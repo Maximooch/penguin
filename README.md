@@ -22,8 +22,9 @@ It provides a command-line interface for interactive conversations, file manipul
 
 1. Clone the repository
 2. Create a virtual environment and activate it
-3. Install the required dependencies: `pip install -r requirements.txt`
-4. Set up your API keys in `config.py`
+4. `cd penguin`
+5. Install the required dependencies: `pip install -r requirements.txt`
+6. Set up your API keys in `config.py`
 
 ## Usage
 

@@ -8,6 +8,9 @@ from memory import ConversationMemory
 from tools import ToolManager
 from config import ANTHROPIC_API_KEY, TAVILY_API_KEY, DEFAULT_MODEL, DEFAULT_MAX_TOKENS
 
+from dotenv import load_dotenv
+load_dotenv()
+
 def main():
     # Initialize colorama
     init()
