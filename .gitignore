@@ -47,6 +47,10 @@ eggs/
 *.sql
 *.sqlite
 @logs/
+/logs/
+
+# Ignores the entire example folder, mostly for testing purposes
+/example/
 
 # Backup files
 *.bak
