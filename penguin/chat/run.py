@@ -50,38 +50,48 @@ def run_chat(chat_manager: ChatManager):
                     max_iterations = MAX_CONTINUATION_ITERATIONS
                 
                 chat_manager.automode = True
+                log_event(log_file, "system", f"Entering automode with {max_iterations} iterations")
                 print_bordered_message(f"Entering automode with {max_iterations} iterations. Press Ctrl+C to exit automode at any time.", TOOL_COLOR, "system", message_count)
                 message_count += 1
                 user_input = get_user_input(message_count)
+                log_event(log_file, "user", f"Automode initial input: {user_input}")
                 
                 iteration_count = 0
                 try:
                     while chat_manager.automode and iteration_count < max_iterations:
                         response, exit_continuation = chat_manager.chat_with_claude(user_input, current_iteration=iteration_count+1, max_iterations=max_iterations)
                         message_count += 1
+                        log_event(log_file, "assistant", f"Automode response (iteration {iteration_count + 1}): {response}")
                         process_and_display_response(response, message_count)
                         
                         if exit_continuation or CONTINUATION_EXIT_PHRASE in response:
+                            log_event(log_file, "system", "Automode completed")
                             print_bordered_message("Automode completed.", TOOL_COLOR, "system", message_count)
                             chat_manager.automode = False
                         else:
+                            log_event(log_file, "system", f"Continuation iteration {iteration_count + 1} completed")
                             print_bordered_message(f"Continuation iteration {iteration_count + 1} completed.", TOOL_COLOR, "system", message_count)
                             user_input = "Continue with the next step."
+                            log_event(log_file, "user", f"Automode continuation prompt: {user_input}")
                         
                         iteration_count += 1
                         
                         if iteration_count >= max_iterations:
+                            log_event(log_file, "system", "Max iterations reached. Exiting automode.")
                             print_bordered_message("Max iterations reached. Exiting automode.", TOOL_COLOR, "system", message_count)
                             chat_manager.automode = False
                 except KeyboardInterrupt:
+                    log_event(log_file, "system", "Automode interrupted by user")
                     print_bordered_message("\nAutomode interrupted by user. Exiting automode.", TOOL_COLOR, "system", message_count)
                     chat_manager.automode = False
                     chat_manager.memory.add_assistant_message("Automode interrupted. How can I assist you further?")
             except KeyboardInterrupt:
+                log_event(log_file, "system", "Automode interrupted by user")
                 print_bordered_message("\nAutomode interrupted by user. Exiting automode.", TOOL_COLOR, "system", message_count)
                 chat_manager.automode = False
                 chat_manager.memory.add_assistant_message("Automode interrupted. How can I assist you further?")
             
+            log_event(log_file, "system", "Exited automode. Returning to regular chat.")
             print_bordered_message("Exited automode. Returning to regular chat.", TOOL_COLOR, "system", message_count)
         else:
             response, _ = chat_manager.chat_with_claude(user_input)
