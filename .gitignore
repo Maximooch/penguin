@@ -48,9 +48,14 @@ eggs/
 *.sqlite
 @logs/
 /logs/
+penguin/logs/
+
 
 # Ignores the entire example folder, mostly for testing purposes
-/example/
+penguin/example/
+
+# Ignore testing folder, nothing useful in there yet.
+/testing/
 
 # Backup files
 *.bak

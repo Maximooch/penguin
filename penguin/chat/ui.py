@@ -38,9 +38,23 @@ def print_code(code, language):
     except pygments.util.ClassNotFound:
         print_bordered_message(f"Code (language: {language}):\n{code}", PENGUIN_COLOR, "assistant", "N/A")
 
+def print_tool_output(tool_name, tool_input, tool_result):
+    tool_panel = Panel(
+        Text(f"Tool Used: {tool_name}\nTool Input: {tool_input}\nTool Result: {tool_result}", style="dim"),
+        border_style="yellow",
+        expand=False
+    )
+    console.print(tool_panel)
+
 def process_and_display_response(response, message_number):
     if response.startswith("Error") or response.startswith("I'm sorry"):
         print_bordered_message(response, TOOL_COLOR, "system", message_number)
+    elif "Tool Used:" in response and "Tool Input:" in response and "Tool Result:" in response:
+        lines = response.split('\n')
+        tool_name = lines[0].split(': ', 1)[1]
+        tool_input = lines[1].split(': ', 1)[1]
+        tool_result = '\n'.join(lines[2:]).split(': ', 1)[1]
+        print_tool_output(tool_name, tool_input, tool_result)
     else:
         if "```" in response:
             parts = response.split("```")
