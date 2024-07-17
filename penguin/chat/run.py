@@ -34,9 +34,8 @@ def run_chat(chat_manager: ChatManager):
             
             if os.path.isfile(image_path):
                 user_input = get_image_prompt()
-                response, _ = chat_manager.chat_with_claude(user_input, image_path)
+                response, _ = chat_manager.chat_with_claude(user_input, message_count, image_path)
                 log_event(log_file, "assistant", f"Assistant response (with image): {response}")
-                message_count += 1
                 process_and_display_response(response, message_count)
             else:
                 print_bordered_message("Invalid image path. Please try again.", PENGUIN_COLOR, "system", message_count)
@@ -59,8 +58,7 @@ def run_chat(chat_manager: ChatManager):
                 iteration_count = 0
                 try:
                     while chat_manager.automode and iteration_count < max_iterations:
-                        response, exit_continuation = chat_manager.chat_with_claude(user_input, current_iteration=iteration_count+1, max_iterations=max_iterations)
-                        message_count += 1
+                        response, exit_continuation = chat_manager.chat_with_claude(user_input, message_count, current_iteration=iteration_count+1, max_iterations=max_iterations)
                         log_event(log_file, "assistant", f"Automode response (iteration {iteration_count + 1}): {response}")
                         process_and_display_response(response, message_count)
                         
@@ -75,6 +73,7 @@ def run_chat(chat_manager: ChatManager):
                             log_event(log_file, "user", f"Automode continuation prompt: {user_input}")
                         
                         iteration_count += 1
+                        message_count += 1
                         
                         if iteration_count >= max_iterations:
                             log_event(log_file, "system", "Max iterations reached. Exiting automode.")
@@ -94,7 +93,6 @@ def run_chat(chat_manager: ChatManager):
             log_event(log_file, "system", "Exited automode. Returning to regular chat.")
             print_bordered_message("Exited automode. Returning to regular chat.", TOOL_COLOR, "system", message_count)
         else:
-            response, _ = chat_manager.chat_with_claude(user_input)
+            response, _ = chat_manager.chat_with_claude(user_input, message_count)
             log_event(log_file, "assistant", f"Assistant response: {response}")
-            message_count += 1
             process_and_display_response(response, message_count)

@@ -4,3 +4,5 @@ pygments
 tavily-python
 python-dotenv
 Pillow
+flake8
+pytest
