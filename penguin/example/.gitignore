@@ -18,6 +18,9 @@ env/
 # Logs
 *.log
 
+# Ignores the entire example folder, mostly for testing purposes
+/example/
+
 # Test coverage
 .coverage
 htmlcov/
