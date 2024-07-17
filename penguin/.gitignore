@@ -1,0 +1,53 @@
+
+# Junkdrawer
+junkdrawer/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Environment variables
+.env
+
+# IDE-specific files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+venv/
+env/
+.env/
+
+# Compiled files, for now
+*.com
+*.class
+*.dll
+*.exe
+*.o
+*.so
+
+# Python packaging
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+.eggs/
+
+
+
+# Logs and databases
+*.log
+*.sql
+*.sqlite
+
+# Backup files
+*.bak
+*.swp
+*~
