@@ -46,6 +46,7 @@ eggs/
 *.log
 *.sql
 *.sqlite
+@logs/
 
 # Backup files
 *.bak
