@@ -4,6 +4,8 @@ Penguin is a modular, extensible AI coding assistant. (as of now only using Clau
 
 It provides a command-line interface for interactive conversations, file manipulation, web searches, and automated task execution. Designed for developers, Penguin AI can assist with coding tasks, answer questions, and interact with the local file system, making it a versatile tool for software development and general problem-solving.
 
+Please be aware that Penguin is currently in active development. While I strive for stability, you may encounter occasional issues or unexpected behavior. I appreciate your patience and feedback as I continue to improve the project.
+
 
 ## Features
 
@@ -24,7 +26,8 @@ It provides a command-line interface for interactive conversations, file manipul
 2. Create a virtual environment and activate it
 4. `cd penguin`
 5. Install the required dependencies: `pip install -r requirements.txt`
-6. Set up your API keys in `config.py`
+6. Set up your API keys in `.env.example`
+7. remove the .example from .env
 
 ## Usage
 
