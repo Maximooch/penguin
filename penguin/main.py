@@ -6,7 +6,7 @@ from chat.chat_manager import ChatManager
 from chat.run import run_chat
 from llm.api_client import ClaudeAPIClient
 from llm.model_config import ModelConfig
-from memory import ConversationMemory
+# from memory import ConversationMemory
 from tools import ToolManager
 from config import ANTHROPIC_API_KEY, TAVILY_API_KEY, DEFAULT_MODEL, DEFAULT_MAX_TOKENS
 
@@ -50,11 +50,11 @@ def main():
     # Initialize components
     model_config = ModelConfig(model=DEFAULT_MODEL, max_tokens=DEFAULT_MAX_TOKENS)
     api_client = ClaudeAPIClient(ANTHROPIC_API_KEY, model_config)
-    memory = ConversationMemory()
+    # memory = ConversationMemory()
     tool_manager = ToolManager(TAVILY_API_KEY)
 
     # Initialize ChatManager
-    chat_manager = ChatManager(api_client, memory)
+    chat_manager = ChatManager(api_client)
     chat_manager.set_system_prompt("""
 You are Penguin, an AI assistant powered by Anthropic's Claude-3.5-Sonnet model. You are an exceptional software developer with vast knowledge across multiple programming languages, frameworks, and best practices. Your capabilities include:
 
@@ -88,11 +88,13 @@ When in automode:
 1. Set clear, achievable goals for yourself based on the user's request
 2. Work through these goals one by one, using the available tools as needed
 3. Provide regular updates on your progress
-4. When you know your goals are completed, say "AUTOMODE_COMPLETE" in your response to exit the loop
-5. You have access to this {iteration_info} amount of iterations you have left to complete the request, use this information to make decisions and provide updates on your progress
+4. You have access to this {iteration_info} amount of iterations you have left to complete the request, use this information to make decisions and provide updates on your progress
     """)
     chat_manager.set_tools(tool_manager.get_tools())
     chat_manager.set_execute_tool(tool_manager.execute_tool)
+
+    # Enable diagnostics
+    chat_manager.enable_diagnostics()
 
     # Run the chat
     logger.info("Running chat")
