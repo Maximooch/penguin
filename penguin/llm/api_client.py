@@ -20,13 +20,13 @@ Example usage:
     print(tool_uses)
 """
 
-from anthropic import Anthropic
+from anthropic import Anthropic # type: ignore
 # Import the Anthropic library to interact with the Claude API
 
 from .model_config import ModelConfig
 # Import the ModelConfig class from the local model_config module
 
-from PIL import Image
+from PIL import Image # type: ignore
 # Import the Image class from the Python Imaging Library (PIL) to handle image processing
 
 import io
@@ -58,7 +58,7 @@ class ClaudeAPIClient:
         except Exception as e:
             # If an exception occurs, raise a new exception with a descriptive error message
             raise Exception(f"Error calling Claude API: {str(e)}")
-
+        
     def process_response(self, response):
         assistant_response = ""  # Initialize an empty string to store the assistant's response
         tool_uses = []  # Initialize an empty list to store tool uses
@@ -78,7 +78,7 @@ class ClaudeAPIClient:
 
         # Return the assistant's response and the list of tool uses
         return assistant_response, tool_uses
-
+        
     def encode_image_to_base64(self, image_path):
         try:
             with Image.open(image_path) as img:
@@ -104,18 +104,3 @@ class ClaudeAPIClient:
         except Exception as e:
             print(f"Error counting tokens: {str(e)}")  # Print an error message if an exception occurs
             return 0  # Return 0 as the token count in case of an error
-
-# Example usage:
-# model_config = ModelConfig()
-# api_client = ClaudeAPIClient("your-api-key-here", model_config)
-# response = api_client.create_message(
-#     model=model_config.model,
-#     max_tokens=model_config.max_tokens,
-#     system="You are a helpful AI assistant.",
-#     messages=[{"role": "user", "content": "Hello, how are you?"}],
-#     tools=[],
-#     tool_choice={"type": "auto"}
-# )
-# assistant_response, tool_uses = api_client.process_response(response)
-# print(assistant_response)
-# print(tool_uses)

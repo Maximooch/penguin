@@ -1,6 +1,6 @@
 import os
 import base64
-from PIL import Image
+from PIL import Image # type: ignore
 import io
 import difflib
 
@@ -39,26 +39,38 @@ def generate_and_apply_diff(original_content, new_content, path):
         return f"Error applying changes: {str(e)}"
 
 def write_to_file(path, content):
-    try:
-        if os.path.exists(path):
-            with open(path, 'r') as f:
-                original_content = f.read()
-            result = generate_and_apply_diff(original_content, content, path)
-        else:
-            with open(path, 'w') as f:
-                f.write(content)
-            result = f"New file created and content written to: {path}"
-        return result
-    except Exception as e:
-        return f"Error writing to file: {str(e)}"
+    encodings = ['utf-8', 'latin-1', 'ascii', 'utf-16']
+    
+    for encoding in encodings:
+        try:
+            if os.path.exists(path):
+                with open(path, 'r', encoding=encoding) as f:
+                    original_content = f.read()
+                result = generate_and_apply_diff(original_content, content, path)
+            else:
+                with open(path, 'w', encoding=encoding) as f:
+                    f.write(content)
+                result = f"New file created and content written to: {path}"
+            return result
+        except UnicodeEncodeError:
+            continue
+        except Exception as e:
+            return f"Error writing to file: {str(e)}"
+    
+    return f"Error writing to file: Unable to encode with encodings: {', '.join(encodings)}"
 
 def read_file(path):
-    try:
-        with open(path, 'r') as f:
-            content = f.read()
-        return content
-    except Exception as e:
-        return f"Error reading file: {str(e)}"
+    encodings = ['utf-8', 'latin-1', 'ascii', 'utf-16']
+    for encoding in encodings:
+        try:
+            with open(path, 'r', encoding=encoding) as f:
+                content = f.read()
+            return content
+        except UnicodeDecodeError:
+            continue
+        except Exception as e:
+            return f"Error reading file: {str(e)}"
+    return f"Error reading file: Unable to decode with encodings: {', '.join(encodings)}"
 
 def list_files(path="."):
     try:

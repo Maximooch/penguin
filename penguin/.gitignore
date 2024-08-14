@@ -50,10 +50,6 @@ eggs/
 /logs/
 penguin/logs/
 
-# Ignore the notes folder in penguin
-penguin/notes/
-
-
 
 # Ignores the entire example folder, mostly for testing purposes
 penguin/example/
@@ -65,4 +61,3 @@ penguin/example/
 *.bak
 *.swp
 *~
-.aider*
