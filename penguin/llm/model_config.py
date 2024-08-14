@@ -1,3 +1,5 @@
+# might move this to a config file later, I suppose it could just import it from an upstream config file.
+
 class ModelConfig:
     DEFAULT_MODEL = "claude-3-5-sonnet-20240620"
     DEFAULT_MAX_TOKENS = 4000
