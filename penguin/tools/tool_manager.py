@@ -7,7 +7,7 @@ from .declarative_memory_tool import DeclarativeMemoryTool
 # from .bm25_search import BM25Search
 from .grep_search import GrepSearch
 # from .elastic_search_tool import ElasticSearch
-from .sklearn_search_tool import SklearnSearch
+# from .sklearn_search_tool import SklearnSearch
 
 class ToolManager:
     def __init__(self, tavily_api_key):
@@ -16,7 +16,7 @@ class ToolManager:
         # self.bm25_searcher = BM25Search(root_dir=os.path.join(os.getcwd(), "logs"))
         self.grep_search = GrepSearch(root_dir=os.path.join(os.getcwd(), "logs"))
         # self.elastic_search = ElasticSearch(root_dir=os.path.join(os.getcwd(), "logs"))
-        self.sklearn_search = SklearnSearch(root_dir=os.path.join(os.getcwd(), "logs"))
+        # self.sklearn_search = SklearnSearch(root_dir=os.path.join(os.getcwd(), "logs"))
         self.tools = [
             {
                 "name": "create_folder",
