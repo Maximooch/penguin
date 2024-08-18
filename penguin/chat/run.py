@@ -20,7 +20,7 @@ Functions:
 
 import os
 from typing import Any
-from colorama import init
+from colorama import init # type: ignore
 from utils.logs import setup_logger, log_event, logger
 from chat.chat_manager import ChatManager
 from chat.ui import (

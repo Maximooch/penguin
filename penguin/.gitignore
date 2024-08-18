@@ -40,7 +40,11 @@ build/
 eggs/
 .eggs/
 
-
+# Virtual environments
+venv/
+env/
+.env/
+penguin_venv/
 
 # Logs and databases
 *.log

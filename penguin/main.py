@@ -1,7 +1,11 @@
 import os
+import sys 
+import subprocess
+import site
 import logging
+
 from logging.handlers import RotatingFileHandler
-from colorama import init
+from colorama import init # type: ignore
 from chat.chat_manager import ChatManager
 from chat.run import run_chat
 from llm.api_client import ClaudeAPIClient
@@ -16,9 +20,39 @@ from config import (
 )
 from core import PenguinCore
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv # type: ignore
 
 load_dotenv()
+
+
+
+def ensure_venv():
+    venv_path = os.path.join(os.path.dirname(__file__), 'penguin_venv')
+    if not os.path.exists(venv_path):
+        print("Virtual environment not found. Setting up...")
+        subprocess.check_call([sys.executable, 'setup_venv.py'])
+    
+    if sys.prefix != venv_path:
+        if os.name == 'nt':  # Windows
+            site_packages = os.path.join(venv_path, 'Lib', 'site-packages')
+            prev_sys_path = sys.path[:]
+            site.main()
+            sys.path[:] = prev_sys_path
+            site.addsitedir(site_packages)
+        else:  # Unix-like systems
+            activate_this = os.path.join(venv_path, 'bin', 'activate_this.py')
+            if os.path.exists(activate_this):
+                exec(open(activate_this).read(), {'__file__': activate_this})
+            else:
+                site_packages = os.path.join(venv_path, 'lib', 'python{}.{}'.format(*sys.version_info[:2]), 'site-packages')
+                prev_sys_path = sys.path[:]
+                site.main()
+                sys.path[:] = prev_sys_path
+                site.addsitedir(site_packages)
+
+    print(f"Using virtual environment: {venv_path}")
+
+ensure_venv()
 
 def setup_logger(log_file='Penguin.log', log_level=logging.INFO):
     logger = logging.getLogger('Penguin')
