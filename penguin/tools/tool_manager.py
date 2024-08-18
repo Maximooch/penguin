@@ -1,8 +1,15 @@
 import os
 import logging
+import time 
+import random 
+import requests # type: ignore
+from requests.exceptions import RequestException # type: ignore
 
 from .support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64
-from tavily import TavilyClient
+# from tavily import TavilyClient
+
+from bs4 import BeautifulSoup # type: ignore
+from duckduckgo_search import DDGS # type: ignore
 from .declarative_memory_tool import DeclarativeMemoryTool
 # from .bm25_search import BM25Search
 from .grep_search import GrepSearch
@@ -11,7 +18,7 @@ from .grep_search import GrepSearch
 
 class ToolManager:
     def __init__(self, tavily_api_key):
-        self.tavily_client = TavilyClient(api_key=tavily_api_key)
+        # self.tavily_client = TavilyClient(api_key=tavily_api_key)
         self.declarative_memory_tool = DeclarativeMemoryTool()
         # self.bm25_searcher = BM25Search(root_dir=os.path.join(os.getcwd(), "logs"))
         self.grep_search = GrepSearch(root_dir=os.path.join(os.getcwd(), "logs"))
@@ -96,14 +103,18 @@ class ToolManager:
                 }
             },
             {
-                "name": "tavily_search",
-                "description": "Perform a web search using Tavily API to get up-to-date information or additional context. Use this when you need current information or feel a search could provide a better answer.",
+                "name": "duckduckgo_search",
+                "description": "Perform a web search using DuckDuckGo to get up-to-date information or additional context. Use this when you need current information or feel a search could provide a better answer.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
                             "description": "The search query"
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "The maximum number of results to return (default: 5)"
                         }
                     },
                     "required": ["query"]
@@ -127,50 +138,6 @@ class ToolManager:
                 "required": ["category", "content"]
             }
         },
-        # {
-        #     "name": "sklearn_search",
-        #     "description": "Perform a sklearn-based search on the conversation history and files.",
-        #     "input_schema": {
-        #         "type": "object",
-        #         "properties": {
-        #             "query": {
-        #                 "type": "string",
-        #                 "description": "The search query"
-        #             },
-        #             "k": {
-        #                 "type": "integer",
-        #                 "description": "The number of results to return (default: 5)"
-        #             },
-        #             "case_sensitive": {
-        #                 "type": "boolean",
-        #                 "description": "Whether the search should be case-sensitive (default: false)"
-        #             },
-        #             "search_files": {
-        #                 "type": "boolean",
-        #                 "description": "Whether to search in files as well as conversation history (default: true)"
-        #             }
-        #         },
-        #         "required": ["query"]
-        #     }
-        # }
-        # {
-        #     "name": "bm25_searcher",
-        #     "description": "Perform a BM25 search on the conversation history.",
-        #     "input_schema": {
-        #         "type": "object",
-        #         "properties": {
-        #             "query": {
-        #                 "type": "string",
-        #                 "description": "The search query"
-        #             },
-        #             "k": {
-        #                 "type": "integer",
-        #                 "description": "The number of results to return (default: 5)"
-        #             }
-        #         },
-        #         "required": ["query"]
-        #     }
-        # },
         {
             "name": "grep_search",
             "description": "Perform a grep-like search on the conversation history and files.",
@@ -196,6 +163,20 @@ class ToolManager:
                 },
                 "required": ["pattern"]
             }
+        },
+        {
+            "name": "code_execution",
+            "description": "Execute a snippet of Python code.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "description": "The Python code to execute"
+                    }
+                },
+                "required": ["code"]
+            }
         }
         ]
 
@@ -209,21 +190,18 @@ class ToolManager:
             "write_to_file": lambda: write_to_file(tool_input["path"], tool_input["content"]),
             "read_file": lambda: read_file(tool_input["path"]),
             "list_files": lambda: list_files(tool_input.get("path", ".")),
-            "tavily_search": lambda: self.tavily_search(tool_input["query"]),
             "add_declarative_note": lambda: self.add_declarative_note(tool_input["category"], tool_input["content"]),
-            # "sklearn_search": lambda: self.perform_sklearn_search(
-            #     tool_input["query"],
-            #     tool_input.get("k", 5),
-            #     tool_input.get("case_sensitive", False),
-            #     tool_input.get("search_files", True)
-            # ),
-            # "bm25_searcher": lambda: self.perform_bm25_search(tool_input["query"], tool_input.get("k", 5)),
             "grep_search": lambda: self.perform_grep_search(
                 tool_input["pattern"],
                 tool_input.get("k", 5),
                 tool_input.get("case_sensitive", False),
                 tool_input.get("search_files", True)
             ),
+            "duckduckgo_search": lambda: self.duckduckgo_search(
+            tool_input["query"],
+            tool_input.get("max_results", 5)
+        ),
+            "code_execution": lambda: self.execute_code(tool_input["code"]),
         }
 
         try:
@@ -237,15 +215,37 @@ class ToolManager:
             logging.error(f"Tool execution error: {error_message}", exc_info=True)
             return error_message
 
-    def tavily_search(self, query):
+    def duckduckgo_search(self, query, max_results=5):
         try:
-            response = self.tavily_client.qna_search(query=query, search_depth="advanced")
-            return response
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results))
+            
+            formatted_results = []
+            for result in results:
+                formatted_results.append({
+                    "title": result['title'],
+                    "content": result['body'],
+                    "url": result['href']
+                })
+            
+            return formatted_results
         except Exception as e:
-            return f"Error performing search: {str(e)}"
+            logging.error(f"Error performing DuckDuckGo search: {str(e)}")
+            return [{
+                "title": "Search Error",
+                "content": f"An error occurred: {str(e)}",
+                "url": ""
+            }]
 
-    def add_declarative_note(self, category, content):
-        return self.declarative_memory_tool.add_note(category, content)
+    # def tavily_search(self, query):
+    #     try:
+    #         response = self.tavily_client.qna_search(query=query, search_depth="advanced")
+    #         return response
+    #     except Exception as e:
+    #         return f"Error performing search: {str(e)}"
+
+    # def add_declarative_note(self, category, content):
+    #     return self.declarative_memory_tool.add_note(category, content)
 
     def perform_sklearn_search(self, query, k=5, case_sensitive=False, search_files=True):
         logging.info(f"Performing sklearn search with query: {query}")
@@ -317,9 +317,21 @@ class ToolManager:
     def encode_image(self, image_path):
         return encode_image_to_base64(image_path)
 
+    def execute_code(self, code):
+        try:
+            # Set the environment variable for encoding
+            os.environ['PYTHONIOENCODING'] = 'utf-8'
+            
+            local_vars = {}
+            exec(code, {}, local_vars)
+            return local_vars
+        except Exception as e:
+            logging.error(f"Error executing code: {str(e)}")
+            return {"error": str(e)}
+
 # Example usage:
 # tool_manager = ToolManager("your-tavily-api-key-here")
 # result = tool_manager.execute_tool("create_folder", {"path": "test_folder"})
 # print(result)
-# result = tool_manager.execute_tool("tavily_search", {"query": "Latest news about AI"})
+# result = tool_manager.execute_tool("duckduckgo_search", {"keywords": "Latest news about AI"})
 # print(result)
