@@ -36,8 +36,6 @@ from llm.api_client import ClaudeAPIClient
 from tools.tool_manager import ToolManager
 from config import CONTINUATION_EXIT_PHRASE
 from utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnostics
-# from tools.support import encode_image_to_base64
-# from memory.declarative_memory import DeclarativeMemory
 import logging
 
 logger = logging.getLogger(__name__)
@@ -51,8 +49,6 @@ class PenguinCore:
         self.system_prompt_sent = False
         self.max_history_length = 1000
         self.conversation_history: List[Dict[str, Any]] = []
-        # Ensure we're using the declarative memory from the tool manager
-        # self.declarative_memory = self.tool_manager.declarative_memory
 
     def set_system_prompt(self, prompt: str) -> None:
         self.system_prompt = prompt
@@ -68,10 +64,6 @@ class PenguinCore:
         notes_str = "\n".join([f"{note['category']}: {note['content']}" for note in declarative_notes])
         
         return f"{self.system_prompt}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
-        
-    # def add_declarative_note(self, category: str, content: str) -> None:
-    #         result = self.tool_manager.add_declarative_note(category, content)
-    #         logger.info(f"Declarative note addition result: {result}")
 
     def add_message(self, role: str, content: Any) -> None:
         if isinstance(content, dict):
@@ -140,20 +132,27 @@ class PenguinCore:
             logger.error(f"Error adding image message: {str(e)}")
             raise
 
-    def _get_ai_response(self, current_iteration: Optional[int], max_iterations: Optional[int]) -> Any:
+    def _get_ai_response(self, current_iteration: Optional[int] = None, max_iterations: Optional[int] = None, is_final: bool = False) -> Any:
         try:
             response = self.api_client.create_message(
                 model=self.api_client.model_config.model,
                 max_tokens=self.api_client.model_config.max_tokens,
                 system=self.get_system_message(current_iteration, max_iterations),
-                messages=self.get_history(),
+                messages=self.get_history(), 
                 tools=self.tool_manager.get_tools(),
                 tool_choice={"type": "auto"}
             )
-            diagnostics.update_tokens('main_model', response.usage.input_tokens, response.usage.output_tokens)
+            diagnostics.update_tokens('tool_checker' if is_final else 'main_model', 
+                                      response.usage.input_tokens, 
+                                      response.usage.output_tokens)
+            
+            if is_final:
+                return "".join(block.text for block in response.content if block.type == "text")
             return response
         except Exception as e:
             logger.error(f"Error calling LLM API: {str(e)}")
+            if is_final:
+                return "\nI encountered an error while processing the tool results. Please try again."
             raise
 
     def _process_response(self, response: Any) -> Tuple[str, bool]:
@@ -169,20 +168,15 @@ class PenguinCore:
                 self._handle_tool_use(content_block)
         
         if any(content_block.type == "tool_use" for content_block in response.content):
-            assistant_response = self._get_final_response()
+            assistant_response = self._get_ai_response(is_final=True)
         
         if assistant_response:
             self.add_message("assistant", assistant_response)
         
         diagnostics.log_token_usage()
         return assistant_response, exit_continuation
+
     
-    # def set_tools(self, tools: List[Dict[str, Any]]) -> None:
-    #     self.tool_manager.get_tools(tools)  
-
-    # def set_execute_tool(self, execute_tool_function: callable) -> None:
-    #     self.tool_manager.set_execute_tool(execute_tool_function)
-
     def _handle_tool_use(self, content_block: Any) -> None:
         tool_name = content_block.name
         tool_input = content_block.input
@@ -199,30 +193,11 @@ class PenguinCore:
             }
         ])
 
-    def _get_final_response(self) -> str:
-        try:
-            final_response = self.api_client.create_message(
-                model=self.api_client.model_config.model,
-                max_tokens=self.api_client.model_config.max_tokens,
-                system=self.get_system_message(),
-                messages=self.get_history(),
-                tools=self.tool_manager.get_tools(),
-                tool_choice={"type": "auto"}
-            )
-            diagnostics.update_tokens('tool_checker', final_response.usage.input_tokens, final_response.usage.output_tokens)
-            return "".join(block.text for block in final_response.content if block.type == "text")
-        except Exception as e:
-            logger.error(f"Error in final response: {str(e)}")
-            return "\nI encountered an error while processing the tool results. Please try again."
-
     def execute_tool(self, tool_name: str, tool_input: Any) -> Any:
         return self.tool_manager.execute_tool(tool_name, tool_input)
 
     def enable_diagnostics(self) -> None:
         enable_diagnostics()
-
-    # def disable_diagnostics(self) -> None:
-    #     disable_diagnostics()
 
     def reset_state(self) -> None:
         self.automode = False

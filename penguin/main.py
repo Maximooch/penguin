@@ -92,8 +92,6 @@ def main():
     penguin_core.set_system_prompt(SYSTEM_PROMPT)
 
     chat_manager = ChatManager(penguin_core)
-    # penguin_core.set_tools(tool_manager.get_tools())
-    # penguin_core.set_execute_tool(tool_manager.execute_tool)
 
     penguin_core.enable_diagnostics()
 
