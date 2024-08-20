@@ -23,7 +23,7 @@ Example usage:
 from anthropic import Anthropic # type: ignore
 # Import the Anthropic library to interact with the Claude API
 
-import openai
+# import openai
 
 from .model_config import ModelConfig
 # Import the ModelConfig class from the local model_config module
@@ -36,46 +36,6 @@ import io
 
 import base64
 # Import the base64 module to encode and decode binary data in base64 format
-
-
-class BaseAPIClient:
-    def create_message(self, model, max_tokens, system, messages, tools, tool_choice):
-        raise NotImplementedError
-
-    def process_response(self, response):
-        raise NotImplementedError
-
-    def count_tokens(self, text):
-        raise NotImplementedError    
-
-class OpenAIClient(BaseAPIClient):
-    def __init__(self, api_key: str):
-        openai.api_key = api_key
-
-    def create_message(self, model, max_tokens, system, messages, tools, tool_choice):
-        try:
-            response = openai.Completion.create(
-                model=model,
-                max_tokens=max_tokens,
-                prompt=system + "\n" + "\n".join([msg["content"] for msg in messages])
-            )
-            return response
-        except Exception as e:
-            raise Exception(f"Error calling OpenAI API: {str(e)}")
-
-    def process_response(self, response):
-        assistant_response = response.choices[0].text.strip()
-        tool_uses = []  # OpenAI might not have tool uses in the same way
-        return assistant_response, tool_uses
-
-    def count_tokens(self, text):
-        try:
-            token_count = len(openai.Completion.create(model="text-davinci-003", prompt=text, max_tokens=1).choices[0].logprobs.tokens)
-            return token_count
-        except Exception as e:
-            print(f"Error counting tokens: {str(e)}")
-            return 0
-
 
 class ClaudeAPIClient:
     def __init__(self, api_key: str, model_config: ModelConfig):
@@ -146,3 +106,43 @@ class ClaudeAPIClient:
         except Exception as e:
             print(f"Error counting tokens: {str(e)}")  # Print an error message if an exception occurs
             return 0  # Return 0 as the token count in case of an error
+
+# class BaseAPIClient:
+#     def create_message(self, model, max_tokens, system, messages, tools, tool_choice):
+#         raise NotImplementedError
+
+#     def process_response(self, response):
+#         raise NotImplementedError
+
+#     def count_tokens(self, text):
+#         raise NotImplementedError    
+
+# class OpenAIClient(BaseAPIClient):
+#     def __init__(self, api_key: str):
+#         openai.api_key = api_key
+
+#     def create_message(self, model, max_tokens, system, messages, tools, tool_choice):
+#         try:
+#             response = openai.Completion.create(
+#                 model=model,
+#                 max_tokens=max_tokens,
+#                 prompt=system + "\n" + "\n".join([msg["content"] for msg in messages])
+#             )
+#             return response
+#         except Exception as e:
+#             raise Exception(f"Error calling OpenAI API: {str(e)}")
+
+#     def process_response(self, response):
+#         assistant_response = response.choices[0].text.strip()
+#         tool_uses = []  # OpenAI might not have tool uses in the same way
+#         return assistant_response, tool_uses
+
+#     def count_tokens(self, text):
+#         try:
+#             token_count = len(openai.Completion.create(model="text-davinci-003", prompt=text, max_tokens=1).choices[0].logprobs.tokens)
+#             return token_count
+#         except Exception as e:
+#             print(f"Error counting tokens: {str(e)}")
+#             return 0
+
+

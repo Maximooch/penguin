@@ -244,8 +244,8 @@ class ToolManager:
     #     except Exception as e:
     #         return f"Error performing search: {str(e)}"
 
-    # def add_declarative_note(self, category, content):
-    #     return self.declarative_memory_tool.add_note(category, content)
+    def add_declarative_note(self, category, content):
+        return self.declarative_memory_tool.add_note(category, content)
 
     def perform_sklearn_search(self, query, k=5, case_sensitive=False, search_files=True):
         logging.info(f"Performing sklearn search with query: {query}")
