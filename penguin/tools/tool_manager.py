@@ -1,4 +1,6 @@
 import os
+import io
+import sys
 import logging
 import time 
 import random 
@@ -6,24 +8,15 @@ import requests # type: ignore
 from requests.exceptions import RequestException # type: ignore
 
 from .support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64
-# from tavily import TavilyClient
 
 from bs4 import BeautifulSoup # type: ignore
-from duckduckgo_search import DDGS # type: ignore
 from .declarative_memory_tool import DeclarativeMemoryTool
-# from .bm25_search import BM25Search
 from .grep_search import GrepSearch
-# from .elastic_search_tool import ElasticSearch
-# from .sklearn_search_tool import SklearnSearch
 
 class ToolManager:
-    def __init__(self, tavily_api_key):
-        # self.tavily_client = TavilyClient(api_key=tavily_api_key)
+    def __init__(self):
         self.declarative_memory_tool = DeclarativeMemoryTool()
-        # self.bm25_searcher = BM25Search(root_dir=os.path.join(os.getcwd(), "logs"))
         self.grep_search = GrepSearch(root_dir=os.path.join(os.getcwd(), "logs"))
-        # self.elastic_search = ElasticSearch(root_dir=os.path.join(os.getcwd(), "logs"))
-        # self.sklearn_search = SklearnSearch(root_dir=os.path.join(os.getcwd(), "logs"))
         self.tools = [
             {
                 "name": "create_folder",
@@ -100,24 +93,6 @@ class ToolManager:
                             "description": "The path of the folder to list (default: current directory)"
                         }
                     }
-                }
-            },
-            {
-                "name": "duckduckgo_search",
-                "description": "Perform a web search using DuckDuckGo to get up-to-date information or additional context. Use this when you need current information or feel a search could provide a better answer.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query"
-                        },
-                        "max_results": {
-                            "type": "integer",
-                            "description": "The maximum number of results to return (default: 5)"
-                        }
-                    },
-                    "required": ["query"]
                 }
             },
             {
@@ -198,91 +173,33 @@ class ToolManager:
                 tool_input.get("search_files", True)
             ),
             "duckduckgo_search": lambda: self.duckduckgo_search(
-            tool_input["query"],
-            tool_input.get("max_results", 5)
-        ),
+                tool_input["query"],
+                tool_input.get("max_results", 5)
+            ),
             "code_execution": lambda: self.execute_code(tool_input["code"]),
         }
 
-        try:
-            result = tool_map.get(tool_name, lambda: f"Unknown tool: {tool_name}")()
-            self.add_message_to_search({"role": "assistant", "content": f"Tool use: {tool_name}"})
-            self.add_message_to_search({"role": "user", "content": f"Tool result: {result}"})
-            return result
-        except Exception as e:
-            error_message = f"Error executing tool '{tool_name}': {str(e)}"
-            self.add_message_to_search({"role": "system", "content": error_message})
-            logging.error(f"Tool execution error: {error_message}", exc_info=True)
+        logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
+        if tool_name not in tool_map:
+            error_message = f"Unknown tool: {tool_name}"
+            logging.error(error_message)
             return error_message
 
-    def duckduckgo_search(self, query, max_results=5):
         try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=max_results))
-            
-            formatted_results = []
-            for result in results:
-                formatted_results.append({
-                    "title": result['title'],
-                    "content": result['body'],
-                    "url": result['href']
-                })
-            
-            return formatted_results
+            result = tool_map[tool_name]()
+            if result is None or (isinstance(result, list) and len(result) == 0):
+                result = "No results found or empty directory."
+            self.add_message_to_search({"role": "assistant", "content": f"Tool use: {tool_name}"})
+            self.add_message_to_search({"role": "user", "content": f"Tool result: {result}"})
+            logging.info(f"Tool {tool_name} executed successfully with result: {result}")
+            return result
         except Exception as e:
-            logging.error(f"Error performing DuckDuckGo search: {str(e)}")
-            return [{
-                "title": "Search Error",
-                "content": f"An error occurred: {str(e)}",
-                "url": ""
-            }]
-
-    # def tavily_search(self, query):
-    #     try:
-    #         response = self.tavily_client.qna_search(query=query, search_depth="advanced")
-    #         return response
-    #     except Exception as e:
-    #         return f"Error performing search: {str(e)}"
+            error_message = f"Error executing tool {tool_name}: {str(e)}"
+            logging.error(error_message)
+            return error_message
 
     def add_declarative_note(self, category, content):
         return self.declarative_memory_tool.add_note(category, content)
-
-    def perform_sklearn_search(self, query, k=5, case_sensitive=False, search_files=True):
-        logging.info(f"Performing sklearn search with query: {query}")
-        results = self.sklearn_search.search(query, k, case_sensitive, search_files)
-        logging.info(f"Sklearn search returned {len(results)} results")
-        formatted_results = []
-        for result in results:
-            if result['type'] == 'file':
-                formatted_results.append({
-                    "type": "text",
-                    "text": f"File: {result.get('path', 'Unknown')}\nContent: {result['content'][:500]}...\nRelevance Score: {result['relevance_score']:.2f}, Cosine Similarity: {result['cosine_similarity']:.2f}, Matching terms: {result['matching_terms']}, Fuzzy Ratio: {result['fuzzy_ratio']:.2f}"
-                })
-            else:
-                formatted_results.append({
-                    "type": "text",
-                    "text": f"Message content: {result['content']}\nRelevance Score: {result['relevance_score']:.2f}, Cosine Similarity: {result['cosine_similarity']:.2f}, Matching terms: {result['matching_terms']}, Fuzzy Ratio: {result['fuzzy_ratio']:.2f}"
-                })
-        logging.info(f"Formatted {len(formatted_results)} results for output")
-        return formatted_results
-
-    # def perform_bm25_search(self, query, k=5):
-    #     results = self.bm25_searcher.search(query, k)
-    #     formatted_results = []
-    #     for result in results:
-    #         if result.get('role') == 'file':
-    #             formatted_results.append({
-    #                 "type": "text",
-    #                 "text": f"File: {result['content']}"
-    #             })
-    #         else:
-    #             formatted_results.append({
-    #                 "type": "text",
-    #                 "text": f"Role: {result['role']}, Content: {result['content']}"
-    #             })
-    #     return formatted_results
-
-    # import logging
 
     def perform_grep_search(self, query, k=5, case_sensitive=False, search_files=True):
         patterns = query.split('|')  # Allow multiple patterns separated by |
@@ -304,34 +221,34 @@ class ToolManager:
         logging.info(f"Formatted {len(formatted_results)} results for output")
         return formatted_results
 
-    # def update_bm25_index(self):
-    #     self.bm25_searcher.index_files()
-
-
     def add_message_to_search(self, message):
-        # self.bm25_searcher.add_message(message)
         self.grep_search.add_message(message)
-    
-        # self.sklearn_search.add_message(message)
 
     def encode_image(self, image_path):
         return encode_image_to_base64(image_path)
 
-    def execute_code(self, code):
+    def execute_code(self, code: str) -> str:
         try:
-            # Set the environment variable for encoding
-            os.environ['PYTHONIOENCODING'] = 'utf-8'
-            
-            local_vars = {}
-            exec(code, {}, local_vars)
-            return local_vars
-        except Exception as e:
-            logging.error(f"Error executing code: {str(e)}")
-            return {"error": str(e)}
+            # Create a StringIO object to capture print output
+            output_buffer = io.StringIO()
+            sys.stdout = output_buffer
 
-# Example usage:
-# tool_manager = ToolManager("your-tavily-api-key-here")
-# result = tool_manager.execute_tool("create_folder", {"path": "test_folder"})
-# print(result)
-# result = tool_manager.execute_tool("duckduckgo_search", {"keywords": "Latest news about AI"})
-# print(result)
+            # Execute the code
+            exec_globals = {}
+            exec(code, exec_globals)
+
+            # Restore the original stdout
+            sys.stdout = sys.__stdout__
+
+            # Get the captured output
+            output = output_buffer.getvalue()
+
+            # If there's no output, check for the last expression result
+            if not output.strip():
+                last_expression = code.strip().split('\n')[-1]
+                if not last_expression.startswith(('def ', 'class ', 'import ', 'from ')):
+                    output = str(eval(last_expression, exec_globals))
+
+            return output if output.strip() else "Code executed successfully, but produced no output."
+        except Exception as e:
+            return f"Error executing code: {str(e)}"
