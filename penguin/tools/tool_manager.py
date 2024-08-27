@@ -227,6 +227,26 @@ class ToolManager:
     def encode_image(self, image_path):
         return encode_image_to_base64(image_path)
 
+    def duckduckgo_search(self, query: str, max_results: int = 5) -> List[Dict[str, str]]:
+        try:
+            url = f"https://api.duckduckgo.com/?q={query}&format=json"
+            response = requests.get(url)
+            response.raise_for_status()
+            data = response.json()
+            
+            results = []
+            for result in data.get('RelatedTopics', [])[:max_results]:
+                if 'Text' in result:
+                    results.append({
+                        'title': result.get('FirstURL', ''),
+                        'snippet': result.get('Text', '')
+                    })
+            
+            return results
+        except RequestException as e:
+            logging.error(f"Error performing DuckDuckGo search: {str(e)}")
+            return [{"error": f"Failed to perform search: {str(e)}"}]
+
     def execute_code(self, code: str) -> str:
         try:
             # Create a StringIO object to capture print output
