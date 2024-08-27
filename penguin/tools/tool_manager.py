@@ -6,6 +6,7 @@ import time
 import random 
 import requests # type: ignore
 from requests.exceptions import RequestException # type: ignore
+from typing import List, Dict
 
 from .support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64
 
