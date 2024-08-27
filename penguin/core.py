@@ -104,37 +104,21 @@ class PenguinCore:
 
     def get_response(self, user_input: str, image_path: Optional[str] = None, 
                     current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> Tuple[str, bool]:
-        """
-        High-level method to get a response from the AI model.
-        
-        This method orchestrates the entire response process, including:
-        1. Preparing the conversation
-        2. Getting the AI response
-        3. Processing the response (including handling tool use and CodeAct actions)
-        4. Handling any errors that occur during the process
-
-        Args:
-            user_input (str): The input from the user
-            image_path (Optional[str]): Path to an image file, if any
-            current_iteration (Optional[int]): Current iteration in automode
-            max_iterations (Optional[int]): Maximum iterations for automode
-
-        Returns:
-            Tuple[str, bool]: The assistant's response and a flag indicating whether to exit continuation
-        """
+        # High-level method to get a response from the AI model
+        # This method orchestrates the entire response process, including:
+        # 1. Preparing the conversation
+        # 2. Getting the AI response
+        # 3. Processing the response (including handling tool use and CodeAct actions)
+        # 4. Handling any errors that occur during the process
         try:
             self._prepare_conversation(user_input, image_path)
             response = self._get_ai_response(current_iteration, max_iterations)
             return self._process_response(response)
-        except DeclarativeMemoryError as e:
-            logger.error(f"Declarative memory error: {str(e)}")
-            return "I encountered an issue with my memory. I'll do my best to continue our conversation without it.", False
-        except APIError as e:
-            logger.error(f"API error: {str(e)}")
-            return "I'm having trouble connecting to my knowledge base. Please try again in a moment.", False
         except Exception as e:
-            logger.error(f"Unexpected error in get_response: {str(e)}")
-            return "I'm sorry, an unexpected error occurred. Please try again.", False
+            logger.error(f"Error in get_response: {str(e)}")
+            if "declarative memory" in str(e).lower():
+                return "I encountered an issue with my memory. I'll do my best to continue our conversation without it.", False
+            return "I'm sorry, an error occurred. Please try again.", False
     
         
     
