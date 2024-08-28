@@ -57,6 +57,7 @@ penguin/notes/
 
 # Ignores the entire example folder, mostly for testing purposes
 penguin/example/
+penguin/codeact/ 
 
 # Ignore testing folder, nothing useful in there yet.
 /testing/

@@ -35,6 +35,9 @@ class GrepSearch:
         # Search files
         if search_files:
             for root, _, files in os.walk(self.root_dir):
+                # Skip __pycache__, penguin_venv, and .env directories
+                if any(excluded in root for excluded in ['__pycache__', 'penguin_venv', '.env']):
+                    continue
                 for file in files:
                     if file.endswith(('.md', '.txt', '.py')):  # Add more file types if needed
                         file_path = os.path.join(root, file)

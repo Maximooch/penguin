@@ -6,18 +6,23 @@ import time
 import random 
 import requests # type: ignore
 from requests.exceptions import RequestException # type: ignore
-from typing import List, Dict
+from typing import List, Dict, Any, Callable
+from utils import FileMap
+# from utils.log_error import log_error
 
-from .support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64
+from .support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
 
 from bs4 import BeautifulSoup # type: ignore
 from .declarative_memory_tool import DeclarativeMemoryTool
 from .grep_search import GrepSearch
 
 class ToolManager:
-    def __init__(self):
+    def __init__(self, log_error_func: Callable):
+        from utils.file_map import FileMap  # Import here to avoid circular import
+        self.log_error = log_error_func
         self.declarative_memory_tool = DeclarativeMemoryTool()
         self.grep_search = GrepSearch(root_dir=os.path.join(os.getcwd(), "logs"))
+        self.file_map = FileMap(os.getcwd())  # Initialize with the current working directory
         self.tools = [
             {
                 "name": "create_folder",
@@ -153,6 +158,37 @@ class ToolManager:
                 },
                 "required": ["code"]
             }
+        },
+        {
+            "name": "get_file_map",
+            "description": "Get the current file map of the project structure. You can specify a subdirectory to get a partial map.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": "The directory to map (optional, defaults to root project directory)"
+                    }
+                }
+            }
+        },
+        {
+            "name": "find_file",
+            "description": "Find a file by name in the project structure. You can specify a search path or search from the root directory.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": "The name of the file to find"
+                    },
+                    "search_path": {
+                        "type": "string",
+                        "description": "The path to start the search from (optional, defaults to root project directory)"
+                    }
+                },
+                "required": ["filename"]
+            }
         }
         ]
 
@@ -178,12 +214,15 @@ class ToolManager:
                 tool_input.get("max_results", 5)
             ),
             "code_execution": lambda: self.execute_code(tool_input["code"]),
+            "get_file_map": lambda: self.get_file_map(tool_input.get("directory", "")),
+            "find_file": lambda: find_file(tool_input["filename"], tool_input.get("search_path", ".")),
         }
-
+        
         logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
         if tool_name not in tool_map:
             error_message = f"Unknown tool: {tool_name}"
             logging.error(error_message)
+            self.log_error(Exception(error_message), f"Attempted to use unknown tool: {tool_name}")
             return error_message
 
         try:
@@ -197,10 +236,14 @@ class ToolManager:
         except Exception as e:
             error_message = f"Error executing tool {tool_name}: {str(e)}"
             logging.error(error_message)
+            self.log_error(e, f"Error occurred while executing tool: {tool_name}")
             return error_message
 
     def add_declarative_note(self, category, content):
         return self.declarative_memory_tool.add_note(category, content)
+
+    def get_file_map(self, directory: str = "") -> str:
+        return self.file_map.get_formatted_file_map(directory)
 
     def perform_grep_search(self, query, k=5, case_sensitive=False, search_files=True):
         patterns = query.split('|')  # Allow multiple patterns separated by |
