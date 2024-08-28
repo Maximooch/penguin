@@ -49,6 +49,7 @@ eggs/
 @logs/
 /logs/
 penguin/logs/
+penguin/error_log/
 
 # Ignore the notes folder in penguin
 penguin/notes/
