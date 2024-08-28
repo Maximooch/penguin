@@ -3,6 +3,7 @@ import base64
 from PIL import Image # type: ignore
 import io
 import difflib
+from pathlib import Path
 
 def create_folder(path):
     try:
@@ -11,11 +12,13 @@ def create_folder(path):
     except Exception as e:
         return f"Error creating folder: {str(e)}"
 
-def create_file(path, content=""):
+def create_file(self, path: str, content: str = "") -> str:
     try:
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w') as f:
             f.write(content)
-        return f"File created: {path}"
+        return f"File created successfully at {path}"
     except Exception as e:
         return f"Error creating file: {str(e)}"
 
@@ -78,6 +81,11 @@ def list_files(path="."):
         return "\n".join(files)
     except Exception as e:
         return f"Error listing files: {str(e)}"
+
+def find_file(filename: str, search_path: str = ".") -> list[str]:
+    search_path = Path(search_path)
+    matches = list(search_path.rglob(filename))
+    return [str(path.relative_to(search_path)) for path in matches]
 
 def encode_image_to_base64(image_path):
     try:

@@ -44,6 +44,10 @@ from config import CONTINUATION_EXIT_PHRASE, MAX_CONTINUATION_ITERATIONS
 from utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnostics
 from agent.automode import Automode
 import logging
+import os
+import traceback
+from datetime import datetime
+from config import Config
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -115,11 +119,29 @@ class PenguinCore:
             response = self._get_ai_response(current_iteration, max_iterations)
             return self._process_response(response)
         except Exception as e:
-            logger.error(f"Error in get_response: {str(e)}")
+            error_context = f"Error in get_response. User input: {user_input}, Image path: {image_path}, Iteration: {current_iteration}/{max_iterations}"
+            self.log_error(e, error_context)
+            
             if "declarative memory" in str(e).lower():
                 return "I encountered an issue with my memory. I'll do my best to continue our conversation without it.", False
-            return "I'm sorry, an error occurred. Please try again.", False
+            return "I'm sorry, an error occurred. The error has been logged for further investigation. Please try again.", False
     
+    def log_error(self, error: Exception, context: str):
+        error_log_dir = os.path.join(os.getcwd(), 'errors_log')
+        os.makedirs(error_log_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        error_file = os.path.join(error_log_dir, f"error_{timestamp}.log")
+        
+        with open(error_file, 'w') as f:
+            f.write(f"Error occurred at: {datetime.now()}\n")
+            f.write(f"Context: {context}\n\n")
+            f.write(f"Error type: {type(error).__name__}\n")
+            f.write(f"Error message: {str(error)}\n\n")
+            f.write("Traceback:\n")
+            f.write(traceback.format_exc())
+            
+        self.logger.error(f"Detailed error log saved to: {error_file}")
         
     
     def _prepare_conversation(self, user_input: str, image_path: Optional[str]) -> None:
@@ -278,12 +300,17 @@ class PenguinCore:
         self.reset_state()
 
 
-    # def enable_diagnostics(self) -> None:
-    #     enable_diagnostics()
+    def enable_diagnostics(self) -> None:
+        from config import Config
+        Config.enable_feature('DIAGNOSTICS_ENABLED')
+        enable_diagnostics()
+        self.logger.info("Diagnostics enabled")
 
     def disable_diagnostics(self) -> None:
-        # Disable diagnostic logging
+        from config import Config
+        Config.disable_feature('DIAGNOSTICS_ENABLED')
         disable_diagnostics()
+        self.logger.info("Diagnostics disabled")
 
     def reset_state(self) -> None:
         # Reset the state of PenguinCore

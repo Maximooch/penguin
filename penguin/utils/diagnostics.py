@@ -1,6 +1,4 @@
 import logging
-
-# import rich
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, TextColumn, BarColumn
@@ -41,20 +39,24 @@ class Diagnostics:
         for name, tracker in self.token_trackers.items():
             total = tracker.tokens['input'] + tracker.tokens['output']
             total_tokens += total
-            percentage = (total / MAX_CONTEXT_TOKENS) * 100
-            console.print(f"{name.capitalize()}:")
-            console.print(f"  Input: {tracker.tokens['input']}, Output: {tracker.tokens['output']}, Total: {total}")
-            console.print(f"  Percentage of context window used: {percentage:.2f}%")
-            
-            with Progress(TextColumn("[progress.description]{task.description}"),
-                          BarColumn(bar_width=50),
-                          TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                          console=console) as progress:
-                progress.add_task(f"Context window usage", total=100, completed=percentage)
+            console.print(f"{name.capitalize()}: Input: {tracker.tokens['input']}, Output: {tracker.tokens['output']}, Total: {total}")
 
-        total_percentage = (total_tokens / MAX_CONTEXT_TOKENS) * 100
         console.print(f"\nTotal Token Usage: {total_tokens}")
-        console.print(f"Total Percentage of Context Window Used: {total_percentage:.2f}%")
+        percentage = (total_tokens / MAX_CONTEXT_TOKENS) * 100
+        console.print(f"Percentage of Context Window Used: {percentage:.2f}%")
+
+        with Progress(TextColumn("[progress.description]{task.description}"),
+                    BarColumn(bar_width=50),
+                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                    console=console) as progress:
+            progress.add_task("Context window usage", total=100, completed=percentage)
+
+    def count_and_update_tokens(self, tracker_name, text):
+        if self.enabled:
+            token_count = len(text.split()) + len(text) // 4  # Rough estimate: words + 1/4 of characters
+            self.update_tokens(tracker_name, token_count, 0)
+            return token_count
+        return 0
 
     def reset(self):
         for tracker in self.token_trackers.values():

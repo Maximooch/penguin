@@ -6,10 +6,12 @@ import logging
 
 from logging.handlers import RotatingFileHandler
 from colorama import init # type: ignore
-from chat.chat_manager import ChatManager
-from chat.run import run_chat
+# from chat.chat_manager import ChatManager
+# from chat.run import run_chat
+from chat.chat import ChatManager
 from llm.api_client import ClaudeAPIClient
 from llm.model_config import ModelConfig
+from utils.log_error import log_error
 from tools import ToolManager
 from config import (
     ANTHROPIC_API_KEY,
@@ -86,17 +88,18 @@ def main():
 
     model_config = ModelConfig(model=DEFAULT_MODEL, max_tokens=DEFAULT_MAX_TOKENS)
     api_client = ClaudeAPIClient(ANTHROPIC_API_KEY, model_config)
-    tool_manager = ToolManager(TAVILY_API_KEY)
+    tool_manager = ToolManager(log_error)
 
     penguin_core = PenguinCore(api_client, tool_manager)
     penguin_core.set_system_prompt(SYSTEM_PROMPT)
 
     chat_manager = ChatManager(penguin_core)
 
-    penguin_core.enable_diagnostics()
+    # penguin_core.enable_diagnostics()
+    # penguin_core.disable_diagnostics()
 
     logger.info("Running chat")
-    run_chat(chat_manager)
+    chat_manager.run_chat()
     logger.info("Chat ended")
 
 if __name__ == "__main__":
