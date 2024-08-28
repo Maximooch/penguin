@@ -50,8 +50,9 @@ This project is licensed under the GNU Affero General Public License v3.0 - see 
 ## Acknowledgments
 
 This project was inspired by the following projects:
+
+- [CodeAct](https://arxiv.org/abs/2402.01030)
 - [Claude-Engineer](https://github.com/Doriandarko/claude-engineer)
 - [Aider](https://github.com/paul-gauthier/aider)
 - [RawDog](https://github.com/AbanteAI/rawdog)
 
-Special thanks to [Claude-Engineer](https://github.com/Doriandarko/claude-engineer) for providing some of the code used in this project. Specifically, the prompt structure, tool system, and automode functionality were adapted from Claude-Engineer. While these components have been significantly rewritten, they served as a valuable starting point. Their code is used under the terms of the MIT license.
