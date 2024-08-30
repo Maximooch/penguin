@@ -48,6 +48,7 @@ import os
 import traceback
 from datetime import datetime
 from config import Config
+import json
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -253,14 +254,22 @@ class PenguinCore:
         try:
             result = self.tool_manager.execute_tool(tool_name, tool_input)
             self.add_message("assistant", [content_block])
+            
+            if isinstance(result, dict):
+                result_content = [{"type": "text", "text": json.dumps(result, indent=2)}]
+            elif isinstance(result, list):
+                result_content = [{"type": "text", "text": json.dumps(item) if isinstance(item, dict) else str(item)} for item in result]
+            else:
+                result_content = [{"type": "text", "text": str(result)}]
+            
             self.add_message("user", [
                 {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
-                    "content": result if isinstance(result, list) else [{"type": "text", "text": str(result)}]
+                    "content": result_content
                 }
             ])
-            return f"Tool Used: {tool_name}\nTool Input: {tool_input}\nTool Result: {result}"
+            return f"Tool Used: {tool_name}\nTool Input: {tool_input}\nTool Result: {json.dumps(result, indent=2)}"
         except Exception as e:
             error_message = f"Error handling tool use '{tool_name}': {str(e)}"
             logger.error(error_message)

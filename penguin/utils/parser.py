@@ -9,6 +9,7 @@ from enum import Enum
 import re
 import logging
 from tools.tool_manager import ToolManager
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,8 @@ class ActionType(Enum):
     LIST_FILES = "list_files"
     LIST_FOLDERS = "list_folders"
     GET_FILE_MAP = "get_file_map"
+    LINT = "lint"
+    MEMORY_SEARCH = "memory_search"
     # REPL, iPython, shell, bash, zsh, networking, file_management, task management, etc. 
     # TODO: Add more actions as needed
 
@@ -61,6 +64,8 @@ class ActionExecutor:
             ActionType.LIST_FILES: lambda params: self.tool_manager.execute_tool("list_files", {"path": params}),
             ActionType.LIST_FOLDERS: lambda params: self.tool_manager.execute_tool("list_files", {"path": params}),
             ActionType.GET_FILE_MAP: lambda params: self.tool_manager.execute_tool("get_file_map", {"directory": params}),
+            ActionType.LINT: lambda params: self._lint_python(params),
+            ActionType.MEMORY_SEARCH: lambda params: self._memory_search(params),
         }
 
         try:
@@ -96,3 +101,20 @@ class ActionExecutor:
             code = params
 
         return self.tool_manager.execute_tool("code_execution", {"code": code})
+
+    def _lint_python(self, params: str) -> str:
+        parts = params.split(':', 1)
+        if len(parts) == 2:
+            target, is_file = parts[0].strip(), parts[1].strip().lower() == 'true'
+        else:
+            target, is_file = params.strip(), False
+
+        # Use the current working directory to resolve the file path
+        if is_file:
+            target = str(Path.cwd() / target)
+
+        return self.tool_manager.execute_tool("lint_python", {"target": target, "is_file": is_file})
+
+    def _memory_search(self, params: str) -> str:
+        query, k = params.split(':', 1) if ':' in params else (params, '5')
+        return self.tool_manager.execute_tool("memory_search", {"query": query.strip(), "k": int(k.strip())})

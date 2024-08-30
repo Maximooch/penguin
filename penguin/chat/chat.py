@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 from core import PenguinCore
 from agent.automode import Automode
 from config import MAX_CONTINUATION_ITERATIONS, CONTINUATION_EXIT_PHRASE
@@ -8,7 +8,7 @@ from chat.ui import (
     get_user_input, get_image_path, get_image_prompt,
     TOOL_COLOR, PENGUIN_COLOR
 )
-from colorama import init
+from colorama import init # type: ignore
 import os
 
 # Constants
@@ -16,6 +16,7 @@ EXIT_COMMAND = 'exit'
 IMAGE_COMMAND = 'image'
 AUTOMODE_COMMAND = 'automode'
 AUTOMODE_CONTINUE_PROMPT = "Continue with the next step. Or STOP by saying 'AUTOMODE_COMPLETE' if you think you've achieved the results established in the original request."
+RESUME_COMMAND = 'resume'
 
 class ChatManager:
     def __init__(self, core: PenguinCore):
@@ -69,6 +70,40 @@ class ChatManager:
         self.automode = False
         self.core.add_message("assistant", "Automode interrupted. How can I assist you further?")
 
+    def handle_resume(self, message_count: int, log_file: str) -> None:
+        latest_log = self.get_latest_log_file()
+        if latest_log:
+            with open(latest_log, 'r', encoding='utf-8') as f:
+                content = f.read()
+            print_bordered_message("Resuming previous conversation:", PENGUIN_COLOR, "system", message_count)
+            
+            # Parse the content (assuming it's Markdown for this example)
+            messages = self.parse_log_content(content)
+            
+            # Instead of clearing history, we'll append the loaded messages
+            for message in messages:
+                self.core.add_message(message['role'], message['content'])
+            
+            if messages:
+                last_message = messages[-1]
+                response = f"I've loaded the previous conversation. The last message was from {last_message['role']} and it was about: {last_message['content'][:100]}... How would you like to continue?"
+            else:
+                response = "I've loaded the previous conversation, but it seems to be empty. How would you like to start?"
+            
+            log_event(log_file, "assistant", f"Assistant response: {response}")
+            process_and_display_response(response, message_count)
+        else:
+            print_bordered_message("No previous conversation found.", PENGUIN_COLOR, "system", message_count)
+
+    def get_latest_log_file(self) -> Optional[str]:
+        log_dir = os.path.join(os.getcwd(), 'logs')
+        log_files = [f for f in os.listdir(log_dir) if f.startswith('chat_') and f.endswith('.md')]
+        if log_files:
+            # Sort files based on the timestamp in the filename
+            latest_file = max(log_files, key=lambda x: x.split('_')[1].split('.')[0])
+            return os.path.join(log_dir, latest_file)
+        return None
+
     def run_chat(self) -> None:
         log_file = setup_logger()
         log_event(log_file, "system", "Starting Penguin AI")
@@ -91,6 +126,8 @@ class ChatManager:
                     self.handle_image_input(message_count, log_file)
                 elif user_input.lower().startswith(AUTOMODE_COMMAND):
                     self.handle_automode(user_input, message_count)
+                elif user_input.lower() == RESUME_COMMAND:
+                    self.handle_resume(message_count, log_file)
                 else:
                     response, exit_continuation = self.chat_with_penguin(user_input, message_count)
                     log_event(log_file, "assistant", f"Assistant response: {response}")
@@ -101,5 +138,23 @@ class ChatManager:
                 log_event(log_file, "error", error_message)
                 print_bordered_message(error_message, TOOL_COLOR, "system", message_count)
                 self.reset_state()
+
+    def parse_log_content(self, content: str) -> List[Dict[str, str]]:
+        messages = []
+        current_message = {'role': '', 'content': ''}
+        for line in content.split('\n'):
+            if line.startswith('### 🐧 Penguin AI'):
+                if current_message['role']:
+                    messages.append(current_message)
+                current_message = {'role': 'assistant', 'content': ''}
+            elif line.startswith('### 👤 User'):
+                if current_message['role']:
+                    messages.append(current_message)
+                current_message = {'role': 'user', 'content': ''}
+            elif line.startswith('Assistant response:') or line.startswith('User input:'):
+                current_message['content'] += line.split(':', 1)[1].strip() + ' '
+        if current_message['role']:
+            messages.append(current_message)
+        return messages
 
 init()

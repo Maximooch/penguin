@@ -84,19 +84,19 @@ class FileMap:
         
         return "\n".join(formatted_output)
 
-# Example usage
-if __name__ == "__main__":
-    file_map = FileMap(".")
-    print("Initial file map:")
-    print(file_map.get_formatted_file_map())
+# # Example usage
+# if __name__ == "__main__":
+#     file_map = FileMap(".")
+#     print("Initial file map:")
+#     print(file_map.get_formatted_file_map())
 
-    # Simulate some time passing and file changes
-    time.sleep(2)
-    Path("test_file.txt").touch()
+#     # Simulate some time passing and file changes
+#     time.sleep(2)
+#     Path("test_file.txt").touch()
 
-    print("\nUpdating incrementally:")
-    file_map.update_incrementally()
-    print(file_map.get_formatted_file_map())
+#     print("\nUpdating incrementally:")
+#     file_map.update_incrementally()
+#     print(file_map.get_formatted_file_map())
 
-    print("\nChanges in the last 5 seconds:")
-    print(file_map.get_changes_since(time.time() - 5))
+#     print("\nChanges in the last 5 seconds:")
+#     print(file_map.get_changes_since(time.time() - 5))
