@@ -6,7 +6,7 @@ import time
 import random 
 import requests # type: ignore
 from requests.exceptions import RequestException # type: ignore
-from typing import List, Dict, Any, Callable
+from typing import List, Dict, Any, Callable, Union
 from utils import FileMap
 # from utils.log_error import log_error
 
@@ -15,6 +15,8 @@ from .support import create_folder, create_file, write_to_file, read_file, list_
 from bs4 import BeautifulSoup # type: ignore
 from .declarative_memory_tool import DeclarativeMemoryTool
 from .grep_search import GrepSearch
+from .lint_python import lint_python
+from .memory_search import MemorySearch
 
 class ToolManager:
     def __init__(self, log_error_func: Callable):
@@ -22,7 +24,9 @@ class ToolManager:
         self.log_error = log_error_func
         self.declarative_memory_tool = DeclarativeMemoryTool()
         self.grep_search = GrepSearch(root_dir=os.path.join(os.getcwd(), "logs"))
+        self.memory_search = MemorySearch(os.path.join(os.getcwd(), "logs"))
         self.file_map = FileMap(os.getcwd())  # Initialize with the current working directory
+        self.project_root = os.getcwd()  # Initialize project root
         self.tools = [
             {
                 "name": "create_folder",
@@ -146,6 +150,24 @@ class ToolManager:
             }
         },
         {
+            "name": "memory_search",
+            "description": "Search through conversation history and declarative memory using keyword and semantic matching.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query"
+                    },
+                    "k": {
+                        "type": "integer",
+                        "description": "The number of results to return (default: 5)"
+                    }
+                },
+                "required": ["query"]
+            }
+        },
+        {
             "name": "code_execution",
             "description": "Execute a snippet of Python code.",
             "input_schema": {
@@ -189,13 +211,31 @@ class ToolManager:
                 },
                 "required": ["filename"]
             }
+        },
+        {
+            "name": "lint_python",
+            "description": "Lint Python code or files using multiple linters (Flake8, Pylint, mypy, and Bandit).",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "The Python code snippet, file path, or directory to lint"
+                    },
+                    "is_file": {
+                        "type": "boolean",
+                        "description": "Whether the target is a file/directory path (true) or a code snippet (false)"
+                    }
+                },
+                "required": ["target", "is_file"]
+            }
         }
         ]
 
     def get_tools(self):
         return self.tools
 
-    def execute_tool(self, tool_name, tool_input):
+    def execute_tool(self, tool_name: str, tool_input: dict) -> Union[str, dict]:
         tool_map = {
             "create_folder": lambda: create_folder(tool_input["path"]),
             "create_file": lambda: create_file(tool_input["path"], tool_input.get("content", "")),
@@ -209,6 +249,7 @@ class ToolManager:
                 tool_input.get("case_sensitive", False),
                 tool_input.get("search_files", True)
             ),
+            "memory_search": lambda: self.perform_memory_search(tool_input["query"], tool_input.get("k", 5)),
             "duckduckgo_search": lambda: self.duckduckgo_search(
                 tool_input["query"],
                 tool_input.get("max_results", 5)
@@ -216,6 +257,7 @@ class ToolManager:
             "code_execution": lambda: self.execute_code(tool_input["code"]),
             "get_file_map": lambda: self.get_file_map(tool_input.get("directory", "")),
             "find_file": lambda: find_file(tool_input["filename"], tool_input.get("search_path", ".")),
+            "lint_python": lambda: lint_python(tool_input["target"], tool_input["is_file"]),
         }
         
         logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
@@ -223,12 +265,12 @@ class ToolManager:
             error_message = f"Unknown tool: {tool_name}"
             logging.error(error_message)
             self.log_error(Exception(error_message), f"Attempted to use unknown tool: {tool_name}")
-            return error_message
+            return {"error": error_message}
 
         try:
             result = tool_map[tool_name]()
             if result is None or (isinstance(result, list) and len(result) == 0):
-                result = "No results found or empty directory."
+                result = {"result": "No results found or empty directory."}
             self.add_message_to_search({"role": "assistant", "content": f"Tool use: {tool_name}"})
             self.add_message_to_search({"role": "user", "content": f"Tool result: {result}"})
             logging.info(f"Tool {tool_name} executed successfully with result: {result}")
@@ -237,7 +279,7 @@ class ToolManager:
             error_message = f"Error executing tool {tool_name}: {str(e)}"
             logging.error(error_message)
             self.log_error(e, f"Error occurred while executing tool: {tool_name}")
-            return error_message
+            return {"error": error_message}
 
     def add_declarative_note(self, category, content):
         return self.declarative_memory_tool.add_note(category, content)
@@ -262,6 +304,19 @@ class ToolManager:
                     "type": "text",
                     "text": f"Message content: {result['content']}\nMatch: {result['match']}"
                 })
+        logging.info(f"Formatted {len(formatted_results)} results for output")
+        return formatted_results
+
+    def perform_memory_search(self, query: str, k: int = 5) -> List[Dict[str, str]]:
+        logging.info(f"Performing memory search with query: {query}")
+        results = self.memory_search.combined_search(query, k)
+        logging.info(f"Memory search returned {len(results)} results")
+        formatted_results = []
+        for result in results:
+            formatted_results.append({
+                "type": "text",
+                "text": f"Timestamp: {result['timestamp']}\nType: {result['type']}\nContent: {result['content']}"
+            })
         logging.info(f"Formatted {len(formatted_results)} results for output")
         return formatted_results
 

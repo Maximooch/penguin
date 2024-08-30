@@ -4,6 +4,7 @@ from PIL import Image # type: ignore
 import io
 import difflib
 from pathlib import Path
+import traceback
 
 def create_folder(path):
     try:
@@ -12,15 +13,22 @@ def create_folder(path):
     except Exception as e:
         return f"Error creating folder: {str(e)}"
 
-def create_file(self, path: str, content: str = "") -> str:
+def create_file(path: str, content: str = "") -> str:
     try:
-        # Ensure the directory exists
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # Print debugging information
+        print(f"Attempting to create file at: {os.path.abspath(path)}")
+        print(f"Current working directory: {os.getcwd()}")
+        
+        # Ensure the directory exists, but only if there's a directory part
+        dir_name = os.path.dirname(path)
+        if dir_name:
+            os.makedirs(dir_name, exist_ok=True)
+        
         with open(path, 'w') as f:
             f.write(content)
         return f"File created successfully at {path}"
     except Exception as e:
-        return f"Error creating file: {str(e)}"
+        return f"Error creating file: {str(e)}\nStack trace: {traceback.format_exc()}"
 
 def generate_and_apply_diff(original_content, new_content, path):
     diff = list(difflib.unified_diff(
