@@ -1,7 +1,9 @@
-from .api_client import ClaudeAPIClient
+from .providers import AIClient, LiteLLMClient, ClaudeAPIClient
 from .model_config import ModelConfig
 
 __all__ = [
-    'APIClient',
+    'AIClient',
+    'LiteLLMClient',
+    'ClaudeAPIClient',
     'ModelConfig',
 ]

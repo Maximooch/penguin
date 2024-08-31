@@ -8,3 +8,5 @@ flake8
 pytest
 rich
 tiktoken
+torch
+sentence-transformers

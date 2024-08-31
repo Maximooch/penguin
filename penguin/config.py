@@ -5,7 +5,7 @@ from dotenv import load_dotenv # type: ignore
 load_dotenv()
 
 # API Keys
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+MODEL_API_KEY = os.environ.get("MODEL_API_KEY")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 
 # Constants
@@ -13,8 +13,15 @@ CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
 MAX_CONTINUATION_ITERATIONS = 100
 
 # Model Configuration
-DEFAULT_MODEL = "claude-3-5-sonnet-20240620"
+DEFAULT_MODEL = "ollama/llama3:8b"
+DEFAULT_PROVIDER = "ollama"
 DEFAULT_MAX_TOKENS = 4000
+OLLAMA_API_BASE = "http://localhost:11434"  # Default Ollama API base URL
+
+# # Model Configuration
+# DEFAULT_MODEL = "claude-3-5-sonnet-20240620"
+# DEFAULT_PROVIDER = "litellm"  # or "claude" depending on your preference
+# DEFAULT_MAX_TOKENS = 4000
 
 # Feature Flags
 class FeatureFlags:

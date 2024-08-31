@@ -9,15 +9,16 @@ from colorama import init # type: ignore
 # from chat.chat_manager import ChatManager
 # from chat.run import run_chat
 from chat.chat import ChatManager
-from llm.api_client import ClaudeAPIClient
 from llm.model_config import ModelConfig
 from utils.log_error import log_error
 from tools import ToolManager
+from llm.providers import get_ai_client
 from config import (
-    ANTHROPIC_API_KEY,
+    MODEL_API_KEY,
     TAVILY_API_KEY,
     DEFAULT_MODEL,
     DEFAULT_MAX_TOKENS,
+    DEFAULT_PROVIDER,
     SYSTEM_PROMPT
 )
 from core import PenguinCore
@@ -30,11 +31,14 @@ load_dotenv()
 
 def ensure_venv():
     venv_path = os.path.join(os.path.dirname(__file__), 'penguin_venv')
+    print(f"Checking for virtual environment at: {venv_path}")
     if not os.path.exists(venv_path):
         print("Virtual environment not found. Setting up...")
         subprocess.check_call([sys.executable, 'setup_venv.py'])
     
     if sys.prefix != venv_path:
+        print(f"Current sys.prefix: {sys.prefix}")
+        print(f"Expected venv path: {venv_path}")
         if os.name == 'nt':  # Windows
             site_packages = os.path.join(venv_path, 'Lib', 'site-packages')
             prev_sys_path = sys.path[:]
@@ -51,6 +55,9 @@ def ensure_venv():
                 site.main()
                 sys.path[:] = prev_sys_path
                 site.addsitedir(site_packages)
+
+    print(f"Python executable: {sys.executable}")
+    print(f"sys.path: {sys.path}")
 
     print(f"Using virtual environment: {venv_path}")
 
@@ -87,7 +94,12 @@ def main():
     init()
 
     model_config = ModelConfig(model=DEFAULT_MODEL, max_tokens=DEFAULT_MAX_TOKENS)
-    api_client = ClaudeAPIClient(ANTHROPIC_API_KEY, model_config)
+    try:
+        api_client = get_ai_client(MODEL_API_KEY, model_config, DEFAULT_PROVIDER)  # Initialize the appropriate AI client based on the provider
+        logger.info(f"Using AI provider: {DEFAULT_PROVIDER}")
+    except ValueError as e:
+        logger.error(f"Error initializing AI client: {str(e)}")
+        sys.exit(1)
     tool_manager = ToolManager(log_error)
 
     penguin_core = PenguinCore(api_client, tool_manager)
@@ -103,4 +115,5 @@ def main():
     logger.info("Chat ended")
 
 if __name__ == "__main__":
+    ensure_venv()
     main()

@@ -11,10 +11,10 @@ It handles tasks such as:
 - Managing declarative memory
 
 Attributes:
-    api_client (ClaudeAPIClient): The API client for interacting with the Claude API.
+    api_client (AIClient): The API client for interacting with the AI model.
     tool_manager (ToolManager): The manager for available tools and declarative memory.
     automode (bool): Flag indicating whether automode is enabled.
-    system_prompt (str): The system prompt to be sent to Claude.
+    system_prompt (str): The system prompt to be sent to the AI model.
     system_prompt_sent (bool): Flag indicating whether the system prompt has been sent.
     max_history_length (int): The maximum length of the conversation history to keep.
     conversation_history (List[Dict[str, Any]]): The conversation history.
@@ -27,7 +27,7 @@ Methods:
     get_history() -> List[Dict[str, Any]]: Returns the conversation history.
     clear_history() -> None: Clears the conversation history.
     get_last_message() -> Optional[Dict[str, Any]]: Returns the last message in the conversation history.
-    get_response(user_input: str, image_path: Optional[str], current_iteration: Optional[int], max_iterations: Optional[int]) -> Tuple[str, bool]: Sends a message to Claude and processes the response.
+    get_response(user_input: str, image_path: Optional[str], current_iteration: Optional[int], max_iterations: Optional[int]) -> Tuple[str, bool]: Sends a message to the AI model and processes the response.
     execute_tool(tool_name: str, tool_input: Any) -> Any: Executes a tool using the tool manager.
     run_automode(user_input: str, message_count: int, chat_function: Callable) -> None: Runs the automode functionality.
     disable_diagnostics() -> None: Disables diagnostic logging.
@@ -36,7 +36,7 @@ Methods:
 
 # Import necessary modules and types
 from typing import List, Optional, Tuple, Dict, Any, Callable
-from llm.api_client import ClaudeAPIClient
+from llm import AIClient
 from tools.tool_manager import ToolManager
 from utils.parser import parse_action, ActionExecutor
 
@@ -54,7 +54,7 @@ import json
 logger = logging.getLogger(__name__)
 
 class PenguinCore:
-    def __init__(self, api_client: ClaudeAPIClient, tool_manager: ToolManager):
+    def __init__(self, api_client: AIClient, tool_manager: ToolManager):
         # Initialize PenguinCore with API client and tool manager
         self.api_client = api_client
         self.tool_manager = tool_manager
@@ -190,14 +190,10 @@ class PenguinCore:
         # 3. Receiving and returning the raw response from the model
         try:
             response = self.api_client.create_message(
-                model=self.api_client.model_config.model,
-                max_tokens=self.api_client.model_config.max_tokens,
-                system=self.get_system_message(current_iteration, max_iterations),
                 messages=self.get_history(),
-                tools=self.tool_manager.get_tools(),
-                tool_choice={"type": "auto"}
+                max_tokens=self.api_client.model_config.max_tokens,
+                temperature=self.api_client.model_config.temperature
             )
-            diagnostics.update_tokens('main_model', response.usage.input_tokens, response.usage.output_tokens)
             return response
         except Exception as e:
             logger.error(f"Error calling LLM API: {str(e)}")
@@ -216,20 +212,13 @@ class PenguinCore:
         actions_to_execute = []
         
         try:
-            for content_block in response.content:
-                if content_block.type == "text":
-                    assistant_response += content_block.text
-                    if CONTINUATION_EXIT_PHRASE in content_block.text:
-                        exit_continuation = True
-                    
-                    # Parse CodeAct actions
-                    actions = parse_action(content_block.text)
-                    actions_to_execute.extend(actions)
-                
-                elif content_block.type == "tool_use":
-                    # Handle tool use directly
-                    tool_result = self._handle_tool_use(content_block)
-                    assistant_response += f"\n{tool_result}"
+            assistant_response = response.choices[0].message.content
+            if CONTINUATION_EXIT_PHRASE in assistant_response:
+                exit_continuation = True
+            
+            # Parse CodeAct actions
+            actions = parse_action(assistant_response)
+            actions_to_execute.extend(actions)
             
             # Execute all CodeAct actions
             for action in actions_to_execute:
@@ -282,15 +271,12 @@ class PenguinCore:
         # after tool use to get a final, summarized response from the model
         try:
             final_response = self.api_client.create_message(
-                model=self.api_client.model_config.model,
-                max_tokens=self.api_client.model_config.max_tokens,
-                system=self.get_system_message(),
                 messages=self.get_history(),
-                tools=self.tool_manager.get_tools(),
-                tool_choice={"type": "auto"}
+                max_tokens=self.api_client.model_config.max_tokens,
+                temperature=self.api_client.model_config.temperature
             )
-            diagnostics.update_tokens('tool_checker', final_response.usage.input_tokens, final_response.usage.output_tokens)
-            return "".join(block.text for block in final_response.content if block.type == "text")
+            assistant_response = final_response.choices[0].message.content
+            return assistant_response
         except Exception as e:
             logger.error(f"Error in final response: {str(e)}")
             return "\nI encountered an error while processing the tool results. Please try again."

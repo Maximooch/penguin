@@ -3,6 +3,8 @@ import subprocess
 import sys
 import venv
 
+# print ("Penguin setup venv process started")
+
 def create_venv(venv_path):
     venv.create(venv_path, with_pip=True)
 
