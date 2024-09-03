@@ -1,49 +1,63 @@
-
-from anthropic import Anthropic # type: ignore
-# Import the Anthropic library to interact with the Claude API
-
+from typing import List, Dict, Any
 from litellm import completion
-
-# import openai
-
 from .model_config import ModelConfig
-# Import the ModelConfig class from the local model_config module
-
-from PIL import Image # type: ignore
-# Import the Image class from the Python Imaging Library (PIL) to handle image processing
-
+from .provider_adapters import LiteLLMAdapter
+import os
+from PIL import Image 
+import base64 
 import io
-# Import the io module to work with in-memory file-like objects
 
-import base64
-# Import the base64 module to encode and decode binary data in base64 format
+class APIClient:
+    def __init__(self, api_key: str, model_config: ModelConfig):
+        self.api_key = api_key
+        self.model_config = model_config
+        self.adapter = LiteLLMAdapter()  # Use the appropriate adapter based on the provider
 
+    def create_message(self, messages: List[Dict[str, Any]], max_tokens: int = None, temperature: float = None) -> Any:
+        try:
+            formatted_messages = self.adapter.format_messages(messages)
+            response = completion(
+                model=self.model_config.model,
+                messages=formatted_messages,
+                max_tokens=max_tokens or self.model_config.max_tokens,
+                temperature=temperature or self.model_config.temperature,
+                api_key=self.api_key,
+                api_base=self.model_config.api_base,
+                request_timeout=600,
+            )
+            # Remove the provider list message entirely
+            if isinstance(response, dict) and 'choices' in response:
+                content = response['choices'][0]['message']['content']
+                if isinstance(content, str):
+                    if "Provider List:" in content:
+                        content = content.split("Provider List:", 1)[0].strip()
+                elif isinstance(content, list):
+                    content = [item for item in content if "Provider List:" not in item.get('text', '')]
+                response['choices'][0]['message']['content'] = content
+            return response
+        except Exception as e:
+            raise Exception(f"LiteLLM API error: {str(e)}")
 
-def encode_image_to_base64(self, image_path):
+    def process_response(self, response: Any) -> tuple[str, List[Any]]:
+        return self.adapter.process_response(response)
+
+    # def count_tokens(self, text):
+    #     # Implement a simple token counting method
+    #     return len(text.split()) + len(text) // 4
+
+    def encode_image_to_base64(self, image_path):
         try:
             with Image.open(image_path) as img:
-                # Open the image file at the specified path
-                max_size = (1024, 1024)  # Set a maximum size for the image
-                img.thumbnail(max_size, Image.DEFAULT_STRATEGY)  # Resize the image if necessary
+                max_size = (1024, 1024)
+                img.thumbnail(max_size, Image.LANCZOS)
                 if img.mode != 'RGB':
-                    # Convert the image to RGB mode if it's not already in that mode
                     img = img.convert('RGB')
-                img_byte_arr = io.BytesIO()  # Create an in-memory file-like object
-                img.save(img_byte_arr, format='JPEG')  # Save the image to the in-memory object as JPEG
-                # Encode the image data as a base64 string and return it
+                img_byte_arr = io.BytesIO()
+                img.save(img_byte_arr, format='JPEG')
                 return base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
         except Exception as e:
-            # If an exception occurs, return an error message
             return f"Error encoding image: {str(e)}"
 
-def count_tokens(self, text):
-        try:
-            # Call the Anthropic API to count the number of tokens in the given text
-            token_count = self.client.count_tokens(text)
-            return token_count  # Return the token count
-        except Exception as e:
-            print(f"Error counting tokens: {str(e)}")  # Print an error message if an exception occurs
-            return 0  # Return 0 as the token count in case of an error
 
 # class BaseAPIClient:
 #     def create_message(self, model, max_tokens, system, messages, tools, tool_choice):

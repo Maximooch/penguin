@@ -1,22 +1,36 @@
 import os
 from dotenv import load_dotenv # type: ignore
+import yaml
+from pathlib import Path
 
 # Load environment variables
 load_dotenv()
 
 # API Keys
-MODEL_API_KEY = os.environ.get("MODEL_API_KEY")
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+# MODEL_API_KEY = os.environ.get("MODEL_API_KEY")
+# TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 
 # Constants
 CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
 MAX_CONTINUATION_ITERATIONS = 100
 
-# Model Configuration
-DEFAULT_MODEL = "ollama/llama3:8b"
-DEFAULT_PROVIDER = "ollama"
-DEFAULT_MAX_TOKENS = 4000
-OLLAMA_API_BASE = "http://localhost:11434"  # Default Ollama API base URL
+def load_config():
+    config_path = Path(__file__).parent.parent / 'config.yml'
+    with open(config_path, 'r') as config_file:
+        return yaml.safe_load(config_file)
+
+config = load_config()
+
+DEFAULT_MODEL = os.getenv('PENGUIN_DEFAULT_MODEL', config['model']['default'])
+DEFAULT_MAX_TOKENS = int(os.getenv('PENGUIN_DEFAULT_MAX_TOKENS', config['model']['max_tokens']))
+DEFAULT_TEMPERATURE = float(os.getenv('PENGUIN_DEFAULT_TEMPERATURE', config['model']['temperature']))
+API_PROVIDER = os.getenv('PENGUIN_API_PROVIDER', config['api']['provider'])
+API_BASE = os.getenv('PENGUIN_API_BASE', config['api']['base_url'])
+GROQ_API_KEY = os.getenv('GROQ_API_KEY')
+
+if not GROQ_API_KEY:
+    raise ValueError("GROQ_API_KEY environment variable is not set")
+
 
 # # Model Configuration
 # DEFAULT_MODEL = "claude-3-5-sonnet-20240620"

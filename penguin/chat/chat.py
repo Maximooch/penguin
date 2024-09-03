@@ -31,6 +31,11 @@ class ChatManager:
             logger.debug(f"Response from core: {response}")  # Add this debug log
             if isinstance(response, tuple) and len(response) == 2:
                 return response
+            elif isinstance(response, str):
+                return response, False
+            elif isinstance(response, dict) and 'choices' in response:
+                content = response['choices'][0]['message']['content']
+                return content, False
             else:
                 return str(response), False
         except Exception as e:
