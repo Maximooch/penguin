@@ -1,0 +1,14 @@
+model:
+  default: "llama-3.1-70b-versatile"
+  max_tokens: 4096
+  temperature: 0.7
+
+api:
+  provider: "groq"
+  base_url: "https://api.groq.com/openai/v1"
+
+# for your api key, please put it in the .env file
+# or export it by doing export GROQ_API_KEY="insert key" 
+# (on Windows you'll do set instead of export) 
+
+# Add other non-sensitive configuration options as needed

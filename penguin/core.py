@@ -11,7 +11,7 @@ It handles tasks such as:
 - Managing declarative memory
 
 Attributes:
-    api_client (AIClient): The API client for interacting with the AI model.
+    api_client (APIClient): The API client for interacting with the AI model.
     tool_manager (ToolManager): The manager for available tools and declarative memory.
     automode (bool): Flag indicating whether automode is enabled.
     system_prompt (str): The system prompt to be sent to the AI model.
@@ -19,6 +19,7 @@ Attributes:
     max_history_length (int): The maximum length of the conversation history to keep.
     conversation_history (List[Dict[str, Any]]): The conversation history.
     logger (logging.Logger): Logger for the class.
+    diagnostics (Diagnostics): Diagnostics utility for token tracking and logging.
 
 Methods:
     set_system_prompt(prompt: str) -> None: Sets the system prompt.
@@ -36,9 +37,12 @@ Methods:
 
 # Import necessary modules and types
 from typing import List, Optional, Tuple, Dict, Any, Callable
-from llm import AIClient
+from llm import APIClient
+from llm.model_config import ModelConfig
+
 from tools.tool_manager import ToolManager
 from utils.parser import parse_action, ActionExecutor
+
 
 from config import CONTINUATION_EXIT_PHRASE, MAX_CONTINUATION_ITERATIONS
 from utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnostics
@@ -54,7 +58,7 @@ import json
 logger = logging.getLogger(__name__)
 
 class PenguinCore:
-    def __init__(self, api_client: AIClient, tool_manager: ToolManager):
+    def __init__(self, api_client: APIClient, tool_manager: ToolManager):
         # Initialize PenguinCore with API client and tool manager
         self.api_client = api_client
         self.tool_manager = tool_manager
@@ -65,6 +69,7 @@ class PenguinCore:
         self.conversation_history: List[Dict[str, Any]] = []
         self.logger = logger
         self.action_executor = ActionExecutor(self.tool_manager)
+        self.diagnostics = diagnostics  # Initialize diagnostics
 
     def set_system_prompt(self, prompt: str) -> None:
         # Set the system prompt and mark it as not sent
@@ -152,8 +157,8 @@ class PenguinCore:
 
         if not self.system_prompt_sent:
             system_message = self.get_system_message()
-            system_tokens = self.api_client.count_tokens(system_message)
-            diagnostics.update_tokens('system_prompt', system_tokens, 0)
+            system_tokens = self.diagnostics.count_tokens(system_message)  # Use diagnostics to count tokens
+            self.diagnostics.update_tokens('system_prompt', system_tokens, 0)
             self.system_prompt_sent = True
 
         if image_path:
@@ -191,8 +196,8 @@ class PenguinCore:
         try:
             response = self.api_client.create_message(
                 messages=self.get_history(),
-                max_tokens=self.api_client.model_config.max_tokens,
-                temperature=self.api_client.model_config.temperature
+                max_tokens=None,  # Use default from APIClient
+                temperature=None  # Use default from APIClient
             )
             return response
         except Exception as e:
@@ -228,7 +233,7 @@ class PenguinCore:
             if assistant_response:
                 self.add_message("assistant", assistant_response)
             
-            diagnostics.log_token_usage()
+            self.diagnostics.log_token_usage()
             return assistant_response, exit_continuation
         except Exception as e:
             logger.error(f"Error processing response: {str(e)}")
@@ -272,8 +277,8 @@ class PenguinCore:
         try:
             final_response = self.api_client.create_message(
                 messages=self.get_history(),
-                max_tokens=self.api_client.model_config.max_tokens,
-                temperature=self.api_client.model_config.temperature
+                max_tokens=None,  # Use default from APIClient
+                temperature=None  # Use default from APIClient
             )
             assistant_response = final_response.choices[0].message.content
             return assistant_response
