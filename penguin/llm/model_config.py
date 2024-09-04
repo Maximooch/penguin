@@ -1,30 +1,37 @@
-# might move this to a config file later, I suppose it could just import it from an upstream config file.
+import os
+from typing import Dict, Any, Optional
 
 class ModelConfig:
-    DEFAULT_MODEL = "llama-3.1-70b-versatile"
-    DEFAULT_MAX_TOKENS = 4096
-    DEFAULT_TEMPERATURE = 0.7
-    # API_PROVIDER = "groq"
-    API_BASE = "https://api.groq.com/openai/v1"
-
-    def __init__(self, model=DEFAULT_MODEL, max_tokens=DEFAULT_MAX_TOKENS, temperature=DEFAULT_TEMPERATURE):
+    def __init__(self, model: str, provider: str, api_base: str = None, max_tokens: int = None, temperature: float = None):
         self.model = model
+        self.provider = provider
+        self.api_base = api_base
         self.max_tokens = max_tokens
         self.temperature = temperature
-        # self.api_provider = self.API_PROVIDER
-        self.api_base = self.API_BASE
+        self.max_history_tokens: Optional[int] = None
 
-    def get_config(self):
-        return {
+    def get_config(self) -> Dict[str, Any]:
+        config = {
             "model": self.model,
-            "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
-            # "api_provider": self.api_provider,
-            "api_base": self.api_base
+            "provider": self.provider,
         }
+        if self.api_base:
+            config["api_base"] = self.api_base
+        if self.max_tokens:
+            config["max_tokens"] = self.max_tokens
+        if self.temperature is not None:
+            config["temperature"] = self.temperature
+        if self.max_history_tokens is not None:
+            config["max_history_tokens"] = self.max_history_tokens
+        return config
 
-# Example usage:
-# config = ModelConfig()
-# print(config.get_config())
-# config.update_config(model="claude-3-7-sonnet-20240620", max_tokens=8000)
-# print(config.get_config())
+    @classmethod
+    def from_env(cls):
+        return cls(
+            model=os.getenv("PENGUIN_MODEL"),
+            provider=os.getenv("PENGUIN_PROVIDER"),
+            api_base=os.getenv("PENGUIN_API_BASE"),
+            max_tokens=int(os.getenv("PENGUIN_MAX_TOKENS")) if os.getenv("PENGUIN_MAX_TOKENS") else None,
+            temperature=float(os.getenv("PENGUIN_TEMPERATURE")) if os.getenv("PENGUIN_TEMPERATURE") else None,
+            max_history_tokens=int(os.getenv("PENGUIN_MAX_HISTORY_TOKENS")) if os.getenv("PENGUIN_MAX_HISTORY_TOKENS") else None
+        )

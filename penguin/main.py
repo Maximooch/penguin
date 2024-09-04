@@ -13,14 +13,11 @@ from utils.log_error import log_error
 from tools import ToolManager
 from llm.api_client import APIClient
 from config import (
-    GROQ_API_KEY, 
-    # Remove or comment out the following lines:
-    # DEFAULT_MODEL,
-    # DEFAULT_MAX_TOKENS,
-    # DEFAULT_TEMPERATURE,
-    # DEFAULT_PROVIDER,
-    SYSTEM_PROMPT
+    config,  # Import the entire config dictionary
+    DEFAULT_MODEL,
+    DEFAULT_PROVIDER
 )
+from prompts import SYSTEM_PROMPT
 from core import PenguinCore
 
 from dotenv import load_dotenv # type: ignore
@@ -60,10 +57,15 @@ def main():
     logger = setup_logger()
     init()
 
-    model_config = ModelConfig()
+    model_config = ModelConfig(
+        model=config['model']['default'],
+        provider=config['model']['provider'],
+        api_base=config['api']['base_url']
+    )
 
     try:
-        api_client = APIClient(api_key=GROQ_API_KEY, model_config=model_config)
+        api_client = APIClient(model_config=model_config)
+        api_client.set_system_prompt(SYSTEM_PROMPT)
         logger.info(f"Using AI model: {model_config.model}")
     except Exception as e:
         error_message = f"Unexpected error: {str(e)}"
