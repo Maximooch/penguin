@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 from utils.diagnostics import diagnostics
-from litellm import completion, get_assistants, create_thread, add_message, run_thread
+from litellm import completion
+# from litellm import get_assistants, create_thread, add_message, run_thread
 import time
-from .openai_assistant import OpenAIAssistantManager
+# from .openai_assistant import OpenAIAssistantManager
 from .model_config import ModelConfig
 
 class ProviderAdapter(ABC):
@@ -27,59 +28,78 @@ class ProviderAdapter(ABC):
     def count_tokens(self, text: str) -> int:
         return diagnostics.count_tokens(text)
 
+class OpenAIAdapter(ProviderAdapter):
+    def __init__(self, model_config: ModelConfig):
+        self.model_config = model_config
+
+    def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return messages  # For now, just return the messages as-is
+
+    def process_response(self, response: Any) -> tuple[str, List[Any]]:
+        # Assume response is in the standard OpenAI format
+        return response['choices'][0]['message']['content'], []
+
+    # Commented out assistant/threads support methods
+    """
+    def initialize_assistant(self):
+        pass
+
+    def create_thread(self):
+        pass
+
+    def add_message_to_thread(self, content: str):
+        pass
+
+    def run_assistant(self):
+        pass
+
+    def get_assistant_response(self):
+        pass
+    """
+
 class LiteLLMAdapter(ProviderAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [{**msg, 'content': str(msg['content'])} for msg in messages]
 
-    def process_response(self, response: Any) -> tuple[Any, List[Any]]:
-        # Return the full response structure
-        return response, []
-    
-    def supports_conversation_id(self) -> bool:
-        return False
+    def process_response(self, response: Any) -> tuple[str, List[Any]]:
+        if isinstance(response, dict) and 'choices' in response:
+            return response['choices'][0]['message']['content'], []
+        elif hasattr(response, 'choices') and len(response.choices) > 0:
+            return response.choices[0].message.content, []
+        elif isinstance(response, str):
+            return response, []
+        else:
+            raise AttributeError(f"Unexpected response structure from LiteLLM API: {response}")
 
-class OpenAIAdapter(ProviderAdapter):
-    def __init__(self, model_config: ModelConfig):
-        self.thread_id = None
-        self.assistant_manager = OpenAIAssistantManager(model_config)
-        self.model_config = model_config
-
-    def supports_conversation_id(self) -> bool:
-        return True
-
+class AnthropicAdapter(ProviderAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not self.thread_id:
-            thread = create_thread(custom_llm_provider="openai")
-            self.thread_id = thread.id
+        # Anthropic uses a different format, so we need to convert
+        formatted_messages = []
+        for msg in messages:
+            if msg['role'] == 'system':
+                formatted_messages.append({"role": "human", "content": f"System: {msg['content']}"})
+            else:
+                formatted_messages.append(msg)
+        return formatted_messages
 
-        for message in messages:
-            add_message(thread_id=self.thread_id, custom_llm_provider="openai", **message)
+    def process_response(self, response: Any) -> tuple[str, List[Any]]:
+        # Assume response is in the Anthropic format
+        return response['completion'], []
 
+class OllamaAdapter(ProviderAdapter):
+    def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # Ollama uses a simple format, so we can just return the messages as-is
         return messages
 
-    def format_messages_with_id(self, conversation_id: str, message: Dict[str, Any]) -> List[Dict[str, Any]]:
-        self.thread_id = conversation_id
-        add_message(thread_id=self.thread_id, custom_llm_provider="openai", **message)
-        return [message]
-
-    def process_response(self, response: Any) -> tuple[Any, List[Any]]:
-        run = run_thread(
-            custom_llm_provider="openai",
-            thread_id=self.thread_id,
-            assistant_id=self.assistant_manager.get_assistant_id()
-        )
-        return run.response, []
-
-    def get_conversation_id(self, response: Any) -> str:
-        return self.thread_id
+    def process_response(self, response: Any) -> tuple[str, List[Any]]:
+        # Assume response is in the Ollama format
+        return response['message']['content'], []
 
 def get_provider_adapter(provider: str, model_config: ModelConfig) -> ProviderAdapter:
     adapters = {
-        "litellm": LiteLLMAdapter(),
         "openai": OpenAIAdapter(model_config),
-        # Add more adapters as needed
+        "litellm": LiteLLMAdapter(),
+        "anthropic": AnthropicAdapter(),
+        "ollama": OllamaAdapter(),
     }
     return adapters.get(provider.lower(), LiteLLMAdapter())  # Default to LiteLLMAdapter if provider not found
-    # TODO: Add more adapters as needed
-    # TODO: Add a way to dynamically load these adapters from a config file
-    # TODO: Default to ollama if provider is not found
