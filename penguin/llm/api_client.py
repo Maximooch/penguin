@@ -5,6 +5,10 @@ from .provider_adapters import get_provider_adapter
 import os
 import yaml
 from pathlib import Path
+import logging
+from PIL import Image 
+import base64
+import io
 
 def load_config():
     config_path = Path(__file__).parent.parent.parent / 'config.yml'
@@ -13,12 +17,6 @@ def load_config():
 
 MODEL_CONFIGS = load_config().get('model_configs', {})
 
-from PIL import Image 
-import base64
-import io
-
-
-
 class APIClient:
     def __init__(self, model_config: ModelConfig):
         self.model_config = model_config
@@ -26,6 +24,7 @@ class APIClient:
         self.adapter = get_provider_adapter(model_config.provider, model_config)
         self.api_key = os.getenv(f"{model_config.provider.upper()}_API_KEY")
         self.max_history_tokens = model_config.max_history_tokens or 1000
+        self.logger = logging.getLogger(__name__)
 
     def set_system_prompt(self, prompt):
         self.system_prompt = prompt
@@ -34,15 +33,9 @@ class APIClient:
         try:
             model_specific_config = MODEL_CONFIGS.get(self.model_config.model, {})
             
-            if self.adapter.supports_conversation_id():
-                if not self.adapter.thread_id:
-                    formatted_messages = self.adapter.format_messages(messages)
-                else:
-                    formatted_messages = self.adapter.format_messages_with_id(self.adapter.thread_id, messages[-1])
-            else:
-                formatted_messages = self.adapter.format_messages(self._truncate_history(messages))
+            formatted_messages = self.adapter.format_messages(self._truncate_history(messages))
             
-            if self.system_prompt and not self.adapter.supports_conversation_id():
+            if self.system_prompt:
                 formatted_messages = [{"role": "system", "content": self.system_prompt}] + formatted_messages
 
             completion_params = {
@@ -56,11 +49,16 @@ class APIClient:
 
             completion_params = {k: v for k, v in completion_params.items() if v is not None}
 
-            response = self.adapter.process_response(completion_params)
+            response = completion(**completion_params)
+            return response  # Return the raw response
 
-            return response
         except Exception as e:
-            raise Exception(f"LiteLLM API error: {str(e)}")
+            error_message = f"LLM API error: {str(e)}"
+            self.logger.error(error_message)
+            raise Exception(error_message)
+        
+    def process_response(self, response: Any) -> tuple[str, List[Any]]:
+        return self.adapter.process_response(response)
 
     def _truncate_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         total_tokens = 0
@@ -72,13 +70,6 @@ class APIClient:
             total_tokens += message_tokens
             truncated_messages.insert(0, message)
         return truncated_messages
-
-    def process_response(self, response: Any) -> tuple[str, List[Any]]:
-        return self.adapter.process_response(response)
-
-    # def count_tokens(self, text):
-    #     # Implement a simple token counting method
-    #     return len(text.split()) + len(text) // 4
 
     def encode_image_to_base64(self, image_path):
         try:
@@ -93,43 +84,44 @@ class APIClient:
         except Exception as e:
             return f"Error encoding image: {str(e)}"
 
+# Commented out old code
+"""
+class BaseAPIClient:
+    def create_message(self, model, max_tokens, system, messages, tools, tool_choice):
+        raise NotImplementedError
 
-# class BaseAPIClient:
-#     def create_message(self, model, max_tokens, system, messages, tools, tool_choice):
-#         raise NotImplementedError
+    def process_response(self, response):
+        raise NotImplementedError
 
-#     def process_response(self, response):
-#         raise NotImplementedError
+    def count_tokens(self, text):
+        raise NotImplementedError    
 
-#     def count_tokens(self, text):
-#         raise NotImplementedError    
+class OpenAIClient(BaseAPIClient):
+    def __init__(self, api_key: str):
+        openai.api_key = api_key
 
-# class OpenAIClient(BaseAPIClient):
-#     def __init__(self, api_key: str):
-#         openai.api_key = api_key
+    def create_message(self, model, max_tokens, system, messages, tools, tool_choice):
+        try:
+            response = openai.Completion.create(
+                model=model,
+                max_tokens=max_tokens,
+                prompt=system + "\n" + "\n".join([msg["content"] for msg in messages])
+            )
+            return response
+        except Exception as e:
+            raise Exception(f"Error calling OpenAI API: {str(e)}")
 
-#     def create_message(self, model, max_tokens, system, messages, tools, tool_choice):
-#         try:
-#             response = openai.Completion.create(
-#                 model=model,
-#                 max_tokens=max_tokens,
-#                 prompt=system + "\n" + "\n".join([msg["content"] for msg in messages])
-#             )
-#             return response
-#         except Exception as e:
-#             raise Exception(f"Error calling OpenAI API: {str(e)}")
+    def process_response(self, response):
+        assistant_response = response.choices[0].text.strip()
+        tool_uses = []  # OpenAI might not have tool uses in the same way
+        return assistant_response, tool_uses
 
-#     def process_response(self, response):
-#         assistant_response = response.choices[0].text.strip()
-#         tool_uses = []  # OpenAI might not have tool uses in the same way
-#         return assistant_response, tool_uses
-
-#     def count_tokens(self, text):
-#         try:
-#             token_count = len(openai.Completion.create(model="text-davinci-003", prompt=text, max_tokens=1).choices[0].logprobs.tokens)
-#             return token_count
-#         except Exception as e:
-#             print(f"Error counting tokens: {str(e)}")
-#             return 0
-
+    def count_tokens(self, text):
+        try:
+            token_count = len(openai.Completion.create(model="text-davinci-003", prompt=text, max_tokens=1).choices[0].logprobs.tokens)
+            return token_count
+        except Exception as e:
+            print(f"Error counting tokens: {str(e)}")
+            return 0
+"""
 

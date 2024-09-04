@@ -124,13 +124,14 @@ class PenguinCore:
             self._prepare_conversation(user_input, image_path)
             response = self._get_ai_response(current_iteration, max_iterations)
             return self._process_response(response)
+        except AttributeError as e:
+            error_context = f"Error in response structure: {str(e)}"
+            self.log_error(e, error_context)
+            return "I'm having trouble understanding the AI's response. This issue has been logged for investigation. Could you please rephrase your question?", False
         except Exception as e:
             error_context = f"Error in get_response. User input: {user_input}, Image path: {image_path}, Iteration: {current_iteration}/{max_iterations}"
             self.log_error(e, error_context)
-            
-            if "declarative memory" in str(e).lower():
-                return "I encountered an issue with my memory. I'll do my best to continue our conversation without it.", False
-            return "I'm sorry, an error occurred. The error has been logged for further investigation. Please try again.", False
+            return "I'm sorry, an unexpected error occurred. The error has been logged for further investigation. Please try again.", False
     
     def log_error(self, error: Exception, context: str):
         error_log_dir = os.path.join(os.getcwd(), 'errors_log')
