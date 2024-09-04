@@ -3,6 +3,8 @@ from typing import List, Dict, Any
 from utils.diagnostics import diagnostics
 from litellm import completion, get_assistants, create_thread, add_message, run_thread
 import time
+from .openai_assistant import OpenAIAssistantManager
+from .model_config import ModelConfig
 
 class ProviderAdapter(ABC):
     @abstractmethod
@@ -37,26 +39,10 @@ class LiteLLMAdapter(ProviderAdapter):
         return False
 
 class OpenAIAdapter(ProviderAdapter):
-    def __init__(self):
+    def __init__(self, model_config: ModelConfig):
         self.thread_id = None
-        self.assistant_id = None
-        self._initialize_assistant()
-
-    def _initialize_assistant(self):
-        assistants = get_assistants(custom_llm_provider="openai")
-        if assistants.data:
-            self.assistant_id = assistants.data[0].id
-        else:
-            # Create a new assistant if none exists
-            timestamp = int(time.time())
-            assistant_name = f"Penguin-{timestamp}-Assistant"
-            assistant = create_assistant(
-                custom_llm_provider="openai",
-                model="gpt-4-turbo",
-                instructions="You are a helpful AI assistant.",
-                name=assistant_name,
-            )
-            self.assistant_id = assistant.id
+        self.assistant_manager = OpenAIAssistantManager(model_config)
+        self.model_config = model_config
 
     def supports_conversation_id(self) -> bool:
         return True
@@ -77,16 +63,20 @@ class OpenAIAdapter(ProviderAdapter):
         return [message]
 
     def process_response(self, response: Any) -> tuple[Any, List[Any]]:
-        run = run_thread(custom_llm_provider="openai", thread_id=self.thread_id, assistant_id=self.assistant_id)
+        run = run_thread(
+            custom_llm_provider="openai",
+            thread_id=self.thread_id,
+            assistant_id=self.assistant_manager.get_assistant_id()
+        )
         return run.response, []
 
     def get_conversation_id(self, response: Any) -> str:
         return self.thread_id
 
-def get_provider_adapter(provider: str) -> ProviderAdapter:
+def get_provider_adapter(provider: str, model_config: ModelConfig) -> ProviderAdapter:
     adapters = {
         "litellm": LiteLLMAdapter(),
-        "openai": OpenAIAdapter(),
+        "openai": OpenAIAdapter(model_config),
         # Add more adapters as needed
     }
     return adapters.get(provider.lower(), LiteLLMAdapter())  # Default to LiteLLMAdapter if provider not found
