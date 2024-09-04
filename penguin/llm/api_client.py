@@ -23,7 +23,7 @@ class APIClient:
     def __init__(self, model_config: ModelConfig):
         self.model_config = model_config
         self.system_prompt = None
-        self.adapter = get_provider_adapter(model_config.provider)
+        self.adapter = get_provider_adapter(model_config.provider, model_config)
         self.api_key = os.getenv(f"{model_config.provider.upper()}_API_KEY")
         self.max_history_tokens = model_config.max_history_tokens or 1000
 
