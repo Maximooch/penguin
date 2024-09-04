@@ -1,42 +1,77 @@
 from typing import List, Dict, Any
 from litellm import completion
 from .model_config import ModelConfig
-from .provider_adapters import LiteLLMAdapter
+from .provider_adapters import get_provider_adapter
 import os
+import yaml
+from pathlib import Path
+
+def load_config():
+    config_path = Path(__file__).parent.parent.parent / 'config.yml'
+    with open(config_path, 'r') as config_file:
+        return yaml.safe_load(config_file)
+
+MODEL_CONFIGS = load_config().get('model_configs', {})
+
 from PIL import Image 
-import base64 
+import base64
 import io
 
+
+
 class APIClient:
-    def __init__(self, api_key: str, model_config: ModelConfig):
-        self.api_key = api_key
+    def __init__(self, model_config: ModelConfig):
         self.model_config = model_config
-        self.adapter = LiteLLMAdapter()  # Use the appropriate adapter based on the provider
+        self.system_prompt = None
+        self.adapter = get_provider_adapter(model_config.provider)
+        self.api_key = os.getenv(f"{model_config.provider.upper()}_API_KEY")
+        self.max_history_tokens = model_config.max_history_tokens or 1000
+
+    def set_system_prompt(self, prompt):
+        self.system_prompt = prompt
 
     def create_message(self, messages: List[Dict[str, Any]], max_tokens: int = None, temperature: float = None) -> Any:
         try:
-            formatted_messages = self.adapter.format_messages(messages)
-            response = completion(
-                model=self.model_config.model,
-                messages=formatted_messages,
-                max_tokens=max_tokens or self.model_config.max_tokens,
-                temperature=temperature or self.model_config.temperature,
-                api_key=self.api_key,
-                api_base=self.model_config.api_base,
-                request_timeout=600,
-            )
-            # Remove the provider list message entirely
-            if isinstance(response, dict) and 'choices' in response:
-                content = response['choices'][0]['message']['content']
-                if isinstance(content, str):
-                    if "Provider List:" in content:
-                        content = content.split("Provider List:", 1)[0].strip()
-                elif isinstance(content, list):
-                    content = [item for item in content if "Provider List:" not in item.get('text', '')]
-                response['choices'][0]['message']['content'] = content
+            model_specific_config = MODEL_CONFIGS.get(self.model_config.model, {})
+            
+            if self.adapter.supports_conversation_id():
+                if not self.adapter.thread_id:
+                    formatted_messages = self.adapter.format_messages(messages)
+                else:
+                    formatted_messages = self.adapter.format_messages_with_id(self.adapter.thread_id, messages[-1])
+            else:
+                formatted_messages = self.adapter.format_messages(self._truncate_history(messages))
+            
+            if self.system_prompt and not self.adapter.supports_conversation_id():
+                formatted_messages = [{"role": "system", "content": self.system_prompt}] + formatted_messages
+
+            completion_params = {
+                "model": self.model_config.model,
+                "messages": formatted_messages,
+                "max_tokens": max_tokens or self.model_config.max_tokens or model_specific_config.get('max_tokens'),
+                "temperature": temperature or self.model_config.temperature or model_specific_config.get('temperature'),
+                "api_key": self.api_key,
+                "api_base": self.model_config.api_base or model_specific_config.get('api_base'),
+            }
+
+            completion_params = {k: v for k, v in completion_params.items() if v is not None}
+
+            response = self.adapter.process_response(completion_params)
+
             return response
         except Exception as e:
             raise Exception(f"LiteLLM API error: {str(e)}")
+
+    def _truncate_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        total_tokens = 0
+        truncated_messages = []
+        for message in reversed(messages):
+            message_tokens = self.adapter.count_tokens(str(message.get('content', '')))
+            if total_tokens + message_tokens > self.max_history_tokens:
+                break
+            total_tokens += message_tokens
+            truncated_messages.insert(0, message)
+        return truncated_messages
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
         return self.adapter.process_response(response)
