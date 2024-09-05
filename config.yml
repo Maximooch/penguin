@@ -1,9 +1,9 @@
 model:
-  default: "ollama/gemma2:latest"
-  provider: "ollama"
+  default: "gpt-4o"
+  provider: "openai"
 
 api:
-  base_url: "http://localhost:11434"
+  base_url: "https://api.openai.com/v1"
 
 model_configs:
   gpt-3.5-turbo:
