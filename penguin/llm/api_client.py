@@ -43,11 +43,15 @@ class APIClient:
                 "messages": formatted_messages,
                 "max_tokens": max_tokens or self.model_config.max_tokens or model_specific_config.get('max_tokens'),
                 "temperature": temperature or self.model_config.temperature or model_specific_config.get('temperature'),
-                "api_key": self.api_key,
                 "api_base": self.model_config.api_base or model_specific_config.get('api_base'),
             }
 
+            # Remove None values
             completion_params = {k: v for k, v in completion_params.items() if v is not None}
+
+            # Add the 'api_key' parameter only if it's not None
+            if self.api_key:
+                completion_params["api_key"] = self.api_key
 
             response = completion(**completion_params)
             return response  # Return the raw response
@@ -124,4 +128,3 @@ class OpenAIClient(BaseAPIClient):
             print(f"Error counting tokens: {str(e)}")
             return 0
 """
-
