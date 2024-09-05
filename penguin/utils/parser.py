@@ -25,6 +25,7 @@ class ActionType(Enum):
     GET_FILE_MAP = "get_file_map"
     LINT = "lint"
     MEMORY_SEARCH = "memory_search"
+    ADD_DECLARATIVE_NOTE = "add_declarative_note"
     # REPL, iPython, shell, bash, zsh, networking, file_management, task management, etc. 
     # TODO: Add more actions as needed
 
@@ -66,6 +67,7 @@ class ActionExecutor:
             ActionType.GET_FILE_MAP: lambda params: self.tool_manager.execute_tool("get_file_map", {"directory": params}),
             ActionType.LINT: lambda params: self._lint_python(params),
             ActionType.MEMORY_SEARCH: lambda params: self._memory_search(params),
+            ActionType.ADD_DECLARATIVE_NOTE: lambda params: self._add_declarative_note(params),
         }
 
         try:
@@ -118,3 +120,7 @@ class ActionExecutor:
     def _memory_search(self, params: str) -> str:
         query, k = params.split(':', 1) if ':' in params else (params, '5')
         return self.tool_manager.execute_tool("memory_search", {"query": query.strip(), "k": int(k.strip())})
+
+    def _add_declarative_note(self, params: str) -> str:
+        category, content = params.split(':', 1)
+        return self.tool_manager.execute_tool("add_declarative_note", {"category": category.strip(), "content": content.strip()})

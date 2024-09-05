@@ -1,9 +1,9 @@
 model:
-  default: "gpt-4o"
-  provider: "openai"
+  default: "ollama/gemma2:latest"
+  provider: "ollama"
 
 api:
-  base_url: "https://api.openai.com/v1"
+  base_url: "http://localhost:11434"
 
 model_configs:
   gpt-3.5-turbo:
@@ -14,7 +14,7 @@ model_configs:
     temperature: 0.7
   claude-3-opus-20240229:
     provider: "anthropic"
-    api_base: "https://api.anthropic.com/v1"
+    # api_base: "https://api.anthropic.com/v1/messages"
     max_tokens: 4096
     temperature: 0.7
 

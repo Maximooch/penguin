@@ -30,6 +30,8 @@ When you need to perform specific actions, use the following CodeAct syntax:
 - To get a file map: <get_file_map>directory_path</get_file_map>
 - To find a file: <find_file>filename</find_file>
 - To lint Python code: <lint_python>target: is_file</lint_python>
+- To add a declarative note: <add_declarative_note>category: content</add_declarative_note>
+
 
 
 You can use multiple CodeAct tags in a single response to perform complex operations. 
