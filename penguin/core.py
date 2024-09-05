@@ -9,6 +9,7 @@ It handles tasks such as:
 - Providing diagnostic logging and token usage tracking
 - Parsing and executing CodeAct actions
 - Managing declarative memory
+- Error logging and handling
 
 Attributes:
     api_client (APIClient): The API client for interacting with the AI model.
@@ -19,6 +20,7 @@ Attributes:
     max_history_length (int): The maximum length of the conversation history to keep.
     conversation_history (List[Dict[str, Any]]): The conversation history.
     logger (logging.Logger): Logger for the class.
+    action_executor (ActionExecutor): Executor for CodeAct actions.
     diagnostics (Diagnostics): Diagnostics utility for token tracking and logging.
 
 Methods:
@@ -29,11 +31,22 @@ Methods:
     clear_history() -> None: Clears the conversation history.
     get_last_message() -> Optional[Dict[str, Any]]: Returns the last message in the conversation history.
     get_response(user_input: str, image_path: Optional[str], current_iteration: Optional[int], max_iterations: Optional[int]) -> Tuple[str, bool]: Sends a message to the AI model and processes the response.
+    log_error(error: Exception, context: str) -> None: Logs detailed error information to a file.
     execute_tool(tool_name: str, tool_input: Any) -> Any: Executes a tool using the tool manager.
     run_automode(user_input: str, message_count: int, chat_function: Callable) -> None: Runs the automode functionality.
+    enable_diagnostics() -> None: Enables diagnostic logging.
     disable_diagnostics() -> None: Disables diagnostic logging.
     reset_state() -> None: Resets the state of PenguinCore.
+
+Private Methods:
+    _prepare_conversation(user_input: str, image_path: Optional[str]) -> None: Prepares the conversation by adding necessary messages.
+    _add_image_message(user_input: str, image_path: str) -> None: Adds an image message to the conversation.
+    _get_ai_response(current_iteration: Optional[int], max_iterations: Optional[int]) -> Any: Gets a response from the AI model.
+    _process_response(response: Any) -> Tuple[str, bool]: Processes the AI model's response.
+    _handle_tool_use(content_block: Any) -> str: Handles tool use requests from the AI model.
+    _get_final_response() -> str: Gets a final response from the AI model after tool use.
 """
+
 
 # Import necessary modules and types
 from typing import List, Optional, Tuple, Dict, Any, Callable
@@ -56,6 +69,7 @@ import json
 
 # Set up logging
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 class PenguinCore:
     def __init__(self, api_client: APIClient, tool_manager: ToolManager):
@@ -83,10 +97,17 @@ class PenguinCore:
         if current_iteration is not None and max_iterations is not None:
             iteration_info = f"You are currently on iteration {current_iteration} out of {max_iterations} in automode."
         
+        self.logger.debug("Fetching declarative notes...")
         declarative_notes = self.tool_manager.declarative_memory_tool.get_notes()
-        notes_str = "\n".join([f"{note['category']}: {note['content']}" for note in declarative_notes])
+        self.logger.debug(f"Fetched declarative notes: {declarative_notes}")
         
-        return f"{self.system_prompt}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
+        notes_str = "\n".join([f"{note['category']}: {note['content']}" for note in declarative_notes])
+        self.logger.debug(f"Formatted notes string: {notes_str}")
+        
+        system_message = f"{self.system_prompt}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
+        self.logger.debug(f"Generated system message: {system_message}")
+        
+        return system_message
 
     def add_message(self, role: str, content: Any) -> None:
         # Add a message to the conversation history
