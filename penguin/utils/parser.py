@@ -5,11 +5,16 @@
 # Inspired by the CodeAct paper: https://arxiv.org/abs/2402.01030
 # CodeAct Github: https://github.com/xingyaoww/code-act
 
+import logging
+from typing import List
 from enum import Enum
 import re
 import logging
 from tools.tool_manager import ToolManager
 from pathlib import Path
+from agent.task_utils import create_task, update_task, complete_task, list_tasks
+from html import unescape
+from agent.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +31,10 @@ class ActionType(Enum):
     LINT = "lint"
     MEMORY_SEARCH = "memory_search"
     ADD_DECLARATIVE_NOTE = "add_declarative_note"
+    TASK_CREATE = "task_create"
+    TASK_UPDATE = "task_update"
+    TASK_COMPLETE = "task_complete"
+    TASK_LIST = "task_list"
     # REPL, iPython, shell, bash, zsh, networking, file_management, task management, etc. 
     # TODO: Add more actions as needed
 
@@ -34,49 +43,56 @@ class CodeActAction:
         self.action_type = action_type
         self.params = params
 
-def parse_action(response):
+def parse_action(content: str) -> List[CodeActAction]:
     actions = []
-    action_pattern = r'<(\w+)>(.*?)</\1>'
-    matches = re.findall(action_pattern, response)
-    for action_type, params in matches:
+    pattern = r'<(\w+)>(.*?)</\1>'
+    matches = re.finditer(pattern, content, re.DOTALL)
+    
+    for match in matches:
+        action_type = match.group(1).lower()
+        params = unescape(match.group(2).strip())
         try:
-            action_type_upper = action_type.upper()
-            if action_type_upper not in ActionType.__members__:
-                logger.warning(f"Unknown action type: {action_type}")
-                continue
-            action = CodeActAction(ActionType[action_type_upper], params.strip())
+            action_type_enum = ActionType[action_type.upper()]
+            action = CodeActAction(action_type_enum, params)
             actions.append(action)
-        except Exception as e:
-            logger.error(f"Error parsing action: {str(e)}")
+        except KeyError:
+            # Ignore unrecognized action types
+            pass
+    
     return actions
 
 class ActionExecutor:
-    def __init__(self, tool_manager: ToolManager):
+    def __init__(self, tool_manager: ToolManager, task_manager: TaskManager):
         self.tool_manager = tool_manager
+        self.task_manager = task_manager
 
     def execute_action(self, action: CodeActAction) -> str:
         action_map = {
             ActionType.READ: lambda params: self.tool_manager.execute_tool("read_file", {"path": params}),
-            ActionType.WRITE: lambda params: self._write_file(params),
-            ActionType.EXECUTE: lambda params: self._execute_code(params),
+            ActionType.WRITE: self._write_file,
+            ActionType.EXECUTE: self._execute_code,
             ActionType.SEARCH: lambda params: self.tool_manager.execute_tool("grep_search", {"pattern": params}),
-            ActionType.CREATE_FILE: lambda params: self._create_file(params),
+            ActionType.CREATE_FILE: self._create_file,
             ActionType.CREATE_FOLDER: lambda params: self.tool_manager.execute_tool("create_folder", {"path": params}),
-            ActionType.LIST_FILES: lambda params: self.tool_manager.execute_tool("list_files", {"path": params}),
-            ActionType.LIST_FOLDERS: lambda params: self.tool_manager.execute_tool("list_files", {"path": params}),
+            ActionType.LIST_FILES: lambda params: self.tool_manager.execute_tool("list_files", {"directory": params}),
+            ActionType.LIST_FOLDERS: lambda params: self.tool_manager.execute_tool("list_files", {"directory": params}),
             ActionType.GET_FILE_MAP: lambda params: self.tool_manager.execute_tool("get_file_map", {"directory": params}),
-            ActionType.LINT: lambda params: self._lint_python(params),
-            ActionType.MEMORY_SEARCH: lambda params: self._memory_search(params),
-            ActionType.ADD_DECLARATIVE_NOTE: lambda params: self._add_declarative_note(params),
+            ActionType.LINT: self._lint_python,
+            ActionType.MEMORY_SEARCH: self._memory_search,
+            ActionType.ADD_DECLARATIVE_NOTE: self._add_declarative_note,
+            ActionType.TASK_CREATE: lambda params: create_task(self.task_manager, *params.split(':', 1)),
+            ActionType.TASK_UPDATE: lambda params: update_task(self.task_manager, *params.split(':', 1)),
+            ActionType.TASK_COMPLETE: lambda params: complete_task(self.task_manager, params),
+            ActionType.TASK_LIST: lambda params: list_tasks(self.task_manager),
         }
-
+        
         try:
             if action.action_type not in action_map:
                 return f"Unknown action type: {action.action_type.value}"
             
             result = action_map[action.action_type](action.params)
             logger.info(f"Action {action.action_type.value} executed successfully")
-            return f"Action {action.action_type.value} executed successfully: {result}"
+            return result
         except Exception as e:
             error_message = f"Error executing action {action.action_type.value}: {str(e)}"
             logger.error(error_message)

@@ -1,22 +1,9 @@
 import time
 import os
 import sys
-
-# Get the start time from the environment variable set by the wrapper script, or use current time if not set
-start_time = float(os.environ.get('PENGUIN_START_TIME', time.time()))
-
-def log_time(description, start):
-    end = time.time()
-    return end - start
-
-import_start = time.time()
-
-# Rest of the imports
-import subprocess
-import site
 import logging
 from logging.handlers import RotatingFileHandler
-from colorama import init # type: ignore
+from colorama import init as colorama_init
 from chat.chat import ChatManager
 from llm.model_config import ModelConfig
 from utils.log_error import log_error
@@ -31,9 +18,13 @@ from prompts import SYSTEM_PROMPT
 from core import PenguinCore
 from dotenv import load_dotenv # type: ignore
 
-import_time = log_time("Import time", import_start)
-
 load_dotenv()
+
+start_time = float(os.environ.get('PENGUIN_START_TIME', time.time()))
+
+def log_time(description, start):
+    end = time.time()
+    return end - start
 
 def setup_logger(log_file='Penguin.log', log_level=logging.INFO):
     print("Setting up logger")  # Debug print
@@ -61,14 +52,14 @@ def setup_logger(log_file='Penguin.log', log_level=logging.INFO):
 
     return logger
 
-def main():
-    global start_time
+def init():
+    global penguin_core, chat_manager
 
     timing_info = {}
 
     timing_info['logger_setup'] = log_time("Logger setup", time.time())
     logger = setup_logger()
-    init()
+    colorama_init()  # Initialize colorama instead of calling init() recursively
 
     timing_info['model_config'] = log_time("Model config setup", time.time())
     model_config = ModelConfig(
@@ -105,7 +96,6 @@ def main():
     print("\nTiming Information:")
     print(f"{'Component':<20} {'Time (seconds)':<15}")
     print("-" * 35)
-    print(f"{'Import time':<20} {import_time:.2f}")
     for component, time_taken in timing_info.items():
         print(f"{component.replace('_', ' ').capitalize():<20} {time_taken:.2f}")
     print("-" * 35)
@@ -113,7 +103,12 @@ def main():
 
     logger.info(f"Total bootup process completed in {total_bootup_duration:.2f} seconds")
 
+def run_chat():
     chat_manager.run_chat()
+
+def main():
+    init()
+    run_chat()
 
 if __name__ == "__main__":
     main()

@@ -2,7 +2,7 @@
 
 ## Core Automode Features
 
-1. Natural Language Task Decomposition
+1. Task Decomposition
    - Break down complex user goals into smaller, manageable subtasks
    - User Story: "As a user, I want to input a complex project goal and have it automatically broken down into steps."
 
