@@ -1,9 +1,11 @@
+#!/usr/bin/env pypy3
 import time
 import os
 import sys
 import logging
 from logging.handlers import RotatingFileHandler
 from colorama import init as colorama_init
+from typing import Dict, Any, Optional
 from chat.chat import ChatManager
 from llm.model_config import ModelConfig
 from utils.log_error import log_error
@@ -16,17 +18,17 @@ from config import (
 )
 from prompts import SYSTEM_PROMPT
 from core import PenguinCore
-from dotenv import load_dotenv # type: ignore
+from dotenv import load_dotenv  # type: ignore
 
 load_dotenv()
 
-start_time = float(os.environ.get('PENGUIN_START_TIME', time.time()))
+start_time: float = float(os.environ.get('PENGUIN_START_TIME', str(time.time())))
 
-def log_time(description, start):
+def log_time(description: str, start: float) -> float:
     end = time.time()
     return end - start
 
-def setup_logger(log_file='Penguin.log', log_level=logging.INFO):
+def setup_logger(log_file: str = 'Penguin.log', log_level: int = logging.INFO) -> logging.Logger:
     print("Setting up logger")  # Debug print
     logger = logging.getLogger('Penguin')
     logger.setLevel(log_level)
@@ -52,10 +54,10 @@ def setup_logger(log_file='Penguin.log', log_level=logging.INFO):
 
     return logger
 
-def init():
+def init() -> None:
     global penguin_core, chat_manager
 
-    timing_info = {}
+    timing_info: Dict[str, float] = {}
 
     timing_info['logger_setup'] = log_time("Logger setup", time.time())
     logger = setup_logger()
@@ -103,10 +105,10 @@ def init():
 
     logger.info(f"Total bootup process completed in {total_bootup_duration:.2f} seconds")
 
-def run_chat():
+def run_chat() -> None:
     chat_manager.run_chat()
 
-def main():
+def main() -> None:
     init()
     run_chat()
 

@@ -55,7 +55,7 @@ from tools.tool_manager import ToolManager
 from utils.parser import parse_action, ActionExecutor
 
 
-from config import CONTINUATION_EXIT_PHRASE, MAX_CONTINUATION_ITERATIONS
+from config import TASK_COMPLETION_PHRASE, MAX_TASK_ITERATIONS
 from utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnostics
 # from agent.automode import Automode
 from agent.task_manager import TaskManager
@@ -67,6 +67,7 @@ from datetime import datetime
 from config import Config
 import json
 import re
+from workspace import get_workspace_path, write_workspace_file
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -157,7 +158,7 @@ class PenguinCore:
             
             # Process the response
             assistant_response = response.choices[0].message.content
-            exit_continuation = CONTINUATION_EXIT_PHRASE in assistant_response
+            exit_continuation = TASK_COMPLETION_PHRASE in assistant_response
             
             # Parse and execute CodeAct actions
             actions = parse_action(assistant_response)
@@ -204,20 +205,21 @@ class PenguinCore:
             return "I'm sorry, an unexpected error occurred. The error has been logged for further investigation. Please try again.", False
 
     def log_error(self, error: Exception, context: str):
-        error_log_dir = os.path.join(os.getcwd(), 'errors_log')
+        error_log_dir = get_workspace_path('errors_log')
         os.makedirs(error_log_dir, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        error_file = os.path.join(error_log_dir, f"error_{timestamp}.log")
+        error_file = get_workspace_path('errors_log', f"error_{timestamp}.log")
         
-        with open(error_file, 'w') as f:
-            f.write(f"Error occurred at: {datetime.now()}\n")
-            f.write(f"Context: {context}\n\n")
-            f.write(f"Error type: {type(error).__name__}\n")
-            f.write(f"Error message: {str(error)}\n\n")
-            f.write("Traceback:\n")
-            f.write(traceback.format_exc())
-            
+        content = f"Error occurred at: {datetime.now()}\n"
+        content += f"Context: {context}\n\n"
+        content += f"Error type: {type(error).__name__}\n"
+        content += f"Error message: {str(error)}\n\n"
+        content += "Traceback:\n"
+        content += traceback.format_exc()
+        
+        write_workspace_file(error_file, content)
+        
         self.logger.error(f"Detailed error log saved to: {error_file}")
         
     

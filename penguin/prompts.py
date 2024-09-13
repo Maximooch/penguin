@@ -39,6 +39,7 @@ Task Management:
 - To update task progress: <task_update>task description: progress percentage</task_update>
 - To complete a task: <task_complete>task description</task_complete>
 - To list all tasks: <task_list></task_list>
+- Once completed a task, you can exit by doing TASK_COMPLETED
 
 When you are running a task:
 

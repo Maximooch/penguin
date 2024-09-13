@@ -2,7 +2,7 @@ from typing import Optional, Tuple, List, Dict, Any
 from core import PenguinCore
 # from agent.automode import Automode
 from agent.task_manager import TaskManager
-from config import MAX_CONTINUATION_ITERATIONS, CONTINUATION_EXIT_PHRASE
+from config import MAX_TASK_ITERATIONS, TASK_COMPLETION_PHRASE
 from utils.logs import setup_logger, log_event, logger
 from chat.ui import (
     print_bordered_message, process_and_display_response, print_welcome_message,
@@ -12,6 +12,7 @@ from chat.ui import (
 from colorama import init # type: ignore
 import os
 import re
+from config import WORKSPACE_PATH
 from agent.task import TaskStatus
 from utils.parser import parse_action, ActionExecutor
 from agent.task_utils import create_task, update_task, complete_task, list_tasks
@@ -68,6 +69,9 @@ class ChatManager:
 
         if action == "list":
             task_board = list_tasks(self.task_manager)
+            task_board_path = os.path.join(WORKSPACE_PATH, "task_board.txt")
+            with open(task_board_path, "w") as f:
+                f.write(task_board)
             print_bordered_message(f"Task Board:\n{task_board}", TOOL_COLOR, "system", message_count)
             return
 
@@ -83,14 +87,22 @@ class ChatManager:
                 return
             task_description = parts[3]
             task = create_task(self.task_manager, task_name, task_description)
+            task_output_path = os.path.join(WORKSPACE_PATH, f"{task_name}_task.txt")
+            with open(task_output_path, "w") as f:
+                f.write(str(task))
             print_bordered_message(str(task), TOOL_COLOR, "system", message_count)
         elif action == "run":
             task = self.task_manager.get_task_by_name(task_name)
             if task:
                 try:
-                    for current_iteration, max_iterations, response in self.task_manager.run_task(task, self.chat_with_penguin, message_count):
-                        print_bordered_message(f"Task Progress: Iteration {current_iteration}/{max_iterations}", TOOL_COLOR, "system", message_count)
-                        print_bordered_message(f"AI Response:\n{response}", PENGUIN_COLOR, "system", message_count)
+                    task_log_path = os.path.join(WORKSPACE_PATH, f"{task_name}_log.txt")
+                    with open(task_log_path, "w") as log_file:
+                        for current_iteration, max_iterations, response in self.task_manager.run_task(task, self.chat_with_penguin, message_count):
+                            progress_msg = f"Task Progress: Iteration {current_iteration}/{max_iterations}"
+                            print_bordered_message(progress_msg, TOOL_COLOR, "system", message_count)
+                            log_file.write(f"{progress_msg}\n")
+                            print_bordered_message(f"AI Response:\n{response}", PENGUIN_COLOR, "system", message_count)
+                            log_file.write(f"AI Response:\n{response}\n")
                     print_bordered_message(f"Task completed: {task}", TOOL_COLOR, "system", message_count)
                 except Exception as e:
                     print_bordered_message(f"Error running task: {str(e)}", TOOL_COLOR, "system", message_count)
@@ -99,6 +111,9 @@ class ChatManager:
         elif action == "status":
             task = self.task_manager.get_task_by_name(task_name)
             if task:
+                task_status_path = os.path.join(WORKSPACE_PATH, f"{task_name}_status.txt")
+                with open(task_status_path, "w") as f:
+                    f.write(f"Task Status: {task}")
                 print_bordered_message(f"Task Status: {task}", TOOL_COLOR, "system", message_count)
             else:
                 print_bordered_message(f"Task not found: {task_name}", TOOL_COLOR, "system", message_count)

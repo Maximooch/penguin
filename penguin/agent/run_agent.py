@@ -1,6 +1,6 @@
 from typing import Callable
 from .task import Task, TaskStatus
-from config import MAX_TASK_ITERATIONS
+from config import MAX_TASK_ITERATIONS, TASK_COMPLETION_PHRASE
 import time
 import logging
 from chat import print_bordered_message, PENGUIN_COLOR, TOOL_COLOR

@@ -1,5 +1,6 @@
 import json
 import os
+from config import WORKSPACE_PATH
 
 
 from typing import List, Optional, Callable
@@ -71,12 +72,14 @@ class TaskManager:
             }
             for task in self.tasks
         ]
-        with open("tasks.json", "w") as f:
-            json.dump(tasks_data, f)
+        file_path = os.path.join(WORKSPACE_PATH, "tasks.json")
+        with open(file_path, "w") as f:
+            json.dump(tasks_data, f, indent=2)
 
     def load_tasks(self) -> None:
-        if os.path.exists("tasks.json"):
-            with open("tasks.json", "r") as f:
+        file_path = os.path.join(WORKSPACE_PATH, "tasks.json")
+        if os.path.exists(file_path):
+            with open(file_path, "r") as f:
                 tasks_data = json.load(f)
             self.tasks = [
                 Task(
