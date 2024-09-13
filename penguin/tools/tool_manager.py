@@ -18,15 +18,18 @@ from .grep_search import GrepSearch
 from .lint_python import lint_python
 from .memory_search import MemorySearch
 
+from config import WORKSPACE_PATH
+from workspace import get_workspace_path
+
 class ToolManager:
     def __init__(self, log_error_func: Callable):
         from utils.file_map import FileMap  # Import here to avoid circular import
         self.log_error = log_error_func
         self.declarative_memory_tool = DeclarativeMemoryTool()
-        self.grep_search = GrepSearch(root_dir=os.path.join(os.getcwd(), "logs"))
-        self.memory_search = MemorySearch(os.path.join(os.getcwd(), "logs"))
-        self.file_map = FileMap(os.getcwd())  # Initialize with the current working directory
-        self.project_root = os.getcwd()  # Initialize project root
+        self.grep_search = GrepSearch(root_dir=get_workspace_path("logs"))
+        self.memory_search = MemorySearch(get_workspace_path("logs"))
+        self.file_map = FileMap(WORKSPACE_PATH)  # Initialize with the workspace path
+        self.project_root = WORKSPACE_PATH  # Set project root to workspace path
         self.tools = [
             {
                 "name": "create_folder",
