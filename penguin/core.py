@@ -41,9 +41,7 @@ Methods:
 Private Methods:
     _prepare_conversation(user_input: str, image_path: Optional[str]) -> None: Prepares the conversation by adding necessary messages.
     _add_image_message(user_input: str, image_path: str) -> None: Adds an image message to the conversation.
-    _get_ai_response(current_iteration: Optional[int], max_iterations: Optional[int]) -> Any: Gets a response from the AI model.
-    _process_response(response: Any) -> Tuple[str, bool]: Processes the AI model's response.
-    _handle_tool_use(content_block: Any) -> str: Handles tool use requests from the AI model.
+    _handle_tool_use(tool_call: Any) -> str: Handles tool use requests from the AI model.
     _get_final_response() -> str: Gets a final response from the AI model after tool use.
 """
 
@@ -59,13 +57,16 @@ from utils.parser import parse_action, ActionExecutor
 
 from config import CONTINUATION_EXIT_PHRASE, MAX_CONTINUATION_ITERATIONS
 from utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnostics
-from agent.automode import Automode
+# from agent.automode import Automode
+from agent.task_manager import TaskManager
+from agent.task import Task, TaskStatus
 import logging
 import os
 import traceback
 from datetime import datetime
 from config import Config
 import json
+import re
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -82,8 +83,10 @@ class PenguinCore:
         self.max_history_length = 1000
         self.conversation_history: List[Dict[str, Any]] = []
         self.logger = logger
-        self.action_executor = ActionExecutor(self.tool_manager)
+        self.task_manager = TaskManager(self.logger)
+        self.action_executor = ActionExecutor(self.tool_manager, self.task_manager)
         self.diagnostics = diagnostics  # Initialize diagnostics
+        
 
     def set_system_prompt(self, prompt: str) -> None:
         # Set the system prompt and mark it as not sent
@@ -107,6 +110,13 @@ class PenguinCore:
         system_message = f"{self.system_prompt}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
         self.logger.debug(f"Generated system message: {system_message}")
         
+        current_task = self.task_manager.get_current_task()
+        if current_task:
+            task_info = f"Current Task: {current_task.description} - Status: {current_task.status.value} - Progress: {current_task.progress}%"
+            system_message += f"\n\n{task_info}"
+        else:
+            system_message += "\n\nNo current task."
+
         return system_message
 
     def add_message(self, role: str, content: Any) -> None:
@@ -135,16 +145,55 @@ class PenguinCore:
 
     def get_response(self, user_input: str, image_path: Optional[str] = None, 
                     current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> Tuple[str, bool]:
-        # High-level method to get a response from the AI model
-        # This method orchestrates the entire response process, including:
-        # 1. Preparing the conversation
-        # 2. Getting the AI response
-        # 3. Processing the response (including handling tool use and CodeAct actions)
-        # 4. Handling any errors that occur during the process
         try:
             self._prepare_conversation(user_input, image_path)
-            response = self._get_ai_response(current_iteration, max_iterations)
-            return self._process_response(response)
+            
+            # Construct and send API request
+            response = self.api_client.create_message(
+                messages=self.get_history(),
+                max_tokens=None,
+                temperature=None
+            )
+            
+            # Process the response
+            assistant_response = response.choices[0].message.content
+            exit_continuation = CONTINUATION_EXIT_PHRASE in assistant_response
+            
+            # Parse and execute CodeAct actions
+            actions = parse_action(assistant_response)
+            for action in actions:
+                result = self.action_executor.execute_action(action)
+                assistant_response += f"\n{result}"
+            
+            # Handle tool use if present in the response
+            if hasattr(response.choices[0].message, 'tool_calls'):
+                for tool_call in response.choices[0].message.tool_calls:
+                    tool_result = self._handle_tool_use(tool_call)
+                    assistant_response += f"\n{tool_result}"
+                
+                # Get final response after tool use
+                final_response = self._get_final_response()
+                assistant_response += f"\n{final_response}"
+            
+            if assistant_response:
+                self.add_message("assistant", assistant_response)
+            
+            self.diagnostics.log_token_usage()
+            
+            current_task = self.task_manager.get_current_task()
+            if current_task and current_task.status == TaskStatus.IN_PROGRESS:
+                # Update task progress based on the response
+                # This is a simple implementation and can be improved
+                if "task completed" in assistant_response.lower():
+                    current_task.update_progress(100)
+                elif "progress" in assistant_response.lower():
+                    # Extract progress percentage from the response
+                    # This is a naive implementation and should be improved
+                    progress = int(re.search(r'\d+', assistant_response).group())
+                    current_task.update_progress(progress)
+            
+            return assistant_response, exit_continuation
+        
         except AttributeError as e:
             error_context = f"Error in response structure: {str(e)}"
             self.log_error(e, error_context)
@@ -153,7 +202,7 @@ class PenguinCore:
             error_context = f"Error in get_response. User input: {user_input}, Image path: {image_path}, Iteration: {current_iteration}/{max_iterations}"
             self.log_error(e, error_context)
             return "I'm sorry, an unexpected error occurred. The error has been logged for further investigation. Please try again.", False
-    
+
     def log_error(self, error: Exception, context: str):
         error_log_dir = os.path.join(os.getcwd(), 'errors_log')
         os.makedirs(error_log_dir, exist_ok=True)
@@ -209,67 +258,14 @@ class PenguinCore:
             logger.error(f"Error adding image message: {str(e)}")
             raise
 
-    def _get_ai_response(self, current_iteration: Optional[int], max_iterations: Optional[int]) -> Any:
-        # Low-level method to directly interact with the AI model
-        # This method is responsible for:
-        # 1. Constructing the API request with the current conversation state
-        # 2. Sending the request to the AI model
-        # 3. Receiving and returning the raw response from the model
-        try:
-            response = self.api_client.create_message(
-                messages=self.get_history(),
-                max_tokens=None,  # Use default from APIClient
-                temperature=None  # Use default from APIClient
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Error calling LLM API: {str(e)}")
-            raise
-
-    def _process_response(self, response: Any) -> Tuple[str, bool]:
-        # Process the AI model's response
-        # This method handles:
-        # 1. Extracting text content from the response
-        # 2. Checking for continuation exit phrases
-        # 3. Parsing and executing CodeAct actions
-        # 4. Handling tool use requests
-        # 5. Compiling the final assistant response
-        assistant_response = ""
-        exit_continuation = False
-        actions_to_execute = []
-        
-        try:
-            assistant_response = response.choices[0].message.content
-            if CONTINUATION_EXIT_PHRASE in assistant_response:
-                exit_continuation = True
-            
-            # Parse CodeAct actions
-            actions = parse_action(assistant_response)
-            actions_to_execute.extend(actions)
-            
-            # Execute all CodeAct actions
-            for action in actions_to_execute:
-                result = self.action_executor.execute_action(action)
-                assistant_response += f"\n{result}"
-            
-            if assistant_response:
-                self.add_message("assistant", assistant_response)
-            
-            self.diagnostics.log_token_usage()
-            return assistant_response, exit_continuation
-        except Exception as e:
-            logger.error(f"Error processing response: {str(e)}")
-            return f"An error occurred while processing the response: {str(e)}", False
-
-    def _handle_tool_use(self, content_block: Any) -> str:
-        # Handle tool use requests from the AI model
-        tool_name = content_block.name
-        tool_input = content_block.input
-        tool_use_id = content_block.id
+    def _handle_tool_use(self, tool_call: Any) -> str:
+        tool_name = tool_call.function.name
+        tool_input = tool_call.function.arguments
+        tool_use_id = tool_call.id
         
         try:
             result = self.tool_manager.execute_tool(tool_name, tool_input)
-            self.add_message("assistant", [content_block])
+            self.add_message("assistant", [{"type": "function", "function": tool_call.function}])
             
             if isinstance(result, dict):
                 result_content = [{"type": "text", "text": json.dumps(result, indent=2)}]
@@ -288,24 +284,19 @@ class PenguinCore:
             return f"Tool Used: {tool_name}\nTool Input: {tool_input}\nTool Result: {json.dumps(result, indent=2)}"
         except Exception as e:
             error_message = f"Error handling tool use '{tool_name}': {str(e)}"
-            logger.error(error_message)
+            self.logger.error(error_message)
             return error_message
 
-
     def _get_final_response(self) -> str:
-        # Get a final response from the AI model after tool use
-        # This method is similar to _get_ai_response, but is specifically used
-        # after tool use to get a final, summarized response from the model
         try:
             final_response = self.api_client.create_message(
                 messages=self.get_history(),
-                max_tokens=None,  # Use default from APIClient
-                temperature=None  # Use default from APIClient
+                max_tokens=None,
+                temperature=None
             )
-            assistant_response = final_response.choices[0].message.content
-            return assistant_response
+            return final_response.choices[0].message.content
         except Exception as e:
-            logger.error(f"Error in final response: {str(e)}")
+            self.logger.error(f"Error in final response: {str(e)}")
             return "\nI encountered an error while processing the tool results. Please try again."
 
     def execute_tool(self, tool_name: str, tool_input: Any) -> Any:
@@ -313,14 +304,22 @@ class PenguinCore:
         # This is a public method that allows direct tool execution
         return self.tool_manager.execute_tool(tool_name, tool_input)
 
-    def run_automode(self, user_input: str, message_count: int, chat_function: Callable) -> None:
-        # Run the automode functionality
-        # This method initiates the automode process, which allows for
-        # multiple iterations of conversation without user intervention
-        automode = Automode(self.logger, MAX_CONTINUATION_ITERATIONS)
-        automode.start(user_input, message_count, chat_function)
-        self.reset_state()
+    def create_task(self, description: str) -> Task:
+        return self.task_manager.create_task(description)
 
+    def run_task(self, task: Task) -> None:
+        self.task_manager.run_task(task, self.get_response)
+
+    def get_task_board(self) -> str:
+        return self.task_manager.get_task_board()
+
+    def get_task_by_description(self, description: str) -> Optional[Task]:
+        return self.task_manager.get_task_by_description(description)
+
+    # def run_automode(self, user_input: str, message_count: int, chat_function: Callable, conversation_history: List[Dict[str, Any]]) -> None:
+    #     automode = Automode(self.logger, MAX_CONTINUATION_ITERATIONS)
+    #     automode.start(user_input, message_count, chat_function, conversation_history)
+    #     self.reset_state()
 
     def enable_diagnostics(self) -> None:
         from config import Config
@@ -340,4 +339,5 @@ class PenguinCore:
         self.automode = False
         self.system_prompt_sent = False
         self.clear_history()
+        self.task_manager = TaskManager(self.logger)
         logger.info("PenguinCore state reset")

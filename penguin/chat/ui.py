@@ -117,8 +117,12 @@ def print_welcome_message():
         "Welcome to the Penguin AI Assistant!\n"
         "Type 'exit' to end the conversation.\n"
         "Type 'image' to include an image in your message.\n"
-        "Type 'automode [number]' to enter Autonomous mode with a specific number of iterations.\n"
-        "While in automode, press Ctrl+C at any time to exit the automode to return to regular chat."
+        "Task Management Commands:\n"
+        "- 'task create [task_name] [task_description]' to create a new task\n"
+        "- 'task run [task_name]' to run a task\n"
+        "- 'task list' to view all tasks\n"
+        "- 'task status [task_name]' to check the status of a specific task\n"
+        "to exit a task currently running, press ctrl+c to stop the task\n"
     )
     print_bordered_message(welcome_text, PENGUIN_COLOR, "system", "Welcome")
 
