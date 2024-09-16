@@ -11,6 +11,7 @@ from pathlib import Path
 WORKSPACE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'workspace')
 os.makedirs(WORKSPACE_PATH, exist_ok=True)
 
+print(f"Workspace path: {WORKSPACE_PATH}")  # This will help us confirm the correct path
 
 # Set up logging
 # logging.basicConfig(level=logging.DEBUG)

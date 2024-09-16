@@ -107,18 +107,7 @@ class ActionExecutor:
         return self.tool_manager.execute_tool("create_file", {"path": path.strip(), "content": content.strip()})
 
     def _execute_code(self, params: str) -> str:
-        if params.endswith('.py'):
-            # It's a file, so we should read its contents first
-            try:
-                with open(params, 'r') as file:
-                    code = file.read()
-            except FileNotFoundError:
-                return f"Error: File '{params}' not found."
-        else:
-            # It's a direct Python command
-            code = params
-
-        return self.tool_manager.execute_tool("code_execution", {"code": code})
+        return self.tool_manager.execute_tool("execute_command", {"command": params})
 
     def _lint_python(self, params: str) -> str:
         parts = params.split(':', 1)

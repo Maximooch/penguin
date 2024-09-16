@@ -109,9 +109,18 @@ class MemorySearch:
         keyword_results = self.keyword_search(query, k)
         semantic_results = self.semantic_search(query, k)
         
-        combined_results = list(set(keyword_results + semantic_results))
-        combined_results.sort(key=lambda x: x['timestamp'], reverse=True)
+        # Combine results, giving priority to keyword results
+        combined_results = keyword_results.copy()
         
+        # Add semantic results if they're not already in the combined results
+        for result in semantic_results:
+            if not any(r.get('id') == result.get('id') for r in combined_results):
+                combined_results.append(result)
+        
+        # Sort combined results by relevance score (assuming higher is better)
+        combined_results.sort(key=lambda x: x.get('relevance', 0), reverse=True)
+        
+        # Return top k results
         return combined_results[:k]
 
     def add_log(self, log: Dict[str, Any]):
