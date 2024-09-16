@@ -1,4 +1,5 @@
 import os
+import json
 import io
 import sys
 import logging
@@ -8,6 +9,7 @@ import requests # type: ignore
 from requests.exceptions import RequestException # type: ignore
 from typing import List, Dict, Any, Callable, Union
 from utils import FileMap
+import subprocess
 # from utils.log_error import log_error
 
 from .support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
@@ -232,6 +234,20 @@ class ToolManager:
                 },
                 "required": ["target", "is_file"]
             }
+        },
+        {
+            "name": "execute_command",
+            "description": "Execute a shell command in the project root directory.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute"
+                    }
+                },
+                "required": ["command"]
+            }
         }
         ]
 
@@ -261,6 +277,7 @@ class ToolManager:
             "get_file_map": lambda: self.get_file_map(tool_input.get("directory", "")),
             "find_file": lambda: find_file(tool_input["filename"], tool_input.get("search_path", ".")),
             "lint_python": lambda: lint_python(tool_input["target"], tool_input["is_file"]),
+            "execute_command": lambda: self.execute_command(tool_input["command"])
         }
         
         logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
@@ -310,18 +327,24 @@ class ToolManager:
         logging.info(f"Formatted {len(formatted_results)} results for output")
         return formatted_results
 
-    def perform_memory_search(self, query: str, k: int = 5) -> List[Dict[str, str]]:
-        logging.info(f"Performing memory search with query: {query}")
-        results = self.memory_search.combined_search(query, k)
-        logging.info(f"Memory search returned {len(results)} results")
-        formatted_results = []
-        for result in results:
-            formatted_results.append({
-                "type": "text",
-                "text": f"Timestamp: {result['timestamp']}\nType: {result['type']}\nContent: {result['content']}"
-            })
-        logging.info(f"Formatted {len(formatted_results)} results for output")
-        return formatted_results
+    def perform_memory_search(self, query: str, k: int = 5) -> str:
+        try:
+            logging.info(f"Performing memory search with query: {query}")
+            results = self.memory_search.combined_search(query, k)
+            logging.info(f"Memory search returned {len(results)} results")
+            formatted_results = []
+            for result in results:
+                formatted_results.append({
+                    "type": "text",
+                    "text": f"Timestamp: {result.get('timestamp', 'N/A')}\nType: {result.get('type', 'N/A')}\nContent: {result.get('content', 'N/A')}"
+                })
+            logging.info(f"Formatted {len(formatted_results)} results for output")
+            return json.dumps(formatted_results, indent=2)
+        except Exception as e:
+            error_message = f"Error performing memory search: {str(e)}"
+            self.log_error(e, error_message)
+            logging.error(error_message)
+            return error_message
 
     def add_message_to_search(self, message):
         self.grep_search.add_message(message)
@@ -374,3 +397,25 @@ class ToolManager:
             return output if output.strip() else "Code executed successfully, but produced no output."
         except Exception as e:
             return f"Error executing code: {str(e)}"
+
+    # For now you can only cd with just the folder names, not the full path. 
+    # I want to do some security measures before allowing full path execution. 
+
+    def execute_command(self, command: str) -> str:
+        try:
+            # Determine if it's a bash command
+            is_bash = command.startswith("bash -c")
+            
+            if is_bash:
+                # For bash commands, use bash explicitly
+                result = subprocess.run(["bash", "-c", command[8:]], capture_output=True, text=True, cwd=self.project_root)
+            else:
+                # For shell commands, use shell=True
+                result = subprocess.run(command, shell=True, capture_output=True, text=True, cwd=self.project_root)
+            
+            if result.returncode == 0:
+                return result.stdout.strip()
+            else:
+                return f"Error: {result.stderr.strip()}"
+        except Exception as e:
+            return f"Error executing command: {str(e)}"

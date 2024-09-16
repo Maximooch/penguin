@@ -15,11 +15,17 @@ class Task:
         self.status = TaskStatus.NOT_STARTED
         self.progress = 0
 
-    def update_progress(self, progress: int):
-        self.progress = progress
-        if progress == 100:
+    def update_progress(self, progress):
+        if isinstance(progress, str):
+            progress = progress.strip().rstrip('%')
+        try:
+            self.progress = int(progress)
+        except ValueError:
+            raise ValueError(f"Invalid progress value: {progress}. Please provide a number or a percentage.")
+        
+        if self.progress == 100:
             self.status = TaskStatus.COMPLETED
-        elif progress > 0:
+        elif self.progress > 0:
             self.status = TaskStatus.IN_PROGRESS
 
     def run(self, chat_function: Callable, message_count: int):

@@ -1,6 +1,5 @@
 from typing import Optional, Tuple, List, Dict, Any
 from core import PenguinCore
-# from agent.automode import Automode
 from agent.task_manager import TaskManager
 from config import MAX_TASK_ITERATIONS, TASK_COMPLETION_PHRASE
 from utils.logs import setup_logger, log_event, logger
@@ -9,7 +8,7 @@ from chat.ui import (
     get_user_input, get_image_path, get_image_prompt,
     TOOL_COLOR, PENGUIN_COLOR
 )
-from colorama import init # type: ignore
+from colorama import init
 import os
 import re
 from config import WORKSPACE_PATH
@@ -20,8 +19,6 @@ from agent.task_utils import create_task, update_task, complete_task, list_tasks
 # Constants
 EXIT_COMMAND = 'exit'
 IMAGE_COMMAND = 'image'
-# AUTOMODE_COMMAND = 'automode'
-# AUTOMODE_CONTINUE_PROMPT = "Continue with the next step. Or STOP by saying 'AUTOMODE_COMPLETE' if you think you've achieved the results established in the original request."
 TASK_COMMAND = 'task'
 RESUME_COMMAND = 'resume'
 
@@ -30,6 +27,7 @@ class ChatManager:
         self.core = core
         self.task_manager = TaskManager(logger)
         self.action_executor = ActionExecutor(self.core.tool_manager, self.task_manager)
+        self.log_files = setup_logger()
 
     def chat_with_penguin(self, user_input: str, message_count: int, image_path: Optional[str] = None, 
         current_iteration: Optional[int] = None, max_iterations: Optional[int] = None,
@@ -60,7 +58,7 @@ class ChatManager:
                 current_task.update_progress(progress)
 
     def handle_task_command(self, user_input: str, message_count: int) -> None:
-        parts = user_input.split(maxsplit=3)
+        parts = user_input.split(maxsplit=2)
         if len(parts) < 2:
             print_bordered_message("Invalid task command. Usage: task [create|run|list|status] [task_name] [task_description]", TOOL_COLOR, "system", message_count)
             return
@@ -69,49 +67,51 @@ class ChatManager:
 
         if action == "list":
             task_board = list_tasks(self.task_manager)
-            task_board_path = os.path.join(WORKSPACE_PATH, "task_board.txt")
-            with open(task_board_path, "w") as f:
-                f.write(task_board)
-            print_bordered_message(f"Task Board:\n{task_board}", TOOL_COLOR, "system", message_count)
+            print_bordered_message(task_board, TOOL_COLOR, "system", message_count)
             return
 
         if len(parts) < 3:
             print_bordered_message("Invalid task command. Usage: task [create|run|status] [task_name] [task_description]", TOOL_COLOR, "system", message_count)
             return
 
-        task_name = parts[2]
+        task_info = parts[2].split(':', 1)
+        task_name = task_info[0].strip()
+        task_description = task_info[1].strip() if len(task_info) > 1 else ""
 
         if action == "create":
-            if len(parts) < 4:
-                print_bordered_message("Invalid task command. Usage: task create [task_name] [task_description]", TOOL_COLOR, "system", message_count)
+            if not task_description:
+                print_bordered_message("Invalid task command. Usage: task create [task_name]: [task_description]", TOOL_COLOR, "system", message_count)
                 return
-            task_description = parts[3]
             task = create_task(self.task_manager, task_name, task_description)
-            task_output_path = os.path.join(WORKSPACE_PATH, f"{task_name}_task.txt")
-            with open(task_output_path, "w") as f:
-                f.write(str(task))
             print_bordered_message(str(task), TOOL_COLOR, "system", message_count)
         elif action == "run":
             task = self.task_manager.get_task_by_name(task_name)
             if task:
                 try:
-                    task_log_path = os.path.join(WORKSPACE_PATH, f"{task_name}_log.txt")
+                    task_log_path = os.path.join(WORKSPACE_PATH, f"{task_name.replace(' ', '_')}_log.txt")
                     with open(task_log_path, "w") as log_file:
                         for current_iteration, max_iterations, response in self.task_manager.run_task(task, self.chat_with_penguin, message_count):
                             progress_msg = f"Task Progress: Iteration {current_iteration}/{max_iterations}"
                             print_bordered_message(progress_msg, TOOL_COLOR, "system", message_count)
                             log_file.write(f"{progress_msg}\n")
+                            log_event(self.log_files, "system", progress_msg)
                             print_bordered_message(f"AI Response:\n{response}", PENGUIN_COLOR, "system", message_count)
                             log_file.write(f"AI Response:\n{response}\n")
+                            log_event(self.log_files, "assistant", response)
                     print_bordered_message(f"Task completed: {task}", TOOL_COLOR, "system", message_count)
+                    log_event(self.log_files, "system", f"Task completed: {task}")
                 except Exception as e:
-                    print_bordered_message(f"Error running task: {str(e)}", TOOL_COLOR, "system", message_count)
+                    error_msg = f"Error running task: {str(e)}"
+                    print_bordered_message(error_msg, TOOL_COLOR, "system", message_count)
+                    log_event(self.log_files, "system", error_msg)
             else:
-                print_bordered_message(f"Task not found: {task_name}", TOOL_COLOR, "system", message_count)
+                not_found_msg = f"Task not found: {task_name}"
+                print_bordered_message(not_found_msg, TOOL_COLOR, "system", message_count)
+                log_event(self.log_files, "system", not_found_msg)
         elif action == "status":
             task = self.task_manager.get_task_by_name(task_name)
             if task:
-                task_status_path = os.path.join(WORKSPACE_PATH, f"{task_name}_status.txt")
+                task_status_path = os.path.join(WORKSPACE_PATH, f"{task_name.replace(' ', '_')}_status.txt")
                 with open(task_status_path, "w") as f:
                     f.write(f"Task Status: {task}")
                 print_bordered_message(f"Task Status: {task}", TOOL_COLOR, "system", message_count)

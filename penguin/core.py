@@ -60,6 +60,7 @@ from utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnosti
 # from agent.automode import Automode
 from agent.task_manager import TaskManager
 from agent.task import Task, TaskStatus
+from system.file_manager import FileManager
 import logging
 import os
 import traceback
@@ -76,6 +77,8 @@ logger.setLevel(logging.DEBUG)
 class PenguinCore:
     def __init__(self, api_client: APIClient, tool_manager: ToolManager):
         # Initialize PenguinCore with API client and tool manager
+        self.os_name = os.name
+        # print(f"OS Name: {self.os_name}")  # Add this line for debugging
         self.api_client = api_client
         self.tool_manager = tool_manager
         self.automode = False
@@ -87,6 +90,7 @@ class PenguinCore:
         self.task_manager = TaskManager(self.logger)
         self.action_executor = ActionExecutor(self.tool_manager, self.task_manager)
         self.diagnostics = diagnostics  # Initialize diagnostics
+        self.file_manager = FileManager()
         
 
     def set_system_prompt(self, prompt: str) -> None:
@@ -108,8 +112,13 @@ class PenguinCore:
         notes_str = "\n".join([f"{note['category']}: {note['content']}" for note in declarative_notes])
         self.logger.debug(f"Formatted notes string: {notes_str}")
         
-        system_message = f"{self.system_prompt}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
+        os_info = f"You are running on {self.os_name}, use the appropriate commands for your OS."
+        # print(f"Debug - OS Info: {os_info}")  # Add this line for debugging
+        
+        system_message = f"{self.system_prompt}\n\n{os_info}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
         self.logger.debug(f"Generated system message: {system_message}")
+        
+        # print(f"Debug - Full System Message:\n{system_message}")  # Add this line for debugging
         
         current_task = self.task_manager.get_current_task()
         if current_task:
@@ -148,6 +157,9 @@ class PenguinCore:
                     current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> Tuple[str, bool]:
         try:
             self._prepare_conversation(user_input, image_path)
+            
+            # Add this line to include OS info in each API call
+            self.add_message("system", f"You are running on {self.os_name}, use the appropriate commands for your OS.")
             
             # Construct and send API request
             response = self.api_client.create_message(
@@ -302,8 +314,8 @@ class PenguinCore:
             return "\nI encountered an error while processing the tool results. Please try again."
 
     def execute_tool(self, tool_name: str, tool_input: Any) -> Any:
-        # Execute a tool using the tool manager
-        # This is a public method that allows direct tool execution
+        if tool_name == "execute_command":
+            return self.file_manager.execute_command(tool_input)
         return self.tool_manager.execute_tool(tool_name, tool_input)
 
     def create_task(self, description: str) -> Task:
@@ -317,11 +329,6 @@ class PenguinCore:
 
     def get_task_by_description(self, description: str) -> Optional[Task]:
         return self.task_manager.get_task_by_description(description)
-
-    # def run_automode(self, user_input: str, message_count: int, chat_function: Callable, conversation_history: List[Dict[str, Any]]) -> None:
-    #     automode = Automode(self.logger, MAX_CONTINUATION_ITERATIONS)
-    #     automode.start(user_input, message_count, chat_function, conversation_history)
-    #     self.reset_state()
 
     def enable_diagnostics(self) -> None:
         from config import Config
@@ -342,4 +349,5 @@ class PenguinCore:
         self.system_prompt_sent = False
         self.clear_history()
         self.task_manager = TaskManager(self.logger)
+        self.file_manager = FileManager()
         logger.info("PenguinCore state reset")
