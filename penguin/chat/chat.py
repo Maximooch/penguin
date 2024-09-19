@@ -14,12 +14,13 @@ import re
 from config import WORKSPACE_PATH
 from agent.task import TaskStatus
 from utils.parser import parse_action, ActionExecutor
-from agent.task_utils import create_task, update_task, complete_task, list_tasks
+from agent.task_utils import create_task, update_task, complete_task, list_tasks, list_projects
 
 # Constants
 EXIT_COMMAND = 'exit'
 IMAGE_COMMAND = 'image'
 TASK_COMMAND = 'task'
+PROJECT_COMMAND = 'project'
 RESUME_COMMAND = 'resume'
 
 class ChatManager:
@@ -70,21 +71,18 @@ class ChatManager:
             print_bordered_message(task_board, TOOL_COLOR, "system", message_count)
             return
 
-        if len(parts) < 3:
+        if len(parts) < 3 and action != "list":
             print_bordered_message("Invalid task command. Usage: task [create|run|status] [task_name] [task_description]", TOOL_COLOR, "system", message_count)
             return
 
-        task_info = parts[2].split(':', 1)
-        task_name = task_info[0].strip()
-        task_description = task_info[1].strip() if len(task_info) > 1 else ""
-
         if action == "create":
-            if not task_description:
-                print_bordered_message("Invalid task command. Usage: task create [task_name]: [task_description]", TOOL_COLOR, "system", message_count)
-                return
+            task_info = parts[2].split(maxsplit=1)
+            task_name = task_info[0]
+            task_description = task_info[1] if len(task_info) > 1 else ""
             task = create_task(self.task_manager, task_name, task_description)
             print_bordered_message(str(task), TOOL_COLOR, "system", message_count)
         elif action == "run":
+            task_name = parts[2]
             task = self.task_manager.get_task_by_name(task_name)
             if task:
                 try:
@@ -109,16 +107,44 @@ class ChatManager:
                 print_bordered_message(not_found_msg, TOOL_COLOR, "system", message_count)
                 log_event(self.log_files, "system", not_found_msg)
         elif action == "status":
+            task_name = parts[2]
             task = self.task_manager.get_task_by_name(task_name)
             if task:
-                task_status_path = os.path.join(WORKSPACE_PATH, f"{task_name.replace(' ', '_')}_status.txt")
-                with open(task_status_path, "w") as f:
-                    f.write(f"Task Status: {task}")
-                print_bordered_message(f"Task Status: {task}", TOOL_COLOR, "system", message_count)
+                status_message = f"Task Status: {task}"
+                print_bordered_message(status_message, TOOL_COLOR, "system", message_count)
             else:
                 print_bordered_message(f"Task not found: {task_name}", TOOL_COLOR, "system", message_count)
         else:
             print_bordered_message(f"Unknown task action: {action}", TOOL_COLOR, "system", message_count)
+
+    def handle_project_command(self, user_input: str, message_count: int) -> None:
+        parts = user_input.split(maxsplit=2)
+        if len(parts) < 2:
+            print_bordered_message("Invalid project command. Usage: project [status|list] [project_name]", TOOL_COLOR, "system", message_count)
+            return
+
+        action = parts[1]
+
+        if action == "list":
+            project_board = list_projects(self.task_manager)
+            print_bordered_message(project_board, TOOL_COLOR, "system", message_count)
+            return
+
+        if len(parts) < 3 and action != "list":
+            print_bordered_message("Invalid project command. Usage: project [status] [project_name]", TOOL_COLOR, "system", message_count)
+            return
+
+        if action == "status":
+            project_name = parts[2]
+            try:
+                status_message = self.action_executor.project_details(project_name)
+                print_bordered_message(status_message, TOOL_COLOR, "system", message_count)
+            except Exception as e:
+                error_message = f"Error retrieving project status: {str(e)}"
+                print_bordered_message(error_message, TOOL_COLOR, "system", message_count)
+                self.logger.error(error_message)
+        else:
+            print_bordered_message(f"Unknown project action: {action}", TOOL_COLOR, "system", message_count)
 
     def run_chat(self) -> None:
         log_file = setup_logger()
@@ -142,6 +168,8 @@ class ChatManager:
                     self.handle_image_input(message_count, log_file)
                 elif user_input.lower().startswith(TASK_COMMAND):
                     self.handle_task_command(user_input, message_count)
+                elif user_input.lower().startswith(PROJECT_COMMAND):
+                    self.handle_project_command(user_input, message_count)
                 elif user_input.lower() == RESUME_COMMAND:
                     self.handle_resume(message_count, log_file)
                 else:

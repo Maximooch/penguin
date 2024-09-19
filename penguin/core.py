@@ -60,6 +60,7 @@ from utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnosti
 # from agent.automode import Automode
 from agent.task_manager import TaskManager
 from agent.task import Task, TaskStatus
+from agent.project import Project, ProjectStatus
 from system.file_manager import FileManager
 import logging
 import os
@@ -69,6 +70,7 @@ from config import Config
 import json
 import re
 from workspace import get_workspace_path, write_workspace_file
+from agent.task_utils import create_project, get_project_details
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -91,6 +93,7 @@ class PenguinCore:
         self.action_executor = ActionExecutor(self.tool_manager, self.task_manager)
         self.diagnostics = diagnostics  # Initialize diagnostics
         self.file_manager = FileManager()
+        self.current_project: Optional[Project] = None
         
 
     def set_system_prompt(self, prompt: str) -> None:
@@ -126,6 +129,13 @@ class PenguinCore:
             system_message += f"\n\n{task_info}"
         else:
             system_message += "\n\nNo current task."
+
+        current_project = self.task_manager.get_current_project()
+        if current_project:
+            project_info = f"Current Project: {current_project.name} - Status: {current_project.status.value} - Progress: {current_project.progress:.2f}%"
+        else:
+            project_info = "No current project."
+        system_message += f"\n\nCurrent Project Information:\n{project_info}"
 
         return system_message
 
@@ -204,6 +214,16 @@ class PenguinCore:
                     # This is a naive implementation and should be improved
                     progress = int(re.search(r'\d+', assistant_response).group())
                     current_task.update_progress(progress)
+            
+            current_project = self.task_manager.get_current_project()
+            if current_project and current_project.status == TaskStatus.IN_PROGRESS:
+                # Update project progress based on the response
+                if "project completed" in assistant_response.lower():
+                    current_project.update_progress(100)
+                elif "project progress" in assistant_response.lower():
+                    # Extract progress percentage from the response
+                    progress = int(re.search(r'\d+', assistant_response).group())
+                    current_project.update_progress(progress)
             
             return assistant_response, exit_continuation
         
@@ -329,6 +349,21 @@ class PenguinCore:
 
     def get_task_by_description(self, description: str) -> Optional[Task]:
         return self.task_manager.get_task_by_description(description)
+
+    def create_project(self, name: str, description: str) -> Project:
+        return self.task_manager.create_project(name, description)
+
+    def run_project(self, project: Project) -> None:
+        self.task_manager.run_project(project, self.get_response)
+
+    def complete_project(self, project_name: str) -> str:
+        return self.task_manager.complete_project(project_name)
+
+    def get_project_board(self) -> str:
+        return self.task_manager.get_project_board()
+
+    def get_project_by_name(self, name: str) -> Optional[Project]:
+        return self.task_manager.get_project_by_name(name)
 
     def enable_diagnostics(self) -> None:
         from config import Config
