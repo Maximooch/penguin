@@ -1,30 +1,80 @@
-from typing import List
-from .task import Task, TaskStatus
+from typing import List, Dict, Any, Optional
+from .task import Task
 import logging
+from enum import Enum
+
+class ProjectStatus(Enum):
+    NOT_STARTED = "not_started"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+
 
 class Project:
-    def __init__(self, name: str, description: str, logger: logging.Logger):
+    def __init__(self, id: str, name: str, description: str, logger: logging.Logger):
+        self.id = id
         self.name = name
         self.description = description
-        self.logger = logger
-        self.tasks: List[Task] = []
-        self.status = TaskStatus.NOT_STARTED
+        self.task_ids: List[str] = []
+        self.status = ProjectStatus.NOT_STARTED  # Use ProjectStatus here
         self.progress = 0
+        self.logger = logger
 
-    def add_task(self, task: Task) -> None:
-        self.tasks.append(task)
+    def add_task(self, task: Task):
+        self.task_ids.append(task.id)
+        self.logger.info(f"Task {task.name} added to project {self.name}")
+
+    def remove_task(self, task_id: str) -> None:
+        if task_id in self.task_ids:
+            self.task_ids.remove(task_id)
+
+    def get_task_ids(self) -> List[str]:
+        return self.task_ids
 
     def update_progress(self) -> None:
-        if not self.tasks:
+        # This method should be called by TaskManager after updating tasks
+        if not self.task_ids:
+            self.progress = 0.0
+            self.status = ProjectStatus.NOT_STARTED
             return
-        
-        completed_tasks = sum(1 for task in self.tasks if task.status == TaskStatus.COMPLETED)
-        self.progress = (completed_tasks / len(self.tasks)) * 100
-        
-        if self.progress == 100:
-            self.status = TaskStatus.COMPLETED
-        elif self.progress > 0:
-            self.status = TaskStatus.IN_PROGRESS
 
-    def __str__(self) -> str:
-        return f"Project: {self.name} - Status: {self.status.value} - Progress: {self.progress:.2f}%"
+        total_progress = sum(task.progress for task in self.get_tasks())
+        self.progress = total_progress / len(self.task_ids)
+
+        if self.progress == 100:
+            self.status = ProjectStatus.COMPLETED
+        elif self.progress > 0:
+            self.status = ProjectStatus.IN_PROGRESS
+        else:
+            self.status = ProjectStatus.NOT_STARTED
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "task_ids": self.task_ids,
+            "status": self.status.value,  # Serialize status as its value
+            "progress": self.progress,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any], logger: logging.Logger) -> 'Project':
+        project = cls(
+            id=data["id"],
+            name=data["name"],
+            description=data["description"],
+            logger=logger
+        )
+        project.task_ids = data.get("task_ids", [])
+        # Convert status string back to ProjectStatus Enum
+        status_str = data.get("status", ProjectStatus.NOT_STARTED.value)
+        project.status = ProjectStatus(status_str)
+        project.progress = data.get("progress", 0)
+        return project
+
+    def __str__(self):
+        return f"Project: {self.name} - {self.description} - Status: {self.status.value} - Progress: {self.progress:.2f}%"
+
+    def get_tasks(self, task_manager) -> List[Task]:
+        return [task_manager.get_task_by_id(task_id) for task_id in self.task_ids]
+
