@@ -53,10 +53,13 @@ class CodeActAction:
         self.params = params
 
 def parse_action(content: str) -> List[CodeActAction]:
-    actions = []
+    # Split content into action commands and the rest
+    action_section, _, _ = content.partition("Executing these actions now.")
     pattern = r'<(\w+)>(.*?)</\1>'
-    matches = re.finditer(pattern, content, re.DOTALL)
+    matches = re.finditer(pattern, action_section, re.DOTALL)
     
+    actions = []  # Initialize the actions list
+
     for match in matches:
         action_type = match.group(1).lower()
         params = unescape(match.group(2).strip())
@@ -157,63 +160,61 @@ class ActionExecutor:
         
         subtask = self.task_manager.add_subtask(parent_task_name, subtask_name, subtask_description)
         if subtask:
+            self.task_manager.save_tasks()  # Add this line
             return f"Subtask created: {subtask}"
         else:
             return f"Parent task not found: {parent_task_name}"
 
     def _execute_task_create(self, params: str) -> str:
-      parts = params.split(":", 1)
-      if len(parts) < 2:
-          return "Error: Invalid arguments for task_create. Expected format: TaskName: TaskDescription"
-      task_name = parts[0].strip()
-      task_description = parts[1].strip()
-      task = self.task_manager.create_task(task_name, task_description)
-      if task:
-          return f"Task created: {task}"
-      else:
-          return f"Error creating task: {task_name}"
+        parts = params.split(":", 1)
+        if len(parts) < 2:
+            return "Error: Invalid arguments for task_create. Expected format: TaskName: TaskDescription"
+        task_name = parts[0].strip()
+        task_description = parts[1].strip()
+        task = self.task_manager.create_task(task_name, task_description)
+        if task:
+            self.task_manager.save_tasks()  # Add this line
+            return f"Task created: {task}"
+        else:
+            return f"Error creating task: {task_name}"
 
     def _execute_task_update(self, params: str) -> str:
-      parts = params.split(":", 1)
-      if len(parts) < 2:
-          return "Error: Invalid arguments for task_update. Expected format: TaskName: Progress"
-      task_name = parts[0].strip()
-      try:
-          progress = int(parts[1].strip())
-      except ValueError:
-          return "Error: Progress must be an integer."
-      return self.task_manager.update_task_by_name(task_name, progress)
+        parts = params.split(":", 1)
+        if len(parts) < 2:
+            return "Error: Invalid arguments for task_update. Expected format: TaskName: Progress"
+        task_name = parts[0].strip()
+        try:
+            progress = int(parts[1].strip())
+        except ValueError:
+            return "Error: Progress must be an integer."
+        result = self.task_manager.update_task_by_name(task_name, progress)
+        self.task_manager.save_tasks()  # Add this line
+        return result
 
     def _execute_task_complete(self, params: str) -> str:
-      task_name = params.strip()
-      return self.task_manager.complete_task(task_name)
+        task_name = params.strip()
+        result = self.task_manager.complete_task(task_name)
+        self.task_manager.save_tasks()  # Add this line
+        return result
 
     def _execute_project_create(self, params: str) -> str:
-      parts = params.split(":", 1)
-      if len(parts) < 2:
-          return "Error: Invalid arguments for project_create. Expected format: ProjectName: ProjectDescription"
-      project_name = parts[0].strip()
-      project_description = parts[1].strip()
-      return self.task_manager.create_project(project_name, project_description)
+        parts = params.split(":", 1)
+        if len(parts) < 2:
+            return "Error: Invalid arguments for project_create. Expected format: ProjectName: ProjectDescription"
+        project_name = parts[0].strip()
+        project_description = parts[1].strip()
+        project = self.task_manager.create_project(project_name, project_description)
+        if project:
+            self.task_manager.save_tasks()  # Add this line
+            return f"Project created: {project}"
+        else:
+            return f"Error creating project: {project_name}"
 
     def _execute_project_complete(self, params: str) -> str:
-           project_name = params.strip()
-           return self.task_manager.complete_project(project_name)
+        project_name = params.strip()
+        result = self.task_manager.complete_project(project_name)
+        self.task_manager.save_tasks()  # Add this line
+        return result
 
     def project_details(self, project_name: str) -> str:
         return self.task_manager.get_project_details(project_name)
-
-    # def project_details(self, project_name: str) -> str:
-    #     project = self.task_manager.get_project_by_name(project_name)
-    #     if project:
-    #         logger.debug(f"Project found: {project.name}, Attributes: {vars(project)}")
-    #         try:
-    #             tasks = [self.task_manager.get_task(task_id) for task_id in project.task_ids]
-    #             task_details = "\n".join([f"- {task.name}: {task.status.value}" for task in tasks if task])
-    #             return f"Project: {project.name}\nDescription: {project.description}\nStatus: {project.status.value}\nProgress: {project.progress:.0f}%\nTasks:\n{task_details}"
-    #         except AttributeError as e:
-    #             error_message = f"Error accessing project attributes: {str(e)}"
-    #             logger.error(error_message)
-    #             return error_message
-    #     else:
-    #         return f"Project not found: {project_name}"

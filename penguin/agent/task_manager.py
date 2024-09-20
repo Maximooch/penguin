@@ -41,6 +41,12 @@ class TaskManager:
     def get_task(self, task_id: str) -> Optional[Task]:
         return self.tasks.get(task_id)
 
+    def add_task_to_project(self, project: Project, task: Task):
+        project.add_task(task)
+        task.project_id = project.id
+        # Ensure to save tasks after modifying
+        self.save_tasks()
+
     def get_project(self, project_id: str) -> Optional[Project]:
         return self.projects.get(project_id)
 
@@ -210,7 +216,16 @@ class TaskManager:
            return f"Project not found: {project_name}"
 
     def complete_project(self, project_name: str) -> str:
-           return self.update_project_status(project_name, ProjectStatus.COMPLETED)
+      project = self.get_project_by_name(project_name)
+      if project:
+          project.status = ProjectStatus.COMPLETED
+          project.progress = 100
+          self.save_tasks()  # Save changes
+          return f"Project completed: {project}"
+      return f"Project not found: {project_name}"
+
+    # def complete_project(self, project_name: str) -> str:
+    #        return self.update_project_status(project_name, ProjectStatus.COMPLETED)
 
     # def update_project_status(self, project_name: str, status: TaskStatus) -> str:
     #     project = self.get_project_by_name(project_name)
