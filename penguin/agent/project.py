@@ -4,9 +4,9 @@ import logging
 from enum import Enum
 
 class ProjectStatus(Enum):
-    NOT_STARTED = "not_started"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
+    NOT_STARTED = "Not_Started"
+    IN_PROGRESS = "In_Progress"
+    COMPLETED = "Completed"
 
 
 class Project:
@@ -59,18 +59,22 @@ class Project:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any], logger: logging.Logger) -> 'Project':
-        project = cls(
-            id=data["id"],
-            name=data["name"],
-            description=data["description"],
-            logger=logger
-        )
-        project.task_ids = data.get("task_ids", [])
-        # Convert status string back to ProjectStatus Enum
-        status_str = data.get("status", ProjectStatus.NOT_STARTED.value)
-        project.status = ProjectStatus(status_str)
-        project.progress = data.get("progress", 0)
-        return project
+       project = cls(
+           id=data["id"],
+           name=data["name"],
+           description=data["description"],
+           logger=logger
+       )
+       project.task_ids = data.get("task_ids", [])
+       status_str = data.get("status", ProjectStatus.NOT_STARTED.value)
+       for status in ProjectStatus:
+           if status.value.lower() == status_str.lower():
+               project.status = status
+               break
+       else:
+           raise ValueError(f"Invalid ProjectStatus: {status_str}")
+       project.progress = data.get("progress", 0)
+       return project
 
     def __str__(self):
         return f"Project: {self.name} - {self.description} - Status: {self.status.value} - Progress: {self.progress:.2f}%"

@@ -41,18 +41,23 @@ class Task:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Task':
-        task = cls(
-            id=data["id"],
-            name=data["name"],
-            description=data["description"],
-            project_id=data.get("project_id"),
-            parent_id=data.get("parent_id")
-        )
-        task.status = TaskStatus(data["status"])
-        task.progress = data["progress"]
-        # Load subtasks if present
-        task.subtasks = [cls.from_dict(subtask_data) for subtask_data in data.get("subtasks", [])]
-        return task
+       task = cls(
+           id=data["id"],
+           name=data["name"],
+           description=data["description"],
+           project_id=data.get("project_id"),
+           parent_id=data.get("parent_id")
+       )
+       status_str = data.get("status", TaskStatus.NOT_STARTED.value)
+       for status in TaskStatus:
+           if status.value.lower() == status_str.lower():
+               task.status = status
+               break
+       else:
+           raise ValueError(f"Invalid TaskStatus: {status_str}")
+       task.progress = data.get("progress", 0)
+       task.subtasks = [cls.from_dict(subtask_data) for subtask_data in data.get("subtasks", [])]
+       return task
 
     def add_subtask(self, subtask: 'Task'):
         self.subtasks.append(subtask)

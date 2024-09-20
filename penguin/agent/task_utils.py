@@ -6,15 +6,18 @@ import os
 
 def create_task(task_manager: TaskManager, name: str, description: str, project_name: Optional[str] = None) -> str:
     task = task_manager.create_task(name.strip(), description)
-    task_manager.save_tasks()  # Add this line
     if project_name:
         project = task_manager.get_project_by_name(project_name)
         if project:
             task_manager.add_task_to_project(project, task)
+            task_manager.save_tasks()  # Moved here
             return f"Task created and added to project '{project_name}': {task}"
         else:
+            task_manager.save_tasks()  # Ensure task is saved even if project isn't found
             return f"Task created, but project '{project_name}' not found: {task}"
-    return f"Task created: {task}"
+    else:
+        task_manager.save_tasks()  # Save the task when no project is specified
+        return f"Task created: {task}"
 
 def create_project(task_manager: TaskManager, name: str, description: str) -> str:
     project = task_manager.create_project(name.strip(), description)
