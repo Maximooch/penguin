@@ -45,7 +45,6 @@ Private Methods:
     _get_final_response() -> str: Gets a final response from the AI model after tool use.
 """
 
-
 # Import necessary modules and types
 from typing import List, Optional, Tuple, Dict, Any, Callable
 from llm import APIClient
@@ -54,10 +53,8 @@ from llm.model_config import ModelConfig
 from tools.tool_manager import ToolManager
 from utils.parser import parse_action, ActionExecutor
 
-
 from config import TASK_COMPLETION_PHRASE, MAX_TASK_ITERATIONS
 from utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnostics
-# from agent.automode import Automode
 from agent.task_manager import TaskManager
 from agent.task import Task, TaskStatus
 from agent.project import Project, ProjectStatus
@@ -94,7 +91,6 @@ class PenguinCore:
         self.diagnostics = diagnostics  # Initialize diagnostics
         self.file_manager = FileManager()
         self.current_project: Optional[Project] = None
-        
 
     def set_system_prompt(self, prompt: str) -> None:
         # Set the system prompt and mark it as not sent
@@ -189,7 +185,7 @@ class PenguinCore:
                 assistant_response += f"\n{result}"
             
             # Handle tool use if present in the response
-            if hasattr(response.choices[0].message, 'tool_calls'):
+            if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
                 for tool_call in response.choices[0].message.tool_calls:
                     tool_result = self._handle_tool_use(tool_call)
                     assistant_response += f"\n{tool_result}"
