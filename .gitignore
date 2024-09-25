@@ -7,6 +7,9 @@ hold/
 __pycache__/
 *.py[cod]
 
+# Embeddings
+embeddings/
+
 # Environment variables
 .env
 
