@@ -5,6 +5,12 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 from sentence_transformers import SentenceTransformer
+import scipy.sparse
+import pickle
+import logging
+from threading import Lock
+
+logger = logging.getLogger(__name__)
 
 class MemorySearch:
     """
@@ -19,18 +25,18 @@ class MemorySearch:
         """
         self.log_dir = log_dir
         self.logs = self.load_logs()
+        self.lock = Lock()
         
         if not self.logs:
-            print("No logs found. MemorySearch initialized with empty data.")
+            logger.warning("No logs found. MemorySearch initialized with empty data.")
             self.tfidf_vectorizer = TfidfVectorizer()
             self.tfidf_matrix = None
-            self.model = SentenceTransformer('paraphrase-MiniLM-L3-v2')
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')
             self.embeddings = None
         else:
-            self.tfidf_vectorizer = TfidfVectorizer()
-            self.tfidf_matrix = self.tfidf_vectorizer.fit_transform([log['content'] for log in self.logs])
-            self.model = SentenceTransformer('paraphrase-MiniLM-L3-v2')
-            self.embeddings = self.compute_embeddings()
+            self.load_models()
+            if self.tfidf_matrix is None or self.embeddings is None:
+                self.initialize_models()
 
     def load_logs(self) -> List[Dict[str, Any]]:
         """
@@ -45,10 +51,44 @@ class MemorySearch:
                     with open(os.path.join(self.log_dir, filename), 'r') as f:
                         logs.extend(json.load(f))
         except FileNotFoundError:
-            print(f"Log directory '{self.log_dir}' not found.")
+            logger.warning(f"Log directory '{self.log_dir}' not found.")
         except Exception as e:
-            print(f"Error loading logs: {e}")
+            logger.error(f"Error loading logs: {e}")
         return logs
+
+    def load_models(self):
+        """
+        Load serialized models and data from disk.
+        """
+        try:
+            with open('tfidf_vectorizer.pkl', 'rb') as f:
+                self.tfidf_vectorizer = pickle.load(f)
+            self.tfidf_matrix = scipy.sparse.load_npz('tfidf_matrix.npz')
+            self.embeddings = np.load('embeddings.npy', mmap_mode='r')
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            logger.info("Models loaded successfully.")
+        except FileNotFoundError:
+            logger.info("No saved models found. Initializing new models.")
+            self.initialize_models()
+
+    def initialize_models(self):
+        """
+        Initialize models when no saved data is available.
+        """
+        self.tfidf_vectorizer = TfidfVectorizer()
+        self.tfidf_matrix = self.tfidf_vectorizer.fit_transform([log['content'] for log in self.logs])
+        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.embeddings = self.compute_embeddings()
+
+    def save_models(self):
+        """
+        Save models and data to disk.
+        """
+        with open('tfidf_vectorizer.pkl', 'wb') as f:
+            pickle.dump(self.tfidf_vectorizer, f)
+        scipy.sparse.save_npz('tfidf_matrix.npz', self.tfidf_matrix)
+        np.save('embeddings.npy', self.embeddings)
+        logger.info("Models saved successfully.")
 
     def compute_embeddings(self) -> np.ndarray:
         """
@@ -69,7 +109,7 @@ class MemorySearch:
         :return: List of top k matching log entries
         """
         if self.tfidf_matrix is None:
-            print("No logs available for keyword search.")
+            logger.warning("No logs available for keyword search.")
             return []
         
         query_vec = self.tfidf_vectorizer.transform([query])
@@ -86,7 +126,7 @@ class MemorySearch:
         :return: List of top k matching log entries
         """
         if self.embeddings is None:
-            print("No logs available for semantic search.")
+            logger.warning("No logs available for semantic search.")
             return []
         
         query_embedding = self.model.encode([query])
@@ -103,25 +143,21 @@ class MemorySearch:
         :return: List of top k matching log entries
         """
         if self.tfidf_matrix is None or self.embeddings is None:
-            print("No logs available for combined search.")
+            logger.warning("No logs available for combined search.")
             return []
         
-        keyword_results = self.keyword_search(query, k)
-        semantic_results = self.semantic_search(query, k)
+        keyword_scores = cosine_similarity(self.tfidf_vectorizer.transform([query]), self.tfidf_matrix)[0]
+        semantic_scores = cosine_similarity(self.model.encode([query]), self.embeddings)[0]
         
-        # Combine results, giving priority to keyword results
-        combined_results = keyword_results.copy()
+        # Normalize scores
+        keyword_scores = (keyword_scores - np.min(keyword_scores)) / (np.max(keyword_scores) - np.min(keyword_scores))
+        semantic_scores = (semantic_scores - np.min(semantic_scores)) / (np.max(semantic_scores) - np.min(semantic_scores))
         
-        # Add semantic results if they're not already in the combined results
-        for result in semantic_results:
-            if not any(r.get('id') == result.get('id') for r in combined_results):
-                combined_results.append(result)
+        # Combine scores with equal weighting
+        combined_scores = 0.5 * keyword_scores + 0.5 * semantic_scores
         
-        # Sort combined results by relevance score (assuming higher is better)
-        combined_results.sort(key=lambda x: x.get('relevance', 0), reverse=True)
-        
-        # Return top k results
-        return combined_results[:k]
+        top_k_indices = combined_scores.argsort()[-k:][::-1]
+        return [self.logs[i] for i in top_k_indices]
 
     def add_log(self, log: Dict[str, Any]):
         """
@@ -129,9 +165,19 @@ class MemorySearch:
 
         :param log: New log entry to add
         """
-        # Add new log to the list
-        self.logs.append(log)
-        # Update TF-IDF matrix
-        self.tfidf_matrix = self.tfidf_vectorizer.fit_transform([log['content'] for log in self.logs])
-        # Update embeddings
-        self.embeddings = np.vstack([self.embeddings, self.model.encode([log['content']])])
+        with self.lock:
+            # Add new log to the list
+            self.logs.append(log)
+            
+            # Update TF-IDF matrix incrementally
+            new_tfidf_vec = self.tfidf_vectorizer.transform([log['content']])
+            self.tfidf_matrix = scipy.sparse.vstack([self.tfidf_matrix, new_tfidf_vec])
+            
+            # Update embeddings incrementally
+            new_embedding = self.model.encode([log['content']])
+            self.embeddings = np.vstack([self.embeddings, new_embedding])
+            
+            # Save updated models
+            self.save_models()
+            
+        logger.info(f"New log entry added and models updated.")
