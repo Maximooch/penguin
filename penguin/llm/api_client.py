@@ -23,7 +23,9 @@ class APIClient:
         self.system_prompt = None
         self.adapter = get_provider_adapter(model_config.provider, model_config)
         self.api_key = os.getenv(f"{model_config.provider.upper()}_API_KEY")
-        self.max_history_tokens = model_config.max_history_tokens or 1000
+        self.max_history_tokens = model_config.max_history_tokens or 200000 
+        # TODO: Make this dynamic based on max_tokens in model_config
+        # TODO: Better handling of truncation/chunking
         self.logger = logging.getLogger(__name__)
 
     def set_system_prompt(self, prompt):
