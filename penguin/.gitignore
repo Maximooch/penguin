@@ -1,10 +1,12 @@
-
 # Junkdrawer
 junkdrawer/
 
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Embeddings
+embeddings/
 
 # Environment variables
 .env

@@ -8,7 +8,9 @@ from sentence_transformers import SentenceTransformer
 import scipy.sparse
 import pickle
 import logging
-from threading import Lock
+from threading import Lock, Event, Thread
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -17,26 +19,50 @@ class MemorySearch:
     A class for searching and managing log entries using both keyword and semantic search methods.
     """
 
-    def __init__(self, log_dir: str = 'logs'):
+    def __init__(self, log_dir: str = 'logs', embeddings_dir: str = 'penguin\\embeddings'):
         """
-        Initialize the MemorySearch object.
-
-        :param log_dir: Directory where log files are stored
+        Initialize the MemorySearch object without loading logs or models.
+        Start the background initialization thread.
         """
         self.log_dir = log_dir
-        self.logs = self.load_logs()
+        self.embeddings_dir = embeddings_dir
+        self.logs = None  # Defer loading
         self.lock = Lock()
-        
-        if not self.logs:
-            logger.warning("No logs found. MemorySearch initialized with empty data.")
-            self.tfidf_vectorizer = TfidfVectorizer()
-            self.tfidf_matrix = None
-            self.model = SentenceTransformer('all-MiniLM-L6-v2')
-            self.embeddings = None
-        else:
+        self.tfidf_vectorizer = None
+        self.tfidf_matrix = None
+        self.model = None
+        self.embeddings = None
+        self.initialization_complete = Event()
+        Thread(target=self.background_initialize, daemon=True).start()
+
+    def background_initialize(self):
+        self.ensure_logs_loaded()
+        self.ensure_models_loaded()
+        self.save_models()
+        self.initialization_complete.set()
+
+    def wait_for_initialization(self):
+        """
+        Wait until the logs and models are fully initialized.
+        """
+        if not self.initialization_complete.is_set():
+            logger.info("Initializing models, please wait...")
+            self.initialization_complete.wait()
+
+    def ensure_logs_loaded(self):
+        if self.logs is None:
+            self.logs = self.load_logs()
+
+    def ensure_models_loaded(self):
+        if self.tfidf_vectorizer is None or self.tfidf_matrix is None:
+            self.load_or_initialize_models()
+
+    def load_or_initialize_models(self):
+        # Try to load models
+        try:
             self.load_models()
-            if self.tfidf_matrix is None or self.embeddings is None:
-                self.initialize_models()
+        except FileNotFoundError:
+            self.initialize_models()
 
     def load_logs(self) -> List[Dict[str, Any]]:
         """
@@ -61,15 +87,22 @@ class MemorySearch:
         Load serialized models and data from disk.
         """
         try:
-            with open('tfidf_vectorizer.pkl', 'rb') as f:
+            if not os.path.exists(self.embeddings_dir):
+                logger.info(f"Embeddings directory {self.embeddings_dir} does not exist. Initializing new models.")
+                raise FileNotFoundError
+
+            with open(os.path.join(self.embeddings_dir, 'tfidf_vectorizer.pkl'), 'rb') as f:
                 self.tfidf_vectorizer = pickle.load(f)
-            self.tfidf_matrix = scipy.sparse.load_npz('tfidf_matrix.npz')
-            self.embeddings = np.load('embeddings.npy', mmap_mode='r')
+            self.tfidf_matrix = scipy.sparse.load_npz(os.path.join(self.embeddings_dir, 'tfidf_matrix.npz'))
+            self.embeddings = np.load(os.path.join(self.embeddings_dir, 'embeddings.npy'), mmap_mode='r')
             self.model = SentenceTransformer('all-MiniLM-L6-v2')
             logger.info("Models loaded successfully.")
         except FileNotFoundError:
             logger.info("No saved models found. Initializing new models.")
-            self.initialize_models()
+            raise
+        except Exception as e:
+            logger.error(f"Error loading models: {e}")
+            raise
 
     def initialize_models(self):
         """
@@ -84,10 +117,11 @@ class MemorySearch:
         """
         Save models and data to disk.
         """
-        with open('tfidf_vectorizer.pkl', 'wb') as f:
+        os.makedirs(self.embeddings_dir, exist_ok=True)
+        with open(os.path.join(self.embeddings_dir, 'tfidf_vectorizer.pkl'), 'wb') as f:
             pickle.dump(self.tfidf_vectorizer, f)
-        scipy.sparse.save_npz('tfidf_matrix.npz', self.tfidf_matrix)
-        np.save('embeddings.npy', self.embeddings)
+        scipy.sparse.save_npz(os.path.join(self.embeddings_dir, 'tfidf_matrix.npz'), self.tfidf_matrix)
+        np.save(os.path.join(self.embeddings_dir, 'embeddings.npy'), self.embeddings)
         logger.info("Models saved successfully.")
 
     def compute_embeddings(self) -> np.ndarray:
@@ -108,6 +142,9 @@ class MemorySearch:
         :param k: Number of top results to return
         :return: List of top k matching log entries
         """
+        self.wait_for_initialization()
+        self.ensure_logs_loaded()
+        self.ensure_models_loaded()
         if self.tfidf_matrix is None:
             logger.warning("No logs available for keyword search.")
             return []
@@ -125,6 +162,9 @@ class MemorySearch:
         :param k: Number of top results to return
         :return: List of top k matching log entries
         """
+        self.wait_for_initialization()
+        self.ensure_logs_loaded()
+        self.ensure_models_loaded()
         if self.embeddings is None:
             logger.warning("No logs available for semantic search.")
             return []
@@ -142,6 +182,7 @@ class MemorySearch:
         :param k: Number of top results to return
         :return: List of top k matching log entries
         """
+        self.wait_for_initialization()
         if self.tfidf_matrix is None or self.embeddings is None:
             logger.warning("No logs available for combined search.")
             return []
