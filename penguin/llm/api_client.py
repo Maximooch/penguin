@@ -49,7 +49,8 @@ class APIClient:
             }
 
             # Remove None values
-            completion_params = {k: v for k, v in completion_params.items() if v is not None}
+            completion_params = {k: v for k, v in completion_params.items() if v is not None} # Why?
+            
 
             # Add the 'api_key' parameter only if it's not None
             if self.api_key:

@@ -83,7 +83,7 @@ class PenguinCore:
         self.automode = False
         self.system_prompt = ""
         self.system_prompt_sent = False
-        self.max_history_length = 1000
+        self.max_history_length = 1000000
         self.conversation_history: List[Dict[str, Any]] = []
         self.logger = logger
         self.task_manager = TaskManager(self.logger)
@@ -180,57 +180,53 @@ class PenguinCore:
             
             # Parse and execute CodeAct actions
             actions = parse_action(assistant_response)
+            action_results = []
             for action in actions:
                 result = self.action_executor.execute_action(action)
-                assistant_response += f"\n{result}"
+                action_results.append(f"Action: {action.action_type}\nResult: {result}")
             
             # Handle tool use if present in the response
             if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
                 for tool_call in response.choices[0].message.tool_calls:
                     tool_result = self._handle_tool_use(tool_call)
-                    assistant_response += f"\n{tool_result}"
-                
-                # Get final response after tool use
+                    action_results.append(tool_result)
+            
+            # If there were actions or tool uses, get a final response
+            if action_results:
+                self.add_message("system", "\n".join(action_results))
                 final_response = self._get_final_response()
-                assistant_response += f"\n{final_response}"
+                assistant_response += f"\n\nObservation:\n{final_response}"
             
             if assistant_response:
                 self.add_message("assistant", assistant_response)
             
             self.diagnostics.log_token_usage()
             
-            current_task = self.task_manager.get_current_task()
-            if current_task and current_task.status == TaskStatus.IN_PROGRESS:
-                # Update task progress based on the response
-                # This is a simple implementation and can be improved
-                if "task completed" in assistant_response.lower():
-                    current_task.update_progress(100)
-                elif "progress" in assistant_response.lower():
-                    # Extract progress percentage from the response
-                    # This is a naive implementation and should be improved
-                    progress = int(re.search(r'\d+', assistant_response).group())
-                    current_task.update_progress(progress)
-            
-            current_project = self.task_manager.get_current_project()
-            if current_project and current_project.status == TaskStatus.IN_PROGRESS:
-                # Update project progress based on the response
-                if "project completed" in assistant_response.lower():
-                    current_project.update_progress(100)
-                elif "project progress" in assistant_response.lower():
-                    # Extract progress percentage from the response
-                    progress = int(re.search(r'\d+', assistant_response).group())
-                    current_project.update_progress(progress)
+            self._update_task_and_project_progress(assistant_response)
             
             return assistant_response, exit_continuation
         
-        except AttributeError as e:
-            error_context = f"Error in response structure: {str(e)}"
-            self.log_error(e, error_context)
-            return "I'm having trouble understanding the AI's response. This issue has been logged for investigation. Could you please rephrase your question?", False
         except Exception as e:
             error_context = f"Error in get_response. User input: {user_input}, Image path: {image_path}, Iteration: {current_iteration}/{max_iterations}"
             self.log_error(e, error_context)
             return "I'm sorry, an unexpected error occurred. The error has been logged for further investigation. Please try again.", False
+
+    def _update_task_and_project_progress(self, assistant_response: str):
+        current_task = self.task_manager.get_current_task()
+        if current_task and current_task.status == TaskStatus.IN_PROGRESS:
+            if "task completed" in assistant_response.lower():
+                current_task.update_progress(100)
+            elif "progress" in assistant_response.lower():
+                progress = int(re.search(r'\d+', assistant_response).group())
+                current_task.update_progress(progress)
+        
+        current_project = self.task_manager.get_current_project()
+        if current_project and current_project.status == TaskStatus.IN_PROGRESS:
+            if "project completed" in assistant_response.lower():
+                current_project.update_progress(100)
+            elif "project progress" in assistant_response.lower():
+                progress = int(re.search(r'\d+', assistant_response).group())
+                current_project.update_progress(progress)
 
     def log_error(self, error: Exception, context: str):
         error_log_dir = get_workspace_path('errors_log')
