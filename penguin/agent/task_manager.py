@@ -56,6 +56,9 @@ class TaskManager:
             task.update_progress(progress)
             self.save_tasks()
 
+    # TODO: a much more efficient way to do this would be to use a database
+    # TODO: and to have a many-to-one relationship between tasks and projects
+    # TODO: a much nicer way to visualize this. Maybe a tree structure? Maybe a graph? Maybe a matrix? Or maybe even something on a website that's easy to use?
     def get_task_board(self) -> str:
         header = "| Task ID | Task Name | Description | Status | Progress | Project | Parent Task |"
         separator = "|---------|-----------|-------------|--------|----------|---------|-------------|"
@@ -176,7 +179,7 @@ class TaskManager:
         try:
             for progress in run_agent(task, chat_function, message_count):
                 self.logger.info(f"Task progress: {progress}")
-                # Here you could implement real-time updates to a UI or notification system
+                # TODO: Here you could implement real-time updates to a UI or notification system
                 yield progress
         except Exception as e:
             self.logger.error(f"Error running task {task.name}: {str(e)}")

@@ -40,6 +40,7 @@ class ActionType(Enum):
     PROJECT_COMPLETE = "project_complete"
     PROJECT_LIST = "project_list"
     SUBTASK_ADD = "subtask_add"
+    # TODO: add subtask_update, subtask_complete, subtask_list
     TASK_DETAILS = "task_details"
     PROJECT_DETAILS = "project_details"
     # WORKFLOW_ANALYZE = "workflow_analyze"
