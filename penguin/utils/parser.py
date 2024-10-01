@@ -195,7 +195,6 @@ class ActionExecutor:
     def _execute_task_complete(self, params: str) -> str:
         task_name = params.strip()
         result = self.task_manager.complete_task(task_name)
-        self.task_manager.save_tasks()  # Add this line
         return result
 
     def _execute_project_create(self, params: str) -> str:
@@ -219,3 +218,11 @@ class ActionExecutor:
 
     def project_details(self, project_name: str) -> str:
         return self.task_manager.get_project_details(project_name)
+
+    def update_task_by_name(self, name: str, progress: int) -> str:
+        task = self.get_task_by_name(name)
+        if task:
+            task.update_progress(progress)
+            self.save_tasks()
+            return f"Task updated: {task.name} to {progress}%"
+        return f"Task not found: {name}"

@@ -167,6 +167,16 @@ class TaskManager:
             task = self.tasks[task_id]
             self.remove_task(task)
 
+    def complete_task(self, task_name: str) -> str:
+        task = self.get_task_by_name(task_name)
+        if task:
+            task.status = TaskStatus.COMPLETED
+            task.progress = 100
+            self.save_tasks()
+            return f"Task '{task_name}' marked as complete."
+        else:
+            return f"Task not found: {task_name}"
+
     def add_subtask(self, parent_task_name: str, subtask_name: str, subtask_description: str) -> Optional[Task]:
         parent_task = self.get_task_by_name(parent_task_name)
         if parent_task:

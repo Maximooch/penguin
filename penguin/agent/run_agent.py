@@ -8,9 +8,19 @@ from chat import print_bordered_message, PENGUIN_COLOR, TOOL_COLOR
 
 def run_agent(item: Union[Task, Project], chat_function: Callable, message_count: int) -> Generator[Tuple[int, int, str], None, Union[Task, Project]]:
     if isinstance(item, Task):
-        goal = f"Complete the task: {item.name}\nDescription: {item.description}"
+        goal = (
+            f"You are to work on the following task: {item.name}\n"
+            f"Description: {item.description}\n\n"
+            "Please break down the task into smaller steps, plan your approach, and execute the necessary actions to complete it.\n"
+            "Provide regular updates on your progress."
+        )
     elif isinstance(item, Project):
-        goal = f"Complete the project: {item.name}\nDescription: {item.description}"
+        goal = (
+            f"You are to work on the following project: {item.name}\n"
+            f"Description: {item.description}\n\n"
+            "Please break down the project into tasks and subtasks, plan your approach, and execute the necessary actions to complete it.\n"
+            "Provide regular updates on your progress."
+        )
     else:
         raise ValueError(f"Unsupported item type: {type(item)}")
 
@@ -28,6 +38,7 @@ def run_agent(item: Union[Task, Project], chat_function: Callable, message_count
 
     if isinstance(item, Task):
         item.status = TaskStatus.COMPLETED
+        item.progress = 100
     elif isinstance(item, Project):
         item.status = ProjectStatus.COMPLETED
 
