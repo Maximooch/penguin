@@ -31,45 +31,47 @@ def create_file(path: str, content: str = "") -> str:
     except Exception as e:
         return f"Error creating file: {str(e)}\nStack trace: {traceback.format_exc()}"
 
-def generate_and_apply_diff(original_content, new_content, path):
+def generate_and_apply_diff(original_content, new_content, full_path, encoding):
+    print(f"Applying diff to {full_path} with encoding {encoding}")
     diff = list(difflib.unified_diff(
         original_content.splitlines(keepends=True),
         new_content.splitlines(keepends=True),
-        fromfile=f"a/{path}",
-        tofile=f"b/{path}",
+        fromfile=f"a/{full_path}",
+        tofile=f"b/{full_path}",
         n=3
     ))
-    
+
     if not diff:
         return "No changes detected."
-    
+
     try:
-        with open(path, 'w') as f:
-            f.writelines(new_content)
-        return f"Changes applied to {path}:\n" + ''.join(diff)
+        with open(full_path, 'w', encoding=encoding) as f:
+            f.write(new_content)
+        return f"Changes applied to {full_path}:\n" + ''.join(diff)
     except Exception as e:
         return f"Error applying changes: {str(e)}"
 
 def write_to_file(path, content):
     full_path = os.path.join(WORKSPACE_PATH, path)
     encodings = ['utf-8', 'latin-1', 'ascii', 'utf-16']
-    
+
     for encoding in encodings:
         try:
             if os.path.exists(full_path):
                 with open(full_path, 'r', encoding=encoding) as f:
                     original_content = f.read()
-                result = generate_and_apply_diff(original_content, content, full_path)
+                result = generate_and_apply_diff(original_content, content, full_path, encoding)
             else:
                 with open(full_path, 'w', encoding=encoding) as f:
                     f.write(content)
                 result = f"New file created and content written to: {full_path}"
+            # Return after successful write
             return result
-        except UnicodeEncodeError:
+        except (UnicodeEncodeError, UnicodeDecodeError):
             continue
         except Exception as e:
-            return f"Error writing to file: {str(e)}"
-    
+            print(f"Error with encoding '{encoding}': {str(e)}")
+            continue
     return f"Error writing to file: Unable to encode with encodings: {', '.join(encodings)}"
 
 def read_file(path):
