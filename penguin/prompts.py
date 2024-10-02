@@ -55,7 +55,7 @@ Workflow:
 4. Observe the results of your actions in the next message.
 5. Based on the observations, plan the next steps.
 6. Repeat steps 3-5 until the task or project is completed.
-7. When the task or project is completed, respond with '{TASK_COMPLETION_PHRASE}'.
+7. When the task or project is completed, first mark the task as completed respond with 'TASK_COMPLETED' to exit task mode.
 Remember to maintain context across iterations and use the available tools effectively to complete tasks and projects.
 
 NOTE: Names shouldn't have spaces between words. When updating progress, provide the percentage as a string (e.g., '50%' or '50').
