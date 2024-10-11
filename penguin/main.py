@@ -85,6 +85,9 @@ def init() -> None:
     timing_info['tool_manager'] = log_time("Tool manager setup", time.time())
     tool_manager = ToolManager(log_error)
 
+    timing_info['memory_search'] = log_time("Memory search initialization", time.time())
+    tool_manager.memory_search.wait_for_initialization()
+
     timing_info['penguin_core'] = log_time("Penguin core setup", time.time())
     penguin_core = PenguinCore(api_client, tool_manager)
     penguin_core.set_system_prompt(SYSTEM_PROMPT)
