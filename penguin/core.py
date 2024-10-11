@@ -160,7 +160,7 @@ class PenguinCore:
         return self.conversation_history[-1] if self.conversation_history else None
 
     def get_response(self, user_input: str, image_path: Optional[str] = None, 
-                    current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> Tuple[str, bool]:
+        current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> Tuple[str, bool]:
         try:
             self._prepare_conversation(user_input, image_path)
             

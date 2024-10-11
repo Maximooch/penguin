@@ -9,8 +9,8 @@ import scipy.sparse
 import pickle
 import logging
 from threading import Lock, Event, Thread
-
-
+import time
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -19,13 +19,10 @@ class MemorySearch:
     A class for searching and managing log entries using both keyword and semantic search methods.
     """
 
-    def __init__(self, log_dir: str = 'logs', embeddings_dir: str = 'penguin\\embeddings'):
-        """
-        Initialize the MemorySearch object without loading logs or models.
-        Start the background initialization thread.
-        """
-        self.log_dir = log_dir
-        self.embeddings_dir = embeddings_dir
+    def __init__(self, log_dir: str = 'logs', embeddings_dir: str = 'embeddings'):
+        self.log_dir = os.path.abspath(log_dir)
+        self.embeddings_dir = os.path.abspath(embeddings_dir)
+        os.makedirs(self.embeddings_dir, exist_ok=True)
         self.logs = None  # Defer loading
         self.lock = Lock()
         self.tfidf_vectorizer = None
@@ -36,18 +33,29 @@ class MemorySearch:
         Thread(target=self.background_initialize, daemon=True).start()
 
     def background_initialize(self):
-        self.ensure_logs_loaded()
-        self.ensure_models_loaded()
-        self.save_models()
-        self.initialization_complete.set()
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                self.ensure_logs_loaded()
+                self.ensure_models_loaded()
+                self.save_models()
+                self.initialization_complete.set()
+                logger.info("Memory search initialization completed successfully.")
+                return
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(1)  # Wait for 1 second before retrying
+        logger.error("Memory search initialization failed after all attempts.")
 
     def wait_for_initialization(self):
         """
         Wait until the logs and models are fully initialized.
         """
         if not self.initialization_complete.is_set():
-            logger.info("Initializing models, please wait...")
+            logger.info("Initializing memory search models, please wait...")
             self.initialization_complete.wait()
+        logger.info("Memory search initialization completed.")
 
     def ensure_logs_loaded(self):
         if self.logs is None:
@@ -58,11 +66,8 @@ class MemorySearch:
             self.load_or_initialize_models()
 
     def load_or_initialize_models(self):
-        # Try to load models
-        try:
-            self.load_models()
-        except FileNotFoundError:
-            self.initialize_models()
+        # Always re-initialize models to include recent logs
+        self.initialize_models()
 
     def load_logs(self) -> List[Dict[str, Any]]:
         """
@@ -76,37 +81,17 @@ class MemorySearch:
                 if filename.endswith('.json'):
                     with open(os.path.join(self.log_dir, filename), 'r') as f:
                         logs.extend(json.load(f))
+            # Sort logs by timestamp to ensure they are in chronological order
+            logs.sort(key=lambda x: x.get('timestamp', ''))
         except FileNotFoundError:
             logger.warning(f"Log directory '{self.log_dir}' not found.")
         except Exception as e:
             logger.error(f"Error loading logs: {e}")
         return logs
 
-    def load_models(self):
-        """
-        Load serialized models and data from disk.
-        """
-        try:
-            if not os.path.exists(self.embeddings_dir):
-                logger.info(f"Embeddings directory {self.embeddings_dir} does not exist. Initializing new models.")
-                raise FileNotFoundError
-
-            with open(os.path.join(self.embeddings_dir, 'tfidf_vectorizer.pkl'), 'rb') as f:
-                self.tfidf_vectorizer = pickle.load(f)
-            self.tfidf_matrix = scipy.sparse.load_npz(os.path.join(self.embeddings_dir, 'tfidf_matrix.npz'))
-            self.embeddings = np.load(os.path.join(self.embeddings_dir, 'embeddings.npy'), mmap_mode='r')
-            self.model = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("Models loaded successfully.")
-        except FileNotFoundError:
-            logger.info("No saved models found. Initializing new models.")
-            raise
-        except Exception as e:
-            logger.error(f"Error loading models: {e}")
-            raise
-
     def initialize_models(self):
         """
-        Initialize models when no saved data is available.
+        Initialize models when no saved data is available or to update with recent logs.
         """
         self.tfidf_vectorizer = TfidfVectorizer()
         self.tfidf_matrix = self.tfidf_vectorizer.fit_transform([log['content'] for log in self.logs])
@@ -117,12 +102,17 @@ class MemorySearch:
         """
         Save models and data to disk.
         """
-        os.makedirs(self.embeddings_dir, exist_ok=True)
-        with open(os.path.join(self.embeddings_dir, 'tfidf_vectorizer.pkl'), 'wb') as f:
-            pickle.dump(self.tfidf_vectorizer, f)
-        scipy.sparse.save_npz(os.path.join(self.embeddings_dir, 'tfidf_matrix.npz'), self.tfidf_matrix)
-        np.save(os.path.join(self.embeddings_dir, 'embeddings.npy'), self.embeddings)
-        logger.info("Models saved successfully.")
+        try:
+            os.makedirs(self.embeddings_dir, exist_ok=True)
+            with open(os.path.join(self.embeddings_dir, 'tfidf_vectorizer.pkl'), 'wb') as f:
+                pickle.dump(self.tfidf_vectorizer, f)
+            if self.tfidf_matrix is not None:
+                scipy.sparse.save_npz(os.path.join(self.embeddings_dir, 'tfidf_matrix.npz'), self.tfidf_matrix)
+            if self.embeddings is not None and len(self.embeddings) > 0:
+                np.save(os.path.join(self.embeddings_dir, 'embeddings.npy'), self.embeddings)
+            logger.info(f"Models saved successfully to {self.embeddings_dir}")
+        except Exception as e:
+            logger.error(f"Error saving models: {str(e)}")
 
     def compute_embeddings(self) -> np.ndarray:
         """
@@ -152,7 +142,7 @@ class MemorySearch:
         query_vec = self.tfidf_vectorizer.transform([query])
         similarities = cosine_similarity(query_vec, self.tfidf_matrix)[0]
         top_k_indices = similarities.argsort()[-k:][::-1]
-        return [self.logs[i] for i in top_k_indices]
+        return self.format_search_results(top_k_indices)
 
     def semantic_search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """
@@ -172,7 +162,7 @@ class MemorySearch:
         query_embedding = self.model.encode([query])
         similarities = cosine_similarity(query_embedding, self.embeddings)[0]
         top_k_indices = similarities.argsort()[-k:][::-1]
-        return [self.logs[i] for i in top_k_indices]
+        return self.format_search_results(top_k_indices)
 
     def combined_search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """
@@ -198,7 +188,37 @@ class MemorySearch:
         combined_scores = 0.5 * keyword_scores + 0.5 * semantic_scores
         
         top_k_indices = combined_scores.argsort()[-k:][::-1]
-        return [self.logs[i] for i in top_k_indices]
+        return self.format_search_results(top_k_indices)
+
+    def format_search_results(self, indices: List[int]) -> List[Dict[str, Any]]:
+        """
+        Format search results with proper timestamps and content.
+
+        :param indices: List of indices of top matching log entries
+        :return: List of formatted log entries
+        """
+        results = []
+        for i in indices:
+            log_entry = self.logs[i]
+            timestamp_str = log_entry.get('timestamp', 'Unknown')
+            try:
+                # Parse timestamp to datetime object for accurate sorting
+                timestamp = datetime.fromisoformat(timestamp_str)
+                formatted_timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                logger.warning(f"Invalid timestamp format: {timestamp_str}")
+                formatted_timestamp = timestamp_str
+
+            content = log_entry.get('content', '')
+            # Remove line numbers from content if present
+            content = '\n'.join([line.split('|', 1)[-1] if '|' in line else line for line in content.split('\n')])
+            results.append({
+                "timestamp": formatted_timestamp,
+                "content": content
+            })
+        
+        # Sort results by timestamp, most recent first
+        return sorted(results, key=lambda x: x['timestamp'], reverse=True)
 
     def add_log(self, log: Dict[str, Any]):
         """
@@ -222,3 +242,16 @@ class MemorySearch:
             self.save_models()
             
         logger.info(f"New log entry added and models updated.")
+
+    def update_logs(self):
+        """
+        Update logs with any new entries and rebuild models.
+        """
+        new_logs = self.load_logs()
+        if len(new_logs) > len(self.logs):
+            self.logs = new_logs
+            self.initialize_models()
+            self.save_models()
+            logger.info("Logs updated and models rebuilt.")
+        else:
+            logger.info("No new logs found.")
