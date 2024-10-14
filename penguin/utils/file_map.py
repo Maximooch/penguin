@@ -1,88 +1,125 @@
 import os
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List, Tuple
 import time
+import fnmatch
+
+class FileNode:
+    def __init__(self, name: str, is_dir: bool):
+        self.name = name
+        self.is_dir = is_dir
+        self.children: Dict[str, FileNode] = {}
+        self.last_modified: float = 0
+        self.size: int = 0
 
 class FileMap:
     def __init__(self, root_path: str):
         self.root_path = Path(root_path)
-        self.file_map: Dict[str, Any] = {}
-        self.last_update_time: Dict[str, float] = {}
+        self.root: FileNode = FileNode(self.root_path.name, True)
+        self.ignore_patterns: List[str] = [
+            '*/__pycache__/*', '*/penguin_venv/*', '*/logs/*', '*.pyc', '*.pyo',
+            '*/node_modules/*', '*.git/*', '*.vscode/*', '*.idea/*',
+            '*.log', '*.lock'
+        ]
         self.update_file_map()
 
     def update_file_map(self):
-        self._update_directory(self.root_path)
+        self._update_directory(self.root_path, self.root)
 
-    def _update_directory(self, directory: Path):
+    def _update_directory(self, directory: Path, node: FileNode):
         for item in directory.iterdir():
             relative_path = str(item.relative_to(self.root_path))
             
-            # Skip __pycache__, penguin_venv, and logs directories
-            if any(part in ['__pycache__', 'penguin_venv', 'logs'] for part in item.parts):
+            if self._should_ignore(relative_path):
                 continue
             
             item_stat = item.stat()
             current_time = item_stat.st_mtime
-
-            if relative_path not in self.last_update_time or current_time > self.last_update_time[relative_path]:
+            
+            if item.name not in node.children or current_time > node.children[item.name].last_modified:
                 if item.is_file():
-                    self.file_map[relative_path] = {
-                        "type": "file",
-                        "size": item_stat.st_size,
-                        "last_modified": current_time
-                    }
+                    file_node = FileNode(item.name, False)
+                    file_node.size = item_stat.st_size
+                    file_node.last_modified = current_time
+                    node.children[item.name] = file_node
                 elif item.is_dir():
-                    self.file_map[relative_path] = {
-                        "type": "directory",
-                        "last_modified": current_time
-                    }
-                    self._update_directory(item)
+                    dir_node = FileNode(item.name, True)
+                    dir_node.last_modified = current_time
+                    node.children[item.name] = dir_node
+                    self._update_directory(item, dir_node)
 
-                self.last_update_time[relative_path] = current_time
-            elif item.is_dir():
-                self._update_directory(item)
+    def _should_ignore(self, path: str) -> bool:
+        return any(fnmatch.fnmatch(path, pattern) for pattern in self.ignore_patterns)
 
     def get_file_map(self) -> Dict[str, Any]:
-        return self.file_map
+        return self._node_to_dict(self.root)
 
-    def update_incrementally(self):
-        self._update_directory(self.root_path)
+    def _node_to_dict(self, node: FileNode) -> Dict[str, Any]:
+        result = {
+            "type": "directory" if node.is_dir else "file",
+            "last_modified": node.last_modified
+        }
+        if not node.is_dir:
+            result["size"] = node.size
+        if node.is_dir:
+            result["children"] = {name: self._node_to_dict(child) for name, child in node.children.items()}
+        return result
+
+    def get_formatted_file_map(self, directory: str = "", max_files: int = 100) -> str:
+        node = self._find_node(directory)
+        formatted_output, file_count = self._format_node(node, directory, max_files=max_files)
+        if file_count >= max_files:
+            formatted_output.append(f"... (output truncated, showing {max_files} of {file_count} files)")
+        return "\n".join(formatted_output)
+
+    def _find_node(self, path: str) -> FileNode:
+        if not path:
+            return self.root
+        parts = path.split(os.sep)
+        node = self.root
+        for part in parts:
+            if part in node.children and node.children[part].is_dir:
+                node = node.children[part]
+            else:
+                return node
+        return node
+
+    def _format_node(self, node: FileNode, path: str, indent: str = "", max_files: int = 100) -> Tuple[List[str], int]:
+        formatted_output = []
+        file_count = 0
+        if node.is_dir:
+            formatted_output.append(f"{indent}{path}/")
+            for name, child in sorted(node.children.items()):
+                child_path = os.path.join(path, name) if path else name
+                child_output, child_count = self._format_node(child, child_path, indent + "  ", max_files - file_count)
+                formatted_output.extend(child_output)
+                file_count += child_count
+                if file_count >= max_files:
+                    break
+        else:
+            size = node.size
+            if size < 1024:
+                size_str = f"{size} B"
+            elif size < 1024 * 1024:
+                size_str = f"{size / 1024:.1f} KB"
+            else:
+                size_str = f"{size / (1024 * 1024):.1f} MB"
+            formatted_output.append(f"{indent}{node.name} ({size_str})")
+            file_count = 1
+        return formatted_output, file_count
 
     def get_changes_since(self, timestamp: float) -> Dict[str, Any]:
         changes = {}
-        for path, info in self.file_map.items():
-            if info["last_modified"] > timestamp:
-                changes[path] = info
+        self._get_changes_since_recursive(self.root, "", timestamp, changes)
         return changes
 
-    def get_formatted_file_map(self, directory: str = "") -> str:
-        file_map = self.get_file_map()
-        formatted_output = []
-        
-        def format_entry(path, info, indent=""):
-            if info['type'] == 'directory':
-                formatted_output.append(f"{indent}{path}/")
-                for sub_path, sub_info in file_map.items():
-                    if sub_path.startswith(path + '/') and sub_path != path:
-                        format_entry(sub_path, sub_info, indent + "  ")
-            else:
-                size = info['size']
-                if size < 1024:
-                    size_str = f"{size} B"
-                elif size < 1024 * 1024:
-                    size_str = f"{size / 1024:.1f} KB"
-                else:
-                    size_str = f"{size / (1024 * 1024):.1f} MB"
-                formatted_output.append(f"{indent}{path.split('/')[-1]} ({size_str})")
-
-        for path, info in sorted(file_map.items()):
-            if directory:
-                if path.startswith(directory):
-                    format_entry(path, info)
-            elif '/' not in path:
-                format_entry(path, info)
-        
-        return "\n".join(formatted_output)
+    def _get_changes_since_recursive(self, node: FileNode, path: str, timestamp: float, changes: Dict[str, Any]):
+        if node.last_modified > timestamp:
+            changes[path] = self._node_to_dict(node)
+        if node.is_dir:
+            for name, child in node.children.items():
+                child_path = os.path.join(path, name) if path else name
+                self._get_changes_since_recursive(child, child_path, timestamp, changes)
 
 # # Example usage
 # if __name__ == "__main__":

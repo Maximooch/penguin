@@ -90,9 +90,18 @@ def read_file(path):
 
 def list_files(path="."):
     try:
-        full_path = os.path.join(WORKSPACE_PATH, path)
+        full_path = os.path.normpath(os.path.join(WORKSPACE_PATH, path))
+        if not full_path.startswith(WORKSPACE_PATH):
+            return f"Error: Attempted to access directory outside of workspace: {path}"
+        
+        if not os.path.exists(full_path):
+            return f"Error: Directory does not exist: {path}"
+        
+        if not os.path.isdir(full_path):
+            return f"Error: Not a directory: {path}"
+        
         files = os.listdir(full_path)
-        return "\n".join(files)
+        return "\n".join([f"{f} ({'directory' if os.path.isdir(os.path.join(full_path, f)) else 'file'})" for f in files])
     except Exception as e:
         return f"Error listing files: {str(e)}"
 
