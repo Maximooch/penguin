@@ -114,7 +114,14 @@ class PenguinCore:
         os_info = f"You are running on {self.os_name}, use the appropriate commands for your OS."
         # print(f"Debug - OS Info: {os_info}")  # Add this line for debugging
         
-        system_message = f"{self.system_prompt}\n\n{os_info}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
+        # Generate file map
+        self.logger.debug("Generating file map...")
+        file_map = self.tool_manager.file_map.get_formatted_file_map(max_files=50)  # Limit to 50 files for brevity
+        self.logger.debug(f"Generated file map: {file_map}")
+        system_message = f"{self.system_prompt}\n\n{os_info}\n\nWorkspace Structure:\n{file_map}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
+
+
+        # system_message = f"{self.system_prompt}\n\n{os_info}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
         self.logger.debug(f"Generated system message: {system_message}")
         
         # print(f"Debug - Full System Message:\n{system_message}")  # Add this line for debugging
