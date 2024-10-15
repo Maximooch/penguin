@@ -37,6 +37,10 @@ class MemorySearch:
         for attempt in range(max_retries):
             try:
                 self.ensure_logs_loaded()
+                if not self.logs:
+                    logger.warning("No logs found. Skipping model initialization.")
+                    self.initialization_complete.set()
+                    return
                 self.ensure_models_loaded()
                 self.save_models()
                 self.initialization_complete.set()
@@ -93,6 +97,9 @@ class MemorySearch:
         """
         Initialize models when no saved data is available or to update with recent logs.
         """
+        if not self.logs:
+            logger.warning("No logs available for model initialization.")
+            return
         self.tfidf_vectorizer = TfidfVectorizer()
         self.tfidf_matrix = self.tfidf_vectorizer.fit_transform([log['content'] for log in self.logs])
         self.model = SentenceTransformer('all-MiniLM-L6-v2')
