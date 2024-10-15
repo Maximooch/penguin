@@ -26,7 +26,9 @@ class DeclarativeMemoryTool:
 
     def get_notes(self) -> list:
         try:
-            return self.declarative_memory.get_notes()
+            notes = self.declarative_memory.get_notes()
+            logger.debug(f"Retrieved notes from DeclarativeMemory: {notes}")
+            return notes
         except Exception as e:
             logger.error(f"Error getting notes: {str(e)}")
             return []

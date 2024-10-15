@@ -20,6 +20,12 @@ class DeclarativeMemory:
             yaml.dump(self.notes, file)
 
     def add_note(self, category: str, content: str):
+        # Check if the note already exists
+        for note in self.notes:
+            if note['category'] == category and note['content'] == content:
+                return  # Note already exists, do nothing
+        
+        # If the note doesn't exist, add it
         self.notes.append({"category": category, "content": content})
         self.save_notes()
 

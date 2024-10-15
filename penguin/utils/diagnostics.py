@@ -51,9 +51,13 @@ class Diagnostics:
                     console=console) as progress:
             progress.add_task("Context window usage", total=100, completed=percentage)
 
+    def count_tokens(self, text):
+        # Simple estimation method
+        return len(text.split()) + len(text) // 4
+
     def count_and_update_tokens(self, tracker_name, text):
         if self.enabled:
-            token_count = len(text.split()) + len(text) // 4  # Rough estimate: words + 1/4 of characters
+            token_count = self.count_tokens(text)
             self.update_tokens(tracker_name, token_count, 0)
             return token_count
         return 0

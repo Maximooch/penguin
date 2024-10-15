@@ -66,45 +66,63 @@ def print_tool_output(tool_name, tool_input, tool_result):
     console.print(tool_panel)
 
 def process_and_display_response(response, message_number):
-    if isinstance(response, str):
-        if response.startswith("Tool Used:"):
-            # This is a tool use response
-            parts = response.split('\n', 2)
-            if len(parts) == 3:
-                tool_name = parts[0].split(': ', 1)[1]
-                tool_input = parts[1].split(': ', 1)[1]
-                tool_result = parts[2].split(': ', 1)[1]
-                print_tool_output(tool_name, tool_input, tool_result)
-            else:
-                print_bordered_message(response, TOOL_COLOR, "system", message_number)
-        else:
-            # Format the response as markdown
-            markdown_response = f"```markdown\n{response}\n```"
-            print_bordered_message(markdown_response, PENGUIN_COLOR, "assistant", message_number)
-    elif isinstance(response, dict):
+    if not response:
+        print_bordered_message("I apologize, but I couldn't generate a response. Please try again.", PENGUIN_COLOR, "assistant", message_number)
+        return
+
+    content = ""
+    if isinstance(response, dict):
         if "error" in response:
             print_bordered_message(response["error"], TOOL_COLOR, "system", message_number)
+            return
         elif "tool_use" in response:
             tool_use = response["tool_use"]
             print_tool_output(tool_use["name"], tool_use["input"], tool_use["result"])
+            return
+        elif "choices" in response and len(response["choices"]) > 0:
+            choice = response["choices"][0]
+            if "message" in choice:
+                content = choice["message"].get("content", "")
+            elif "text" in choice:
+                content = choice["text"]
+            else:
+                content = str(choice)
         else:
-            # Format the response as markdown
-            markdown_response = f"```markdown\n{str(response)}\n```"
-            print_bordered_message(markdown_response, PENGUIN_COLOR, "assistant", message_number)
-    else:
-        print_bordered_message(f"Unexpected response format: {type(response)}", TOOL_COLOR, "system", message_number)
+            content = str(response)
+    elif isinstance(response, str):
+        content = response
+    elif isinstance(response, list):
+        for item in response:
+            if isinstance(item, dict) and 'type' in item and item['type'] == 'text':
+                content += item.get('text', '')
+            elif isinstance(item, str):
+                content += item
 
-    # Additional logging for debugging
-    logger.debug(f"Response type: {type(response)}")
-    logger.debug(f"Response content: {response}")
+    content = content.strip()
+    if not content:
+        print_bordered_message("I apologize, but I couldn't generate a meaningful response. Please try again.", PENGUIN_COLOR, "assistant", message_number)
+        return
+
+    if "Provider List:" in content:
+        content = content.split("Provider List:", 1)[0].strip()
+
+    print_bordered_message(content, PENGUIN_COLOR, "assistant", message_number)
+
+    # Log the raw response for debugging
+    logger.debug(f"Raw response: {response}")
+    logger.debug(f"Processed content: {content}")
 
 def print_welcome_message():
     welcome_text = (
         "Welcome to the Penguin AI Assistant!\n"
         "Type 'exit' to end the conversation.\n"
         "Type 'image' to include an image in your message.\n"
-        "Type 'automode [number]' to enter Autonomous mode with a specific number of iterations.\n"
-        "While in automode, press Ctrl+C at any time to exit the automode to return to regular chat."
+        "Task Management Commands:\n"
+        "- 'task create [task_name] [task_description]' to create a new task\n"
+        "- 'task run [task_name]' to run a task\n"
+        "- 'task list' to view all tasks\n"
+        "- 'task status [task_name]' to check the status of a specific task\n"
+        "to exit a task currently running, press ctrl+c to stop the task\n"
     )
     print_bordered_message(welcome_text, PENGUIN_COLOR, "system", "Welcome")
 
