@@ -1,27 +1,37 @@
-# might move this to a config file later, I suppose it could just import it from an upstream config file.
+import os
+from typing import Dict, Any, Optional
 
 class ModelConfig:
-    DEFAULT_MODEL = "claude-3-5-sonnet-20240620"
-    DEFAULT_MAX_TOKENS = 4000
-
-    def __init__(self, model=DEFAULT_MODEL, max_tokens=DEFAULT_MAX_TOKENS):
+    def __init__(self, model: str, provider: str, api_base: str = None, max_tokens: int = None, temperature: float = None):
         self.model = model
+        self.provider = provider
+        self.api_base = api_base
         self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.max_history_tokens: Optional[int] = None
 
-    def update_config(self, model=None, max_tokens=None):
-        if model:
-            self.model = model
-        if max_tokens:
-            self.max_tokens = max_tokens
-
-    def get_config(self):
-        return {
+    def get_config(self) -> Dict[str, Any]:
+        config = {
             "model": self.model,
-            "max_tokens": self.max_tokens
+            "provider": self.provider,
         }
+        if self.api_base:
+            config["api_base"] = self.api_base
+        if self.max_tokens:
+            config["max_tokens"] = self.max_tokens
+        if self.temperature is not None:
+            config["temperature"] = self.temperature
+        if self.max_history_tokens is not None:
+            config["max_history_tokens"] = self.max_history_tokens
+        return config
 
-# Example usage:
-# config = ModelConfig()
-# print(config.get_config())
-# config.update_config(model="claude-3-7-sonnet-20240620", max_tokens=8000)
-# print(config.get_config())
+    @classmethod
+    def from_env(cls):
+        return cls(
+            model=os.getenv("PENGUIN_MODEL"),
+            provider=os.getenv("PENGUIN_PROVIDER"),
+            api_base=os.getenv("PENGUIN_API_BASE"),
+            max_tokens=int(os.getenv("PENGUIN_MAX_TOKENS")) if os.getenv("PENGUIN_MAX_TOKENS") else None,
+            temperature=float(os.getenv("PENGUIN_TEMPERATURE")) if os.getenv("PENGUIN_TEMPERATURE") else None,
+            max_history_tokens=int(os.getenv("PENGUIN_MAX_HISTORY_TOKENS")) if os.getenv("PENGUIN_MAX_HISTORY_TOKENS") else None
+        )

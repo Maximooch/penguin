@@ -1,6 +1,6 @@
 # Penguin AI Assistant
 
-Penguin is a modular, extensible AI coding assistant. (as of now only using Claude 3.5 Sonnet)
+Penguin is a modular, extensible AI coding assistant. It supports all models supported by LiteLLM.
 
 It provides a command-line interface for interactive conversations, file manipulation, web searches, and automated task execution. Designed for developers, Penguin AI can assist with coding tasks, answer questions, and interact with the local file system, making it a versatile tool for software development and general problem-solving.
 

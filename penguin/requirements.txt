@@ -1,4 +1,4 @@
-anthropic
+litellm
 colorama
 pygments
 tavily-python
@@ -10,3 +10,4 @@ rich
 tiktoken
 torch
 sentence-transformers
+pyyaml
