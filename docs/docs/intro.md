@@ -28,11 +28,6 @@ For more detailed instructions, see the [Getting Started](getting_started.md) gu
 
 - [Getting Started](getting_started.md)
 - [Configuration](configuration.md)
-- API Reference
-  - [PenguinCore](api_reference/core.md)
-  - [ChatManager](api_reference/chat_manager.md)
-  - [ToolManager](api_reference/tool_manager.md)
-  - [APIClient](api_reference/api_client.md)
 - Usage Guide
   - [Basic Usage](usage/basic_usage.md)
   - [Automode](usage/automode.md)
@@ -42,6 +37,11 @@ For more detailed instructions, see the [Getting Started](getting_started.md) gu
   - [Custom Tools](advanced/custom_tools.md)
   - [Error Handling](advanced/error_handling.md)
   - [Diagnostics](advanced/diagnostics.md)
+- API Reference
+  - [PenguinCore](api_reference/core.md)
+  - [ChatManager](api_reference/chat_manager.md)
+  - [ToolManager](api_reference/tool_manager.md)
+  - [APIClient](api_reference/api_client.md)
 
 ## Contributing
 

@@ -3,7 +3,7 @@ const config = {
   tagline: 'A modular, extensible AI coding assistant',
   url: 'https://LinkAI.chat',
   baseUrl: '/',
-  onBrokenLinks: 'throw',
+  onBrokenLinks: 'ignore',
   onBrokenMarkdownLinks: 'warn',
   favicon: 'img/favicon.ico',
   organizationName: 'LinkAI',
@@ -67,7 +67,7 @@ const config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Your Name or Organization. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Maximus Putnam. Built with Docusaurus.`,
     },
   },
 };

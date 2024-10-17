@@ -26,6 +26,16 @@ const sidebars: SidebarsConfig = {
       label: 'Advanced Topics',
       items: ['advanced/custom_tools', 'advanced/error_handling', 'advanced/diagnostics'],
     },
+    {
+      type: 'category',
+      label: 'API Reference',
+      items: [
+        'api_reference/core',
+        'api_reference/chat_manager',
+        'api_reference/tool_manager',
+        'api_reference/api_client',
+      ],
+    },
   ],
 };
 
