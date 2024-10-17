@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Penguin AI Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        #chat-container {
+            height: 400px;
+            border: 1px solid #ccc;
+            overflow-y: scroll;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        #user-input {
+            width: 70%;
+            padding: 5px;
+        }
+        button {
+            padding: 5px 10px;
+        }
+        #task-panel {
+            margin-top: 20px;
+            border: 1px solid #ccc;
+            padding: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Penguin AI Chat</h1>
+    <div id="chat-container"></div>
+    <input type="text" id="user-input" placeholder="Type your message...">
+    <button onclick="sendMessage()">Send</button>
+
+    <div id="task-panel">
+        <h2>Task Management</h2>
+        <input type="text" id="task-name" placeholder="Task name">
+        <input type="text" id="task-description" placeholder="Task description">
+        <button onclick="createTask()">Create Task</button>
+        <button onclick="runTask()">Run Task</button>
+        <h3>Task List:</h3>
+        <div id="task-list"></div>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:5000/api';
+
+        async function sendMessage() {
+            const userInput = document.getElementById('user-input');
+            const message = userInput.value;
+            if (message.trim() !== '') {
+                appendMessage('You', message);
+                userInput.value = '';
+
+                try {
+                    const response = await fetch(`${API_URL}/chat`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ message: message }),
+                    });
+                    const data = await response.json();
+                    if (response.ok) {
+                        appendMessage('Penguin', data.response);
+                    } else {
+                        appendMessage('System', `Error: ${data.error || 'Unknown error occurred'}`);
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    appendMessage('System', 'An error occurred while sending the message.');
+                }
+                await fetchTasks();
+            }
+        }
+
+        function appendMessage(sender, message) {
+            const chatContainer = document.getElementById('chat-container');
+            const messageElement = document.createElement('p');
+            messageElement.innerHTML = `<strong>${sender}:</strong> ${message}`;
+            chatContainer.appendChild(messageElement);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        async function createTask() {
+            const taskName = document.getElementById('task-name').value;
+            const taskDescription = document.getElementById('task-description').value;
+            try {
+                const response = await fetch(`${API_URL}/task`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        action: 'create',
+                        taskName: taskName,
+                        taskDescription: taskDescription
+                    }),
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    appendMessage('System', data.message);
+                    document.getElementById('task-name').value = '';
+                    document.getElementById('task-description').value = '';
+                } else {
+                    appendMessage('System', `Error: ${data.message || 'Unknown error occurred'}`);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                appendMessage('System', 'An error occurred while creating the task.');
+            }
+            await fetchTasks();
+        }
+
+        async function runTask() {
+            const taskName = document.getElementById('task-name').value;
+            try {
+                const response = await fetch(`${API_URL}/task`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        action: 'run',
+                        taskName: taskName
+                    }),
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    appendMessage('System', data.message);
+                } else {
+                    appendMessage('System', `Error: ${data.message || 'Unknown error occurred'}`);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                appendMessage('System', 'An error occurred while running the task.');
+            }
+            await fetchTasks();
+        }
+
+        async function fetchTasks() {
+            try {
+                const response = await fetch(`${API_URL}/task`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        action: 'list'
+                    }),
+                });
+                const data = await response.json();
+                if (response.ok) {
+                    const taskList = document.getElementById('task-list');
+                    taskList.innerHTML = '';
+                    data.tasks.forEach(task => {
+                        taskList.innerHTML += `<p>${task}</p>`;
+                    });
+                } else {
+                    console.error('Error fetching tasks:', data.message);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        document.getElementById('user-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Fetch tasks on page load
+        fetchTasks();
+    </script>
+</body>
+</html>
