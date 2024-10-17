@@ -2,7 +2,7 @@ const config = {
   title: 'Penguin AI Assistant',
   tagline: 'A modular, extensible AI coding assistant',
   url: 'https://maximooch.github.io',
-  baseUrl: '/penguin/',
+  baseUrl: '/',
   onBrokenLinks: 'ignore',
   onBrokenMarkdownLinks: 'warn',
   favicon: 'img/favicon.ico',
