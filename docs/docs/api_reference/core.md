@@ -1,4 +1,3 @@
-# Automode
+# Core
 
 Coming Soon!
-
