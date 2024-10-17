@@ -1,8 +1,8 @@
 const config = {
   title: 'Penguin AI Assistant',
   tagline: 'A modular, extensible AI coding assistant',
-  url: 'https://LinkAI.chat',
-  baseUrl: '/',
+  url: 'https://maximooch.github.io',
+  baseUrl: '/penguin/',
   onBrokenLinks: 'ignore',
   onBrokenMarkdownLinks: 'warn',
   favicon: 'img/favicon.ico',
