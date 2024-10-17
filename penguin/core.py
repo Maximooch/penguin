@@ -1,48 +1,53 @@
 """
-PenguinCore is a class that manages the core functionality of the Penguin AI assistant.
+PenguinCore is the central class that manages the core functionality of the Penguin AI assistant.
 
-It handles tasks such as:
-- Maintaining the conversation history
-- Sending messages to the LLM API and processing the responses
-- Managing system prompts and automode iterations
-- Handling tool usage and image inputs
-- Providing diagnostic logging and token usage tracking
-- Parsing and executing CodeAct actions
-- Managing declarative memory
+This class handles various tasks including:
+- Conversation history management
+- Interaction with LLM API
+- System prompt and automode management
+- Tool usage and image input processing
+- Diagnostic logging and token usage tracking
+- CodeAct action parsing and execution
+- Declarative memory management
 - Error logging and handling
+- Task and project management
 
 Attributes:
-    api_client (APIClient): The API client for interacting with the AI model.
-    tool_manager (ToolManager): The manager for available tools and declarative memory.
+    api_client (APIClient): Client for interacting with the AI model.
+    tool_manager (ToolManager): Manager for available tools and declarative memory.
     automode (bool): Flag indicating whether automode is enabled.
     system_prompt (str): The system prompt to be sent to the AI model.
     system_prompt_sent (bool): Flag indicating whether the system prompt has been sent.
-    max_history_length (int): The maximum length of the conversation history to keep.
+    max_history_length (int): Maximum length of the conversation history to keep.
     conversation_history (List[Dict[str, Any]]): The conversation history.
     logger (logging.Logger): Logger for the class.
     action_executor (ActionExecutor): Executor for CodeAct actions.
     diagnostics (Diagnostics): Diagnostics utility for token tracking and logging.
+    file_manager (FileManager): Manager for file operations.
+    current_project (Optional[Project]): The currently active project.
 
 Methods:
-    set_system_prompt(prompt: str) -> None: Sets the system prompt.
-    get_system_message(current_iteration: Optional[int], max_iterations: Optional[int]) -> str: Returns the system message for the current automode iteration.
-    add_message(role: str, content: Any) -> None: Adds a message to the conversation history.
-    get_history() -> List[Dict[str, Any]]: Returns the conversation history.
-    clear_history() -> None: Clears the conversation history.
-    get_last_message() -> Optional[Dict[str, Any]]: Returns the last message in the conversation history.
-    get_response(user_input: str, image_path: Optional[str], current_iteration: Optional[int], max_iterations: Optional[int]) -> Tuple[str, bool]: Sends a message to the AI model and processes the response.
-    log_error(error: Exception, context: str) -> None: Logs detailed error information to a file.
-    execute_tool(tool_name: str, tool_input: Any) -> Any: Executes a tool using the tool manager.
-    run_automode(user_input: str, message_count: int, chat_function: Callable) -> None: Runs the automode functionality.
-    enable_diagnostics() -> None: Enables diagnostic logging.
-    disable_diagnostics() -> None: Disables diagnostic logging.
-    reset_state() -> None: Resets the state of PenguinCore.
-
-Private Methods:
-    _prepare_conversation(user_input: str, image_path: Optional[str]) -> None: Prepares the conversation by adding necessary messages.
-    _add_image_message(user_input: str, image_path: str) -> None: Adds an image message to the conversation.
-    _handle_tool_use(tool_call: Any) -> str: Handles tool use requests from the AI model.
-    _get_final_response() -> str: Gets a final response from the AI model after tool use.
+    set_system_prompt(prompt: str) -> None
+    get_system_message(current_iteration: Optional[int], max_iterations: Optional[int]) -> str
+    add_message(role: str, content: Any) -> None
+    get_history() -> List[Dict[str, Any]]
+    clear_history() -> None
+    get_last_message() -> Optional[Dict[str, Any]]
+    get_response(user_input: str, image_path: Optional[str], current_iteration: Optional[int], max_iterations: Optional[int]) -> Tuple[str, bool]
+    log_error(error: Exception, context: str) -> None
+    execute_tool(tool_name: str, tool_input: Any) -> Any
+    create_task(description: str) -> Task
+    run_task(task: Task) -> None
+    get_task_board() -> str
+    get_task_by_description(description: str) -> Optional[Task]
+    create_project(name: str, description: str) -> Project
+    run_project(project: Project) -> None
+    complete_project(project_name: str) -> str
+    get_project_board() -> str
+    get_project_by_name(name: str) -> Optional[Project]
+    enable_diagnostics() -> None
+    disable_diagnostics() -> None
+    reset_state() -> None
 """
 
 # Import necessary modules and types
@@ -75,7 +80,17 @@ logger.setLevel(logging.DEBUG)
 
 class PenguinCore:
     def __init__(self, api_client: APIClient, tool_manager: ToolManager):
-        # Initialize PenguinCore with API client and tool manager
+        """
+        Initialize PenguinCore with API client and tool manager.
+        
+        This constructor sets up the core components of the Penguin AI assistant,
+        including the API client, tool manager, task manager, and various other
+        attributes necessary for its operation.
+        
+        Args:
+            api_client (APIClient): The client used to interact with the AI model.
+            tool_manager (ToolManager): The manager for available tools and declarative memory.
+        """
         self.os_name = os.name
         # print(f"OS Name: {self.os_name}")  # Add this line for debugging
         self.api_client = api_client
@@ -93,12 +108,39 @@ class PenguinCore:
         self.current_project: Optional[Project] = None
 
     def set_system_prompt(self, prompt: str) -> None:
-        # Set the system prompt and mark it as not sent
+        """
+        Set the system prompt and mark it as not sent.
+        
+        This method updates the system prompt that will be used in conversations
+        with the AI model. It also resets the system_prompt_sent flag to ensure
+        the new prompt will be sent in the next interaction.
+        
+        Args:
+            prompt (str): The new system prompt to be set.
+        """
         self.system_prompt = prompt
         self.system_prompt_sent = False
 
     def get_system_message(self, current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> str:
-        # Generate the system message including automode status and declarative notes
+        """
+        Generate the system message including automode status and declarative notes.
+        
+        This method constructs a comprehensive system message that includes:
+        - The current system prompt
+        - Information about the operating system
+        - The workspace file structure
+        - Declarative notes from memory
+        - Automode status
+        - Current iteration information (if in automode)
+        - Current task and project information
+        
+        Args:
+            current_iteration (Optional[int]): The current iteration number if in automode.
+            max_iterations (Optional[int]): The maximum number of iterations if in automode.
+        
+        Returns:
+            str: The complete system message to be sent to the AI model.
+        """
         automode_status = "You are currently in automode." if self.automode else "You are not in automode."
         iteration_info = ""
         if current_iteration is not None and max_iterations is not None:
@@ -120,8 +162,6 @@ class PenguinCore:
         self.logger.debug(f"Generated file map: {file_map}")
         system_message = f"{self.system_prompt}\n\n{os_info}\n\nWorkspace Structure:\n{file_map}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
 
-
-        # system_message = f"{self.system_prompt}\n\n{os_info}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
         self.logger.debug(f"Generated system message: {system_message}")
         
         # print(f"Debug - Full System Message:\n{system_message}")  # Add this line for debugging
@@ -143,7 +183,18 @@ class PenguinCore:
         return system_message
 
     def add_message(self, role: str, content: Any) -> None:
-        # Add a message to the conversation history
+        """
+        Add a message to the conversation history.
+        
+        This method adds a new message to the conversation history. It handles
+        different types of content (dict, list, or other) and formats them
+        appropriately. If the conversation history exceeds the maximum length,
+        the oldest message is removed.
+        
+        Args:
+            role (str): The role of the message sender (e.g., "user", "assistant", "system").
+            content (Any): The content of the message, which can be a dict, list, or string.
+        """
         if isinstance(content, dict):
             message = {"role": role, "content": [content]}
         elif isinstance(content, list):
@@ -155,19 +206,55 @@ class PenguinCore:
             self.conversation_history.pop(0)
 
     def get_history(self) -> List[Dict[str, Any]]:
-        # Return the conversation history
+        """
+        Return the conversation history.
+        
+        This method provides access to the full conversation history.
+        
+        Returns:
+            List[Dict[str, Any]]: The complete conversation history.
+        """
         return self.conversation_history
 
     def clear_history(self) -> None:
-        # Clear the conversation history
+        """
+        Clear the conversation history.
+        
+        This method resets the conversation history to an empty list.
+        """
         self.conversation_history = []
 
     def get_last_message(self) -> Optional[Dict[str, Any]]:
-        # Return the last message in the conversation history
+        """
+        Return the last message in the conversation history.
+        
+        This method retrieves the most recent message from the conversation history.
+        If the history is empty, it returns None.
+        
+        Returns:
+            Optional[Dict[str, Any]]: The last message in the conversation history, or None if empty.
+        """
         return self.conversation_history[-1] if self.conversation_history else None
 
     def get_response(self, user_input: str, image_path: Optional[str] = None, 
         current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> Tuple[str, bool]:
+        """
+        Generate a response to the user input, potentially using an image.
+        
+        This method is the core interaction point with the AI model. It prepares the conversation,
+        sends the request to the API, processes the response including any tool calls or actions,
+        and handles task and project progress updates.
+        
+        Args:
+            user_input (str): The input from the user.
+            image_path (Optional[str]): Path to an image file, if any.
+            current_iteration (Optional[int]): Current iteration number if in automode.
+            max_iterations (Optional[int]): Maximum number of iterations if in automode.
+        
+        Returns:
+            Tuple[str, bool]: A tuple containing the assistant's response and a boolean indicating
+                              whether to exit the continuation (True if task completion phrase is present).
+        """
         try:
             self._prepare_conversation(user_input, image_path)
             
@@ -219,6 +306,15 @@ class PenguinCore:
             return "I'm sorry, an unexpected error occurred. The error has been logged for further investigation. Please try again.", False
 
     def _update_task_and_project_progress(self, assistant_response: str):
+        """
+        Update the progress of the current task and project based on the assistant's response.
+        
+        This method parses the assistant's response for indications of task or project completion
+        or progress updates, and updates the corresponding task or project accordingly.
+        
+        Args:
+            assistant_response (str): The response from the assistant to analyze for progress indicators.
+        """
         current_task = self.task_manager.get_current_task()
         if current_task and current_task.status == TaskStatus.IN_PROGRESS:
             if "task completed" in assistant_response.lower():
@@ -236,6 +332,17 @@ class PenguinCore:
                 current_project.update_progress(progress)
 
     def log_error(self, error: Exception, context: str):
+        """
+        Log an error with detailed information to a file.
+        
+        This method creates a detailed error log including the error type, message,
+        traceback, and the context in which the error occurred. The log is saved
+        to a file in the errors_log directory within the workspace.
+        
+        Args:
+            error (Exception): The exception that occurred.
+            context (str): Additional context information about when/where the error occurred.
+        """
         error_log_dir = get_workspace_path('errors_log')
         os.makedirs(error_log_dir, exist_ok=True)
         

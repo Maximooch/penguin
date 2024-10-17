@@ -11,3 +11,6 @@ tiktoken
 torch
 sentence-transformers
 pyyaml
+sphinx
+sphinx-rtd-theme
+myst-parser
