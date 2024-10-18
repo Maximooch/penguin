@@ -5,29 +5,26 @@ import io
 import difflib
 from pathlib import Path
 import traceback
-from config import WORKSPACE_PATH
 
 def create_folder(path):
     try:
-        full_path = os.path.join(WORKSPACE_PATH, path)
-        os.makedirs(full_path, exist_ok=True)
-        return f"Folder created: {full_path}"
+        os.makedirs(path, exist_ok=True)
+        return f"Folder created: {os.path.abspath(path)}"
     except Exception as e:
         return f"Error creating folder: {str(e)}"
 
 def create_file(path: str, content: str = "") -> str:
     try:
-        full_path = os.path.join(WORKSPACE_PATH, path)
-        print(f"Attempting to create file at: {os.path.abspath(full_path)}")
+        print(f"Attempting to create file at: {os.path.abspath(path)}")
         print(f"Current working directory: {os.getcwd()}")
 
-        dir_name = os.path.dirname(full_path)
+        dir_name = os.path.dirname(path)
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
 
-        with open(full_path, 'w') as f:
+        with open(path, 'w') as f:
             f.write(content)
-        return f"File created successfully at {full_path}"
+        return f"File created successfully at {os.path.abspath(path)}"
     except Exception as e:
         return f"Error creating file: {str(e)}\nStack trace: {traceback.format_exc()}"
 
@@ -52,7 +49,7 @@ def generate_and_apply_diff(original_content, new_content, full_path, encoding):
         return f"Error applying changes: {str(e)}"
 
 def write_to_file(path, content):
-    full_path = os.path.join(WORKSPACE_PATH, path)
+    full_path = path
     encodings = ['utf-8', 'latin-1', 'ascii', 'utf-16']
 
     for encoding in encodings:
@@ -75,7 +72,7 @@ def write_to_file(path, content):
     return f"Error writing to file: Unable to encode with encodings: {', '.join(encodings)}"
 
 def read_file(path):
-    full_path = os.path.join(WORKSPACE_PATH, path)
+    full_path = path
     encodings = ['utf-8', 'latin-1', 'ascii', 'utf-16']
     for encoding in encodings:
         try:
@@ -90,9 +87,7 @@ def read_file(path):
 
 def list_files(path="."):
     try:
-        full_path = os.path.normpath(os.path.join(WORKSPACE_PATH, path))
-        if not full_path.startswith(WORKSPACE_PATH):
-            return f"Error: Attempted to access directory outside of workspace: {path}"
+        full_path = os.path.normpath(path)
         
         if not os.path.exists(full_path):
             return f"Error: Directory does not exist: {path}"
@@ -106,7 +101,7 @@ def list_files(path="."):
         return f"Error listing files: {str(e)}"
 
 def find_file(filename: str, search_path: str = ".") -> list[str]:
-    full_search_path = Path(os.path.join(WORKSPACE_PATH, search_path))
+    full_search_path = Path(search_path)
     matches = list(full_search_path.rglob(filename))
     return [str(path.relative_to(full_search_path)) for path in matches]
 

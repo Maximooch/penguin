@@ -21,15 +21,14 @@ from .lint_python import lint_python
 from .memory_search import MemorySearch
 
 from config import WORKSPACE_PATH
-from workspace import get_workspace_path
 
 class ToolManager:
     def __init__(self, log_error_func: Callable):
         from utils.file_map import FileMap  # Import here to avoid circular import
         self.log_error = log_error_func
         self.declarative_memory_tool = DeclarativeMemoryTool()
-        self.grep_search = GrepSearch(root_dir=get_workspace_path("logs"))
-        self.memory_search = MemorySearch(get_workspace_path("logs"))
+        self.grep_search = GrepSearch(root_dir=os.path.join(WORKSPACE_PATH, "logs"))
+        self.memory_search = MemorySearch(os.path.join(WORKSPACE_PATH, "logs"))
         self.file_map = FileMap(WORKSPACE_PATH)  # Initialize with the workspace path
         self.project_root = WORKSPACE_PATH  # Set project root to workspace path
         self.tools = [
@@ -256,11 +255,11 @@ class ToolManager:
 
     def execute_tool(self, tool_name: str, tool_input: dict) -> Union[str, dict]:
         tool_map = {
-            "create_folder": lambda: create_folder(tool_input["path"]),
-            "create_file": lambda: create_file(tool_input["path"], tool_input.get("content", "")),
-            "write_to_file": lambda: write_to_file(tool_input["path"], tool_input["content"]),
-            "read_file": lambda: read_file(tool_input["path"]),
-            "list_files": lambda: list_files(tool_input.get("path", ".")),
+            "create_folder": lambda: create_folder(os.path.join(WORKSPACE_PATH, tool_input["path"])),
+            "create_file": lambda: create_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input.get("content", "")),
+            "write_to_file": lambda: write_to_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input["content"]),
+            "read_file": lambda: read_file(os.path.join(WORKSPACE_PATH, tool_input["path"])),
+            "list_files": lambda: list_files(os.path.join(WORKSPACE_PATH, tool_input.get("path", "."))),
             "add_declarative_note": lambda: self.add_declarative_note(tool_input["category"], tool_input["content"]),
             "grep_search": lambda: self.perform_grep_search(
                 tool_input["pattern"],
