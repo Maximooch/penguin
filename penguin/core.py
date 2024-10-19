@@ -259,7 +259,7 @@ class PenguinCore:
             self._prepare_conversation(user_input, image_path)
             
             # Add this line to include OS info in each API call
-            self.add_message("system", f"You are running on {self.os_name}, use the appropriate commands for your OS.")
+            # self.add_message("system", f"You are running on {self.os_name}, use the appropriate commands for your OS.")
             
             # Construct and send API request
             response = self.api_client.create_message(
@@ -279,26 +279,17 @@ class PenguinCore:
                 result = self.action_executor.execute_action(action)
                 action_results.append(f"Action: {action.action_type}\nResult: {result}")
             
-            # Handle tool use if present in the response
-            if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
-                for tool_call in response.choices[0].message.tool_calls:
-                    tool_result = self._handle_tool_use(tool_call)
-                    action_results.append(tool_result)
+            # Combine AI response and action results
+            full_response = f"AI Response:\n{assistant_response}\n\nAction Results:\n" + "\n".join(action_results)
             
-            # If there were actions or tool uses, get a final response
-            if action_results:
-                self.add_message("system", "\n".join(action_results))
-                final_response = self._get_final_response()
-                assistant_response += f"\n\nObservation:\n{final_response}"
-            
-            if assistant_response:
-                self.add_message("assistant", assistant_response)
+            if full_response:
+                self.add_message("assistant", full_response)
             
             self.diagnostics.log_token_usage()
             
             self._update_task_and_project_progress(assistant_response)
             
-            return assistant_response, exit_continuation
+            return full_response, exit_continuation
         
         except Exception as e:
             error_context = f"Error in get_response. User input: {user_input}, Image path: {image_path}, Iteration: {current_iteration}/{max_iterations}"
@@ -492,3 +483,5 @@ class PenguinCore:
         self.task_manager = TaskManager(self.logger)
         self.file_manager = FileManager()
         logger.info("PenguinCore state reset")
+
+
