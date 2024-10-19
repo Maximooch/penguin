@@ -54,10 +54,11 @@ class CodeActAction:
         self.params = params
 
 def parse_action(content: str) -> List[CodeActAction]:
-    # Split content into action commands and the rest
-    action_section, _, _ = content.partition("Executing these actions now.")
+    # Extract only the AI's response part
+    ai_response = content.split("AI Response:\n", 1)[-1].split("\n\nAction Results:", 1)[0]
+    
     pattern = r'<(\w+)>(.*?)</\1>'
-    matches = re.finditer(pattern, action_section, re.DOTALL)
+    matches = re.finditer(pattern, ai_response, re.DOTALL)
     
     actions = []  # Initialize the actions list
 
@@ -226,3 +227,6 @@ class ActionExecutor:
             self.save_tasks()
             return f"Task updated: {task.name} to {progress}%"
         return f"Task not found: {name}"
+
+    def _create_folder(self, params: str) -> str:
+        return self.tool_manager.execute_tool("create_folder", {"path": params})
