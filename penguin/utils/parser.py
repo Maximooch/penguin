@@ -19,14 +19,14 @@ from agent.task_manager import TaskManager
 logger = logging.getLogger(__name__)
 
 class ActionType(Enum):
-    READ = "read"
-    WRITE = "write"
+    # READ = "read"
+    # WRITE = "write"
     EXECUTE = "execute"
     SEARCH = "search"
-    CREATE_FILE = "create_file"
-    CREATE_FOLDER = "create_folder"
-    LIST_FILES = "list_files"
-    LIST_FOLDERS = "list_folders"
+    # CREATE_FILE = "create_file"
+    # CREATE_FOLDER = "create_folder"
+    # LIST_FILES = "list_files"
+    # LIST_FOLDERS = "list_folders"
     GET_FILE_MAP = "get_file_map"
     LINT = "lint"
     MEMORY_SEARCH = "memory_search"
@@ -82,14 +82,14 @@ class ActionExecutor:
 
     def execute_action(self, action: CodeActAction) -> str:
         action_map = {
-            ActionType.READ: lambda params: self.tool_manager.execute_tool("read_file", {"path": params}),
-            ActionType.WRITE: self._write_file,
+            # ActionType.READ: lambda params: self.tool_manager.execute_tool("read_file", {"path": params}),
+            # ActionType.WRITE: self._write_file,
             ActionType.EXECUTE: self._execute_code,
             ActionType.SEARCH: lambda params: self.tool_manager.execute_tool("grep_search", {"pattern": params}),
-            ActionType.CREATE_FILE: self._create_file,
-            ActionType.CREATE_FOLDER: lambda params: self.tool_manager.execute_tool("create_folder", {"path": params}),
-            ActionType.LIST_FILES: lambda params: self.tool_manager.execute_tool("list_files", {"directory": params}),
-            ActionType.LIST_FOLDERS: lambda params: self.tool_manager.execute_tool("list_files", {"directory": params}),
+            # ActionType.CREATE_FILE: self._create_file,
+            # ActionType.CREATE_FOLDER: lambda params: self.tool_manager.execute_tool("create_folder", {"path": params}),
+            # ActionType.LIST_FILES: lambda params: self.tool_manager.execute_tool("list_files", {"directory": params}),
+            # ActionType.LIST_FOLDERS: lambda params: self.tool_manager.execute_tool("list_files", {"directory": params}),
             ActionType.GET_FILE_MAP: lambda params: self.tool_manager.execute_tool("get_file_map", {"directory": params}),
             ActionType.LINT: self._lint_python,
             ActionType.MEMORY_SEARCH: self._memory_search,
@@ -120,16 +120,16 @@ class ActionExecutor:
             logger.error(error_message)
             return error_message
 
-    def _write_file(self, params: str) -> str:
-        path, content = params.split(':', 1)
-        return self.tool_manager.execute_tool("write_to_file", {"path": path.strip(), "content": content.strip()})
+    # def _write_file(self, params: str) -> str:
+    #     path, content = params.split(':', 1)
+    #     return self.tool_manager.execute_tool("write_to_file", {"path": path.strip(), "content": content.strip()})
 
-    def _create_file(self, params: str) -> str:
-        path, content = params.split(':', 1)
-        return self.tool_manager.execute_tool("create_file", {"path": path.strip(), "content": content.strip()})
+    # def _create_file(self, params: str) -> str:
+    #     path, content = params.split(':', 1)
+    #     return self.tool_manager.execute_tool("create_file", {"path": path.strip(), "content": content.strip()})
 
     def _execute_code(self, params: str) -> str:
-        return self.tool_manager.execute_tool("execute_command", {"command": params})
+        return self.tool_manager.execute_code(params)
 
     def _lint_python(self, params: str) -> str:
         parts = params.split(':', 1)
