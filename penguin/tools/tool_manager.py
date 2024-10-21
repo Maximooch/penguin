@@ -12,13 +12,14 @@ from utils import FileMap
 import subprocess
 # from utils.log_error import log_error
 
-from .support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
+# from .support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
 
 from bs4 import BeautifulSoup # type: ignore
 from .declarative_memory_tool import DeclarativeMemoryTool
 from .grep_search import GrepSearch
 from .lint_python import lint_python
 from .memory_search import MemorySearch
+from utils.notebook import NotebookExecutor
 
 from config import WORKSPACE_PATH
 
@@ -31,6 +32,7 @@ class ToolManager:
         self.memory_search = MemorySearch(os.path.join(WORKSPACE_PATH, "logs"))
         self.file_map = FileMap(WORKSPACE_PATH)  # Initialize with the workspace path
         self.project_root = WORKSPACE_PATH  # Set project root to workspace path
+        self.notebook_executor = NotebookExecutor()
         self.tools = [
             {
                 "name": "create_folder",
@@ -255,11 +257,11 @@ class ToolManager:
 
     def execute_tool(self, tool_name: str, tool_input: dict) -> Union[str, dict]:
         tool_map = {
-            "create_folder": lambda: create_folder(os.path.join(WORKSPACE_PATH, tool_input["path"])),
-            "create_file": lambda: create_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input.get("content", "")),
-            "write_to_file": lambda: write_to_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input["content"]),
-            "read_file": lambda: read_file(os.path.join(WORKSPACE_PATH, tool_input["path"])),
-            "list_files": lambda: list_files(os.path.join(WORKSPACE_PATH, tool_input.get("path", "."))),
+            # "create_folder": lambda: create_folder(os.path.join(WORKSPACE_PATH, tool_input["path"])),
+            # "create_file": lambda: create_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input.get("content", "")),
+            # "write_to_file": lambda: write_to_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input["content"]),
+            # "read_file": lambda: read_file(os.path.join(WORKSPACE_PATH, tool_input["path"])),
+            # "list_files": lambda: list_files(os.path.join(WORKSPACE_PATH, tool_input.get("path", "."))),
             "add_declarative_note": lambda: self.add_declarative_note(tool_input["category"], tool_input["content"]),
             "grep_search": lambda: self.perform_grep_search(
                 tool_input["pattern"],
@@ -274,7 +276,7 @@ class ToolManager:
             ),
             "code_execution": lambda: self.execute_code(tool_input["code"]),
             "get_file_map": lambda: self.get_file_map(tool_input.get("directory", "")),
-            "find_file": lambda: find_file(tool_input["filename"], tool_input.get("search_path", ".")),
+            # "find_file": lambda: find_file(tool_input["filename"], tool_input.get("search_path", ".")),
             "lint_python": lambda: lint_python(tool_input["target"], tool_input["is_file"]),
             "execute_command": lambda: self.execute_command(tool_input["command"])
         }
@@ -348,8 +350,8 @@ class ToolManager:
     def add_message_to_search(self, message):
         self.grep_search.add_message(message)
 
-    def encode_image(self, image_path):
-        return encode_image_to_base64(image_path)
+    # def encode_image(self, image_path):
+    #     return encode_image_to_base64(image_path)
 
     def duckduckgo_search(self, query: str, max_results: int = 5) -> List[Dict[str, str]]:
         try:
@@ -371,46 +373,54 @@ class ToolManager:
             logging.error(f"Error performing DuckDuckGo search: {str(e)}")
             return [{"error": f"Failed to perform search: {str(e)}"}]
 
+
     def execute_code(self, code: str) -> str:
-        try:
-            # Create a StringIO object to capture print output
-            output_buffer = io.StringIO()
-            sys.stdout = output_buffer
+        return self.notebook_executor.execute_code(code)
 
-            # Execute the code
-            exec_globals = {}
-            exec(code, exec_globals)
+    # def execute_code(self, code: str) -> str:
+    #     try:
+    #         # Create a StringIO object to capture print output
+    #         output_buffer = io.StringIO()
+    #         sys.stdout = output_buffer
 
-            # Restore the original stdout
-            sys.stdout = sys.__stdout__
+    #         # Execute the code
+    #         exec_globals = {}
+    #         exec(code, exec_globals)
 
-            # Get the captured output
-            output = output_buffer.getvalue()
+    #         # Restore the original stdout
+    #         sys.stdout = sys.__stdout__
 
-            # If there's no output, check for the last expression result
-            if not output.strip():
-                last_expression = code.strip().split('\n')[-1]
-                if not last_expression.startswith(('def ', 'class ', 'import ', 'from ')):
-                    output = str(eval(last_expression, exec_globals))
+    #         # Get the captured output
+    #         output = output_buffer.getvalue()
 
-            return output if output.strip() else "Code executed successfully, but produced no output."
-        except Exception as e:
-            return f"Error executing code: {str(e)}"
+    #         # If there's no output, check for the last expression result
+    #         if not output.strip():
+    #             last_expression = code.strip().split('\n')[-1]
+    #             if not last_expression.startswith(('def ', 'class ', 'import ', 'from ')):
+    #                 output = str(eval(last_expression, exec_globals))
+
+    #         return output if output.strip() else "Code executed successfully, but produced no output."
+    #     except Exception as e:
+    #         return f"Error executing code: {str(e)}"
 
     # For now you can only cd with just the folder names, not the full path. 
     # I want to do some security measures before allowing full path execution. 
 
     def execute_command(self, command: str) -> str:
         try:
-            # Determine if it's a bash command
-            is_bash = command.startswith("bash -c")
-            
-            if is_bash:
-                # For bash commands, use bash explicitly
-                result = subprocess.run(["bash", "-c", command[8:]], capture_output=True, text=True, cwd=self.project_root)
-            else:
-                # For shell commands, use shell=True
-                result = subprocess.run(command, shell=True, capture_output=True, text=True, cwd=self.project_root)
+            # Determine the OS
+            import platform
+            os_type = platform.system().lower()
+
+            # Adjust command based on OS
+            if os_type == 'windows':
+                shell = True
+                command = f'cmd /c {command}'
+            else:  # Unix-like systems (Linux, macOS)
+                shell = False
+                command = ['bash', '-c', command]
+
+            result = subprocess.run(command, shell=shell, capture_output=True, text=True, cwd=self.project_root)
             
             if result.returncode == 0:
                 return result.stdout.strip()
@@ -418,3 +428,4 @@ class ToolManager:
                 return f"Error: {result.stderr.strip()}"
         except Exception as e:
             return f"Error executing command: {str(e)}"
+
