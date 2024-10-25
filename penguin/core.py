@@ -236,7 +236,7 @@ class PenguinCore:
         """
         return self.conversation_history[-1] if self.conversation_history else None
 
-    def get_response(self, user_input: str, image_path: Optional[str] = None, 
+    def get_response(self, user_input: str, image_path: Optional[str], 
         current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> Tuple[str, bool]:
         """
         Generate a response to the user input, potentially using an image.
@@ -252,38 +252,45 @@ class PenguinCore:
             max_iterations (Optional[int]): Maximum number of iterations if in automode.
         
         Returns:
-            Tuple[str, bool]: A tuple containing the assistant's response and a boolean indicating
+            Tuple[Dict[str, Any], bool]: A tuple containing the assistant's response and a boolean indicating
                               whether to exit the continuation (True if task completion phrase is present).
         """
+        self.logger.debug(f"Entering get_response. User input: {user_input}, Image path: {image_path}")
         try:
             self._prepare_conversation(user_input, image_path)
             
-            # Add this line to include OS info in each API call
-            # self.add_message("system", f"You are running on {self.os_name}, use the appropriate commands for your OS.")
-            
-            # Construct and send API request
             response = self.api_client.create_message(
                 messages=self.get_history(),
                 max_tokens=None,
                 temperature=None
             )
-            
-            # Process the response
+            self.logger.debug(f"Raw API response: {response}")
+
             assistant_response = response.choices[0].message.content
             exit_continuation = TASK_COMPLETION_PHRASE in assistant_response
             
-            # Parse and execute CodeAct actions
+            self.logger.debug(f"Parsed assistant response: {assistant_response}")
+            self.logger.debug(f"Exit continuation: {exit_continuation}")
+
             actions = parse_action(assistant_response)
+            self.logger.debug(f"Parsed actions: {actions}")
+
             action_results = []
             for action in actions:
                 result = self.action_executor.execute_action(action)
-                action_results.append(f"Action: {action.action_type}\nResult: {result}")
+                self.logger.debug(f"Action executed: {action.action_type.value}, Result: {result}")
+                if result is not None:
+                    action_results.append({"action": action.action_type.value, "result": str(result)})
             
-            # Combine AI response and action results
-            full_response = f"AI Response:\n{assistant_response}\n\nAction Results:\n" + "\n".join(action_results)
+            full_response = {
+                "assistant_response": assistant_response,
+                "action_results": action_results
+            }
             
+            self.logger.debug(f"Full response: {full_response}")
+
             if full_response:
-                self.add_message("assistant", full_response)
+                self.add_message("assistant", assistant_response)
             
             self.diagnostics.log_token_usage()
             
@@ -294,7 +301,7 @@ class PenguinCore:
         except Exception as e:
             error_context = f"Error in get_response. User input: {user_input}, Image path: {image_path}, Iteration: {current_iteration}/{max_iterations}"
             self.log_error(e, error_context)
-            return "I'm sorry, an unexpected error occurred. The error has been logged for further investigation. Please try again.", False
+            return {"assistant_response": "I'm sorry, an unexpected error occurred. The error has been logged for further investigation. Please try again.", "action_results": []}, False
 
     def _update_task_and_project_progress(self, assistant_response: str):
         """

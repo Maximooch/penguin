@@ -84,7 +84,15 @@ class MemorySearch:
             for filename in os.listdir(self.log_dir):
                 if filename.endswith('.json'):
                     with open(os.path.join(self.log_dir, filename), 'r') as f:
-                        logs.extend(json.load(f))
+                        file_logs = json.load(f)
+                        # Ensure each log entry has a 'content' field that's a string
+                        for log in file_logs:
+                            if isinstance(log, dict):
+                                if 'content' not in log:
+                                    log['content'] = str(log)
+                                elif not isinstance(log['content'], str):
+                                    log['content'] = str(log['content'])
+                                logs.append(log)
             # Sort logs by timestamp to ensure they are in chronological order
             logs.sort(key=lambda x: x.get('timestamp', ''))
         except FileNotFoundError:
