@@ -1,61 +1,88 @@
 import logging
+from logging.handlers import RotatingFileHandler
 import json
 import datetime
 import os
 from config import WORKSPACE_PATH
 
-def setup_logger():
-    log_dirs = ['logs', os.path.join(WORKSPACE_PATH, 'logs')]
+def setup_logger(log_file: str = 'Penguin.log', log_level: int = logging.INFO) -> logging.Logger:
+    logger = logging.getLogger('Penguin')
+    logger.setLevel(log_level)
+
+    # Remove any existing handlers
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+
+    # Create logs directory if it doesn't exist
+    penguin_log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
+    log_dirs = [penguin_log_dir, os.path.join(WORKSPACE_PATH, 'logs')]
     for log_dir in log_dirs:
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_files = [f"{log_dir}/chat_{timestamp}.json" for log_dir in log_dirs]
-    return log_files
+        os.makedirs(log_dir, exist_ok=True)
 
-def log_event(log_files, event_type, content):
-    for log_file in log_files:
-        # JSON logging
-        try:
-            with open(log_file, 'r+') as f:
-                try:
-                    data = json.load(f)
-                except json.JSONDecodeError:
-                    data = []
-                
-                data.append({
-                    "timestamp": datetime.datetime.now().isoformat(),
-                    "type": event_type,
-                    "content": content
-                })
-                
-                f.seek(0)
-                json.dump(data, f, indent=2)
-                f.truncate()
-        except FileNotFoundError:
-            with open(log_file, 'w') as f:
-                json.dump([{
-                    "timestamp": datetime.datetime.now().isoformat(),
-                    "type": event_type,
-                    "content": content
-                }], f, indent=2)
+    # Set up file handlers with rotation
+    for log_dir in log_dirs:
+        file_handler = RotatingFileHandler(
+            os.path.join(log_dir, log_file),
+            maxBytes=1024 * 1024,  # 1 MB
+            backupCount=5
+        )
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
 
-        # Markdown logging
-        md_file = log_file.replace('.json', '.md')
-        with open(md_file, 'a', encoding='utf-8') as f:
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            if event_type == "user":
-                f.write(f"### 👤 User ({timestamp}):\n{content}\n\n")
-            elif event_type == "assistant":
-                f.write(f"### 🐧 Penguin AI ({timestamp}):\n{content}\n\n")
-            else:
-                f.write(f"### System ({timestamp}):\n{content}\n\n")
+    logger.propagate = False
+    return logger
 
+def log_event(logger: logging.Logger, event_type: str, content: str):
+    timestamp = datetime.datetime.now()
+    json_log_file = os.path.join(WORKSPACE_PATH, 'logs', f"chat_{timestamp.strftime('%Y%m%d_%H%M')}.json")
+    md_log_file = json_log_file.replace('.json', '.md')
 
+    try:
+        _write_json_log(json_log_file, event_type, content, timestamp)
+        _write_markdown_log(md_log_file, event_type, content, timestamp)
+    except Exception as e:
+        logger.error(f"Error writing to log files: {str(e)}")
+
+    logger.info(f"{event_type.upper()}: {content}")
+
+def _write_json_log(file_path: str, event_type: str, content: str, timestamp: datetime.datetime):
+    try:
+        with open(file_path, 'r+') as f:
+            try:
+                data = json.load(f)
+            except json.JSONDecodeError:
+                data = []
+            
+            data.append({
+                "timestamp": timestamp.isoformat(),
+                "type": event_type,
+                "content": content
+            })
+            
+            f.seek(0)
+            f.truncate()
+            json.dump(data, f, indent=2)
+    except FileNotFoundError:
+        with open(file_path, 'w') as f:
+            json.dump([{
+                "timestamp": timestamp.isoformat(),
+                "type": event_type,
+                "content": content
+            }], f, indent=2)
+
+def _write_markdown_log(file_path: str, event_type: str, content: str, timestamp: datetime.datetime):
+    timestamp_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = ""
+    if event_type == "user":
+        log_entry = f"### 👤 User ({timestamp_str}):\n{content}\n\n"
+    elif event_type == "assistant":
+        log_entry = f"### 🐧 Penguin AI ({timestamp_str}):\n{content}\n\n"
+    else:
+        log_entry = f"### System ({timestamp_str}):\n{content}\n\n"
+    
+    with open(file_path, 'a', encoding='utf-8') as f:
+        f.write(log_entry)
 
 # Create a global logger instance
-logger = logging.getLogger('Penguin')
-logger.setLevel(logging.INFO)
-
-# Prevent the logger from propagating to the root logger
-logger.propagate = False
+penguin_logger = setup_logger()

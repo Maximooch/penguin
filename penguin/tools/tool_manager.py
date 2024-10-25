@@ -428,4 +428,3 @@ class ToolManager:
                 return f"Error: {result.stderr.strip()}"
         except Exception as e:
             return f"Error executing command: {str(e)}"
-

@@ -7,6 +7,7 @@ from logging.handlers import RotatingFileHandler
 from colorama import init as colorama_init
 from typing import Dict, Any, Optional
 from chat.chat import ChatManager
+from chat.prompt_ui import PromptUI
 from llm.model_config import ModelConfig
 from utils.log_error import log_error
 from tools import ToolManager
@@ -19,6 +20,11 @@ from config import (
 from prompts import SYSTEM_PROMPT
 from core import PenguinCore
 from dotenv import load_dotenv  # type: ignore
+import warnings
+from agent.task_manager import TaskManager
+from utils.parser import ActionExecutor
+
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 """
 This module serves as the main entry point for the Penguin AI assistant.
@@ -39,6 +45,9 @@ load_dotenv()
 
 # Get the start time of the application, either from environment variable or current time
 start_time: float = float(os.environ.get('PENGUIN_START_TIME', str(time.time())))
+
+# Filter out all UserWarnings from pydantic
+warnings.filterwarnings("ignore", category=UserWarning, module="pydantic")
 
 def log_time(description: str, start: float) -> float:
     """
@@ -159,23 +168,24 @@ def init() -> ChatManager:
     penguin_core = PenguinCore(api_client, tool_manager)
     penguin_core.set_system_prompt(SYSTEM_PROMPT)
 
-    # Set up ChatManager
-    timing_info['chat_manager'] = log_time("Chat manager setup", time.time())
-    chat_manager = ChatManager(penguin_core)
+    # Set up TaskManager
+    task_manager = TaskManager(logger)
 
-    # Calculate and print timing information
-    end_time = time.time()
-    total_bootup_duration = end_time - start_time
+    # Set up ChatManager with PromptUI
+    chat_manager = ChatManager(penguin_core, PromptUI())
 
-    print("\nTiming Information:")
-    print(f"{'Component':<20} {'Time (seconds)':<15}")
-    print("-" * 35)
-    for component, time_taken in timing_info.items():
-        print(f"{component.replace('_', ' ').capitalize():<20} {time_taken:.2f}")
-    print("-" * 35)
-    print(f"{'Total bootup time':<20} {total_bootup_duration:.2f}")
+    # # Calculate and print timing information
+    # end_time = time.time()
+    # total_bootup_duration = end_time - start_time
 
-    logger.info(f"Total bootup process completed in {total_bootup_duration:.2f} seconds")
+    # print("\nTiming Information:")
+    # print(f"{'Component':<20} {'Time (seconds)':<15}")
+    # print("-" * 35)
+    # for component, time_taken in timing_info.items():
+    #     print(f"{component.replace('_', ' ').capitalize():<20} {time_taken:.2f}")
+    # print("-" * 35)
+    # print(f"{'Total bootup time':<20} {total_bootup_duration:.2f}")
+    # logger.info(f"Total bootup process completed in {total_bootup_duration:.2f} seconds")
 
     return chat_manager
 
@@ -195,8 +205,8 @@ def main() -> None:
     This function calls the init() function to set up all necessary components
     and then starts the chat interface by calling run_chat().
     """
-    init()
-    run_chat()
+    chat_manager = init()
+    chat_manager.run_chat()
 
 if __name__ == "__main__":
     main()
