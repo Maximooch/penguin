@@ -120,6 +120,7 @@ class PenguinCore:
         """
         self.system_prompt = prompt
         self.system_prompt_sent = False
+        self.api_client.set_system_prompt(prompt)
 
     def get_system_message(self, current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> str:
         """
@@ -266,8 +267,17 @@ class PenguinCore:
             )
             self.logger.debug(f"Raw API response: {response}")
 
-            assistant_response = response.choices[0].message.content
-            exit_continuation = TASK_COMPLETION_PHRASE in assistant_response
+            # Handle different response formats based on API type
+            if self.api_client.model_config.use_assistants_api:
+                # For Assistant API, preserve the raw response
+                if isinstance(response, dict):
+                    assistant_response = response.get("assistant_response", "") or str(response)
+                else:
+                    assistant_response = str(response)
+            else:
+                assistant_response = response.choices[0].message.content
+                
+            exit_continuation = TASK_COMPLETION_PHRASE in str(assistant_response)
             
             self.logger.debug(f"Parsed assistant response: {assistant_response}")
             self.logger.debug(f"Exit continuation: {exit_continuation}")
