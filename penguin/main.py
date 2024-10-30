@@ -136,11 +136,16 @@ def init() -> ChatManager:
 
     # Configure AI model
     timing_info['model_config'] = log_time("Model config setup", time.time())
+    # print("\n=== Model Config Initialization ===")
+    # print(f"Config settings: {config['model']}")
     model_config = ModelConfig(
         model=config['model']['default'],
         provider=config['model']['provider'],
-        api_base=config['api']['base_url']
+        api_base=config['api']['base_url'],
+        use_assistants_api=config['model'].get('use_assistants_api', False)
     )
+    # print(f"Model Config created: {vars(model_config)}")
+    # print("================================\n")
 
     # Set up API client
     api_client_start = time.time()

@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from litellm import completion
 from .model_config import ModelConfig
 from .provider_adapters import get_provider_adapter
@@ -64,16 +64,29 @@ class APIClient:
         # TODO: Better handling of truncation/chunking
         self.logger = logging.getLogger(__name__)
 
+        # Yes I know print statements are bad, messy, ugly, and evil. But this was necessary.
+
+        # print("\n=== API Client Initialization ===")
+        # print(f"Model: {model_config.model}")
+        # print(f"Provider: {model_config.provider}")
+        # print(f"Use Assistants API: {model_config.use_assistants_api}")
+        # print(f"API Key Present: {bool(self.api_key)}")
+        # print("===============================\n")
+
+        if model_config.use_assistants_api:
+            self.logger.info("Using OpenAI Assistants API")
+            # print("Using OpenAI Assistants API")
+        else:
+            self.logger.info("Using regular OpenAI API")
+            # print("Using regular OpenAI API")
+
     def set_system_prompt(self, prompt: str) -> None:
-        """
-        Set the system prompt to be used in future requests.
-
-        Args:
-            prompt (str): The system prompt to set.
-        """
+        """Set the system prompt and update assistant if using Assistants API"""
         self.system_prompt = prompt
+        if self.model_config.use_assistants_api and self.adapter.assistant_manager:
+            self.adapter.assistant_manager.update_system_prompt(prompt)
 
-    def create_message(self, messages: List[Dict[str, Any]], max_tokens: int = None, temperature: float = None) -> Any:
+    def create_message(self, messages: List[Dict[str, Any]], max_tokens: Optional[int] = None, temperature: Optional[float] = None) -> Any:
         """
         Create a message to send to the AI model.
 
@@ -91,36 +104,75 @@ class APIClient:
         Raises:
             Exception: If there's an error in calling the LLM API.
         """
+        # print("\n=== Creating Message ===")
+        # print(f"Using Assistants API: {self.model_config.use_assistants_api}")
+        
+        if self.model_config.use_assistants_api:
+            # print("Attempting Assistant API path...")
+            if self.adapter.assistant_manager:
+                try:
+                    content = messages[-1]['content']
+                    if isinstance(content, list):
+                        text = content[0]['text']
+                    else:
+                        text = content
+                    # print(f"Adding message to thread: {text[:100]}...")
+                    self.adapter.assistant_manager.add_message_to_thread(text)
+                    run = self.adapter.assistant_manager.run_assistant()
+                    return self.adapter.assistant_manager.process_run(run)
+                except Exception as e:
+                    # print(f"Error in Assistant API path: {str(e)}")
+                    raise
+        else:
+            # print("Using regular API path...")
+            pass
+        # print("=====================\n")
+
         try:
-            # Get model-specific configuration
-            model_specific_config = MODEL_CONFIGS.get(self.model_config.model, {})
-            
-            # Format messages using the provider-specific adapter
-            formatted_messages = self.adapter.format_messages(self._truncate_history(messages))
-            
-            # Add system prompt if it exists
-            if self.system_prompt:
-                formatted_messages = [{"role": "system", "content": self.system_prompt}] + formatted_messages
+            if self.model_config.use_assistants_api:
+                # print("\nAttempting to use Assistants API...")
+                assistant_manager = self.adapter.assistant_manager
+                if assistant_manager:
+                    # print("Assistant manager found, adding message to thread...")
+                    content = messages[-1]['content'][0]['text'] if isinstance(messages[-1]['content'], list) else messages[-1]['content']
+                    assistant_manager.add_message_to_thread(content)
+                    # print("Running assistant...")
+                    run = assistant_manager.run_assistant()
+                    # print(f"Run created with status: {run.get('status', 'unknown')}")
+                    return assistant_manager.process_run(run)
+                else:
+                    # print("Error: Assistant manager not initialized!")
+                    pass
+            else:
+                # Get model-specific configuration
+                model_specific_config = MODEL_CONFIGS.get(self.model_config.model, {})
+                
+                # Format messages using the provider-specific adapter
+                formatted_messages = self.adapter.format_messages(self._truncate_history(messages))
+                
+                # Add system prompt if it exists
+                if self.system_prompt:
+                    formatted_messages = [{"role": "system", "content": self.system_prompt}] + formatted_messages
 
-            # Prepare parameters for the completion call
-            completion_params = {
-                "model": self.model_config.model,
-                "messages": formatted_messages,
-                "max_tokens": max_tokens or self.model_config.max_tokens or model_specific_config.get('max_tokens'),
-                "temperature": temperature or self.model_config.temperature or model_specific_config.get('temperature'),
-                "api_base": self.model_config.api_base or model_specific_config.get('api_base'),
-            }
+                # Prepare parameters for the completion call
+                completion_params = {
+                    "model": self.model_config.model,
+                    "messages": formatted_messages,
+                    "max_tokens": max_tokens or self.model_config.max_tokens or model_specific_config.get('max_tokens'),
+                    "temperature": temperature or self.model_config.temperature or model_specific_config.get('temperature'),
+                    "api_base": self.model_config.api_base or model_specific_config.get('api_base'),
+                }
 
-            # Remove None values from the parameters
-            completion_params = {k: v for k, v in completion_params.items() if v is not None}
-            
-            # Add API key if it exists
-            if self.api_key:
-                completion_params["api_key"] = self.api_key
+                # Remove None values from the parameters
+                completion_params = {k: v for k, v in completion_params.items() if v is not None}
+                
+                # Add API key if it exists
+                if self.api_key:
+                    completion_params["api_key"] = self.api_key
 
-            # Make the API call
-            response = completion(**completion_params)
-            return response
+                # Make the API call
+                response = completion(**completion_params)
+                return response
 
         except Exception as e:
             error_message = f"LLM API error: {str(e)}"

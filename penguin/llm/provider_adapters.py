@@ -2,10 +2,10 @@ from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 from utils.diagnostics import diagnostics
 from litellm import completion
-# from litellm import get_assistants, create_thread, add_message, run_thread
 import time
-# from .openai_assistant import OpenAIAssistantManager
+from .openai_assistant import OpenAIAssistantManager
 from .model_config import ModelConfig
+import logging
 
 class ProviderAdapter(ABC):
     @abstractmethod
@@ -30,32 +30,34 @@ class ProviderAdapter(ABC):
 
 class OpenAIAdapter(ProviderAdapter):
     def __init__(self, model_config: ModelConfig):
+        # print("\n=== OpenAI Adapter Initialization ===")
         self.model_config = model_config
+        # print(f"Using Assistants API: {model_config.use_assistants_api}")
+        
+        if model_config.use_assistants_api:
+            try:
+                # print("Initializing Assistant Manager...")
+                self.assistant_manager = OpenAIAssistantManager(model_config)
+                # print("Assistant Manager initialized successfully")
+            except Exception as e:
+                # print(f"Failed to initialize Assistant Manager: {str(e)}")
+                # print("Falling back to regular API")
+                self.assistant_manager = None
+                model_config.use_assistants_api = False  # Force fallback to regular API
+        else:
+            # print("Using regular API (configured)")
+            self.assistant_manager = None
+        # print("===================================\n")
 
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return messages  # For now, just return the messages as-is
+        return messages  # Return the messages as-is
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
-        # Assume response is in the standard OpenAI format
-        return response['choices'][0]['message']['content'], []
-
-    # Commented out assistant/threads support methods
-    """
-    def initialize_assistant(self):
-        pass
-
-    def create_thread(self):
-        pass
-
-    def add_message_to_thread(self, content: str):
-        pass
-
-    def run_assistant(self):
-        pass
-
-    def get_assistant_response(self):
-        pass
-    """
+        if self.assistant_manager:
+            return response, []
+        else:
+            # Handle the regular OpenAI API response
+            return response['choices'][0]['message']['content'], []
 
 class LiteLLMAdapter(ProviderAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
