@@ -20,6 +20,7 @@ from .grep_search import GrepSearch
 from .lint_python import lint_python
 from .memory_search import MemorySearch
 from utils.notebook import NotebookExecutor
+from memory.summary_notes import SummaryNotes
 
 from config import WORKSPACE_PATH
 
@@ -33,6 +34,7 @@ class ToolManager:
         self.file_map = FileMap(WORKSPACE_PATH)  # Initialize with the workspace path
         self.project_root = WORKSPACE_PATH  # Set project root to workspace path
         self.notebook_executor = NotebookExecutor()
+        self.summary_notes_tool = SummaryNotes()
         self.tools = [
             {
                 "name": "create_folder",
@@ -249,6 +251,24 @@ class ToolManager:
                 },
                 "required": ["command"]
             }
+        },
+        {
+            "name": "add_summary_note",
+            "description": "Add a summary note for the current session.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "The category of the summary (e.g., 'session', 'conversation')"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The content of the summary"
+                    }
+                },
+                "required": ["category", "content"]
+            }
         }
         ]
 
@@ -278,7 +298,8 @@ class ToolManager:
             "get_file_map": lambda: self.get_file_map(tool_input.get("directory", "")),
             # "find_file": lambda: find_file(tool_input["filename"], tool_input.get("search_path", ".")),
             "lint_python": lambda: lint_python(tool_input["target"], tool_input["is_file"]),
-            "execute_command": lambda: self.execute_command(tool_input["command"])
+            "execute_command": lambda: self.execute_command(tool_input["command"]),
+            "add_summary_note": lambda: self.add_summary_note(tool_input["category"], tool_input["content"])
         }
         
         logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
@@ -428,3 +449,13 @@ class ToolManager:
                 return f"Error: {result.stderr.strip()}"
         except Exception as e:
             return f"Error executing command: {str(e)}"
+
+    def add_summary_note(self, category: str, content: str) -> str:
+        self.summary_notes_tool.add_summary(category, content)
+        return f"Summary note added: {category} - {content}"
+
+    def get_summary_notes(self) -> List[Dict[str, Any]]:
+        return self.summary_notes_tool.get_summaries()
+
+    # def archive_summary_notes(self):
+    #     self.summary_notes_tool.save_summaries()
