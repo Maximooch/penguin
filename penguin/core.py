@@ -48,6 +48,8 @@ Methods:
     enable_diagnostics() -> None
     disable_diagnostics() -> None
     reset_state() -> None
+    add_summary_note_as_system_message(category: str, content: str) -> None
+    # end_session() -> None
 """
 
 # Import necessary modules and types
@@ -151,6 +153,7 @@ class PenguinCore:
         declarative_notes = self.tool_manager.declarative_memory_tool.get_notes()
         self.logger.debug(f"Fetched declarative notes: {declarative_notes}")
         
+    
         notes_str = "\n".join([f"{note['category']}: {note['content']}" for note in declarative_notes])
         self.logger.debug(f"Formatted notes string: {notes_str}")
         
@@ -161,7 +164,13 @@ class PenguinCore:
         self.logger.debug("Generating file map...")
         file_map = self.tool_manager.file_map.get_formatted_file_map(max_files=50)  # Limit to 50 files for brevity
         self.logger.debug(f"Generated file map: {file_map}")
-        system_message = f"{self.system_prompt}\n\n{os_info}\n\nWorkspace Structure:\n{file_map}\n\nDeclarative Notes:\n{notes_str}\n\n{automode_status}\n{iteration_info}"
+
+        # Fetch and format summary notes
+        summary_notes = self.tool_manager.get_summary_notes()
+        summary_notes_str = "\n".join([f"{note['category']}: {note['content']}" for note in summary_notes])
+        self.logger.debug(f"Formatted summary notes string: {summary_notes_str}")
+
+        system_message = f"{self.system_prompt}\n\n{os_info}\n\nWorkspace Structure:\n{file_map}\n\nDeclarative Notes:\n{notes_str}\n\nSummary Notes:\n{summary_notes_str}\n\n{automode_status}\n{iteration_info}"
 
         self.logger.debug(f"Generated system message: {system_message}")
         
@@ -500,5 +509,15 @@ class PenguinCore:
         self.task_manager = TaskManager(self.logger)
         self.file_manager = FileManager()
         logger.info("PenguinCore state reset")
+
+    def add_summary_note_as_system_message(self, category: str, content: str):
+        """Add a summary note and treat it as a system message."""
+        self.tool_manager.add_summary_note(category, content)
+        self.add_message("system", {"type": "summary_note", "category": category, "content": content})
+
+    # def end_session(self):
+    #     """End the session and archive summary notes."""
+    #     self.tool_manager.archive_summary_notes()
+    #     self.reset_state()
 
 

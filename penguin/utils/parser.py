@@ -44,6 +44,7 @@ class ActionType(Enum):
     TASK_DETAILS = "task_details"
     PROJECT_DETAILS = "project_details"
     # WORKFLOW_ANALYZE = "workflow_analyze"
+    ADD_SUMMARY_NOTE = "add_summary_note"
 
     # REPL, iPython, shell, bash, zsh, networking, file_management, task management, etc. 
     # TODO: Add more actions as needed
@@ -106,6 +107,7 @@ class ActionExecutor:
             ActionType.TASK_DETAILS: lambda params: get_task_details(self.task_manager, params),
             ActionType.PROJECT_DETAILS: lambda params: self.task_manager.get_project_details(params),
             # ActionType.WORKFLOW_ANALYZE: lambda params: self.task_manager.analyze_workflow(),
+            ActionType.ADD_SUMMARY_NOTE: self._add_summary_note,
         }
         
         try:
@@ -230,3 +232,15 @@ class ActionExecutor:
 
     def _create_folder(self, params: str) -> str:
         return self.tool_manager.execute_tool("create_folder", {"path": params})
+
+    def _add_summary_note(self, params: str) -> str:
+        # If there's no explicit category, use a default one
+        if ':' not in params:
+            category = "general"
+            content = params.strip()
+        else:
+            category, content = params.split(':', 1)
+            category = category.strip()
+            content = content.strip()
+        
+        return self.tool_manager.add_summary_note(category, content)
