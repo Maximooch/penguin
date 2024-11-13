@@ -26,5 +26,11 @@ model_configs:
 
 # Add other non-sensitive configuration options as needed
 
+# Tools:
+# Toggle whatever tools you want to use, config.py then makes a list sending to core.py to inform what tools are available.
+# 3rd party tools need to have a info.yml (txt, json, whatever type of text file) linked to that particular tool. So it could be loaded as a mini prompt.
+
+
+
 
 # https://api.openai.com/v1

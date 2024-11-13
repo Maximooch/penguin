@@ -1,0 +1,45 @@
+// Penguin Cognitive Architecture
+digraph {
+	rankdir=TB
+	node [fontname=Arial shape=box style="rounded,filled"]
+	edge [fontname=Arial fontsize=10]
+	global_workspace [label="Global Workspace
+(Single LLM)" fillcolor=lightblue shape=doubleoctagon]
+	subgraph cluster_perception {
+		color=gray50 label="Perception Module" style=rounded
+		input_processor [label="Input Processor" fillcolor=lightgreen tooltip=""]
+		pattern_recognizer [label="Pattern Recognizer" fillcolor=lightgreen tooltip=""]
+	}
+	subgraph cluster_memory {
+		color=gray50 label="Memory System" style=rounded
+		working_memory [label="Working Memory" fillcolor=lightyellow tooltip=""]
+		episodic_memory [label="Episodic Memory" fillcolor=lightyellow tooltip=""]
+		semantic_memory [label="Semantic Memory" fillcolor=lightyellow tooltip=""]
+	}
+	subgraph cluster_executive {
+		color=gray50 label="Executive Function" style=rounded
+		task_planner [label="Task Planner" fillcolor=lightpink tooltip=""]
+		action_selector [label="Action Selector" fillcolor=lightpink tooltip=""]
+	}
+	subgraph cluster_action {
+		color=gray50 label="Action Module" style=rounded
+		tool_executor [label="Tool Executor" fillcolor=lightgrey tooltip=""]
+		feedback_analyzer [label="Feedback Analyzer" fillcolor=lightgrey tooltip=""]
+	}
+	state_controller [label="State Machine
+Controller" fillcolor=orange shape=hexagon]
+	global_workspace -> state_controller [label="" style=bold]
+	input_processor -> pattern_recognizer [label="" style=solid]
+	pattern_recognizer -> global_workspace [label="" style=solid]
+	working_memory -> global_workspace [label="" style=solid]
+	global_workspace -> episodic_memory [label="" style=solid]
+	global_workspace -> semantic_memory [label="" style=solid]
+	global_workspace -> task_planner [label="" style=solid]
+	task_planner -> action_selector [label="" style=solid]
+	action_selector -> tool_executor [label="" style=solid]
+	tool_executor -> feedback_analyzer [label="" style=solid]
+	feedback_analyzer -> global_workspace [label="" style=solid]
+	state_controller -> task_planner [label="" style=dashed]
+	state_controller -> working_memory [label="" style=dashed]
+	state_controller -> tool_executor [label="" style=dashed]
+}
