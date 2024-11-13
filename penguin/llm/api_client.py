@@ -249,6 +249,11 @@ class APIClient:
         except Exception as e:
             return f"Error encoding image: {str(e)}"
 
+    def reset(self):
+        """Reset the client state"""
+        self.messages = []
+        self.set_system_prompt(self.system_prompt)
+
 # The following code is commented out and represents an older version of the API client.
 # It's kept for reference but is not currently in use.
 """

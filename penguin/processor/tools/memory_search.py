@@ -70,31 +70,8 @@ class MemorySearch:
             self.load_or_initialize_models()
 
     def load_or_initialize_models(self):
-        """Try to load existing models first, only initialize if needed."""
-        try:
-            model_path = os.path.join(self.embeddings_dir, 'sentence_transformer')
-            if os.path.exists(model_path):
-                self.model = SentenceTransformer(model_path)
-                logger.info("Loaded cached sentence transformer model")
-            else:
-                self.model = SentenceTransformer('all-MiniLM-L6-v2')
-                self.model.save(model_path)
-                logger.info("Downloaded and cached sentence transformer model")
-
-            # Try loading other models
-            if os.path.exists(os.path.join(self.embeddings_dir, 'tfidf_vectorizer.pkl')):
-                with open(os.path.join(self.embeddings_dir, 'tfidf_vectorizer.pkl'), 'rb') as f:
-                    self.tfidf_vectorizer = pickle.load(f)
-                self.tfidf_matrix = scipy.sparse.load_npz(os.path.join(self.embeddings_dir, 'tfidf_matrix.npz'))
-                self.embeddings = np.load(os.path.join(self.embeddings_dir, 'embeddings.npy'))
-                logger.info("Loaded cached TF-IDF and embeddings")
-            else:
-                # Initialize if cached models don't exist
-                self.initialize_models()
-                logger.info("Initialized new models")
-        except Exception as e:
-            logger.warning(f"Error loading cached models: {e}, initializing new ones")
-            self.initialize_models()
+        # Always re-initialize models to include recent logs
+        self.initialize_models()
 
     def load_logs(self) -> List[Dict[str, Any]]:
         """

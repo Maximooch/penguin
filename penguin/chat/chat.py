@@ -19,74 +19,102 @@ class ChatManager:
         self.action_executor = core.action_executor
         self.logger = penguin_logger
 
-    def chat_with_penguin(self, user_input: str, message_count: int, image_path: Optional[str] = None, 
-                          current_iteration: Optional[int] = None, max_iterations: Optional[int] = None) -> Tuple[Dict[str, Any], bool]:
+    async def chat_with_penguin(
+        self, 
+        user_input: str, 
+        message_count: int, 
+        image_path: Optional[str] = None,
+        current_iteration: Optional[int] = None, 
+        max_iterations: Optional[int] = None
+    ) -> Tuple[Dict[str, Any], bool]:
         try:
-            response_dict, exit_continuation = self.core.get_response(user_input, image_path, current_iteration, max_iterations)
+            response_dict, exit_continuation = await self.core.get_response(
+                user_input, 
+                image_path, 
+                current_iteration, 
+                max_iterations
+            )
             log_event(self.logger, "assistant", f"Assistant response: {response_dict}")
+            print(f"Assistant response: {response_dict}")
             
             if not isinstance(response_dict, dict):
                 response_dict = {"assistant_response": str(response_dict), "action_results": []}
             
-            assistant_response = response_dict.get("assistant_response", "")
-            actions = parse_action(assistant_response)
-            
-            action_results = []
-            for action in actions:
-                result = self.core.action_executor.execute_action(action)
-                if result is not None:
-                    action_results.append({
-                        "action": action["name"] if isinstance(action, dict) and "name" in action else "unknown",
-                        "result": str(result)
-                    })
-            
-            response_dict["action_results"] = response_dict.get("action_results", []) + action_results
-            
             if not current_iteration:
                 log_event(self.logger, "user", f"User input: {user_input}")
+                print(f"User input: {user_input}")
                 log_event(self.logger, "assistant", f"Assistant response: {response_dict}")
+                print(f"Assistant response: {response_dict}")
             
             return response_dict, exit_continuation
             
         except Exception as e:
             error_message = f"An error occurred: {str(e)}"
             log_event(self.logger, "error", error_message)
+            print(f"Error: {error_message}")
             error_response = {"assistant_response": error_message, "action_results": []}
             if not current_iteration:
                 log_event(self.logger, "system", f"Error: {str(e)}")
+                print(f"System error: {str(e)}")
             return error_response, False
 
-    def run_chat(self) -> None:
+    async def run_chat(self) -> None:
+        print("\n=== Penguin AI Chat Interface ===")
         self.logger.info("Starting Penguin AI")
-        self.ui.print_welcome_message()
+        print("Starting Penguin AI")
+        self.logger.debug("Entered ChatManager.run_chat()")
+        print("Entered ChatManager.run_chat()")
+        print("Printing welcome message...")
         
+        try:
+            self.logger.debug("About to print welcome message")
+            print("About to print welcome message")
+            self.ui.print_welcome_message()
+            self.logger.debug("Welcome message printed successfully")
+            print("Welcome message printed successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to print welcome message: {str(e)}")
+            print(f"Failed to print welcome message: {str(e)}")
+            
         message_count = 0
+        
+        print("Entering main chat loop...")
+        self.logger.debug("Starting main chat loop")
+        print("Starting main chat loop")
         
         while True:
             message_count += 1
             try:
-                user_input = self.ui.get_user_input(message_count)
-                
-                if user_input.lower() == EXIT_COMMAND:
-                    self.handle_exit(message_count)
-                    break
+                self.logger.debug(f"Starting iteration {message_count}")
+                print(f"Starting iteration {message_count}")
+                print(f"\nWaiting for user input [{message_count}]...")
+                self.logger.debug("About to call get_user_input")
+                print("About to call get_user_input")
+                user_input = await self.ui.get_user_input(message_count)
+                self.logger.debug(f"Received user input: {user_input}")
+                print(f"Received user input: {user_input}")
                 
                 if user_input.lower() == IMAGE_COMMAND:
-                    self.handle_image_input(message_count)
+                    await self.handle_image_input(message_count)
                 elif user_input.lower().startswith(TASK_COMMAND):
-                    self.core.action_executor.handle_task_command(user_input, message_count)
+                    await self.core.action_executor.handle_task_command(user_input, message_count)
                 elif user_input.lower().startswith(PROJECT_COMMAND):
-                    self.core.action_executor.handle_project_command(user_input, message_count)
+                    await self.core.action_executor.handle_project_command(user_input, message_count)
                 elif user_input.lower() == RESUME_COMMAND:
-                    self.handle_resume(message_count)
+                    await self.handle_resume(message_count)
                 else:
-                    response, _ = self.chat_with_penguin(user_input, message_count)
+                    response, _ = await self.chat_with_penguin(user_input, message_count)
                     self.ui.process_and_display_response(response)
             except Exception as e:
-                self.handle_error(str(e), message_count)
+                    # self.logger.error(f"Error in chat loop: {str(e)}")
+                    # self.logger.error(f"Error type: {type(e)}")
+                    print(f"Error in chat loop: {str(e)}")
+                    print(f"Error type: {type(e)}")
+                    await self.handle_error(str(e), message_count)
 
-    def handle_exit(self, message_count: int) -> None:
+    async def handle_exit(self, message_count: int) -> None:
         log_event(self.logger, "system", "Exiting chat session")
+        print("Exiting chat session")
         self.ui.print_bordered_message(
             "Thank you for chatting. Goodbye!", 
             self.ui.PENGUIN_COLOR, 
@@ -94,18 +122,19 @@ class ChatManager:
             message_count
         )
 
-    def handle_image_input(self, message_count: int) -> None:
+    async def handle_image_input(self, message_count: int) -> None:
         image_path = self.ui.get_image_path()
         if os.path.isfile(image_path):
             user_input = self.ui.get_image_prompt()
-            response, _ = self.chat_with_penguin(user_input, message_count, image_path)
+            response, _ = await self.chat_with_penguin(user_input, message_count, image_path)
             log_event(self.logger, "assistant", f"Assistant response (with image): {response}")
+            print(f"Assistant response (with image): {response}")
             self.ui.print_bordered_message(f"Assistant response (with image):\n{response}", self.ui.PENGUIN_COLOR, "system", message_count)
             self.ui.print_code(response, "json")
         else:
             self.ui.print_bordered_message("Invalid image path. Please try again.", self.ui.PENGUIN_COLOR, "system", message_count)
 
-    def handle_resume(self, message_count: int) -> None:
+    async def handle_resume(self, message_count: int) -> None:
         latest_log = self.get_latest_log_file()
         if latest_log:
             with open(latest_log, 'r', encoding='utf-8') as f:
@@ -124,13 +153,15 @@ class ChatManager:
                 response = "I've loaded the previous conversation, but it seems to be empty. How would you like to start?"
             
             log_event(self.logger, "assistant", f"Assistant response: {response}")
+            print(f"Assistant response: {response}")
             self.ui.print_bordered_message(f"Assistant response:\n{response}", self.ui.PENGUIN_COLOR, "system", message_count)
             self.ui.print_code(response, "json")
         else:
             self.ui.print_bordered_message("No previous conversation found.", self.ui.PENGUIN_COLOR, "system", message_count)
 
-    def handle_error(self, error_message: str, message_count: int) -> None:
+    async def handle_error(self, error_message: str, message_count: int) -> None:
         log_event(self.logger, "error", error_message)
+        print(f"Error: {error_message}")
         self.ui.print_bordered_message(f"An error occurred: {error_message}", self.ui.TOOL_COLOR, "system", message_count)
         self.core.reset_state()
 

@@ -1,4 +1,5 @@
-from prompt_toolkit import PromptSession
+from prompt_toolkit.shortcuts.prompt import PromptSession
+from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
@@ -25,11 +26,15 @@ class PromptUI:
     PENGUIN_EMOJI = "🐧"
 
     def __init__(self):
+        """Initialize the prompt UI with history, auto-suggestions and command completion"""
+        logger.debug("Initializing PromptUI...")
+        print("Initializing PromptUI...")
+        
         self.style = Style.from_dict({
             'prompt': f'fg:{self.USER_COLOR}',
             'command': 'fg:white bold',
         })
-        
+
         # Command completion
         self.commands = WordCompleter([
             'exit', 'image', 'task', 'project', 'resume',
@@ -37,18 +42,54 @@ class PromptUI:
             'project status', 'project list'
         ])
         
-        # Initialize prompt session with history
-        history_file = os.path.expanduser('~/.penguin_history')
-        self.session = PromptSession(
-            history=FileHistory(history_file),
-            auto_suggest=AutoSuggestFromHistory(),
-            completer=self.commands,
-            style=self.style
-        )
+        # Don't create the session yet
+        self.session = None
 
-    def get_user_input(self, message_number: int) -> str:
-        prompt_message = HTML(f'<prompt>👤 You (Message {message_number}): </prompt>')
-        return self.session.prompt(prompt_message, style=self.style)
+    def _ensure_session(self):
+        """Lazily initialize the prompt session when needed"""
+        if self.session is None:
+            try:
+                logger.debug("Creating new PromptSession")
+                print("Creating new PromptSession")
+                history_file = os.path.expanduser('~/.penguin_history')
+                logger.debug(f"Using history file: {history_file}")
+                print(f"Using history file: {history_file}")
+                
+                self.session = PromptSession(
+                    history=FileHistory(history_file),
+                    auto_suggest=AutoSuggestFromHistory(),
+                    completer=self.commands,
+                    style=self.style,
+                    enable_history_search=True
+                )
+                logger.debug("PromptSession created successfully")
+                print("PromptSession created successfully")
+            except Exception as e:
+                logger.error(f"Error creating PromptSession: {str(e)}")
+                logger.error(f"Error type: {type(e)}")
+                logger.error(f"Error attributes: {dir(e)}")
+                print(f"Error creating PromptSession: {str(e)}")
+                print(f"Error type: {type(e)}")
+                raise
+
+    async def get_user_input(self, message_count: int) -> str:
+        """Get user input with proper formatting and error handling"""
+        try:
+            self._ensure_session()  # Initialize session if needed
+            with patch_stdout():
+                prompt_text = f"[{self.PENGUIN_COLOR}]Penguin [{message_count}]:[/] "
+                user_input = await self.session.prompt_async(prompt_text)
+            return user_input.strip()
+        except EOFError:
+            return "exit"
+        except Exception as e:
+            logger.error(f"Error getting user input: {str(e)}")
+            print(f"Error getting user input: {str(e)}")
+            logger.error(f"Error type: {type(e)}")
+            print(f"Error type: {type(e)}")
+            logger.error(f"Error attributes: {dir(e)}")
+            print(f"Error attributes: {dir(e)}")
+            raise
 
     def print_bordered_message(self, message: str, color: str, role: str, message_number: int):
         """Display a message in a bordered panel with proper formatting"""
@@ -74,7 +115,7 @@ class PromptUI:
             console.print(panel)
         except Exception as e:
             # Fallback to plain text
-            console.print(f"[{color}]{header}[/]\n{message}")
+            console.print(Panel(message, title=header, border_style=color, width=width))
 
     def print_code(self, code: str, language: str):
         width = console.width - 4
