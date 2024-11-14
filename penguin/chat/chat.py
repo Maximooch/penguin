@@ -28,35 +28,37 @@ class ChatManager:
         max_iterations: Optional[int] = None
     ) -> Tuple[Dict[str, Any], bool]:
         try:
+            # First process the input
+            await self.core.process_input({
+                "text": user_input,
+                "image_path": image_path
+            })
+            
+            # Then get response
             response_dict, exit_continuation = await self.core.get_response(
-                user_input, 
-                image_path, 
-                current_iteration, 
-                max_iterations
+                current_iteration=current_iteration, 
+                max_iterations=max_iterations
             )
-            log_event(self.logger, "assistant", f"Assistant response: {response_dict}")
-            print(f"Assistant response: {response_dict}")
             
             if not isinstance(response_dict, dict):
                 response_dict = {"assistant_response": str(response_dict), "action_results": []}
             
-            if not current_iteration:
-                log_event(self.logger, "user", f"User input: {user_input}")
-                print(f"User input: {user_input}")
-                log_event(self.logger, "assistant", f"Assistant response: {response_dict}")
-                print(f"Assistant response: {response_dict}")
+            # Single logging point
+            log_event(self.logger, "user", f"User input: {user_input}")
+            log_event(self.logger, "assistant", f"Assistant response: {response_dict}")
             
             return response_dict, exit_continuation
             
         except Exception as e:
-            error_message = f"An error occurred: {str(e)}"
-            log_event(self.logger, "error", error_message)
-            print(f"Error: {error_message}")
-            error_response = {"assistant_response": error_message, "action_results": []}
-            if not current_iteration:
-                log_event(self.logger, "system", f"Error: {str(e)}")
-                print(f"System error: {str(e)}")
-            return error_response, False
+            error_info = await self.core._handle_error(e, {
+                "method": "chat_with_penguin",
+                "user_input": user_input,
+                "image_path": image_path,
+                "iteration": current_iteration,
+                "max_iterations": max_iterations
+            })
+            await self.handle_error(error_info, message_count)
+            return {"assistant_response": error_info["message"], "action_results": []}, False
 
     async def run_chat(self) -> None:
         print("\n=== Penguin AI Chat Interface ===")
@@ -159,10 +161,18 @@ class ChatManager:
         else:
             self.ui.print_bordered_message("No previous conversation found.", self.ui.PENGUIN_COLOR, "system", message_count)
 
-    async def handle_error(self, error_message: str, message_count: int) -> None:
+    async def handle_error(self, error_info: Dict[str, str], message_count: int) -> None:
+        error_message = error_info["message"]
+        log_path = error_info.get("log_path")
+        
         log_event(self.logger, "error", error_message)
         print(f"Error: {error_message}")
-        self.ui.print_bordered_message(f"An error occurred: {error_message}", self.ui.TOOL_COLOR, "system", message_count)
+        
+        error_display = f"An error occurred: {error_message}"
+        if log_path:
+            error_display += f"\nError details logged to: {log_path}"
+        
+        self.ui.print_bordered_message(error_display, self.ui.TOOL_COLOR, "system", message_count)
         self.core.reset_state()
 
     def get_latest_log_file(self) -> Optional[str]:

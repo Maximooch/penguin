@@ -68,18 +68,14 @@ class CognitionSystem:
     async def get_response(
         self, 
         conversation_history: list,
-        user_input: str, 
-        image_path: Optional[str] = None,
         current_iteration: Optional[int] = None, 
         max_iterations: Optional[int] = None
     ) -> Tuple[Dict[str, Any], bool]:
         """
-        Generate and process a response to user input through the LLM.
+        Generate and process a response through the LLM.
         
         Args:
             conversation_history: List of conversation messages
-            user_input: Current user input
-            image_path: Optional path to image for vision models
             current_iteration: Current iteration count for multi-step tasks
             max_iterations: Maximum allowed iterations
             
@@ -87,11 +83,6 @@ class CognitionSystem:
             Tuple[Dict[str, Any], bool]: Response data and continuation flag
         """
         try:
-            # Track token usage
-            if user_input:
-                input_tokens = self.diagnostics.count_tokens(user_input)
-                self.diagnostics.update_tokens('user_input', input_tokens, 0)
-
             # Get raw response from API
             raw_response = self.api_client.create_message(
                 messages=conversation_history,
@@ -120,8 +111,7 @@ class CognitionSystem:
                 "actions": actions,
                 "metadata": {
                     "iteration": current_iteration,
-                    "max_iterations": max_iterations,
-                    "has_image": image_path is not None
+                    "max_iterations": max_iterations
                 }
             }
             
