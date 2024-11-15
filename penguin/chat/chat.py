@@ -4,6 +4,9 @@ from utils.logs import penguin_logger, log_event
 from chat.prompt_ui import PromptUI
 from utils.parser import ActionExecutor, parse_action
 import os
+import logging
+import time
+import asyncio
 
 # Constants
 EXIT_COMMAND = 'exit'
@@ -16,8 +19,41 @@ class ChatManager:
     def __init__(self, core: PenguinCore, ui: PromptUI):
         self.core = core
         self.ui = ui
-        self.action_executor = core.action_executor
-        self.logger = penguin_logger
+        self.logger = logging.getLogger(__name__)
+        self._is_processing = False
+        self._interrupt_requested = False
+        
+    async def run_chat(self):
+        """Main chat loop with async support"""
+        self.ui.print_welcome_message()
+        message_count = 1
+        
+        while True:
+            try:
+                user_input = await self.ui.get_user_input(message_count)
+                
+                if user_input.lower() == EXIT_COMMAND:
+                    break
+                    
+                response_dict, exit_flag = await self.chat_with_penguin(
+                    user_input=user_input,
+                    message_count=message_count
+                )
+                
+                if exit_flag:
+                    break
+                    
+                self.ui.process_and_display_response(response_dict)
+                message_count += 1
+                
+            except KeyboardInterrupt:
+                if self._is_processing:
+                    self._interrupt_requested = True
+                    print("\nInterrupting current operation...")
+                else:
+                    print("\nUse 'exit' to close Penguin")
+            except Exception as e:
+                await self.handle_error({"message": str(e)}, message_count)
 
     async def chat_with_penguin(
         self, 
@@ -28,22 +64,37 @@ class ChatManager:
         max_iterations: Optional[int] = None
     ) -> Tuple[Dict[str, Any], bool]:
         try:
-            # First process the input
-            await self.core.process_input({
-                "text": user_input,
-                "image_path": image_path
-            })
+            self._is_processing = True
+            self._interrupt_requested = False
             
-            # Then get response
-            response_dict, exit_continuation = await self.core.get_response(
-                current_iteration=current_iteration, 
-                max_iterations=max_iterations
-            )
+            # Process input with interrupt check
+            try:
+                await self.core.process_input({
+                    "text": user_input,
+                    "image_path": image_path
+                })
+            except KeyboardInterrupt:
+                self._interrupt_requested = True
             
+            if self._interrupt_requested:
+                return self._create_interrupt_response("Processing interrupted")
+            
+            # Get response with interrupt check
+            try:
+                response_dict, exit_continuation = await self.core.get_response(
+                    current_iteration=current_iteration, 
+                    max_iterations=max_iterations
+                )
+            except KeyboardInterrupt:
+                self._interrupt_requested = True
+                
+            if self._interrupt_requested:
+                return self._create_interrupt_response("Response generation interrupted")
+            
+            # Process response
             if not isinstance(response_dict, dict):
                 response_dict = {"assistant_response": str(response_dict), "action_results": []}
             
-            # Single logging point
             log_event(self.logger, "user", f"User input: {user_input}")
             log_event(self.logger, "assistant", f"Assistant response: {response_dict}")
             
@@ -59,60 +110,19 @@ class ChatManager:
             })
             await self.handle_error(error_info, message_count)
             return {"assistant_response": error_info["message"], "action_results": []}, False
-
-    async def run_chat(self) -> None:
-        print("\n=== Penguin AI Chat Interface ===")
-        self.logger.info("Starting Penguin AI")
-        print("Starting Penguin AI")
-        self.logger.debug("Entered ChatManager.run_chat()")
-        print("Entered ChatManager.run_chat()")
-        print("Printing welcome message...")
-        
-        try:
-            self.logger.debug("About to print welcome message")
-            print("About to print welcome message")
-            self.ui.print_welcome_message()
-            self.logger.debug("Welcome message printed successfully")
-            print("Welcome message printed successfully")
-        except Exception as e:
-            self.logger.error(f"Failed to print welcome message: {str(e)}")
-            print(f"Failed to print welcome message: {str(e)}")
+        finally:
+            self._is_processing = False
             
-        message_count = 0
-        
-        print("Entering main chat loop...")
-        self.logger.debug("Starting main chat loop")
-        print("Starting main chat loop")
-        
-        while True:
-            message_count += 1
-            try:
-                self.logger.debug(f"Starting iteration {message_count}")
-                print(f"Starting iteration {message_count}")
-                print(f"\nWaiting for user input [{message_count}]...")
-                self.logger.debug("About to call get_user_input")
-                print("About to call get_user_input")
-                user_input = await self.ui.get_user_input(message_count)
-                self.logger.debug(f"Received user input: {user_input}")
-                print(f"Received user input: {user_input}")
-                
-                if user_input.lower() == IMAGE_COMMAND:
-                    await self.handle_image_input(message_count)
-                elif user_input.lower().startswith(TASK_COMMAND):
-                    await self.core.action_executor.handle_task_command(user_input, message_count)
-                elif user_input.lower().startswith(PROJECT_COMMAND):
-                    await self.core.action_executor.handle_project_command(user_input, message_count)
-                elif user_input.lower() == RESUME_COMMAND:
-                    await self.handle_resume(message_count)
-                else:
-                    response, _ = await self.chat_with_penguin(user_input, message_count)
-                    self.ui.process_and_display_response(response)
-            except Exception as e:
-                    # self.logger.error(f"Error in chat loop: {str(e)}")
-                    # self.logger.error(f"Error type: {type(e)}")
-                    print(f"Error in chat loop: {str(e)}")
-                    print(f"Error type: {type(e)}")
-                    await self.handle_error(str(e), message_count)
+    def _create_interrupt_response(self, message: str) -> Tuple[Dict[str, Any], bool]:
+        """Create a standardized interrupt response"""
+        return {
+            "assistant_response": f"{message}. How can I help?",
+            "action_results": [],
+            "metadata": {
+                "interrupted": True,
+                "timestamp": time.time()
+            }
+        }, True
 
     async def handle_exit(self, message_count: int) -> None:
         log_event(self.logger, "system", "Exiting chat session")

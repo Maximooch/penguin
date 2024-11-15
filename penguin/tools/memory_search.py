@@ -38,13 +38,13 @@ class MemorySearch:
             try:
                 self.ensure_logs_loaded()
                 if not self.logs:
-                    logger.warning("No logs found. Skipping model initialization.")
+                    # logger.warning("No logs found. Skipping model initialization.")
                     self.initialization_complete.set()
                     return
                 self.ensure_models_loaded()
                 self.save_models()
                 self.initialization_complete.set()
-                logger.info("Memory search initialization completed successfully.")
+                # logger.info("Memory search initialization completed successfully.")
                 return
             except Exception as e:
                 logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
@@ -57,9 +57,9 @@ class MemorySearch:
         Wait until the logs and models are fully initialized.
         """
         if not self.initialization_complete.is_set():
-            logger.info("Initializing memory search models, please wait...")
+            # logger.info("Initializing memory search models, please wait...")
             self.initialization_complete.wait()
-        logger.info("Memory search initialization completed.")
+        # logger.info("Memory search initialization completed.")
 
     def ensure_logs_loaded(self):
         if self.logs is None:
@@ -75,11 +75,11 @@ class MemorySearch:
             model_path = os.path.join(self.embeddings_dir, 'sentence_transformer')
             if os.path.exists(model_path):
                 self.model = SentenceTransformer(model_path)
-                logger.info("Loaded cached sentence transformer model")
+                # logger.info("Loaded cached sentence transformer model")
             else:
                 self.model = SentenceTransformer('all-MiniLM-L6-v2')
                 self.model.save(model_path)
-                logger.info("Downloaded and cached sentence transformer model")
+                # logger.info("Downloaded and cached sentence transformer model")
 
             # Try loading other models
             if os.path.exists(os.path.join(self.embeddings_dir, 'tfidf_vectorizer.pkl')):
@@ -87,11 +87,11 @@ class MemorySearch:
                     self.tfidf_vectorizer = pickle.load(f)
                 self.tfidf_matrix = scipy.sparse.load_npz(os.path.join(self.embeddings_dir, 'tfidf_matrix.npz'))
                 self.embeddings = np.load(os.path.join(self.embeddings_dir, 'embeddings.npy'))
-                logger.info("Loaded cached TF-IDF and embeddings")
+                # logger.info("Loaded cached TF-IDF and embeddings")
             else:
                 # Initialize if cached models don't exist
                 self.initialize_models()
-                logger.info("Initialized new models")
+                # logger.info("Initialized new models")
         except Exception as e:
             logger.warning(f"Error loading cached models: {e}, initializing new ones")
             self.initialize_models()
@@ -148,7 +148,7 @@ class MemorySearch:
                 scipy.sparse.save_npz(os.path.join(self.embeddings_dir, 'tfidf_matrix.npz'), self.tfidf_matrix)
             if self.embeddings is not None and len(self.embeddings) > 0:
                 np.save(os.path.join(self.embeddings_dir, 'embeddings.npy'), self.embeddings)
-            logger.info(f"Models saved successfully to {self.embeddings_dir}")
+            # logger.info(f"Models saved successfully to {self.embeddings_dir}")
         except Exception as e:
             logger.error(f"Error saving models: {str(e)}")
 

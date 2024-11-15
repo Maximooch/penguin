@@ -28,6 +28,8 @@ class ProviderAdapter(ABC):
     def count_tokens(self, text: str) -> int:
         return diagnostics.count_tokens(text)
 
+#TODO: implement streaming abstraction
+
 class OpenAIAdapter(ProviderAdapter):
     def __init__(self, model_config: ModelConfig):
         # print("\n=== OpenAI Adapter Initialization ===")
