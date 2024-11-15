@@ -64,13 +64,13 @@ class PenguinCore:
         task_manager: TaskManager
     ):
         """Initialize PenguinCore with required components."""
-        print("Initializing PenguinCore...")
+        # print("Initializing PenguinCore...")
         self.api_client = api_client
         self.tool_manager = tool_manager
         self.task_manager = task_manager
-        print("Creating ActionExecutor...")
+        # print("Creating ActionExecutor...")
         self.action_executor = ActionExecutor(tool_manager, task_manager)
-        print("ActionExecutor created successfully")
+        # print("ActionExecutor created successfully")
         self.messages = []
         
         # Initialize core systems
@@ -84,6 +84,7 @@ class PenguinCore:
         # State
         self.system_prompt = ""
         self.initialized = True
+        self._interrupted = False
         logger.info("PenguinCore initialized successfully")
 
     def set_system_prompt(self, prompt: str) -> None:
@@ -98,6 +99,10 @@ class PenguinCore:
         if current_iteration is not None and max_iterations is not None:
             message += f"\n\nCurrent iteration: {current_iteration}/{max_iterations}"
         return message
+
+    def _check_interrupt(self) -> bool:
+        """Check if execution has been interrupted"""
+        return self._interrupted
 
     async def process_input(self, input_data: Dict) -> None:
         """
@@ -155,13 +160,43 @@ class PenguinCore:
             # Parse actions without executing
             actions = parse_action(assistant_response)
             
-            # Execute actions
+            # Execute actions with interrupt checking
             action_results = []
             for action in actions:
-                result = self.action_executor.execute_action(action)
-                logger.debug(f"Action executed: {action.action_type.value}, Result: {result}")
-                if result is not None:
-                    action_results.append({"action": action.action_type.value, "result": str(result)})
+                if self._check_interrupt():
+                    action_results.append({
+                        "action": action.action_type.value,
+                        "result": "Action skipped due to interrupt",
+                        "status": "interrupted"
+                    })
+                    continue
+                    
+                try:
+                    result = self.action_executor.execute_action(action)
+                    if result is not None:
+                        action_results.append({
+                            "action": action.action_type.value,
+                            "result": str(result),
+                            "status": "completed"
+                        })
+                except Exception as e:
+                    action_results.append({
+                        "action": action.action_type.value,
+                        "result": f"Error executing action: {str(e)}",
+                        "status": "error"
+                    })
+                    logger.error(f"Action execution error: {str(e)}")
+            
+            # Check for interrupt after actions
+            if self._check_interrupt():
+                return {
+                    "assistant_response": "Operation interrupted during action execution",
+                    "action_results": action_results,
+                    "metadata": {
+                        "interrupted": True,
+                        "completed_actions": len([a for a in action_results if a["status"] == "completed"])
+                    }
+                }, True
             
             # Construct response
             full_response = {
@@ -257,7 +292,9 @@ class PenguinCore:
         return await self.task_manager.create_project(name, description)
 
     def reset_state(self):
-        """Reset the conversation state"""
+        """Reset the core state"""
         self.messages = []
-        self.api_client.reset()
+        self._interrupted = False
+        self.conversation.reset()
         self.tool_manager.reset()
+        self.action_executor.reset()

@@ -1,18 +1,17 @@
-from prompt_toolkit.shortcuts.prompt import PromptSession
-from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.styles import Style
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import WordCompleter
-from rich.console import Console
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.syntax import Syntax
+from prompt_toolkit import PromptSession  # type: ignore
+# from prompt_toolkit.patch_stdout import patch_stdout  # type: ignore
+from prompt_toolkit.styles import Style  # type: ignore
+from prompt_toolkit.formatted_text import HTML  # type: ignore
+from prompt_toolkit.history import FileHistory  # type: ignore
+from rich.console import Console  # type: ignore
+from rich.markdown import Markdown  # type: ignore
+from rich.panel import Panel  # type: ignore
+from rich.syntax import Syntax  # type: ignore
 import os
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 import re
+import asyncio
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -26,82 +25,37 @@ class PromptUI:
     PENGUIN_EMOJI = "🐧"
 
     def __init__(self):
-        """Initialize the prompt UI with history, auto-suggestions and command completion"""
-        logger.debug("Initializing PromptUI...")
-        print("Initializing PromptUI...")
-        
-        self.style = Style.from_dict({
-            'prompt': f'fg:{self.USER_COLOR}',
-            'command': 'fg:white bold',
+        history_file = os.path.expanduser('~/.penguin_history')
+        self.session = PromptSession(history=FileHistory(history_file))
+        self.style = self._create_style()
+        self.console = Console()
+
+    def _create_style(self):
+        return Style.from_dict({
+            'prompt': '#0000ff',  # Blue
+            'penguin': '#0000ff bold',
         })
 
-        # Command completion
-        self.commands = WordCompleter([
-            'exit', 'image', 'task', 'project', 'resume',
-            'task create', 'task run', 'task list', 'task status',
-            'project status', 'project list'
-        ])
-        
-        # Don't create the session yet
-        self.session = None
-
-    def _ensure_session(self):
-        """Lazily initialize the prompt session when needed"""
-        if self.session is None:
-            try:
-                logger.debug("Creating new PromptSession")
-                print("Creating new PromptSession")
-                history_file = os.path.expanduser('~/.penguin_history')
-                logger.debug(f"Using history file: {history_file}")
-                print(f"Using history file: {history_file}")
-                
-                self.session = PromptSession(
-                    history=FileHistory(history_file),
-                    auto_suggest=AutoSuggestFromHistory(),
-                    completer=self.commands,
-                    style=self.style,
-                    enable_history_search=True
-                )
-                logger.debug("PromptSession created successfully")
-                print("PromptSession created successfully")
-            except Exception as e:
-                logger.error(f"Error creating PromptSession: {str(e)}")
-                logger.error(f"Error type: {type(e)}")
-                logger.error(f"Error attributes: {dir(e)}")
-                print(f"Error creating PromptSession: {str(e)}")
-                print(f"Error type: {type(e)}")
-                raise
-
     async def get_user_input(self, message_count: int) -> str:
-        """Get user input with proper formatting and error handling"""
         try:
-            self._ensure_session()  # Initialize session if needed
-            with patch_stdout():
-                prompt_text = f"[{self.PENGUIN_COLOR}]Penguin [{message_count}]:[/] "
-                user_input = await self.session.prompt_async(prompt_text)
+            user_input = await self.session.prompt_async(
+                HTML(f"<penguin>Penguin [{message_count}]:</penguin> "),
+                style=self.style
+            )
             return user_input.strip()
-        except EOFError:
+        except (EOFError, KeyboardInterrupt):
             return "exit"
-        except Exception as e:
-            logger.error(f"Error getting user input: {str(e)}")
-            print(f"Error getting user input: {str(e)}")
-            logger.error(f"Error type: {type(e)}")
-            print(f"Error type: {type(e)}")
-            logger.error(f"Error attributes: {dir(e)}")
-            print(f"Error attributes: {dir(e)}")
-            raise
 
-    def print_bordered_message(self, message: str, color: str, role: str, message_number: int):
+    def print_bordered_message(self, message: str, color: str, role: str, message_type: str | int):
         """Display a message in a bordered panel with proper formatting"""
         emoji_icon = self.PENGUIN_EMOJI if role in ["penguin", "assistant", "system"] else "👤"
-        header = f"{emoji_icon} {role.capitalize()} ({message_number}):"
+        header = f"{emoji_icon} {role.capitalize()} ({message_type}):"
         
         # Convert message to string and clean it
         if isinstance(message, (dict, list)):
             message = str(message)
         message = str(message).strip()
         
-        width = console.width - 4
         try:
             # Try markdown first
             panel = Panel(
@@ -110,17 +64,23 @@ class PromptUI:
                 title_align="left",
                 border_style=color,
                 expand=False,
-                width=width
+                width=self.console.width - 4
             )
-            console.print(panel)
+            self.console.print(panel)
         except Exception as e:
             # Fallback to plain text
-            console.print(Panel(message, title=header, border_style=color, width=width))
+            self.console.print(Panel(
+                message, 
+                title=header,
+                title_align="left",
+                border_style=color, 
+                width=self.console.width - 4
+            ))
 
     def print_code(self, code: str, language: str):
-        width = console.width - 4
+        width = self.console.width - 4
         syntax = Syntax(code, language, theme="monokai", line_numbers=True, word_wrap=True)
-        console.print(Panel(syntax, expand=False, border_style=self.PENGUIN_COLOR, width=width))
+        self.console.print(Panel(syntax, expand=False, border_style=self.PENGUIN_COLOR, width=width))
 
     def print_welcome_message(self):
         welcome_text = (
@@ -151,43 +111,55 @@ class PromptUI:
 
     def process_and_display_response(self, response: Dict[str, Any]):
         """Process and display the AI response with proper formatting"""
-        if isinstance(response, dict):
-            # Extract the main response and action results
-            main_response = response.get("assistant_response", "")
-            action_results = response.get("action_results", [])
+        if not isinstance(response, dict):
+            response = {"assistant_response": str(response), "action_results": []}
             
-            # Extract and execute any code blocks from the response
+        main_response = response.get("assistant_response", "")
+        action_results = response.get("action_results", [])
+        
+        # Handle main response
+        if main_response:
+            # Extract code blocks first
             code_blocks = re.findall(r'```(\w+)?\n(.*?)```', main_response, re.DOTALL)
             
-            # Display the main response without the code blocks and extra formatting
+            # Clean the response text
             clean_response = re.sub(r'```.*?```', '', main_response, flags=re.DOTALL).strip()
-            clean_response = re.sub(r'┏.*?┓', '', clean_response, flags=re.DOTALL)
-            clean_response = re.sub(r'┗.*?┛', '', clean_response, flags=re.DOTALL)
-            clean_response = re.sub(r'%.*?\n', '', clean_response)
+            clean_response = re.sub(r'┏.*?┓|┗.*?┛|%.*?\n', '', clean_response, flags=re.DOTALL)
             
             if clean_response:
                 self.print_bordered_message(clean_response, self.PENGUIN_COLOR, "assistant", "Response")
             
             # Display code blocks
             for lang, code in code_blocks:
-                lang = lang.strip() if lang else 'plaintext'
-                self.print_code(code.strip(), lang)
+                if code:  # Only process if there's actual code
+                    lang = lang.strip() if lang else 'plaintext'
+                    self.print_code(code.strip(), lang)
+        
+        # Handle action results
+        if action_results:
+            self._display_action_results(action_results)
+
+    def _display_action_results(self, results: List[Dict[str, Any]]):
+        results_text = []
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+                
+            status = result.get("status", "unknown")
+            action = result.get("action", "Unknown Action")
+            value = result.get("result", "No result")
             
-            # Display action results in a more readable format
-            if action_results:
-                results_text = ""
-                seen_results = set()  # To track unique results
+            if status == "interrupted":
+                results_text.append(f"⚠️ {action}: {value}")
+            elif status == "error":
+                results_text.append(f"❌ {action}: {value}")
+            elif status == "completed":
+                results_text.append(f"✅ {action}: {value}")
                 
-                for result in action_results:
-                    result_value = result.get("result", "No result")
-                    if result_value not in [None, 'None', '', *seen_results]:
-                        results_text += f"{result_value}\n"
-                        seen_results.add(result_value)
-                
-                if results_text:
-                    self.print_bordered_message(
-                        results_text.strip(), 
-                        self.RESULT_COLOR, 
-                        "output", 
-                        "Result"
-                    )
+        if results_text:
+            self.print_bordered_message(
+                "\n".join(results_text),
+                self.RESULT_COLOR,
+                "output",
+                "Action Results"
+            )
