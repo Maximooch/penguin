@@ -15,7 +15,8 @@ from utils.log_error import log_error
 from tools import ToolManager
 from llm.api_client import APIClient
 from config import config
-from prompts import SYSTEM_PROMPT
+# from prompts import SYSTEM_PROMPT
+from prompts2 import SYSTEM_PROMPT
 from new_core import PenguinCore
 from dotenv import load_dotenv  # type: ignore
 import warnings
