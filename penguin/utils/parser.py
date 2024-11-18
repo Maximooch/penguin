@@ -47,6 +47,7 @@ class ActionType(Enum):
     ADD_SUMMARY_NOTE = "add_summary_note"
     DUCKDUCKGO_SEARCH = "duckduckgo_search"
     TAVILY_SEARCH = "tavily_search"
+    PERPLEXITY_SEARCH = "perplexity_search"
     # REPL, iPython, shell, bash, zsh, networking, file_management, task management, etc. 
     # TODO: Add more actions as needed
 
@@ -111,6 +112,7 @@ class ActionExecutor:
             ActionType.ADD_SUMMARY_NOTE: self._add_summary_note,
             ActionType.DUCKDUCKGO_SEARCH: self._duckduckgo_search,
             ActionType.TAVILY_SEARCH: self._tavily_search,
+            ActionType.PERPLEXITY_SEARCH: self._perplexity_search,
         }
         
         try:
@@ -281,6 +283,19 @@ class ActionExecutor:
         
         # The results are already formatted as a string by the ToolManager
         return results
+    
+    def _perplexity_search(self, params: str) -> str:
+        parts = params.split(':', 1)
+        if len(parts) == 2:
+            query, max_results = parts[0].strip(), int(parts[1].strip())
+        else:
+            query, max_results = params.strip(), 5
+
+        results = self.tool_manager.execute_tool("perplexity_search", {"query": query, "max_results": max_results})
+        
+        # The results are already formatted as a string by the PerplexityProvider
+        return results
+
     # def _tavily_search(self, params: str) -> str:
     #     parts = params.split(':', 1)
     #     if len(parts) == 2:

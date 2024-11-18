@@ -54,8 +54,8 @@ Information Retrieval
 For any information that is not available in your training data or the workspace, use web search. 
 The search will automatically return recent results - do not specify dates in your queries.
 
-<tavily_search>query: max_results</tavily_search>
-Example: <tavily_search>latest AI advancements: 3</tavily_search>
+<perplexity_search>query: max_results</perplexity_search>
+Example: <perplexity_search>latest AI advancements: 3</perplexity_search>
 NOTE: you have a maximum of 5 results to work with at a time. 
 
 <memory_search>query:k</memory_search>

@@ -24,6 +24,7 @@ from memory.summary_notes import SummaryNotes
 from .duck import duckduckgo_search as ddg_search
 # from .tavily import TavilySearch
 from tavily import TavilyClient
+from .perplexity_tool import PerplexityProvider
 
 from config import WORKSPACE_PATH, TAVILY_API_KEY
 
@@ -40,6 +41,7 @@ class ToolManager:
         self.summary_notes_tool = SummaryNotes()
         tavily_api_key = TAVILY_API_KEY
         self.tavily_client = TavilyClient(api_key=tavily_api_key)
+        self.perplexity_provider = PerplexityProvider()
         self.tools = [
             {
                 "name": "create_folder",
@@ -289,6 +291,24 @@ class ToolManager:
                     "required": ["query"]
                 }
         },
+        {
+                "name": "perplexity_search",
+                "description": "Perform a web search using Perplexity API to get up-to-date information or additional context.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query"
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "The maximum number of results to return (default: 5)"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            },
         # {
         #     "name": "tavily_search",
         #     "description": "Perform a web search using Tavily API with advanced context and metadata.",
@@ -341,7 +361,10 @@ class ToolManager:
             "lint_python": lambda: lint_python(tool_input["target"], tool_input["is_file"]),
             "execute_command": lambda: self.execute_command(tool_input["command"]),
             "add_summary_note": lambda: self.add_summary_note(tool_input["category"], tool_input["content"]),
-            "tavily_search": lambda: self.tavily_search(tool_input["query"], tool_input.get("max_results", 5)),
+            "tavily_search": lambda: self.tavily_search(tool_input["query"]),
+            "perplexity_search": lambda: self.perplexity_provider.format_results(
+                self.perplexity_provider.search(tool_input["query"], tool_input.get("max_results", 5))
+            )
             # "tavily_search": lambda: self.tavily_search(
             #     tool_input["query"],
             #     tool_input.get("max_results", 5),
