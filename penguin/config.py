@@ -23,13 +23,15 @@ load_dotenv()
 
 # API Keys
 # MODEL_API_KEY = os.environ.get("MODEL_API_KEY")
-# TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 
 # Constants
 # CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
 # MAX_CONTINUATION_ITERATIONS = 100
 TASK_COMPLETION_PHRASE = "TASK_COMPLETED"
 MAX_TASK_ITERATIONS = 100
+
+
 
 def load_config():
     config_path = Path(__file__).parent.parent / 'config.yml'

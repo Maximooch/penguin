@@ -21,12 +21,15 @@ from .lint_python import lint_python
 from .memory_search import MemorySearch
 from utils.notebook import NotebookExecutor
 from memory.summary_notes import SummaryNotes
+from .duck import duckduckgo_search as ddg_search
+# from .tavily import TavilySearch
+from tavily import TavilyClient
 
-from config import WORKSPACE_PATH
+from config import WORKSPACE_PATH, TAVILY_API_KEY
 
 class ToolManager:
     def __init__(self, log_error_func: Callable):
-        from utils.file_map import FileMap  # Import here to avoid circular import
+        # from utils.file_map import FileMap  # Import here to avoid circular import
         self.log_error = log_error_func
         self.declarative_memory_tool = DeclarativeMemoryTool()
         self.grep_search = GrepSearch(root_dir=os.path.join(WORKSPACE_PATH, "logs"))
@@ -35,6 +38,8 @@ class ToolManager:
         self.project_root = WORKSPACE_PATH  # Set project root to workspace path
         self.notebook_executor = NotebookExecutor()
         self.summary_notes_tool = SummaryNotes()
+        tavily_api_key = TAVILY_API_KEY
+        self.tavily_client = TavilyClient(api_key=tavily_api_key)
         self.tools = [
             {
                 "name": "create_folder",
@@ -269,7 +274,43 @@ class ToolManager:
                 },
                 "required": ["category", "content"]
             }
-        }
+        },
+        {
+                "name": "tavily_search",
+                "description": "Perform a web search using Tavily API to get up-to-date information or additional context. Use this when you need current information or feel a search could provide a better answer.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query"
+                        }
+                    },
+                    "required": ["query"]
+                }
+        },
+        # {
+        #     "name": "tavily_search",
+        #     "description": "Perform a web search using Tavily API with advanced context and metadata.",
+        #     "input_schema": {
+        #         "type": "object",
+        #         "properties": {
+        #             "query": {
+        #                 "type": "string",
+        #                 "description": "The search query"
+        #             },
+        #             "max_results": {
+        #                 "type": "integer",
+        #                 "description": "The maximum number of results to return (default: 5)"
+        #             },
+        #             "search_depth": {
+        #                 "type": "string",
+        #                 "description": "The search depth: 'basic' or 'advanced' (default: 'basic')"
+        #             }
+        #         },
+        #         "required": ["query"]
+        #     }
+        # },
         ]
 
     def get_tools(self):
@@ -299,7 +340,13 @@ class ToolManager:
             # "find_file": lambda: find_file(tool_input["filename"], tool_input.get("search_path", ".")),
             "lint_python": lambda: lint_python(tool_input["target"], tool_input["is_file"]),
             "execute_command": lambda: self.execute_command(tool_input["command"]),
-            "add_summary_note": lambda: self.add_summary_note(tool_input["category"], tool_input["content"])
+            "add_summary_note": lambda: self.add_summary_note(tool_input["category"], tool_input["content"]),
+            "tavily_search": lambda: self.tavily_search(tool_input["query"], tool_input.get("max_results", 5)),
+            # "tavily_search": lambda: self.tavily_search(
+            #     tool_input["query"],
+            #     tool_input.get("max_results", 5),
+            #     tool_input.get("search_depth", "advanced")
+            # ),
         }
         
         logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
@@ -316,6 +363,21 @@ class ToolManager:
             self.add_message_to_search({"role": "assistant", "content": f"Tool use: {tool_name}"})
             self.add_message_to_search({"role": "user", "content": f"Tool result: {result}"})
             logging.info(f"Tool {tool_name} executed successfully with result: {result}")
+            # if tool_name == "tavily_search":
+            #     formatted_results = "Tavily Search Results:\n\n"
+            #     for i, result in enumerate(result, 1):
+            #         if "error" in result:
+            #             formatted_results += f"{i}. Error: {result['error']}\n\n"
+            #         else:
+            #             formatted_results += (
+            #                 f"{i}. {result['title']}\n"
+            #                 f"   URL: {result['url']}\n"
+            #                 f"   Content: {result['content'][:200]}...\n"
+            #                 f"   Score: {result['score']}\n"
+            #                 f"   Published Date: {result['published_date']}\n"
+            #                 f"   Source: {result['source']}\n\n"
+            #             )
+            #     result = formatted_results.strip()
             return result
         except Exception as e:
             error_message = f"Error executing tool {tool_name}: {str(e)}"
@@ -376,24 +438,12 @@ class ToolManager:
 
     def duckduckgo_search(self, query: str, max_results: int = 5) -> List[Dict[str, str]]:
         try:
-            url = f"https://api.duckduckgo.com/?q={query}&format=json"
-            response = requests.get(url)
-            response.raise_for_status()
-            data = response.json()
-            
-            results = []
-            for result in data.get('RelatedTopics', [])[:max_results]:
-                if 'Text' in result:
-                    results.append({
-                        'title': result.get('FirstURL', ''),
-                        'snippet': result.get('Text', '')
-                    })
-            
+            results = ddg_search(query, max_results)
             return results
-        except RequestException as e:
-            logging.error(f"Error performing DuckDuckGo search: {str(e)}")
-            return [{"error": f"Failed to perform search: {str(e)}"}]
-
+        except Exception as e:
+            error_message = f"Error performing DuckDuckGo search: {str(e)}"
+            logging.error(error_message)
+            return [{"error": error_message}]
 
     def execute_code(self, code: str) -> str:
         return self.notebook_executor.execute_code(code)
@@ -459,3 +509,38 @@ class ToolManager:
 
     # def archive_summary_notes(self):
     #     self.summary_notes_tool.save_summaries()
+
+    def tavily_search(self, query: str, max_results: int = 5) -> str:
+        try:
+            response = self.tavily_client.search(query=query, max_results=max_results)
+            formatted_results = "Tavily Search Results:\n\n"
+            for i, result in enumerate(response.get("results", []), 1):
+                formatted_results += (
+                    f"{i}. {result.get('title', 'No title')}\n"
+                    f"   URL: {result.get('url', 'No URL')}\n"
+                    f"   Snippet: {result.get('snippet', 'No snippet')[:200]}...\n\n"
+                )
+            return formatted_results.strip()
+        except Exception as e:
+            return f"Error performing Tavily search: {str(e)}"      
+
+    # def tavily_search(self, query: str, max_results: int = 5, search_depth: str = "advanced") -> str:
+    #     try:
+    #         response = self.tavily_search.search(query, max_results, search_depth)
+    #         if "error" in response:
+    #             return response["error"]
+            
+    #         formatted_results = "Tavily Search Results:\n\n"
+    #         for i, result in enumerate(response.get("results", []), 1):
+    #             formatted_results += (
+    #                 f"{i}. {result.get('title', 'No title')}\n"
+    #                 f"   URL: {result.get('url', 'No URL')}\n"
+    #                 f"   Content: {result.get('content', 'No content')[:200]}...\n"
+    #                 f"   Score: {result.get('score', 'N/A')}\n"
+    #                 f"   Published Date: {result.get('published_date', 'N/A')}\n"
+    #                 f"   Source: {result.get('source', 'N/A')}\n\n"
+    #             )
+    #         return formatted_results.strip()
+    #     except Exception as e:
+    #         return f"Error performing Tavily search: {str(e)}"
+    

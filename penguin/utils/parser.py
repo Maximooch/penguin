@@ -27,8 +27,8 @@ class ActionType(Enum):
     # CREATE_FOLDER = "create_folder"
     # LIST_FILES = "list_files"
     # LIST_FOLDERS = "list_folders"
-    GET_FILE_MAP = "get_file_map"
-    LINT = "lint"
+    # GET_FILE_MAP = "get_file_map"
+    # LINT = "lint"
     MEMORY_SEARCH = "memory_search"
     ADD_DECLARATIVE_NOTE = "add_declarative_note"
     TASK_CREATE = "task_create"
@@ -45,7 +45,8 @@ class ActionType(Enum):
     PROJECT_DETAILS = "project_details"
     # WORKFLOW_ANALYZE = "workflow_analyze"
     ADD_SUMMARY_NOTE = "add_summary_note"
-
+    DUCKDUCKGO_SEARCH = "duckduckgo_search"
+    TAVILY_SEARCH = "tavily_search"
     # REPL, iPython, shell, bash, zsh, networking, file_management, task management, etc. 
     # TODO: Add more actions as needed
 
@@ -91,8 +92,8 @@ class ActionExecutor:
             # ActionType.CREATE_FOLDER: lambda params: self.tool_manager.execute_tool("create_folder", {"path": params}),
             # ActionType.LIST_FILES: lambda params: self.tool_manager.execute_tool("list_files", {"directory": params}),
             # ActionType.LIST_FOLDERS: lambda params: self.tool_manager.execute_tool("list_files", {"directory": params}),
-            ActionType.GET_FILE_MAP: lambda params: self.tool_manager.execute_tool("get_file_map", {"directory": params}),
-            ActionType.LINT: self._lint_python,
+            # ActionType.GET_FILE_MAP: lambda params: self.tool_manager.execute_tool("get_file_map", {"directory": params}),
+            # ActionType.LINT: self._lint_python,
             ActionType.MEMORY_SEARCH: self._memory_search,
             ActionType.ADD_DECLARATIVE_NOTE: self._add_declarative_note,
             ActionType.TASK_CREATE: self._execute_task_create,
@@ -108,6 +109,8 @@ class ActionExecutor:
             ActionType.PROJECT_DETAILS: lambda params: self.task_manager.get_project_details(params),
             # ActionType.WORKFLOW_ANALYZE: lambda params: self.task_manager.analyze_workflow(),
             ActionType.ADD_SUMMARY_NOTE: self._add_summary_note,
+            ActionType.DUCKDUCKGO_SEARCH: self._duckduckgo_search,
+            ActionType.TAVILY_SEARCH: self._tavily_search,
         }
         
         try:
@@ -133,16 +136,16 @@ class ActionExecutor:
     def _execute_code(self, params: str) -> str:
         return self.tool_manager.execute_code(params)
 
-    def _lint_python(self, params: str) -> str:
-        parts = params.split(':', 1)
-        if len(parts) == 2:
-            target, is_file = parts[0].strip(), parts[1].strip().lower() == 'true'
-        else:
-            target, is_file = params.strip(), False
+    # def _lint_python(self, params: str) -> str:
+    #     parts = params.split(':', 1)
+    #     if len(parts) == 2:
+    #         target, is_file = parts[0].strip(), parts[1].strip().lower() == 'true'
+    #     else:
+    #         target, is_file = params.strip(), False
 
-        # Use the current working directory to resolve the file path
-        if is_file:
-            target = str(Path.cwd() / target)
+    #     # Use the current working directory to resolve the file path
+    #     if is_file:
+    #         target = str(Path.cwd() / target)
 
         return self.tool_manager.execute_tool("lint_python", {"target": target, "is_file": is_file})
 
@@ -244,3 +247,57 @@ class ActionExecutor:
             content = content.strip()
         
         return self.tool_manager.add_summary_note(category, content)
+
+    def _duckduckgo_search(self, params: str) -> str:
+        parts = params.split(':', 1)
+        if len(parts) == 2:
+            query, max_results = parts[0].strip(), int(parts[1].strip())
+        else:
+            query, max_results = params.strip(), 5
+
+        results = self.tool_manager.execute_tool("duckduckgo_search", {"query": query, "max_results": max_results})
+        
+        # Format the results
+        formatted_results = "DuckDuckGo Search Results:\n\n"
+        for i, result in enumerate(results, 1):
+            if "error" in result:
+                formatted_results += f"{i}. Error: {result['error']}\n\n"
+            else:
+                formatted_results += (
+                    f"{i}. {result['title']}\n"
+                    f"   Snippet: {result['snippet']}\n"
+                    f"   Source: {result['source']}\n\n"
+                )
+        return formatted_results.strip()
+    
+    def _tavily_search(self, params: str) -> str:
+        parts = params.split(':', 1)
+        if len(parts) == 2:
+            query, max_results = parts[0].strip(), int(parts[1].strip())
+        else:
+            query, max_results = params.strip(), 5
+
+        results = self.tool_manager.execute_tool("tavily_search", {"query": query, "max_results": max_results})
+        
+        # The results are already formatted as a string by the ToolManager
+        return results
+    # def _tavily_search(self, params: str) -> str:
+    #     parts = params.split(':', 1)
+    #     if len(parts) == 2:
+    #         query, max_results = parts[0].strip(), int(parts[1].strip())
+    #     else:
+    #         query, max_results = params.strip(), 5
+
+    #     results = self.tool_manager.execute_tool("tavily_search", {"query": query, "max_results": max_results})
+        
+    #     formatted_results = "Tavily Search Results:\n\n"
+    #     for i, result in enumerate(results, 1):
+    #         if "error" in result:
+    #             formatted_results += f"{i}. Error: {result['error']}\n\n"
+    #         else:
+    #             formatted_results += (
+    #                 f"{i}. {result['title']}\n"
+    #                 f"   Snippet: {result['snippet']}\n"
+    #                 f"   Source: {result['source']}\n\n"
+    #             )
+    #     return formatted_results.strip()
