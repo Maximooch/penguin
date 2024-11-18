@@ -122,6 +122,33 @@ class PenguinCore:
         except Exception as e:
             await self._handle_error(e, input_data)
 
+    async def process_input_with_image(self, input_data: Dict) -> None:
+        try:
+            user_input = input_data.get("text", "")
+            image_path = input_data.get("image_path")
+            
+            if image_path:
+                base64_image = self.tool_manager.encode_image(image_path)
+                message_content = [
+                    {"type": "text", "text": user_input},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                    }
+                ]
+            else:
+                message_content = user_input
+
+            response = self.api_client.create_message(
+                messages=[{"role": "user", "content": message_content}]
+            )
+            
+            # Process the response...
+            
+        except Exception as e:
+            self.logger.error(f"Error in process_input_with_image: {str(e)}")
+            await self._handle_error(e, input_data)
+
     async def get_response(
         self, 
         current_iteration: Optional[int] = None, 

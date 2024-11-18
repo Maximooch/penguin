@@ -16,13 +16,13 @@ class ConversationSystem:
     - Image message handling
     """
     
-    def __init__(self, tool_manager, diagnostics: Optional[Diagnostics] = None):
+    def __init__(self, tool_manager, diagnostics):
         self.tool_manager = tool_manager
-        self.diagnostics = diagnostics or Diagnostics()
-        self.conversation_history: List[Dict[str, Any]] = []
-        self.system_prompt = ""
+        self.diagnostics = diagnostics
+        self.system_prompt = None
         self.system_prompt_sent = False
-        self.max_history_length = 1000000  # Can be made configurable
+        self.history = []
+        self.max_history_length = 1000000
         
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt and mark it as not sent."""
@@ -42,15 +42,15 @@ class ConversationSystem:
             formatted_content = [{"type": "text", "text": str(content)}]
         
         message = {"role": role, "content": formatted_content}
-        self.conversation_history.append(message)
+        self.history.append(message)
         
         # Truncate history if it exceeds max length
-        if len(self.conversation_history) > self.max_history_length:
+        if len(self.history) > self.max_history_length:
             # Keep system messages and trim others
-            system_messages = [m for m in self.conversation_history if m["role"] == "system"]
-            other_messages = [m for m in self.conversation_history if m["role"] != "system"]
+            system_messages = [m for m in self.history if m["role"] == "system"]
+            other_messages = [m for m in self.history if m["role"] != "system"]
             other_messages = other_messages[-self.max_history_length + len(system_messages):]
-            self.conversation_history = system_messages + other_messages
+            self.history = system_messages + other_messages
             
     def prepare_conversation(self, user_input: str, image_path: Optional[str] = None) -> None:
         """Prepare the conversation by adding necessary messages."""
@@ -75,11 +75,9 @@ class ConversationSystem:
             image_message = [
                 {"type": "text", "text": user_input},
                 {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": base64_image
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{base64_image}"
                     }
                 }
             ]
@@ -91,15 +89,15 @@ class ConversationSystem:
             
     def get_history(self) -> List[Dict[str, Any]]:
         """Get the full conversation history."""
-        return self.conversation_history
+        return self.history
         
     def get_last_message(self) -> Optional[Dict[str, Any]]:
         """Get the last message in the conversation history."""
-        return self.conversation_history[-1] if self.conversation_history else None
+        return self.history[-1] if self.history else None
         
     def clear_history(self) -> None:
         """Clear the conversation history."""
-        self.conversation_history = []
+        self.history = []
         self.system_prompt_sent = False
         
     def add_summary_note(self, category: str, content: str) -> None:

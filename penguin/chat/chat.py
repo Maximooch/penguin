@@ -35,15 +35,22 @@ class ChatManager:
                 if user_input.lower() == EXIT_COMMAND:
                     break
                     
-                response_dict, exit_flag = await self.chat_with_penguin(
-                    user_input=user_input,
-                    message_count=message_count
-                )
-                
-                if exit_flag:
-                    break
+                # Handle special commands
+                if user_input.lower().startswith(TASK_COMMAND):
+                    await self.handle_task_command(user_input)
+                elif user_input.lower().startswith(IMAGE_COMMAND):
+                    await self.handle_image_command(user_input)
+                else:
+                    response_dict, exit_flag = await self.chat_with_penguin(
+                        user_input=user_input,
+                        message_count=message_count
+                    )
                     
-                self.ui.process_and_display_response(response_dict)
+                    if exit_flag:
+                        break
+                    
+                    self.ui.process_and_display_response(response_dict)
+                
                 message_count += 1
                 
             except KeyboardInterrupt:
@@ -69,10 +76,10 @@ class ChatManager:
             
             # Process input with interrupt check
             try:
-                await self.core.process_input({
-                    "text": user_input,
-                    "image_path": image_path
-                })
+                input_data = {"text": user_input}
+                if image_path:
+                    input_data["image_path"] = image_path
+                await self.core.process_input(input_data)
             except KeyboardInterrupt:
                 self._interrupt_requested = True
             
@@ -104,12 +111,9 @@ class ChatManager:
             error_info = await self.core._handle_error(e, {
                 "method": "chat_with_penguin",
                 "user_input": user_input,
-                "image_path": image_path,
-                "iteration": current_iteration,
-                "max_iterations": max_iterations
+                "image_path": image_path
             })
-            await self.handle_error(error_info, message_count)
-            return {"assistant_response": error_info["message"], "action_results": []}, False
+            return error_info, False
         finally:
             self._is_processing = False
             
@@ -192,3 +196,42 @@ class ChatManager:
     def parse_log_content(self, content: str) -> List[Dict[str, str]]:
         # Implementation remains the same
         pass
+
+    async def handle_task_command(self, command):
+        parts = command.split()
+        if len(parts) < 2:
+            self.ui.print_bordered_message("Invalid task command. Use 'task list' or 'task create [name] [description]'", self.ui.PENGUIN_COLOR, "system", "Error")
+            return
+        
+        action = parts[1]
+        if action == "list":
+            tasks = await self.core.task_manager.list_tasks()
+            if tasks:
+                task_list = "\n".join([f"- {task['name']}: {task['description']}" for task in tasks])
+                self.ui.print_bordered_message(f"Current tasks:\n{task_list}", self.ui.PENGUIN_COLOR, "system", "Task List")
+            else:
+                self.ui.print_bordered_message("No tasks currently.", self.ui.PENGUIN_COLOR, "system", "Task List")
+        elif action == "create" and len(parts) >= 4:
+            name = parts[2]
+            description = " ".join(parts[3:])
+            await self.core.task_manager.create_task(name, description)
+            self.ui.print_bordered_message(f"Task '{name}' created successfully.", self.ui.PENGUIN_COLOR, "system", "Task Created")
+        else:
+            self.ui.print_bordered_message("Invalid task command. Use 'task list' or 'task create [name] [description]'", self.ui.PENGUIN_COLOR, "system", "Error")
+
+    async def handle_image_command(self, command):
+        parts = command.split()
+        if len(parts) < 2:
+            self.ui.print_bordered_message("Invalid image command. Use 'image [file_path]'", self.ui.PENGUIN_COLOR, "system", "Error")
+            return
+        
+        image_path = parts[1]
+        if not os.path.exists(image_path):
+            self.ui.print_bordered_message(f"Image file not found: {image_path}", self.ui.PENGUIN_COLOR, "system", "Error")
+            return
+        
+        self.ui.print_bordered_message(f"Image received: {image_path}", self.ui.PENGUIN_COLOR, "system", "Image Input")
+        
+        # Process the image and pass it to the AI model
+        response_dict, exit_flag = await self.chat_with_penguin(user_input="Analyze this image", message_count=0, image_path=image_path)
+        self.ui.process_and_display_response(response_dict)

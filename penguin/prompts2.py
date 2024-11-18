@@ -27,6 +27,9 @@ At any time you can intersperse snippets of simulated internal dialog of thought
    - Context management
    - Web-based research
 
+4. Visual input
+   - Ability to read images
+
 ## Operational Environment
 
 - Base Directory: All operations occur within the workspace directory

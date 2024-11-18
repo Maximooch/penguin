@@ -14,7 +14,7 @@ from llm.model_config import ModelConfig
 from utils.log_error import log_error
 from tools import ToolManager
 from llm.api_client import APIClient
-from config import config
+from config import config, load_config
 # from prompts import SYSTEM_PROMPT
 from prompts2 import SYSTEM_PROMPT
 from new_core import PenguinCore
@@ -70,13 +70,21 @@ async def main():
         # Initialize components
         console.print("Initializing components...")
         
+        # Load the configuration
+        config = load_config()
+        model_name = config['model']['default']
+        model_specific_config = config['model_configs'].get(model_name, {})
+        
         # Create model config first
         console.print("1. Creating model config...")
         model_config = ModelConfig(
-            model=config['model']['default'],
+            model=model_name,
             provider=config['model']['provider'],
-            api_base=config['api']['base_url'],
-            use_assistants_api=config['model'].get('use_assistants_api', False)
+            use_assistants_api=config['model'].get('use_assistants_api', False),
+            max_tokens=model_specific_config.get('max_tokens'),
+            temperature=model_specific_config.get('temperature'),
+            api_base=config['api'].get('base_url'),
+            supports_vision=model_specific_config.get('supports_vision', False)
         )
         
         # Create API client with model config
