@@ -8,6 +8,9 @@ from .model_config import ModelConfig
 import logging
 
 class ProviderAdapter(ABC):
+    def __init__(self, model_config: ModelConfig):
+        self.model_config = model_config
+
     @abstractmethod
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         pass
@@ -31,34 +34,23 @@ class ProviderAdapter(ABC):
 #TODO: implement streaming abstraction
 
 class OpenAIAdapter(ProviderAdapter):
-    def __init__(self, model_config: ModelConfig):
-        # print("\n=== OpenAI Adapter Initialization ===")
-        self.model_config = model_config
-        # print(f"Using Assistants API: {model_config.use_assistants_api}")
-        
-        if model_config.use_assistants_api:
-            try:
-                # print("Initializing Assistant Manager...")
-                self.assistant_manager = OpenAIAssistantManager(model_config)
-                # print("Assistant Manager initialized successfully")
-            except Exception as e:
-                # print(f"Failed to initialize Assistant Manager: {str(e)}")
-                # print("Falling back to regular API")
-                self.assistant_manager = None
-                model_config.use_assistants_api = False  # Force fallback to regular API
-        else:
-            # print("Using regular API (configured)")
-            self.assistant_manager = None
-        # print("===================================\n")
-
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return messages  # Return the messages as-is
+        formatted_messages = []
+        for message in messages:
+            if isinstance(message['content'], list):
+                # This is already in the correct format for vision models
+                formatted_messages.append(message)
+            else:
+                formatted_messages.append({
+                    "role": message['role'],
+                    "content": [{"type": "text", "text": message['content']}]
+                })
+        return formatted_messages
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
-        if self.assistant_manager:
+        if self.model_config.use_assistants_api:
             return response, []
         else:
-            # Handle the regular OpenAI API response
             return response['choices'][0]['message']['content'], []
 
 class LiteLLMAdapter(ProviderAdapter):
@@ -77,33 +69,25 @@ class LiteLLMAdapter(ProviderAdapter):
 
 class AnthropicAdapter(ProviderAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        # Anthropic uses a different format, so we need to convert
-        formatted_messages = []
-        for msg in messages:
-            if msg['role'] == 'system':
-                formatted_messages.append({"role": "human", "content": f"System: {msg['content']}"})
-            else:
-                formatted_messages.append(msg)
-        return formatted_messages
+        # Anthropic's Claude models already accept the format we're using
+        return messages
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
-        # Assume response is in the Anthropic format
         return response['completion'], []
 
 class OllamaAdapter(ProviderAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        # Ollama uses a simple format, so we can just return the messages as-is
+        # Ollama's LLaVA models accept the same format as OpenAI
         return messages
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
-        # Assume response is in the Ollama format
         return response['message']['content'], []
 
 def get_provider_adapter(provider: str, model_config: ModelConfig) -> ProviderAdapter:
     adapters = {
         "openai": OpenAIAdapter(model_config),
-        "litellm": LiteLLMAdapter(),
-        "anthropic": AnthropicAdapter(),
-        "ollama": OllamaAdapter(),
+        "litellm": LiteLLMAdapter(model_config),
+        "anthropic": AnthropicAdapter(model_config),
+        "ollama": OllamaAdapter(model_config),
     }
-    return adapters.get(provider.lower(), LiteLLMAdapter())  # Default to LiteLLMAdapter if provider not found
+    return adapters.get(provider.lower(), LiteLLMAdapter(model_config))  # Default to LiteLLMAdapter if provider not found

@@ -27,6 +27,7 @@ from tavily import TavilyClient
 from .perplexity_tool import PerplexityProvider
 
 from config import WORKSPACE_PATH, TAVILY_API_KEY
+import base64
 
 class ToolManager:
     def __init__(self, log_error_func: Callable):
@@ -566,4 +567,9 @@ class ToolManager:
     #         return formatted_results.strip()
     #     except Exception as e:
     #         return f"Error performing Tavily search: {str(e)}"
+    
+
+    def encode_image(self, image_path: str) -> str:
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
     

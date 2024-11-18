@@ -83,11 +83,25 @@ class CognitionSystem:
             Tuple[Dict[str, Any], bool]: Response data and continuation flag
         """
         try:
+            # Check if the last message contains an image
+            last_message = conversation_history[-1]
+            if isinstance(last_message['content'], list):
+                for content_item in last_message['content']:
+                    if content_item['type'] == 'image_url':
+                        # If an image is found, add the 'vision' parameter
+                        vision = True
+                        break
+                else:
+                    vision = False
+            else:
+                vision = False
+
             # Get raw response from API
             raw_response = self.api_client.create_message(
                 messages=conversation_history,
                 max_tokens=None,
-                temperature=None
+                temperature=None,
+                vision=vision
             )
             
             # Process and enhance response
