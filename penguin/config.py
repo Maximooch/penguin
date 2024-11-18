@@ -24,6 +24,7 @@ load_dotenv()
 # API Keys
 # MODEL_API_KEY = os.environ.get("MODEL_API_KEY")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY")
 
 # Constants
 # CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
