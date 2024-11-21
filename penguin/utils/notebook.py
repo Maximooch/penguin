@@ -3,11 +3,14 @@ import io
 import sys
 import os
 from config import WORKSPACE_PATH
+from utils.process_manager import ProcessManager
 
 class NotebookExecutor:
     def __init__(self):
         self.shell = InteractiveShell.instance()
         os.chdir(WORKSPACE_PATH)  # Set the working directory to the workspace
+        self.process_manager = ProcessManager()
+        self.current_process = None
 
     def execute_code(self, code: str) -> str:
         try:
@@ -76,3 +79,22 @@ class NotebookExecutor:
             return '\n'.join(output) if output else "Command executed successfully"
         except Exception as e:
             return f"Error executing shell command: {str(e)}"
+
+    async def enter_process(self, name: str) -> str:
+        result = await self.process_manager.enter_process(name)
+        if result:
+            self.current_process = name
+            return f"Entered process '{name}'"
+        return f"Failed to enter process '{name}'"
+
+    async def send_command(self, command: str) -> str:
+        if not self.current_process:
+            return "Not currently in any process"
+        return await self.process_manager.send_command(self.current_process, command)
+
+    async def exit_process(self) -> str:
+        if not self.current_process:
+            return "Not currently in any process"
+        result = await self.process_manager.exit_process(self.current_process)
+        self.current_process = None
+        return result

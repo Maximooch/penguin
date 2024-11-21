@@ -199,7 +199,7 @@ class PenguinCore:
                     continue
                     
                 try:
-                    result = self.action_executor.execute_action(action)
+                    result = await self.action_executor.execute_action(action)
                     if result is not None:
                         action_results.append({
                             "action": action.action_type.value,
