@@ -15,6 +15,8 @@ from pathlib import Path
 from agent.task_utils import create_task, update_task, complete_task, list_tasks, create_project, add_subtask, get_task_details, get_project_details
 from html import unescape
 from agent.task_manager import TaskManager
+import asyncio
+from utils.process_manager import ProcessManager
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,13 @@ class ActionType(Enum):
     PERPLEXITY_SEARCH = "perplexity_search"
     # REPL, iPython, shell, bash, zsh, networking, file_management, task management, etc. 
     # TODO: Add more actions as needed
+    PROCESS_START = "process_start"
+    PROCESS_STOP = "process_stop"
+    PROCESS_STATUS = "process_status"
+    PROCESS_LIST = "process_list"
+    PROCESS_ENTER = "process_enter"
+    PROCESS_SEND = "process_send"
+    PROCESS_EXIT = "process_exit"
 
 class CodeActAction:
     def __init__(self, action_type, params):
@@ -82,8 +91,11 @@ class ActionExecutor:
     def __init__(self, tool_manager: ToolManager, task_manager: TaskManager):
         self.tool_manager = tool_manager
         self.task_manager = task_manager
+        self.process_manager = ProcessManager()
+        self.current_process = None
 
-    def execute_action(self, action: CodeActAction) -> str:
+    async def execute_action(self, action: CodeActAction) -> str:
+        logger.debug(f"Attempting to execute action: {action.action_type.value}")
         action_map = {
             # ActionType.READ: lambda params: self.tool_manager.execute_tool("read_file", {"path": params}),
             # ActionType.WRITE: self._write_file,
@@ -113,18 +125,35 @@ class ActionExecutor:
             ActionType.DUCKDUCKGO_SEARCH: self._duckduckgo_search,
             ActionType.TAVILY_SEARCH: self._tavily_search,
             ActionType.PERPLEXITY_SEARCH: self._perplexity_search,
+            ActionType.PROCESS_START: self._process_start,
+            ActionType.PROCESS_STOP: self._process_stop,
+            ActionType.PROCESS_STATUS: self._process_status,
+            ActionType.PROCESS_LIST: self._process_list,
+            ActionType.PROCESS_ENTER: self._process_enter,
+            ActionType.PROCESS_SEND: self._process_send,
+            ActionType.PROCESS_EXIT: self._process_exit,
         }
         
         try:
             if action.action_type not in action_map:
+                logger.warning(f"Unknown action type: {action.action_type.value}")
                 return f"Unknown action type: {action.action_type.value}"
             
-            result = action_map[action.action_type](action.params)
+            handler = action_map[action.action_type]
+            logger.debug(f"Handler for action {action.action_type.value}: {handler}")
+            
+            if asyncio.iscoroutinefunction(handler):
+                logger.debug(f"Executing async handler for {action.action_type.value}")
+                result = await handler(action.params)
+            else:
+                logger.debug(f"Executing sync handler for {action.action_type.value}")
+                result = handler(action.params)
+            
             logger.info(f"Action {action.action_type.value} executed successfully")
             return result
         except Exception as e:
             error_message = f"Error executing action {action.action_type.value}: {str(e)}"
-            logger.error(error_message)
+            logger.error(error_message, exc_info=True)
             return error_message
 
     # def _write_file(self, params: str) -> str:
@@ -136,6 +165,7 @@ class ActionExecutor:
     #     return self.tool_manager.execute_tool("create_file", {"path": path.strip(), "content": content.strip()})
 
     def _execute_code(self, params: str) -> str:
+        logger.debug(f"Executing code: {params}")
         return self.tool_manager.execute_code(params)
 
     # def _lint_python(self, params: str) -> str:
@@ -149,7 +179,7 @@ class ActionExecutor:
     #     if is_file:
     #         target = str(Path.cwd() / target)
 
-        return self.tool_manager.execute_tool("lint_python", {"target": target, "is_file": is_file})
+        # return self.tool_manager.execute_tool("lint_python", {"target": target, "is_file": is_file})
 
     def _memory_search(self, params: str) -> str:
         query, k = params.split(':', 1) if ':' in params else (params, '5')
@@ -296,23 +326,38 @@ class ActionExecutor:
         # The results are already formatted as a string by the PerplexityProvider
         return results
 
-    # def _tavily_search(self, params: str) -> str:
-    #     parts = params.split(':', 1)
-    #     if len(parts) == 2:
-    #         query, max_results = parts[0].strip(), int(parts[1].strip())
-    #     else:
-    #         query, max_results = params.strip(), 5
+    async def _process_start(self, params: str) -> str:
+        logger.debug(f"Starting process with params: {params}")
+        name, command = params.split(':', 1)
+        return await self.process_manager.start_process(name.strip(), command.strip())
 
-    #     results = self.tool_manager.execute_tool("tavily_search", {"query": query, "max_results": max_results})
-        
-    #     formatted_results = "Tavily Search Results:\n\n"
-    #     for i, result in enumerate(results, 1):
-    #         if "error" in result:
-    #             formatted_results += f"{i}. Error: {result['error']}\n\n"
-    #         else:
-    #             formatted_results += (
-    #                 f"{i}. {result['title']}\n"
-    #                 f"   Snippet: {result['snippet']}\n"
-    #                 f"   Source: {result['source']}\n\n"
-    #             )
-    #     return formatted_results.strip()
+    async def _process_stop(self, params: str) -> str:
+        return await self.process_manager.stop_process(params.strip())
+
+    async def _process_status(self, params: str) -> str:
+        return await self.process_manager.get_process_status(params.strip())
+
+    async def _process_list(self, params: str) -> str:
+        processes = await self.process_manager.list_processes()
+        return "\n".join([f"{name}: {status}" for name, status in processes.items()])
+
+    async def _process_enter(self, params: str) -> str:
+        name = params.strip()
+        reader = await self.process_manager.enter_process(name)
+        if reader:
+            self.current_process = name
+            initial_output = await reader.read(1024)
+            return f"Entered process '{name}'. Initial output:\n{initial_output.decode()}"
+        return f"Failed to enter process '{name}'"
+
+    async def _process_send(self, params: str) -> str:
+        if not self.current_process:
+            return "Not currently in any process"
+        return await self.process_manager.send_command(self.current_process, params.strip())
+
+    async def _process_exit(self, params: str) -> str:
+        if not self.current_process:
+            return "Not currently in any process"
+        result = await self.process_manager.exit_process(self.current_process)
+        self.current_process = None
+        return result

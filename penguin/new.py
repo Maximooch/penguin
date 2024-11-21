@@ -41,6 +41,7 @@ async def init_penguin() -> ChatManager:
             api_base=config['api']['base_url'],
             use_assistants_api=config['model'].get('use_assistants_api', False)
         )
+        
         api_client = APIClient(model_config=model_config)
         api_client.set_system_prompt(SYSTEM_PROMPT)
         
@@ -62,13 +63,14 @@ async def init_penguin() -> ChatManager:
     except Exception as e:
         logger.exception("Initialization error")
         raise
+
 async def main():
     console = Console()
     console.print("\n=== Starting Penguin ===\n")
     
     try:
-        # Initialize components
-        console.print("Initializing components...")
+        chat_manager = await init_penguin()
+        console.print("[green]Initialization complete![/green]\n")
         
         # Load the configuration
         config = load_config()

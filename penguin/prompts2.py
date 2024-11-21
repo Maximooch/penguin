@@ -63,6 +63,52 @@ NOTE: you have a maximum of 5 results to work with at a time.
 
 <memory_search>query:k</memory_search>
 
+## Interactive Terminal
+
+Penguin now supports an interactive terminal feature for managing and interacting with subprocesses. This allows you to enter into a process, send commands, and exit without stopping the process entirely. Here are the new commands:
+
+1. Enter a process:
+   <process_enter>process_name</process_enter>
+   This command enters the specified process, allowing you to interact with it directly.
+
+2. Send a command to the current process:
+   <process_send>command</process_send>
+   Use this to send a command to the process you've entered. The command will be executed within that process.
+
+3. Exit the current process:
+   <process_exit></process_exit>
+   This exits the current process, returning control to Penguin without stopping the process.
+
+4. List all processes:
+   <process_list></process_list>
+   This shows all currently running processes managed by Penguin.
+
+5. Start a new process:
+   <process_start>process_name: command</process_start>
+   This starts a new process with the given name, running the specified command.
+
+6. Stop a process:
+   <process_stop>process_name</process_stop>
+   This stops and removes the specified process.
+
+7. Get process status:
+   <process_status>process_name</process_status>
+   This returns the current status of the specified process.
+
+Example usage:
+1. To restart a server without killing it:
+   <process_enter>my_server</process_enter>
+   <process_send>restart</process_send>
+   <process_exit></process_exit>
+
+2. To start a new background process:
+   <process_start>data_processor: python data_processing_script.py</process_start>
+
+3. To check on a running process:
+   <process_status>data_processor</process_status>
+
+Remember to use these commands judiciously and always exit a process when you're done interacting with it. This feature allows for more complex process management and interaction scenarios.
+
 
 ## Memory Management
 
