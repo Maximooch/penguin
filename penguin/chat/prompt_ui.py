@@ -39,7 +39,7 @@ class PromptUI:
     async def get_user_input(self, message_count: int) -> str:
         try:
             user_input = await self.session.prompt_async(
-                HTML(f"<penguin>Penguin [{message_count}]:</penguin> "),
+                HTML(f"<penguin>You [{message_count}]:</penguin> "),
                 style=self.style
             )
             return user_input.strip()
@@ -49,7 +49,9 @@ class PromptUI:
     def print_bordered_message(self, message: str, color: str, role: str, message_type: str | int):
         """Display a message in a bordered panel with proper formatting"""
         emoji_icon = self.PENGUIN_EMOJI if role in ["penguin", "assistant", "system"] else "👤"
-        header = f"{emoji_icon} {role.capitalize()} ({message_type}):"
+        # Convert assistant role to Penguin in the header
+        display_role = "Penguin" if role == "assistant" else role.capitalize()
+        header = f"{emoji_icon} {display_role} ({message_type}):"
         
         # Convert message to string and clean it
         if isinstance(message, (dict, list)):
