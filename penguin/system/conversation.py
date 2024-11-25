@@ -19,9 +19,9 @@ class ConversationSystem:
     def __init__(self, tool_manager, diagnostics):
         self.tool_manager = tool_manager
         self.diagnostics = diagnostics
-        self.system_prompt = None
+        self.messages = []
+        self.system_prompt = ""
         self.system_prompt_sent = False
-        self.history = []
         self.max_history_length = 1000000
         
     def set_system_prompt(self, prompt: str) -> None:
@@ -42,15 +42,15 @@ class ConversationSystem:
             formatted_content = [{"type": "text", "text": str(content)}]
         
         message = {"role": role, "content": formatted_content}
-        self.history.append(message)
+        self.messages.append(message)
         
         # Truncate history if it exceeds max length
-        if len(self.history) > self.max_history_length:
+        if len(self.messages) > self.max_history_length:
             # Keep system messages and trim others
-            system_messages = [m for m in self.history if m["role"] == "system"]
-            other_messages = [m for m in self.history if m["role"] != "system"]
+            system_messages = [m for m in self.messages if m["role"] == "system"]
+            other_messages = [m for m in self.messages if m["role"] != "system"]
             other_messages = other_messages[-self.max_history_length + len(system_messages):]
-            self.history = system_messages + other_messages
+            self.messages = system_messages + other_messages
             
     def prepare_conversation(self, user_input: str, image_path: Optional[str] = None) -> None:
         """Prepare the conversation by adding necessary messages."""
@@ -93,15 +93,15 @@ class ConversationSystem:
             
     def get_history(self) -> List[Dict[str, Any]]:
         """Get the full conversation history."""
-        return self.history
+        return self.messages
         
     def get_last_message(self) -> Optional[Dict[str, Any]]:
         """Get the last message in the conversation history."""
-        return self.history[-1] if self.history else None
+        return self.messages[-1] if self.messages else None
         
     def clear_history(self) -> None:
         """Clear the conversation history."""
-        self.history = []
+        self.messages = []
         self.system_prompt_sent = False
         
     def add_summary_note(self, category: str, content: str) -> None:
@@ -112,6 +112,11 @@ class ConversationSystem:
             "content": content,
             "timestamp": datetime.now().isoformat()
         })
+
+    def reset(self):
+        """Reset the conversation state"""
+        self.messages = []
+        self.system_prompt_sent = False
 
 class ConversationSession:
     """Represents a single conversation session with its own state."""

@@ -1,295 +1,539 @@
 import os
+import chromadb
+from chromadb.config import Settings
+from typing import List, Dict, Any, Optional
 import json
-from typing import List, Dict, Any
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
-from sentence_transformers import SentenceTransformer
-import scipy.sparse
-import pickle
+import ollama
+from datetime import datetime, timedelta
+from tqdm import tqdm  # For progress bar
+import re
+import uuid
+from colorama import init, Fore, Style  # For colored output
 import logging
-from threading import Lock, Event, Thread
-import time
-from datetime import datetime, timezone
+from pathlib import Path
+from config import WORKSPACE_PATH  # Import workspace path from config
 
-logger = logging.getLogger(__name__)
+class MemorySearcher:
+    _instance = None
+    
+    def __new__(cls, persist_directory: str = None):
+        if cls._instance is None:
+            cls._instance = super(MemorySearcher, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
 
-class MemorySearch:
-    """
-    A class for searching and managing log entries using both keyword and semantic search methods.
-    """
+    def __init__(self, persist_directory: str = None):
+        if self._initialized:
+            return
+            
+        # Initialize colorama
+        init()  # For colored output
+        
+        # Set default persist directory to workspace/memory_db if none provided
+        if persist_directory is None:
+            persist_directory = os.path.join(WORKSPACE_PATH, 'memory_db')
+        
+        # Ensure directory exists
+        os.makedirs(persist_directory, exist_ok=True)
+        
+        # Define memory paths relative to workspace
+        self.memory_paths = {
+            'logs': os.path.join(WORKSPACE_PATH, 'logs'),
+            'notes': os.path.join(WORKSPACE_PATH, 'notes')
+        }
+        
+        # Initialize ChromaDB client with persistent storage
+        try:
+            self.client = chromadb.PersistentClient(
+                path=persist_directory,
+                settings=Settings(
+                    anonymized_telemetry=False,
+                    allow_reset=True,
+                    is_persistent=True
+                )
+            )
+            
+            # Initialize collections
+            self.logs_collection = self.client.get_or_create_collection(
+                name="logs",
+                metadata={"description": "Log entries and history"}
+            )
+            
+            self.notes_collection = self.client.get_or_create_collection(
+                name="notes",
+                metadata={"description": "Declarative notes and documentation"}
+            )
+            
+            # Set up logging
+            self.logger = logging.getLogger(__name__)
+            
+            # Initialize Ollama client for embeddings
+            self.ollama_client = ollama.Client()
+            
+            # Index existing memories
+            self.index_memory_files()
+            
+            self._initialized = True
+            
+        except Exception as e:
+            self.logger.error(f"Error initializing ChromaDB: {str(e)}")
+            raise
 
-    def __init__(self, log_dir: str = 'logs', embeddings_dir: str = 'embeddings'):
-        self.log_dir = os.path.abspath(log_dir)
-        self.embeddings_dir = os.path.abspath(embeddings_dir)
-        os.makedirs(self.embeddings_dir, exist_ok=True)
-        self.logs = None  # Defer loading
-        self.lock = Lock()
-        self.tfidf_vectorizer = None
-        self.tfidf_matrix = None
-        self.model = None
-        self.embeddings = None
-        self.initialization_complete = Event()
-        Thread(target=self.background_initialize, daemon=True).start()
+    def parse_memory(self, content: str) -> Dict[str, Any]:
+        """Parse memory content and extract metadata"""
+        memory_info = {
+            "timestamp": datetime.now().isoformat(),
+            "type": "conversation",
+            "summary": "",
+        }
+        
+        # Try to parse JSON-formatted memories
+        try:
+            data = json.loads(content)
+            if isinstance(data, dict):
+                memory_info.update({
+                    "type": data.get("type", "declarative"),
+                    "summary": data.get("summary", ""),
+                })
+        except json.JSONDecodeError:
+            # For plain text, try to extract key information
+            lines = content.split('\n')
+            if lines:
+                memory_info["summary"] = lines[0][:100]  # First line as summary
 
-    def background_initialize(self):
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                self.ensure_logs_loaded()
-                if not self.logs:
-                    # logger.warning("No logs found. Skipping model initialization.")
-                    self.initialization_complete.set()
-                    return
-                self.ensure_models_loaded()
-                self.save_models()
-                self.initialization_complete.set()
-                # logger.info("Memory search initialization completed successfully.")
-                return
-            except Exception as e:
-                logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
-                if attempt < max_retries - 1:
-                    time.sleep(1)  # Wait for 1 second before retrying
-        logger.error("Memory search initialization failed after all attempts.")
+        return memory_info
+
+    def extract_categories(self, content: str) -> str:
+        """Extract categories and join them into a single string"""
+        categories = set()
+        
+        # Common categories to look for
+        category_keywords = {
+            'task': ['task', 'todo', 'done', 'complete'],
+            'project': ['project', 'milestone', 'planning'],
+            'error': ['error', 'bug', 'issue', 'fix'],
+            'decision': ['decision', 'chose', 'selected', 'agreed'],
+            'research': ['research', 'investigation', 'analysis'],
+            'code': ['code', 'implementation', 'function', 'class'],
+        }
+        
+        content_lower = content.lower()
+        for category, keywords in category_keywords.items():
+            if any(keyword in content_lower for keyword in keywords):
+                categories.add(category)
+                
+        return ",".join(sorted(categories))  # Convert set to sorted string
+
+    def extract_date_from_path(self, filename: str) -> str:
+        """Extract date from filename like chat_20240902_175411.md"""
+        match = re.search(r'(\d{8})_(\d{6})', filename)
+        if match:
+            date = match.group(1)
+            time = match.group(2)
+            return f"{date[:4]}-{date[4:6]}-{date[6:]}T{time[:2]}:{time[2:4]}:{time[4:]}"
+        return datetime.now().isoformat()
+
+    def index_memory(self, content: str, memory_type: str, metadata: Dict[str, Any]):
+        """Index a single memory with its metadata"""
+        try:
+            # Get embeddings
+            response = self.ollama_client.embeddings(
+                model='nomic-embed-text',
+                prompt=content
+            )
+            
+            # Ensure all metadata values are strings
+            metadata = {k: str(v) for k, v in metadata.items()}
+            
+            # Add to appropriate collection
+            collection = self.logs_collection if memory_type == 'logs' else self.notes_collection
+            collection.add(
+                documents=[content],
+                metadatas=[metadata],
+                embeddings=[response['embedding']],
+                ids=[str(uuid.uuid4())]
+            )
+        except Exception as e:
+            self.logger.error(f"Error indexing memory: {str(e)}")
+
+    def index_memory_files(self) -> str:
+        """Index all memory files from workspace"""
+        try:
+            indexed_count = 0
+            
+            # Index logs
+            logs_path = self.memory_paths['logs']
+            if os.path.exists(logs_path):
+                for filename in os.listdir(logs_path):
+                    if filename.endswith('.md') or filename.endswith('.txt'):
+                        file_path = os.path.join(logs_path, filename)
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                            
+                            # Extract metadata
+                            metadata = self.parse_memory(content)
+                            metadata.update({
+                                'file_path': file_path,
+                                'memory_type': 'logs',
+                                'categories': self.extract_categories(content),
+                                'timestamp': self.extract_date_from_path(filename)
+                            })
+                            
+                            # Index the memory
+                            self.index_memory(content, 'logs', metadata)
+                            indexed_count += 1
+            
+            # Index notes
+            notes_path = self.memory_paths['notes']
+            if os.path.exists(notes_path):
+                for filename in os.listdir(notes_path):
+                    if filename.endswith('.md') or filename.endswith('.txt'):
+                        file_path = os.path.join(notes_path, filename)
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                            
+                            # Extract metadata
+                            metadata = self.parse_memory(content)
+                            metadata.update({
+                                'file_path': file_path,
+                                'memory_type': 'notes',
+                                'categories': self.extract_categories(content),
+                                'timestamp': datetime.now().isoformat()
+                            })
+                            
+                            # Index the memory
+                            self.index_memory(content, 'notes', metadata)
+                            indexed_count += 1
+            
+            return f"Successfully indexed {indexed_count} memory files"
+            
+        except Exception as e:
+            error_msg = f"Error indexing memory files: {str(e)}"
+            self.logger.error(error_msg)
+            return error_msg
+
+    def format_preview(self, content: str, max_length: int = 300) -> str:
+        """Format the preview text to be more readable"""
+        # Remove JSON artifacts and clean up the text
+        preview = content.replace("{'assistant_response': '", "")
+        preview = preview.replace("'}", "")
+        preview = preview.replace('{"assistant_response": "', "")
+        preview = preview.replace('"}', "")
+        
+        # Truncate with ellipsis if too long
+        if len(preview) > max_length:
+            preview = preview[:max_length] + "..."
+            
+        return preview.strip()
+
+    def search_memory(self, query: str, max_results: int = 5,
+                     memory_type: Optional[str] = None,
+                     categories: Optional[List[str]] = None,
+                     date_after: Optional[str] = None,
+                     date_before: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Search through memory collections"""
+        try:
+            all_results = []
+            collections = []
+            
+            # Get embeddings for query
+            response = self.ollama_client.embeddings(
+                model='nomic-embed-text',
+                prompt=query
+            )
+            query_embedding = response['embedding']
+            
+            # Determine which collections to search
+            if memory_type == 'logs':
+                collections = [self.logs_collection]
+            elif memory_type == 'notes':
+                collections = [self.notes_collection]
+            else:
+                collections = [self.logs_collection, self.notes_collection]
+            
+            # Build where clause
+            where = self._build_where_clause(categories, date_after, date_before)
+            
+            # Search each collection
+            for collection in collections:
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=max_results,
+                    where=where,
+                    include=['metadatas', 'documents', 'distances']  # Specify exactly what we want
+                )
+                
+                # Check if we got any results
+                if not results['documents'] or not results['documents'][0]:
+                    continue
+                
+                # Process and format results
+                for i in range(len(results['documents'][0])):
+                    result = {
+                        'metadata': results['metadatas'][0][i],
+                        'preview': self.format_preview(results['documents'][0][i]),
+                        'relevance': (1 - float(results['distances'][0][i])) * 100,  # Convert distance to similarity score
+                        'collection': collection.name
+                    }
+                    all_results.append(result)
+            
+            # Sort by relevance and limit results
+            all_results.sort(key=lambda x: x['relevance'], reverse=True)
+            return all_results[:max_results]
+            
+        except Exception as e:
+            self.logger.error(f"Error searching memory: {str(e)}")
+            return []
+
+    def _build_where_clause(self,
+                          categories: Optional[List[str]],
+                          date_after: Optional[str],
+                          date_before: Optional[str]) -> Optional[Dict]:
+        """Build the where clause for ChromaDB query"""
+        where = {}
+        
+        if categories:
+            where["categories"] = {"$in": categories}
+            
+        if date_after or date_before:
+            where["timestamp"] = {}
+            if date_after:
+                where["timestamp"]["$gte"] = date_after
+            if date_before:
+                where["timestamp"]["$lte"] = date_before
+                
+        return where if where else None
 
     def wait_for_initialization(self):
-        """
-        Wait until the logs and models are fully initialized.
-        """
-        if not self.initialization_complete.is_set():
-            # logger.info("Initializing memory search models, please wait...")
-            self.initialization_complete.wait()
-        # logger.info("Memory search initialization completed.")
+        """Wait for ChromaDB initialization to complete"""
+        return self._initialized
 
-    def ensure_logs_loaded(self):
-        if self.logs is None:
-            self.logs = self.load_logs()
+    def _expand_query_terms(self, query: str) -> str:
+        """Expand query with related terms"""
+        related_terms = {
+            'task': ['todo', 'action item', 'work item'],
+            'refactor': ['restructure', 'redesign', 'clean up'],
+            'bug': ['error', 'issue', 'problem'],
+            'feature': ['functionality', 'capability'],
+            'test': ['verify', 'check', 'validate'],
+            'automode': ['automatic', 'automated', 'auto', 'automation', 'autonomous', 
+                        'self-running', 'background', 'daemon', 'service'],
+            'penguin': ['assistant', 'AI', 'helper', 'bot'],
+            'list': ['show', 'display', 'enumerate', 'output']
+        }
+        
+        expanded = query
+        for term, synonyms in related_terms.items():
+            if term.lower() in query.lower():
+                expanded += f" {' '.join(synonyms)}"
+        
+        print(f"\nDebug: Expanded query: {expanded}")
+        return expanded
 
-    def ensure_models_loaded(self):
-        if self.tfidf_vectorizer is None or self.tfidf_matrix is None:
-            self.load_or_initialize_models()
+    def _calculate_content_hash(self, content: str) -> str:
+        """Create a fuzzy hash of content for deduplication"""
+        # Simplified version - could use better fuzzy matching
+        words = content.lower().split()[:20]  # First 20 words
+        return ' '.join(words)
 
-    def load_or_initialize_models(self):
-        """Try to load existing models first, only initialize if needed."""
+    def _calculate_relevance(self, doc: str, query: str, score: float) -> float:
+        """Enhanced relevance calculation"""
+        base_score = max(0, min(100, (1 - score) * 100))
+        
+        # Boost exact matches
+        content_lower = doc.lower()
+        query_terms = query.lower().split()
+        exact_matches = sum(term in content_lower for term in query_terms)
+        base_score += exact_matches * 10
+        
+        # Boost recent content
         try:
-            model_path = os.path.join(self.embeddings_dir, 'sentence_transformer')
-            if os.path.exists(model_path):
-                self.model = SentenceTransformer(model_path)
-                # logger.info("Loaded cached sentence transformer model")
+            doc_date = datetime.fromisoformat(doc.split('(')[1].split(')')[0])
+            days_old = (datetime.now() - doc_date).days
+            recency_boost = max(0, 10 - (days_old / 30))  # Up to 10 points for newer content
+            base_score += recency_boost
+        except:
+            pass
+            
+        return min(100, base_score)
+
+    def _get_highlights(self, text: str, query: str) -> List[tuple]:
+        """Find positions of terms to highlight"""
+        highlights = []
+        query_terms = set(query.lower().split())
+        
+        for term in query_terms:
+            for match in re.finditer(rf'\b{re.escape(term)}\b', text.lower()):
+                highlights.append((match.start(), match.end()))
+                
+        return highlights
+
+    def _extract_relevant_preview(self, content: str, query: str, max_length: int = 300) -> str:
+        """Extract a relevant preview that includes query context"""
+        # Split into messages by markdown headers
+        messages = []
+        current_message = []
+        
+        for line in content.split('\n'):
+            if line.startswith('###'):
+                if current_message:
+                    messages.append('\n'.join(current_message))
+                current_message = [line]
             else:
-                self.model = SentenceTransformer('all-MiniLM-L6-v2')
-                self.model.save(model_path)
-                # logger.info("Downloaded and cached sentence transformer model")
-
-            # Try loading other models
-            if os.path.exists(os.path.join(self.embeddings_dir, 'tfidf_vectorizer.pkl')):
-                with open(os.path.join(self.embeddings_dir, 'tfidf_vectorizer.pkl'), 'rb') as f:
-                    self.tfidf_vectorizer = pickle.load(f)
-                self.tfidf_matrix = scipy.sparse.load_npz(os.path.join(self.embeddings_dir, 'tfidf_matrix.npz'))
-                self.embeddings = np.load(os.path.join(self.embeddings_dir, 'embeddings.npy'))
-                # logger.info("Loaded cached TF-IDF and embeddings")
-            else:
-                # Initialize if cached models don't exist
-                self.initialize_models()
-                # logger.info("Initialized new models")
-        except Exception as e:
-            logger.warning(f"Error loading cached models: {e}, initializing new ones")
-            self.initialize_models()
-
-    def load_logs(self) -> List[Dict[str, Any]]:
-        """
-        Load all JSON log files from the log directory.
-
-        :return: List of log entries
-        """
-        logs = []
-        try:
-            for filename in os.listdir(self.log_dir):
-                if filename.endswith('.json'):
-                    with open(os.path.join(self.log_dir, filename), 'r') as f:
-                        file_logs = json.load(f)
-                        # Ensure each log entry has a 'content' field that's a string
-                        for log in file_logs:
-                            if isinstance(log, dict):
-                                if 'content' not in log:
-                                    log['content'] = str(log)
-                                elif not isinstance(log['content'], str):
-                                    log['content'] = str(log['content'])
-                                logs.append(log)
-            # Sort logs by timestamp to ensure they are in chronological order
-            logs.sort(key=lambda x: x.get('timestamp', ''))
-        except FileNotFoundError:
-            logger.warning(f"Log directory '{self.log_dir}' not found.")
-        except Exception as e:
-            logger.error(f"Error loading logs: {e}")
-        return logs
-
-    def initialize_models(self):
-        """
-        Initialize models when no saved data is available or to update with recent logs.
-        """
-        if not self.logs:
-            logger.warning("No logs available for model initialization.")
-            return
-        self.tfidf_vectorizer = TfidfVectorizer()
-        self.tfidf_matrix = self.tfidf_vectorizer.fit_transform([log['content'] for log in self.logs])
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
-        self.embeddings = self.compute_embeddings()
-
-    def save_models(self):
-        """
-        Save models and data to disk.
-        """
-        try:
-            os.makedirs(self.embeddings_dir, exist_ok=True)
-            with open(os.path.join(self.embeddings_dir, 'tfidf_vectorizer.pkl'), 'wb') as f:
-                pickle.dump(self.tfidf_vectorizer, f)
-            if self.tfidf_matrix is not None:
-                scipy.sparse.save_npz(os.path.join(self.embeddings_dir, 'tfidf_matrix.npz'), self.tfidf_matrix)
-            if self.embeddings is not None and len(self.embeddings) > 0:
-                np.save(os.path.join(self.embeddings_dir, 'embeddings.npy'), self.embeddings)
-            # logger.info(f"Models saved successfully to {self.embeddings_dir}")
-        except Exception as e:
-            logger.error(f"Error saving models: {str(e)}")
-
-    def compute_embeddings(self) -> np.ndarray:
-        """
-        Compute embeddings for all log entries using the sentence transformer model.
-
-        :return: numpy array of embeddings
-        """
-        if not self.logs:
-            return np.array([])
-        return self.model.encode([log['content'] for log in self.logs])
-
-    def keyword_search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Perform keyword-based search using TF-IDF and cosine similarity.
-
-        :param query: Search query
-        :param k: Number of top results to return
-        :return: List of top k matching log entries
-        """
-        self.wait_for_initialization()
-        self.ensure_logs_loaded()
-        self.ensure_models_loaded()
-        if self.tfidf_matrix is None:
-            logger.warning("No logs available for keyword search.")
-            return []
+                current_message.append(line)
         
-        query_vec = self.tfidf_vectorizer.transform([query])
-        similarities = cosine_similarity(query_vec, self.tfidf_matrix)[0]
-        top_k_indices = similarities.argsort()[-k:][::-1]
-        return self.format_search_results(top_k_indices)
-
-    def semantic_search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Perform semantic search using sentence embeddings and cosine similarity.
-
-        :param query: Search query
-        :param k: Number of top results to return
-        :return: List of top k matching log entries
-        """
-        self.wait_for_initialization()
-        self.ensure_logs_loaded()
-        self.ensure_models_loaded()
-        if self.embeddings is None:
-            logger.warning("No logs available for semantic search.")
-            return []
+        if current_message:
+            messages.append('\n'.join(current_message))
         
-        query_embedding = self.model.encode([query])
-        similarities = cosine_similarity(query_embedding, self.embeddings)[0]
-        top_k_indices = similarities.argsort()[-k:][::-1]
-        return self.format_search_results(top_k_indices)
-
-    def combined_search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """
-        Perform both keyword and semantic search, combine results, and return top k unique entries.
-
-        :param query: Search query
-        :param k: Number of top results to return
-        :return: List of top k matching log entries
-        """
-        self.wait_for_initialization()
-        if self.tfidf_matrix is None or self.embeddings is None:
-            logger.warning("No logs available for combined search.")
-            return []
+        def clean_message(msg):
+            """Clean up a message for display"""
+            # Extract assistant response from JSON-like format
+            if "assistant_response" in msg:
+                match = re.search(r"'assistant_response':\s*'([^']+)'", msg)
+                if match:
+                    return match.group(1)
+            # Clean up user input
+            if "User input:" in msg:
+                return msg.split("User input:", 1)[1].strip()
+            return msg.strip()
         
-        keyword_scores = cosine_similarity(self.tfidf_vectorizer.transform([query]), self.tfidf_matrix)[0]
-        semantic_scores = cosine_similarity(self.model.encode([query]), self.embeddings)[0]
+        # First try: find messages containing query terms
+        query_terms = query.lower().split()
+        relevant_messages = []
         
-        # Normalize scores
-        keyword_scores = (keyword_scores - np.min(keyword_scores)) / (np.max(keyword_scores) - np.min(keyword_scores))
-        semantic_scores = (semantic_scores - np.min(semantic_scores)) / (np.max(semantic_scores) - np.min(semantic_scores))
+        for msg in messages:
+            msg_lower = msg.lower()
+            if any(term in msg_lower for term in query_terms):
+                cleaned = clean_message(msg)
+                if cleaned:
+                    relevant_messages.append(cleaned)
         
-        # Combine scores with equal weighting
-        combined_scores = 0.5 * keyword_scores + 0.5 * semantic_scores
+        if relevant_messages:
+            # Show the most relevant message and its context
+            best_idx = 0  # Index of most relevant message
+            start_idx = max(0, best_idx - 1)
+            end_idx = min(len(relevant_messages), best_idx + 2)
+            preview = '\n   '.join(relevant_messages[start_idx:end_idx])
+            return preview[:max_length] + "..." if len(preview) > max_length else preview
         
-        top_k_indices = combined_scores.argsort()[-k:][::-1]
-        return self.format_search_results(top_k_indices)
+        # Fallback: Show a conversation exchange (user + assistant if possible)
+        for i, msg in enumerate(messages):
+            if "👤 User" in msg:
+                user_msg = clean_message(msg)
+                # Try to get the assistant's response
+                if i + 1 < len(messages) and "🐧 Penguin" in messages[i + 1]:
+                    assistant_msg = clean_message(messages[i + 1])
+                    return f"{user_msg}\n   {assistant_msg}"[:max_length] + "..."
+                return user_msg[:max_length] + "..."
+        
+        # Final fallback: Just show the first non-empty message
+        for msg in messages:
+            cleaned = clean_message(msg)
+            if cleaned:
+                return cleaned[:max_length] + "..."
+        
+        return "Empty conversation"
 
-    def format_search_results(self, indices: List[int]) -> List[Dict[str, Any]]:
-        """
-        Format search results with proper timestamps and content.
-
-        :param indices: List of indices of top matching log entries
-        :return: List of formatted log entries
-        """
-        results = []
-        for i in indices:
-            log_entry = self.logs[i]
-            timestamp_str = log_entry.get('timestamp', 'Unknown')
-            try:
-                # Parse timestamp to datetime object for accurate sorting
-                timestamp = datetime.fromisoformat(timestamp_str)
-                formatted_timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
-            except ValueError:
-                logger.warning(f"Invalid timestamp format: {timestamp_str}")
-                formatted_timestamp = timestamp_str
-
-            content = log_entry.get('content', '')
-            # Remove line numbers from content if present
-            content = '\n'.join([line.split('|', 1)[-1] if '|' in line else line for line in content.split('\n')])
-            results.append({
-                "timestamp": formatted_timestamp,
-                "content": content
+    def _format_results(self, results, query: str) -> List[Dict[str, Any]]:
+        """Format search results into a clean structure with relevant previews"""
+        combined_results = []
+        if not results['ids']:
+            return combined_results
+            
+        for doc, meta, distance in zip(
+            results['documents'][0], 
+            results['metadatas'][0], 
+            results['distances'][0]
+        ):
+            preview = self._extract_relevant_preview(doc, query)
+            combined_results.append({
+                "content": doc,
+                "metadata": meta,
+                "distance": distance,
+                "preview": preview
             })
         
-        # Sort results by timestamp, most recent first
-        return sorted(results, key=lambda x: x['timestamp'], reverse=True)
+        return combined_results
 
-    def add_log(self, log: Dict[str, Any]):
-        """
-        Add a new log entry to the search index.
+def print_results(results: List[Dict[str, Any]]):
+    """Print results with colored highlighting"""
+    if not results:
+        print("\nNo results found.")
+        return
+        
+    print("\nSearch Results:")
+    print("---------------")
+    
+    for i, result in enumerate(results, 1):
+        print(f"\n{i}. From: {result['metadata']['file_path']}")
+        print(f"   Type: {result['metadata']['memory_type']}")
+        print(f"   Categories: {result['metadata']['categories']}")
+        print(f"   Relevance: {result['relevance']:.2f}/100")
+        print(f"   Preview:")
+        
+        # Print with highlights
+        text = result['preview']
+        last_pos = 0
+        for start, end in sorted(result['highlights']):
+            print(f"   {text[last_pos:start]}", end='')
+            print(f"{Fore.YELLOW}{text[start:end]}{Style.RESET_ALL}", end='')
+            last_pos = end
+        print(f"   {text[last_pos:]}")
 
-        :param log: New log entry to add
-        """
-        with self.lock:
-            # Add new log to the list
-            self.logs.append(log)
+if __name__ == "__main__":
+    searcher = MemorySearcher()
+    
+    print("\nPenguin Memory Search")
+    print("===================")
+    
+    # Index files first
+    searcher.index_memory_files()
+    
+    # Interactive search loop
+    while True:
+        try:
+            query = input("\nEnter search query (or 'exit' to quit): ").strip()
+            if query.lower() == 'exit':
+                break
             
-            # Update TF-IDF matrix incrementally
-            new_tfidf_vec = self.tfidf_vectorizer.transform([log['content']])
-            self.tfidf_matrix = scipy.sparse.vstack([self.tfidf_matrix, new_tfidf_vec])
+            memory_type = input("Filter by type (logs/notes, Enter to skip): ").strip() or None
+            categories_input = input("Filter by categories (comma-separated, Enter to skip): ").strip()
+            categories = [c.strip() for c in categories_input.split(',')] if categories_input else None
             
-            # Update embeddings incrementally
-            new_embedding = self.model.encode([log['content']])
-            self.embeddings = np.vstack([self.embeddings, new_embedding])
+            date_after_input = input("Filter by date after (YYYY-MM-DD, Enter to skip): ").strip()
+            date_after = datetime.fromisoformat(date_after_input) if date_after_input else None
             
-            # Save updated models
-            self.save_models()
+            date_before_input = input("Filter by date before (YYYY-MM-DD, Enter to skip): ").strip()
+            date_before = datetime.fromisoformat(date_before_input) if date_before_input else None
             
-        logger.info(f"New log entry added and models updated.")
-
-    def update_logs(self):
-        """
-        Update logs with any new entries and rebuild models.
-        """
-        new_logs = self.load_logs()
-        if len(new_logs) > len(self.logs):
-            self.logs = new_logs
-            self.initialize_models()
-            self.save_models()
-            logger.info("Logs updated and models rebuilt.")
-        else:
-            logger.info("No new logs found.")
+            results = searcher.search_memory(
+                query=query,
+                max_results=5,
+                memory_type=memory_type,
+                categories=categories,
+                date_after=date_after,
+                date_before=date_before
+            )
+            
+            if not results:
+                print("\nNo results found.")
+                continue
+                
+            print("\nSearch Results:")
+            print("---------------")
+            for i, result in enumerate(results, 1):
+                print(f"\n{i}. From: {result['metadata']['file_path']}")
+                print(f"   Type: {result['metadata']['memory_type']}")
+                print(f"   Categories: {result['metadata']['categories']}")
+                print(f"   Relevance: {result['relevance']:.2f}/100")
+                print(f"   Preview:")
+                print(f"   {result['preview']}")
+                
+        except KeyboardInterrupt:
+            print("\nSearch interrupted.")
+            break
+        except Exception as e:
+            print(f"\nError during search: {str(e)}")
+            continue
+    
+    print("\nSearch interface closed.")

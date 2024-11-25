@@ -7,7 +7,7 @@ import time
 import random 
 import requests # type: ignore
 from requests.exceptions import RequestException # type: ignore
-from typing import List, Dict, Any, Callable, Union
+from typing import List, Dict, Any, Callable, Union, Optional
 from utils import FileMap
 import subprocess
 # from utils.log_error import log_error
@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup # type: ignore
 from .declarative_memory_tool import DeclarativeMemoryTool
 from .grep_search import GrepSearch
 from .lint_python import lint_python
-from .memory_search import MemorySearch
+from .old2_memory_search import MemorySearch
 from utils.notebook import NotebookExecutor
 from memory.summary_notes import SummaryNotes
 from .duck import duckduckgo_search as ddg_search
@@ -26,6 +26,7 @@ from .duck import duckduckgo_search as ddg_search
 from tavily import TavilyClient
 from .perplexity_tool import PerplexityProvider
 from .workspace_search import CodeIndexer
+from .memory_search import MemorySearcher  # Import the new memory searcher
 
 from config import WORKSPACE_PATH, TAVILY_API_KEY
 import base64
@@ -46,6 +47,7 @@ class ToolManager:
         self.perplexity_provider = PerplexityProvider()
         self.code_indexer = CodeIndexer(persist_directory=os.path.join(WORKSPACE_PATH, "chroma_db"))
         self.code_indexer.wait_for_initialization()
+        self.memory_searcher = MemorySearcher()
         self.tools = [
             {
                 "name": "create_folder",
@@ -330,6 +332,31 @@ class ToolManager:
                     },
                     "required": ["query"]
                 }
+            },
+            {
+                "name": "memory_search",
+                "description": "Search through memory logs and notes",
+                "parameters": {
+                    "query": {
+                        "type": "string",
+                        "description": "The search query"
+                    },
+                    "max_results": {
+                        "type": "integer", 
+                        "description": "Maximum number of results to return",
+                        "default": 5
+                    },
+                    "memory_type": {
+                        "type": "string",
+                        "description": "Type of memory to search (logs/notes)",
+                        "optional": True
+                    },
+                    "categories": {
+                        "type": "array",
+                        "description": "Categories to filter by",
+                        "optional": True
+                    }
+                }
             }
         # {
         #     "name": "tavily_search",
@@ -390,6 +417,14 @@ class ToolManager:
             "workspace_search": lambda: self.search_workspace(
                 tool_input["query"],
                 tool_input.get("max_results", 5)
+            ),
+            "memory_search": lambda: self.search_memory(
+                tool_input["query"],
+                tool_input.get("max_results", 5),
+                tool_input.get("memory_type", None),
+                tool_input.get("categories", None),
+                tool_input.get("date_after", None),
+                tool_input.get("date_before", None)
             )
             # "tavily_search": lambda: self.tavily_search(
             #     tool_input["query"],
@@ -645,6 +680,38 @@ class ToolManager:
             return "Workspace indexing completed successfully."
         except Exception as e:
             error_message = f"Error indexing workspace: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return error_message
+
+    def search_memory(self, query: str, max_results: int = 5, 
+                     memory_type: str = None, categories: List[str] = None,
+                     date_after: Optional[str] = None,
+                     date_before: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Search through memory using the new memory searcher"""
+        try:
+            results = self.memory_searcher.search_memory(
+                query=query,
+                max_results=max_results,
+                memory_type=memory_type,
+                categories=categories,
+                date_after=date_after,
+                date_before=date_before
+            )
+            return results
+        except Exception as e:
+            error_message = f"Error searching memory: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return []
+
+    def index_memory(self) -> str:
+        """Index all memory files"""
+        try:
+            self.memory_searcher.index_memory_files()
+            return "Memory indexing completed successfully."
+        except Exception as e:
+            error_message = f"Error indexing memory: {str(e)}"
             logging.error(error_message)
             self.log_error(e, error_message)
             return error_message
