@@ -5,6 +5,9 @@ hold/
 arch-notes/
 testing/
 
+# Frontend
+frontend/
+
 # Python cache
 __pycache__/
 *.py[cod]
@@ -46,8 +49,23 @@ build/
 eggs/
 .eggs/
 
+# Node modules
+node_modules/
 
+# pytest
+.pytest_cache/
+ 
+# .venv
+.venv/
 
+# .vscode
+.vscode/
+
+# ct1
+ct1/
+
+# chromatest
+chroma_test/
 # Logs and databases
 *.log
 *.sql

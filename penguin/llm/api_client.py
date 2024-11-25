@@ -86,69 +86,17 @@ class APIClient:
         if self.model_config.use_assistants_api and self.adapter.assistant_manager:
             self.adapter.assistant_manager.update_system_prompt(prompt)
 
-    def create_message(self, messages: List[Dict[str, Any]], max_tokens: Optional[int] = None, temperature: Optional[float] = None, image_path: Optional[str] = None) -> Any:
-        """
-        Create a message to send to the AI model.
-
-        This method prepares the message, including the conversation history and system prompt,
-        and sends it to the AI model using the litellm library.
-
-        Args:
-            messages (List[Dict[str, Any]]): The conversation history.
-            max_tokens (int, optional): Maximum number of tokens in the response. Defaults to None.
-            temperature (float, optional): Sampling temperature for response generation. Defaults to None.
-            image_path (str, optional): The path to the image file. Defaults to None.
-
-        Returns:
-            Any: The raw response from the AI model.
-
-        Raises:
-            Exception: If there's an error in calling the LLM API.
-        """
+    def create_message(self, messages: List[Dict[str, Any]], max_tokens: Optional[int] = None, temperature: Optional[float] = None) -> Any:
         try:
-            self.logger.debug(f"Creating message with image_path: {image_path}")
-            if self.model_config.use_assistants_api:
-                # print("Attempting Assistant API path...")
-                if self.adapter.assistant_manager:
-                    try:
-                        content = messages[-1]['content']
-                        if isinstance(content, list):
-                            text = content[0]['text']
-                        else:
-                            text = content
-                        # print(f"Adding message to thread: {text[:100]}...")
-                        self.adapter.assistant_manager.add_message_to_thread(text)
-                        run = self.adapter.assistant_manager.run_assistant()
-                        return self.adapter.assistant_manager.process_run(run)
-                    except Exception as e:
-                        # print(f"Error in Assistant API path: {str(e)}")
-                        raise
-            else:
-                # print("Using regular API path...")
-                pass
-            # print("=====================\n")
-
-            # Get model-specific config
-            model_specific_config = MODEL_CONFIGS.get(self.model_config.model, {})
-            
-            # Format messages using the provider-specific adapter
-            formatted_messages = self.adapter.format_messages(self._truncate_history(messages))
-            
-            # Add system prompt if it exists
+            # Add system message if it exists and isn't already present
             if self.system_prompt:
-                formatted_messages = [{"role": "system", "content": self.system_prompt}] + formatted_messages
-            
-            # Handle image input
-            if image_path and self.model_config.supports_vision:
-                self.logger.debug(f"Processing image: {image_path}")
-                base64_image = self.encode_image_to_base64(image_path)
-                formatted_messages[-1]['content'] = [
-                    {"type": "text", "text": formatted_messages[-1]['content']},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                ]
-            
-            self.logger.debug(f"Formatted messages: {formatted_messages}")
+                has_system_message = any(msg.get("role") == "system" for msg in messages)
+                if not has_system_message:
+                    messages = [{"role": "system", "content": self.system_prompt}] + messages
 
+            # Format messages using the provider-specific adapter
+            formatted_messages = self.adapter.format_messages(messages)
+            
             # Prepare parameters for the completion call
             completion_params = {
                 "model": self.model_config.model,
@@ -157,21 +105,19 @@ class APIClient:
                 "temperature": temperature or self.model_config.temperature,
                 "api_base": self.model_config.api_base,
             }
-
-            # Remove None values from the parameters
+            
+            # Remove None values
             completion_params = {k: v for k, v in completion_params.items() if v is not None}
             
-            # Add API key if it exists
             if self.api_key:
                 completion_params["api_key"] = self.api_key
-
-            self.logger.debug(f"Completion parameters: {completion_params}")
-
+                
+            self.logger.debug(f"Sending formatted messages: {formatted_messages}")
+            
             # Make the API call
             response = completion(**completion_params)
-            self.logger.debug(f"API response: {response}")
             return response
-
+            
         except Exception as e:
             error_message = f"LLM API error: {str(e)}"
             self.logger.error(error_message)

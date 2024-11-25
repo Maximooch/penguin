@@ -73,7 +73,10 @@ class ConversationSystem:
         try:
             base64_image = self.tool_manager.encode_image(image_path)
             image_message = [
-                {"type": "text", "text": user_input},
+                {
+                    "type": "text",
+                    "text": user_input
+                },
                 {
                     "type": "image_url",
                     "image_url": {
@@ -81,6 +84,7 @@ class ConversationSystem:
                     }
                 }
             ]
+            # Add as properly structured content
             self.add_message("user", image_message)
             logger.info("Image message added to conversation history")
         except Exception as e:

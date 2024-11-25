@@ -37,14 +37,40 @@ class OpenAIAdapter(ProviderAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         formatted_messages = []
         for message in messages:
-            if isinstance(message['content'], list):
-                # This is already in the correct format for vision models
-                formatted_messages.append(message)
-            else:
+            content = message.get('content', '')
+            
+            # Handle list-type content (like image messages)
+            if isinstance(content, list):
+                # Ensure each content part has proper format
+                formatted_content = []
+                for part in content:
+                    if isinstance(part, dict):
+                        if 'image_url' in part:
+                            # Ensure image_url format is consistent
+                            formatted_content.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": part['image_url']['url']
+                                }
+                            })
+                        else:
+                            formatted_content.append(part)
+                    else:
+                        formatted_content.append({
+                            "type": "text",
+                            "text": str(part)
+                        })
                 formatted_messages.append({
                     "role": message['role'],
-                    "content": [{"type": "text", "text": message['content']}]
+                    "content": formatted_content
                 })
+            else:
+                # Handle string content
+                formatted_messages.append({
+                    "role": message['role'],
+                    "content": [{"type": "text", "text": str(content)}]
+                })
+        
         return formatted_messages
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:

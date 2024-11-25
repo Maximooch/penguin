@@ -6,6 +6,7 @@ import time
 import os
 import sys
 import logging
+from config import WORKSPACE_PATH
 from logging.handlers import RotatingFileHandler
 from typing import Dict, Any, Optional
 from chat.chat import ChatManager
@@ -49,6 +50,7 @@ async def init_penguin() -> ChatManager:
         task_manager = TaskManager(logger)
         
         await asyncio.to_thread(tool_manager.memory_search.wait_for_initialization)
+        await asyncio.to_thread(tool_manager.code_indexer.index_directory, WORKSPACE_PATH)
         
         penguin_core = PenguinCore(
             api_client=api_client,
@@ -72,52 +74,9 @@ async def main():
         chat_manager = await init_penguin()
         console.print("[green]Initialization complete![/green]\n")
         
-        # Load the configuration
-        config = load_config()
-        model_name = config['model']['default']
-        model_specific_config = config['model_configs'].get(model_name, {})
-        
-        # Create model config first
-        console.print("1. Creating model config...")
-        model_config = ModelConfig(
-            model=model_name,
-            provider=config['model']['provider'],
-            use_assistants_api=config['model'].get('use_assistants_api', False),
-            max_tokens=model_specific_config.get('max_tokens'),
-            temperature=model_specific_config.get('temperature'),
-            api_base=config['api'].get('base_url'),
-            supports_vision=model_specific_config.get('supports_vision', False)
-        )
-        
-        # Create API client with model config
-        console.print("2. Creating API client...")
-        api_client = APIClient(model_config=model_config)
-        api_client.set_system_prompt(SYSTEM_PROMPT)
-        
-        # Create managers
-        console.print("3. Creating managers...")
-        tool_manager = ToolManager(log_error)
-        task_manager = TaskManager(logger)
-        
-        # Create core components
-        console.print("4. Creating PenguinCore...")
-        core = PenguinCore(
-            api_client=api_client,
-            tool_manager=tool_manager,
-            task_manager=task_manager
-        )
-        core.set_system_prompt(SYSTEM_PROMPT)
-        
-        # Create UI and chat manager
-        console.print("5. Creating ChatManager...")
-        ui = PromptUI()
-        chat_manager = ChatManager(core, ui)
-        
-        console.print("[green]Initialization complete![/green]")
-        
         # Create and use session synchronously
         session = create_app_session()
-        with session:  # Use regular 'with' instead of 'async with'
+        with session:
             await chat_manager.run_chat()
                 
     except Exception as e:

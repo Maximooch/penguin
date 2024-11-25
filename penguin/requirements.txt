@@ -14,3 +14,7 @@ sphinx
 sphinx-rtd-theme
 myst-parser
 IPython
+
+chromadb
+ollama
+ast-parser

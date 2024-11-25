@@ -59,6 +59,7 @@ class ActionType(Enum):
     PROCESS_ENTER = "process_enter"
     PROCESS_SEND = "process_send"
     PROCESS_EXIT = "process_exit"
+    WORKSPACE_SEARCH = "workspace_search"
 
 class CodeActAction:
     def __init__(self, action_type, params):
@@ -132,6 +133,7 @@ class ActionExecutor:
             ActionType.PROCESS_ENTER: self._process_enter,
             ActionType.PROCESS_SEND: self._process_send,
             ActionType.PROCESS_EXIT: self._process_exit,
+            ActionType.WORKSPACE_SEARCH: self._workspace_search,
         }
         
         try:
@@ -361,3 +363,15 @@ class ActionExecutor:
         result = await self.process_manager.exit_process(self.current_process)
         self.current_process = None
         return result
+
+    def _workspace_search(self, params: str) -> str:
+        parts = params.split(':', 1)
+        if len(parts) == 2:
+            query, max_results = parts[0].strip(), int(parts[1].strip())
+        else:
+            query, max_results = params.strip(), 5
+
+        return self.tool_manager.execute_tool("workspace_search", {
+            "query": query,
+            "max_results": max_results
+        })
