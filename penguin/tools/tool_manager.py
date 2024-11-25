@@ -25,6 +25,7 @@ from .duck import duckduckgo_search as ddg_search
 # from .tavily import TavilySearch
 from tavily import TavilyClient
 from .perplexity_tool import PerplexityProvider
+from .workspace_search import CodeIndexer
 
 from config import WORKSPACE_PATH, TAVILY_API_KEY
 import base64
@@ -43,6 +44,8 @@ class ToolManager:
         tavily_api_key = TAVILY_API_KEY
         self.tavily_client = TavilyClient(api_key=tavily_api_key)
         self.perplexity_provider = PerplexityProvider()
+        self.code_indexer = CodeIndexer(persist_directory=os.path.join(WORKSPACE_PATH, "chroma_db"))
+        self.code_indexer.wait_for_initialization()
         self.tools = [
             {
                 "name": "create_folder",
@@ -310,6 +313,24 @@ class ToolManager:
                     "required": ["query"]
                 }
             },
+                    {
+                "name": "workspace_search",
+                "description": "Search through workspace code files using semantic search and AST parsing for accurate code lookups.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query - can be function name, class name, or general code concept"
+                        },
+                        "max_results": {
+                            "type": "integer",
+                            "description": "Maximum number of results to return (default: 5)"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
         # {
         #     "name": "tavily_search",
         #     "description": "Perform a web search using Tavily API with advanced context and metadata.",
@@ -365,6 +386,10 @@ class ToolManager:
             "tavily_search": lambda: self.tavily_search(tool_input["query"]),
             "perplexity_search": lambda: self.perplexity_provider.format_results(
                 self.perplexity_provider.search(tool_input["query"], tool_input.get("max_results", 5))
+            ),
+            "workspace_search": lambda: self.search_workspace(
+                tool_input["query"],
+                tool_input.get("max_results", 5)
             )
             # "tavily_search": lambda: self.tavily_search(
             #     tool_input["query"],
@@ -573,3 +598,53 @@ class ToolManager:
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode('utf-8')
     
+    def search_workspace(self, query: str, max_results: int = 5) -> str:
+        try:
+            results = self.code_indexer.search_code(query, max_results)
+            if not results:
+                return "No matching code found in workspace."
+                
+            formatted_results = []
+            for result in results:
+                file_path = result['metadata']['file_path']
+                distance = result.get('distance', 0)
+                
+                # Format the code snippet
+                code_snippet = result['content']
+                if len(code_snippet.split('\n')) > 10:
+                    code_lines = code_snippet.split('\n')[:10]
+                    code_snippet = '\n'.join(code_lines) + '\n...'
+                
+                # Build the formatted result
+                formatted_result = f"File: {file_path}\n"
+                if 'match_type' in result:
+                    formatted_result += f"Match Type: {result['match_type']}\n"
+                    if result['match_type'] == 'method':
+                        formatted_result += f"In Class: {result['class']}\n"
+                if 'line_range' in result and result['line_range']:
+                    formatted_result += f"Lines: {result['line_range']}\n"
+                formatted_result += f"Relevance Score: {1 - distance:.4f}\n"
+                formatted_result += "Code Snippet:\n```python\n"
+                formatted_result += code_snippet
+                formatted_result += "\n```\n"
+                
+                formatted_results.append(formatted_result)
+            
+            return "\n\n".join(formatted_results)
+        except Exception as e:
+            error_message = f"Error searching workspace: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return error_message
+        
+    def index_workspace(self, directory: str = None) -> str:
+        try:
+            if directory is None:
+                directory = self.project_root
+            self.code_indexer.index_directory(directory)
+            return "Workspace indexing completed successfully."
+        except Exception as e:
+            error_message = f"Error indexing workspace: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return error_message

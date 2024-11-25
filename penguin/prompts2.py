@@ -61,6 +61,14 @@ The search will automatically return recent results - do not specify dates in yo
 Example: <perplexity_search>latest AI advancements: 3</perplexity_search>
 NOTE: you have a maximum of 5 results to work with at a time. 
 
+<workspace_search>query: max_results</workspace_search>
+Example: <workspace_search>execute_action: 3</workspace_search>
+Use this to:
+- Find implementation details
+- Locate similar code patterns
+- Understand code structure
+- Navigate large codebases
+
 <memory_search>query:k</memory_search>
 
 ## Interactive Terminal
@@ -213,4 +221,3 @@ Current Project: {project_info}
 5. ADAPT based on outcomes
 6. Repeat until complete
 """
-
