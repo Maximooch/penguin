@@ -375,3 +375,55 @@ class ActionExecutor:
             "query": query,
             "max_results": max_results
         })
+
+    async def _memory_search(self, params: str) -> str:
+        """
+        Parse and execute memory search command
+        Format: query:max_results:memory_type:categories:date_after:date_before
+        Example: "project planning:5:logs:planning,projects:2024-01-01:2024-03-01"
+        """
+        try:
+            parts = params.split(':')
+            query = parts[0].strip()
+            
+            # Parse optional parameters
+            max_results = int(parts[1]) if len(parts) > 1 and parts[1].strip() else 5
+            memory_type = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
+            categories = parts[3].strip().split(',') if len(parts) > 3 and parts[3].strip() else None
+            date_after = parts[4].strip() if len(parts) > 4 and parts[4].strip() else None
+            date_before = parts[5].strip() if len(parts) > 5 and parts[5].strip() else None
+
+            results = self.tool_manager.search_memory(
+                query=query,
+                max_results=max_results,
+                memory_type=memory_type,
+                categories=categories,
+                date_after=date_after,
+                date_before=date_before
+            )
+
+            # Format results for display
+            if not results:
+                return "No results found."
+
+            formatted_results = []
+            for i, result in enumerate(results, 1):
+                formatted_results.append(f"\n{i}. From: {result['metadata']['file_path']}")
+                formatted_results.append(f"   Type: {result['metadata']['memory_type']}")
+                formatted_results.append(f"   Categories: {result['metadata']['categories']}")
+                formatted_results.append(f"   Relevance: {result['relevance']:.2f}/100")
+                formatted_results.append(f"   Preview:")
+                formatted_results.append(f"   {result['preview']}")
+                formatted_results.append("")
+
+            return "\n".join(formatted_results)
+
+        except Exception as e:
+            return f"Error executing memory search: {str(e)}"
+
+    async def _memory_index(self, params: str) -> str:
+        """Index all memory files"""
+        try:
+            return self.tool_manager.index_memory()
+        except Exception as e:
+            return f"Error indexing memory: {str(e)}"

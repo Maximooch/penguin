@@ -1,3 +1,4 @@
+
 from typing import Optional, Tuple, List, Dict, Any
 from core import PenguinCore
 from utils.logs import penguin_logger, log_event
@@ -22,6 +23,7 @@ class ChatManager:
         self.logger = logging.getLogger(__name__)
         self._is_processing = False
         self._interrupt_requested = False
+        self.task_manager = core.task_manager
         
     async def run_chat(self):
         """Main chat loop with async support"""
@@ -200,24 +202,67 @@ class ChatManager:
     async def handle_task_command(self, command):
         parts = command.split()
         if len(parts) < 2:
-            self.ui.print_bordered_message("Invalid task command. Use 'task list' or 'task create [name] [description]'", self.ui.PENGUIN_COLOR, "system", "Error")
+            self.ui.print_bordered_message(
+                "Invalid task command. Use 'task list' or 'task create [name] [description]'", 
+                self.ui.PENGUIN_COLOR, 
+                "system", 
+                "Error"
+            )
             return
         
         action = parts[1]
-        if action == "list":
-            tasks = await self.core.task_manager.list_tasks()
-            if tasks:
-                task_list = "\n".join([f"- {task['name']}: {task['description']}" for task in tasks])
-                self.ui.print_bordered_message(f"Current tasks:\n{task_list}", self.ui.PENGUIN_COLOR, "system", "Task List")
+        try:
+            if action == "list":
+                # Use get_task_board instead of list_tasks
+                task_board = self.task_manager.get_task_board()
+                self.ui.print_bordered_message(
+                    task_board if task_board else "No tasks currently.", 
+                    self.ui.PENGUIN_COLOR, 
+                    "system", 
+                    "Task List"
+                )
+            elif action == "create" and len(parts) >= 4:
+                name = parts[2]
+                description = " ".join(parts[3:])
+                await self.task_manager.create_task(name, description)
+                self.ui.print_bordered_message(
+                    f"Task '{name}' created successfully.", 
+                    self.ui.PENGUIN_COLOR, 
+                    "system", 
+                    "Task Created"
+                )
+            elif action == "status" and len(parts) >= 3:
+                name = parts[2]
+                task = self.task_manager.get_task_by_name(name)
+                if task:
+                    status = f"Task: {task.name}\nStatus: {task.status}\nProgress: {task.progress}%"
+                    self.ui.print_bordered_message(
+                        status,
+                        self.ui.PENGUIN_COLOR,
+                        "system",
+                        "Task Status"
+                    )
+                else:
+                    self.ui.print_bordered_message(
+                        f"Task '{name}' not found.",
+                        self.ui.PENGUIN_COLOR,
+                        "system",
+                        "Error"
+                    )
             else:
-                self.ui.print_bordered_message("No tasks currently.", self.ui.PENGUIN_COLOR, "system", "Task List")
-        elif action == "create" and len(parts) >= 4:
-            name = parts[2]
-            description = " ".join(parts[3:])
-            await self.core.task_manager.create_task(name, description)
-            self.ui.print_bordered_message(f"Task '{name}' created successfully.", self.ui.PENGUIN_COLOR, "system", "Task Created")
-        else:
-            self.ui.print_bordered_message("Invalid task command. Use 'task list' or 'task create [name] [description]'", self.ui.PENGUIN_COLOR, "system", "Error")
+                self.ui.print_bordered_message(
+                    "Invalid task command. Use 'task list' or 'task create [name] [description]'",
+                    self.ui.PENGUIN_COLOR,
+                    "system",
+                    "Error"
+                )
+        except Exception as e:
+            self.ui.print_bordered_message(
+                f"Error executing task command: {str(e)}",
+                self.ui.PENGUIN_COLOR,
+                "system",
+                "Error"
+            )
 
     async def handle_image_command(self, command):
         parts = command.split()

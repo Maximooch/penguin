@@ -69,7 +69,12 @@ Use this to:
 - Understand code structure
 - Navigate large codebases
 
-<memory_search>query:k</memory_search>
+<memory_search>query:max_results</memory_search>
+Example: <memory_search>project planning:5</memory_search>
+(Generally recommended to use no filters.)
+
+<memory_search>query:max_results:memory_type:categories:date_after:date_before</memory_search>
+Example: <memory_search>project planning:5:logs:planning,projects:2024-01-01:2024-03-01</memory_search>
 
 ## Interactive Terminal
 

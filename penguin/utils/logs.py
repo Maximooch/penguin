@@ -73,14 +73,33 @@ def _write_json_log(file_path: str, event_type: str, content: str, timestamp: da
 
 def _write_markdown_log(file_path: str, event_type: str, content: str, timestamp: datetime.datetime):
     timestamp_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
-    log_entry = ""
+    
     if event_type == "user":
         log_entry = f"### 👤 User ({timestamp_str}):\n{content}\n\n"
     elif event_type == "assistant":
-        log_entry = f"### 🐧 Penguin AI ({timestamp_str}):\n{content}\n\n"
+        # Check if this is already a formatted response
+        if "'assistant_response':" not in content:
+            log_entry = f"### 🐧 Penguin AI ({timestamp_str}):\n{content}\n\n"
+        else:
+            parts = content.split("'assistant_response': ")
+            message = parts[1].split("', 'action_results")[0].strip('"')
+            metadata = (parts[1].split("'action_results':")[1]
+                      .replace("'", '"')  # Replace single quotes with double quotes
+                      .replace("{", "")   # Remove curly braces
+                      .replace("}", "")
+                      .strip())
+            
+            log_entry = (
+                f"### 🐧 Penguin AI ({timestamp_str}):\n"
+                f"{message}\n"
+                f"\n"
+                f"\n"
+                f"    {metadata}\n"
+                f"\n"
+            )
+            # No else needed here since we're already in the assistant block
     else:
         log_entry = f"### System ({timestamp_str}):\n{content}\n\n"
-    
     with open(file_path, 'a', encoding='utf-8') as f:
         f.write(log_entry)
 
