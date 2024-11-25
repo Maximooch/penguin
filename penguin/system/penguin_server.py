@@ -6,7 +6,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import logging
 from logging.handlers import RotatingFileHandler
 # from main import init
-from new import init_penguin
+from penguin.main import init_penguin
 from utils.auth import require_auth
 from utils.validation import validate_request
 
