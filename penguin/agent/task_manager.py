@@ -72,16 +72,45 @@ class TaskManager:
         
         return "\n".join(rows)
 
+    def _format_table(self, headers: List[str], rows: List[List[str]]) -> str:
+        """Helper method to format tables with dynamic column widths"""
+        # Calculate column widths based on headers and content
+        widths = [len(h) for h in headers]
+        for row in rows:
+            for i, cell in enumerate(row):
+                widths[i] = max(widths[i], len(str(cell)))
+
+        # Create format string for rows
+        fmt = " | ".join(f"{{:<{w}}}" for w in widths)
+        separator = "-+-".join("-" * w for w in widths)
+
+        # Format table
+        lines = [fmt.format(*headers), separator]
+        for row in rows:
+            lines.append(fmt.format(*row))
+
+        return "\n".join(lines)
+
     def get_project_board(self) -> str:
-        header = "| Project ID | Project Name | Description | Status | Progress |"
-        separator = "|------------|--------------|-------------|--------|----------|"
-        rows = [header, separator]
+        """Get a formatted list of all projects"""
+        if not self.projects:
+            return "No projects found"
+            
+        headers = ["ID", "Name", "Description", "Status", "Progress", "Tasks"]
+        rows = []
         
         for project in self.projects.values():
-            project_str = f"| {project.id[:8]} | {project.name[:12]:12} | {project.description[:11]:11} | {project.status.value:6} | {project.progress:3.0f}% |"
-            rows.append(project_str)
+            task_count = len(project.task_ids)
+            rows.append([
+                project.id[:4] + "…",
+                project.name[:20],
+                project.description[:20] + "…" if len(project.description) > 20 else project.description,
+                project.status.value,
+                f"{project.progress}%",
+                str(task_count)
+            ])
         
-        return "\n".join(rows)
+        return self._format_table(headers, rows)
 
     def save_tasks(self) -> None:
         data = {
@@ -139,6 +168,7 @@ class TaskManager:
         return None
 
     def get_project_by_name(self, name: str) -> Optional[Project]:
+        """Get project by name"""
         for project in self.projects.values():
             if project.name.lower() == name.lower():
                 # logger.debug(f"Found project: {project.name}, Attributes: {vars(project)}")
@@ -147,13 +177,25 @@ class TaskManager:
         return None
     
     def get_project_details(self, project_name: str) -> str:
+        """Get detailed status of a project"""
         project = self.get_project_by_name(project_name)
-        if project:
-            tasks = [self.get_task(task_id) for task_id in project.task_ids]
-            task_details = "\n".join([f"- {task.name}: {task.status.value}" for task in tasks if task])
-            return f"Project: {project.name}\nDescription: {project.description}\nStatus: {project.status.value}\nProgress: {project.progress:.0f}%\nTasks:\n{task_details}"
-        else:
-            return f"Project not found: {project_name}"
+        if not project:
+            raise ValueError(f"Project not found: {project_name}")
+        
+        details = [
+            f"Project: {project.name}",
+            f"Description: {project.description}",
+            f"Status: {project.status.value}",
+            f"Progress: {project.progress}%",
+            "\nTasks:"
+        ]
+        
+        for task_id in project.task_ids:
+            task = self.tasks.get(task_id)
+            if task:
+                details.append(f"  - {task.name}: {task.status.value} ({task.progress}%)")
+        
+        return "\n".join(details)
 
     def remove_task(self, task: Task) -> None:
         if task.id in self.tasks:
@@ -256,3 +298,28 @@ class TaskManager:
     #       self.save_tasks()
     #       return f"Project completed: {project}"
     #   return f"Project not found: {project_name}"
+
+    def get_task_details(self, task_name: str) -> str:
+        """Get detailed status of a task"""
+        task = self.get_task_by_name(task_name)
+        if not task:
+            raise ValueError(f"Task not found: {task_name}")
+        
+        details = [
+            f"Task: {task.name}",
+            f"Description: {task.description}",
+            f"Status: {task.status.value}",
+            f"Progress: {task.progress}%"
+        ]
+        
+        if task.project_id:
+            project = self.projects.get(task.project_id)
+            if project:
+                details.append(f"Project: {project.name}")
+            
+        if task.subtasks:
+            details.append("Subtasks:")
+            for subtask in task.subtasks:
+                details.append(f"  - {subtask.name}: {subtask.status.value} ({subtask.progress}%)")
+            
+        return "\n".join(details)

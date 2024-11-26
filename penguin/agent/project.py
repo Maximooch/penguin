@@ -82,3 +82,27 @@ class Project:
     def get_tasks(self, task_manager) -> List[Task]:
         return [task_manager.get_task_by_id(task_id) for task_id in self.task_ids]
 
+    def update_status(self, status: ProjectStatus) -> None:
+        """Update project status"""
+        self.status = status
+        if status == ProjectStatus.COMPLETED:
+            self.progress = 100
+        elif status == ProjectStatus.NOT_STARTED:
+            self.progress = 0
+
+    def calculate_progress(self, task_manager) -> float:
+        """Calculate project progress based on tasks"""
+        if not self.task_ids:
+            return 0.0
+        
+        total_progress = 0
+        valid_tasks = 0
+        
+        for task_id in self.task_ids:
+            task = task_manager.tasks.get(task_id)
+            if task:
+                total_progress += task.progress
+                valid_tasks += 1
+        
+        return total_progress / valid_tasks if valid_tasks > 0 else 0.0
+

@@ -1,4 +1,3 @@
-
 from typing import Optional, Tuple, List, Dict, Any
 from core import PenguinCore
 from utils.logs import penguin_logger, log_event
@@ -199,70 +198,99 @@ class ChatManager:
         # Implementation remains the same
         pass
 
-    async def handle_task_command(self, command):
-        parts = command.split()
+    async def handle_task_command(self, user_input: str) -> None:
+        """Handle task-related commands"""
+        parts = user_input.split(maxsplit=2)
         if len(parts) < 2:
             self.ui.print_bordered_message(
-                "Invalid task command. Use 'task list' or 'task create [name] [description]'", 
-                self.ui.PENGUIN_COLOR, 
-                "system", 
-                "Error"
-            )
-            return
-        
-        action = parts[1]
-        try:
-            if action == "list":
-                # Use get_task_board instead of list_tasks
-                task_board = self.task_manager.get_task_board()
-                self.ui.print_bordered_message(
-                    task_board if task_board else "No tasks currently.", 
-                    self.ui.PENGUIN_COLOR, 
-                    "system", 
-                    "Task List"
-                )
-            elif action == "create" and len(parts) >= 4:
-                name = parts[2]
-                description = " ".join(parts[3:])
-                await self.task_manager.create_task(name, description)
-                self.ui.print_bordered_message(
-                    f"Task '{name}' created successfully.", 
-                    self.ui.PENGUIN_COLOR, 
-                    "system", 
-                    "Task Created"
-                )
-            elif action == "status" and len(parts) >= 3:
-                name = parts[2]
-                task = self.task_manager.get_task_by_name(name)
-                if task:
-                    status = f"Task: {task.name}\nStatus: {task.status}\nProgress: {task.progress}%"
-                    self.ui.print_bordered_message(
-                        status,
-                        self.ui.PENGUIN_COLOR,
-                        "system",
-                        "Task Status"
-                    )
-                else:
-                    self.ui.print_bordered_message(
-                        f"Task '{name}' not found.",
-                        self.ui.PENGUIN_COLOR,
-                        "system",
-                        "Error"
-                    )
-            else:
-                self.ui.print_bordered_message(
-                    "Invalid task command. Use 'task list' or 'task create [name] [description]'",
-                    self.ui.PENGUIN_COLOR,
-                    "system",
-                    "Error"
-                )
-        except Exception as e:
-            self.ui.print_bordered_message(
-                f"Error executing task command: {str(e)}",
+                "Invalid task command. Available commands:\n"
+                "- task list\n"
+                "- task create [name] [description]\n"
+                "- task run [name]\n"
+                "- task status [name]",
                 self.ui.PENGUIN_COLOR,
                 "system",
                 "Error"
             )
+            return
+
+        command = parts[1].lower()
+        
+        try:
+            if command == "list":
+                result = self.core.list_tasks()
+                self.ui.print_bordered_message(result, self.ui.PENGUIN_COLOR, "system", "Task List")
+            
+            elif command == "create" and len(parts) >= 3:
+                name_desc = parts[2].split(maxsplit=1)
+                if len(name_desc) < 2:
+                    raise ValueError("Both name and description are required")
+                    
+                result = self.core.create_task(name_desc[0], name_desc[1])
+                self.ui.print_bordered_message(result, self.ui.PENGUIN_COLOR, "system", "Task Created")
+            
+            elif command == "run" and len(parts) >= 3:
+                task_name = parts[2]
+                self.ui.print_bordered_message(f"Running task: {task_name}", self.ui.PENGUIN_COLOR, "system", "Task Running")
+                async for iteration, max_iter, response in self.core.run_task(task_name):
+                    self.ui.print_bordered_message(
+                        f"Progress ({iteration}/{max_iter if max_iter > 0 else '∞'}):\n{response}",
+                        self.ui.TOOL_COLOR,
+                        "progress",
+                        f"Task: {task_name}"
+                    )
+            
+            elif command == "status" and len(parts) >= 3:
+                task_name = parts[2]
+                result = self.core.get_task_status(task_name)
+                self.ui.print_bordered_message(result, self.ui.PENGUIN_COLOR, "system", "Task Status")
+            
+            else:
+                raise ValueError("Invalid task command or missing parameters")
+                
+        except Exception as e:
+            self.ui.print_bordered_message(f"Error: {str(e)}", self.ui.TOOL_COLOR, "system", "Error")
+
+    async def handle_project_command(self, user_input: str) -> None:
+        """Handle project-related commands"""
+        parts = user_input.split(maxsplit=2)
+        if len(parts) < 2:
+            self.ui.print_bordered_message(
+                "Invalid project command. Available commands:\n"
+                "- project list\n"
+                "- project create [name] [description]\n"
+                "- project status [name]",
+                self.ui.PENGUIN_COLOR,
+                "system",
+                "Error"
+            )
+            return
+
+        command = parts[1].lower()
+        
+        try:
+            if command == "list":
+                result = self.core.list_projects()
+                self.ui.print_bordered_message(result, self.ui.PENGUIN_COLOR, "system", "Project List")
+            
+            elif command == "create" and len(parts) >= 3:
+                name_desc = parts[2].split(maxsplit=1)
+                if len(name_desc) < 2:
+                    raise ValueError("Both name and description are required")
+                    
+                result = self.core.create_project(name_desc[0], name_desc[1])
+                self.ui.print_bordered_message(result, self.ui.PENGUIN_COLOR, "system", "Project Created")
+            
+            elif command == "status" and len(parts) >= 3:
+                project_name = parts[2]
+                result = self.core.get_project_status(project_name)
+                self.ui.print_bordered_message(result, self.ui.PENGUIN_COLOR, "system", "Project Status")
+            
+            else:
+                raise ValueError("Invalid project command or missing parameters")
+                
+        except Exception as e:
+            self.ui.print_bordered_message(f"Error: {str(e)}", self.ui.TOOL_COLOR, "system", "Error")
 
     async def handle_image_command(self, command):
         parts = command.split()

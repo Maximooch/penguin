@@ -21,6 +21,7 @@ def create_task(task_manager: TaskManager, name: str, description: str, project_
 
 def create_project(task_manager: TaskManager, name: str, description: str) -> str:
     project = task_manager.create_project(name.strip(), description)
+    task_manager.save_tasks()  # Ensure persistence
     return f"Project created: {project}"
 
 def update_task(task_manager: TaskManager, name: str, progress: int) -> str:
@@ -97,3 +98,11 @@ def get_project_details(task_manager: TaskManager, name: str) -> str:
 
 def list_projects(task_manager: TaskManager) -> str:
     return task_manager.get_project_board()
+
+def get_project_board(task_manager: TaskManager) -> str:
+    """Get formatted list of all projects"""
+    return task_manager.get_project_board()
+
+def get_project_details(task_manager: TaskManager, project_name: str) -> str:
+    """Get detailed project status"""
+    return task_manager.get_project_details(project_name)
