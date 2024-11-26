@@ -13,7 +13,7 @@ The core acts primarily as a coordinator, delegating specific functionality
 to specialized systems while maintaining overall state and flow control.
 """
 
-from typing import Dict, List, Optional, Tuple, Any, Callable
+from typing import Dict, List, Optional, Tuple, Any, Callable, Generator, AsyncGenerator
 import logging
 import os
 import traceback
@@ -386,6 +386,47 @@ class PenguinCore:
     async def create_project(self, name: str, description: str):
         """Create a new project."""
         return await self.task_manager.create_project(name, description)
+
+    async def run_task(self, task_name: str) -> AsyncGenerator[Tuple[int, int, str], None]:
+        """Run a task with progress updates"""
+        task = self.task_manager.get_task_by_name(task_name)
+        if not task:
+            raise ValueError(f"Task not found: {task_name}")
+        
+        message_count = len(self.messages) + 1  # Use messages length instead
+        async for progress in self.task_manager.run_task(task, self.process_message, message_count):
+            yield progress
+
+    def get_task_status(self, task_name: str) -> str:
+        """Get detailed status of a task"""
+        return self.task_manager.get_task_details(task_name)
+
+    def get_project_status(self, project_name: str) -> str:
+        """Get detailed status of a project"""
+        return self.task_manager.get_project_details(project_name)
+
+    def list_tasks(self) -> str:
+        """Get a formatted list of all tasks"""
+        return self.task_manager.get_task_board()
+
+    def list_projects(self) -> str:
+        """Get a formatted list of all projects"""
+        return self.task_manager.get_project_board()
+
+    def create_task(self, name: str, description: str, project_name: Optional[str] = None) -> str:
+        """Create a new task"""
+        task = self.task_manager.create_task(name.strip(), description)
+        if project_name:
+            project = self.task_manager.get_project_by_name(project_name)
+            if project:
+                self.task_manager.add_task_to_project(project, task)
+        return f"Task created: {task}"
+
+    def create_project(self, name: str, description: str) -> str:
+        """Create a new project"""
+        project = self.task_manager.create_project(name.strip(), description)
+        return f"Project created: {project}"
+
     def reset_state(self):
         """Reset the core state"""
         self.messages = []

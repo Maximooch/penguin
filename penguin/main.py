@@ -1,7 +1,6 @@
 #!/usr/bin/env pypy3
 import asyncio
-from prompt_toolkit.application import create_app_session  # type: ignore
-# from prompt_toolkit.patch_stdout import patch_stdout  # type: ignore
+from prompt_toolkit.application import create_app_session # type: ignore
 import time
 import os
 import sys
@@ -16,13 +15,14 @@ from utils.log_error import log_error
 from tools import ToolManager
 from llm.api_client import APIClient
 from config import config, load_config
-# from prompts import SYSTEM_PROMPT
 from system_prompt import SYSTEM_PROMPT
 from core import PenguinCore
 from dotenv import load_dotenv  # type: ignore
 import warnings
 from agent.task_manager import TaskManager
 from rich.console import Console # type: ignore
+import subprocess
+from pathlib import Path
 
 # Load environment variables first
 load_dotenv()
@@ -50,11 +50,47 @@ file_handler = RotatingFileHandler(
 file_handler.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 
+async def init_ollama_server() -> None:
+    """Initialize Ollama server in background process"""
+    logger.info("Starting Ollama server...")
+    try:
+        # Start ollama serve in background
+        process = subprocess.Popen(
+            "ollama serve",
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        
+        # Wait for server to start (max 30 seconds)
+        start_time = time.time()
+        while time.time() - start_time < 30:
+            try:
+                # Test connection with a simple embedding
+                import ollama # type: ignore
+                client = ollama.Client(timeout=5.0)
+                client.embeddings(model='nomic-embed-text', prompt='test')
+                logger.info("Ollama server started successfully")
+                return
+            except Exception:
+                await asyncio.sleep(1)
+                continue
+                
+        raise TimeoutError("Ollama server failed to start within timeout")
+        
+    except Exception as e:
+        logger.warning(f"Failed to start Ollama server: {str(e)}")
+        logger.warning("Continuing without embeddings support")
+
 async def init_penguin() -> ChatManager:
     """Initialize Penguin components"""
     try:
-        console = Console()  # Create a rich console instance
+        console = Console()
         
+        # Start Ollama server first
+        await init_ollama_server()
+        
+        # Initialize model config
         model_config = ModelConfig(
             model=config['model']['default'],
             provider=config['model']['provider'],
@@ -65,11 +101,20 @@ async def init_penguin() -> ChatManager:
         api_client = APIClient(model_config=model_config)
         api_client.set_system_prompt(SYSTEM_PROMPT)
         
+        # Initialize tool manager with graceful Ollama handling
         tool_manager = ToolManager(log_error)
         task_manager = TaskManager(logger)
         
-        await asyncio.to_thread(tool_manager.memory_search.wait_for_initialization)
-        await asyncio.to_thread(tool_manager.code_indexer.index_directory, WORKSPACE_PATH)
+        # Modified initialization sequence
+        try:
+            await asyncio.to_thread(tool_manager.memory_search.wait_for_initialization)
+        except Exception as e:
+            logger.warning(f"Memory search initialization failed, continuing without embeddings: {str(e)}")
+            
+        try:
+            await asyncio.to_thread(tool_manager.code_indexer.index_directory, WORKSPACE_PATH)
+        except Exception as e:
+            logger.warning(f"Code indexing failed, continuing without code search: {str(e)}")
         
         penguin_core = PenguinCore(
             api_client=api_client,
@@ -82,7 +127,7 @@ async def init_penguin() -> ChatManager:
         return chat_manager
         
     except Exception as e:
-        logger.exception("Initialization error")
+        logger.exception("Fatal initialization error")
         raise
 
 async def main():

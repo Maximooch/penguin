@@ -67,8 +67,13 @@ class MemorySearcher:
             # Set up logging
             self.logger = logging.getLogger(__name__)
             
-            # Initialize Ollama client for embeddings
-            self.ollama_client = ollama.Client()
+            # Try to initialize Ollama client, fall back to simple search if unavailable
+            try:
+                self.ollama_client = ollama.Client()
+                self.use_embeddings = True
+            except Exception as e:
+                self.logger.warning(f"Ollama not available, falling back to simple search: {str(e)}")
+                self.use_embeddings = False
             
             # Index existing memories
             self.index_memory_files()
@@ -136,11 +141,19 @@ class MemorySearcher:
     def index_memory(self, content: str, memory_type: str, metadata: Dict[str, Any]):
         """Index a single memory with its metadata"""
         try:
-            # Get embeddings
-            response = self.ollama_client.embeddings(
-                model='nomic-embed-text',
-                prompt=content
-            )
+            # Get embeddings if Ollama is available
+            if self.use_embeddings:
+                try:
+                    response = self.ollama_client.embeddings(
+                        model='nomic-embed-text',
+                        prompt=content
+                    )
+                    embeddings = [response['embedding']]
+                except Exception as e:
+                    self.logger.warning(f"Error getting embeddings, falling back to null embeddings: {str(e)}")
+                    embeddings = None
+            else:
+                embeddings = None
             
             # Ensure all metadata values are strings
             metadata = {k: str(v) for k, v in metadata.items()}
@@ -150,7 +163,7 @@ class MemorySearcher:
             collection.add(
                 documents=[content],
                 metadatas=[metadata],
-                embeddings=[response['embedding']],
+                embeddings=embeddings if embeddings else None,
                 ids=[str(uuid.uuid4())]
             )
         except Exception as e:

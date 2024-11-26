@@ -4,7 +4,7 @@ import yaml # type: ignore
 from pathlib import Path
 # import logging
 from typing import Dict, Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # LinkAI Workspace Configuration
 # LINKAI_WORKSPACE_ID = os.getenv('LINKAI_WORKSPACE_ID')
@@ -150,19 +150,19 @@ class Config:
 
 @dataclass
 class DiagnosticsConfig:
-    enabled: bool = False  # Default to False
-    max_context_tokens: int = 200000
-    log_to_file: bool = False
-    log_path: Optional[Path] = None
+    enabled: bool = field(default=False)
+    max_context_tokens: int = field(default=200000)
+    log_to_file: bool = field(default=False)
+    log_path: Optional[Path] = field(default=None)
 
 @dataclass
 class Config:
-    model_name: Optional[str] = None
-    temperature: float = 0.7
-    max_tokens: Optional[int] = None
-    diagnostics: DiagnosticsConfig = DiagnosticsConfig()
-    workspace_dir: Path = Path.cwd()
-    cache_dir: Path = Path(os.getenv('PENGUIN_CACHE_DIR', '~/.cache/penguin')).expanduser()
+    model_name: Optional[str] = field(default=None)
+    temperature: float = field(default=0.7)
+    max_tokens: Optional[int] = field(default=None)
+    diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
+    workspace_dir: Path = field(default_factory=Path.cwd)
+    cache_dir: Path = field(default_factory=lambda: Path(os.getenv('PENGUIN_CACHE_DIR', '~/.cache/penguin')).expanduser())
 
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> 'Config':
