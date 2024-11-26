@@ -1,71 +1,106 @@
+import tiktoken # type: ignore
+from rich.console import Console # type: ignore
+from rich.panel import Panel # type: ignore
+from rich.progress import Progress, TextColumn, BarColumn # type: ignore
 import logging
-from rich.console import Console
-from rich.panel import Panel
-from rich.progress import Progress, TextColumn, BarColumn
+from typing import Dict
 
 console = Console()
-MAX_CONTEXT_TOKENS = 200000  # Adjust this value as needed
+MAX_CONTEXT_TOKENS = 200000
 
 class TokenTracker:
     def __init__(self):
         self.tokens = {'input': 0, 'output': 0}
-
-    def update(self, input_tokens, output_tokens):
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
+    
+    def update(self, input_tokens: int, output_tokens: int):
+        """Update token counts directly with numbers"""
         self.tokens['input'] += input_tokens
         self.tokens['output'] += output_tokens
-
+        
     def reset(self):
+        """Reset token counts"""
         self.tokens = {'input': 0, 'output': 0}
 
 class Diagnostics:
-    def __init__(self, enabled=False):
-        self.enabled = enabled
-        self.token_trackers = {
+    def __init__(self):
+        self.enabled = True
+        self.token_trackers: Dict[str, TokenTracker] = {
             'main_model': TokenTracker(),
-            'tool_checker': TokenTracker(),
-            'system_prompt': TokenTracker()
+            'tools': TokenTracker(), 
+            'memory': TokenTracker()
         }
+        self.tokenizer = tiktoken.get_encoding("cl100k_base")
 
-    def update_tokens(self, tracker_name, input_tokens, output_tokens):
-        if self.enabled:
-            self.token_trackers[tracker_name].update(input_tokens, output_tokens)
+    def count_tokens(self, text: str) -> int:
+        """Count tokens in text using tiktoken"""
+        if not text:
+            return 0
+        return len(self.tokenizer.encode(text))
+
+    def update_tokens(self, tracker_name: str, input_text: str, output_text: str = ""):
+        """Update token counts for a specific tracker"""
+        if not self.enabled:
+            logging.debug("Diagnostics disabled, skipping token update")
+            return
+            
+        input_tokens = self.count_tokens(input_text)
+        output_tokens = self.count_tokens(output_text)
+        
+        if tracker_name not in self.token_trackers:
+            logging.debug(f"Creating new tracker for {tracker_name}")
+            self.token_trackers[tracker_name] = TokenTracker()
+            
+        self.token_trackers[tracker_name].update(input_tokens, output_tokens)
+        logging.debug(f"Updated {tracker_name} - Input: {input_tokens}, Output: {output_tokens}")
 
     def log_token_usage(self):
+        """Log current token usage with rich formatting"""
         if not self.enabled:
             return
 
-        console.print("\nToken Usage:")
+        console.print("\nToken Usage Summary:")
         total_tokens = 0
+        
         for name, tracker in self.token_trackers.items():
             total = tracker.tokens['input'] + tracker.tokens['output']
             total_tokens += total
-            console.print(f"{name.capitalize()}: Input: {tracker.tokens['input']}, Output: {tracker.tokens['output']}, Total: {total}")
+            
+            console.print(Panel(
+                f"Input: {tracker.tokens['input']}\n"
+                f"Output: {tracker.tokens['output']}\n"
+                f"Total: {total}",
+                title=f"{name.title()}"
+            ))
 
-        console.print(f"\nTotal Token Usage: {total_tokens}")
         percentage = (total_tokens / MAX_CONTEXT_TOKENS) * 100
-        console.print(f"Percentage of Context Window Used: {percentage:.2f}%")
+        
+        console.print(f"\nTotal Token Usage: {total_tokens}")
+        console.print(f"Context Window Used: {percentage:.1f}%")
 
-        with Progress(TextColumn("[progress.description]{task.description}"),
-                    BarColumn(bar_width=50),
-                    TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                    console=console) as progress:
-            progress.add_task("Context window usage", total=100, completed=percentage)
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=50),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            console=console
+        ) as progress:
+            progress.add_task(
+                "Context window usage",
+                total=100,
+                completed=min(percentage, 100)
+            )
 
-    def count_tokens(self, text):
-        # Simple estimation method
-        return len(text.split()) + len(text) // 4
-
-    def count_and_update_tokens(self, tracker_name, text):
-        if self.enabled:
-            token_count = self.count_tokens(text)
-            self.update_tokens(tracker_name, token_count, 0)
-            return token_count
-        return 0
+    def get_total_tokens(self) -> int:
+        """Get total tokens across all trackers"""
+        return sum(tracker.tokens['input'] + tracker.tokens['output'] 
+                  for tracker in self.token_trackers.values())
 
     def reset(self):
+        """Reset all token trackers"""
         for tracker in self.token_trackers.values():
             tracker.reset()
 
+# Global diagnostics instance
 diagnostics = Diagnostics()
 
 def enable_diagnostics():
