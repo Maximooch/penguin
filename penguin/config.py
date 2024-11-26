@@ -1,9 +1,10 @@
 import os
 from dotenv import load_dotenv # type: ignore
-import yaml
+import yaml # type: ignore
 from pathlib import Path
 # import logging
 from typing import Dict, Any, Optional
+from dataclasses import dataclass
 
 # LinkAI Workspace Configuration
 # LINKAI_WORKSPACE_ID = os.getenv('LINKAI_WORKSPACE_ID')
@@ -40,7 +41,15 @@ def load_config():
     try:
         with open(config_path, 'r') as config_file:
             config = yaml.safe_load(config_file)
-            # logger.debug(f"Loaded config: {config}")
+            
+            # Initialize diagnostics based on config
+            if 'diagnostics' in config:
+                from utils.diagnostics import disable_diagnostics, enable_diagnostics
+                if not config['diagnostics'].get('enabled', False):
+                    disable_diagnostics()
+                else:
+                    enable_diagnostics()
+                    
             return config
     except FileNotFoundError:
         # logger.error(f"Config file not found at {config_path}")
@@ -138,3 +147,67 @@ class Config:
 # Show memory search results in the UI. ( I mean it is tool output, but it's a lot of output so we should have a flag for it ) 
 
 # 
+
+@dataclass
+class DiagnosticsConfig:
+    enabled: bool = False  # Default to False
+    max_context_tokens: int = 200000
+    log_to_file: bool = False
+    log_path: Optional[Path] = None
+
+@dataclass
+class Config:
+    model_name: Optional[str] = None
+    temperature: float = 0.7
+    max_tokens: Optional[int] = None
+    diagnostics: DiagnosticsConfig = DiagnosticsConfig()
+    workspace_dir: Path = Path.cwd()
+    cache_dir: Path = Path(os.getenv('PENGUIN_CACHE_DIR', '~/.cache/penguin')).expanduser()
+
+    @classmethod
+    def load_config(cls, config_path: Optional[Path] = None) -> 'Config':
+        """Load configuration from config.yml"""
+        if config_path is None:
+            config_path = Path(__file__).parent.parent / 'config.yml'
+
+        try:
+            with open(config_path) as f:
+                config_data = yaml.safe_load(f)
+                
+            # Load diagnostics config
+            diagnostics_config = DiagnosticsConfig(
+                enabled=config_data.get('diagnostics', {}).get('enabled', False),
+                max_context_tokens=config_data.get('diagnostics', {}).get('max_context_tokens', 200000)
+            )
+            
+            # Initialize diagnostics based on config
+            if not diagnostics_config.enabled:
+                from utils.diagnostics import disable_diagnostics
+                disable_diagnostics()
+            
+            return cls(
+                diagnostics=diagnostics_config
+            )
+                
+        except FileNotFoundError:
+            return cls()
+        except yaml.YAMLError:
+            return cls()
+
+    def to_dict(self) -> Dict[str, Any]:
+        if not self.model_name:
+            raise ValueError("model_name must be specified")
+            
+        return {
+            "model_name": self.model_name,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "diagnostics": {
+                "enabled": self.diagnostics.enabled,
+                "max_context_tokens": self.diagnostics.max_context_tokens,
+                "log_to_file": self.diagnostics.log_to_file,
+                "log_path": str(self.diagnostics.log_path) if self.diagnostics.log_path else None
+            },
+            "workspace_dir": str(self.workspace_dir),
+            "cache_dir": str(self.cache_dir)
+        }

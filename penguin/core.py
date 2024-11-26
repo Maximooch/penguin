@@ -20,19 +20,20 @@ import traceback
 from datetime import datetime
 import json
 import re
+from pathlib import Path
+from rich.console import Console # type: ignore
 
 # LLM and API
 from llm import APIClient
 from llm.model_config import ModelConfig
 
 # Core systems
-# from hub import PenguinHub
 from system.conversation import ConversationSystem
 from cognition.cognition import CognitionSystem
 from system.file_manager import FileManager
 
 # Tools and Processing
-from utils.diagnostics import Diagnostics
+from utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnostics
 from tools.tool_manager import ToolManager
 from utils.parser import parse_action, ActionExecutor
 
@@ -43,10 +44,11 @@ from agent.project import Project, ProjectStatus
 from agent.task_utils import create_project, get_project_details
 
 # Configuration
+# from .config import Config
 from config import (
     TASK_COMPLETION_PHRASE, 
     MAX_TASK_ITERATIONS,
-    config,
+    Config,
     DEFAULT_MODEL,
     DEFAULT_PROVIDER
 )
@@ -55,30 +57,34 @@ from config import (
 from workspace import get_workspace_path, write_workspace_file
 
 logger = logging.getLogger(__name__)
+console = Console()
 
 class PenguinCore:
     def __init__(
         self,
-        api_client: APIClient,
-        tool_manager: ToolManager,
-        task_manager: TaskManager
+        config: Optional[Config] = None,
+        api_client: Optional[APIClient] = None,
+        tool_manager: Optional[ToolManager] = None,
+        task_manager: Optional[TaskManager] = None
     ):
         """Initialize PenguinCore with required components."""
-        # print("Initializing PenguinCore...")
+        self.config = config or Config.load_config()
+        
+        # Initialize diagnostics based on config
+        if not self.config.diagnostics.enabled:
+            disable_diagnostics()
+        
         self.api_client = api_client
         self.tool_manager = tool_manager
         self.task_manager = task_manager
-        # print("Creating ActionExecutor...")
-        self.action_executor = ActionExecutor(tool_manager, task_manager)
-        # print("ActionExecutor created successfully")
+        self.action_executor = ActionExecutor(tool_manager, task_manager) if tool_manager and task_manager else None
         self.messages = []
         
         # Initialize core systems
-        self.diagnostics = Diagnostics()
-        self.conversation = ConversationSystem(self.tool_manager, self.diagnostics)
+        self.conversation = ConversationSystem(self.tool_manager, diagnostics)
         self.cognition = CognitionSystem(
             api_client=self.api_client,
-            diagnostics=self.diagnostics
+            diagnostics=diagnostics
         )
         
         # State
@@ -87,10 +93,71 @@ class PenguinCore:
         self._interrupted = False
         logger.info("PenguinCore initialized successfully")
 
+    def _setup_diagnostics(self):
+        """Initialize diagnostics based on config"""
+        if self.config.diagnostics.enabled:
+            enable_diagnostics()
+            if self.config.diagnostics.log_to_file and self.config.diagnostics.log_path:
+                # Setup file logging if configured
+                log_path = Path(self.config.diagnostics.log_path)
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                logging.basicConfig(
+                    filename=str(log_path),
+                    level=logging.INFO,
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+                )
+        else:
+            disable_diagnostics()
+
+    async def process_message(self, message: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """Process a message with token tracking"""
+        try:
+            # Track input tokens
+            diagnostics.update_tokens('main_model', message)
+            
+            # Process message through conversation system
+            response = await self.get_response()
+            
+            # Track output tokens
+            diagnostics.update_tokens('main_model', "", str(response))
+            
+            # Log usage if enabled
+            diagnostics.log_token_usage()
+            
+            return response
+            
+        except Exception as e:
+            logging.error(f"Error processing message: {e}")
+            raise
+
+    def reset_context(self):
+        """Reset context and diagnostics"""
+        diagnostics.reset()
+        self.messages = []
+        self._interrupted = False
+        self.conversation.reset()
+        if self.tool_manager:
+            self.tool_manager.reset()
+        if self.action_executor:
+            self.action_executor.reset()
+        
+    @property
+    def total_tokens_used(self) -> int:
+        """Get total tokens used in current session"""
+        return diagnostics.get_total_tokens()
+        
+    def get_token_usage(self) -> Dict[str, Dict[str, int]]:
+        """Get detailed token usage statistics"""
+        return {
+            name: tracker.tokens.copy()
+            for name, tracker in diagnostics.token_trackers.items()
+        }
+
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt."""
         self.system_prompt = prompt
-        self.api_client.set_system_prompt(prompt)
+        if self.api_client:
+            self.api_client.set_system_prompt(prompt)
 
     def get_system_message(self, current_iteration: Optional[int] = None, 
                           max_iterations: Optional[int] = None) -> str:
@@ -104,14 +171,13 @@ class PenguinCore:
         """Check if execution has been interrupted"""
         return self._interrupted
 
-    async def process_input(self, input_data: Dict) -> None:
-        """
-        Process and prepare user input for the conversation.
-        
-        Args:
-            input_data: Dict containing user input and optional parameters
-        """
+    async def process_input(self, input_data: Dict[str, Any]) -> None:
+        """Process user input and update token count"""
         try:
+            # Count input tokens
+            if "text" in input_data:
+                diagnostics.update_tokens('main_model', input_data["text"])
+            
             # Extract input parameters
             user_input = input_data.get("text", "")
             image_path = input_data.get("image_path")
@@ -180,6 +246,9 @@ class PenguinCore:
                     assistant_response = str(response)
             else:
                 assistant_response = response.choices[0].message.content
+
+            # Count output tokens
+            diagnostics.update_tokens('main_model', "", assistant_response)
                 
             # Check for task completion
             exit_continuation = TASK_COMPLETION_PHRASE in str(assistant_response)
@@ -239,7 +308,7 @@ class PenguinCore:
             self.conversation.add_message("assistant", assistant_response)
             
             # Log diagnostics
-            self.diagnostics.log_token_usage()
+            diagnostics.log_token_usage()
             
             # Update task progress
             await self._update_task_progress(assistant_response)
@@ -317,7 +386,6 @@ class PenguinCore:
     async def create_project(self, name: str, description: str):
         """Create a new project."""
         return await self.task_manager.create_project(name, description)
-
     def reset_state(self):
         """Reset the core state"""
         self.messages = []
