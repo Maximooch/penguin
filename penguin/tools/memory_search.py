@@ -173,57 +173,62 @@ class MemorySearcher:
         """Index all memory files from workspace"""
         try:
             indexed_count = 0
+            skipped_count = 0
             
-            # Index logs
-            logs_path = self.memory_paths['logs']
-            if os.path.exists(logs_path):
-                for filename in os.listdir(logs_path):
-                    if filename.endswith('.md') or filename.endswith('.txt'):
-                        file_path = os.path.join(logs_path, filename)
+            # Load previous index metadata
+            index_metadata = self._load_index_metadata()
+            new_metadata = {}
+            
+            # Helper function to check if file needs indexing
+            def needs_indexing(file_path: str) -> bool:
+                current_meta = self._get_file_metadata(file_path)
+                previous_meta = index_metadata.get(file_path)
+                
+                if not previous_meta:
+                    return True
+                    
+                return (current_meta['mtime'] != previous_meta['mtime'] or 
+                        current_meta['size'] != previous_meta['size'])
+            
+            # Process each memory type
+            for memory_type, base_path in self.memory_paths.items():
+                if not os.path.exists(base_path):
+                    continue
+                    
+                for filename in os.listdir(base_path):
+                    if filename.endswith(('.md', '.txt')):
+                        file_path = os.path.join(base_path, filename)
+                        
+                        # Check if file needs indexing
+                        if not needs_indexing(file_path):
+                            skipped_count += 1
+                            new_metadata[file_path] = index_metadata[file_path]
+                            continue
+                            
+                        # Index the file
                         with open(file_path, 'r', encoding='utf-8') as f:
                             content = f.read()
                             
-                            # Extract metadata
                             metadata = self.parse_memory(content)
                             metadata.update({
                                 'file_path': file_path,
-                                'memory_type': 'logs',
+                                'memory_type': memory_type,
                                 'categories': self.extract_categories(content),
                                 'timestamp': self.extract_date_from_path(filename)
                             })
                             
-                            # Index the memory
-                            self.index_memory(content, 'logs', metadata)
+                            self.index_memory(content, memory_type, metadata)
+                            new_metadata[file_path] = self._get_file_metadata(file_path)
                             indexed_count += 1
             
-            # Index notes
-            notes_path = self.memory_paths['notes']
-            if os.path.exists(notes_path):
-                for filename in os.listdir(notes_path):
-                    if filename.endswith('.md') or filename.endswith('.txt'):
-                        file_path = os.path.join(notes_path, filename)
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                            
-                            # Extract metadata
-                            metadata = self.parse_memory(content)
-                            metadata.update({
-                                'file_path': file_path,
-                                'memory_type': 'notes',
-                                'categories': self.extract_categories(content),
-                                'timestamp': datetime.now().isoformat()
-                            })
-                            
-                            # Index the memory
-                            self.index_memory(content, 'notes', metadata)
-                            indexed_count += 1
+            # Save updated metadata
+            self._save_index_metadata(new_metadata)
             
-            return f"Successfully indexed {indexed_count} memory files"
+            return f"Indexed {indexed_count} files, skipped {skipped_count} unchanged files"
             
         except Exception as e:
-            error_msg = f"Error indexing memory files: {str(e)}"
-            self.logger.error(error_msg)
-            return error_msg
+            self.logger.error(f"Error during indexing: {str(e)}")
+            return f"Indexing failed: {str(e)}"
 
     def format_preview(self, content: str, max_length: int = 300) -> str:
         """Format the preview text to be more readable"""
@@ -467,6 +472,36 @@ class MemorySearcher:
             })
         
         return combined_results
+
+    def _get_file_metadata(self, file_path: str) -> Dict[str, Any]:
+        """Get file metadata including modification time"""
+        stat = os.stat(file_path)
+        return {
+            "path": file_path,
+            "mtime": stat.st_mtime,
+            "size": stat.st_size
+        }
+
+    def _load_index_metadata(self) -> Dict[str, Dict[str, Any]]:
+        """Load metadata of previously indexed files"""
+        metadata_path = os.path.join(WORKSPACE_PATH, 'memory_db', 'index_metadata.json')
+        try:
+            if os.path.exists(metadata_path):
+                with open(metadata_path, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            self.logger.warning(f"Failed to load index metadata: {e}")
+        return {}
+
+    def _save_index_metadata(self, metadata: Dict[str, Dict[str, Any]]):
+        """Save metadata of indexed files"""
+        metadata_path = os.path.join(WORKSPACE_PATH, 'memory_db', 'index_metadata.json')
+        try:
+            os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f)
+        except Exception as e:
+            self.logger.warning(f"Failed to save index metadata: {e}")
 
 def print_results(results: List[Dict[str, Any]]):
     """Print results with colored highlighting"""

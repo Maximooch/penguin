@@ -67,8 +67,8 @@ class Diagnostics:
             total_tokens += total
             
             console.print(Panel(
-                f"Input: {tracker.tokens['input']}\n"
-                f"Output: {tracker.tokens['output']}\n"
+                # f"Input: {tracker.tokens['input']}\n"
+                # f"Output: {tracker.tokens['output']}\n"
                 f"Total: {total}",
                 title=f"{name.title()}"
             ))

@@ -38,10 +38,10 @@ from tools.tool_manager import ToolManager
 from utils.parser import parse_action, ActionExecutor
 
 # Task Management
-from agent.task_manager import TaskManager
-from agent.task import Task, TaskStatus
-from agent.project import Project, ProjectStatus
-from agent.task_utils import create_project, get_project_details
+# from agent.task_manager import TaskManager
+# from agent.task import Task, TaskStatus
+# from agent.project import Project, ProjectStatus
+# from agent.task_utils import create_project, get_project_details
 
 # Configuration
 # from .config import Config
@@ -65,7 +65,7 @@ class PenguinCore:
         config: Optional[Config] = None,
         api_client: Optional[APIClient] = None,
         tool_manager: Optional[ToolManager] = None,
-        task_manager: Optional[TaskManager] = None
+        # task_manager: Optional[TaskManager] = None
     ):
         """Initialize PenguinCore with required components."""
         self.config = config or Config.load_config()
@@ -76,8 +76,8 @@ class PenguinCore:
         
         self.api_client = api_client
         self.tool_manager = tool_manager
-        self.task_manager = task_manager
-        self.action_executor = ActionExecutor(tool_manager, task_manager) if tool_manager and task_manager else None
+        # self.task_manager = task_manager
+        self.action_executor = ActionExecutor(tool_manager) 
         self.messages = []
         
         # Initialize core systems
@@ -103,7 +103,7 @@ class PenguinCore:
                 log_path.parent.mkdir(parents=True, exist_ok=True)
                 logging.basicConfig(
                     filename=str(log_path),
-                    level=logging.INFO,
+                    level=logging.WARNING,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
                 )
         else:
@@ -311,9 +311,9 @@ class PenguinCore:
             diagnostics.log_token_usage()
             
             # Update task progress
-            await self._update_task_progress(assistant_response)
+            # await self._update_task_progress(assistant_response)
             
-            return full_response, exit_continuation
+            return full_response , exit_continuation
             
         except Exception as e:
             error_context = f"Error in get_response. Iteration: {current_iteration}/{max_iterations}"
@@ -368,64 +368,120 @@ class PenguinCore:
                 "type": type(error).__name__
             }
 
-    async def _update_task_progress(self, response: Dict):
-        """Update task and project progress based on response."""
-        try:
-            if "task_update" in response:
-                await self.task_manager.update_task(response["task_update"])
-            if "project_update" in response:
-                await self.task_manager.update_project(response["project_update"])
-        except Exception as e:
-            logger.error(f"Error updating task progress: {str(e)}")
+    # async def _update_task_progress(self, response: Dict):
+    #     """Update task and project progress based on response."""
+    #     try:
+    #         if "task_update" in response:
+    #             await self.task_manager.update_task(response["task_update"])
+    #         if "project_update" in response:
+    #             await self.task_manager.update_project(response["project_update"])
+    #     except Exception as e:
+    #         logger.error(f"Error updating task progress: {str(e)}")
 
     # Task and Project Management Interface
-    async def create_task(self, description: str):
-        """Create a new task."""
-        return await self.task_manager.create_task(description)
+    # async def create_task(self, description: str):
+    #     """Create a new task."""
+    #     return await self.task_manager.create_task(description)
 
-    async def create_project(self, name: str, description: str):
-        """Create a new project."""
-        return await self.task_manager.create_project(name, description)
+    # async def create_project(self, name: str, description: str):
+    #     """Create a new project."""
+    #     return await self.task_manager.create_project(name, description)
 
-    async def run_task(self, task_name: str) -> AsyncGenerator[Tuple[int, int, str], None]:
-        """Run a task with progress updates"""
-        task = self.task_manager.get_task_by_name(task_name)
-        if not task:
-            raise ValueError(f"Task not found: {task_name}")
+    # async def run_task(self, task_name: str) -> AsyncGenerator[Tuple[int, int, str], None]:
+    #     """Run a task with progress updates"""
+    #     task = self.task_manager.get_task_by_name(task_name)
+    #     if not task:
+    #         raise ValueError(f"Task not found: {task_name}")
         
-        message_count = len(self.messages) + 1  # Use messages length instead
-        async for progress in self.task_manager.run_task(task, self.process_message, message_count):
-            yield progress
+    #     message_count = len(self.messages) + 1  # Use messages length instead
+    #     async for progress in self.task_manager.run_task(task, self.process_message, message_count):
+    #         yield progress
 
-    def get_task_status(self, task_name: str) -> str:
-        """Get detailed status of a task"""
-        return self.task_manager.get_task_details(task_name)
+    # def get_task_status(self, task_name: str) -> str:
+    #     """Get detailed status of a task"""
+    #     return self.task_manager.get_task_details(task_name)
 
-    def get_project_status(self, project_name: str) -> str:
-        """Get detailed status of a project"""
-        return self.task_manager.get_project_details(project_name)
+    # def get_project_status(self, project_name: str) -> str:
+    #     """Get detailed status of a project"""
+    #     return self.task_manager.get_project_details(project_name)
 
-    def list_tasks(self) -> str:
-        """Get a formatted list of all tasks"""
-        return self.task_manager.get_task_board()
+    # def list_tasks(self) -> str:
+    #     """Get a formatted list of all tasks"""
+    #     return self.task_manager.get_task_board()
 
-    def list_projects(self) -> str:
-        """Get a formatted list of all projects"""
-        return self.task_manager.get_project_board()
+    # def list_projects(self) -> str:
+    #     """Get a formatted list of all projects"""
+    #     return self.task_manager.get_project_board()
 
-    def create_task(self, name: str, description: str, project_name: Optional[str] = None) -> str:
-        """Create a new task"""
-        task = self.task_manager.create_task(name.strip(), description)
-        if project_name:
-            project = self.task_manager.get_project_by_name(project_name)
-            if project:
-                self.task_manager.add_task_to_project(project, task)
-        return f"Task created: {task}"
+    # def create_task(self, name: str, description: str, project_name: Optional[str] = None) -> str:
+    #     """Create a new task"""
+    #     task = self.task_manager.create_task(name.strip(), description)
+    #     if project_name:
+    #         project = self.task_manager.get_project_by_name(project_name)
+    #         if project:
+    #             self.task_manager.add_task_to_project(project, task)
+    #     return f"Task created: {task}"
 
-    def create_project(self, name: str, description: str) -> str:
-        """Create a new project"""
-        project = self.task_manager.create_project(name.strip(), description)
-        return f"Project created: {project}"
+    # def create_project(self, name: str, description: str) -> str:
+    #     """Create a new project"""
+    # async def _update_task_progress(self, response: Dict):
+    #     """Update task and project progress based on response."""
+    #     try:
+    #         if "task_update" in response:
+    #             await self.task_manager.update_task(response["task_update"])
+    #         if "project_update" in response:
+    #             await self.task_manager.update_project(response["project_update"])
+    #     except Exception as e:
+    #         logger.error(f"Error updating task progress: {str(e)}")
+
+    # # Task and Project Management Interface
+    # async def create_task(self, description: str):
+    #     """Create a new task."""
+    #     return await self.task_manager.create_task(description)
+
+    # async def create_project(self, name: str, description: str):
+    #     """Create a new project."""
+    #     return await self.task_manager.create_project(name, description)
+
+    # async def run_task(self, task_name: str) -> AsyncGenerator[Tuple[int, int, str], None]:
+    #     """Run a task with progress updates"""
+    #     task = self.task_manager.get_task_by_name(task_name)
+    #     if not task:
+    #         raise ValueError(f"Task not found: {task_name}")
+        
+    #     message_count = len(self.messages) + 1  # Use messages length instead
+    #     async for progress in self.task_manager.run_task(task, self.process_message, message_count):
+    #         yield progress
+
+    # def get_task_status(self, task_name: str) -> str:
+    #     """Get detailed status of a task"""
+    #     return self.task_manager.get_task_details(task_name)
+
+    # def get_project_status(self, project_name: str) -> str:
+    #     """Get detailed status of a project"""
+    #     return self.task_manager.get_project_details(project_name)
+
+    # def list_tasks(self) -> str:
+    #     """Get a formatted list of all tasks"""
+    #     return self.task_manager.get_task_board()
+
+    # def list_projects(self) -> str:
+    #     """Get a formatted list of all projects"""
+    #     return self.task_manager.get_project_board()
+
+    # def create_task(self, name: str, description: str, project_name: Optional[str] = None) -> str:
+    #     """Create a new task"""
+    #     task = self.task_manager.create_task(name.strip(), description)
+    #     if project_name:
+    #         project = self.task_manager.get_project_by_name(project_name)
+    #         if project:
+    #             self.task_manager.add_task_to_project(project, task)
+    #     return f"Task created: {task}"
+
+    # def create_project(self, name: str, description: str) -> str:
+    #     """Create a new project"""
+    #     project = self.task_manager.create_project(name.strip(), description)
+    #     return f"Project created: {project}"
 
     def reset_state(self):
         """Reset the core state"""
