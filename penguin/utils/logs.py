@@ -19,32 +19,43 @@ def setup_logger(log_file: str = 'Penguin.log', log_level: int = logging.INFO) -
     for log_dir in log_dirs:
         os.makedirs(log_dir, exist_ok=True)
 
-    # Set up file handlers with rotation
+    # Set up file handlers with rotation and UTF-8 encoding
     for log_dir in log_dirs:
         file_handler = RotatingFileHandler(
             os.path.join(log_dir, log_file),
             maxBytes=1024 * 1024,  # 1 MB
-            backupCount=5
+            backupCount=5,
+            encoding='utf-8'  # Add UTF-8 encoding
         )
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
+    # Add a StreamHandler for console output with UTF-8 encoding
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    console_handler.setStream(open(os.devnull, 'w', encoding='utf-8'))  # Redirect to null device
+    logger.addHandler(console_handler)
+
     logger.propagate = False
     return logger
 
 def log_event(logger: logging.Logger, event_type: str, content: str):
-    timestamp = datetime.datetime.now()
-    json_log_file = os.path.join(WORKSPACE_PATH, 'logs', f"chat_{timestamp.strftime('%Y%m%d_%H%M')}.json")
-    md_log_file = json_log_file.replace('.json', '.md')
-
     try:
+        # Clean content of emojis and special characters for logging
+        clean_content = content.encode('ascii', 'ignore').decode()
+        
+        timestamp = datetime.datetime.now()
+        json_log_file = os.path.join(WORKSPACE_PATH, 'logs', f"chat_{timestamp.strftime('%Y%m%d_%H%M')}.json")
+        md_log_file = json_log_file.replace('.json', '.md')
+
         _write_json_log(json_log_file, event_type, content, timestamp)
         _write_markdown_log(md_log_file, event_type, content, timestamp)
+        
+        # Use cleaned content for console logging
+        logger.info(f"{event_type.upper()}: {clean_content}")
     except Exception as e:
-        logger.error(f"Error writing to log files: {str(e)}")
-
-    logger.info(f"{event_type.upper()}: {content}")
+        logger.error(f"Error in log_event: {str(e)}")
 
 def _write_json_log(file_path: str, event_type: str, content: str, timestamp: datetime.datetime):
     try:
@@ -105,3 +116,5 @@ def _write_markdown_log(file_path: str, event_type: str, content: str, timestamp
 
 # Create a global logger instance
 penguin_logger = setup_logger()
+
+logging.getLogger().setLevel(logging.WARNING)

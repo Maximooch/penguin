@@ -8,6 +8,7 @@ olderhold/
 
 # Frontend
 frontend/
+frontend-test/
 
 # Python cache
 __pycache__/

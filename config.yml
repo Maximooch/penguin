@@ -3,7 +3,7 @@
 # https://docs.litellm.ai/docs/providers
 
 diagnostics:
-  enabled: true  # Global switch for diagnostics
+  enabled: false  # Global switch for diagnostics
   max_context_tokens: 200000
   log_to_file: false
   log_path: "logs/penguin.log"  # Optional, only used if log_to_file is true
