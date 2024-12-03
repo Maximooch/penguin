@@ -4,6 +4,9 @@ import json
 import datetime
 import os
 from config import WORKSPACE_PATH
+import logging
+
+logger = logging.getLogger('Penguin')
 
 def setup_logger(log_file: str = 'Penguin.log', log_level: int = logging.INFO) -> logging.Logger:
     logger = logging.getLogger('Penguin')
@@ -45,11 +48,28 @@ def log_event(logger: logging.Logger, event_type: str, content: str):
         # Clean content of emojis and special characters for logging
         clean_content = content.encode('ascii', 'ignore').decode()
         
+        # Create a new timestamp for each event
         timestamp = datetime.datetime.now()
-        json_log_file = os.path.join(WORKSPACE_PATH, 'logs', f"chat_{timestamp.strftime('%Y%m%d_%H%M')}.json")
-        md_log_file = json_log_file.replace('.json', '.md')
+        
+        # Create logs directory if it doesn't exist
+        logs_dir = os.path.join(WORKSPACE_PATH, 'logs')
+        os.makedirs(logs_dir, exist_ok=True)
+        
+        # Generate filenames with current timestamp
+        base_filename = f"chat_{timestamp.strftime('%Y%m%d_%H%M')}"
+        json_log_file = os.path.join(logs_dir, f"{base_filename}.json")
+        md_log_file = os.path.join(logs_dir, f"{base_filename}.md")
 
-        _write_json_log(json_log_file, event_type, content, timestamp)
+        # Only create new files if they don't exist
+        if not os.path.exists(json_log_file):
+            _write_json_log(json_log_file, event_type, content, timestamp)
+        else:
+            # Append to existing file
+            _append_json_log(json_log_file, event_type, content, timestamp)
+
+        if not os.path.exists(md_log_file):
+            with open(md_log_file, 'w', encoding='utf-8') as f:
+                f.write(f"# Chat Log - {timestamp.strftime('%Y-%m-%d %H:%M')}\n\n")
         _write_markdown_log(md_log_file, event_type, content, timestamp)
         
         # Use cleaned content for console logging
@@ -113,6 +133,29 @@ def _write_markdown_log(file_path: str, event_type: str, content: str, timestamp
         log_entry = f"### System ({timestamp_str}):\n{content}\n\n"
     with open(file_path, 'a', encoding='utf-8') as f:
         f.write(log_entry)
+
+def _append_json_log(file_path: str, event_type: str, content: str, timestamp: datetime.datetime):
+    """Append to existing JSON log file"""
+    try:
+        with open(file_path, 'r+', encoding='utf-8') as f:
+            try:
+                data = json.load(f)
+                if not isinstance(data, list):
+                    data = []
+            except json.JSONDecodeError:
+                data = []
+            
+            data.append({
+                "timestamp": timestamp.isoformat(),
+                "type": event_type,
+                "content": content
+            })
+            
+            f.seek(0)
+            f.truncate()
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error appending to JSON log: {str(e)}")
 
 # Create a global logger instance
 penguin_logger = setup_logger()

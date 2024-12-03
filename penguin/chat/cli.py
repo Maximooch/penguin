@@ -15,6 +15,8 @@ from tools import ToolManager
 from utils.log_error import log_error
 from system_prompt import SYSTEM_PROMPT
 
+import datetime
+
 app = typer.Typer(help="Penguin AI Assistant")
 console = Console()
 
@@ -69,6 +71,14 @@ class PenguinCLI:
 
     async def chat_loop(self):
         """Main chat loop"""
+        # Initialize logging for this session
+        timestamp = datetime.datetime.now()
+        session_id = timestamp.strftime('%Y%m%d_%H%M')
+        
+        # Setup logging for this session
+        from utils.logs import setup_logger
+        session_logger = setup_logger(f"chat_{session_id}.log")
+        
         welcome_message = """Welcome to the Penguin AI Assistant!
 
 Available Commands:

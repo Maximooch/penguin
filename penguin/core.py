@@ -109,26 +109,7 @@ class PenguinCore:
         else:
             disable_diagnostics()
 
-    async def process_message(self, message: str, context: Optional[Dict[str, Any]] = None) -> str:
-        """Process a message with token tracking"""
-        try:
-            # Track input tokens
-            diagnostics.update_tokens('main_model', message)
-            
-            # Process message through conversation system
-            response = await self.get_response()
-            
-            # Track output tokens
-            diagnostics.update_tokens('main_model', "", str(response))
-            
-            # Log usage if enabled
-            diagnostics.log_token_usage()
-            
-            return response
-            
-        except Exception as e:
-            logging.error(f"Error processing message: {e}")
-            raise
+
 
     def reset_context(self):
         """Reset context and diagnostics"""
@@ -153,6 +134,16 @@ class PenguinCore:
             for name, tracker in diagnostics.token_trackers.items()
         }
 
+    def prepare_conversation(self, message: str, tool_outputs: Optional[List[Dict[str, Any]]] = None):
+        """Prepare conversation context with tool outputs"""
+        self.add_message("user", message)
+        if tool_outputs:
+            tool_output_text = "\n".join(
+                f"{output['action']}: {output['result']}" 
+                for output in tool_outputs
+            )
+            self.add_message("system", f"Tool outputs:\n{tool_output_text}")
+
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt."""
         self.system_prompt = prompt
@@ -170,6 +161,44 @@ class PenguinCore:
     def _check_interrupt(self) -> bool:
         """Check if execution has been interrupted"""
         return self._interrupted
+    
+    async def process_message(self, message: str, context: Optional[Dict[str, Any]] = None) -> str:
+        """Process a message with token tracking"""
+        try:
+            # Track input tokens
+            diagnostics.update_tokens('main_model', message)
+            
+            # Process message through conversation system
+            self.conversation.prepare_conversation(message)
+            
+            # Get response with tool execution results
+            response_data, _ = await self.get_response()
+            
+            # Format final response including tool outputs
+            if isinstance(response_data, dict):
+                response = response_data.get("assistant_response", "")
+                action_results = response_data.get("action_results", [])
+                
+                # Format response with tool outputs
+                formatted_response = response + "\n\n"
+                if action_results:
+                    formatted_response += "Tool outputs:\n"
+                    for result in action_results:
+                        formatted_response += f"- {result['action']}: {result['result']}\n"
+            else:
+                formatted_response = str(response_data)
+            
+            # Track output tokens
+            diagnostics.update_tokens('main_model', "", formatted_response)
+            
+            # Log usage if enabled
+            diagnostics.log_token_usage()
+            
+            return formatted_response
+            
+        except Exception as e:
+            logging.error(f"Error processing message: {e}")
+            raise
 
     async def process_input(self, input_data: Dict[str, Any]) -> None:
         """Process user input and update token count"""
@@ -322,6 +351,24 @@ class PenguinCore:
                 "assistant_response": "I apologize, but an error occurred. It has been logged for investigation.",
                 "action_results": []
             }, False
+
+    async def execute_action(self, action) -> Dict[str, Any]:
+        """Execute an action and return structured result"""
+        try:
+            result = await super().execute_action(action)
+            return {
+                "action": action.action_type.value,
+                "result": str(result) if result is not None else "",
+                "status": "completed"
+            }
+        except Exception as e:
+            return {
+                "action": action.action_type.value,
+                "result": f"Error: {str(e)}",
+                "status": "error"
+            }
+
+
 
     async def _handle_error(self, error: Exception, context: Any) -> Dict[str, str]:
         """
@@ -490,3 +537,4 @@ class PenguinCore:
         self.conversation.reset()
         self.tool_manager.reset()
         self.action_executor.reset()
+
