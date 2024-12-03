@@ -18,12 +18,9 @@ from bs4 import BeautifulSoup # type: ignore
 from .declarative_memory_tool import DeclarativeMemoryTool
 from .grep_search import GrepSearch
 from .lint_python import lint_python
-from .old2_memory_search import MemorySearch
+# from .old2_memory_search import MemorySearch
 from utils.notebook import NotebookExecutor
 from memory.summary_notes import SummaryNotes
-from .duck import duckduckgo_search as ddg_search
-# from .tavily import TavilySearch
-from tavily import TavilyClient
 from .perplexity_tool import PerplexityProvider
 from .workspace_search import CodeIndexer
 from .memory_search import MemorySearcher  # Import the new memory searcher
@@ -37,13 +34,11 @@ class ToolManager:
         self.log_error = log_error_func
         self.declarative_memory_tool = DeclarativeMemoryTool()
         self.grep_search = GrepSearch(root_dir=os.path.join(WORKSPACE_PATH, "logs"))
-        self.memory_search = MemorySearch(os.path.join(WORKSPACE_PATH, "logs"))
+        # self.memory_search = MemorySearch(os.path.join(WORKSPACE_PATH, "logs"))
         self.file_map = FileMap(WORKSPACE_PATH)  # Initialize with the workspace path
         self.project_root = WORKSPACE_PATH  # Set project root to workspace path
         self.notebook_executor = NotebookExecutor()
         self.summary_notes_tool = SummaryNotes()
-        tavily_api_key = TAVILY_API_KEY
-        self.tavily_client = TavilyClient(api_key=tavily_api_key)
         self.perplexity_provider = PerplexityProvider()
         self.code_indexer = CodeIndexer(persist_directory=os.path.join(WORKSPACE_PATH, "chroma_db"))
         self.code_indexer.wait_for_initialization()
@@ -284,20 +279,6 @@ class ToolManager:
             }
         },
         {
-                "name": "tavily_search",
-                "description": "Perform a web search using Tavily API to get up-to-date information or additional context. Use this when you need current information or feel a search could provide a better answer.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query"
-                        }
-                    },
-                    "required": ["query"]
-                }
-        },
-        {
                 "name": "perplexity_search",
                 "description": "Perform a web search using Perplexity API to get up-to-date information or additional context.",
                 "input_schema": {
@@ -358,28 +339,6 @@ class ToolManager:
                     }
                 }
             }
-        # {
-        #     "name": "tavily_search",
-        #     "description": "Perform a web search using Tavily API with advanced context and metadata.",
-        #     "input_schema": {
-        #         "type": "object",
-        #         "properties": {
-        #             "query": {
-        #                 "type": "string",
-        #                 "description": "The search query"
-        #             },
-        #             "max_results": {
-        #                 "type": "integer",
-        #                 "description": "The maximum number of results to return (default: 5)"
-        #             },
-        #             "search_depth": {
-        #                 "type": "string",
-        #                 "description": "The search depth: 'basic' or 'advanced' (default: 'basic')"
-        #             }
-        #         },
-        #         "required": ["query"]
-        #     }
-        # },
         ]
 
     def get_tools(self):
@@ -399,18 +358,18 @@ class ToolManager:
                 tool_input.get("case_sensitive", False),
                 tool_input.get("search_files", True)
             ),
-            "memory_search": lambda: self.perform_memory_search(tool_input["query"], tool_input.get("k", 5)),
-            "duckduckgo_search": lambda: self.duckduckgo_search(
-                tool_input["query"],
-                tool_input.get("max_results", 5)
-            ),
+            # "memory_search": lambda: self.perform_memory_search(tool_input["query"], tool_input.get("k", 5)),
+            # "duckduckgo_search": lambda: self.duckduckgo_search(
+            #     tool_input["query"],
+            #     tool_input.get("max_results", 5)
+            # ),
             "code_execution": lambda: self.execute_code(tool_input["code"]),
             "get_file_map": lambda: self.get_file_map(tool_input.get("directory", "")),
             # "find_file": lambda: find_file(tool_input["filename"], tool_input.get("search_path", ".")),
             "lint_python": lambda: lint_python(tool_input["target"], tool_input["is_file"]),
             "execute_command": lambda: self.execute_command(tool_input["command"]),
             "add_summary_note": lambda: self.add_summary_note(tool_input["category"], tool_input["content"]),
-            "tavily_search": lambda: self.tavily_search(tool_input["query"]),
+            # "tavily_search": lambda: self.tavily_search(tool_input["query"]),
             "perplexity_search": lambda: self.perplexity_provider.format_results(
                 self.perplexity_provider.search(tool_input["query"], tool_input.get("max_results", 5))
             ),
@@ -447,21 +406,7 @@ class ToolManager:
             self.add_message_to_search({"role": "assistant", "content": f"Tool use: {tool_name}"})
             self.add_message_to_search({"role": "user", "content": f"Tool result: {result}"})
             logging.info(f"Tool {tool_name} executed successfully with result: {result}")
-            # if tool_name == "tavily_search":
-            #     formatted_results = "Tavily Search Results:\n\n"
-            #     for i, result in enumerate(result, 1):
-            #         if "error" in result:
-            #             formatted_results += f"{i}. Error: {result['error']}\n\n"
-            #         else:
-            #             formatted_results += (
-            #                 f"{i}. {result['title']}\n"
-            #                 f"   URL: {result['url']}\n"
-            #                 f"   Content: {result['content'][:200]}...\n"
-            #                 f"   Score: {result['score']}\n"
-            #                 f"   Published Date: {result['published_date']}\n"
-            #                 f"   Source: {result['source']}\n\n"
-            #             )
-            #     result = formatted_results.strip()
+
             return result
         except Exception as e:
             error_message = f"Error executing tool {tool_name}: {str(e)}"
@@ -495,24 +440,24 @@ class ToolManager:
         logging.info(f"Formatted {len(formatted_results)} results for output")
         return formatted_results
 
-    def perform_memory_search(self, query: str, k: int = 5) -> str:
-        try:
-            logging.info(f"Performing memory search with query: {query}")
-            results = self.memory_search.combined_search(query, k)
-            logging.info(f"Memory search returned {len(results)} results")
-            formatted_results = []
-            for result in results:
-                formatted_results.append({
-                    "type": "text",
-                    "text": f"Timestamp: {result.get('timestamp', 'N/A')}\nType: {result.get('type', 'N/A')}\nContent: {result.get('content', 'N/A')}"
-                })
-            logging.info(f"Formatted {len(formatted_results)} results for output")
-            return json.dumps(formatted_results, indent=2)
-        except Exception as e:
-            error_message = f"Error performing memory search: {str(e)}"
-            self.log_error(e, error_message)
-            logging.error(error_message)
-            return error_message
+    # def perform_memory_search(self, query: str, k: int = 5) -> str:
+    #     try:
+    #         logging.info(f"Performing memory search with query: {query}")
+    #         results = self.memory_search.combined_search(query, k)
+    #         logging.info(f"Memory search returned {len(results)} results")
+    #         formatted_results = []
+    #         for result in results:
+    #             formatted_results.append({
+    #                 "type": "text",
+    #                 "text": f"Timestamp: {result.get('timestamp', 'N/A')}\nType: {result.get('type', 'N/A')}\nContent: {result.get('content', 'N/A')}"
+    #             })
+    #         logging.info(f"Formatted {len(formatted_results)} results for output")
+    #         return json.dumps(formatted_results, indent=2)
+    #     except Exception as e:
+    #         error_message = f"Error performing memory search: {str(e)}"
+    #         self.log_error(e, error_message)
+    #         logging.error(error_message)
+    #         return error_message
 
     def add_message_to_search(self, message):
         self.grep_search.add_message(message)
@@ -520,14 +465,6 @@ class ToolManager:
     # def encode_image(self, image_path):
     #     return encode_image_to_base64(image_path)
 
-    def duckduckgo_search(self, query: str, max_results: int = 5) -> List[Dict[str, str]]:
-        try:
-            results = ddg_search(query, max_results)
-            return results
-        except Exception as e:
-            error_message = f"Error performing DuckDuckGo search: {str(e)}"
-            logging.error(error_message)
-            return [{"error": error_message}]
 
     def execute_code(self, code: str) -> str:
         return self.notebook_executor.execute_code(code)
@@ -594,40 +531,7 @@ class ToolManager:
     # def archive_summary_notes(self):
     #     self.summary_notes_tool.save_summaries()
 
-    def tavily_search(self, query: str, max_results: int = 5) -> str:
-        try:
-            response = self.tavily_client.search(query=query, max_results=max_results)
-            formatted_results = "Tavily Search Results:\n\n"
-            for i, result in enumerate(response.get("results", []), 1):
-                formatted_results += (
-                    f"{i}. {result.get('title', 'No title')}\n"
-                    f"   URL: {result.get('url', 'No URL')}\n"
-                    f"   Snippet: {result.get('snippet', 'No snippet')[:200]}...\n\n"
-                )
-            return formatted_results.strip()
-        except Exception as e:
-            return f"Error performing Tavily search: {str(e)}"      
 
-    # def tavily_search(self, query: str, max_results: int = 5, search_depth: str = "advanced") -> str:
-    #     try:
-    #         response = self.tavily_search.search(query, max_results, search_depth)
-    #         if "error" in response:
-    #             return response["error"]
-            
-    #         formatted_results = "Tavily Search Results:\n\n"
-    #         for i, result in enumerate(response.get("results", []), 1):
-    #             formatted_results += (
-    #                 f"{i}. {result.get('title', 'No title')}\n"
-    #                 f"   URL: {result.get('url', 'No URL')}\n"
-    #                 f"   Content: {result.get('content', 'No content')[:200]}...\n"
-    #                 f"   Score: {result.get('score', 'N/A')}\n"
-    #                 f"   Published Date: {result.get('published_date', 'N/A')}\n"
-    #                 f"   Source: {result.get('source', 'N/A')}\n\n"
-    #             )
-    #         return formatted_results.strip()
-    #     except Exception as e:
-    #         return f"Error performing Tavily search: {str(e)}"
-    
 
     def encode_image(self, image_path: str) -> str:
         with open(image_path, "rb") as image_file:

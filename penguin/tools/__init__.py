@@ -7,6 +7,8 @@ from .support import (
     list_files,
     encode_image_to_base64
 )
+# from .code_visualizer import CodeVisualizer
+# from .visualize import visualize
 
 __all__ = [
     'ToolManager',
@@ -15,5 +17,5 @@ __all__ = [
     'write_to_file',
     'read_file',
     'list_files',
-    'encode_image_to_base64'
+    'encode_image_to_base64',
 ]
