@@ -4,9 +4,6 @@ import json
 import datetime
 import os
 from config import WORKSPACE_PATH
-import logging
-
-logger = logging.getLogger('Penguin')
 
 def setup_logger(log_file: str = 'Penguin.log', log_level: int = logging.INFO) -> logging.Logger:
     logger = logging.getLogger('Penguin')
@@ -22,85 +19,73 @@ def setup_logger(log_file: str = 'Penguin.log', log_level: int = logging.INFO) -
     for log_dir in log_dirs:
         os.makedirs(log_dir, exist_ok=True)
 
-    # Set up file handlers with rotation and UTF-8 encoding
+    # Set up file handlers with rotation
     for log_dir in log_dirs:
         file_handler = RotatingFileHandler(
             os.path.join(log_dir, log_file),
             maxBytes=1024 * 1024,  # 1 MB
-            backupCount=5,
-            encoding='utf-8'  # Add UTF-8 encoding
+            backupCount=5
         )
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
 
-    # Add a StreamHandler for console output with UTF-8 encoding
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    console_handler.setStream(open(os.devnull, 'w', encoding='utf-8'))  # Redirect to null device
-    logger.addHandler(console_handler)
-
     logger.propagate = False
     return logger
 
 def log_event(logger: logging.Logger, event_type: str, content: str):
+    timestamp = datetime.datetime.now()
+    json_log_file = os.path.join(WORKSPACE_PATH, 'logs', f"chat_{timestamp.strftime('%Y%m%d_%H%M')}.json")
+    md_log_file = json_log_file.replace('.json', '.md')
+    
+    # Add debug logging
+    print(f"Attempting to log to: {json_log_file} and {md_log_file}")  # Temporary debug print
+    print(f"WORKSPACE_PATH: {WORKSPACE_PATH}")  # Verify workspace path
+    
     try:
-        # Clean content of emojis and special characters for logging
-        clean_content = content.encode('ascii', 'ignore').decode()
-        
-        # Create a new timestamp for each event
-        timestamp = datetime.datetime.now()
-        
-        # Create logs directory if it doesn't exist
-        logs_dir = os.path.join(WORKSPACE_PATH, 'logs')
-        os.makedirs(logs_dir, exist_ok=True)
-        
-        # Generate filenames with current timestamp
-        base_filename = f"chat_{timestamp.strftime('%Y%m%d_%H%M')}"
-        json_log_file = os.path.join(logs_dir, f"{base_filename}.json")
-        md_log_file = os.path.join(logs_dir, f"{base_filename}.md")
-
-        # Only create new files if they don't exist
-        if not os.path.exists(json_log_file):
-            _write_json_log(json_log_file, event_type, content, timestamp)
-        else:
-            # Append to existing file
-            _append_json_log(json_log_file, event_type, content, timestamp)
-
-        if not os.path.exists(md_log_file):
-            with open(md_log_file, 'w', encoding='utf-8') as f:
-                f.write(f"# Chat Log - {timestamp.strftime('%Y-%m-%d %H:%M')}\n\n")
+        # Verify directories exist
+        log_dir = os.path.dirname(json_log_file)
+        if not os.path.exists(log_dir):
+            print(f"Creating log directory: {log_dir}")
+            os.makedirs(log_dir, exist_ok=True)
+            
+        _write_json_log(json_log_file, event_type, content, timestamp)
         _write_markdown_log(md_log_file, event_type, content, timestamp)
-        
-        # Use cleaned content for console logging
-        logger.info(f"{event_type.upper()}: {clean_content}")
+        print(f"Successfully wrote logs")  # Confirm write succeeded
     except Exception as e:
-        logger.error(f"Error in log_event: {str(e)}")
+        print(f"Error writing logs: {str(e)}")  # Print the actual error
+        logger.error(f"Error writing to log files: {str(e)}")
 
 def _write_json_log(file_path: str, event_type: str, content: str, timestamp: datetime.datetime):
     try:
-        with open(file_path, 'r+') as f:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        data = []
+        # Try to read existing data
+        if os.path.exists(file_path):
             try:
-                data = json.load(f)
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
             except json.JSONDecodeError:
-                data = []
-            
-            data.append({
-                "timestamp": timestamp.isoformat(),
-                "type": event_type,
-                "content": content
-            })
-            
-            f.seek(0)
-            f.truncate()
+                print(f"Error reading existing JSON file: {file_path}")
+                # Continue with empty data if file is corrupted
+                pass
+        
+        # Append new entry
+        data.append({
+            "timestamp": timestamp.isoformat(),
+            "type": event_type,
+            "content": content
+        })
+        
+        # Write updated data
+        with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
-    except FileNotFoundError:
-        with open(file_path, 'w') as f:
-            json.dump([{
-                "timestamp": timestamp.isoformat(),
-                "type": event_type,
-                "content": content
-            }], f, indent=2)
+            
+    except Exception as e:
+        print(f"Error in _write_json_log: {str(e)}")
+        raise
 
 def _write_markdown_log(file_path: str, event_type: str, content: str, timestamp: datetime.datetime):
     timestamp_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
@@ -134,30 +119,5 @@ def _write_markdown_log(file_path: str, event_type: str, content: str, timestamp
     with open(file_path, 'a', encoding='utf-8') as f:
         f.write(log_entry)
 
-def _append_json_log(file_path: str, event_type: str, content: str, timestamp: datetime.datetime):
-    """Append to existing JSON log file"""
-    try:
-        with open(file_path, 'r+', encoding='utf-8') as f:
-            try:
-                data = json.load(f)
-                if not isinstance(data, list):
-                    data = []
-            except json.JSONDecodeError:
-                data = []
-            
-            data.append({
-                "timestamp": timestamp.isoformat(),
-                "type": event_type,
-                "content": content
-            })
-            
-            f.seek(0)
-            f.truncate()
-            json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Error appending to JSON log: {str(e)}")
-
 # Create a global logger instance
 penguin_logger = setup_logger()
-
-logging.getLogger().setLevel(logging.WARNING)

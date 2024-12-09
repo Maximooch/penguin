@@ -1,12 +1,23 @@
 #!/usr/bin/env pypy3
+
+# Standard Library
 import asyncio
 import time
 import os
 import sys
 import logging
+import warnings
+import subprocess
+
+from pathlib import Path
+import traceback
+
 from config import WORKSPACE_PATH
+
 from logging.handlers import RotatingFileHandler
 from typing import Dict, Any, Optional
+
+# Penguin
 from chat.cli import PenguinCLI
 from llm.model_config import ModelConfig
 from utils.log_error import log_error
@@ -15,13 +26,13 @@ from llm.api_client import APIClient
 from config import config
 from system_prompt import SYSTEM_PROMPT
 from core import PenguinCore
+
+# Third-party
+
 from dotenv import load_dotenv  # type: ignore
-import warnings
 from rich.console import Console # type: ignore
-import subprocess
-from pathlib import Path
-import traceback  # Add this import
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn # type: ignore
+
 from utils.timing import track_startup_time
 
 # Load environment variables first

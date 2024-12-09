@@ -1,14 +1,15 @@
-from typing import List, Dict, Any, Optional
-from litellm import completion
+from typing import List, Dict, Any, Optional, Union
+from litellm import acompletion, completion # type: ignore
 from .model_config import ModelConfig
 from .provider_adapters import get_provider_adapter
 import os
-import yaml
+import yaml # type: ignore
 from pathlib import Path
 import logging
-from PIL import Image 
+from PIL import Image # type: ignore
 import base64
 import io
+import asyncio
 
 def load_config() -> Dict[str, Any]:
     """
@@ -86,7 +87,18 @@ class APIClient:
         if self.model_config.use_assistants_api and self.adapter.assistant_manager:
             self.adapter.assistant_manager.update_system_prompt(prompt)
 
-    def create_message(self, messages: List[Dict[str, Any]], max_tokens: Optional[int] = None, temperature: Optional[float] = None) -> Any:
+    async def create_message(self, messages: List[Dict[str, Any]], max_tokens: Optional[int] = None, temperature: Optional[float] = None) -> Any:
+        """
+        Asynchronously create a message using the configured model.
+        
+        Args:
+            messages: List of message dictionaries
+            max_tokens: Optional max tokens to generate
+            temperature: Optional temperature parameter
+            
+        Returns:
+            Response from the model API
+        """
         try:
             # Add system message if it exists and isn't already present
             if self.system_prompt:
@@ -114,8 +126,14 @@ class APIClient:
                 
             self.logger.debug(f"Sending formatted messages: {formatted_messages}")
             
-            # Make the API call
-            response = completion(**completion_params)
+            # Make the API call asynchronously
+            if self.model_config.use_assistants_api:
+                # For assistants API, wrap synchronous call in asyncio.to_thread
+                response = await asyncio.to_thread(completion, **completion_params)
+            else:
+                # For regular API, use async call
+                response = await acompletion(**completion_params)
+                
             return response
             
         except Exception as e:
@@ -197,6 +215,8 @@ class APIClient:
         """Reset the client state"""
         self.messages = []
         self.set_system_prompt(self.system_prompt)
+
+
 
 # The following code is commented out and represents an older version of the API client.
 # It's kept for reference but is not currently in use.

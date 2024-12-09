@@ -98,9 +98,6 @@ Available Commands:
  • /image or image: Include an image in your message
  • /help or help: Show this help message
  
-Press Tab for command completion
-Use ↑↓ to navigate command history
-Press Ctrl+C to stop a running task
 
 Press Tab for command completion Use ↑↓ to navigate command history Press Ctrl+C to stop a running task"""
 
