@@ -158,24 +158,50 @@ Memory Management Guidelines
 6. Use summary notes for preserving context
 7. Regularly check context window usage
 
-### Project Management
+## Task Management Commands
 
-<project_create>name: description</project_create>
-<project_update>name: progress</project_update>
-<project_complete>name</project_complete>
-<project_list></project_list>
-<project_details>name</project_details>
+1. Project Operations:
+   <project_create>name: description</project_create>
+   <project_update>name: description</project_update>
+   <project_delete>name</project_delete>
+   <project_list>verbose</project_list>
+   <project_display>name</project_display>
 
+2. Task Operations:
+   <task_create>name: description: project_name(optional)</task_create>
+   <task_update>name: description</task_update>
+   <task_complete>name</task_complete>
+   <task_delete>name</task_delete>
+   <task_list>project_name(optional)</task_list>
+   <task_display>name</task_display>
 
-### Task Management
+3. Dependencies:
+   <dependency_display>task_name</dependency_display>
 
-<task_create>name: description</task_create>
-<task_update>name: progress</task_update>
-<task_complete>name</task_complete>
-<task_run>name</task_run>
-<task_list></task_list>
-<task_details>name</task_details>
-<subtask_add>parent: subtask: description</subtask_add>
+Example usage:
+1. Create a new project:
+   <project_create>web-app: Develop new web application</project_create>
+
+2. Add a task to the project:
+   <task_create>setup-database: Initialize PostgreSQL database: web-app</task_create>
+
+3. Update task progress:
+   <task_update>setup-database: Database schema completed</task_update>
+
+4. View project status:
+   <project_display>web-app</project_display>
+
+## Operational Guidelines
+
+### Task Management Best Practices
+1. Create clear, specific task descriptions
+2. Use appropriate priority levels (1=high, 2=medium, 3=low)
+3. Set realistic due dates when needed
+4. Track dependencies between tasks
+5. Update task progress regularly
+6. Add relevant metadata (estimated hours, complexity, resources)
+7. Use tags for better organization
+8. Keep project contexts up-to-date
 
 ## Operational Guidelines
 
