@@ -12,12 +12,11 @@ import re
 import logging
 from tools.tool_manager import ToolManager
 from pathlib import Path
-# from agent.task_utils import create_task, update_task, complete_task, list_tasks, create_project, add_subtask, get_task_details, get_project_details
 from html import unescape
-# from agent.task_manager import TaskManager
 import asyncio
 from utils.process_manager import ProcessManager
-
+from config import WORKSPACE_PATH  # Add this import
+from local_task.manager import ProjectManager
 logger = logging.getLogger(__name__)
 
 class ActionType(Enum):
@@ -58,6 +57,19 @@ class ActionType(Enum):
     PROCESS_SEND = "process_send"
     PROCESS_EXIT = "process_exit"
     WORKSPACE_SEARCH = "workspace_search"
+    # Task Management Actions
+    TASK_CREATE = "task_create"
+    TASK_UPDATE = "task_update"
+    TASK_COMPLETE = "task_complete"
+    TASK_DELETE = "task_delete"
+    TASK_LIST = "task_list"
+    TASK_DISPLAY = "task_display"
+    PROJECT_CREATE = "project_create"
+    PROJECT_UPDATE = "project_update"
+    PROJECT_DELETE = "project_delete"
+    PROJECT_LIST = "project_list"
+    PROJECT_DISPLAY = "project_display"
+    DEPENDENCY_DISPLAY = "dependency_display"
 
 class CodeActAction:
     def __init__(self, action_type, params):
@@ -89,7 +101,8 @@ def parse_action(content: str) -> List[CodeActAction]:
 class ActionExecutor:
     def __init__(self, tool_manager: ToolManager, task_manager=None):
         self.tool_manager = tool_manager
-        # self.task_manager = task_manager
+        # Initialize ProjectManager with the configured workspace path
+        self.task_manager = ProjectManager(WORKSPACE_PATH)  
         self.process_manager = ProcessManager()
         self.current_process = None
 
@@ -130,6 +143,21 @@ class ActionExecutor:
             ActionType.PROCESS_SEND: self._process_send,
             ActionType.PROCESS_EXIT: self._process_exit,
             ActionType.WORKSPACE_SEARCH: self._workspace_search,
+            
+            # Project management handlers
+            ActionType.PROJECT_CREATE: self._project_create,
+            ActionType.PROJECT_LIST: self._project_list,
+            ActionType.PROJECT_UPDATE: self._project_update,
+            ActionType.PROJECT_DELETE: self._project_delete,
+            ActionType.PROJECT_DISPLAY: self._project_display,
+            
+            # Task management handlers
+            ActionType.TASK_CREATE: self._task_create,
+            ActionType.TASK_UPDATE: self._task_update,
+            ActionType.TASK_COMPLETE: self._task_complete,
+            ActionType.TASK_DELETE: self._task_delete,
+            ActionType.TASK_LIST: self._task_list,
+            ActionType.TASK_DISPLAY: self._project_display,  # Reuse project display for tasks
         }
         
         try:
@@ -186,82 +214,6 @@ class ActionExecutor:
     def _add_declarative_note(self, params: str) -> str:
         category, content = params.split(':', 1)
         return self.tool_manager.execute_tool("add_declarative_note", {"category": category.strip(), "content": content.strip()})
-
-    # def _execute_subtask_add(self, params: str) -> str:
-    #     parts = params.split(":", 2)
-    #     if len(parts) < 3:
-    #         return "Error: Invalid arguments for subtask_add. Expected format: ParentTaskName: SubtaskName: SubtaskDescription"
-    #     parent_task_name = parts[0].strip()
-    #     subtask_name = parts[1].strip()
-    #     subtask_description = parts[2].strip()
-        
-    #     subtask = self.task_manager.add_subtask(parent_task_name, subtask_name, subtask_description)
-    #     if subtask:
-    #         self.task_manager.save_tasks()  # Add this line
-    #         return f"Subtask created: {subtask}"
-    #     else:
-    #         return f"Parent task not found: {parent_task_name}"
-
-    # def _execute_task_create(self, params: str) -> str:
-    #     parts = params.split(":", 1)
-    #     if len(parts) < 2:
-    #         return "Error: Invalid arguments for task_create. Expected format: TaskName: TaskDescription"
-    #     task_name = parts[0].strip()
-    #     task_description = parts[1].strip()
-    #     task = self.task_manager.create_task(task_name, task_description)
-    #     if task:
-    #         self.task_manager.save_tasks()  # Add this line
-    #         return f"Task created: {task}"
-    #     else:
-    #         return f"Error creating task: {task_name}"
-
-    # def _execute_task_update(self, params: str) -> str:
-    #     parts = params.split(":", 1)
-    #     if len(parts) < 2:
-    #         return "Error: Invalid arguments for task_update. Expected format: TaskName: Progress"
-    #     task_name = parts[0].strip()
-    #     try:
-    #         progress = int(parts[1].strip())
-    #     except ValueError:
-    #         return "Error: Progress must be an integer."
-    #     result = self.task_manager.update_task_by_name(task_name, progress)
-    #     self.task_manager.save_tasks()  # Add this line
-    #     return result
-
-    # def _execute_task_complete(self, params: str) -> str:
-    #     task_name = params.strip()
-    #     result = self.task_manager.complete_task(task_name)
-    #     return result
-
-    # def _execute_project_create(self, params: str) -> str:
-    #     parts = params.split(":", 1)
-    #     if len(parts) < 2:
-    #         return "Error: Invalid arguments for project_create. Expected format: ProjectName: ProjectDescription"
-    #     project_name = parts[0].strip()
-    #     project_description = parts[1].strip()
-    #     project = self.task_manager.create_project(project_name, project_description)
-    #     if project:
-    #         self.task_manager.save_tasks()  # Add this line
-    #         return f"Project created: {project}"
-    #     else:
-    #         return f"Error creating project: {project_name}"
-
-    # def _execute_project_complete(self, params: str) -> str:
-    #     project_name = params.strip()
-    #     result = self.task_manager.complete_project(project_name)
-    #     self.task_manager.save_tasks()  # Add this line
-    #     return result
-
-    # def project_details(self, project_name: str) -> str:
-    #     return self.task_manager.get_project_details(project_name)
-
-    # def update_task_by_name(self, name: str, progress: int) -> str:
-    #     task = self.get_task_by_name(name)
-    #     if task:
-    #         task.update_progress(progress)
-    #         self.save_tasks()
-    #         return f"Task updated: {task.name} to {progress}%"
-    #     return f"Task not found: {name}"
 
     def _create_folder(self, params: str) -> str:
         return self.tool_manager.execute_tool("create_folder", {"path": params})
@@ -389,3 +341,139 @@ class ActionExecutor:
             return self.tool_manager.index_memory()
         except Exception as e:
             return f"Error indexing memory: {str(e)}"
+
+    def _project_create(self, params: str) -> str:
+        """Create a new project. Format: name:description"""
+        try:
+            name, description = params.split(':', 1)
+            project = self.task_manager.create(name.strip(), description.strip())
+            return f"Project created: {project.name}"
+        except Exception as e:
+            return f"Error creating project: {str(e)}"
+
+    def _project_list(self, params: str) -> str:
+        """List all projects"""
+        try:
+            projects = self.task_manager.projects.values()  # Access the projects dict directly
+            if not projects:
+                return "No projects found."
+            return "\n".join([f"- {p.name}: {p.description}" for p in projects])
+        except Exception as e:
+            return f"Error listing projects: {str(e)}"
+
+    def _project_update(self, params: str) -> str:
+        """Update project status. Format: name:description"""
+        try:
+            name, description = params.split(':', 1)
+            self.task_manager.update_status(name.strip(), description.strip())
+            return f"Project '{name}' updated successfully"
+        except Exception as e:
+            return f"Error updating project: {str(e)}"
+
+    def _project_delete(self, params: str) -> str:
+        """Delete a project. Format: name"""
+        try:
+            self.task_manager.delete(params.strip())
+            return f"Project '{params}' deleted successfully"
+        except Exception as e:
+            return f"Error deleting project: {str(e)}"
+
+    def _project_display(self, params: str) -> str:
+        """Display project details. Format: name"""
+        try:
+            # Get the string output from display method
+            output = self.task_manager.display(params.strip() if params.strip() else None)
+            return output or "No display output generated"
+        except Exception as e:
+            return f"Error displaying project: {str(e)}"
+
+    def _task_create(self, params: str) -> str:
+        """Create a new task. Format: name:description[:project_name]"""
+        try:
+            parts = params.split(':', 2)
+            if len(parts) < 2:
+                return "Error: Invalid task format. Use name:description[:project_name]"
+            name, description = parts[0:2]
+            project_name = parts[2].strip() if len(parts) > 2 else None
+            task = self.task_manager.create(name.strip(), description.strip(), project_name)
+            return f"Task created: {task.title}"
+        except Exception as e:
+            return f"Error creating task: {str(e)}"
+
+    def _task_update(self, params: str) -> str:
+        """Update task status. Format: name:description"""
+        try:
+            name, description = params.split(':', 1)
+            self.task_manager.update_status(name.strip(), description.strip())
+            return f"Task '{name}' updated successfully"
+        except Exception as e:
+            return f"Error updating task: {str(e)}"
+
+    def _task_complete(self, params: str) -> str:
+        """Complete a task. Format: name"""
+        try:
+            self.task_manager.complete(params.strip())
+            return f"Task '{params}' completed successfully"
+        except Exception as e:
+            return f"Error completing task: {str(e)}"
+
+    def _task_delete(self, params: str) -> str:
+        """Delete a task. Format: name"""
+        try:
+            self.task_manager.delete(params.strip())
+            return f"Task '{params}' deleted successfully"
+        except Exception as e:
+            return f"Error deleting task: {str(e)}"
+
+    def _task_list(self, params: str) -> str:
+        """List tasks. Format: project_name(optional)"""
+        try:
+            tasks = []
+            if params.strip():
+                # List tasks for specific project
+                project = self.task_manager._find_project_by_name(params.strip())
+                if not project:
+                    return f"Project '{params}' not found."
+                tasks = list(project.tasks.values())
+            else:
+                # List independent tasks
+                tasks = list(self.task_manager.independent_tasks.values())
+            
+            if not tasks:
+                return "No tasks found."
+
+            # Format tasks into a readable table-like string
+            formatted_tasks = []
+            for task in tasks:
+                status_icon = {
+                    'active': '🔵',
+                    'completed': '✅',
+                    'archived': '📦'
+                }.get(task.status, '❓')
+                
+                priority_icon = {
+                    1: '🔴',
+                    2: '🟡',
+                    3: '🟢'
+                }.get(task.priority, '⚪')
+                
+                task_line = [
+                    f"{priority_icon} {status_icon} {task.title}",
+                    f"    Status: {task.status}",
+                    f"    Progress: {task.progress}%",
+                    f"    Description: {task.description}"
+                ]
+                
+                if task.tags:
+                    task_line.append(f"    Tags: {', '.join(f'#{tag}' for tag in task.tags)}")
+                if task.due_date:
+                    task_line.append(f"    Due: {task.due_date}")
+                    
+                formatted_tasks.append('\n'.join(task_line))
+            
+            return '\n\n'.join(formatted_tasks)
+            
+        except Exception as e:
+            logger.error(f"Error in _task_list: {str(e)}", exc_info=True)
+            return f"Error listing tasks: {str(e)}"
+        
