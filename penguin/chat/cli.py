@@ -82,14 +82,14 @@ class PenguinCLI:
         welcome_message = """Welcome to the Penguin AI Assistant!
 
 Available Commands:
- • /task or task: Task management commands
-   - list: View all tasks
+
+ • /list: Display all projects and tasks
+ • /task: Task management commands
    - create [name] [description]: Create a new task
    - run [name]: Run a task
    - status [name]: Check task status
    
- • /project or project: Project management commands
-   - list: View all projects
+ • /project: Project management commands
    - create [name] [description]: Create a new project
    - run [name]: Run a project
    - status [name]: Check project status
@@ -97,7 +97,6 @@ Available Commands:
  • /exit or exit: End the conversation
  • /image or image: Include an image in your message
  • /help or help: Show this help message
- 
 
 Press Tab for command completion Use ↑↓ to navigate command history Press Ctrl+C to stop a running task"""
 
@@ -113,37 +112,102 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                 if not user_input.strip():
                     continue
                     
-                # Handle /image command
-                if user_input.lower().startswith('/image'):
-                    image_path = input("Drag and drop your image here: ").strip().replace("'", "")
-                    if not os.path.exists(image_path):
-                        self.display_message(f"Image file not found: {image_path}", "error")
+                # Handle commands
+                if user_input.startswith('/'):
+                    command_parts = user_input[1:].split(' ', 2)  # Split into max 3 parts
+                    command = command_parts[0].lower()
+                    
+                    # Handle /list command
+                    if command == 'list':
+                        response = await self.core.process_list_command()
+                        if isinstance(response, dict):
+                            if 'assistant_response' in response:
+                                self.display_message(response['assistant_response'])
+                            if 'action_results' in response:
+                                for result in response['action_results']:
+                                    if isinstance(result, dict) and 'result' in result:
+                                        self.display_message(result['result'], "output")
                         continue
-                        
-                    image_prompt = input("Description (optional): ")
                     
-                    # Process image with core
-                    input_data = {
-                        "text": image_prompt,
-                        "image_path": image_path
-                    }
-                    
-                    await self.core.process_input(input_data)
-                    response, _ = await self.core.get_response()
-                    
-                    # Display response
-                    if isinstance(response, dict):
-                        if 'assistant_response' in response:
-                            self.display_message(response['assistant_response'])
-                        if 'action_results' in response:
-                            for result in response['action_results']:
-                                self.display_message(str(result), "system")
-                    else:
-                        self.display_message(str(response))
-                    
-                    continue
+                    # Handle /task commands
+                    if command == 'task' and len(command_parts) >= 2:
+                        action = command_parts[1].lower()
+                        name = command_parts[2].split(' ', 1)[0] if len(command_parts) > 2 else ""
+                        description = command_parts[2].split(' ', 1)[1] if len(command_parts) > 2 and ' ' in command_parts[2] else ""
 
-                # Process input and get response
+                        try:
+                            if action == 'create':
+                                response = await self.core.create_task(name, description)
+                            elif action == 'complete':
+                                response = await self.core.complete_task(name)
+                            elif action == 'status':
+                                response = await self.core.get_task_status(name)
+                            else:
+                                self.display_message(f"Unknown task action: {action}", "error")
+                                continue
+
+                            if isinstance(response, dict):
+                                if 'result' in response:
+                                    self.display_message(response['result'], "system")
+                            continue
+                        except Exception as e:
+                            self.display_message(f"Error with task command: {str(e)}", "error")
+                            continue
+
+                    # Handle /project commands
+                    if command == 'project' and len(command_parts) >= 2:
+                        action = command_parts[1].lower()
+                        name = command_parts[2].split(' ', 1)[0] if len(command_parts) > 2 else ""
+                        description = command_parts[2].split(' ', 1)[1] if len(command_parts) > 2 and ' ' in command_parts[2] else ""
+
+                        try:
+                            if action == 'create':
+                                response = await self.core.create_project(name, description)
+                            elif action == 'status':
+                                response = await self.core.get_project_status(name)
+                            else:
+                                self.display_message(f"Unknown project action: {action}", "error")
+                                continue
+
+                            if isinstance(response, dict):
+                                if 'result' in response:
+                                    self.display_message(response['result'], "system")
+                            continue
+                        except Exception as e:
+                            self.display_message(f"Error with project command: {str(e)}", "error")
+                            continue
+
+                    # Handle /image command
+                    if command.startswith('image'):
+                        image_path = input("Drag and drop your image here: ").strip().replace("'", "")
+                        if not os.path.exists(image_path):
+                            self.display_message(f"Image file not found: {image_path}", "error")
+                            continue
+                            
+                        image_prompt = input("Description (optional): ")
+                        
+                        # Process image with core
+                        input_data = {
+                            "text": image_prompt,
+                            "image_path": image_path
+                        }
+                        
+                        await self.core.process_input(input_data)
+                        response, _ = await self.core.get_response()
+                        
+                        # Display response
+                        if isinstance(response, dict):
+                            if 'assistant_response' in response:
+                                self.display_message(response['assistant_response'])
+                            if 'action_results' in response:
+                                for result in response['action_results']:
+                                    self.display_message(str(result), "system")
+                        else:
+                            self.display_message(str(response))
+                        
+                        continue
+
+                # Process regular input and get response
                 await self.core.process_input({"text": user_input})
                 response, _ = await self.core.get_response()
                 
