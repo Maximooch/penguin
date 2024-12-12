@@ -17,11 +17,15 @@ from dataclasses import dataclass, asdict, field
 import hashlib
 import shutil
 
-from rich.tree import Tree
-from rich.panel import Panel
-from rich.console import Console
-from rich.table import Table
-from rich import box
+from rich.tree import Tree # type: ignore
+from rich.panel import Panel # type: ignore
+from rich.console import Console # type: ignore
+from rich.table import Table # type: ignore
+from rich import box # type: ignore
+
+import logging
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 from .vis import ProjectVisualizer
 
@@ -117,6 +121,9 @@ class ProjectManager:
         self.data_file = self.workspace_root / "projects_and_tasks.json"
         self.console = Console()
         
+        # Add debug logging
+        logger.debug(f"Initializing ProjectManager with workspace: {workspace_root}")
+        
         # Create necessary directories if they don't exist
         self.workspace_root.mkdir(parents=True, exist_ok=True)
         self.projects_dir.mkdir(parents=True, exist_ok=True)
@@ -124,6 +131,9 @@ class ProjectManager:
         self.projects: Dict[str, Project] = {}
         self.independent_tasks: Dict[str, Task] = {}
         self._load_data()
+        
+        # Log loaded data
+        logger.debug(f"Loaded {len(self.projects)} projects and {len(self.independent_tasks)} independent tasks")
 
     def _generate_id(self, text: str) -> str:
         """
