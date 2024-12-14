@@ -16,6 +16,7 @@ from utils.log_error import log_error
 from system_prompt import SYSTEM_PROMPT
 
 import datetime
+from run_mode import RunMode
 
 app = typer.Typer(help="Penguin AI Assistant")
 console = Console()
@@ -205,6 +206,23 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                         else:
                             self.display_message(str(response))
                         
+                        continue
+
+                    # Handle /run command
+                    if command == 'run':
+                        if len(command_parts) < 2:  # We just need the task name
+                            self.display_message(
+                                "Usage: /run <task_name> [description]\n"
+                                "Examples:\n"
+                                "  Run existing task: /run setup-project\n"
+                                "  Create and run new task: /run new-task 'Set up the initial project structure'", 
+                                "system"
+                            )
+                            continue
+                            
+                        name = command_parts[1]
+                        description = ' '.join(command_parts[2:]) if len(command_parts) > 2 else None
+                        await self.core.start_run_mode(name, description)
                         continue
 
                 # Process regular input and get response

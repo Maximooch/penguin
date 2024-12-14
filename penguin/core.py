@@ -57,6 +57,9 @@ from config import (
 # Workspace
 from workspace import get_workspace_path, write_workspace_file
 
+# RunMode
+from run_mode import RunMode
+
 logger = logging.getLogger(__name__)
 console = Console()
 
@@ -584,3 +587,34 @@ class PenguinCore:
                 "result": f"Error getting task status: {str(e)}",
                 "status": "error"
             }
+
+    async def start_run_mode(
+        self, 
+        name: str, 
+        description: Optional[str] = None, 
+        context: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Start autonomous run mode for executing a task.
+        
+        Args:
+            name: Name of the task (existing or new)
+            description: Optional description if creating a new task
+            context: Optional additional context or parameters
+        """
+        try:
+            # Initialize and start run mode
+            run_mode = RunMode(self)
+            await run_mode.start(name, description, context)
+            
+            # Mark task as complete if run mode finished successfully
+            if not run_mode._interrupted:
+                await self.complete_task(name)
+                
+        except Exception as e:
+            logger.error(f"Error in run mode: {str(e)}")
+            await self._handle_error(e, {
+                "context": "run_mode",
+                "task_name": name,
+                "description": description
+            })
