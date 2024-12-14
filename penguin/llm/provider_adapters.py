@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import List, Dict, Any
 from utils.diagnostics import diagnostics
-from litellm import completion
+from litellm import completion 
 import time
 from .openai_assistant import OpenAIAssistantManager
 from .model_config import ModelConfig
@@ -95,11 +95,35 @@ class LiteLLMAdapter(ProviderAdapter):
 
 class AnthropicAdapter(ProviderAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        # Anthropic's Claude models already accept the format we're using
-        return messages
+        formatted_messages = []
+        for message in messages:
+            content = message.get('content', '')
+            
+            # Convert list-type content to string
+            if isinstance(content, list):
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get('type') == 'text':
+                            text_parts.append(part.get('text', ''))
+                        elif part.get('type') == 'image_url':
+                            # Handle image URLs according to Anthropic's format
+                            text_parts.append(f"[Image: {part.get('image_url', {}).get('url', '')}]")
+                content = ' '.join(text_parts)
+            elif isinstance(content, dict):
+                content = str(content)
+                
+            formatted_messages.append({
+                'role': message.get('role', 'user'),
+                'content': content  # Anthropic expects a simple string
+            })
+        
+        return formatted_messages
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
-        return response['completion'], []
+        if isinstance(response, dict):
+            return response.get('content', ''), []
+        return str(response), []
 
 class OllamaAdapter(ProviderAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
