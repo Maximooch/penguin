@@ -12,7 +12,7 @@ import json
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
 from dataclasses import dataclass, asdict, field
 import hashlib
 import shutil
@@ -30,6 +30,7 @@ logger.setLevel(logging.DEBUG)
 from .vis import ProjectVisualizer
 
 from config import Config, WORKSPACE_PATH
+from utils.errors import error_logger
 
 
 @dataclass
