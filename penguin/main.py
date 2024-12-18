@@ -34,6 +34,7 @@ from rich.console import Console # type: ignore
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn # type: ignore
 
 from utils.timing import track_startup_time
+from utils.errors import setup_global_error_handling
 
 # Load environment variables first
 load_dotenv()
@@ -167,6 +168,7 @@ async def init_components() -> PenguinCLI:
         raise
 
 async def main():
+    setup_global_error_handling()
     total_start = time.time()
     console = Console()
     

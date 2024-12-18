@@ -60,6 +60,8 @@ from workspace import get_workspace_path, write_workspace_file
 # RunMode
 from run_mode import RunMode
 
+from utils.errors import error_logger
+
 logger = logging.getLogger(__name__)
 console = Console()
 
@@ -116,8 +118,6 @@ class PenguinCore:
                 )
         else:
             disable_diagnostics()
-
-
 
     def reset_context(self):
         """Reset context and diagnostics"""
@@ -205,7 +205,12 @@ class PenguinCore:
             return formatted_response
             
         except Exception as e:
-            logging.error(f"Error processing message: {e}")
+            error_logger.log_error(e, context={
+                "component": "core",
+                "method": "process_message", 
+                "message": message,
+                "context": context
+            })
             raise
 
     async def process_input(self, input_data: Dict[str, Any]) -> None:
@@ -223,7 +228,12 @@ class PenguinCore:
             self.conversation.prepare_conversation(user_input, image_path)
             
         except Exception as e:
-            await self._handle_error(e, input_data)
+            error_logger.log_error(e, context={
+                "component": "core",
+                "method": "process_input",
+                "input_data": input_data
+            })
+            raise
 
     async def process_input_with_image(self, input_data: Dict) -> None:
         try:
@@ -249,8 +259,12 @@ class PenguinCore:
             # Process the response...
             
         except Exception as e:
-            self.logger.error(f"Error in process_input_with_image: {str(e)}")
-            await self._handle_error(e, input_data)
+            error_logger.log_error(e, context={
+                "component": "core",
+                "method": "process_input_with_image",
+                "input_data": input_data
+            })
+            raise
 
     async def get_response(
         self, 
@@ -353,8 +367,12 @@ class PenguinCore:
             return full_response , exit_continuation
             
         except Exception as e:
-            error_context = f"Error in get_response. Iteration: {current_iteration}/{max_iterations}"
-            await self._handle_error(e, error_context)
+            error_data = error_logger.log_error(e, context={
+                "component": "core",
+                "method": "get_response",
+                "iteration": current_iteration,
+                "max_iterations": max_iterations
+            })
             return {
                 "assistant_response": "I apologize, but an error occurred. It has been logged for investigation.",
                 "action_results": []
@@ -370,57 +388,15 @@ class PenguinCore:
                 "status": "completed"
             }
         except Exception as e:
+            error_logger.log_error(e, context={
+                "component": "core",
+                "method": "execute_action",
+                "action": action.action_type.value
+            })
             return {
                 "action": action.action_type.value,
                 "result": f"Error: {str(e)}",
                 "status": "error"
-            }
-
-
-
-    async def _handle_error(self, error: Exception, context: Any) -> Dict[str, str]:
-        """
-        Handle and log system errors with detailed information.
-        
-        Args:
-            error (Exception): The exception that occurred
-            context (Any): Context information about when/where the error occurred
-        
-        Returns:
-            Dict[str, str]: Error information including log path
-        """
-        try:
-            error_log_dir = get_workspace_path('errors_log')
-            os.makedirs(error_log_dir, exist_ok=True)
-            
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            error_file = get_workspace_path('errors_log', f"error_{timestamp}.log")
-            
-            if not isinstance(context, dict):
-                context = {"context": str(context)}
-            
-            content = f"Error occurred at: {datetime.now()}\n"
-            content += f"Context: {json.dumps(context, indent=2)}\n\n"
-            content += f"Error type: {type(error).__name__}\n"
-            content += f"Error message: {str(error)}\n\n"
-            content += "Traceback:\n"
-            content += traceback.format_exc()
-            
-            write_workspace_file(error_file, content)
-            error_path = os.path.relpath(error_file, get_workspace_path())
-            
-            return {
-                "message": str(error),
-                "log_path": error_path,
-                "type": type(error).__name__
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to log error: {str(e)}")
-            return {
-                "message": str(error),
-                "log_path": None,
-                "type": type(error).__name__
             }
 
     def reset_state(self):
@@ -469,6 +445,10 @@ class PenguinCore:
                 }]
             }
         except Exception as e:
+            error_logger.log_error(e, context={
+                "component": "core",
+                "method": "process_list_command"
+            })
             return {
                 "assistant_response": f"Error displaying workspace: {str(e)}",
                 "action_results": []
@@ -484,6 +464,12 @@ class PenguinCore:
                 "status": "completed"
             }
         except Exception as e:
+            error_logger.log_error(e, context={
+                "component": "core",
+                "method": "create_task",
+                "name": name,
+                "description": description
+            })
             return {
                 "action": "task_create",
                 "result": f"Error creating task: {str(e)}",
@@ -500,6 +486,11 @@ class PenguinCore:
                 "status": "completed"
             }
         except Exception as e:
+            error_logger.log_error(e, context={
+                "component": "core",
+                "method": "complete_task",
+                "name": name
+            })
             return {
                 "action": "task_complete",
                 "result": f"Error completing task: {str(e)}",
@@ -612,9 +603,11 @@ class PenguinCore:
                 await self.complete_task(name)
                 
         except Exception as e:
-            logger.error(f"Error in run mode: {str(e)}")
-            await self._handle_error(e, {
-                "context": "run_mode",
+            error_logger.log_error(e, context={
+                "component": "core",
+                "method": "start_run_mode",
                 "task_name": name,
-                "description": description
+                "description": description,
+                "context": context
             })
+            raise
