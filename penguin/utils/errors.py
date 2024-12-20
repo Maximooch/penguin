@@ -9,7 +9,7 @@ import json
 
 logger = logging.getLogger(__name__)
 
-class ErrorLogger:
+class ErrorHandler:
     def __init__(self, log_dir: Path):
         self.log_dir = log_dir
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -54,8 +54,8 @@ class ErrorLogger:
 
         return error_data
 
-# Global error logger instance
-error_logger = ErrorLogger(Path("errors_log"))
+# Global error handler instance
+error_handler = ErrorHandler(Path("errors_log"))
 
 def setup_global_error_handling():
     """Setup global exception handler"""
@@ -64,7 +64,7 @@ def setup_global_error_handling():
             sys.__excepthook__(exc_type, exc_value, exc_traceback)
             return
 
-        error_logger.log_error(
+        error_handler.log_error(
             exc_value,
             context={"uncaught": True},
             fatal=True
