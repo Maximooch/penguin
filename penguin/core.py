@@ -60,7 +60,7 @@ from workspace import get_workspace_path, write_workspace_file
 # RunMode
 from run_mode import RunMode
 
-from utils.errors import error_logger
+from utils.errors import error_handler
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -205,9 +205,9 @@ class PenguinCore:
             return formatted_response
             
         except Exception as e:
-            error_logger.log_error(e, context={
+            error_handler.log_error(e, context={
                 "component": "core",
-                "method": "process_message", 
+                "method": "process_message",
                 "message": message,
                 "context": context
             })
@@ -228,7 +228,7 @@ class PenguinCore:
             self.conversation.prepare_conversation(user_input, image_path)
             
         except Exception as e:
-            error_logger.log_error(e, context={
+            error_handler.log_error(e, context={
                 "component": "core",
                 "method": "process_input",
                 "input_data": input_data
@@ -259,7 +259,7 @@ class PenguinCore:
             # Process the response...
             
         except Exception as e:
-            error_logger.log_error(e, context={
+            error_handler.log_error(e, context={
                 "component": "core",
                 "method": "process_input_with_image",
                 "input_data": input_data
@@ -367,7 +367,7 @@ class PenguinCore:
             return full_response , exit_continuation
             
         except Exception as e:
-            error_data = error_logger.log_error(e, context={
+            error_data = error_handler.log_error(e, context={
                 "component": "core",
                 "method": "get_response",
                 "iteration": current_iteration,
@@ -388,7 +388,7 @@ class PenguinCore:
                 "status": "completed"
             }
         except Exception as e:
-            error_logger.log_error(e, context={
+            error_handler.log_error(e, context={
                 "component": "core",
                 "method": "execute_action",
                 "action": action.action_type.value
@@ -445,7 +445,7 @@ class PenguinCore:
                 }]
             }
         except Exception as e:
-            error_logger.log_error(e, context={
+            error_handler.log_error(e, context={
                 "component": "core",
                 "method": "process_list_command"
             })
@@ -464,7 +464,7 @@ class PenguinCore:
                 "status": "completed"
             }
         except Exception as e:
-            error_logger.log_error(e, context={
+            error_handler.log_error(e, context={
                 "component": "core",
                 "method": "create_task",
                 "name": name,
@@ -486,7 +486,7 @@ class PenguinCore:
                 "status": "completed"
             }
         except Exception as e:
-            error_logger.log_error(e, context={
+            error_handler.log_error(e, context={
                 "component": "core",
                 "method": "complete_task",
                 "name": name
@@ -603,7 +603,7 @@ class PenguinCore:
                 await self.complete_task(name)
                 
         except Exception as e:
-            error_logger.log_error(e, context={
+            error_handler.log_error(e, context={
                 "component": "core",
                 "method": "start_run_mode",
                 "task_name": name,

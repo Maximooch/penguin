@@ -1,0 +1,12 @@
+{
+  "timestamp": "2024-12-19T11:40:34.925860",
+  "error_type": "FileNotFoundError",
+  "message": "[Errno 2] No such file or directory: '\\\\definitely\\\\not\\\\a\\\\real\\\\path\\\\file.txt'",
+  "traceback": "Traceback (most recent call last):\n  File \"C:\\Users\\maxim\\.0Link\\penguin\\penguin\\utils\\test_error_handling.py\", line 75, in trigger_file_error\n    nonexistent.read_text()\n  File \"C:\\Users\\maxim\\AppData\\Local\\Programs\\Python\\Python310\\lib\\pathlib.py\", line 1132, in read_text\n    with self.open(mode='r', encoding=encoding, errors=errors) as f:\n  File \"C:\\Users\\maxim\\AppData\\Local\\Programs\\Python\\Python310\\lib\\pathlib.py\", line 1117, in open\n    return self._accessor.open(self, mode, buffering, encoding, errors,\nFileNotFoundError: [Errno 2] No such file or directory: '\\\\definitely\\\\not\\\\a\\\\real\\\\path\\\\file.txt'\n",
+  "context": {
+    "component": "tests",
+    "method": "trigger_file_error",
+    "attempted_path": "\\definitely\\not\\a\\real\\path\\file.txt"
+  },
+  "severity": "ERROR"
+}
