@@ -30,7 +30,7 @@ logger.setLevel(logging.DEBUG)
 from .vis import ProjectVisualizer
 
 from config import Config, WORKSPACE_PATH
-from utils.errors import error_logger
+from utils.errors import error_handler
 
 
 @dataclass

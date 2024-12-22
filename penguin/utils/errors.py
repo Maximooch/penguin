@@ -1,4 +1,3 @@
-# penguin/utils/errors.py
 import logging
 import traceback
 import sys
@@ -10,16 +9,15 @@ import json
 logger = logging.getLogger(__name__)
 
 class ErrorHandler:
-    def __init__(self, log_dir: Path):
+    def __init__(self, log_dir: Path = Path("errors_log")):
+        """Initialize error handler with logging directory"""
         self.log_dir = log_dir
         self.log_dir.mkdir(parents=True, exist_ok=True)
         
-        # Configure file handler
+        # Configure file handler for logging
         fh = logging.FileHandler(self.log_dir / "errors.log")
         fh.setLevel(logging.ERROR)
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         fh.setFormatter(formatter)
         logger.addHandler(fh)
 
@@ -30,7 +28,7 @@ class ErrorHandler:
         *,
         fatal: bool = False
     ) -> Dict[str, Any]:
-        """Unified error logging"""
+        """Unified error logging with structured output"""
         error_data = {
             "timestamp": datetime.now().isoformat(),
             "error_type": type(error).__name__,
@@ -55,7 +53,7 @@ class ErrorHandler:
         return error_data
 
 # Global error handler instance
-error_handler = ErrorHandler(Path("errors_log"))
+error_handler = ErrorHandler()
 
 def setup_global_error_handling():
     """Setup global exception handler"""
