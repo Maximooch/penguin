@@ -20,7 +20,7 @@ from typing import Dict, Any, Optional
 # Penguin
 from chat.cli import PenguinCLI
 from llm.model_config import ModelConfig
-from utils.log_error import log_error
+from utils.errors import error_handler, setup_global_error_handling
 from tools import ToolManager
 from llm.api_client import APIClient
 from config import config
@@ -34,7 +34,6 @@ from rich.console import Console # type: ignore
 from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn # type: ignore
 
 from utils.timing import track_startup_time
-from utils.errors import setup_global_error_handling
 
 # Load environment variables first
 load_dotenv()
@@ -49,7 +48,7 @@ logging.getLogger('sentence_transformers').setLevel(logging.WARNING)
 logging.getLogger('LiteLLM').setLevel(logging.WARNING)
 logging.getLogger('tools').setLevel(logging.WARNING)
 logging.getLogger('llm').setLevel(logging.WARNING)
-logging.getLogger('chat').setLevel(logging.WARNING)
+logging.getLogger('chat').setLevel(logging.DEBUG)
 
 # Optional: If you want to keep logs in a file instead of console
 if not os.path.exists('logs'):
@@ -130,7 +129,7 @@ async def init_components() -> PenguinCLI:
             
             api_client = APIClient(model_config=model_config)
             api_client.set_system_prompt(SYSTEM_PROMPT)
-            tool_manager = ToolManager(log_error)
+            tool_manager = ToolManager(error_handler)
             
             # Start heavy initialization tasks in parallel
             init_tasks = [

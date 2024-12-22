@@ -37,7 +37,7 @@ from system.file_manager import FileManager
 from utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnostics
 from tools.tool_manager import ToolManager
 from utils.parser import parse_action, ActionExecutor
-
+from utils.errors import error_handler
 # Task Management
 # from agent.task_manager import TaskManager
 # from agent.task import Task, TaskStatus
@@ -60,7 +60,6 @@ from workspace import get_workspace_path, write_workspace_file
 # RunMode
 from run_mode import RunMode
 
-from utils.errors import error_handler
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -75,32 +74,40 @@ class PenguinCore:
     ):
         """Initialize PenguinCore with required components."""
         self.config = config or Config.load_config()
-        
-        # Initialize project manager
-        from local_task.manager import ProjectManager
-        self.project_manager = ProjectManager(workspace_root=get_workspace_path())
+        self.api_client = api_client
+        self.tool_manager = tool_manager
+        self._interrupted = False
+        self.system_prompt = ""
         
         # Initialize diagnostics based on config
         if not self.config.diagnostics.enabled:
             disable_diagnostics()
         
-        self.api_client = api_client
-        self.tool_manager = tool_manager
-        # self.task_manager = task_manager
-        self.action_executor = ActionExecutor(tool_manager) 
+        # Initialize conversation system
+        from workspace import get_workspace_path
+        workspace_path = Path(get_workspace_path())
+        self.conversation_system = ConversationSystem(
+            tool_manager=self.tool_manager,
+            diagnostics=diagnostics,
+            base_path=workspace_path
+        )
+        
+        # Initialize project manager
+        from local_task.manager import ProjectManager
+        self.project_manager = ProjectManager(workspace_root=get_workspace_path())
+        
+        # Initialize action executor
+        self.action_executor = ActionExecutor(tool_manager)
         self.messages = []
         
         # Initialize core systems
-        self.conversation = ConversationSystem(self.tool_manager, diagnostics)
         self.cognition = CognitionSystem(
             api_client=self.api_client,
             diagnostics=diagnostics
         )
         
         # State
-        self.system_prompt = ""
         self.initialized = True
-        self._interrupted = False
         logger.info("PenguinCore initialized successfully")
 
     def _setup_diagnostics(self):
@@ -124,7 +131,7 @@ class PenguinCore:
         diagnostics.reset()
         self.messages = []
         self._interrupted = False
-        self.conversation.reset()
+        self.conversation_system.reset()
         if self.tool_manager:
             self.tool_manager.reset()
         if self.action_executor:
@@ -177,7 +184,7 @@ class PenguinCore:
             diagnostics.update_tokens('main_model', message)
             
             # Process message through conversation system
-            self.conversation.prepare_conversation(message)
+            self.conversation_system.prepare_conversation(message)
             
             # Get response with tool execution results
             response_data, _ = await self.get_response()
@@ -225,7 +232,7 @@ class PenguinCore:
             image_path = input_data.get("image_path")
             
             # Prepare conversation context
-            self.conversation.prepare_conversation(user_input, image_path)
+            self.conversation_system.prepare_conversation(user_input, image_path)
             
         except Exception as e:
             error_handler.log_error(e, context={
@@ -283,7 +290,7 @@ class PenguinCore:
         try:
             # Get raw response through API
             response = await self.api_client.create_message(
-                messages=self.conversation.get_history(),
+                messages=self.conversation_system.get_history(),
                 max_tokens=None,
                 temperature=None
             )
@@ -356,7 +363,7 @@ class PenguinCore:
             }
             
             # Update conversation
-            self.conversation.add_message("assistant", assistant_response)
+            self.conversation_system.add_message("assistant", assistant_response)
             
             # Log diagnostics
             diagnostics.log_token_usage()
@@ -403,7 +410,7 @@ class PenguinCore:
         """Reset the core state"""
         self.messages = []
         self._interrupted = False
-        self.conversation.reset()
+        self.conversation_system.reset()
         self.tool_manager.reset()
         self.action_executor.reset()
 

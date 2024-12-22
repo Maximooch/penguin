@@ -1,6 +1,6 @@
 import os
 import typer # type: ignore
-from typing import Optional
+from typing import Optional, List
 from pathlib import Path
 import asyncio
 from rich.console import Console # type: ignore
@@ -17,6 +17,7 @@ from system_prompt import SYSTEM_PROMPT
 
 import datetime
 from run_mode import RunMode
+from system.conversation_menu import ConversationMenu, ConversationSummary
 
 app = typer.Typer(help="Penguin AI Assistant")
 console = Console()
@@ -33,6 +34,7 @@ class PenguinCLI:
         self.core = core
         self.message_count = 0
         self.console = Console()
+        self.conversation_menu = ConversationMenu(self.console)
 
     def display_message(self, message: str, role: str = "assistant"):
         """Display a message with proper formatting"""
@@ -84,6 +86,11 @@ class PenguinCLI:
 
 Available Commands:
 
+ • /conv: Conversation management
+   - list: Show available conversations
+   - load: Load a previous conversation
+   - summary: Show current conversation summary
+   
  • /list: Display all projects and tasks
  • /task: Task management commands
    - create [name] [description]: Create a new task
@@ -118,6 +125,11 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     command_parts = user_input[1:].split(' ', 2)  # Split into max 3 parts
                     command = command_parts[0].lower()
                     
+                    # Handle /conv command
+                    if command == 'conv':
+                        await self.handle_conversation_command(command_parts)
+                        continue
+                        
                     # Handle /list command
                     if command == 'list':
                         response = await self.core.process_list_command()
@@ -247,6 +259,48 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                 console.print(f"[red]Error: {str(e)}[/red]")
 
         console.print("\nGoodbye! 👋")
+
+    async def handle_conversation_command(self, command_parts: List[str]) -> None:
+        """Handle conversation-related commands"""
+        if len(command_parts) < 2:
+            self.display_message(
+                "Usage:\n"
+                " • /conv list - Show available conversations\n"
+                " • /conv load - Load a previous conversation\n"
+                " • /conv summary - Show current conversation summary",
+                "system"     )
+            return
+           
+        action = command_parts[1].lower()
+       
+        if action == "list":
+            conversations = [
+                ConversationSummary(
+                    session_id=meta.session_id,
+                    title=meta.title or f"Conversation {idx+1}",
+                    message_count=meta.message_count,
+                    last_active=datetime.fromisoformat(meta.last_active)
+                )
+                for idx, meta in enumerate(self.core.conversation_system.loader.list_conversations())
+            ]
+            session_id = self.conversation_menu.select_conversation(conversations)
+            if session_id:
+                try:
+                    self.core.conversation_system.load(session_id)
+                    self.display_message("Conversation loaded successfully", "system")
+                except Exception as e:
+                    self.display_message(f"Error loading conversation: {str(e)}", "error")
+                   
+        elif action == "load":
+            # Same as list for now, might add direct session_id loading later
+            await self.handle_conversation_command(["conv", "list"])
+           
+        elif action == "summary":
+            messages = self.core.conversation_system.get_history()
+            self.conversation_menu.display_summary(messages)
+       
+        else:
+            self.display_message(f"Unknown conversation action: {action}", "error")
 
 @app.command()
 def chat(

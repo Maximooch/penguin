@@ -211,3 +211,14 @@ class Config:
             "workspace_dir": str(self.workspace_dir),
             "cache_dir": str(self.cache_dir)
         }
+
+# Add to existing config.py
+CONVERSATIONS_PATH = os.path.join(WORKSPACE_PATH, 'conversations')
+os.makedirs(CONVERSATIONS_PATH, exist_ok=True)
+
+# Add conversation-specific configuration
+CONVERSATION_CONFIG = {
+    'max_history': 1000000,  # Maximum number of messages to keep in history
+    'auto_save': True,   # Automatically save conversations
+    'save_format': 'json'  # Format to save conversations in
+}
