@@ -1,8 +1,8 @@
 from typing import List, Optional
 from datetime import datetime
-from rich.console import Console
-from rich.table import Table
-from rich.prompt import Prompt
+from rich.console import Console # type: ignore
+from rich.table import Table # type: ignore
+from rich.prompt import Prompt # type: ignore
 from dataclasses import dataclass
 
 @dataclass
@@ -10,12 +10,17 @@ class ConversationSummary:
     session_id: str
     title: str
     message_count: int
-    last_active: datetime
+    last_active: str
+    
+    @property
+    def display_date(self) -> str:
+        """Return the already formatted date string"""
+        return self.last_active
     
     @property
     def display_name(self) -> str:
         """Format conversation for display"""
-        return f"{self.title[:40]} ({self.message_count} msgs) - {self.last_active.strftime('%Y-%m-%d %H:%M')}"
+        return f"{self.title[:40]} ({self.message_count} msgs) - {self.last_active}"
 
 class ConversationMenu:
     def __init__(self, console: Console):
@@ -34,7 +39,7 @@ class ConversationMenu:
                 str(idx),
                 conv.title[:40],
                 str(conv.message_count),
-                conv.last_active.strftime('%Y-%m-%d %H:%M')
+                conv.display_date
             )
             
         self.console.print("\n📝 Available Conversations:\n")
