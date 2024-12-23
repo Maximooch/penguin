@@ -87,7 +87,7 @@ class PenguinCLI:
 
 Available Commands:
 
- • /conv: Conversation management
+ • /chat: Conversation management
    - list: Show available conversations
    - load: Load a previous conversation
    - summary: Show current conversation summary
@@ -126,8 +126,8 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     command_parts = user_input[1:].split(' ', 2)  # Split into max 3 parts
                     command = command_parts[0].lower()
                     
-                    # Handle /conv command
-                    if command == 'conv':
+                    # Handle /chat command
+                    if command == 'chat':
                         await self.handle_conversation_command(command_parts)
                         continue
                         
@@ -269,9 +269,9 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
         if len(command_parts) < 2:
             self.display_message(
                 "Usage:\n"
-                " • /conv list - Show available conversations\n"
-                " • /conv load - Load a previous conversation\n"
-                " • /conv summary - Show current conversation summary",
+                " • /chat list - Show available conversations\n"
+                " • /chat load - Load a previous conversation\n"
+                " • /chat summary - Show current conversation summary",
                 "system"     )
             return
            
