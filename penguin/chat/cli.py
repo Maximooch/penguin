@@ -18,6 +18,7 @@ from system_prompt import SYSTEM_PROMPT
 import datetime
 from run_mode import RunMode
 from system.conversation_menu import ConversationMenu, ConversationSummary
+from system.conversation import parse_iso_datetime  # Add this import
 
 app = typer.Typer(help="Penguin AI Assistant")
 console = Console()
@@ -251,6 +252,9 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                 else:
                     self.display_message(str(response))
                 
+                # Save conversation after each message exchange
+                self.core.conversation_system.save()
+                
                 self.message_count += 1
 
             except KeyboardInterrupt:
@@ -279,7 +283,7 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     session_id=meta.session_id,
                     title=meta.title or f"Conversation {idx+1}",
                     message_count=meta.message_count,
-                    last_active=datetime.fromisoformat(meta.last_active)
+                    last_active=parse_iso_datetime(meta.last_active)
                 )
                 for idx, meta in enumerate(self.core.conversation_system.loader.list_conversations())
             ]
