@@ -14,7 +14,9 @@ sphinx
 sphinx-rtd-theme
 myst-parser
 IPython
+bs4
+plotext
+matplotlib
 
 chromadb
 ollama
-ast-parser
