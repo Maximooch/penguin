@@ -73,6 +73,7 @@ def main():
     # Create virtual environment
     run_with_progress(
         "Creating virtual environment",
+        os.chdir('penguin')
         ["uv", "venv", "--python", "3.10"]
     )
     
@@ -89,7 +90,7 @@ def main():
     if launch == 'y':
         print("\n🚀 Launching Penguin...\n")
         # Change directory using os.chdir instead of subprocess.run
-        os.chdir('penguin')
+        # os.chdir('penguin')
         subprocess.run(["uv", "run", "main.py"])
 
 if __name__ == "__main__":
