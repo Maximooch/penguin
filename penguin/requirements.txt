@@ -17,6 +17,7 @@ IPython
 bs4
 plotext
 matplotlib
+tqdm
 
 chromadb
 ollama
