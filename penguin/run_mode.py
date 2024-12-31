@@ -8,9 +8,9 @@ from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.markdown import Markdown
+from rich.console import Console # type: ignore
+from rich.panel import Panel # type: ignore
+from rich.markdown import Markdown # type: ignore
 
 from config import MAX_TASK_ITERATIONS, TASK_COMPLETION_PHRASE
 
