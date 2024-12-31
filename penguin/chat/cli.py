@@ -133,7 +133,7 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                         
                     # Handle /list command
                     if command == 'list':
-                        response = await self.core.process_list_command()
+                        response = self.core.project_manager.process_list_command()
                         if isinstance(response, dict):
                             if 'assistant_response' in response:
                                 self.display_message(response['assistant_response'])
@@ -151,11 +151,11 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
 
                         try:
                             if action == 'create':
-                                response = await self.core.create_task(name, description)
+                                response = self.core.project_manager.create_task(name, description)
                             elif action == 'complete':
-                                response = await self.core.complete_task(name)
+                                response = self.core.project_manager.complete_task(name)
                             elif action == 'status':
-                                response = await self.core.get_task_status(name)
+                                response = self.core.project_manager.get_task_status(name)
                             else:
                                 self.display_message(f"Unknown task action: {action}", "error")
                                 continue
@@ -176,9 +176,9 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
 
                         try:
                             if action == 'create':
-                                response = await self.core.create_project(name, description)
+                                response = self.core.project_manager.create_project(name, description)
                             elif action == 'status':
-                                response = await self.core.get_project_status(name)
+                                response = self.core.project_manager.get_project_status(name)
                             else:
                                 self.display_message(f"Unknown project action: {action}", "error")
                                 continue

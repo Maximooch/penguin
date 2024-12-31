@@ -38,11 +38,6 @@ from utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnosti
 from tools.tool_manager import ToolManager
 from utils.parser import parse_action, ActionExecutor
 from utils.errors import error_handler
-# Task Management
-# from agent.task_manager import TaskManager
-# from agent.task import Task, TaskStatus
-# from agent.project import Project, ProjectStatus
-# from agent.task_utils import create_project, get_project_details
 
 # Configuration
 # from .config import Config
@@ -51,15 +46,18 @@ from config import (
     MAX_TASK_ITERATIONS,
     Config,
     DEFAULT_MODEL,
-    DEFAULT_PROVIDER
+    DEFAULT_PROVIDER,
+    WORKSPACE_PATH
 )
 
 # Workspace
-from workspace import get_workspace_path, write_workspace_file
+# from workspace import get_workspace_path, write_workspace_file
 
 # RunMode
 from run_mode import RunMode
 
+# Local task manager
+from local_task.manager import ProjectManager
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -79,25 +77,26 @@ class PenguinCore:
         self._interrupted = False
         self.system_prompt = ""
         
+        # Initialize project manager with workspace path from config
+        self.project_manager = ProjectManager(workspace_root=WORKSPACE_PATH)
+        
         # Initialize diagnostics based on config
+        # Don't touch this file in edits!
         if not self.config.diagnostics.enabled:
             disable_diagnostics()
         
         # Initialize conversation system
-        from workspace import get_workspace_path
-        workspace_path = Path(get_workspace_path())
         self.conversation_system = ConversationSystem(
             tool_manager=self.tool_manager,
             diagnostics=diagnostics,
-            base_path=workspace_path
+            base_path=Path(WORKSPACE_PATH)
         )
         
-        # Initialize project manager
-        from local_task.manager import ProjectManager
-        self.project_manager = ProjectManager(workspace_root=get_workspace_path())
-        
-        # Initialize action executor
-        self.action_executor = ActionExecutor(tool_manager)
+        # Initialize action executor with project manager
+        self.action_executor = ActionExecutor(
+            tool_manager=self.tool_manager,
+            task_manager=self.project_manager
+        )
         self.messages = []
         
         # Initialize core systems
@@ -414,177 +413,179 @@ class PenguinCore:
         self.tool_manager.reset()
         self.action_executor.reset()
 
-    async def display_all(self) -> str:
-        """
-        Display all projects and tasks in a unified view.
-        Returns formatted string output.
-        """
-        from io import StringIO
-        import sys
+    # async def display_all(self) -> str:
+    #     """
+    #     Display all projects and tasks in a unified view.
+    #     Returns formatted string output.
+    #     """
+    #     from io import StringIO
+    #     import sys
         
-        # Capture console output
-        old_stdout = sys.stdout
-        string_buffer = StringIO()
-        sys.stdout = string_buffer
+    #     # Capture console output
+    #     old_stdout = sys.stdout
+    #     string_buffer = StringIO()
+    #     sys.stdout = string_buffer
         
-        try:
-            # Use project manager's display function instead
-            self.project_manager._display_all()
+    #     try:
+    #         # Use project manager's display function instead
+    #         self.project_manager._display_all()
             
-            # Get the captured output
-            output = string_buffer.getvalue()
-            return output
+    #         # Get the captured output
+    #         output = string_buffer.getvalue()
+    #         return output
             
-        finally:
-            sys.stdout = old_stdout
-            string_buffer.close()
+    #     finally:
+    #         sys.stdout = old_stdout
+    #         string_buffer.close()
 
-    async def process_list_command(self) -> Dict[str, Any]:
-        """Process the /list command and return formatted output"""
-        try:
-            output = await self.display_all()
-            return {
-                "assistant_response": "Here's the current workspace overview:",
-                "action_results": [{
-                    "action": "list",
-                    "result": output,
-                    "status": "completed"
-                }]
-            }
-        except Exception as e:
-            error_handler.log_error(e, context={
-                "component": "core",
-                "method": "process_list_command"
-            })
-            return {
-                "assistant_response": f"Error displaying workspace: {str(e)}",
-                "action_results": []
-            }
+    # async def process_list_command(self) -> Dict[str, Any]:
+    #     """Process the /list command and return formatted output"""
+    #     try:
+    #         output = await self.display_all()
+    #         return {
+    #             "assistant_response": "Here's the current workspace overview:",
+    #             "action_results": [{
+    #                 "action": "list",
+    #                 "result": output,
+    #                 "status": "completed"
+    #             }]
+    #         }
+    #     except Exception as e:
+    #         error_handler.log_error(e, context={
+    #             "component": "core",
+    #             "method": "process_list_command"
+    #         })
+    #         return {
+    #             "assistant_response": f"Error displaying workspace: {str(e)}",
+    #             "action_results": []
+    #         }
 
-    async def create_task(self, name: str, description: str) -> Dict[str, Any]:
-        """Create a new independent task"""
-        try:
-            task = self.project_manager._create_independent_task(name, description)
-            return {
-                "action": "task_create",
-                "result": f"Created task: {task.title}",
-                "status": "completed"
-            }
-        except Exception as e:
-            error_handler.log_error(e, context={
-                "component": "core",
-                "method": "create_task",
-                "name": name,
-                "description": description
-            })
-            return {
-                "action": "task_create",
-                "result": f"Error creating task: {str(e)}",
-                "status": "error"
-            }
+    # async def create_task(self, name: str, description: str) -> Dict[str, Any]:
+    #     """Create a new independent task"""
+    #     try:
+    #         # Create independent task directly using ProjectManager
+    #         task = self.project_manager._create_independent_task(name, description)
+            
+    #         return {
+    #             "action": "task_create",
+    #             "result": f"Created task: {task.title}",
+    #             "status": "completed"
+    #         }
+    #     except Exception as e:
+    #         error_handler.log_error(e, context={
+    #             "component": "core",
+    #             "method": "create_task",
+    #             "name": name,
+    #             "description": description
+    #         })
+    #         return {
+    #             "action": "task_create",
+    #             "result": f"Error creating task: {str(e)}",
+    #             "status": "error"
+    #         }
 
-    async def complete_task(self, name: str) -> Dict[str, Any]:
-        """Complete a task by name"""
-        try:
-            self.project_manager.complete(name)
-            return {
-                "action": "task_complete",
-                "result": f"Completed task: {name}",
-                "status": "completed"
-            }
-        except Exception as e:
-            error_handler.log_error(e, context={
-                "component": "core",
-                "method": "complete_task",
-                "name": name
-            })
-            return {
-                "action": "task_complete",
-                "result": f"Error completing task: {str(e)}",
-                "status": "error"
-            }
+    # async def complete_task(self, name: str) -> Dict[str, Any]:
+    #     """Complete a task by name"""
+    #     try:
+    #         self.project_manager.complete(name)
+    #         return {
+    #             "action": "task_complete",
+    #             "result": f"Completed task: {name}",
+    #             "status": "completed"
+    #         }
+    #     except Exception as e:
+    #         error_handler.log_error(e, context={
+    #             "component": "core",
+    #             "method": "complete_task",
+    #             "name": name
+    #         })
+    #         return {
+    #             "action": "task_complete",
+    #             "result": f"Error completing task: {str(e)}",
+    #             "status": "error"
+    #         }
 
-    async def create_project(self, name: str, description: str) -> Dict[str, Any]:
-        """Create a new project"""
-        try:
-            project = self.project_manager.create(name, description)
-            return {
-                "action": "project_create",
-                "result": f"Created project: {project.name}",
-                "status": "completed"
-            }
-        except Exception as e:
-            return {
-                "action": "project_create",
-                "result": f"Error creating project: {str(e)}",
-                "status": "error"
-            }
+    # async def create_project(self, name: str, description: str) -> Dict[str, Any]:
+    #     """Create a new project"""
+    #     try:
+    #         project = self.project_manager.create(name, description)
+    #         return {
+    #             "action": "project_create",
+    #             "result": f"Created project: {project.name}",
+    #             "status": "completed"
+    #         }
+    #     except Exception as e:
+    #         return {
+    #             "action": "project_create",
+    #             "result": f"Error creating project: {str(e)}",
+    #             "status": "error"
+    #         }
 
-    async def get_project_status(self, name: str) -> Dict[str, Any]:
-        """Get status of a project"""
-        try:
-            project = self.project_manager._find_project_by_name(name)
-            if not project:
-                raise ValueError(f"Project not found: {name}")
+    # async def get_project_status(self, name: str) -> Dict[str, Any]:
+    #     """Get status of a project"""
+    #     try:
+    #         project = self.project_manager._find_project_by_name(name)
+    #         if not project:
+    #             raise ValueError(f"Project not found: {name}")
             
-            # Format project status
-            active_tasks = [t for t in project.tasks.values() if t.status == "active"]
-            completed_tasks = [t for t in project.tasks.values() if t.status == "completed"]
+    #         # Format project status
+    #         active_tasks = [t for t in project.tasks.values() if t.status == "active"]
+    #         completed_tasks = [t for t in project.tasks.values() if t.status == "completed"]
             
-            result = (
-                f"Project: {project.name}\n"
-                f"Description: {project.description}\n"
-                f"Tasks: active: {len(active_tasks)}, completed: {len(completed_tasks)}\n"
-                f"Created: {project.created_at}\n"
-                f"Last Updated: {project.updated_at}"
-            )
+    #         result = (
+    #             f"Project: {project.name}\n"
+    #             f"Description: {project.description}\n"
+    #             f"Tasks: active: {len(active_tasks)}, completed: {len(completed_tasks)}\n"
+    #             f"Created: {project.created_at}\n"
+    #             f"Last Updated: {project.updated_at}"
+    #         )
             
-            return {
-                "action": "project_status",
-                "result": result,
-                "status": "completed"
-            }
-        except Exception as e:
-            return {
-                "action": "project_status",
-                "result": f"Error getting project status: {str(e)}",
-                "status": "error"
-            }
+    #         return {
+    #             "action": "project_status",
+    #             "result": result,
+    #             "status": "completed"
+    #         }
+    #     except Exception as e:
+    #         return {
+    #             "action": "project_status",
+    #             "result": f"Error getting project status: {str(e)}",
+    #             "status": "error"
+    #         }
 
-    async def get_task_status(self, name: str) -> Dict[str, Any]:
-        """Get status of a task"""
-        try:
-            task = self.project_manager._find_task_by_name(name)
-            if not task:
-                raise ValueError(f"Task not found: {name}")
+    # async def get_task_status(self, name: str) -> Dict[str, Any]:
+    #     """Get status of a task"""
+    #     try:
+    #         task = self.project_manager._find_task_by_name(name)
+    #         if not task:
+    #             raise ValueError(f"Task not found: {name}")
             
-            # Format task status
-            result = (
-                f"Task: {task.title}\n"
-                f"Status: {task.status}\n"
-                f"Progress: {task.progress}%\n"
-                f"Priority: {task.priority}\n"
-            )
+    #         # Format task status
+    #         result = (
+    #             f"Task: {task.title}\n"
+    #             f"Status: {task.status}\n"
+    #             f"Progress: {task.progress}%\n"
+    #             f"Priority: {task.priority}\n"
+    #         )
             
-            if task.due_date:
-                result += f"Due Date: {task.due_date}\n"
-            if task.tags:
-                result += f"Tags: {', '.join(task.tags)}\n"
-            if task.project_id:
-                project = self.project_manager.projects[task.project_id]
-                result += f"Project: {project.name}\n"
+    #         if task.due_date:
+    #             result += f"Due Date: {task.due_date}\n"
+    #         if task.tags:
+    #             result += f"Tags: {', '.join(task.tags)}\n"
+    #         if task.project_id:
+    #             project = self.project_manager.projects[task.project_id]
+    #             result += f"Project: {project.name}\n"
             
-            return {
-                "action": "task_status",
-                "result": result,
-                "status": "completed"
-            }
-        except Exception as e:
-            return {
-                "action": "task_status",
-                "result": f"Error getting task status: {str(e)}",
-                "status": "error"
-            }
+    #         return {
+    #             "action": "task_status",
+    #             "result": result,
+    #             "status": "completed"
+    #         }
+    #     except Exception as e:
+    #         return {
+    #             "action": "task_status",
+    #             "result": f"Error getting task status: {str(e)}",
+    #             "status": "error"
+    #         }
 
     async def start_run_mode(
         self, 

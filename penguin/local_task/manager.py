@@ -16,6 +16,8 @@ from typing import Dict, List, Optional, Union, Any
 from dataclasses import dataclass, asdict, field
 import hashlib
 import shutil
+import sys
+from io import StringIO
 
 from rich.tree import Tree # type: ignore
 from rich.panel import Panel # type: ignore
@@ -29,8 +31,21 @@ logger.setLevel(logging.DEBUG)
 
 from .vis import ProjectVisualizer
 
-from config import Config, WORKSPACE_PATH
-from utils.errors import error_handler
+try:
+    from config import Config, WORKSPACE_PATH
+except ImportError:
+    WORKSPACE_PATH = Path.cwd()  # Default to current directory if no config, for testing
+
+try:
+    from utils.errors import error_handler
+except ImportError:
+    # Create a simple error handler for testing
+    class SimpleErrorHandler:
+        def log_error(self, error, context=None, fatal=False):
+            print(f"Error: {str(error)}")
+            if context:
+                print(f"Context: {context}")
+    error_handler = SimpleErrorHandler()
 
 
 @dataclass
@@ -149,52 +164,31 @@ class ProjectManager:
         content = f"{text}{datetime.now().isoformat()}"
         return hashlib.sha1(content.encode()).hexdigest()[:8]
 
-    def create(self, name: str, description: str, project_name: Optional[str] = None,
-              due_date: Optional[str] = None, metadata: Optional[Dict] = None) -> Union[Project, Task]:
+    def create(self, name: str, description: str, project_name: Optional[str] = None, is_task: bool = False) -> Union[Project, Task]:
         """
         Create a new project or task.
         
         Args:
-            name: Name/title of project or task
-            description: Detailed description
-            project_name: Optional project name (if creating a task within project)
-            due_date: Optional due date in ISO format
-            metadata: Optional dictionary of additional metadata
+            name: Name of the project/task
+            description: Description of the project/task
+            project_name: If provided, creates a task under this project
+            is_task: If True, creates an independent task even if project_name is None
             
         Returns:
-            Created Project or Task object
-            
-        Raises:
-            ValueError: If project_name provided but not found
+            Project or Task instance
         """
-        timestamp = datetime.now().isoformat()
-        
-        # If no project_name, due_date, or metadata, this is a project creation
-        if project_name is None and due_date is None and metadata is None:
-            return self._create_project(name, description)
-            
-        # Otherwise this is a task creation
-        if project_name:
+        if project_name is not None:
+            # Create a task under the specified project
             project = self._find_project_by_name(project_name)
             if not project:
-                raise ValueError(f"Project not found: {project_name}")
+                raise ValueError(f"Project {project_name} not found")
             return self._create_task(name, description, project.id)
+        elif is_task:
+            # Create an independent task
+            return self._create_independent_task(name, description)
         else:
-            # Creating independent task
-            task = Task(
-                id=self._generate_id(name),
-                title=name,
-                description=description,
-                status="active",
-                created_at=timestamp,
-                updated_at=timestamp,
-                priority=3,  # Default priority
-                due_date=due_date,
-                metadata=metadata or {}
-            )
-            self.independent_tasks[task.id] = task
-            self._save_data()
-            return task
+            # Create a project
+            return self._create_project(name, description)
 
     def delete(self, name: str) -> None:
         """
@@ -307,10 +301,7 @@ class ProjectManager:
         if task:
             task.description = description
             task.updated_at = datetime.now().isoformat()
-            if task.project_id:
-                self._save_data()
-            else:
-                self._save_independent_task(task)
+            self._save_data()
             return
 
         raise ValueError(f"No project or task found with name: {name}")
@@ -512,12 +503,17 @@ class ProjectManager:
         """Save all projects and tasks to JSON file."""
         data = {
             "projects": {
-                pid: project.to_dict() for pid, project in self.projects.items()
+                pid: {
+                    **project.to_dict(),
+                    "tasks": {tid: asdict(task) for tid, task in project.tasks.items()}
+                }
+                for pid, project in self.projects.items()
             },
             "independent_tasks": {
                 tid: asdict(task) for tid, task in self.independent_tasks.items()
             }
         }
+        
         with self.data_file.open('w') as f:
             json.dump(data, f, indent=2)
 
@@ -671,29 +667,16 @@ class ProjectManager:
         Returns:
             String containing the formatted display output
         """
-        from io import StringIO
-        import sys
-        
-        # Capture console output
-        old_stdout = sys.stdout
-        string_buffer = StringIO()
-        sys.stdout = string_buffer
-        
         try:
             if project_name:
-                self._display_project(project_name)
+                return self._display_project(project_name)
             else:
-                self._display_all()
-                
-            # Get the captured output
-            output = string_buffer.getvalue()
-            return output
-            
-        finally:
-            sys.stdout = old_stdout
-            string_buffer.close()
+                return self._display_all()
+        except Exception as e:
+            logger.error(f"Error in display: {str(e)}")
+            return str(e)
 
-    def _display_all(self) -> None:
+    def _display_all(self) -> str:
         """Display all projects and tasks in a tree structure"""
         tree = Tree("📂 Workspace")
         
@@ -731,17 +714,21 @@ class ProjectManager:
                     task_text += f" [dim]{', '.join(f'#{tag}' for tag in task.tags)}[/]"
                 independent_tree.add(task_text)
 
-        self.console.print(tree)
+        # Create a string representation
+        console = Console(record=True)
+        console.print(tree)
+        return console.export_text()
 
-    def _display_project(self, project_name: str) -> None:
+    def _display_project(self, project_name: str) -> str:
         """Display detailed view of a specific project"""
         project = self._find_project_by_name(project_name)
         if not project:
-            self.console.print(f"[red]Project '{project_name}' not found[/]")
-            return
+            return f"Project '{project_name}' not found"
 
+        console = Console(record=True)
+        
         # Project header with better styling
-        self.console.print(Panel(
+        console.print(Panel(
             f"[bold blue]{project.name}[/]\n[dim]{project.description}[/]",
             title="[white]Project Details[/]",
             border_style="blue",
@@ -821,7 +808,8 @@ class ProjectManager:
                 dependencies
             )
 
-        self.console.print(table)
+        console.print(table)
+        return console.export_text()
 
     def display_dependencies(self, task_name: str) -> None:
         """
@@ -883,7 +871,10 @@ class ProjectManager:
             due_date = datetime.fromisoformat(task.due_date).strftime("%Y-%m-%d")
             progress_tree.add(f"Due date: {due_date}")
 
-        self.console.print(tree)
+        # Create a string representation
+        console = Console(record=True)
+        console.print(tree)
+        return console.export_text()
 
     def visualize(self, project_name: str = None) -> None:
         """Generate visualizations for project(s)"""
@@ -906,3 +897,205 @@ class ProjectManager:
         
         # Show terminal charts
         self.visualizer.show_terminal_charts(projects)
+
+    def _get_overall_status(self) -> Dict:
+        """Get overall status of all projects and tasks"""
+        total_projects = len(self.projects)
+        total_tasks = sum(len(p.tasks) for p in self.projects.values()) + len(self.independent_tasks)
+        
+        status_counts = {
+            "active": 0,
+            "completed": 0,
+            "archived": 0
+        }
+        
+        # Count project tasks
+        for project in self.projects.values():
+            for task in project.tasks.values():
+                status_counts[task.status] += 1
+                
+        # Count independent tasks
+        for task in self.independent_tasks.values():
+            status_counts[task.status] += 1
+            
+        return {
+            "total_projects": total_projects,
+            "total_tasks": total_tasks,
+            "tasks_by_status": status_counts,
+            "completion_rate": (status_counts["completed"] / total_tasks * 100) if total_tasks > 0 else 0
+        }
+
+    def display_all(self) -> str:
+        """Display all projects and tasks in a unified view."""
+        try:
+            return self._display_all()  # Call the existing internal method
+        except Exception as e:
+            logger.error(f"Error in display_all: {str(e)}")
+            return str(e)
+
+    def process_list_command(self) -> Dict[str, Any]:
+        """Process the /list command and return formatted output"""
+        try:
+            output = self.display_all()
+            return {
+                "assistant_response": "Here's the current workspace overview:",
+                "action_results": [{
+                    "action": "list",
+                    "result": output,
+                    "status": "completed"
+                }]
+            }
+        except Exception as e:
+            error_handler.log_error(e, context={
+                "component": "project_manager",
+                "method": "process_list_command"
+            })
+            return {
+                "assistant_response": f"Error displaying workspace: {str(e)}",
+                "action_results": []
+            }
+
+    def create_task(self, name: str, description: str, project_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Create a new task, either independent or in a project.
+        
+        Args:
+            name: Name of the task
+            description: Task description
+            project_name: Optional project to add task to
+        """
+        try:
+            if project_name:
+                # Create task in project
+                project = self._find_project_by_name(project_name)
+                if not project:
+                    raise ValueError(f"Project not found: {project_name}")
+                task = self._create_project_task(project, name, description)
+            else:
+                # Create independent task
+                task = self._create_independent_task(name, description)
+            
+            self._save_data()  # Force immediate save
+            
+            return {
+                "action": "task_create",
+                "result": f"Created task: {task.title}",
+                "status": "completed"
+            }
+        except Exception as e:
+            error_handler.log_error(e, context={
+                "component": "project_manager",
+                "method": "create_task",
+                "name": name,
+                "description": description
+            })
+            return {
+                "action": "task_create",
+                "result": f"Error creating task: {str(e)}",
+                "status": "error"
+            }
+
+    def complete_task(self, name: str) -> Dict[str, Any]:
+        """Complete a task by name"""
+        try:
+            self.complete(name)  # Using existing complete method
+            self._save_data()  # Force immediate save
+            
+            return {
+                "action": "task_complete",
+                "result": f"Completed task: {name}",
+                "status": "completed"
+            }
+        except Exception as e:
+            error_handler.log_error(e, context={
+                "component": "project_manager",
+                "method": "complete_task",
+                "name": name
+            })
+            return {
+                "action": "task_complete",
+                "result": f"Error completing task: {str(e)}",
+                "status": "error"
+            }
+
+    def create_project(self, name: str, description: str) -> Dict[str, Any]:
+        """Create a new project"""
+        try:
+            project = self.create(name, description)
+            self._save_data()  # Force immediate save
+            
+            return {
+                "action": "project_create",
+                "result": f"Created project: {project.name}",
+                "status": "completed"
+            }
+        except Exception as e:
+            return {
+                "action": "project_create",
+                "result": f"Error creating project: {str(e)}",
+                "status": "error"
+            }
+
+    def get_project_status(self, name: str) -> Dict[str, Any]:
+        """Get status of a project"""
+        try:
+            project = self._find_project_by_name(name)
+            if not project:
+                raise ValueError(f"Project not found: {name}")
+            
+            active_tasks = [t for t in project.tasks.values() if t.status == "active"]
+            completed_tasks = [t for t in project.tasks.values() if t.status == "completed"]
+            
+            result = (
+                f"Project: {project.name}\n"
+                f"Description: {project.description}\n"
+                f"Tasks: active: {len(active_tasks)}, completed: {len(completed_tasks)}\n"
+                f"Created: {project.created_at}\n"
+                f"Last Updated: {project.updated_at}"
+            )
+            
+            return {
+                "action": "project_status",
+                "result": result,
+                "status": "completed"
+            }
+        except Exception as e:
+            return {
+                "action": "project_status",
+                "result": f"Error getting project status: {str(e)}",
+                "status": "error"
+            }
+
+    def get_task_status(self, name: str) -> Dict[str, Any]:
+        """Get status of a task"""
+        try:
+            task = self._find_task_by_name(name)
+            if not task:
+                raise ValueError(f"Task not found: {name}")
+            
+            result = (
+                f"Task: {task.title}\n"
+                f"Status: {task.status}\n"
+                f"Progress: {task.progress}%\n"
+                f"Priority: {task.priority}\n"
+            )
+            
+            if task.due_date:
+                result += f"Due Date: {task.due_date}\n"
+            if task.tags:
+                result += f"Tags: {', '.join(task.tags)}\n"
+            if task.project_id:
+                project = self.projects[task.project_id]
+                result += f"Project: {project.name}\n"
+            
+            return {
+                "action": "task_status",
+                "result": result,
+                "status": "completed"
+            }
+        except Exception as e:
+            return {
+                "action": "task_status",
+                "result": f"Error getting task status: {str(e)}",
+                "status": "error"
+            }

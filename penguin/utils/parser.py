@@ -99,10 +99,9 @@ def parse_action(content: str) -> List[CodeActAction]:
     return actions
 
 class ActionExecutor:
-    def __init__(self, tool_manager: ToolManager, task_manager=None):
+    def __init__(self, tool_manager: ToolManager, task_manager: ProjectManager):
         self.tool_manager = tool_manager
-        # Initialize ProjectManager with the configured workspace path
-        self.task_manager = ProjectManager(WORKSPACE_PATH)  
+        self.task_manager = task_manager
         self.process_manager = ProcessManager()
         self.current_process = None
 
@@ -157,7 +156,8 @@ class ActionExecutor:
             ActionType.TASK_COMPLETE: self._task_complete,
             ActionType.TASK_DELETE: self._task_delete,
             ActionType.TASK_LIST: self._task_list,
-            ActionType.TASK_DISPLAY: self._project_display,  # Reuse project display for tasks
+            ActionType.TASK_DISPLAY: self._task_display,
+            ActionType.DEPENDENCY_DISPLAY: self._dependency_display,
         }
         
         try:
@@ -381,9 +381,8 @@ class ActionExecutor:
     def _project_display(self, params: str) -> str:
         """Display project details. Format: name"""
         try:
-            # Get the string output from display method
-            output = self.task_manager.display(params.strip() if params.strip() else None)
-            return output or "No display output generated"
+            output = self.task_manager.display(params.strip())
+            return output
         except Exception as e:
             return f"Error displaying project: {str(e)}"
 
@@ -395,8 +394,11 @@ class ActionExecutor:
                 return "Error: Invalid task format. Use name:description[:project_name]"
             name, description = parts[0:2]
             project_name = parts[2].strip() if len(parts) > 2 else None
-            task = self.task_manager.create(name.strip(), description.strip(), project_name)
-            return f"Task created: {task.title}"
+            response = self.task_manager.create_task(name.strip(), description.strip(), project_name)
+            
+            if isinstance(response, dict) and 'result' in response:
+                return response['result']
+            return f"Task created: {name}"
         except Exception as e:
             return f"Error creating task: {str(e)}"
 
@@ -436,8 +438,11 @@ class ActionExecutor:
                     return f"Project '{params}' not found."
                 tasks = list(project.tasks.values())
             else:
-                # List independent tasks
+                # List ALL tasks (both project and independent)
                 tasks = list(self.task_manager.independent_tasks.values())
+                # Also get project tasks
+                for project in self.task_manager.projects.values():
+                    tasks.extend(project.tasks.values())
             
             if not tasks:
                 return "No tasks found."
@@ -476,4 +481,18 @@ class ActionExecutor:
         except Exception as e:
             logger.error(f"Error in _task_list: {str(e)}", exc_info=True)
             return f"Error listing tasks: {str(e)}"
-        
+
+    def _task_display(self, params: str) -> str:
+        """Display task details. Format: name"""
+        try:
+            output = self.task_manager.display(params.strip())
+            return output
+        except Exception as e:
+            return f"Error displaying task: {str(e)}"
+
+    def _dependency_display(self, params: str) -> str:
+        """Display dependencies for a task or project"""
+        try:
+            return self.task_manager.display_dependencies(params.strip())
+        except Exception as e:
+            return f"Error displaying dependencies: {str(e)}"
