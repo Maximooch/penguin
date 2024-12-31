@@ -1,6 +1,14 @@
-# Not exclusive to OpenAI
 # Check LiteLLM documentation to see how to use other providers
 # https://docs.litellm.ai/docs/providers
+
+model:
+  default: "claude-3-5-sonnet-20240620"
+  provider: "anthropic"
+  use_assistants_api: false # Add this line to toggle OpenAI Assistants API usage
+
+api:
+  base_url: "https://api.anthropic.com/v1/messages"
+
 
 diagnostics:
   enabled: false  # Global switch for diagnostics
@@ -9,14 +17,9 @@ diagnostics:
   log_path: "logs/penguin.log"  # Optional, only used if log_to_file is true
 
 
-model:
-  default: "claude-3-5-sonnet-20240620"
-  provider: "anthropic"
-  use_assistants_api: false # Add this line to toggle Assistants API usage
-
-api:
-  base_url: "https://api.anthropic.com/v1/messages"
-
+# ------------------------------------------------------------------------------------------------
+# Model Configs. You can ignore these unless you want to change the default model configs. 
+# ------------------------------------------------------------------------------------------------
 model_configs:
   gpt-4o: 
     max_tokens: 4096
