@@ -1,3 +1,7 @@
+## Development Status
+
+⚠️ **Note**: Penguin is under active development. While I  strive for stability, you may encounter occasional issues. Your feedback and contributions are valuable in improving the project.
+
 # Penguin AI Assistant
 
 Penguin is a modular, extensible AI coding assistant powered by LLMs, enabling support for multiple AI models thanks to LiteLLM. It functions as an intelligent software engineer that can assist with coding tasks while maintaining its own code execution, memory tools, and workspace environment.
@@ -98,9 +102,6 @@ Penguin uses a modular architecture with these key systems:
 - **Task**: Coordinates projects and tasks
 - **Diagnostic**: Monitors performance
 
-## Development Status
-
-⚠️ **Note**: Penguin is under active development. While we strive for stability, you may encounter occasional issues. Your feedback and contributions are valuable in improving the project.
 
 ## Contributing
 
