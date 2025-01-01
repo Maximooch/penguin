@@ -50,7 +50,7 @@ eggs/
 
 # Node modules (but not the entire frontend)
 node_modules/
-penguin-web/node_modules/
+# penguin-web/node_modules/
 
 # pytest
 .pytest_cache/
