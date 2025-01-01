@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import PropTypes from 'prop-types';
 
-function ThreadSidebar({ onThreadSelect, activeThreadId }) {
+function ThreadSidebar({ onThreadSelect, activeThreadId, onNewThread }) {
   const [threads, setThreads] = useState([]);
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -78,6 +78,14 @@ function ThreadSidebar({ onThreadSelect, activeThreadId }) {
 
   return (
     <div className="sidebar">
+      <div className="sidebar-header">
+        <button 
+          className="new-thread-button"
+          onClick={onNewThread}
+        >
+          New Conversation
+        </button>
+      </div>
       <div className="thread-list">
         {threads.length === 0 ? (
           <div className="empty-state">No conversations yet</div>
@@ -130,7 +138,8 @@ function getMessagePreview(messages) {
 
 ThreadSidebar.propTypes = {
   onThreadSelect: PropTypes.func.isRequired,
-  activeThreadId: PropTypes.string
+  activeThreadId: PropTypes.string,
+  onNewThread: PropTypes.func.isRequired
 };
 
 export default ThreadSidebar; 

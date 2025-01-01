@@ -3,53 +3,44 @@ import react from '@vitejs/plugin-react'
 import path from 'path'
 import fs from 'fs'
 
-// Get the absolute path to the workspace directory
-const workspacePath = path.resolve(__dirname, '../../workspace')
-console.log('Workspace path:', workspacePath)
-
 export default defineConfig({
   plugins: [react()],
   server: {
-    fs: {
-      strict: false,
-      allow: ['..', workspacePath]
-    },
-    // Use the proxy configuration instead of middleware
     proxy: {
-      '/api/conversations': {
+      '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        ws: true, // Enable WebSocket proxy
         configure: (proxy, options) => {
+          // Error handling for proxy
           proxy.on('error', (err, req, res) => {
             console.error('Proxy error:', err);
-            // Handle proxy errors by serving local files
+            
+            // Handle conversations endpoint specifically
             if (req.url === '/api/conversations') {
+              const workspacePath = path.resolve(__dirname, '../../workspace')
+              const conversationsDir = path.join(workspacePath, 'conversations')
+              
               try {
-                const conversationsDir = path.join(workspacePath, 'conversations')
-                console.log('Falling back to local conversations in:', conversationsDir)
-                
                 if (!fs.existsSync(conversationsDir)) {
-                  console.error('Conversations directory not found:', conversationsDir)
-                  res.writeHead(404, { 'Content-Type': 'application/json' })
-                  return res.end(JSON.stringify({ 
-                    error: 'Conversations directory not found',
-                    path: conversationsDir
-                  }))
+                  fs.mkdirSync(conversationsDir, { recursive: true })
                 }
 
                 const files = fs.readdirSync(conversationsDir)
                   .filter(file => file.endsWith('.json'))
                 
                 const conversations = files.map(file => {
-                  try {
-                    const content = fs.readFileSync(
-                      path.join(conversationsDir, file), 
-                      'utf-8'
-                    )
-                    return JSON.parse(content)
-                  } catch (parseError) {
-                    console.warn(`Failed to parse conversation file ${file}:`, parseError)
-                    return null
+                  const filePath = path.join(conversationsDir, file)
+                  const content = fs.readFileSync(filePath, 'utf-8')
+                  const data = JSON.parse(content)
+                  return {
+                    metadata: {
+                      session_id: path.basename(file, '.json'),
+                      title: data.title || 'Untitled Conversation',
+                      last_active: data.last_active || new Date().toISOString(),
+                      message_count: data.messages?.length || 0
+                    },
+                    messages: data.messages || []
                   }
                 }).filter(Boolean)
 
@@ -57,14 +48,10 @@ export default defineConfig({
                   'Content-Type': 'application/json',
                   'Access-Control-Allow-Origin': '*'
                 })
-                return res.end(JSON.stringify(conversations))
+                res.end(JSON.stringify(conversations))
               } catch (error) {
                 console.error('Error serving conversations:', error)
-                res.writeHead(500, { 'Content-Type': 'application/json' })
-                return res.end(JSON.stringify({ 
-                  error: 'Failed to load conversations',
-                  details: error.message
-                }))
+                res.writeHead(500).end()
               }
             }
           })

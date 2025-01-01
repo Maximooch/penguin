@@ -1,12 +1,19 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Any
+from typing import Dict, Optional
+import json
+import asyncio
+from datetime import datetime
+from pathlib import Path
+import os
 
 class WebInterface:
     def __init__(self, cli):
         self.app = FastAPI()
         self.cli = cli
+        self.active_connections: Dict[str, WebSocket] = {}
         
+        # Setup CORS middleware
         self.app.add_middleware(
             CORSMiddleware,
             allow_origins=["*"],
@@ -15,53 +22,134 @@ class WebInterface:
             allow_headers=["*"],
         )
         
+        # Initialize workspace paths
+        self.workspace_path = Path("workspace")
+        self.conversations_path = self.workspace_path / "conversations"
+        self.conversations_path.mkdir(parents=True, exist_ok=True)
+        
+        # Setup routes
         self.setup_routes()
-    
-    def format_response(self, response: Any) -> str:
-        """Format the response similar to CLI display"""
-        if isinstance(response, dict):
-            formatted = ""
-            
-            # Add main response if present
-            if 'assistant_response' in response:
-                formatted += str(response['assistant_response'])
-            
-            # Add action results if present
-            if 'action_results' in response and response['action_results']:
-                formatted += "\n\nTool Results:\n"
-                for result in response['action_results']:
-                    action = result.get('action', 'unknown')
-                    result_text = result.get('result', '')
-                    formatted += f"• {action}: {result_text}\n"
-            
-            return formatted
         
-        return str(response)
-    
     def setup_routes(self):
-        @self.app.post("/chat")
-        async def chat(message: Dict[str, str]):
-            # Use the core's methods directly since that's what CLI uses internally
-            await self.cli.core.process_input({"text": message["text"]})
-            response, _ = await self.cli.core.get_response()
-            
-            # Format the response
-            formatted_response = self.format_response(response)
-            return {"response": formatted_response}
-        
-        @self.app.websocket("/ws")
-        async def websocket_endpoint(websocket: WebSocket):
+        @self.app.get("/api/conversations")
+        async def list_conversations():
+            try:
+                conversations = []
+                for file in self.conversations_path.glob("*.json"):
+                    try:
+                        with open(file, "r") as f:
+                            data = json.load(f)
+                            conversations.append({
+                                "metadata": {
+                                    "session_id": file.stem,
+                                    "title": data.get("title", "Untitled"),
+                                    "last_active": data.get("last_active", 
+                                        datetime.now().isoformat()),
+                                    "message_count": len(data.get("messages", []))
+                                },
+                                "messages": data.get("messages", [])
+                            })
+                    except Exception as e:
+                        print(f"Error reading conversation {file}: {e}")
+                        continue
+                
+                # Sort by last_active descending
+                conversations.sort(
+                    key=lambda x: x["metadata"]["last_active"],
+                    reverse=True
+                )
+                return conversations
+                
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/conversations/new")
+        async def create_conversation():
+            try:
+                # Generate new session ID
+                session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                # Create new conversation file
+                conversation_data = {
+                    "title": "New Conversation",
+                    "last_active": datetime.now().isoformat(),
+                    "messages": []
+                }
+                
+                conversation_file = self.conversations_path / f"{session_id}.json"
+                with open(conversation_file, "w") as f:
+                    json.dump(conversation_data, f, indent=2)
+                
+                return {
+                    "session_id": session_id,
+                    "metadata": {
+                        "title": conversation_data["title"],
+                        "last_active": conversation_data["last_active"],
+                        "message_count": 0
+                    }
+                }
+                
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.websocket("/ws/{session_id}")
+        async def websocket_endpoint(websocket: WebSocket, session_id: str):
+            await self.handle_websocket(websocket, session_id)
+
+    async def handle_websocket(self, websocket: WebSocket, session_id: str):
+        """Handle WebSocket connection for a chat session."""
+        try:
+            # Load existing messages from conversation file
+            conversation_file = os.path.join(self.cli.core.workspace_path, 'conversations', f'{session_id}.json')
+            if os.path.exists(conversation_file):
+                with open(conversation_file, 'r') as f:
+                    data = json.load(f)
+                    # Add existing messages to conversation system
+                    for msg in data.get('messages', []):
+                        self.cli.core.conversation_system.add_message(
+                            role=msg['role'],
+                            content=msg['content']
+                        )
+
             await websocket.accept()
+            
             while True:
                 try:
-                    message = await websocket.receive_json()
-                    # Use core's methods directly
-                    await self.cli.core.process_input({"text": message["text"]})
-                    response, _ = await self.cli.core.get_response()
+                    data = await websocket.receive_json()
+                    user_message = data.get('text', '').strip()
                     
-                    # Format the response
-                    formatted_response = self.format_response(response)
-                    await websocket.send_json({"response": formatted_response})
+                    if not user_message:
+                        continue
+
+                    # Add user message to conversation system
+                    self.cli.core.conversation_system.add_message(
+                        role="user",
+                        content=[{"text": user_message}]
+                    )
+
+                    # Get response from assistant
+                    response = await self.cli.core.get_response(user_message)
+
+                    # Add assistant response to conversation system
+                    self.cli.core.conversation_system.add_message(
+                        role="assistant",
+                        content=[{"text": response}]
+                    )
+
+                    # Send response back to client
+                    await websocket.send_json({
+                        "response": response
+                    })
+
+                except WebSocketDisconnect:
+                    break
                 except Exception as e:
-                    print(f"Error processing message: {e}")
-                    await websocket.send_json({"error": str(e)}) 
+                    logger.error(f"Error handling message: {str(e)}")
+                    await websocket.send_json({
+                        "error": f"Error processing message: {str(e)}"
+                    })
+
+        except Exception as e:
+            logger.error(f"WebSocket error: {str(e)}")
+            if not websocket.client_state == WebSocketState.DISCONNECTED:
+                await websocket.close() 
