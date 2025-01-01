@@ -1,4 +1,3 @@
-
 # Junkdrawer
 junkdrawer/
 hold/
@@ -7,10 +6,6 @@ arch_notes/
 testing/
 olderhold/
 copywriting/
-
-# Frontend
-frontend/
-frontend-test/
 
 # Python cache
 __pycache__/
@@ -53,8 +48,9 @@ build/
 eggs/
 .eggs/
 
-# Node modules
+# Node modules (but not the entire frontend)
 node_modules/
+penguin-web/node_modules/
 
 # pytest
 .pytest_cache/
@@ -70,6 +66,7 @@ ct1/
 
 # chromatest
 chroma_test/
+
 # Logs and databases
 *.log
 *.sql
@@ -81,8 +78,6 @@ penguin/error_log/
 
 # Ignore the notes folder in penguin
 penguin/notes/
-
-
 
 # Ignores the entire example folder, mostly for testing purposes
 penguin/example/
