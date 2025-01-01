@@ -21,11 +21,31 @@ function App() {
   const reconnectAttempts = useRef(0);
   const maxReconnectAttempts = 3;
   const [activeThread, setActiveThread] = useState(null);
+  const [sessionId, setSessionId] = useState(null);
 
-  const connectWebSocket = () => {
+  const createNewConversation = async () => {
+    try {
+      const response = await fetch('/api/conversations/new', {
+        method: 'POST'
+      });
+      const data = await response.json();
+      return data.session_id;
+    } catch (error) {
+      console.error('Error creating conversation:', error);
+      return null;
+    }
+  };
+
+  const connectWebSocket = async (sid = null) => {
     try {
       setIsConnecting(true);
-      ws.current = new WebSocket('ws://localhost:8000/ws');
+      
+      // Create new conversation if no session ID provided
+      const session_id = sid || await createNewConversation();
+      if (!session_id) throw new Error('Failed to get session ID');
+      
+      setSessionId(session_id);
+      ws.current = new WebSocket(`ws://localhost:8000/ws/${session_id}`);
       
       ws.current.onmessage = (event) => {
         console.log('WebSocket message received:', event.data);
@@ -64,7 +84,7 @@ function App() {
     } catch (error) {
       console.error('Error setting up WebSocket:', error);
       setIsConnecting(false);
-      addMessage('assistant', 'Failed to establish connection. Please check if the server is running.');
+      addMessage('assistant', 'Failed to establish connection. Please try again.');
     }
   };
 
@@ -105,8 +125,17 @@ function App() {
     }
   };
 
-  const handleThreadSelect = (thread) => {
+  const handleThreadSelect = async (thread) => {
+    // Close existing connection if any
+    if (ws.current) {
+      ws.current.close();
+    }
+    
     setActiveThread(thread);
+    
+    // Connect to WebSocket with thread's session ID
+    await connectWebSocket(thread.session_id);
+    
     // Load messages from the selected thread
     if (thread && thread.messages) {
       const formattedMessages = thread.messages.map(msg => ({
@@ -125,6 +154,16 @@ function App() {
       <ThreadSidebar 
         onThreadSelect={handleThreadSelect}
         activeThreadId={activeThread?.session_id}
+        onNewThread={() => {
+          // Close existing connection
+          if (ws.current) {
+            ws.current.close();
+          }
+          // Start new conversation
+          connectWebSocket();
+          setMessages([]);
+          setActiveThread(null);
+        }}
       />
       <div className="main-content">
         <div className="chat-container">
