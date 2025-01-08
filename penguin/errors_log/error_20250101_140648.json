@@ -1,0 +1,12 @@
+{
+  "timestamp": "2025-01-01T14:06:48.075821",
+  "error_type": "AttributeError",
+  "error_message": "'str' object has no attribute 'choices'",
+  "traceback": "Traceback (most recent call last):\n  File \"/Users/maximusputnam/Documents/code/Penguin/penguin/penguin/core.py\", line 305, in get_response\n    assistant_response = response.choices[0].message.content\n                         ^^^^^^^^^^^^^^^^\nAttributeError: 'str' object has no attribute 'choices'\n",
+  "context": {
+    "component": "core",
+    "method": "get_response",
+    "iteration": null,
+    "max_iterations": null
+  }
+}

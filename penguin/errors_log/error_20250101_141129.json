@@ -1,0 +1,7 @@
+{
+  "timestamp": "2025-01-01T14:11:29.291017",
+  "error_type": "ResponseError",
+  "error_message": "model \"nomic-embed-text\" not found, try pulling it first",
+  "traceback": "Traceback (most recent call last):\n  File \"/Users/maximusputnam/Documents/code/Penguin/penguin/penguin/tools/tool_manager.py\", line 542, in search_workspace\n    results = self.code_indexer.search_code(query, max_results)\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/maximusputnam/Documents/code/Penguin/penguin/penguin/tools/workspace_search.py\", line 135, in search_code\n    response = self.ollama_client.embeddings(\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/maximusputnam/miniconda3/lib/python3.12/site-packages/ollama/_client.py\", line 379, in embeddings\n    return self._request(\n           ^^^^^^^^^^^^^^\n  File \"/Users/maximusputnam/miniconda3/lib/python3.12/site-packages/ollama/_client.py\", line 177, in _request\n    return cls(**self._request_raw(*args, **kwargs).json())\n                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/Users/maximusputnam/miniconda3/lib/python3.12/site-packages/ollama/_client.py\", line 122, in _request_raw\n    raise ResponseError(e.response.text, e.response.status_code) from None\nollama._types.ResponseError: model \"nomic-embed-text\" not found, try pulling it first\n",
+  "context": "Error searching workspace: model \"nomic-embed-text\" not found, try pulling it first"
+}

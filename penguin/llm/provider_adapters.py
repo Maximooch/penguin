@@ -84,14 +84,34 @@ class LiteLLMAdapter(ProviderAdapter):
         return [{**msg, 'content': str(msg['content'])} for msg in messages]
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
-        if isinstance(response, dict) and 'choices' in response:
-            return response['choices'][0]['message']['content'], []
-        elif hasattr(response, 'choices') and len(response.choices) > 0:
-            return response.choices[0].message.content, []
-        elif isinstance(response, str):
-            return response, []
-        else:
-            raise AttributeError(f"Unexpected response structure from LiteLLM API: {response}")
+        """
+        Process response from LiteLLM, handling different response formats
+        """
+        try:
+            # Handle dictionary response
+            if isinstance(response, dict):
+                if 'choices' in response:
+                    return response['choices'][0]['message']['content'], []
+                return response.get('content', str(response)), []
+            
+            # Handle LiteLLM response object
+            if hasattr(response, 'choices') and len(response.choices) > 0:
+                if hasattr(response.choices[0], 'message'):
+                    return response.choices[0].message.content, []
+                if hasattr(response.choices[0], 'text'):
+                    return response.choices[0].text, []
+            
+            # Handle string response (some providers like Deepseek might return direct string)
+            if isinstance(response, str):
+                return response, []
+                
+            # If we can't handle the response format, convert to string
+            return str(response), []
+            
+        except Exception as e:
+            logging.error(f"Error processing LiteLLM response: {str(e)}")
+            # Return the raw response as string if we can't process it
+            return str(response), []
 
 class AnthropicAdapter(ProviderAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -133,11 +153,56 @@ class OllamaAdapter(ProviderAdapter):
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
         return response['message']['content'], []
 
+class DeepseekAdapter(ProviderAdapter):
+    def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Format messages for Deepseek API - uses OpenAI-compatible format
+        """
+        formatted_messages = []
+        for message in messages:
+            content = message.get('content', '')
+            
+            # Handle list-type content (like image messages)
+            if isinstance(content, list):
+                # Ensure each content part has proper format
+                formatted_content = []
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get('type') == 'text':
+                            formatted_content.append(part.get('text', ''))
+                        elif part.get('type') == 'image_url':
+                            # Deepseek supports image URLs in OpenAI format
+                            formatted_content.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": part.get('image_url', {}).get('url', '')
+                                }
+                            })
+                content = formatted_content
+            
+            formatted_messages.append({
+                'role': message.get('role', 'user'),
+                'content': content
+            })
+        
+        return formatted_messages
+
+    def process_response(self, response: Any) -> tuple[str, List[Any]]:
+        """
+        Process Deepseek API response - follows OpenAI format
+        """
+        if isinstance(response, dict):
+            if 'choices' in response:
+                return response['choices'][0]['message']['content'], []
+            return response.get('content', ''), []
+        return str(response), []
+
 def get_provider_adapter(provider: str, model_config: ModelConfig) -> ProviderAdapter:
     adapters = {
         "openai": OpenAIAdapter(model_config),
         "litellm": LiteLLMAdapter(model_config),
         "anthropic": AnthropicAdapter(model_config),
         "ollama": OllamaAdapter(model_config),
+        "deepseek": DeepseekAdapter(model_config),
     }
     return adapters.get(provider.lower(), LiteLLMAdapter(model_config))  # Default to LiteLLMAdapter if provider not found

@@ -17,6 +17,7 @@ import asyncio
 from utils.process_manager import ProcessManager
 from config import WORKSPACE_PATH  # Add this import
 from local_task.manager import ProjectManager
+from datetime import datetime
 logger = logging.getLogger(__name__)
 
 class ActionType(Enum):
@@ -496,3 +497,70 @@ class ActionExecutor:
             return self.task_manager.display_dependencies(params.strip())
         except Exception as e:
             return f"Error displaying dependencies: {str(e)}"
+
+    def _context_get(self, params: str) -> str:
+        """Get context for a project or task. Format: project_name/task_name"""
+        try:
+            # First try to find project
+            project = self.task_manager._find_project_by_name(params)
+            if project:
+                # List all context files in project's context directory
+                context_files = list(project.context_path.glob("*.md"))
+                if not context_files:
+                    return "No context files found for project."
+                
+                results = [f"Context for project '{params}':"]
+                for cf in context_files:
+                    with cf.open('r') as f:
+                        content = f.read()
+                    results.append(f"\n--- {cf.name} ---\n{content}")
+                return "\n".join(results)
+            
+            # If not found, try to find task
+            task = self.task_manager._find_task_by_name(params)
+            if task:
+                if not task.metadata.get('context'):
+                    return f"No context found for task '{params}'"
+                return f"Context for task '{params}':\n{task.metadata['context']}"
+                
+            return f"No project or task found with name: {params}"
+            
+        except Exception as e:
+            return f"Error getting context: {str(e)}"
+
+    def _context_add(self, params: str) -> str:
+        """Add context to project/task. Format: name:content[:type]"""
+        try:
+            parts = params.split(':', 2)
+            if len(parts) < 2:
+                return "Error: Invalid format. Use name:content[:type]"
+                
+            name, content = parts[0:2]
+            context_type = parts[2] if len(parts) > 2 else "notes"
+            
+            # Try project first
+            project = self.task_manager._find_project_by_name(name)
+            if project:
+                context_file = self.task_manager.add_context(
+                    project.id, 
+                    content, 
+                    context_type
+                )
+                return f"Added context to project '{name}': {context_file}"
+            
+            # Try task
+            task = self.task_manager._find_task_by_name(name)
+            if task:
+                if 'context' not in task.metadata:
+                    task.metadata['context'] = []
+                task.metadata['context'].append({
+                    'type': context_type,
+                    'content': content,
+                    'added_at': datetime.now().isoformat()
+                })
+                return f"Added context to task '{name}'"
+                
+            return f"No project or task found with name: {name}"
+            
+        except Exception as e:
+            return f"Error adding context: {str(e)}"

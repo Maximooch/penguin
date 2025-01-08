@@ -18,13 +18,12 @@ from system_prompt import SYSTEM_PROMPT
 import datetime
 from run_mode import RunMode
 from system.conversation_menu import ConversationMenu, ConversationSummary
-from system.conversation import parse_iso_datetime  # Add this import
+from system.conversation import parse_iso_datetime 
 
 app = typer.Typer(help="Penguin AI Assistant")
 console = Console()
 
 class PenguinCLI:
-    # Color constants matching prompt_ui.py
     USER_COLOR = "cyan"
     PENGUIN_COLOR = "blue"
     TOOL_COLOR = "yellow"
@@ -33,6 +32,7 @@ class PenguinCLI:
 
     def __init__(self, core):
         self.core = core
+        self.in_247_mode = False
         self.message_count = 0
         self.console = Console()
         self.conversation_menu = ConversationMenu(self.console)
@@ -150,10 +150,29 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                         description = command_parts[2].split(' ', 1)[1] if len(command_parts) > 2 and ' ' in command_parts[2] else ""
 
                         try:
+                            # Check both continuous mode states
+                            is_continuous = (
+                                getattr(self.core, '_continuous_mode', False) or 
+                                getattr(self.core.run_mode, 'continuous_mode', False) if hasattr(self.core, 'run_mode') else False
+                            )
+                            
                             if action == 'create':
                                 response = self.core.project_manager.create_task(name, description)
                             elif action == 'complete':
                                 response = self.core.project_manager.complete_task(name)
+                                self.display_message(f"[DEBUG] Task completion - continuous mode: {is_continuous}")
+                                
+                                if response["status"] == "completed":
+                                    self.display_message(response['result'], "system")
+                                    # Only continue if either mode is active
+                                    if is_continuous:
+                                        self.display_message("[DEBUG] Continuous mode active, continuing")
+                                        continue
+                                    else:
+                                        self.display_message("[DEBUG] No continuous mode active, ending")
+                                else:
+                                    self.display_message(f"Task completion error: {response['result']}", "error")
+                                    continue
                             elif action == 'status':
                                 response = self.core.project_manager.get_task_status(name)
                             else:
@@ -223,19 +242,39 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
 
                     # Handle /run command
                     if command == 'run':
-                        if len(command_parts) < 2:  # We just need the task name
+                        if len(command_parts) < 2:
                             self.display_message(
-                                "Usage: /run <task_name> [description]\n"
+                                "Usage: /run <task_name> [description] [--continuous]\n"
                                 "Examples:\n"
-                                "  Run existing task: /run setup-project\n"
-                                "  Create and run new task: /run new-task 'Set up the initial project structure'", 
+                                "  Run single task: /run setup-project\n"
+                                "  Run continuous mode: /run --continuous\n"
+                                "  Run with time limit: /run --continuous --time 5", 
                                 "system"
                             )
                             continue
                             
-                        name = command_parts[1]
-                        description = ' '.join(command_parts[2:]) if len(command_parts) > 2 else None
-                        await self.core.start_run_mode(name, description)
+                        # Parse continuous mode flags
+                        continuous = "--continuous" in command_parts
+                        time_limit = None
+                        
+                        try:
+                            if "--time" in command_parts:
+                                time_index = command_parts.index("--time")
+                                if len(command_parts) > time_index + 1:
+                                    time_limit = int(command_parts[time_index + 1])
+                        except ValueError:
+                            self.display_message("Invalid time limit format. Using default.", "error")
+
+                        if continuous:
+                            # Start continuous mode
+                            run_mode = RunMode(self.core)
+                            self.display_message("Starting continuous mode...", "system")
+                            await run_mode.start_continuous()
+                        else:
+                            # Regular single task execution
+                            name = command_parts[1]
+                            description = ' '.join(command_parts[2:]) if len(command_parts) > 2 else None
+                            await self.core.start_run_mode(name, description)
                         continue
 
                 # Process regular input and get response
