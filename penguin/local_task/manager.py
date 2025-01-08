@@ -67,11 +67,14 @@ class Task:
         due_date: Optional due date in ISO format
         progress: Task completion percentage (0-100)
         metadata: Additional task-specific metadata
+        review_notes: Optional notes from human review
+        reviewed_by: Optional name of reviewer
+        reviewed_at: Optional ISO format timestamp of review
     """
     id: str
     title: str
     description: str
-    status: str  # active, completed, archived
+    status: str  # 'active', 'cancelled', 'failed', 'pending_review', 'completed', 'archived'
     created_at: str
     updated_at: str
     priority: int
@@ -81,6 +84,23 @@ class Task:
     due_date: Optional[str] = None
     progress: int = 0
     metadata: Dict = field(default_factory=dict)
+    review_notes: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[str] = None
+
+    def mark_pending_review(self, notes: str) -> None:
+        """Mark task as pending human review"""
+        self.status = "pending_review"
+        self.updated_at = datetime.now().isoformat()
+        self.review_notes = notes
+
+    def approve(self, reviewer: str, notes: Optional[str] = None) -> None:
+        """Approve task completion"""
+        self.status = "completed"
+        self.reviewed_by = reviewer
+        self.reviewed_at = datetime.now().isoformat()
+        if notes:
+            self.review_notes = notes
 
 @dataclass
 class Project:
@@ -135,6 +155,7 @@ class ProjectManager:
         self.workspace_root = Path(workspace_root)
         self.projects_dir = self.workspace_root / "projects"
         self.data_file = self.workspace_root / "projects_and_tasks.json"
+        self.workspace_file = self.workspace_root / "independent_tasks.json"
         self.console = Console()
         
         # Add debug logging
@@ -970,7 +991,8 @@ class ProjectManager:
                 project = self._find_project_by_name(project_name)
                 if not project:
                     raise ValueError(f"Project not found: {project_name}")
-                task = self._create_project_task(project, name, description)
+                # Use _create_project_task instead of _create_task
+                task = self._create_project_task(project.id, name, description)
             else:
                 # Create independent task
                 task = self._create_independent_task(name, description)
@@ -996,27 +1018,90 @@ class ProjectManager:
             }
 
     def complete_task(self, name: str) -> Dict[str, Any]:
-        """Complete a task by name"""
+        """Complete a task and return status information"""
         try:
-            self.complete(name)  # Using existing complete method
-            self._save_data()  # Force immediate save
+            task = self._find_task_by_name(name)
+            if not task:
+                return {
+                    "status": "error",
+                    "result": f"No task found with name: {name}",
+                    "metadata": None
+                }
+
+            # Update task state
+            task.status = "completed"
+            task.updated_at = datetime.now().isoformat()
             
+            # Save changes
+            if task.project_id:
+                self._save_data()
+            else:
+                self._save_independent_task(task)
+            
+            # Return completion status with metadata
             return {
-                "action": "task_complete",
-                "result": f"Completed task: {name}",
-                "status": "completed"
+                "status": "completed",
+                "result": f"Task '{name}' completed successfully",
+                "metadata": {
+                    "task_id": task.id,
+                    "project_id": task.project_id,
+                    "continuous_mode": task.metadata.get("continuous_mode", False) if task.metadata else False,
+                    "completion_time": datetime.now().isoformat()
+                }
             }
+            
         except Exception as e:
             error_handler.log_error(e, context={
                 "component": "project_manager",
                 "method": "complete_task",
-                "name": name
+                "task_name": name
             })
             return {
-                "action": "task_complete",
+                "status": "error",
                 "result": f"Error completing task: {str(e)}",
-                "status": "error"
+                "metadata": None
             }
+
+    def _save_independent_tasks(self) -> None:
+        """Save independent tasks to the workspace"""
+        try:
+            data = {
+                "independent_tasks": {
+                    task_id: self._task_to_dict(task)
+                    for task_id, task in self.independent_tasks.items()
+                }
+            }
+            
+            with open(self.workspace_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            
+        except Exception as e:
+            error_handler.log_error(e, context={
+                "component": "project_manager",
+                "method": "_save_independent_tasks"
+            })
+            raise
+
+    def _task_to_dict(self, task: Task) -> Dict[str, Any]:
+        """Convert a Task object to a dictionary for serialization"""
+        return {
+            "id": task.id,
+            "title": task.title,
+            "description": task.description,
+            "status": task.status,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+            "priority": task.priority,
+            "project_id": task.project_id,
+            "tags": task.tags if hasattr(task, 'tags') else [],
+            "dependencies": task.dependencies if hasattr(task, 'dependencies') else [],
+            "due_date": task.due_date if hasattr(task, 'due_date') else None,
+            "progress": task.progress if hasattr(task, 'progress') else 0,
+            "metadata": task.metadata if hasattr(task, 'metadata') else {},
+            "review_notes": task.review_notes if hasattr(task, 'review_notes') else None,
+            "reviewed_by": task.reviewed_by if hasattr(task, 'reviewed_by') else None,
+            "reviewed_at": task.reviewed_at if hasattr(task, 'reviewed_at') else None
+        }
 
     def create_project(self, name: str, description: str) -> Dict[str, Any]:
         """Create a new project"""
@@ -1099,3 +1184,104 @@ class ProjectManager:
                 "result": f"Error getting task status: {str(e)}",
                 "status": "error"
             }
+
+    async def get_next_task(self) -> Optional[Dict[str, Any]]:
+        """
+        Get next highest priority active task.
+        
+        Returns the active task with:
+        1. Lowest priority number (highest priority)
+        2. If same priority, most recently created
+        """
+        logger.debug("Getting next task...")
+        
+        # Collect all active tasks from both independent and project tasks
+        active_tasks = []
+        
+        # Add independent tasks
+        for task in self.independent_tasks.values():
+            if task.status == "active":
+                logger.debug(f"Found active independent task: {task.title} (priority: {task.priority}, created: {task.created_at})")
+                active_tasks.append(task)
+        
+        # Add project tasks
+        for project in self.projects.values():
+            for task in project.tasks.values():
+                if task.status == "active":
+                    logger.debug(f"Found active project task: {task.title} (priority: {task.priority}, created: {task.created_at})")
+                    active_tasks.append(task)
+        
+        if active_tasks:
+            # Sort by priority (lower number = higher priority)
+            # For same priority, use newer tasks first (reverse chronological order)
+            next_task = max(active_tasks, 
+                           key=lambda t: (-t.priority, t.created_at))
+            
+            logger.debug(f"Selected next task: {next_task.title} (priority: {next_task.priority}, created: {next_task.created_at})")
+            
+            return {
+                "title": next_task.title,
+                "description": next_task.description,
+                "id": next_task.id,
+                "project_id": next_task.project_id,
+                "priority": next_task.priority,
+                "metadata": next_task.metadata if hasattr(next_task, 'metadata') else {},
+                "status": next_task.status,
+                "progress": next_task.progress if hasattr(next_task, 'progress') else 0,
+                "due_date": next_task.due_date if hasattr(next_task, 'due_date') else None
+            }
+        
+        logger.debug("No active tasks found")
+        return None
+
+    def get_task_context(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Get context for a task by ID"""
+        # Search independent tasks
+        if task_id in self.independent_tasks:
+            task = self.independent_tasks[task_id]
+            return task.metadata if hasattr(task, 'metadata') else None
+        
+        # Search project tasks
+        for project in self.projects.values():
+            if task_id in project.tasks:
+                task = project.tasks[task_id]
+                return task.metadata if hasattr(task, 'metadata') else None
+            
+        return None
+
+    # Why is this code here?
+
+    # async def _execute_task(self, name: str, description: str) -> None:
+    #     """Execute a task with just description"""
+    #     try:
+    #         task_prompt = (
+    #             f"Execute task: {name}\n"
+    #             f"Description: {description}\n"  # Use description for task context
+    #             f"Respond with {self.TASK_COMPLETION_PHRASE} when finished."
+    #         )
+            
+    #         await self.core.process_input({"text": task_prompt})
+            
+    #     except Exception as e:
+    #         logger.error(f"Error in task execution: {str(e)}")
+    #         self._display_message(f"Error: {str(e)}", "error")
+
+    def _create_project_task(self, project_id: str, name: str, description: str) -> Task:
+        """Create a task within a project"""
+        task = Task(
+            id=self._generate_id(name),
+            title=name,
+            description=description,
+            status="active",
+            created_at=datetime.now().isoformat(),
+            updated_at=datetime.now().isoformat(),
+            priority=1,
+            project_id=project_id
+        )
+        
+        if project_id in self.projects:
+            self.projects[project_id].tasks[task.id] = task
+            self._save_data()
+            return task
+        
+        raise ValueError(f"Project {project_id} not found")

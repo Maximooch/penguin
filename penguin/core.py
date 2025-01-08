@@ -13,6 +13,12 @@ The core acts primarily as a coordinator, delegating specific functionality
 to specialized systems while maintaining overall state and flow control.
 """
 
+# TODO: Have conversation loading things here. 
+# Conversation.py should or may have something similar to OpenAI's threads. Long term thing.
+
+# TODO: Some sort of interface to support things beyond CLI. Web, Core-library, etc. 
+
+
 from typing import Dict, List, Optional, Tuple, Any, Callable, Generator, AsyncGenerator
 import logging
 import os
@@ -86,6 +92,7 @@ class PenguinCore:
             disable_diagnostics()
         
         # Initialize conversation system
+        # Why is it initializing tool manager, diagnostics, and base_path here?
         self.conversation_system = ConversationSystem(
             tool_manager=self.tool_manager,
             diagnostics=diagnostics,
@@ -93,6 +100,7 @@ class PenguinCore:
         )
         
         # Initialize action executor with project manager
+        # Why is it initializing task_manager here?
         self.action_executor = ActionExecutor(
             tool_manager=self.tool_manager,
             task_manager=self.project_manager
@@ -100,6 +108,7 @@ class PenguinCore:
         self.messages = []
         
         # Initialize core systems
+        # It's not really using api_client, seems like a duplication, until it's actually used.
         self.cognition = CognitionSystem(
             api_client=self.api_client,
             diagnostics=diagnostics
@@ -108,6 +117,11 @@ class PenguinCore:
         # State
         self.initialized = True
         logger.info("PenguinCore initialized successfully")
+        
+        # Ensure error log directory exists
+        Path("errors_log").mkdir(exist_ok=True)
+        
+        self._continuous_mode = False
 
     def _setup_diagnostics(self):
         """Initialize diagnostics based on config"""
@@ -127,6 +141,7 @@ class PenguinCore:
 
     def reset_context(self):
         """Reset context and diagnostics"""
+        # What if this wasn't reset at the end of every session, to help with long term memory?
         diagnostics.reset()
         self.messages = []
         self._interrupted = False
@@ -165,7 +180,8 @@ class PenguinCore:
             self.api_client.set_system_prompt(prompt)
 
     def get_system_message(self, current_iteration: Optional[int] = None, 
-                          max_iterations: Optional[int] = None) -> str:
+        max_iterations: Optional[int] = None) -> str:
+        
         """Get the system message including iteration info if provided."""
         message = self.system_prompt
         if current_iteration is not None and max_iterations is not None:
@@ -423,8 +439,7 @@ class PenguinCore:
     ) -> None:
         """
         Start autonomous run mode for executing a task.
-        
-        Args:
+                Args:
             name: Name of the task (existing or new)
             description: Optional description if creating a new task
             context: Optional additional context or parameters
@@ -432,13 +447,34 @@ class PenguinCore:
         try:
             # Initialize and start run mode
             run_mode = RunMode(self)
-            await run_mode.start(name, description, context)
             
-            # Mark task as complete if run mode finished successfully
-            if not run_mode._interrupted:
-                await self.complete_task(name)
-                
+            # Set continuous mode flag if in continuous mode
+            is_continuous = '--continuous' in (context or {})
+            self._continuous_mode = is_continuous
+            run_mode.continuous_mode = is_continuous
+            
+            # Add debug logging
+            logger.debug(f"Starting run mode - continuous: {is_continuous}")
+            
+            # Start run mode and wait for completion
+            status = await run_mode.start(name, description, context)
+            
+            # Handle completion status
+            if status and status.get("status") == "error":
+                logger.error(f"Run mode error: {status.get('message')}")
+                raise Exception(status.get("message", "Unknown run mode error"))
+            
+            # Only reset continuous mode if run mode has properly cleaned up
+            if not run_mode.continuous_mode:
+                self._continuous_mode = False
+                logger.debug("Continuous mode reset")
+                # traceback 
+                traceback.print_exc()
+            
         except Exception as e:
+            # Only reset continuous mode on error if run mode has cleaned up
+            if not getattr(run_mode, 'continuous_mode', False):
+                self._continuous_mode = False
             error_handler.log_error(e, context={
                 "component": "core",
                 "method": "start_run_mode",

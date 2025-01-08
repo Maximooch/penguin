@@ -9,7 +9,6 @@ model:
 api:
   base_url: "https://api.anthropic.com/v1/messages"
 
-
 diagnostics:
   enabled: false  # Global switch for diagnostics
   max_context_tokens: 200000

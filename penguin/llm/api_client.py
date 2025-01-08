@@ -1,4 +1,10 @@
 from typing import List, Dict, Any, Optional, Union
+
+# TODO: decouple litellm from api_client. 
+# TODO: greatly simplify api_client while maintaining full functionality
+# TODO: add streaming support
+# TODO: add support for images, files, audio, and video
+
 from litellm import acompletion, completion # type: ignore
 from .model_config import ModelConfig
 from .provider_adapters import get_provider_adapter
@@ -127,15 +133,23 @@ class APIClient:
             self.logger.debug(f"Sending formatted messages: {formatted_messages}")
             
             # Make the API call asynchronously
-            if self.model_config.use_assistants_api:
-                # For assistants API, wrap synchronous call in asyncio.to_thread
-                response = await asyncio.to_thread(completion, **completion_params)
-            else:
-                # For regular API, use async call
-                response = await acompletion(**completion_params)
+            try:
+                if self.model_config.use_assistants_api:
+                    # For assistants API, wrap synchronous call in asyncio.to_thread
+                    response = await asyncio.to_thread(completion, **completion_params)
+                else:
+                    # For regular API, use async call
+                    response = await acompletion(**completion_params)
                 
-            return response
-            
+                # Log the raw response for debugging
+                self.logger.debug(f"Raw API response: {response}")
+                
+                return response
+                
+            except Exception as e:
+                self.logger.error(f"API call error: {str(e)}")
+                raise
+                
         except Exception as e:
             error_message = f"LLM API error: {str(e)}"
             self.logger.error(error_message)

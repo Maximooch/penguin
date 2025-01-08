@@ -1,0 +1,10 @@
+{
+  "timestamp": "2025-01-01T13:51:49.457716",
+  "error_type": "KeyboardInterrupt",
+  "error_message": "",
+  "traceback": "NoneType: None\n",
+  "context": {
+    "type": "KeyboardInterrupt",
+    "traceback": "  File \"/Users/maximusputnam/Documents/code/Penguin/penguin/penguin/main.py\", line 219, in <module>\n    asyncio.run(main())\n  File \"/Users/maximusputnam/miniconda3/lib/python3.12/asyncio/runners.py\", line 194, in run\n    return runner.run(main)\n           ^^^^^^^^^^^^^^^^\n  File \"/Users/maximusputnam/miniconda3/lib/python3.12/asyncio/runners.py\", line 123, in run\n    raise KeyboardInterrupt()\n"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "timestamp": "2025-01-07T22:59:50.704958",
+  "error_type": "AttributeError",
+  "message": "'ProjectManager' object has no attribute '_save_independent_task'",
+  "traceback": "Traceback (most recent call last):\n  File \"/Users/maximusputnam/Documents/code/Penguin/penguin/penguin/local_task/manager.py\", line 1022, in complete_task\n    self.complete(name)  # Using existing complete method\n    ^^^^^^^^^^^^^^^^^^^\n  File \"/Users/maximusputnam/Documents/code/Penguin/penguin/penguin/local_task/manager.py\", line 262, in complete\n    self._save_independent_task(task)\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAttributeError: 'ProjectManager' object has no attribute '_save_independent_task'. Did you mean: '_create_independent_task'?\n",
+  "context": {
+    "component": "project_manager",
+    "method": "complete_task",
+    "name": "Complete Me"
+  },
+  "severity": "ERROR"
+}
