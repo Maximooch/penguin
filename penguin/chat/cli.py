@@ -19,6 +19,7 @@ import datetime
 from run_mode import RunMode
 from system.conversation_menu import ConversationMenu, ConversationSummary
 from system.conversation import parse_iso_datetime 
+import traceback
 
 app = typer.Typer(help="Penguin AI Assistant")
 console = Console()
@@ -155,21 +156,21 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                                 getattr(self.core, '_continuous_mode', False) or 
                                 getattr(self.core.run_mode, 'continuous_mode', False) if hasattr(self.core, 'run_mode') else False
                             )
+                            self.display_message(f"[DEBUG] Continuous mode state: {is_continuous}", "system")
                             
                             if action == 'create':
                                 response = self.core.project_manager.create_task(name, description)
                             elif action == 'complete':
                                 response = self.core.project_manager.complete_task(name)
-                                self.display_message(f"[DEBUG] Task completion - continuous mode: {is_continuous}")
+                                self.display_message(f"[DEBUG] Task completion response: {response}", "system")
                                 
                                 if response["status"] == "completed":
                                     self.display_message(response['result'], "system")
-                                    # Only continue if either mode is active
                                     if is_continuous:
-                                        self.display_message("[DEBUG] Continuous mode active, continuing")
+                                        self.display_message("[DEBUG] Continuous mode active, continuing", "system")
                                         continue
                                     else:
-                                        self.display_message("[DEBUG] No continuous mode active, ending")
+                                        self.display_message("[DEBUG] Task completed, no continuous mode", "system")
                                 else:
                                     self.display_message(f"Task completion error: {response['result']}", "error")
                                     continue
@@ -184,7 +185,8 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                                     self.display_message(response['result'], "system")
                             continue
                         except Exception as e:
-                            self.display_message(f"Error with task command: {str(e)}", "error")
+                            self.display_message(f"[DEBUG] Task command error: {str(e)}", "error")
+                            self.display_message(f"[DEBUG] Traceback:\n{traceback.format_exc()}", "error")
                             continue
 
                     # Handle /project commands
@@ -244,17 +246,18 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     if command == 'run':
                         if len(command_parts) < 2:
                             self.display_message(
-                                "Usage: /run <task_name> [description] [--continuous]\n"
+                                "Usage: /run <task_name> [description] [--247]\n"
                                 "Examples:\n"
                                 "  Run single task: /run setup-project\n"
-                                "  Run continuous mode: /run --continuous\n"
-                                "  Run with time limit: /run --continuous --time 5", 
+                                "  Run 24/7 mode: /run --247\n"
+                                "  Run with time limit: /run --247 --time 5\n"
+                                "\nNote: --247 enables continuous operation mode", 
                                 "system"
                             )
                             continue
                             
                         # Parse continuous mode flags
-                        continuous = "--continuous" in command_parts
+                        continuous = "--247" in command_parts
                         time_limit = None
                         
                         try:
@@ -268,12 +271,14 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                         if continuous:
                             # Start continuous mode
                             run_mode = RunMode(self.core)
-                            self.display_message("Starting continuous mode...", "system")
+                            self.display_message("[DEBUG] Initializing 24/7 operation mode", "system")
+                            self.display_message("[DEBUG] Time limit: " + str(time_limit) if time_limit else "None", "system")
                             await run_mode.start_continuous()
                         else:
                             # Regular single task execution
                             name = command_parts[1]
                             description = ' '.join(command_parts[2:]) if len(command_parts) > 2 else None
+                            self.display_message(f"[DEBUG] Starting task: {name}", "system")
                             await self.core.start_run_mode(name, description)
                         continue
 
@@ -297,10 +302,13 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                 self.message_count += 1
 
             except KeyboardInterrupt:
+                self.display_message("[DEBUG] Keyboard interrupt received", "system")
                 break
             except Exception as e:
-                console.print(f"[red]Error: {str(e)}[/red]")
+                self.display_message(f"[DEBUG] Chat loop error: {str(e)}", "error")
+                self.display_message(f"[DEBUG] Traceback:\n{traceback.format_exc()}", "error")
 
+        self.display_message("[DEBUG] Exiting chat loop", "system")
         console.print("\nGoodbye! 👋")
 
     async def handle_conversation_command(self, command_parts: List[str]) -> None:
