@@ -48,7 +48,9 @@ from utils.errors import error_handler
 # Configuration
 # from .config import Config
 from config import (
-    TASK_COMPLETION_PHRASE, 
+    TASK_COMPLETION_PHRASE,
+    CONTINUOUS_COMPLETION_PHRASE,
+    EMERGENCY_STOP_PHRASE,
     MAX_TASK_ITERATIONS,
     Config,
     DEFAULT_MODEL,
@@ -403,7 +405,8 @@ class PenguinCore:
     async def execute_action(self, action) -> Dict[str, Any]:
         """Execute an action and return structured result"""
         try:
-            result = await super().execute_action(action)
+            # result = await super().execute_action(action)
+            result = await self.action_executor.execute_action(action)
             return {
                 "action": action.action_type.value,
                 "result": str(result) if result is not None else "",
@@ -429,13 +432,13 @@ class PenguinCore:
         self.tool_manager.reset()
         self.action_executor.reset()
 
-
-
     async def start_run_mode(
-        self, 
-        name: str, 
-        description: Optional[str] = None, 
-        context: Optional[Dict[str, Any]] = None
+        self,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        continuous: bool = False,
+        time_limit: Optional[int] = None
     ) -> None:
         """
         Start autonomous run mode for executing a task.
@@ -443,38 +446,28 @@ class PenguinCore:
             name: Name of the task (existing or new)
             description: Optional description if creating a new task
             context: Optional additional context or parameters
+            continuous: Whether to run in continuous mode
+            time_limit: Optional time limit in minutes
         """
         try:
-            # Initialize and start run mode
-            run_mode = RunMode(self)
-            
-            # Set continuous mode flag if in continuous mode
-            is_continuous = '--continuous' in (context or {})
-            self._continuous_mode = is_continuous
-            run_mode.continuous_mode = is_continuous
-            
-            # Add debug logging
-            logger.debug(f"Starting run mode - continuous: {is_continuous}")
-            
-            # Start run mode and wait for completion
-            status = await run_mode.start(name, description, context)
-            
-            # Handle completion status
-            if status and status.get("status") == "error":
-                logger.error(f"Run mode error: {status.get('message')}")
-                raise Exception(status.get("message", "Unknown run mode error"))
-            
-            # Only reset continuous mode if run mode has properly cleaned up
-            if not run_mode.continuous_mode:
-                self._continuous_mode = False
-                logger.debug("Continuous mode reset")
-                # traceback 
-                traceback.print_exc()
-            
+            run_mode = RunMode(self, time_limit=time_limit)
+            self._continuous_mode = continuous
+            run_mode.continuous_mode = continuous
+
+            # Add run mode start to conversation
+            self.conversation_system.add_message(
+                "system",
+                f"Starting {'24/7' if continuous else 'task'} mode: {name if name else 'No specific task'}"
+            )
+
+            if continuous:
+                await run_mode.start_continuous()
+            else:
+                await run_mode.execute_task(name, description)
+
         except Exception as e:
-            # Only reset continuous mode on error if run mode has cleaned up
-            if not getattr(run_mode, 'continuous_mode', False):
-                self._continuous_mode = False
+            # Reset continuous mode and cleanup
+            self._continuous_mode = False
             error_handler.log_error(e, context={
                 "component": "core",
                 "method": "start_run_mode",
@@ -483,3 +476,7 @@ class PenguinCore:
                 "context": context
             })
             raise
+        finally:
+            # Ensure state is cleaned up
+            if not continuous:
+                self._continuous_mode = False

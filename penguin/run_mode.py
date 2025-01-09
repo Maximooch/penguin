@@ -10,12 +10,18 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass
 import asyncio
 import traceback
+import json
 
 from rich.console import Console # type: ignore
 from rich.panel import Panel # type: ignore
 from rich.markdown import Markdown # type: ignore
 
-from config import MAX_TASK_ITERATIONS, TASK_COMPLETION_PHRASE
+from config import (
+    TASK_COMPLETION_PHRASE,
+    CONTINUOUS_COMPLETION_PHRASE,
+    EMERGENCY_STOP_PHRASE,
+    MAX_TASK_ITERATIONS
+)
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -45,6 +51,12 @@ class RunMode:
         self._interrupted = False
         self.continuous_mode = False
         
+        # Initialize timing variables
+        self.start_time = datetime.now()
+        self.last_health_check = datetime.now()
+        self.health_check_interval = timedelta(seconds=30)
+        self.time_limit = timedelta(minutes=time_limit) if time_limit else None
+        
         # Display settings
         self.SYSTEM_COLOR = "yellow"
         self.OUTPUT_COLOR = "green"
@@ -52,15 +64,11 @@ class RunMode:
         
         # Task completion settings
         self.TASK_COMPLETION_PHRASE = TASK_COMPLETION_PHRASE
+        self.CONTINUOUS_COMPLETION_PHRASE = CONTINUOUS_COMPLETION_PHRASE
+        self.EMERGENCY_STOP_PHRASE = EMERGENCY_STOP_PHRASE
         
         self._shutdown_requested = False
-        self.last_health_check = datetime.now()
-        self.health_check_interval = timedelta(minutes=5)
         
-        # Time limit tracking
-        self.start_time = None
-        self.time_limit = timedelta(minutes=time_limit) if time_limit and time_limit > 0 else None
-
     def _display_message(self, message: str, message_type: str = "system") -> None:
         """Display formatted message with consistent styling"""
         if not message:
@@ -229,7 +237,9 @@ class RunMode:
         """Cleanup run mode state"""
         self._interrupted = False
         self.continuous_mode = False
-        self._display_message("Exiting run mode")
+        logger.debug("Cleaning up run mode state")
+        self._display_message(f"Exiting run mode\nDebug: {logger.getEffectiveLevel()}\nTraceback: {traceback.format_stack()}")
+        
 
     async def start_continuous(self) -> None:
         """Start continuous operation mode"""
@@ -255,9 +265,10 @@ class RunMode:
                     self._shutdown_requested = True
                     break
                     
-                if self.core._interrupt_pending:
-                    logger.debug("Interrupt pending, waiting...")
-                    self._display_message("Interrupt pending, waiting...")
+                # Check for interrupts using Core's state
+                if getattr(self.core, '_interrupted', False):
+                    logger.debug("Interrupt detected, waiting...")
+                    self._display_message("Interrupt detected, waiting...")
                     await asyncio.sleep(0.1)
                     continue
                 
@@ -271,39 +282,32 @@ class RunMode:
                     await self._execute_task(
                         next_task["title"],
                         next_task["description"],
-                        {  # Pass all task context
+                        {
                             "id": next_task["id"],
                             "project_id": next_task.get("project_id"),
                             "priority": next_task.get("priority"),
-                            "metadata": next_task.get("metadata"),
+                            "metadata": next_task.get("metadata", {}),
                             "status": next_task.get("status"),
                             "progress": next_task.get("progress"),
                             "due_date": next_task.get("due_date")
                         }
                     )
                 else:
-                    print("\n[DEBUG] No tasks available")
-                    self._display_message("No tasks available")
+                    self._display_message("[DEBUG] No tasks available")
                     await asyncio.sleep(1 if not self.time_limit else 0.1)
                 
                 await self._health_check()
-                # Reduce sleep time for tests
-                await asyncio.sleep(0.1 if self.time_limit else 1)
                 
-            print("\n[DEBUG] Exiting continuous mode main loop")
-            self._display_message("Exiting continuous mode main loop")
+            self._display_message("[DEBUG] Exiting continuous mode main loop")
             
         except KeyboardInterrupt:
-            print("\n[DEBUG] Keyboard interrupt received")
-            self._display_message("Keyboard interrupt received")
+            self._display_message("[DEBUG] Keyboard interrupt received")
             self._shutdown_requested = True
             self._display_message("Initiating graceful shutdown...")
         except Exception as e:
-            print(f"\n[DEBUG] Continuous operation error: {str(e)}")
-            self._display_message(f"Continuous operation error: {str(e)}")
-            print(f"Traceback:\n{traceback.format_exc()}")
-            self._display_message(f"Error: {str(e)}", "error")
+            self._display_message(f"[DEBUG] Continuous operation error: {str(e)}")
             self._display_message(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
+            raise
         finally:
             self._display_message("[DEBUG] Entering graceful shutdown")
             await self._graceful_shutdown()
@@ -340,7 +344,7 @@ class RunMode:
         logger.debug("Graceful shutdown completed")
         self._display_message("Graceful shutdown completed")
 
-    async def _execute_task(self, name: str, description: str, context: Optional[Dict[str, Any]] = None) -> None:
+    async def _execute_task(self, name: str, description: Optional[str] = None, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Execute a task with proper completion handling
         
@@ -357,38 +361,75 @@ class RunMode:
                 - due_date: Optional due date
         """
         try:
-            self._display_message(f"[DEBUG] Starting task execution: {name}")
-            self._display_message(f"[DEBUG] Current RunMode continuous_mode: {self.continuous_mode}")
-            self._display_message(f"[DEBUG] Current Core continuous_mode: {self.core._continuous_mode}")
+            iteration = 0
+            self._display_message(f"Starting task: {name}")
             
-            # Prepare task prompt with rich context
-            task_prompt = [
-                f"Execute task: {name}",
-                f"Description: {description}"
-            ]
+            # Provide default description if none exists
+            task_description = description or f"Complete the task: {name}"
             
-            if context:
-                if context.get("project_id"):
-                    task_prompt.append(f"Project ID: {context['project_id']}")
-                if context.get("priority"):
-                    task_prompt.append(f"Priority: {context['priority']}")
-                if context.get("progress"):
-                    task_prompt.append(f"Current Progress: {context['progress']}%")
-                if context.get("due_date"):
-                    task_prompt.append(f"Due Date: {context['due_date']}")
-                if context.get("metadata"):
-                    task_prompt.append(f"Additional Context: {context['metadata']}")
+            while iteration < self.max_iterations:
+                if self._interrupted:
+                    return {
+                        "status": "interrupted",
+                        "message": "Task execution interrupted by user"
+                    }
                     
-            task_prompt.append(f"Respond with {self.TASK_COMPLETION_PHRASE} when finished.")
-            
-            # Process task through core
-            await self.core.process_input({"text": "\n".join(task_prompt)})
-            response, exit_flag = await self.core.get_response()
-            
-            # Handle task completion with better error checking
-            if not self._interrupted:
-                if exit_flag or self.TASK_COMPLETION_PHRASE in str(response.get("assistant_response", "")):
-                    self._display_message(f"[DEBUG] Task completed: {name}")
+                # Create task prompt
+                task_prompt = (
+                    f"Execute task: {name}\n"
+                    f"Description: {task_description}\n"
+                    "Respond with TASK_COMPLETE when finished."
+                )
+                
+                # Add context if available
+                if context:
+                    task_prompt += f"\nContext: {json.dumps(context, indent=2)}"
+                
+                # Process task through core
+                await self.core.process_input({"text": task_prompt})
+                
+                # Get response from core
+                response, exit_flag = await self.core.get_response(
+                    current_iteration=iteration,
+                    max_iterations=self.max_iterations
+                )
+                
+                # Display Penguin's thoughts
+                if response.get('assistant_response'):
+                    self._display_message(
+                        response['assistant_response'], 
+                        "assistant"
+                    )
+                
+                # Display action results
+                for result in response.get('action_results', []):
+                    self._display_message(
+                        f"{result['action']}: {result['result']}", 
+                        "output" if result['status'] == "completed" else "error"
+                    )
+                
+                # Check completion phrases
+                response_text = str(response.get('assistant_response', ''))
+                
+                if self.EMERGENCY_STOP_PHRASE in response_text:
+                    self._display_message("Emergency stop requested")
+                    return {
+                        "status": "error",
+                        "message": "Emergency stop requested by task"
+                    }
+                    
+                if self.CONTINUOUS_COMPLETION_PHRASE in response_text:
+                    self._display_message("[DEBUG] Continuous mode completion requested")
+                    self.continuous_mode = False
+                    self.core._continuous_mode = False
+                    return {
+                        "status": "completed",
+                        "message": "Continuous mode session completed",
+                        "completion_type": "continuous"
+                    }
+                    
+                if self.TASK_COMPLETION_PHRASE in response_text:
+                    self._display_message(f"[DEBUG] Task completion detected: {name}")
                     result = self.core.project_manager.complete_task(name)
                     
                     # Enhanced state checks and error handling
@@ -400,27 +441,58 @@ class RunMode:
                     
                     if result["status"] == "completed":
                         self._display_message(f"Task completed: {name}", "output")
-                        if not self.continuous_mode and not self.core._continuous_mode:
-                            self._display_message("[DEBUG] Both modes false, requesting shutdown")
-                            self._request_shutdown("Task execution completed")
-                        else:
-                            self._display_message("[DEBUG] Continuous mode active, continuing")
+                        return {
+                            "status": "completed",
+                            "message": f"Task '{name}' completed successfully",
+                            "completion_type": "task",
+                            "metadata": result.get("metadata", {})
+                        }
                     else:
                         error_msg = f"Task completion error: {result.get('result', 'Unknown error')}"
                         self._display_message(f"[DEBUG] {error_msg}")
-                        self._display_message(error_msg, "error")
-                        raise Exception(error_msg)
+                        return {
+                            "status": "error",
+                            "message": error_msg
+                        }
+                
+                # Update iteration counter
+                iteration += 1
+                
+                # Perform health check if needed
+                if datetime.now() - self.last_health_check > self.health_check_interval:
+                    self._display_message("[DEBUG] Performing health check")
+                    self.last_health_check = datetime.now()
                     
+                # Check time limit if set
+                if self.time_limit and datetime.now() - self.start_time > self.time_limit:
+                    return {
+                        "status": "error",
+                        "message": "Task execution time limit exceeded"
+                    }
+                    
+            # Max iterations reached
+            return {
+                "status": "error",
+                "message": f"Max iterations ({self.max_iterations}) reached without completion"
+            }
+                        
         except Exception as e:
             self._display_message(f"[DEBUG] Error in task execution: {str(e)}")
             self._display_message(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
-            raise
+            return {
+                "status": "error",
+                "message": str(e)
+            }
 
-    def _request_shutdown(self, message: str = None):
-        """Request graceful shutdown with optional message"""
-        self._display_message(f"[DEBUG] Shutdown requested: {message}")
-        if message:
-            self._display_message(message)
-        self._display_message(f"[DEBUG] Current continuous_mode state: {self.continuous_mode}")
-        self._shutdown_requested = True
+    # def _request_shutdown(self, message: str = None):
+    #     """Request graceful shutdown with optional message"""
+    #     self._display_message(f"[DEBUG] Shutdown requested: {message}")
+    #     if message:
+    #         self._display_message(message)
+    #     self._display_message(f"[DEBUG] Current continuous_mode state: {self.continuous_mode}")
+    #     self._shutdown_requested = True
+
+
+
+
 
