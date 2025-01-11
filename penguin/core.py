@@ -1,16 +1,101 @@
 """
-PenguinCore acts as the central nervous system for the Penguin AI assistant.
+PenguinCore acts as the central nervous system for the Penguin AI assistant, orchestrating interactions between various subsystems.
 
-This class orchestrates the interaction between various systems:
-- Cognition System: Handles reasoning and response generation
-- Conversation System: Manages message history and formatting
-- Memory System: Handles context and knowledge persistence
-- Processor System: Manages available tools and actions
-- Task System: Handles task and project management
-- Diagnostic System: Monitors performance and usage
+Key Systems:
+- Cognition System: Handles reasoning, decision making, and response generation using LLM models
+- Conversation System: Manages message history, context tracking, and conversation formatting
+- Memory System: Provides persistent storage and retrieval of context, knowledge, and conversation history
+- Processor System: Coordinates tool execution and action handling through:
+    - Tool Manager: Central registry for available tools and capabilities 
+    - Action Executor: Routes and executes actions using appropriate handlers
+    - Notebook Executor: Manages code execution in IPython environments
+- Task System: Handles project and task management, including:
+    - Task creation and status tracking
+    - Project organization and execution
+    - Progress monitoring and reporting
+- Diagnostic System: Monitors and reports on:
+    - Token usage and costs
+    - Performance metrics
+    - Error rates and types
+    - System health indicators
 
-The core acts primarily as a coordinator, delegating specific functionality
-to specialized systems while maintaining overall state and flow control.
+The core acts as a coordinator rather than implementing functionality directly:
+- Maintains overall system state and flow control
+- Routes messages and actions between subsystems
+- Manages initialization and cleanup
+- Handles error conditions and recovery
+- Provides unified interface for external interaction
+
+Key Features:
+- Modular architecture allowing easy extension
+- Robust error handling and logging
+- Configurable diagnostic tracking
+- Support for multiple conversation modes
+- Flexible tool integration system
+- Project and task management capabilities
+
+API Specification:
+
+Core Methods:
+    __init__(
+        config: Optional[Config] = None,
+        api_client: Optional[APIClient] = None, 
+        tool_manager: Optional[ToolManager] = None
+    ) -> None:
+        Initialize PenguinCore with optional config and components
+        
+    async process_message(
+        message: str, 
+        context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        Process a user message and return formatted response
+        
+    async process_input(
+        input_data: Dict[str, Any]
+    ) -> None:
+        Process structured input data including text/images
+        
+    async get_response(
+        current_iteration: Optional[int] = None,
+        max_iterations: Optional[int] = None 
+    ) -> Tuple[Dict[str, Any], bool]:
+        Generate response using conversation context
+        Returns response data and continuation flag
+        
+    async start_run_mode(
+        name: Optional[str] = None,
+        description: Optional[str] = None, 
+        context: Optional[Dict[str, Any]] = None,
+        continuous: bool = False,
+        time_limit: Optional[int] = None
+    ) -> None:
+        Start autonomous run mode for task execution
+
+State Management:
+    reset_context() -> None:
+        Reset conversation context and diagnostics
+        
+    reset_state() -> None: 
+        Reset core state including messages and tools
+        
+    set_system_prompt(prompt: str) -> None:
+        Set system prompt for conversation
+
+Properties:
+    total_tokens_used -> int:
+        Get total tokens used in current session
+        
+    get_token_usage() -> Dict[str, Dict[str, int]]:
+        Get detailed token usage statistics
+
+Usage:
+The core should be initialized with required configuration and subsystems before use.
+It provides high-level methods for message processing, task execution, and system control.
+
+Example:
+    core = PenguinCore(config=config)
+    response = await core.process_message("Hello!")
+    await core.start_run_mode(name="coding_task")
 """
 
 # TODO: Have conversation loading things here. 
