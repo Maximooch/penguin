@@ -115,34 +115,72 @@ class LiteLLMAdapter(ProviderAdapter):
 
 class AnthropicAdapter(ProviderAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Format messages for Anthropic API - combines multiple content parts into a single string
+        to ensure compatibility with Anthropic's API requirements through LiteLLM.
+        """
         formatted_messages = []
         for message in messages:
             content = message.get('content', '')
+            role = message.get('role', 'user')
             
-            # Convert list-type content to string
-            if isinstance(content, list):
-                text_parts = []
+            # Handle image path in message
+            if 'image_path' in message:
+                import base64
+                # Read and encode image
+                with open(message['image_path'], 'rb') as img_file:
+                    encoded_image = base64.b64encode(img_file.read()).decode('utf-8')
+                
+                formatted_content = [
+                    {"type": "text", "text": content},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{encoded_image}"
+                        }
+                    }
+                ]
+                formatted_messages.append({
+                    'role': role,
+                    'content': formatted_content
+                })
+            
+            # Handle list-type content (for existing image URLs)
+            elif isinstance(content, list):
+                formatted_content = []
                 for part in content:
                     if isinstance(part, dict):
                         if part.get('type') == 'text':
-                            text_parts.append(part.get('text', ''))
+                            formatted_content.append({
+                                "type": "text",
+                                "text": part.get('text', '')
+                            })
                         elif part.get('type') == 'image_url':
-                            # Handle image URLs according to Anthropic's format
-                            text_parts.append(f"[Image: {part.get('image_url', {}).get('url', '')}]")
-                content = ' '.join(text_parts)
-            elif isinstance(content, dict):
-                content = str(content)
-                
-            formatted_messages.append({
-                'role': message.get('role', 'user'),
-                'content': content  # Anthropic expects a simple string
-            })
+                            formatted_content.append(part)
+                    else:
+                        formatted_content.append({
+                            "type": "text",
+                            "text": str(part)
+                        })
+                formatted_messages.append({
+                    'role': role,
+                    'content': formatted_content
+                })
+            else:
+                # Handle plain text content
+                formatted_messages.append({
+                    'role': role,
+                    'content': [{"type": "text", "text": str(content)}]
+                })
         
         return formatted_messages
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
+        """Process Anthropic API response"""
         if isinstance(response, dict):
-            return response.get('content', ''), []
+            if 'choices' in response and len(response['choices']) > 0:
+                message = response['choices'][0].get('message', {})
+                return message.get('content', ''), []
         return str(response), []
 
 class OllamaAdapter(ProviderAdapter):
