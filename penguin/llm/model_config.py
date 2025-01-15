@@ -2,7 +2,7 @@ import os
 from typing import Dict, Any, Optional
 
 class ModelConfig:
-    def __init__(self, model: str, provider: str, api_base: str = None, max_tokens: int = None, temperature: float = None, use_assistants_api: bool = False, supports_vision: bool = False):
+    def __init__(self, model: str, provider: str, api_base: str = None, max_tokens: int = None, temperature: float = None, use_assistants_api: bool = False, supports_vision: bool = None):
         self.model = model
         self.provider = provider
         self.api_base = api_base
