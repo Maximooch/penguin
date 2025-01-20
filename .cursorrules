@@ -1,3 +1,23 @@
 The heuristic of 3x the capability from a 1/3 of the complexity is appreciated. I want things that are unreasonably effective.
 
 This is for a bootstrapped startup.
+
+# Coding Guidelines
+
+## 1. Pythonic Practices
+-   **Elegance and Readability:**  Strive for elegant and Pythonic code that is easy to understand and maintain.
+-   **PEP 8 Compliance:**  Adhere to PEP 8 guidelines for code style, with Ruff as the primary linter and formatter.
+-   **Explicit over Implicit:**  Favor explicit code that clearly communicates its intent over implicit, overly concise code.
+-   **Zen of Python:** Keep the Zen of Python in mind when making design decisions.
+
+## 2. Modular Design
+-   **Single Responsibility Principle:** Each module/file should have a well-defined, single responsibility.
+-   **Reusable Components:**  Develop reusable functions and classes, favoring composition over inheritance.
+-   **Package Structure:** Organize code into logical packages and modules.
+
+## 3. Code Quality
+-   **Comprehensive Type Annotations:** All functions, methods, and class members must have type annotations, using the most specific types possible.
+-   **Detailed Docstrings:**  All functions, methods, and classes must have Google-style docstrings, thoroughly explaining their purpose, parameters, return values, and any exceptions raised. Include usage examples where helpful.
+-   **Thorough Unit Testing:** Aim for high test coverage (90% or higher) using `pytest`. Test both common cases and edge cases.
+-   **Robust Exception Handling:**  Use specific exception types, provide informative error messages, and handle exceptions gracefully. Implement custom exception classes when needed. Avoid bare `except` clauses.
+-   **Logging:** Employ the `logging` module judiciously to log important events, warnings, and errors.
