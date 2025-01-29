@@ -2,12 +2,14 @@
 # https://docs.litellm.ai/docs/providers
 
 model:
-  default: "claude-3-5-sonnet-20240620"
-  provider: "anthropic"
+  default: "ollama/deepseek-r1:32b"
+  provider: "ollama"
   use_assistants_api: false # Add this line to toggle OpenAI Assistants API usage
 
 api:
-  base_url: "https://api.anthropic.com/v1/messages"
+  base_url: "http://127.0.0.1:11434"
+  # If you're using ollama, set the base_url to the ollama server url, which is usually http://127.0.0.1:11434
+  # It'll tell you if you do `ollama serve` in the terminal.
 
 diagnostics:
   enabled: false  # Global switch for diagnostics
