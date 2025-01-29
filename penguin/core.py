@@ -548,7 +548,7 @@ class PenguinCore:
             if continuous:
                 await run_mode.start_continuous()
             else:
-                await run_mode.execute_task(name, description)
+                await run_mode.start(name=name, description=description, context=context)
 
         except Exception as e:
             # Reset continuous mode and cleanup
