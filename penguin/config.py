@@ -224,3 +224,6 @@ CONVERSATION_CONFIG = {
     'auto_save': True,   # Automatically save conversations
     'save_format': 'json'  # Format to save conversations in
 }
+
+# Add after loading config
+# print("Loaded DEEPSEEK_API_KEY exists:", os.getenv("DEEPSEEK_API_KEY") is not None)  # Debug check
