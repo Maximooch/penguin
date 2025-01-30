@@ -350,6 +350,15 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
             messages = self.core.conversation_system.get_history()
             self.conversation_menu.display_summary(messages)
        
+        elif action == "run":
+            # During task execution
+            await self.core.start_run_mode(command_parts[2], command_parts[3] if len(command_parts) > 3 else None)
+            
+            # After completion
+            conversation = self.core.conversation_system.get_conversation(command_parts[2])
+            conversation.messages.extend(self.core.run_mode_messages)
+            conversation.save()
+       
         else:
             self.display_message(f"Unknown conversation action: {action}", "error")
 
