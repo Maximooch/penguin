@@ -106,11 +106,20 @@ class APIClient:
             Response from the model API
         """
         try:
-            # Add system message if it exists and isn't already present
+            # Handle system prompt compatibility
             if self.system_prompt:
-                has_system_message = any(msg.get("role") == "system" for msg in messages)
-                if not has_system_message:
-                    messages = [{"role": "system", "content": self.system_prompt}] + messages
+                if self.adapter.supports_system_messages():
+                    # Remove existing system messages and add ours first
+                    messages = [msg for msg in messages if msg.get("role") != "system"]
+                    messages.insert(0, {"role": "system", "content": self.system_prompt})
+                else:
+                    # Convert system message to user message with prefix
+                    print(f"Converting system message to user message for provider: {self.adapter.provider}")
+                    messages.insert(0, {
+                        "role": "user",
+                        "content": f"[SYSTEM PROMPT]: {self.system_prompt}"
+                    })
+                    self.logger.debug("Converted system message to user message for provider")
 
             # Format messages using the provider-specific adapter
             formatted_messages = self.adapter.format_messages(messages)
@@ -122,7 +131,11 @@ class APIClient:
                 "max_tokens": max_tokens or self.model_config.max_tokens,
                 "temperature": temperature or self.model_config.temperature,
                 "api_base": self.model_config.api_base,
-            }
+                "headers": {
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                }
+            } # TODO: Get rid of this
             
             # Remove None values
             completion_params = {k: v for k, v in completion_params.items() if v is not None}

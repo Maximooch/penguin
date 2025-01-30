@@ -31,9 +31,23 @@ class ProviderAdapter(ABC):
     def count_tokens(self, text: str) -> int:
         return diagnostics.count_tokens(text)
 
+    def supports_system_messages(self) -> bool:
+        """Return True if provider natively supports system role messages"""
+        return True  # Default to supporting system messages
+
+    @property
+    @abstractmethod
+    def provider(self) -> str:
+        """Return lowercase provider name string"""
+        pass
+
 #TODO: implement streaming abstraction
 
 class OpenAIAdapter(ProviderAdapter):
+    @property
+    def provider(self) -> str:
+        return "openai"
+
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         formatted_messages = []
         for message in messages:
@@ -80,6 +94,10 @@ class OpenAIAdapter(ProviderAdapter):
             return response['choices'][0]['message']['content'], []
 
 class LiteLLMAdapter(ProviderAdapter):
+    @property
+    def provider(self) -> str:
+        return "litellm"
+
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [{**msg, 'content': str(msg['content'])} for msg in messages]
 
@@ -114,6 +132,10 @@ class LiteLLMAdapter(ProviderAdapter):
             return str(response), []
 
 class AnthropicAdapter(ProviderAdapter):
+    @property
+    def provider(self) -> str:
+        return "anthropic"
+
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Format messages for Anthropic API - combines multiple content parts into a single string
@@ -184,6 +206,10 @@ class AnthropicAdapter(ProviderAdapter):
         return str(response), []
 
 class OllamaAdapter(ProviderAdapter):
+    @property
+    def provider(self) -> str:
+        return "ollama"
+
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # Ollama's LLaVA models accept the same format as OpenAI
         return messages
@@ -192,48 +218,53 @@ class OllamaAdapter(ProviderAdapter):
         return response['message']['content'], []
 
 class DeepseekAdapter(ProviderAdapter):
+    @property
+    def provider(self) -> str:
+        return "deepseek"
+
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Format messages for Deepseek API - uses OpenAI-compatible format
-        """
-        formatted_messages = []
-        for message in messages:
-            content = message.get('content', '')
-            
-            # Handle list-type content (like image messages)
-            if isinstance(content, list):
-                # Ensure each content part has proper format
-                formatted_content = []
-                for part in content:
-                    if isinstance(part, dict):
-                        if part.get('type') == 'text':
-                            formatted_content.append(part.get('text', ''))
-                        elif part.get('type') == 'image_url':
-                            # Deepseek supports image URLs in OpenAI format
-                            formatted_content.append({
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": part.get('image_url', {}).get('url', '')
-                                }
-                            })
-                content = formatted_content
-            
-            formatted_messages.append({
-                'role': message.get('role', 'user'),
-                'content': content
-            })
+        # Extract FIRST system message only (Deepseek allows 1 system message at start)
+        system_messages = [msg for msg in messages if msg.get('role') == 'system']
+        other_messages = [msg for msg in messages if msg.get('role') != 'system']
         
-        return formatted_messages
+        formatted = []
+        if system_messages:
+            # Use first system message as-is
+            formatted.append(system_messages[0])
+            # Convert subsequent system messages to user with prefix
+            for extra_system in system_messages[1:]:
+                other_messages.insert(0, {
+                    'role': 'user',
+                    'content': f"[ADDITIONAL SYSTEM CONTEXT]: {extra_system['content']}"
+                })
+        
+        # Process all other messages with strict role alternation
+        current_role = None
+        for msg in other_messages:
+            role = msg.get('role', 'user')
+            content = str(msg.get('content', ''))
+            
+            if role == current_role:
+                # Merge with previous message
+                formatted[-1]['content'] += f"\n{content}"
+            else:
+                formatted.append({'role': role, 'content': content})
+                current_role = role
+                
+        return formatted
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
-        """
-        Process Deepseek API response - follows OpenAI format
-        """
-        if isinstance(response, dict):
-            if 'choices' in response:
-                return response['choices'][0]['message']['content'], []
-            return response.get('content', ''), []
-        return str(response), []
+        """Process Deepseek API response"""
+        try:
+            if hasattr(response, 'choices'):
+                return response.choices[0].message.content, []
+            return str(response), []
+        except Exception as e:
+            logging.error(f"Error processing Deepseek response: {str(e)}")
+            return str(response), []
+
+    def supports_system_messages(self) -> bool:
+        return True  # Now properly supports single system message
 
 def get_provider_adapter(provider: str, model_config: ModelConfig) -> ProviderAdapter:
     adapters = {
