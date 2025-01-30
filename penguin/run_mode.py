@@ -69,9 +69,9 @@ class RunMode:
         
         self._shutdown_requested = False
         
-    def _display_message(self, message: str, message_type: str = "system") -> None:
+    def _display_message(self, message_text: str, message_type: str = "system") -> None:
         """Display formatted message with consistent styling"""
-        if not message:
+        if not message_text:
             return
             
         color = {
@@ -81,12 +81,26 @@ class RunMode:
         }.get(message_type, self.SYSTEM_COLOR)
         
         panel = Panel(
-            Markdown(message),
+            message_text,
             title=f"🐧 RunMode ({message_type})",
             title_align="left",
             border_style=color
         )
         console.print(panel)
+
+        # New message logging logic
+        role_mapping = {
+            "system": "system",
+            "output": "assistant",
+            "error": "system",
+            "debug": "system"
+        }
+        
+        if hasattr(self.core, 'run_mode_messages'):
+            self.core.run_mode_messages.append({
+                "role": role_mapping.get(message_type, "system"),
+                "content": f"[RunMode {message_type}] {message_text}"
+            })
 
     async def start(self, name: str, description: Optional[str] = None, context: Optional[Dict[str, Any]] = None) -> None:
         """
@@ -97,6 +111,8 @@ class RunMode:
             description: Optional description (will be fetched from task if not provided)
             context: Optional additional context or parameters for the task
         """
+        if hasattr(self.core, 'run_mode_messages'):
+            self.core.run_mode_messages.clear()
         try:
             # Get task from project manager
             task = None

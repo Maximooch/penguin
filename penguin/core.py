@@ -209,6 +209,7 @@ class PenguinCore:
         Path("errors_log").mkdir(exist_ok=True)
         
         self._continuous_mode = False
+        self.run_mode_messages = []
 
     def _setup_diagnostics(self):
         """Initialize diagnostics based on config"""
