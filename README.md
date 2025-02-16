@@ -1,3 +1,9 @@
+![Custom](https://img.shields.io/badge/penguin-awesome-blue?style=for-the-badge&logo=python)
+![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![Documentation Status](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://penguin-rho.vercel.app)
+[![Version](https://img.shields.io/badge/version-0.1.0-orange)](https://github.com/maximooch/penguin)
+
 ## Development Status
 
 ⚠️ **Note**: Penguin is under active development. While I  strive for stability, you may encounter occasional issues. Your feedback and contributions are valuable in improving the project.
