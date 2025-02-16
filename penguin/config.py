@@ -158,13 +158,27 @@ class DiagnosticsConfig:
     log_path: Optional[Path] = field(default=None)
 
 @dataclass
+class ModelConfig:
+    default: str = "gpt-4"
+    provider: str = "openai"
+    use_assistants_api: bool = False
+
+@dataclass
+class APIConfig:
+    base_url: Optional[str] = None
+
+@dataclass
 class Config:
-    model_name: Optional[str] = field(default=None)
+    model: ModelConfig = field(default_factory=ModelConfig)
+    api: APIConfig = field(default_factory=APIConfig)
+    workspace_path: Path = field(default_factory=lambda: Path(WORKSPACE_PATH))
     temperature: float = field(default=0.7)
     max_tokens: Optional[int] = field(default=None)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     workspace_dir: Path = field(default_factory=Path.cwd)
-    cache_dir: Path = field(default_factory=lambda: Path(os.getenv('PENGUIN_CACHE_DIR', '~/.cache/penguin')).expanduser())
+    cache_dir: Path = field(
+        default_factory=lambda: Path(os.getenv('PENGUIN_CACHE_DIR', '~/.cache/penguin')).expanduser()
+    )
 
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> 'Config':
@@ -188,20 +202,29 @@ class Config:
                 disable_diagnostics()
             
             return cls(
+                model=ModelConfig(
+                    default=config_data.get('model', {}).get('default', "gpt-4"),
+                    provider=config_data.get('model', {}).get('provider', "openai"),
+                    use_assistants_api=config_data.get('model', {}).get('use_assistants_api', False)
+                ),
+                api=APIConfig(
+                    base_url=config_data.get('api', {}).get('base_url')
+                ),
+                workspace_path=Path(WORKSPACE_PATH),
+                temperature=config_data.get('temperature', 0.7),
+                max_tokens=config_data.get('max_tokens'),
                 diagnostics=diagnostics_config
             )
                 
-        except FileNotFoundError:
-            return cls()
-        except yaml.YAMLError:
-            return cls()
+        except (FileNotFoundError, yaml.YAMLError):
+            return cls()  # Return default config if file not found or invalid
 
     def to_dict(self) -> Dict[str, Any]:
-        if not self.model_name:
+        if not self.model.default:
             raise ValueError("model_name must be specified")
             
         return {
-            "model_name": self.model_name,
+            "model_name": self.model.default,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "diagnostics": {
