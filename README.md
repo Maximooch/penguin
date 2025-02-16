@@ -1,10 +1,49 @@
-![Custom](https://img.shields.io/badge/penguin-awesome-blue?style=for-the-badge&logo=python)
-![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Penguin](https://img.shields.io/badge/🐧-Penguin_AI-00A7E1?style=for-the-badge&logoColor=white)](https://github.com/maximooch/penguin)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Documentation Status](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://penguin-rho.vercel.app)
 [![Version](https://img.shields.io/badge/version-0.1.0-orange)](https://github.com/maximooch/penguin)
 
-## Development Status
+## 📋 Table of Contents
+- [Overview](#overview)
+- [Features](#key-features)
+- [Quick Start](#quick-start)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Architecture](#architecture)
+- [Contributing](#contributing)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
+
+## 🚀 Quick Start
+```bash
+# Clone and install Penguin
+git clone https://github.com/maximooch/penguin.git
+cd penguin
+
+# Install Penguin (recommended with UV)
+pip install -e .
+
+# Set your API key
+cp .env.example .env
+# Edit .env with your API key
+
+# Run Penguin
+penguin  # CLI interface
+# OR
+penguin-web  # Web interface (if installed)
+```
+
+## 🎯 Development Status
+- ✅ Core functionality
+- ✅ Basic CLI interface (penguin)
+- ✅ Model integration (LiteLLM, could be better)
+- 🚧 Advanced features (in progress)
+- 📅 Web interface (penguin-web and Link, planned)
+- 📅 Plugin system (planned)
+
+[View Roadmap →](https://github.com/maximooch/penguin/projects)
 
 ⚠️ **Note**: Penguin is under active development. While I  strive for stability, you may encounter occasional issues. Your feedback and contributions are valuable in improving the project.
 
@@ -115,7 +154,21 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 
 ## License
 
-This project is licensed under the GNU Affero General Public License v3.0 - see the [LICENSE](LICENSE) file for details or visit [https://www.gnu.org/licenses/agpl-3.0.en.html](https://www.gnu.org/licenses/agpl-3.0.en.html) for the full license text.
+Penguin is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+Key points:
+- You must disclose source code when you deploy modified versions
+- Changes must be shared under the same license
+- Network use counts as distribution
+- Include copyright and license notices
+
+For the complete license text, see:
+- [LICENSE](LICENSE) file in this repository
+- [GNU AGPL v3](https://www.gnu.org/licenses/agpl-3.0.en.html) official text
+
+
 
 ## Acknowledgments
 
