@@ -183,7 +183,7 @@ Penguin uses a modular architecture with these key systems:
    - Error tracking
    - System health checks
 
-### Development Standards
+### Development Standards (Not implemented yet)
 - Comprehensive type annotations
 - Detailed docstrings
 - High test coverage (90%+)
