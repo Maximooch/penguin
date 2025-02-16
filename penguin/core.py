@@ -104,7 +104,7 @@ Example:
 # TODO: Some sort of interface to support things beyond CLI. Web, Core-library, etc. 
 
 
-from typing import Dict, List, Optional, Tuple, Any, Callable, Generator, AsyncGenerator
+from typing import Dict, List, Optional, Tuple, Any, Callable, Generator, AsyncGenerator, Union, TYPE_CHECKING
 import logging
 import os
 import traceback
@@ -114,6 +114,14 @@ import re
 from pathlib import Path
 from rich.console import Console # type: ignore
 from rich.tree import Tree # type: ignore
+from dotenv import load_dotenv # type: ignore
+import asyncio
+from tenacity import retry, stop_after_attempt, wait_exponential # TODO: try this out.
+from tqdm import tqdm
+import time
+
+# System Prompt
+from system_prompt import SYSTEM_PROMPT
 
 # LLM and API
 from llm import APIClient
@@ -131,7 +139,6 @@ from utils.parser import parse_action, ActionExecutor
 from utils.errors import error_handler
 
 # Configuration
-# from .config import Config
 from config import (
     TASK_COMPLETION_PHRASE,
     CONTINUOUS_COMPLETION_PHRASE,
@@ -140,11 +147,8 @@ from config import (
     Config,
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
-    WORKSPACE_PATH
+    WORKSPACE_PATH,
 )
-
-# Workspace
-# from workspace import get_workspace_path, write_workspace_file
 
 # RunMode
 from run_mode import RunMode
@@ -152,34 +156,131 @@ from run_mode import RunMode
 # Local task manager
 from local_task.manager import ProjectManager
 
+if TYPE_CHECKING:
+    from chat.cli import PenguinCLI
+
 logger = logging.getLogger(__name__)
 console = Console()
 
 class PenguinCore:
+    @classmethod
+    async def create(
+        cls,
+        config: Optional[Config] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        workspace_path: Optional[str] = None,
+        enable_cli: bool = False
+    ) -> Union['PenguinCore', Tuple['PenguinCore', 'PenguinCLI']]:
+        """
+        Factory method for creating PenguinCore instance.
+        Returns either PenguinCore alone or with CLI if enable_cli=True
+        """
+        try:
+            # Initialize progress bar
+            steps = [
+                "Loading environment",
+                "Setting up logging",
+                "Loading configuration",
+                "Creating model config",
+                "Initializing API client",
+                "Creating tool manager",
+                "Creating core instance"
+            ]
+            if enable_cli:
+                steps.append("Initializing CLI")
+            
+            pbar = tqdm(steps, desc="Initializing Penguin", unit="step")
+            
+            # Track start time
+            start_time = time.time()
+            
+            # Step 1: Load environment
+            pbar.set_description("Loading environment")
+            load_dotenv()
+            pbar.update(1)
+            
+            # Step 2: Initialize logging
+            pbar.set_description("Setting up logging")
+            logging.basicConfig(level=logging.WARNING)
+            for logger_name in ['httpx', 'sentence_transformers', 'LiteLLM', 'tools', 'llm']:
+                logging.getLogger(logger_name).setLevel(logging.WARNING)
+            logging.getLogger('chat').setLevel(logging.DEBUG)
+            pbar.update(1)
+            
+            # Load configuration
+            config = config or Config.load_config()
+            
+            # Initialize model configuration
+            model_config = ModelConfig(
+                model=model or DEFAULT_MODEL,  # Use default if not provided
+                provider=provider or DEFAULT_PROVIDER,
+                api_base=config.api.base_url,
+                use_assistants_api=False  # Default to False
+            )
+            
+            # Create API client
+            api_client = APIClient(model_config=model_config)
+            api_client.set_system_prompt(SYSTEM_PROMPT)
+            
+            # Initialize tool manager
+            tool_manager = ToolManager(error_handler)
+            
+            # Create core instance
+            instance = cls(
+                config=config,
+                api_client=api_client,
+                tool_manager=tool_manager
+            )
+            
+            if enable_cli:
+                # Import CLI only when needed
+                from chat.cli import PenguinCLI
+                cli = PenguinCLI(instance)
+            
+            # Close progress bar
+            pbar.close()
+            
+            # Show total initialization time
+            init_time = time.time() - start_time
+            logger.info(f"Initialization completed in {init_time:.2f} seconds")
+            
+            return instance if not enable_cli else (instance, cli)
+            
+        except Exception as e:
+            # Close progress bar on error
+            if 'pbar' in locals():
+                pbar.close()
+            error_msg = f"Failed to initialize PenguinCore: {str(e)}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
+
     def __init__(
         self,
         config: Optional[Config] = None,
         api_client: Optional[APIClient] = None,
         tool_manager: Optional[ToolManager] = None,
-        # task_manager: Optional[TaskManager] = None
     ):
         """Initialize PenguinCore with required components."""
         self.config = config or Config.load_config()
         self.api_client = api_client
         self.tool_manager = tool_manager
         self._interrupted = False
-        self.system_prompt = ""
+        
+        # Set system prompt from import
+        self.system_prompt = SYSTEM_PROMPT
         
         # Initialize project manager with workspace path from config
         self.project_manager = ProjectManager(workspace_root=WORKSPACE_PATH)
         
         # Initialize diagnostics based on config
         # Don't touch this file in edits!
+        # Don't touch this file in edits!
         if not self.config.diagnostics.enabled:
             disable_diagnostics()
+        # Why is it initializing tool manager, diagnostics, and base_path here?
         
         # Initialize conversation system
-        # Why is it initializing tool manager, diagnostics, and base_path here?
         self.conversation_system = ConversationSystem(
             tool_manager=self.tool_manager,
             diagnostics=diagnostics,
@@ -187,15 +288,14 @@ class PenguinCore:
         )
         
         # Initialize action executor with project manager
-        # Why is it initializing task_manager here?
         self.action_executor = ActionExecutor(
             tool_manager=self.tool_manager,
             task_manager=self.project_manager
         )
+        # It's not really using api_client, seems like a duplication, until it's actually used.
         self.messages = []
         
         # Initialize core systems
-        # It's not really using api_client, seems like a duplication, until it's actually used.
         self.cognition = CognitionSystem(
             api_client=self.api_client,
             diagnostics=diagnostics
@@ -206,10 +306,6 @@ class PenguinCore:
         logger.info("PenguinCore initialized successfully")
         
         # Ensure error log directory exists
-        Path("errors_log").mkdir(exist_ok=True)
-        
-        self._continuous_mode = False
-        self.run_mode_messages = []
 
     def _setup_diagnostics(self):
         """Initialize diagnostics based on config"""
@@ -262,7 +358,7 @@ class PenguinCore:
             self.add_message("system", f"Tool outputs:\n{tool_output_text}")
 
     def set_system_prompt(self, prompt: str) -> None:
-        """Set the system prompt."""
+        """Set the system prompt for both core and API client."""
         self.system_prompt = prompt
         if self.api_client:
             self.api_client.set_system_prompt(prompt)
@@ -566,3 +662,53 @@ class PenguinCore:
             # Ensure state is cleaned up
             if not continuous:
                 self._continuous_mode = False
+        Path("errors_log").mkdir(exist_ok=True)
+        
+        self._continuous_mode = False
+        self.run_mode_messages = []
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        reraise=True
+    )
+    async def process(
+        self, 
+        message: str, 
+        context: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Simple interface for processing messages.
+        Wraps process_message and process_input for easier use.
+        """
+        try:
+            # Process the input
+            await self.process_input({"text": message})
+            
+            # Get the response
+            response, _ = await self.get_response()
+            
+            # Format response like CLI
+            output = []
+            
+            if isinstance(response, dict):
+                # Add main response
+                if 'assistant_response' in response:
+                    output.append(response['assistant_response'])
+                
+                # Add action results separately
+                if 'action_results' in response:
+                    for result in response['action_results']:
+                        output.append(str(result))
+            else:
+                output.append(str(response))
+            
+            # Join with double newlines to match CLI formatting
+            return "\n\n".join(output)
+            
+        except Exception as e:
+            error_msg = f"Error processing message: {str(e)}"
+            logger.error(error_msg)
+            logger.error(f"Traceback:\n{traceback.format_exc()}")
+            error_handler.log_error(e)
+            raise
