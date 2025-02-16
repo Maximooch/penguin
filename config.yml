@@ -2,15 +2,28 @@
 # https://docs.litellm.ai/docs/providers
 
 model:
-  default: "openai/deepseek-reasoner"
-  provider: "deepseek"
+  default: "gpt-4o"
+  provider: "openai"
   use_assistants_api: false # Add this line to toggle OpenAI Assistants API usage
 
 
 api:
-  base_url: "https://api.deepseek.com/v1"
+  base_url: "https://api.openai.com/v1"
   # If you're using ollama, set the base_url to the ollama server url, which is usually http://127.0.0.1:11434
   # It'll tell you if you do `ollama serve` in the terminal.
+
+# /Users/maximusputnam/Documents/code/Penguin/workspace
+
+# Workspace Configuration
+workspace:
+  path: "/Users/maximusputnam/Documents/code/Penguin/penguin_workspace"  # Default, can be overridden
+  create_dirs:  # Subdirectories to create
+    - conversations
+    - memory_db
+    - logs
+    - notes
+    - projects
+    - context
 
 
 diagnostics:

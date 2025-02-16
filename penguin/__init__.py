@@ -1,10 +1,16 @@
-# from .core import PenguinCore
-from .core import PenguinCore
-from .config import *
-from .main import main
-from .system_prompt import SYSTEM_PROMPT
-from .run_mode import RunMode
-# from .llm import APIClient
-# from .hub import PenguinHub
+"""
+Penguin AI Assistant
+"""
+import os
+import sys
 
-__all__ = ['PenguinCore', 'main', 'PenguinHub', 'SYSTEM_PROMPT']
+# Add package directory to Python path
+package_dir = os.path.dirname(os.path.abspath(__file__))
+if package_dir not in sys.path:
+    sys.path.insert(0, package_dir)
+
+from .core import PenguinCore
+from .config import config
+
+__version__ = "0.1.0"
+__all__ = ["PenguinCore", "config"]

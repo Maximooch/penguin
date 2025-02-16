@@ -1,14 +1,16 @@
-from memory.declarative_memory import DeclarativeMemory
-import os
 import logging
+import os
+
+from penguin.memory.declarative_memory import DeclarativeMemory
 
 logger = logging.getLogger(__name__)
+
 
 class DeclarativeMemoryTool:
     def __init__(self):
         try:
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            file_path = os.path.join(base_dir, 'notes', 'declarative_notes.yml')
+            file_path = os.path.join(base_dir, "notes", "declarative_notes.yml")
             logger.info(f"Initializing DeclarativeMemory with file path: {file_path}")
             self.declarative_memory = DeclarativeMemory(file_path)
         except Exception as e:

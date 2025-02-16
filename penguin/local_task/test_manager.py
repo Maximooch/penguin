@@ -1,11 +1,12 @@
-import tempfile
-from pathlib import Path
 import traceback
-from manager import ProjectManager, Project, Task
+from pathlib import Path
+
+from manager import Project, ProjectManager, Task
+
 
 def run_test(name, test_func):
     """Run a test and print results"""
-    print(f"\n{'='*20} Testing: {name} {'='*20}")
+    print(f"\n{'=' * 20} Testing: {name} {'=' * 20}")
     try:
         test_func()
         print(f"✅ {name} - PASSED")
@@ -15,15 +16,16 @@ def run_test(name, test_func):
         print("\nTraceback:")
         traceback.print_exc()
 
+
 def main():
     # Create a workspace in the current directory for inspection
     workspace = Path.cwd() / "test_workspace"
     workspace.mkdir(exist_ok=True)
     print(f"Test workspace at: {workspace}")
-    
+
     # Initialize manager
     manager = ProjectManager(workspace)
-    
+
     def test_create_project():
         print("\nTesting project creation...")
         project = manager.create("Test Project", "Test Description")
@@ -38,7 +40,7 @@ def main():
         task = manager.create(
             name="Independent Task",
             description="Task Description",
-            is_task=True  # This makes it an independent task
+            is_task=True,  # This makes it an independent task
         )
         print(f"Created task: {task.title}")
         print(f"Task type: {type(task)}")
@@ -50,7 +52,7 @@ def main():
         task = manager.create(
             name="Project Task",
             description="A task in Test Project",
-            project_name="Test Project"
+            project_name="Test Project",
         )
         print(f"Created project task: {task.title}")
         print(f"Task type: {type(task)}")
@@ -61,7 +63,7 @@ def main():
         print("\nTesting list and status...")
         all_items = manager.list()
         print("All items:", all_items)
-        
+
         status = manager.status()
         print("Overall status:", status)
 
@@ -91,26 +93,24 @@ def main():
         print("\nTesting task dependencies...")
         task1 = manager.create("Task 1", "First task", is_task=True)
         task2 = manager.create("Task 2", "Dependent task", is_task=True)
-        
+
         # Add dependency
         task2.dependencies.append(task1.id)
         manager._save_data()
-        
+
         # Verify dependency
         manager.display_dependencies("Task 2")
 
     def test_task_metadata():
         print("\nTesting task metadata...")
         task = manager.create(
-            name="Metadata Task",
-            description="Task with metadata",
-            is_task=True
+            name="Metadata Task", description="Task with metadata", is_task=True
         )
         task.metadata["priority"] = "high"
         task.metadata["category"] = "testing"
         task.tags = ["test", "metadata"]
         manager._save_data()
-        
+
         # Verify metadata display
         manager.display()
 
@@ -123,7 +123,7 @@ def main():
         ("Update and Complete", test_update_and_complete),
         ("Error Handling", test_error_handling),
         ("Task Dependencies", test_task_dependencies),
-        ("Task Metadata", test_task_metadata)
+        ("Task Metadata", test_task_metadata),
     ]
 
     for name, func in tests:
@@ -132,5 +132,6 @@ def main():
     print(f"\nTests completed. Data saved in: {workspace}")
     print("You can inspect the test_workspace directory for saved data.")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

@@ -2,6 +2,7 @@ import os
 import subprocess
 from typing import List
 
+
 class FileManager:
     def __init__(self):
         self.current_dir = os.getcwd()
@@ -17,17 +18,23 @@ class FileManager:
         original_dir = os.getcwd()
         os.chdir(self.current_dir)
         try:
-            if command.startswith('cd '):
+            if command.startswith("cd "):
                 new_dir = command[3:].strip()
                 if self.cd(new_dir):
                     return f"Changed directory to {self.current_dir}"
                 else:
                     return f"Failed to change directory to {new_dir}"
-            elif command.strip().lower() == 'pwd':
+            elif command.strip().lower() == "pwd":
                 return self.current_dir
             else:
-                result = subprocess.run(command, shell=True, capture_output=True, text=True)
-                return result.stdout if result.returncode == 0 else f"Error: {result.stderr}"
+                result = subprocess.run(
+                    command, shell=True, capture_output=True, text=True
+                )
+                return (
+                    result.stdout
+                    if result.returncode == 0
+                    else f"Error: {result.stderr}"
+                )
         finally:
             os.chdir(original_dir)
 

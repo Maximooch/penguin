@@ -1,21 +1,23 @@
-from typing import List, Dict, Any, Optional, Union
+import asyncio
+import base64
+import io
+import logging
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-# TODO: decouple litellm from api_client. 
+import yaml  # type: ignore
+
+# TODO: decouple litellm from api_client.
 # TODO: greatly simplify api_client while maintaining full functionality
 # TODO: add streaming support
 # TODO: add support for images, files, audio, and video
+from litellm import acompletion, completion  # type: ignore
+from PIL import Image  # type: ignore
 
-from litellm import acompletion, completion # type: ignore
 from .model_config import ModelConfig
 from .provider_adapters import get_provider_adapter
-import os
-import yaml # type: ignore
-from pathlib import Path
-import logging
-from PIL import Image # type: ignore
-import base64
-import io
-import asyncio
+
 
 def load_config() -> Dict[str, Any]:
     """
@@ -32,12 +34,14 @@ def load_config() -> Dict[str, Any]:
         FileNotFoundError: If the config.yml file is not found.
         yaml.YAMLError: If there's an error parsing the YAML content.
     """
-    config_path = Path(__file__).parent.parent.parent / 'config.yml'
-    with open(config_path, 'r') as config_file:
+    config_path = Path(__file__).parent.parent.parent / "config.yml"
+    with open(config_path) as config_file:
         return yaml.safe_load(config_file)
 
+
 # Load the model configurations from the config file
-MODEL_CONFIGS = load_config().get('model_configs', {})
+MODEL_CONFIGS = load_config().get("model_configs", {})
+
 
 class APIClient:
     """
@@ -66,7 +70,7 @@ class APIClient:
         self.system_prompt = None
         self.adapter = get_provider_adapter(model_config.provider, model_config)
         self.api_key = os.getenv(f"{model_config.provider.upper()}_API_KEY")
-        self.max_history_tokens = model_config.max_history_tokens or 200000 
+        self.max_history_tokens = model_config.max_history_tokens or 200000
         # TODO: Make this dynamic based on max_tokens in model_config
         # TODO: Better handling of truncation/chunking
         self.logger = logging.getLogger(__name__)
@@ -93,15 +97,20 @@ class APIClient:
         if self.model_config.use_assistants_api and self.adapter.assistant_manager:
             self.adapter.assistant_manager.update_system_prompt(prompt)
 
-    async def create_message(self, messages: List[Dict[str, Any]], max_tokens: Optional[int] = None, temperature: Optional[float] = None) -> Any:
+    async def create_message(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+    ) -> Any:
         """
         Asynchronously create a message using the configured model.
-        
+
         Args:
             messages: List of message dictionaries
             max_tokens: Optional max tokens to generate
             temperature: Optional temperature parameter
-            
+
         Returns:
             Response from the model API
         """
@@ -111,19 +120,28 @@ class APIClient:
                 if self.adapter.supports_system_messages():
                     # Remove existing system messages and add ours first
                     messages = [msg for msg in messages if msg.get("role") != "system"]
-                    messages.insert(0, {"role": "system", "content": self.system_prompt})
+                    messages.insert(
+                        0, {"role": "system", "content": self.system_prompt}
+                    )
                 else:
                     # Convert system message to user message with prefix
-                    print(f"Converting system message to user message for provider: {self.adapter.provider}")
-                    messages.insert(0, {
-                        "role": "user",
-                        "content": f"[SYSTEM PROMPT]: {self.system_prompt}"
-                    })
-                    self.logger.debug("Converted system message to user message for provider")
+                    print(
+                        f"Converting system message to user message for provider: {self.adapter.provider}"
+                    )
+                    messages.insert(
+                        0,
+                        {
+                            "role": "user",
+                            "content": f"[SYSTEM PROMPT]: {self.system_prompt}",
+                        },
+                    )
+                    self.logger.debug(
+                        "Converted system message to user message for provider"
+                    )
 
             # Format messages using the provider-specific adapter
             formatted_messages = self.adapter.format_messages(messages)
-            
+
             # Prepare parameters for the completion call
             completion_params = {
                 "model": self.model_config.model,
@@ -133,18 +151,20 @@ class APIClient:
                 "api_base": self.model_config.api_base,
                 "headers": {
                     "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                }
-            } # TODO: Get rid of this
-            
+                    "Content-Type": "application/json",
+                },
+            }  # TODO: Get rid of this
+
             # Remove None values
-            completion_params = {k: v for k, v in completion_params.items() if v is not None}
-            
+            completion_params = {
+                k: v for k, v in completion_params.items() if v is not None
+            }
+
             if self.api_key:
                 completion_params["api_key"] = self.api_key
-                
+
             self.logger.debug(f"Sending formatted messages: {formatted_messages}")
-            
+
             # Make the API call asynchronously
             try:
                 if self.model_config.use_assistants_api:
@@ -153,21 +173,21 @@ class APIClient:
                 else:
                     # For regular API, use async call
                     response = await acompletion(**completion_params)
-                
+
                 # Log the raw response for debugging
                 self.logger.debug(f"Raw API response: {response}")
-                
+
                 return response
-                
+
             except Exception as e:
                 self.logger.error(f"API call error: {str(e)}")
                 raise
-                
+
         except Exception as e:
             error_message = f"LLM API error: {str(e)}"
             self.logger.error(error_message)
             raise Exception(error_message)
-        
+
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
         """
         Process the raw response from the AI model.
@@ -199,7 +219,7 @@ class APIClient:
         total_tokens = 0
         truncated_messages = []
         for message in reversed(messages):
-            message_tokens = self.adapter.count_tokens(str(message.get('content', '')))
+            message_tokens = self.adapter.count_tokens(str(message.get("content", "")))
             if total_tokens + message_tokens > self.max_history_tokens:
                 break
             total_tokens += message_tokens
@@ -224,17 +244,17 @@ class APIClient:
                 # Resize the image if it's larger than 1024x1024
                 max_size = (1024, 1024)
                 img.thumbnail(max_size, Image.LANCZOS)
-                
+
                 # Convert to RGB if it's not already
-                if img.mode != 'RGB':
-                    img = img.convert('RGB')
-                
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+
                 # Save the image to a bytes buffer
                 img_byte_arr = io.BytesIO()
-                img.save(img_byte_arr, format='JPEG')
-                
+                img.save(img_byte_arr, format="JPEG")
+
                 # Encode the image bytes to base64
-                return base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+                return base64.b64encode(img_byte_arr.getvalue()).decode("utf-8")
         except Exception as e:
             return f"Error encoding image: {str(e)}"
 
@@ -242,7 +262,6 @@ class APIClient:
         """Reset the client state"""
         self.messages = []
         self.set_system_prompt(self.system_prompt)
-
 
 
 # The following code is commented out and represents an older version of the API client.

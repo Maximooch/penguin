@@ -8,6 +8,11 @@ __pycache__/
 # Embeddings
 embeddings/
 
+# Workspace conversations, embeddings, etc.
+.workspace/conversations/
+.workspace/memory_db/
+.workspace/logs
+
 # Environment variables
 .env
 
