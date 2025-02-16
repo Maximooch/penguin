@@ -11,6 +11,14 @@ copywriting/
 __pycache__/
 *.py[cod]
 
+# Ruff cache
+.ruff_cache/
+
+# Workspace conversations, embeddings, etc.
+penguin/workspace/conversations/
+penguin/workspace/memory_db/
+penguin/workspace/logs
+
 # Embeddings
 embeddings/
 

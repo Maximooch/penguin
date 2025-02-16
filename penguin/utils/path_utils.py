@@ -2,14 +2,16 @@
 
 # In penguin/utils/path_utils.py (create this file)
 import os
-from config import WORKSPACE_PATH
+
+from penguin.config import WORKSPACE_PATH
+
 
 def normalize_path(path):
     # Remove any leading slashes or backslashes
-    path = path.lstrip('/\\')
+    path = path.lstrip("/\\")
     # Remove 'workspace/' prefix if present
-    if path.startswith('workspace/'):
-        path = path[len('workspace/'):]
+    if path.startswith("workspace/"):
+        path = path[len("workspace/") :]
     # Normalize the path to prevent directory traversal
     full_path = os.path.normpath(os.path.join(WORKSPACE_PATH, path))
     # Security check

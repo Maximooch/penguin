@@ -1,0 +1,39 @@
+# Exclude files
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    "__pycache__",
+    "junkdrawer",
+    "hold",
+    "testing",
+]
+
+# Enable rules
+select = [
+    "F",   # pyflakes
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "UP",  # pyupgrade
+    "RUF", # ruff-specific rules
+    "TCH", # type-checking
+]
+
+# Line length
+line-length = 88
+
+# Assume Python 3.8+
+target-version = "py38"
+
+[lint.isort]
+known-first-party = ["penguin"]
+combine-as-imports = true
+
+[format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto" 

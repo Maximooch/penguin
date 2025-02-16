@@ -1,9 +1,12 @@
-from IPython.core.interactiveshell import InteractiveShell
 import io
-import sys
 import os
-from config import WORKSPACE_PATH
-from utils.process_manager import ProcessManager
+import sys
+
+from IPython.core.interactiveshell import InteractiveShell
+
+from penguin.config import WORKSPACE_PATH
+from penguin.utils.process_manager import ProcessManager
+
 
 class NotebookExecutor:
     def __init__(self):
@@ -40,9 +43,15 @@ class NotebookExecutor:
                     combined_output.append(str(result.result))
                 if error_output.strip():  # Include stderr even on success
                     combined_output.append(f"Warnings:\n{error_output.strip()}")
-                return "\n".join(combined_output) if combined_output else "Code executed successfully"
+                return (
+                    "\n".join(combined_output)
+                    if combined_output
+                    else "Code executed successfully"
+                )
             else:
-                error_msg = result.error_in_exec or error_output or "Unknown error occurred"
+                error_msg = (
+                    result.error_in_exec or error_output or "Unknown error occurred"
+                )
                 return f"Error: {error_msg}"
         except Exception as e:
             return f"Error executing code: {str(e)}"
@@ -53,20 +62,16 @@ class NotebookExecutor:
 
         try:
             # Determine OS and adjust command
-            if platform.system().lower() == 'windows':
+            if platform.system().lower() == "windows":
                 shell = True
-                command = f'cmd /c {command}'
+                command = f"cmd /c {command}"
             else:  # Unix-like systems
                 shell = False
-                command = ['bash', '-c', command]
+                command = ["bash", "-c", command]
 
             # Execute command
             result = subprocess.run(
-                command,
-                shell=shell,
-                capture_output=True,
-                text=True,
-                cwd=WORKSPACE_PATH
+                command, shell=shell, capture_output=True, text=True, cwd=WORKSPACE_PATH
             )
 
             # Combine stdout and stderr if present
@@ -76,7 +81,7 @@ class NotebookExecutor:
             if result.stderr:
                 output.append(f"Stderr:\n{result.stderr.strip()}")
 
-            return '\n'.join(output) if output else "Command executed successfully"
+            return "\n".join(output) if output else "Command executed successfully"
         except Exception as e:
             return f"Error executing shell command: {str(e)}"
 

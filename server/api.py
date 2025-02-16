@@ -1,13 +1,12 @@
-from fastapi import FastAPI, WebSocket, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import Dict, Any, Optional
-import asyncio
 import logging
+from typing import Any, Dict, Optional
 
-from core import PenguinCore
 from config import Config
+from core import PenguinCore
+from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from llm import APIClient
+from pydantic import BaseModel
 from tools import ToolManager
 
 app = FastAPI(title="Penguin AI Web API")
@@ -25,28 +24,26 @@ app.add_middleware(
 config = Config.load_config()
 api_client = APIClient()
 tool_manager = ToolManager()
-penguin = PenguinCore(
-    config=config,
-    api_client=api_client,
-    tool_manager=tool_manager
-)
+penguin = PenguinCore(config=config, api_client=api_client, tool_manager=tool_manager)
+
 
 class Message(BaseModel):
     content: str
     context: Optional[Dict[str, Any]] = None
+
 
 @app.post("/chat")
 async def chat(message: Message):
     """Process a chat message and return the response"""
     try:
         response = await penguin.process_message(
-            message=message.content,
-            context=message.context
+            message=message.content, context=message.context
         )
         return {"response": response}
     except Exception as e:
         logging.error(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -56,21 +53,19 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             # Receive message
             data = await websocket.receive_json()
-            
+
             # Process message
             response = await penguin.process_message(
-                message=data["content"],
-                context=data.get("context")
+                message=data["content"], context=data.get("context")
             )
-            
+
             # Send response
-            await websocket.send_json({
-                "response": response
-            })
-            
+            await websocket.send_json({"response": response})
+
     except Exception as e:
         logging.error(f"WebSocket error: {str(e)}")
         await websocket.close()
+
 
 @app.post("/task/create")
 async def create_task(name: str, description: str):
@@ -81,6 +76,7 @@ async def create_task(name: str, description: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/projects")
 async def list_projects():
     """List all projects"""
@@ -88,4 +84,4 @@ async def list_projects():
         output = await penguin.display_all()
         return {"projects": output}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))

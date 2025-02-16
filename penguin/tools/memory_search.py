@@ -1,21 +1,22 @@
-import os
-import chromadb
-from chromadb.config import Settings
-from typing import List, Dict, Any, Optional
 import json
-import ollama
-from datetime import datetime, timedelta
-from tqdm import tqdm  # For progress bar
+import logging
+import os
 import re
 import uuid
-from colorama import init, Fore, Style  # For colored output
-import logging
-from pathlib import Path
-from config import WORKSPACE_PATH  # Import workspace path from config
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import chromadb
+import ollama
+from chromadb.config import Settings
+from colorama import Fore, Style, init  # For colored output
+
+from penguin.config import WORKSPACE_PATH  # Import workspace path from config
+
 
 class MemorySearcher:
     _instance = None
-    
+
     def __new__(cls, persist_directory: str = None):
         if cls._instance is None:
             cls._instance = super(MemorySearcher, cls).__new__(cls)
@@ -25,61 +26,60 @@ class MemorySearcher:
     def __init__(self, persist_directory: str = None):
         if self._initialized:
             return
-            
+
         # Initialize colorama
         init()  # For colored output
-        
+
         # Set default persist directory to workspace/memory_db if none provided
         if persist_directory is None:
-            persist_directory = os.path.join(WORKSPACE_PATH, 'memory_db')
-        
+            persist_directory = os.path.join(WORKSPACE_PATH, "memory_db")
+
         # Ensure directory exists
         os.makedirs(persist_directory, exist_ok=True)
-        
+
         # Define memory paths relative to workspace
         self.memory_paths = {
-            'logs': os.path.join(WORKSPACE_PATH, 'logs'),
-            'notes': os.path.join(WORKSPACE_PATH, 'notes')
+            "logs": os.path.join(WORKSPACE_PATH, "logs"),
+            "notes": os.path.join(WORKSPACE_PATH, "notes"),
         }
-        
+
         # Initialize ChromaDB client with persistent storage
         try:
             self.client = chromadb.PersistentClient(
                 path=persist_directory,
                 settings=Settings(
-                    anonymized_telemetry=False,
-                    allow_reset=True,
-                    is_persistent=True
-                )
+                    anonymized_telemetry=False, allow_reset=True, is_persistent=True
+                ),
             )
-            
+
             # Initialize collections
             self.logs_collection = self.client.get_or_create_collection(
-                name="logs",
-                metadata={"description": "Log entries and history"}
+                name="logs", metadata={"description": "Log entries and history"}
             )
-            
+
             self.notes_collection = self.client.get_or_create_collection(
                 name="notes",
-                metadata={"description": "Declarative notes and documentation"}
+                metadata={"description": "Declarative notes and documentation"},
             )
-            
+
             # Set up logging
             self.logger = logging.getLogger(__name__)
-            
+
             # Try to initialize Ollama client, fall back to simple search if unavailable
             try:
                 self.ollama_client = ollama.Client()
                 self.use_embeddings = True
             except Exception as e:
-                self.logger.warning(f"Ollama not available, falling back to simple search: {str(e)}")
+                self.logger.warning(
+                    f"Ollama not available, falling back to simple search: {str(e)}"
+                )
                 self.use_embeddings = False
-            
+
             # Index existing memories
             self.index_memory_files()
-            
+
             self._initialized = True
-            
+
         except Exception as e:
             self.logger.error(f"Error initializing ChromaDB: {str(e)}")
             raise
@@ -91,18 +91,20 @@ class MemorySearcher:
             "type": "conversation",
             "summary": "",
         }
-        
+
         # Try to parse JSON-formatted memories
         try:
             data = json.loads(content)
             if isinstance(data, dict):
-                memory_info.update({
-                    "type": data.get("type", "declarative"),
-                    "summary": data.get("summary", ""),
-                })
+                memory_info.update(
+                    {
+                        "type": data.get("type", "declarative"),
+                        "summary": data.get("summary", ""),
+                    }
+                )
         except json.JSONDecodeError:
             # For plain text, try to extract key information
-            lines = content.split('\n')
+            lines = content.split("\n")
             if lines:
                 memory_info["summary"] = lines[0][:100]  # First line as summary
 
@@ -111,31 +113,33 @@ class MemorySearcher:
     def extract_categories(self, content: str) -> str:
         """Extract categories and join them into a single string"""
         categories = set()
-        
+
         # Common categories to look for
         category_keywords = {
-            'task': ['task', 'todo', 'done', 'complete'],
-            'project': ['project', 'milestone', 'planning'],
-            'error': ['error', 'bug', 'issue', 'fix'],
-            'decision': ['decision', 'chose', 'selected', 'agreed'],
-            'research': ['research', 'investigation', 'analysis'],
-            'code': ['code', 'implementation', 'function', 'class'],
+            "task": ["task", "todo", "done", "complete"],
+            "project": ["project", "milestone", "planning"],
+            "error": ["error", "bug", "issue", "fix"],
+            "decision": ["decision", "chose", "selected", "agreed"],
+            "research": ["research", "investigation", "analysis"],
+            "code": ["code", "implementation", "function", "class"],
         }
-        
+
         content_lower = content.lower()
         for category, keywords in category_keywords.items():
             if any(keyword in content_lower for keyword in keywords):
                 categories.add(category)
-                
+
         return ",".join(sorted(categories))  # Convert set to sorted string
 
     def extract_date_from_path(self, filename: str) -> str:
         """Extract date from filename like chat_20240902_175411.md"""
-        match = re.search(r'(\d{8})_(\d{6})', filename)
+        match = re.search(r"(\d{8})_(\d{6})", filename)
         if match:
             date = match.group(1)
             time = match.group(2)
-            return f"{date[:4]}-{date[4:6]}-{date[6:]}T{time[:2]}:{time[2:4]}:{time[4:]}"
+            return (
+                f"{date[:4]}-{date[4:6]}-{date[6:]}T{time[:2]}:{time[2:4]}:{time[4:]}"
+            )
         return datetime.now().isoformat()
 
     def index_memory(self, content: str, memory_type: str, metadata: Dict[str, Any]):
@@ -145,26 +149,29 @@ class MemorySearcher:
             if self.use_embeddings:
                 try:
                     response = self.ollama_client.embeddings(
-                        model='nomic-embed-text',
-                        prompt=content
+                        model="nomic-embed-text", prompt=content
                     )
-                    embeddings = [response['embedding']]
+                    embeddings = [response["embedding"]]
                 except Exception as e:
-                    self.logger.warning(f"Error getting embeddings, falling back to null embeddings: {str(e)}")
+                    self.logger.warning(
+                        f"Error getting embeddings, falling back to null embeddings: {str(e)}"
+                    )
                     embeddings = None
             else:
                 embeddings = None
-            
+
             # Ensure all metadata values are strings
             metadata = {k: str(v) for k, v in metadata.items()}
-            
+
             # Add to appropriate collection
-            collection = self.logs_collection if memory_type == 'logs' else self.notes_collection
+            collection = (
+                self.logs_collection if memory_type == "logs" else self.notes_collection
+            )
             collection.add(
                 documents=[content],
                 metadatas=[metadata],
                 embeddings=embeddings if embeddings else None,
-                ids=[str(uuid.uuid4())]
+                ids=[str(uuid.uuid4())],
             )
         except Exception as e:
             self.logger.error(f"Error indexing memory: {str(e)}")
@@ -174,58 +181,62 @@ class MemorySearcher:
         try:
             indexed_count = 0
             skipped_count = 0
-            
+
             # Load previous index metadata
             index_metadata = self._load_index_metadata()
             new_metadata = {}
-            
+
             # Helper function to check if file needs indexing
             def needs_indexing(file_path: str) -> bool:
                 current_meta = self._get_file_metadata(file_path)
                 previous_meta = index_metadata.get(file_path)
-                
+
                 if not previous_meta:
                     return True
-                    
-                return (current_meta['mtime'] != previous_meta['mtime'] or 
-                        current_meta['size'] != previous_meta['size'])
-            
+
+                return (
+                    current_meta["mtime"] != previous_meta["mtime"]
+                    or current_meta["size"] != previous_meta["size"]
+                )
+
             # Process each memory type
             for memory_type, base_path in self.memory_paths.items():
                 if not os.path.exists(base_path):
                     continue
-                    
+
                 for filename in os.listdir(base_path):
-                    if filename.endswith(('.md', '.txt')):
+                    if filename.endswith((".md", ".txt")):
                         file_path = os.path.join(base_path, filename)
-                        
+
                         # Check if file needs indexing
                         if not needs_indexing(file_path):
                             skipped_count += 1
                             new_metadata[file_path] = index_metadata[file_path]
                             continue
-                            
+
                         # Index the file
-                        with open(file_path, 'r', encoding='utf-8') as f:
+                        with open(file_path, encoding="utf-8") as f:
                             content = f.read()
-                            
+
                             metadata = self.parse_memory(content)
-                            metadata.update({
-                                'file_path': file_path,
-                                'memory_type': memory_type,
-                                'categories': self.extract_categories(content),
-                                'timestamp': self.extract_date_from_path(filename)
-                            })
-                            
+                            metadata.update(
+                                {
+                                    "file_path": file_path,
+                                    "memory_type": memory_type,
+                                    "categories": self.extract_categories(content),
+                                    "timestamp": self.extract_date_from_path(filename),
+                                }
+                            )
+
                             self.index_memory(content, memory_type, metadata)
                             new_metadata[file_path] = self._get_file_metadata(file_path)
                             indexed_count += 1
-            
+
             # Save updated metadata
             self._save_index_metadata(new_metadata)
-            
+
             return f"Indexed {indexed_count} files, skipped {skipped_count} unchanged files"
-            
+
         except Exception as e:
             self.logger.error(f"Error during indexing: {str(e)}")
             return f"Indexing failed: {str(e)}"
@@ -237,89 +248,99 @@ class MemorySearcher:
         preview = preview.replace("'}", "")
         preview = preview.replace('{"assistant_response": "', "")
         preview = preview.replace('"}', "")
-        
+
         # Truncate with ellipsis if too long
         if len(preview) > max_length:
             preview = preview[:max_length] + "..."
-            
+
         return preview.strip()
 
-    def search_memory(self, query: str, max_results: int = 5,
-                     memory_type: Optional[str] = None,
-                     categories: Optional[List[str]] = None,
-                     date_after: Optional[str] = None,
-                     date_before: Optional[str] = None) -> List[Dict[str, Any]]:
+    def search_memory(
+        self,
+        query: str,
+        max_results: int = 5,
+        memory_type: Optional[str] = None,
+        categories: Optional[List[str]] = None,
+        date_after: Optional[str] = None,
+        date_before: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Search through memory collections"""
         try:
             all_results = []
             collections = []
-            
+
             # Get embeddings for query
             response = self.ollama_client.embeddings(
-                model='nomic-embed-text',
-                prompt=query
+                model="nomic-embed-text", prompt=query
             )
-            query_embedding = response['embedding']
-            
+            query_embedding = response["embedding"]
+
             # Determine which collections to search
-            if memory_type == 'logs':
+            if memory_type == "logs":
                 collections = [self.logs_collection]
-            elif memory_type == 'notes':
+            elif memory_type == "notes":
                 collections = [self.notes_collection]
             else:
                 collections = [self.logs_collection, self.notes_collection]
-            
+
             # Build where clause
             where = self._build_where_clause(categories, date_after, date_before)
-            
+
             # Search each collection
             for collection in collections:
                 results = collection.query(
                     query_embeddings=[query_embedding],
                     n_results=max_results,
                     where=where,
-                    include=['metadatas', 'documents', 'distances']  # Specify exactly what we want
+                    include=[
+                        "metadatas",
+                        "documents",
+                        "distances",
+                    ],  # Specify exactly what we want
                 )
-                
+
                 # Check if we got any results
-                if not results['documents'] or not results['documents'][0]:
+                if not results["documents"] or not results["documents"][0]:
                     continue
-                
+
                 # Process and format results
-                for i in range(len(results['documents'][0])):
+                for i in range(len(results["documents"][0])):
                     result = {
-                        'metadata': results['metadatas'][0][i],
-                        'preview': self.format_preview(results['documents'][0][i]),
-                        'relevance': (1 - float(results['distances'][0][i])) * 100,  # Convert distance to similarity score
-                        'collection': collection.name
+                        "metadata": results["metadatas"][0][i],
+                        "preview": self.format_preview(results["documents"][0][i]),
+                        "relevance": (1 - float(results["distances"][0][i]))
+                        * 100,  # Convert distance to similarity score
+                        "collection": collection.name,
                     }
                     all_results.append(result)
-            
+
             # Sort by relevance and limit results
-            all_results.sort(key=lambda x: x['relevance'], reverse=True)
+            all_results.sort(key=lambda x: x["relevance"], reverse=True)
             return all_results[:max_results]
-            
+
         except Exception as e:
             self.logger.error(f"Error searching memory: {str(e)}")
             return []
 
-    def _build_where_clause(self,
-                          categories: Optional[List[str]],
-                          date_after: Optional[str],
-                          date_before: Optional[str]) -> Optional[Dict]:
+    def _build_where_clause(
+        self,
+        categories: Optional[List[str]],
+        date_after: Optional[str],
+        date_before: Optional[str],
+    ) -> Optional[Dict]:
         """Build the where clause for ChromaDB query"""
         where = {}
-        
+
         if categories:
             where["categories"] = {"$in": categories}
-            
+
         if date_after or date_before:
             where["timestamp"] = {}
             if date_after:
                 where["timestamp"]["$gte"] = date_after
             if date_before:
                 where["timestamp"]["$lte"] = date_before
-                
+
         return where if where else None
 
     def wait_for_initialization(self):
@@ -329,22 +350,31 @@ class MemorySearcher:
     def _expand_query_terms(self, query: str) -> str:
         """Expand query with related terms"""
         related_terms = {
-            'task': ['todo', 'action item', 'work item'],
-            'refactor': ['restructure', 'redesign', 'clean up'],
-            'bug': ['error', 'issue', 'problem'],
-            'feature': ['functionality', 'capability'],
-            'test': ['verify', 'check', 'validate'],
-            'automode': ['automatic', 'automated', 'auto', 'automation', 'autonomous', 
-                        'self-running', 'background', 'daemon', 'service'],
-            'penguin': ['assistant', 'AI', 'helper', 'bot'],
-            'list': ['show', 'display', 'enumerate', 'output']
+            "task": ["todo", "action item", "work item"],
+            "refactor": ["restructure", "redesign", "clean up"],
+            "bug": ["error", "issue", "problem"],
+            "feature": ["functionality", "capability"],
+            "test": ["verify", "check", "validate"],
+            "automode": [
+                "automatic",
+                "automated",
+                "auto",
+                "automation",
+                "autonomous",
+                "self-running",
+                "background",
+                "daemon",
+                "service",
+            ],
+            "penguin": ["assistant", "AI", "helper", "bot"],
+            "list": ["show", "display", "enumerate", "output"],
         }
-        
+
         expanded = query
         for term, synonyms in related_terms.items():
             if term.lower() in query.lower():
                 expanded += f" {' '.join(synonyms)}"
-        
+
         print(f"\nDebug: Expanded query: {expanded}")
         return expanded
 
@@ -352,57 +382,61 @@ class MemorySearcher:
         """Create a fuzzy hash of content for deduplication"""
         # Simplified version - could use better fuzzy matching
         words = content.lower().split()[:20]  # First 20 words
-        return ' '.join(words)
+        return " ".join(words)
 
     def _calculate_relevance(self, doc: str, query: str, score: float) -> float:
         """Enhanced relevance calculation"""
         base_score = max(0, min(100, (1 - score) * 100))
-        
+
         # Boost exact matches
         content_lower = doc.lower()
         query_terms = query.lower().split()
         exact_matches = sum(term in content_lower for term in query_terms)
         base_score += exact_matches * 10
-        
+
         # Boost recent content
         try:
-            doc_date = datetime.fromisoformat(doc.split('(')[1].split(')')[0])
+            doc_date = datetime.fromisoformat(doc.split("(")[1].split(")")[0])
             days_old = (datetime.now() - doc_date).days
-            recency_boost = max(0, 10 - (days_old / 30))  # Up to 10 points for newer content
+            recency_boost = max(
+                0, 10 - (days_old / 30)
+            )  # Up to 10 points for newer content
             base_score += recency_boost
         except:
             pass
-            
+
         return min(100, base_score)
 
     def _get_highlights(self, text: str, query: str) -> List[tuple]:
         """Find positions of terms to highlight"""
         highlights = []
         query_terms = set(query.lower().split())
-        
+
         for term in query_terms:
-            for match in re.finditer(rf'\b{re.escape(term)}\b', text.lower()):
+            for match in re.finditer(rf"\b{re.escape(term)}\b", text.lower()):
                 highlights.append((match.start(), match.end()))
-                
+
         return highlights
 
-    def _extract_relevant_preview(self, content: str, query: str, max_length: int = 300) -> str:
+    def _extract_relevant_preview(
+        self, content: str, query: str, max_length: int = 300
+    ) -> str:
         """Extract a relevant preview that includes query context"""
         # Split into messages by markdown headers
         messages = []
         current_message = []
-        
-        for line in content.split('\n'):
-            if line.startswith('###'):
+
+        for line in content.split("\n"):
+            if line.startswith("###"):
                 if current_message:
-                    messages.append('\n'.join(current_message))
+                    messages.append("\n".join(current_message))
                 current_message = [line]
             else:
                 current_message.append(line)
-        
+
         if current_message:
-            messages.append('\n'.join(current_message))
-        
+            messages.append("\n".join(current_message))
+
         def clean_message(msg):
             """Clean up a message for display"""
             # Extract assistant response from JSON-like format
@@ -414,26 +448,28 @@ class MemorySearcher:
             if "User input:" in msg:
                 return msg.split("User input:", 1)[1].strip()
             return msg.strip()
-        
+
         # First try: find messages containing query terms
         query_terms = query.lower().split()
         relevant_messages = []
-        
+
         for msg in messages:
             msg_lower = msg.lower()
             if any(term in msg_lower for term in query_terms):
                 cleaned = clean_message(msg)
                 if cleaned:
                     relevant_messages.append(cleaned)
-        
+
         if relevant_messages:
             # Show the most relevant message and its context
             best_idx = 0  # Index of most relevant message
             start_idx = max(0, best_idx - 1)
             end_idx = min(len(relevant_messages), best_idx + 2)
-            preview = '\n   '.join(relevant_messages[start_idx:end_idx])
-            return preview[:max_length] + "..." if len(preview) > max_length else preview
-        
+            preview = "\n   ".join(relevant_messages[start_idx:end_idx])
+            return (
+                preview[:max_length] + "..." if len(preview) > max_length else preview
+            )
+
         # Fallback: Show a conversation exchange (user + assistant if possible)
         for i, msg in enumerate(messages):
             if "👤 User" in msg:
@@ -443,51 +479,47 @@ class MemorySearcher:
                     assistant_msg = clean_message(messages[i + 1])
                     return f"{user_msg}\n   {assistant_msg}"[:max_length] + "..."
                 return user_msg[:max_length] + "..."
-        
+
         # Final fallback: Just show the first non-empty message
         for msg in messages:
             cleaned = clean_message(msg)
             if cleaned:
                 return cleaned[:max_length] + "..."
-        
+
         return "Empty conversation"
 
     def _format_results(self, results, query: str) -> List[Dict[str, Any]]:
         """Format search results into a clean structure with relevant previews"""
         combined_results = []
-        if not results['ids']:
+        if not results["ids"]:
             return combined_results
-            
+
         for doc, meta, distance in zip(
-            results['documents'][0], 
-            results['metadatas'][0], 
-            results['distances'][0]
+            results["documents"][0], results["metadatas"][0], results["distances"][0]
         ):
             preview = self._extract_relevant_preview(doc, query)
-            combined_results.append({
-                "content": doc,
-                "metadata": meta,
-                "distance": distance,
-                "preview": preview
-            })
-        
+            combined_results.append(
+                {
+                    "content": doc,
+                    "metadata": meta,
+                    "distance": distance,
+                    "preview": preview,
+                }
+            )
+
         return combined_results
 
     def _get_file_metadata(self, file_path: str) -> Dict[str, Any]:
         """Get file metadata including modification time"""
         stat = os.stat(file_path)
-        return {
-            "path": file_path,
-            "mtime": stat.st_mtime,
-            "size": stat.st_size
-        }
+        return {"path": file_path, "mtime": stat.st_mtime, "size": stat.st_size}
 
     def _load_index_metadata(self) -> Dict[str, Dict[str, Any]]:
         """Load metadata of previously indexed files"""
-        metadata_path = os.path.join(WORKSPACE_PATH, 'memory_db', 'index_metadata.json')
+        metadata_path = os.path.join(WORKSPACE_PATH, "memory_db", "index_metadata.json")
         try:
             if os.path.exists(metadata_path):
-                with open(metadata_path, 'r') as f:
+                with open(metadata_path) as f:
                     return json.load(f)
         except Exception as e:
             self.logger.warning(f"Failed to load index metadata: {e}")
@@ -495,78 +527,96 @@ class MemorySearcher:
 
     def _save_index_metadata(self, metadata: Dict[str, Dict[str, Any]]):
         """Save metadata of indexed files"""
-        metadata_path = os.path.join(WORKSPACE_PATH, 'memory_db', 'index_metadata.json')
+        metadata_path = os.path.join(WORKSPACE_PATH, "memory_db", "index_metadata.json")
         try:
             os.makedirs(os.path.dirname(metadata_path), exist_ok=True)
-            with open(metadata_path, 'w') as f:
+            with open(metadata_path, "w") as f:
                 json.dump(metadata, f)
         except Exception as e:
             self.logger.warning(f"Failed to save index metadata: {e}")
+
 
 def print_results(results: List[Dict[str, Any]]):
     """Print results with colored highlighting"""
     if not results:
         print("\nNo results found.")
         return
-        
+
     print("\nSearch Results:")
     print("---------------")
-    
+
     for i, result in enumerate(results, 1):
         print(f"\n{i}. From: {result['metadata']['file_path']}")
         print(f"   Type: {result['metadata']['memory_type']}")
         print(f"   Categories: {result['metadata']['categories']}")
         print(f"   Relevance: {result['relevance']:.2f}/100")
-        print(f"   Preview:")
-        
+        print("   Preview:")
+
         # Print with highlights
-        text = result['preview']
+        text = result["preview"]
         last_pos = 0
-        for start, end in sorted(result['highlights']):
-            print(f"   {text[last_pos:start]}", end='')
-            print(f"{Fore.YELLOW}{text[start:end]}{Style.RESET_ALL}", end='')
+        for start, end in sorted(result["highlights"]):
+            print(f"   {text[last_pos:start]}", end="")
+            print(f"{Fore.YELLOW}{text[start:end]}{Style.RESET_ALL}", end="")
             last_pos = end
         print(f"   {text[last_pos:]}")
 
+
 if __name__ == "__main__":
     searcher = MemorySearcher()
-    
+
     print("\nPenguin Memory Search")
     print("===================")
-    
+
     # Index files first
     searcher.index_memory_files()
-    
+
     # Interactive search loop
     while True:
         try:
             query = input("\nEnter search query (or 'exit' to quit): ").strip()
-            if query.lower() == 'exit':
+            if query.lower() == "exit":
                 break
-            
-            memory_type = input("Filter by type (logs/notes, Enter to skip): ").strip() or None
-            categories_input = input("Filter by categories (comma-separated, Enter to skip): ").strip()
-            categories = [c.strip() for c in categories_input.split(',')] if categories_input else None
-            
-            date_after_input = input("Filter by date after (YYYY-MM-DD, Enter to skip): ").strip()
-            date_after = datetime.fromisoformat(date_after_input) if date_after_input else None
-            
-            date_before_input = input("Filter by date before (YYYY-MM-DD, Enter to skip): ").strip()
-            date_before = datetime.fromisoformat(date_before_input) if date_before_input else None
-            
+
+            memory_type = (
+                input("Filter by type (logs/notes, Enter to skip): ").strip() or None
+            )
+            categories_input = input(
+                "Filter by categories (comma-separated, Enter to skip): "
+            ).strip()
+            categories = (
+                [c.strip() for c in categories_input.split(",")]
+                if categories_input
+                else None
+            )
+
+            date_after_input = input(
+                "Filter by date after (YYYY-MM-DD, Enter to skip): "
+            ).strip()
+            date_after = (
+                datetime.fromisoformat(date_after_input) if date_after_input else None
+            )
+
+            date_before_input = input(
+                "Filter by date before (YYYY-MM-DD, Enter to skip): "
+            ).strip()
+            date_before = (
+                datetime.fromisoformat(date_before_input) if date_before_input else None
+            )
+
             results = searcher.search_memory(
                 query=query,
                 max_results=5,
                 memory_type=memory_type,
                 categories=categories,
                 date_after=date_after,
-                date_before=date_before
+                date_before=date_before,
             )
-            
+
             if not results:
                 print("\nNo results found.")
                 continue
-                
+
             print("\nSearch Results:")
             print("---------------")
             for i, result in enumerate(results, 1):
@@ -574,14 +624,14 @@ if __name__ == "__main__":
                 print(f"   Type: {result['metadata']['memory_type']}")
                 print(f"   Categories: {result['metadata']['categories']}")
                 print(f"   Relevance: {result['relevance']:.2f}/100")
-                print(f"   Preview:")
+                print("   Preview:")
                 print(f"   {result['preview']}")
-                
+
         except KeyboardInterrupt:
             print("\nSearch interrupted.")
             break
         except Exception as e:
             print(f"\nError during search: {str(e)}")
             continue
-    
+
     print("\nSearch interface closed.")

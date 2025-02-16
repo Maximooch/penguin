@@ -1,6 +1,6 @@
 import subprocess
-import asyncio
 from typing import Dict
+
 
 class ProcessManager:
     def __init__(self):
@@ -13,7 +13,7 @@ class ProcessManager:
                 shell=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                text=True,
             )
             self.processes[name] = process
             return f"Process '{name}' started with PID {process.pid}"
@@ -38,9 +38,13 @@ class ProcessManager:
             if process.poll() is None:
                 return f"Process '{name}' is running"
             else:
-                return f"Process '{name}' has exited with return code {process.returncode}"
+                return (
+                    f"Process '{name}' has exited with return code {process.returncode}"
+                )
         return f"Process '{name}' not found"
 
     async def list_processes(self) -> Dict[str, str]:
-        return {name: "Running" if process.poll() is None else "Exited" 
-                for name, process in self.processes.items()}
+        return {
+            name: "Running" if process.poll() is None else "Exited"
+            for name, process in self.processes.items()
+        }

@@ -2,4 +2,4 @@
 PENGUIN_COLOR = "blue"
 TOOL_COLOR = "yellow"
 USER_COLOR = "cyan"
-RESULT_COLOR = "green" 
+RESULT_COLOR = "green"  
