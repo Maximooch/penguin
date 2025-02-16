@@ -127,7 +127,8 @@ pip install -r requirements.txt
 
 Start the Penguin AI assistant:
 ```bash
-python main.py
+penguin  # Start CLI interface
+penguin-web  # Start Web interface
 ```
 
 Play around with Penguin! It's recommended to check out the User Manual, and the Docs for more in depth information to get the most out of Penguin!
@@ -143,10 +144,53 @@ Penguin uses a modular architecture with these key systems:
 - **Core**: Central coordinator between systems
 - **Cognition**: Handles reasoning and response generation
 - **Memory**: Manages context and knowledge persistence
-- **Processor**: Controls tools and actions
+- **Processor**: Controls tools and actions (ToolManager, Parser (ActionManager), and utils)
 - **Task**: Coordinates projects and tasks
 - **Diagnostic**: Monitors performance
 
+
+### System Design
+- Core acts as coordinator between systems
+- Each system has clear responsibilities
+- State management through hierarchical state machines
+- Event-based communication between modules
+- Memory persistence across sessions
+- Tool extensibility through plugin architecture
+
+### Key Components
+1. **Cognition System**
+   - Reasoning and response generation
+   - Model integration via LiteLLM
+   - Context management
+
+2. **Memory System**
+   - Short-term conversation memory
+   - Long-term knowledge persistence
+   - Embeddings and vector storage
+
+3. **Processor System**
+   - ToolManager: Central registry and executor for available tools
+   - ActionExecutor: Parses and routes actions to appropriate handlers
+   - NotebookExecutor: Handles code execution in IPython environment
+
+4. **Task System**
+   - Project and task coordination
+   - Workspace management
+   - File operations
+
+5. **Diagnostic System**
+   - Performance monitoring
+   - Error tracking
+   - System health checks
+
+### Development Standards
+- Comprehensive type annotations
+- Detailed docstrings
+- High test coverage (90%+)
+- Robust exception handling
+- Extensive logging
+
+For detailed technical documentation, visit our [docs](https://penguin-rho.vercel.app).
 
 ## Contributing
 
