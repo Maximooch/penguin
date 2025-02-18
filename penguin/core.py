@@ -108,6 +108,7 @@ Example:
 import logging
 import time
 import traceback
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -307,6 +308,13 @@ class PenguinCore:
         logger.info("PenguinCore initialized successfully")
 
         # Ensure error log directory exists
+        self.validate_path(Path(WORKSPACE_PATH))
+
+    def validate_path(self, path: Path):
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
+        if not os.access(path, os.W_OK):
+            raise PermissionError(f"No write access to {path}")
 
     def _setup_diagnostics(self):
         """Initialize diagnostics based on config"""

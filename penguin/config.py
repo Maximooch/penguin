@@ -49,10 +49,19 @@ def get_workspace_root() -> Path:
 
 # Base paths
 PROJECT_ROOT = get_project_root()
-WORKSPACE_PATH = get_workspace_root()
 
-# Ensure directories exist
-WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
+# Get user's actual home directory
+USER_HOME = Path(os.path.expanduser("~"))
+WORKSPACE_PATH = USER_HOME / "Documents" / "code" / "penguin_workspace"
+
+# Add explicit creation with error handling
+try:
+    WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
+except PermissionError as e:
+    raise RuntimeError(
+        f"Permission denied creating workspace at {WORKSPACE_PATH}. "
+        "Try running as administrator or choose a different location."
+    ) from e
 
 # Move config loading before its first use
 config = load_config()
