@@ -49,6 +49,12 @@ try:
             "black>=21.0.0",
             "isort>=5.0.0",
             "ruff>=0.1.0",  # Added Ruff
+            "plotext",
+            "matplotlib",
+            "networkx",
+            "IPython",
+            "ipykernel",
+            "ipywidgets",
         ],
         python_requires=">=3.8",
         entry_points={
