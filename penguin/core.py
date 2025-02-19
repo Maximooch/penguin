@@ -533,15 +533,13 @@ class PenguinCore:
             # Process response format
             if self.api_client.model_config.use_assistants_api:
                 if isinstance(response, dict):
-                    assistant_response = response.get("assistant_response", "") or str(
-                        response
-                    )
+                    assistant_response = response.get("assistant_response", "") or str(response)
                 else:
                     assistant_response = str(response)
             else:
                 assistant_response = response.choices[0].message.content
 
-            # Count output tokens
+            # Count output tokens and update diagnostics
             diagnostics.update_tokens("main_model", "", assistant_response)
 
             # Check for task completion
@@ -583,22 +581,38 @@ class PenguinCore:
                     )
                     logger.error(f"Action execution error: {str(e)}")
 
-            # Check for interrupt after actions
+            # If execution was interrupted, return an early response
             if self._check_interrupt():
+                aggregated = "Operation interrupted during action execution"
                 return {
-                    "assistant_response": "Operation interrupted during action execution",
+                    "assistant_response": aggregated,
                     "action_results": action_results,
                     "metadata": {
                         "interrupted": True,
-                        "completed_actions": len(
-                            [a for a in action_results if a["status"] == "completed"]
-                        ),
+                        "completed_actions": len([a for a in action_results if a["status"] == "completed"]),
                     },
                 }, True
 
-            # Construct response
+            # Aggregate tool action results into a readable block
+            aggregated_tool_outputs = ""
+            if action_results:
+                lines = [f"- {r['action']}: {r['result']}" for r in action_results]
+                aggregated_tool_outputs = "Tool outputs:\n" + "\n".join(lines)
+                # Also add each tool output as a system message
+                for result in action_results:
+                    self.conversation_system.add_message("system",
+                        f"Action executed: {result['action']}\nResult: {result['result']}"
+                    )
+
+            # Update conversation with assistant response and aggregated tool outputs
+            full_assistant_response = assistant_response
+            if aggregated_tool_outputs:
+                full_assistant_response += "\n\n" + aggregated_tool_outputs
+            self.conversation_system.add_message("assistant", full_assistant_response)
+
+            # Construct the final response payload
             full_response = {
-                "assistant_response": assistant_response,
+                "assistant_response": full_assistant_response,
                 "action_results": action_results,
                 "metadata": {
                     "iteration": current_iteration,
@@ -606,10 +620,6 @@ class PenguinCore:
                 },
             }
 
-            # Update conversation
-            self.conversation_system.add_message("assistant", assistant_response)
-
-            # Log diagnostics
             diagnostics.log_token_usage()
 
             # Update task progress

@@ -2,9 +2,10 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, WebSocket, HTTPException
 from pydantic import BaseModel
 from dataclasses import asdict
+from datetime import datetime
 
 from penguin.core import PenguinCore
-from penguin.system.conversation import ConversationLoader
+from penguin.system.conversation import ConversationLoader, ConversationMetadata
 
 
 class MessageRequest(BaseModel):
@@ -100,4 +101,38 @@ async def get_conversation(conversation_id: str):
         raise HTTPException(
             status_code=500,
             detail=f"Error loading conversation {conversation_id}: {str(e)}",
+        )
+
+
+@router.post("/api/v1/conversations/create")
+async def create_conversation():
+    """Create a new conversation."""
+    try:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        conversation_id = f"conversation_{timestamp}"
+        
+        # Initialize with welcome message
+        messages = [{
+            "role": "system",
+            "content": "Welcome to Penguin AI! How can I help you today?",
+            "timestamp": datetime.now().isoformat()
+        }]
+        
+        # Create metadata
+        metadata = ConversationMetadata(
+            created_at=datetime.now().isoformat(),
+            last_active=datetime.now().isoformat(),
+            message_count=1,
+            session_id=conversation_id
+        )
+        
+        # Save initial conversation state
+        loader = ConversationLoader()
+        loader.save_conversation(conversation_id, messages, metadata)
+        
+        return {"conversation_id": conversation_id}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating conversation: {str(e)}"
         )
