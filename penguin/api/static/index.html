@@ -296,12 +296,25 @@
                     }
                 }
 
-                const startNewConversation = () => {
-                    selectedConversationId.value = null
-                    messages.value = [{
-                        role: 'system',
-                        content: 'Welcome to Penguin AI! How can I help you today?'
-                    }]
+                const startNewConversation = async () => {
+                    try {
+                        const response = await fetch('/api/v1/conversations/create', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            }
+                        });
+                        const data = await response.json();
+                        selectedConversationId.value = data.conversation_id;
+                        messages.value = [{
+                            role: 'system',
+                            content: 'Welcome to Penguin AI! How can I help you today?',
+                            timestamp: new Date()
+                        }];
+                        await refreshConversations();
+                    } catch (error) {
+                        console.error('Error creating new conversation:', error);
+                    }
                 }
 
                 const renderMarkdown = (content) => {
