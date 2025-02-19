@@ -5,12 +5,43 @@
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            height: 100vh;
+        }
+        #sidebar {
+            width: 250px;
+            border-right: 1px solid #ccc;
             padding: 20px;
+            box-sizing: border-box;
+            overflow-y: auto;
+        }
+        #sidebar h2 {
+            margin-top: 0;
+        }
+        #conversation-list {
+            list-style: none;
+            padding-left: 0;
+            margin-top: 10px;
+        }
+        #conversation-list li {
+            padding: 5px;
+            cursor: pointer;
+        }
+        #conversation-list li.active {
+            font-weight: bold;
+            background-color: #f0f0f0;
+        }
+        #chat-container-wrapper {
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            box-sizing: border-box;
         }
         #chat-container {
-            height: 500px;
+            flex-grow: 1;
             border: 1px solid #ccc;
             overflow-y: auto;
             padding: 20px;
@@ -55,18 +86,25 @@
     </style>
 </head>
 <body>
-    <h1>🐧 Penguin AI Chat</h1>
-    <div id="chat-container"></div>
-    <div id="input-container">
-        <input type="text" id="message-input" placeholder="Type your message...">
-        <button onclick="sendMessage()">Send</button>
+    <div id="sidebar">
+        <h2>Conversations</h2>
+        <ul id="conversation-list"></ul>
+        <button onclick="refreshConversations()">Refresh</button>
+        <button onclick="startNewConversation()">New Conversation</button>
+    </div>
+    <div id="chat-container-wrapper">
+        <div id="chat-container"></div>
+        <div id="input-container">
+            <input type="text" id="message-input" placeholder="Type your message...">
+            <button onclick="sendMessage()">Send</button>
+        </div>
     </div>
 
     <script>
-        const chatContainer = document.getElementById('chat-container');
-        const messageInput = document.getElementById('message-input');
+        let selectedConversationId = null;
 
         function addMessage(text, type) {
+            const chatContainer = document.getElementById('chat-container');
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${type}-message`;
             messageDiv.textContent = text;
@@ -74,26 +112,77 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
         }
 
-        async function sendMessage() {
-            const message = messageInput.value.trim();
-            if (!message) return;
+        async function refreshConversations() {
+            try {
+                const response = await fetch('/api/v1/conversations');
+                const data = await response.json();
+                const conversationList = document.getElementById('conversation-list');
+                conversationList.innerHTML = '';
+                data.conversations.forEach(conv => {
+                    const li = document.createElement('li');
+                    li.textContent = conv.title ? conv.title : conv.session_id;
+                    li.dataset.id = conv.session_id;
+                    li.onclick = () => {
+                        selectedConversationId = conv.session_id;
+                        highlightActiveConversation(conv.session_id);
+                        loadConversation(conv.session_id);
+                    };
+                    conversationList.appendChild(li);
+                });
+            } catch (error) {
+                console.error('Error fetching conversations:', error);
+            }
+        }
 
-            // Add user message
+        function highlightActiveConversation(id) {
+            const items = document.querySelectorAll('#conversation-list li');
+            items.forEach(item => {
+                if (item.dataset.id === id) {
+                    item.classList.add('active');
+                } else {
+                    item.classList.remove('active');
+                }
+            });
+        }
+
+        async function loadConversation(convId) {
+            try {
+                const response = await fetch('/api/v1/conversations/' + convId);
+                const data = await response.json();
+                const chatContainer = document.getElementById('chat-container');
+                chatContainer.innerHTML = '';
+                data.messages.forEach(msg => {
+                    let type = msg.role;
+                    let text = '';
+                    if (Array.isArray(msg.content)) {
+                        text = msg.content.map(c => c.text).join(' ');
+                    } else {
+                        text = msg.content;
+                    }
+                    addMessage(text, type);
+                });
+            } catch (error) {
+                console.error('Error loading conversation:', error);
+            }
+        }
+
+        async function sendMessage() {
+            const message = document.getElementById('message-input').value.trim();
+            if (!message) return;
             addMessage(message, 'user');
-            messageInput.value = '';
+            document.getElementById('message-input').value = '';
 
             try {
+                const body = { text: message };
+                if (selectedConversationId) {
+                    body.conversation_id = selectedConversationId;
+                }
                 const response = await fetch('/api/v1/chat/message', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ text: message }),
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
                 });
-
                 const data = await response.json();
-                
-                // Add assistant response
                 if (data.response) {
                     const responses = data.response.split('\n\n');
                     responses.forEach(resp => {
@@ -109,15 +198,28 @@
             }
         }
 
-        // Handle Enter key
-        messageInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
+        function startNewConversation() {
+            selectedConversationId = null;
+            document.getElementById('chat-container').innerHTML = '';
+            addMessage('Started a new conversation.', 'system');
+
+            // Ensure no conversation stays highlighted in the sidebar
+            const items = document.querySelectorAll('#conversation-list li');
+            items.forEach(item => item.classList.remove('active'));
+        }
+
+        // Handle Enter key for sending messages
+        document.getElementById('message-input').addEventListener('keypress', event => {
+            if (event.key === 'Enter') {
                 sendMessage();
             }
         });
 
-        // Initial system message
-        addMessage('Welcome to Penguin AI! How can I help you today?', 'system');
+        // Initial actions on page load
+        window.onload = () => {
+            refreshConversations();
+            addMessage('Welcome to Penguin AI! How can I help you today?', 'system');
+        };
     </script>
 </body>
 </html> 

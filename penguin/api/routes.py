@@ -1,13 +1,15 @@
 from typing import Any, Dict, Optional
-
-from fastapi import APIRouter, Depends, WebSocket  # type: ignore
+from fastapi import APIRouter, Depends, WebSocket, HTTPException
 from pydantic import BaseModel
+from dataclasses import asdict
 
 from penguin.core import PenguinCore
+from penguin.system.conversation import ConversationLoader
 
 
 class MessageRequest(BaseModel):
     text: str
+    conversation_id: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
 
 
@@ -34,8 +36,8 @@ async def get_core():
 async def process_message(
     request: MessageRequest, core: PenguinCore = Depends(get_core)
 ):
-    """Process a chat message"""
-    response = await core.process(request.text, request.context)
+    """Process a chat message, with optional conversation support."""
+    response = await core.process(request.text, request.context, conversation_id=request.conversation_id)
     return {"response": response}
 
 
@@ -43,14 +45,14 @@ async def process_message(
 async def create_project(
     request: ProjectRequest, core: PenguinCore = Depends(get_core)
 ):
-    """Create a new project"""
+    """Create a new project."""
     response = core.project_manager.create_project(request.name, request.description)
     return response
 
 
 @router.post("/api/v1/tasks/execute")
 async def execute_task(request: TaskRequest, core: PenguinCore = Depends(get_core)):
-    """Execute a task"""
+    """Execute a task."""
     await core.start_run_mode(
         request.name,
         request.description,
@@ -64,7 +66,7 @@ async def execute_task(request: TaskRequest, core: PenguinCore = Depends(get_cor
 async def websocket_endpoint(
     websocket: WebSocket, core: PenguinCore = Depends(get_core)
 ):
-    """Real-time chat interface"""
+    """Real-time chat interface."""
     await websocket.accept()
     while True:
         try:
@@ -73,3 +75,29 @@ async def websocket_endpoint(
             await websocket.send_json({"response": response})
         except Exception as e:
             await websocket.send_json({"error": str(e)})
+
+
+@router.get("/api/v1/conversations")
+async def list_conversations():
+    """List all available conversations."""
+    try:
+        loader = ConversationLoader()
+        conversations = loader.list_conversations()
+        conv_data = [asdict(conv) for conv in conversations]
+        return {"conversations": conv_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error retrieving conversations: {str(e)}")
+
+
+@router.get("/api/v1/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str):
+    """Retrieve conversation details by ID."""
+    try:
+        loader = ConversationLoader()
+        messages, metadata = loader.load_conversation(conversation_id)
+        return {"metadata": asdict(metadata), "messages": messages}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error loading conversation {conversation_id}: {str(e)}",
+        )

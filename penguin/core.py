@@ -46,7 +46,8 @@ Core Methods:
 
     async process_message(
         message: str,
-        context: Optional[Dict[str, Any]] = None
+        context: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None
     ) -> str:
         Process a user message and return formatted response
 
@@ -389,43 +390,51 @@ class PenguinCore:
         return self._interrupted
 
     async def process_message(
-        self, message: str, context: Optional[Dict[str, Any]] = None
+        self,
+        message: str,
+        context: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None
     ) -> str:
-        """Process a message with token tracking"""
+        """Process a message with optional conversation support and token tracking.
+
+        If a conversation_id is provided, load the corresponding conversation
+        so that the new message is appended to its history. Otherwise, a new conversation
+        will be started.
+        """
         try:
-            # Track input tokens
+            # Track input tokens for the message.
             diagnostics.update_tokens("main_model", message)
-
-            # Process message through conversation system
+            
+            # If a conversation_id is passed, load the existing conversation.
+            if conversation_id:
+                self.conversation_system.load(conversation_id)
+            
+            # Prepare the conversation context by adding the new user message.
             self.conversation_system.prepare_conversation(message)
-
-            # Get response with tool execution results
+            
+            # Obtain the assistant's response including tool outputs.
             response_data, _ = await self.get_response()
-
-            # Format final response including tool outputs
+            
+            # Format the final response.
             if isinstance(response_data, dict):
                 response = response_data.get("assistant_response", "")
                 action_results = response_data.get("action_results", [])
-
-                # Format response with tool outputs
                 formatted_response = response + "\n\n"
                 if action_results:
                     formatted_response += "Tool outputs:\n"
                     for result in action_results:
-                        formatted_response += (
-                            f"- {result['action']}: {result['result']}\n"
-                        )
+                        formatted_response += f"- {result['action']}: {result['result']}\n"
             else:
                 formatted_response = str(response_data)
-
-            # Track output tokens
+            
+            # Update diagnostic tokens for the response.
             diagnostics.update_tokens("main_model", "", formatted_response)
-
-            # Log usage if enabled
             diagnostics.log_token_usage()
 
+            # Save the updated conversation state.
+            self.conversation_system.save()
+            
             return formatted_response
-
         except Exception as e:
             log_error(
                 e,
@@ -434,6 +443,7 @@ class PenguinCore:
                     "method": "process_message",
                     "message": message,
                     "context": context,
+                    "conversation_id": conversation_id,
                 },
             )
             raise
@@ -719,40 +729,38 @@ class PenguinCore:
         reraise=True,
     )
     async def process(
-        self, message: str, context: Optional[Dict[str, Any]] = None
+        self,
+        message: str,
+        context: Optional[Dict[str, Any]] = None,
+        conversation_id: Optional[str] = None
     ) -> str:
-        """
-        Simple interface for processing messages.
-        Wraps process_message and process_input for easier use.
+        """Process a message with optional conversation support.
+
+        When a conversation_id is provided, load the corresponding conversation so that
+        new messages are appended to its history. Otherwise, process as a new conversation.
         """
         try:
-            # Process the input
-            await self.process_input({"text": message})
-
-            # Get the response
-            response, _ = await self.get_response()
-
-            # Format response like CLI
-            output = []
-
-            if isinstance(response, dict):
-                # Add main response
-                if "assistant_response" in response:
-                    output.append(response["assistant_response"])
-
-                # Add action results separately
-                if "action_results" in response:
-                    for result in response["action_results"]:
-                        output.append(str(result))
+            # If a conversation ID is provided, load the corresponding conversation.
+            if conversation_id:
+                self.conversation_system.load(conversation_id)
+            
+            # Prepare the conversation context with the new message.
+            self.conversation_system.prepare_conversation(message)
+            
+            # Generate response using the associated systems.
+            response_data, _ = await self.get_response()
+            
+            # (Optional) Update or perform any post-processing on the conversation state.
+            self.conversation_system.save()
+            
+            # Format the response based on the type of output received.
+            if isinstance(response_data, dict):
+                response = response_data.get("assistant_response", "")
             else:
-                output.append(str(response))
-
-            # Join with double newlines to match CLI formatting
-            return "\n\n".join(output)
+                response = str(response_data)
+            
+            return response
 
         except Exception as e:
-            error_msg = f"Error processing message: {str(e)}"
-            logger.error(error_msg)
-            logger.error(f"Traceback:\n{traceback.format_exc()}")
-            log_error(e)
+            log_error(e, context={"method": "process", "message": message, "conversation_id": conversation_id})
             raise
