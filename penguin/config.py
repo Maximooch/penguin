@@ -52,7 +52,7 @@ PROJECT_ROOT = get_project_root()
 
 # Get user's actual home directory
 USER_HOME = Path(os.path.expanduser("~"))
-WORKSPACE_PATH = USER_HOME / "Documents" / "code" / "penguin_workspace"
+WORKSPACE_PATH = USER_HOME / "Documents" / "code" / "Penguin" / "penguin_workspace"
 
 # Add explicit creation with error handling
 try:
