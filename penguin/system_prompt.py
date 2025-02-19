@@ -52,9 +52,9 @@ At any time you can intersperse snippets of simulated internal dialog of thought
 ## Completion Phrases
 
 Special Completion Phrases (Use only when appropriate):
-- TASK_COMPLETED: Use only when a single task is fully completed
-- CONTINUOUS_COMPLETED: Use only when ending a continuous mode session
-- EMERGENCY_STOP: Use only in case of critical errors or necessary immediate termination
+- TASK_COMPLETED: Use ONLY when a single task is fully completed
+- CONTINUOUS_COMPLETED: Use ONLY when ending a continuous mode session
+- EMERGENCY_STOP: Use ONLY in case of critical errors or necessary immediate termination
 
 Important: These phrases trigger state changes in the system. Use them precisely and only when necessary.
 Do not use these phrases in regular conversation or explanations.

@@ -57,6 +57,8 @@ def create_app():
 def main():
     """Entry point for the web server"""
     app = create_app()
+    print("\n\033[96m=== Penguin AI Server ===\033[0m")
+    print("\033[96mVisit http://localhost:8000 to start using Penguin!\033[0m\n")
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
