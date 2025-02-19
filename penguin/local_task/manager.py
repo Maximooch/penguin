@@ -1351,3 +1351,18 @@ class ProjectManager:
             return task
 
         raise ValueError(f"Project {project_id} not found")
+
+    def get_project(self, name: str) -> Optional[Project]:
+        """
+        Get a project by name.
+
+        Args:
+            name: Name of the project to retrieve
+
+        Returns:
+            Project object if found, None otherwise
+        """
+        try:
+            return self._find_project_by_name(name)
+        except ValueError:
+            return None

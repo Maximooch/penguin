@@ -246,6 +246,13 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                                 response = self.core.project_manager.create_project(
                                     name, description
                                 )
+                            elif action == "run":
+                                # Verify project exists
+                                if not self.core.project_manager.get_project(name):
+                                    self.display_message(f"Project not found: {name}", "error")
+                                    continue
+                                # Start run mode for project
+                                await self.core.start_run_mode(name, description, mode_type="project")
                             elif action == "status":
                                 response = self.core.project_manager.get_project_status(
                                     name
@@ -253,6 +260,9 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                             else:
                                 self.display_message(
                                     f"Unknown project action: {action}", "error"
+                                )
+                                self.display_message(
+                                    "Available actions: create, run, status", "system"
                                 )
                                 continue
 
