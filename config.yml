@@ -5,6 +5,7 @@ model:
   default: "gpt-4o"
   provider: "openai"
   use_assistants_api: false # Add this line to toggle OpenAI Assistants API usage
+  temperature: 0.7
 
 
 api:

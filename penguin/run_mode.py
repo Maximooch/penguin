@@ -193,7 +193,7 @@ class RunMode:
                 task_prompt = (
                     f"Execute task: {current_task['name']}\n"
                     f"Description: {current_task['description']}\n"
-                    f"Respond with {self.TASK_COMPLETION_PHRASE} when finished."
+                    f"Respond with {self.TASK_COMPLETION_PHRASE} ONLY when finished with the task, not the message!."
                 )
 
                 # Future context handling
@@ -227,7 +227,7 @@ class RunMode:
                 # Check for completion
                 if not self.continuous_mode:
                     if exit_flag or self.TASK_COMPLETION_PHRASE in str(response):
-                        self._display_message("Task completed successfully")
+                        self._display_message("Task completed")
                         break
                 elif (
                     self.time_limit
