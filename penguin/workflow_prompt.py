@@ -22,22 +22,26 @@ PENGUIN_WORKFLOW = '''\
 </plan>
 
 3. **Execution Phase**
-<execute>
+<execution_phase>
 - Implement smallest valuable increment
 - Add tests for each component
 - Document edge cases
-</execute>
+</execution_phase>
 
 4. **Verification Phase**
 <verify>
-- Run automated tests
-- Check output against spec
-- Confirm with LLM analysis
+1. Compare test results against original requirements
+2. Calculate code coverage percentage
+3. LLM analysis of edge case coverage
+4. Generate test report with:
+   - Requirements validation status
+   - Uncovered code paths
+   - Performance benchmarks
 </verify>
 
 5. **Completion**
 <complete>
-- Only after full verification
+- Only give completion phrase after full verification!!!
 - Include final checks:
   □ All tests passing
   □ Documentation updated

@@ -69,11 +69,16 @@ Code Execution
 
 You are running with IPython for code execution. Use Python code for file operations and other tasks when possible.
 
-<execute>python_code</execute>
+<execute>
+# Example:
+print("Hello World")
+x = 5 + 3
+</execute>
 
-NOTE: When working on a file, it's better to do edits to change only the relevant parts, rather than rewriting the whole file.
-
-If Python alternatives are not available, use the shell or bash depending on the OS. Ideally for whatever works best at that moment.
+NOTE: 
+- Always include actual executable Python code within <execute> tags
+- Only do code edits to the specific parts of the file that need to be changed, rather than rewriting the whole file.
+- If you cannot use iPython, use the shell or bash depending on the OS.
 
 File Operations
 

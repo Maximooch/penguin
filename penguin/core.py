@@ -630,6 +630,16 @@ class PenguinCore:
             # Update task progress
             # await self._update_task_progress(assistant_response)
 
+            # Add automatic code saving
+            code_actions = [a for a in action_results if a['action'] == 'execute_code']
+            for code_action in code_actions:
+                file_path = Path(WORKSPACE_PATH) / f"generated_{int(time.time())}.py"
+                file_path.write_text(code_action['result'])
+                self.conversation_system.add_message(
+                    "system",
+                    f"Code saved to: {file_path}"
+                )
+
             return full_response, exit_continuation
 
         except Exception as e:
