@@ -32,7 +32,7 @@ cp .env.example .env
 # Run Penguin
 penguin  # CLI interface
 # OR
-penguin-web  # Web interface (if installed)
+penguin-web  # Web interface 
 ```
 
 ## 🎯 Development Status

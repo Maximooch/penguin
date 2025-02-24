@@ -148,12 +148,17 @@ from penguin.system.conversation import ConversationSystem
 
 # System Prompt
 from penguin.system_prompt import SYSTEM_PROMPT
-from penguin.tools import ToolManager
+# Workflow Prompt
+from penguin.workflow_prompt import PENGUIN_WORKFLOW
+
+
 
 # Tools and Processing
+from penguin.tools import ToolManager
 from penguin.utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnostics
 from penguin.utils.log_error import log_error
 from penguin.utils.parser import ActionExecutor, parse_action
+
 
 if TYPE_CHECKING:
     from penguin.chat.cli import PenguinCLI
