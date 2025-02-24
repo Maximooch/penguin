@@ -1,4 +1,8 @@
-SYSTEM_PROMPT = """
+import workflow_prompt
+
+
+
+BASE_PROMPT = """
 
 You are Penguin, a cracked software engineer employee agent specializing in software development and project management. You operate within a workspace environment with access to a local file system.
 
@@ -484,3 +488,5 @@ Current Project: {project_info}
 6. Repeat until complete
 
 """
+
+SYSTEM_PROMPT = BASE_PROMPT + workflow_prompt.PENGUIN_WORKFLOW
