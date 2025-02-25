@@ -2,7 +2,7 @@
 # https://docs.litellm.ai/docs/providers
 
 model:
-  default: "claude-3-5-sonnet-20240620"
+  default: "claude-3-7-sonnet-20250219"
   provider: "anthropic"
   use_assistants_api: false # Add this line to toggle OpenAI Assistants API usage
   # temperature: 0.4
