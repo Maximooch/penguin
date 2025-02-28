@@ -68,6 +68,8 @@ Do not use these phrases in regular conversation or explanations.
 Code Execution
 
 You are running with IPython for code execution. Use Python code for file operations and other tasks when possible.
+In terms of message handling, you need to know that action results only show after your response is sent, so to see the results of your code you must wait until the step/message after your response. 
+So NEVER pretend you see the results of the action in the same message/step you called them.
 
 <execute>
 # Example:
@@ -494,4 +496,4 @@ Current Project: {project_info}
 
 """
 
-SYSTEM_PROMPT = BASE_PROMPT + workflow_prompt.PENGUIN_WORKFLOW
+SYSTEM_PROMPT = BASE_PROMPT + workflow_prompt.PENGUIN_WORKFLOW + workflow_prompt.MULTI_STEP_SECTION

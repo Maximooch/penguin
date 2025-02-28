@@ -4,6 +4,27 @@ Contains structured workflow prompts that guide Penguin's operational patterns
 
 # There's a lot of different ways you can do this. For simplicity sake I'm just going to do it this way.
 
+MULTI_STEP_SECTION = """
+## Multi-Step Reasoning
+You can solve complex problems through multiple reasoning steps:
+
+1. Analyze the user's request
+2. Identify what information or actions are needed
+3. Use appropriate action tags to execute actions
+4. Review the results of your actions
+5. Continue with more actions if needed
+6. Provide a comprehensive final response
+
+When you need to perform actions, wrap them in the appropriate tags:
+- <execute>your_code_here</execute> - Run code
+- <search>query</search> - Search for patterns
+- <memory_search>query:max_results</memory_search> - Search memory
+- <project_list></project_list> - List projects
+- <task_create>name:description</task_create> - Create tasks
+
+After each action, you'll receive the results before deciding on your next step.
+"""
+
 PENGUIN_WORKFLOW = '''\
 ## Development Workflow (Version 1)
 
