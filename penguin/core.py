@@ -111,7 +111,7 @@ import time
 import traceback
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union, Callable
 
 from dotenv import load_dotenv  # type: ignore
 from rich.console import Console  # type: ignore
@@ -276,6 +276,7 @@ class PenguinCore:
         self.api_client = api_client
         self.tool_manager = tool_manager
         self._interrupted = False
+        self.progress_callbacks = []
 
         # Set system prompt from import
         self.system_prompt = SYSTEM_PROMPT
@@ -338,6 +339,25 @@ class PenguinCore:
         else:
             disable_diagnostics()
 
+    def register_progress_callback(self, callback: Callable[[int, int, Optional[str]], None]) -> None:
+        """Register a callback for progress updates during multi-step processing.
+        
+        Args:
+            callback: Function that takes (iteration, max_iterations, message) as parameters
+        """
+        self.progress_callbacks.append(callback)
+
+    def notify_progress(self, iteration: int, max_iterations: int, message: Optional[str] = None) -> None:
+        """Notify all registered callbacks about progress.
+        
+        Args:
+            iteration: Current iteration number
+            max_iterations: Maximum number of iterations
+            message: Optional status message
+        """
+        for callback in self.progress_callbacks:
+            callback(iteration, max_iterations, message)
+
     def reset_context(self):
         """Reset context and diagnostics"""
         # What if this wasn't reset at the end of every session, to help with long term memory?
@@ -388,6 +408,10 @@ class PenguinCore:
         message = self.system_prompt
         if current_iteration is not None and max_iterations is not None:
             message += f"\n\nCurrent iteration: {current_iteration}/{max_iterations}"
+            if current_iteration > 1:
+                message += "\nYou are in a multi-step reasoning process. Review the action results from your previous steps and decide what to do next. You can take additional actions or provide a final response."
+            else:
+                message += "\nYou are starting a multi-step reasoning process. You can analyze the user's request and take actions, then review the results to determine next steps."
         return message
 
     def _check_interrupt(self) -> bool:
@@ -535,23 +559,34 @@ class PenguinCore:
             )
             logger.debug(f"Raw API response: {response}")
 
-            # Process response format
-            if self.api_client.model_config.use_assistants_api:
-                if isinstance(response, dict):
-                    assistant_response = response.get("assistant_response", "") or str(response)
+            # Process response format with improved error handling
+            try:
+                if self.api_client.model_config.use_assistants_api:
+                    if isinstance(response, dict):
+                        assistant_response = response.get("assistant_response", "") or str(response)
+                    else:
+                        assistant_response = str(response)
                 else:
-                    assistant_response = str(response)
-            else:
-                assistant_response = response.choices[0].message.content
+                    # Add deeper validation of the response structure
+                    if not response or not hasattr(response, 'choices') or not response.choices:
+                        logger.error("Invalid response structure from API")
+                        assistant_response = None
+                    else:
+                        assistant_response = response.choices[0].message.content
+            except Exception as e:
+                logger.error(f"Error extracting assistant response: {str(e)}")
+                assistant_response = None
 
             # Count output tokens and update diagnostics
-            diagnostics.update_tokens("main_model", "", assistant_response)
+            if assistant_response:
+                diagnostics.update_tokens("main_model", "", assistant_response)
 
             # Check for task completion
-            exit_continuation = TASK_COMPLETION_PHRASE in str(assistant_response)
+            exit_continuation = TASK_COMPLETION_PHRASE in str(assistant_response or "")
 
             # Parse actions without executing
-            actions = parse_action(assistant_response)
+            # Add null check to handle None responses
+            actions = parse_action(assistant_response) if assistant_response is not None else []
 
             # Execute actions with interrupt checking
             action_results = []
@@ -610,7 +645,7 @@ class PenguinCore:
                     )
 
             # Update conversation with assistant response and aggregated tool outputs
-            full_assistant_response = assistant_response
+            full_assistant_response = assistant_response if assistant_response is not None else "No response generated"
             if aggregated_tool_outputs:
                 full_assistant_response += "\n\n" + aggregated_tool_outputs
             self.conversation_system.add_message("assistant", full_assistant_response)
@@ -653,7 +688,7 @@ class PenguinCore:
                 },
             )
             return {
-                "assistant_response": "I apologize, but an error occurred. It has been logged for investigation.",
+                "assistant_response": f"I apologize, but an error occurred: {str(e)}",
                 "action_results": [],
             }, False
 
@@ -755,16 +790,25 @@ class PenguinCore:
     )
     async def process(
         self,
-        message: str,
+        input_data: Dict[str, Any],
         context: Optional[Dict[str, Any]] = None,
-        conversation_id: Optional[str] = None
-    ) -> str:
-        """Process a message with optional conversation support.
-
-        When a conversation_id is provided, load the corresponding conversation so that
-        new messages are appended to its history. Otherwise, process as a new conversation.
+        conversation_id: Optional[str] = None,
+        max_iterations: int = 5  # Prevent infinite loops
+    ) -> Dict[str, Any]:
+        """Process a message with multi-step reasoning and action execution.
+        
+        This method implements a reasoning-action loop that allows Penguin to:
+        1. Generate a response and identify actions
+        2. Execute those actions
+        3. Analyze the results
+        4. Decide whether to take more actions or provide a final response
         """
         try:
+            # Extract message from input data
+            message = input_data.get("text", "")
+            if not message:
+                return {"assistant_response": "No input provided", "action_results": []}
+            
             # If a conversation ID is provided, load the corresponding conversation.
             if conversation_id:
                 self.conversation_system.load(conversation_id)
@@ -772,20 +816,107 @@ class PenguinCore:
             # Prepare the conversation context with the new message.
             self.conversation_system.prepare_conversation(message)
             
-            # Generate response using the associated systems.
-            response_data, _ = await self.get_response()
+            final_response = None
+            iterations = 0
+            action_results_all = []
             
-            # (Optional) Update or perform any post-processing on the conversation state.
+            # Multi-step processing loop
+            while iterations < max_iterations:
+                iterations += 1
+                
+                # Notify progress callbacks with more detailed status
+                status_message = f"Processing step {iterations}/{max_iterations}..."
+                self.notify_progress(iterations, max_iterations, status_message)
+                logger.debug(status_message)
+                
+                # Add iteration marker to conversation
+                self.conversation_system.add_iteration_marker(iterations, max_iterations)
+                
+                # Get the next response (which may contain actions)
+                try:
+                    response_data, exit_continuation = await self.get_response(
+                        current_iteration=iterations, 
+                        max_iterations=max_iterations
+                    )
+                    
+                    # Extract the assistant's response text
+                    assistant_response = response_data.get("assistant_response", "")
+                    current_action_results = response_data.get("action_results", [])
+                    
+                    # Add action results to the overall collection
+                    action_results_all.extend(current_action_results)
+                    
+                    # Check for empty or "No response generated" responses
+                    if assistant_response == "No response generated" or not assistant_response:
+                        logger.debug("Breaking loop: No valid response was generated")
+                        final_response = "I apologize, but I was unable to generate a response. Please try again."
+                        break
+                    
+                    # Parse any actions in the response
+                    actions = parse_action(assistant_response)
+                    logger.debug(f"Iteration {iterations}: Found {len(actions)} actions")
+                    
+                    # Break conditions - this is the key fix: more explicit logging and checks
+                    should_break = False
+                    break_reason = ""
+                    
+                    if not actions:
+                        break_reason = "No actions found in response"
+                        should_break = True
+                    elif exit_continuation:
+                        break_reason = "Exit continuation flag is set"
+                        should_break = True
+                    elif iterations >= max_iterations:
+                        break_reason = "Maximum iterations reached"
+                        should_break = True
+                        
+                    if should_break:
+                        logger.debug(f"Breaking loop: {break_reason}")
+                        self.notify_progress(iterations, max_iterations, f"Finalizing: {break_reason}")
+                        final_response = assistant_response
+                        break
+                    
+                    # If we're continuing, notify of action execution
+                    if actions:
+                        self.notify_progress(iterations, max_iterations, f"Executing {len(actions)} actions...")
+                    
+                    # Add action results to conversation for the next iteration
+                    if current_action_results:
+                        result_message = "\n".join([
+                            f"Action: {r['action']}\nResult: {r['result']}\nStatus: {r['status']}"
+                            for r in current_action_results
+                        ])
+                        self.conversation_system.add_message(
+                            "system", 
+                            f"Action Results:\n{result_message}"
+                        )
+                except Exception as e:
+                    logger.error(f"Error in iteration {iterations}: {str(e)}")
+                    self.notify_progress(iterations, max_iterations, "Error in processing")
+                    # Add error to conversation
+                    self.conversation_system.add_message(
+                        "system",
+                        f"Error in processing: {str(e)}"
+                    )
+                    # Break the loop on error
+                    final_response = f"I encountered an error during processing: {str(e)}"
+                    break
+            
+            # Save the final conversation state
             self.conversation_system.save()
             
-            # Format the response based on the type of output received.
-            if isinstance(response_data, dict):
-                response = response_data.get("assistant_response", "")
-            else:
-                response = str(response_data)
+            # Return the final response with all action results
+            return {
+                "assistant_response": final_response or "No response generated",
+                "action_results": action_results_all
+            }
             
-            return response
-
         except Exception as e:
-            log_error(e, context={"method": "process", "message": message, "conversation_id": conversation_id})
-            raise
+            error_msg = f"Error in process method: {str(e)}"
+            logger.error(f"{error_msg}\n{traceback.format_exc()}")
+            log_error(e, context={"method": "process", "input_data": input_data, "conversation_id": conversation_id})
+            return {
+                "assistant_response": "I apologize, but an error occurred while processing your request.",
+                "action_results": [],
+                "error": str(e)
+            }

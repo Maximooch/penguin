@@ -3,12 +3,13 @@ import datetime
 import os
 import traceback
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Callable, Dict, Any
 
 import typer  # type: ignore
 from rich.console import Console  # type: ignore
 from rich.markdown import Markdown  # type: ignore
 from rich.panel import Panel  # type: ignore
+from rich.progress import Progress, SpinnerColumn, TextColumn  # type: ignore
 
 from penguin.config import config
 from penguin.core import PenguinCore
@@ -39,6 +40,8 @@ class PenguinCLI:
         self.message_count = 0
         self.console = Console()
         self.conversation_menu = ConversationMenu(self.console)
+        self.core.register_progress_callback(self.on_progress_update)
+        self.progress = None
 
     def display_message(self, message: str, role: str = "assistant"):
         """Display a message with proper formatting"""
@@ -75,6 +78,31 @@ class PenguinCLI:
             width=self.console.width - 4,
         )
         self.console.print(panel)
+
+    def on_progress_update(self, iteration: int, max_iterations: int, message: Optional[str] = None):
+        """Handle progress updates from the core during multi-step processing"""
+        if self.progress is None:
+            self.progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                console=self.console
+            )
+            self.progress.start()
+            self.progress_task = self.progress.add_task(
+                f"Thinking... (Step {iteration}/{max_iterations})", total=max_iterations
+            )
+        else:
+            self.progress.update(
+                self.progress_task, 
+                description=f"{message or 'Thinking...'} (Step {iteration}/{max_iterations})",
+                completed=iteration
+            )
+            
+            # If processing is complete, finish the progress bar
+            if iteration >= max_iterations or message and "Finalizing" in message:
+                self.progress.update(self.progress_task, completed=max_iterations)
+                self.progress.stop()
+                self.progress = None
 
     async def chat_loop(self):
         """Main chat loop"""
@@ -294,8 +322,8 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                         # Process image with core
                         input_data = {"text": image_prompt, "image_path": image_path}
 
-                        await self.core.process_input(input_data)
-                        response, _ = await self.core.get_response()
+                        # Use process() instead of process_input + get_response to get multi-step processing
+                        response = await self.core.process(input_data, max_iterations=5)
 
                         # Display response
                         if isinstance(response, dict):
@@ -365,18 +393,34 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                         continue
 
                 # Process regular input and get response
-                await self.core.process_input({"text": user_input})
-                response, _ = await self.core.get_response()
-
-                # Display response
-                if isinstance(response, dict):
-                    if "assistant_response" in response:
-                        self.display_message(response["assistant_response"])
-                    if "action_results" in response:
-                        for result in response["action_results"]:
-                            self.display_message(str(result), "system")
-                else:
-                    self.display_message(str(response))
+                # Initialize progress display for multi-step processing
+                self.display_message("Processing your request...", "system")
+                
+                # Process the input with multi-step reasoning (max_iterations=5 by default)
+                try:
+                    response = await self.core.process({"text": user_input}, max_iterations=5)
+                    
+                    # Display response
+                    if isinstance(response, dict):
+                        if "assistant_response" in response:
+                            self.display_message(response["assistant_response"])
+                        if "action_results" in response:
+                            for result in response["action_results"]:
+                                self.display_message(str(result), "system")
+                    else:
+                        self.display_message(str(response))
+                except KeyboardInterrupt:
+                    # Clean up progress display if interrupted
+                    if self.progress:
+                        self.progress.stop()
+                        self.progress = None
+                    raise
+                except Exception as e:
+                    # Clean up progress display on error
+                    if self.progress:
+                        self.progress.stop()
+                        self.progress = None
+                    self.display_message(f"Error processing your request: {str(e)}", "error")
 
                 # Save conversation after each message exchange
                 self.core.conversation_system.save()

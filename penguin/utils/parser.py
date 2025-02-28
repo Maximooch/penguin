@@ -80,28 +80,58 @@ class CodeActAction:
 
 
 def parse_action(content: str) -> List[CodeActAction]:
+    """Parse actions from content using regex pattern matching.
+    
+    Args:
+        content: The string content to parse for actions
+        
+    Returns:
+        A list of CodeActAction objects, empty if no actions found
+    """
+    # Handle None content by returning an empty list
+    if content is None or content == "No response generated":
+        logger.warning(f"Received invalid content in parse_action: {content}")
+        return []
+    
+    # Check for common action tag patterns
+    action_tag_pattern = r"<(execute|search|memory_search|perplexity_search|workspace_search|process_\w+|add_\w+_note|task_\w+|project_\w+|dependency_\w+)>"
+    if not re.search(action_tag_pattern, content, re.IGNORECASE):
+        # No action tags found, return empty list immediately
+        logger.debug("No action tags found in content")
+        return []
+        
     # Extract only the AI's response part
-    ai_response = content.split("AI Response:\n", 1)[-1].split(
-        "\n\nAction Results:", 1
-    )[0]
+    try:
+        # Use more flexible pattern matching for action extraction
+        pattern = r"<(\w+)>(.*?)</\1>"
+        matches = re.finditer(pattern, content, re.DOTALL)
 
-    pattern = r"<(\w+)>(.*?)</\1>"
-    matches = re.finditer(pattern, ai_response, re.DOTALL)
-
-    actions = []  # Initialize the actions list
-
-    for match in matches:
-        action_type = match.group(1).lower()
-        params = unescape(match.group(2).strip())
-        try:
-            action_type_enum = ActionType[action_type.upper()]
-            action = CodeActAction(action_type_enum, params)
-            actions.append(action)
-        except KeyError:
-            # Ignore unrecognized action types
-            pass
-
-    return actions
+        actions = []  # Initialize the actions list
+        
+        match_found = False
+        for match in matches:
+            match_found = True
+            action_type = match.group(1).lower()
+            params = unescape(match.group(2).strip())
+            
+            # Verify this is a valid action type
+            try:
+                action_type_enum = ActionType[action_type.upper()]
+                action = CodeActAction(action_type_enum, params)
+                actions.append(action)
+                logger.debug(f"Found valid action: {action_type}")
+            except KeyError:
+                # Ignore unrecognized action types
+                logger.warning(f"Unrecognized action type: {action_type}")
+                pass
+        
+        if not match_found:
+            logger.debug("No actions matched in content despite initial regex check")
+        
+        return actions
+    except Exception as e:
+        logger.error(f"Error parsing actions: {str(e)}", exc_info=True)
+        return []
 
 
 class ActionExecutor:

@@ -387,3 +387,10 @@ class ConversationSystem:
         """Reset the conversation state"""
         self.messages = []
         self.system_prompt_sent = False
+
+    def add_iteration_marker(self, iteration: int, max_iterations: int) -> None:
+        """Add a marker for the start of a new iteration in the multi-step process."""
+        self.add_message(
+            "system",
+            f"--- Beginning iteration {iteration}/{max_iterations} ---"
+        )
