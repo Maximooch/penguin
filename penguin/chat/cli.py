@@ -136,6 +136,7 @@ class PenguinCLI:
         self.conversation_menu = ConversationMenu(self.console)
         self.core.register_progress_callback(self.on_progress_update)
         self.progress = None
+        self._active_contexts = set()
         
         # Add signal handler for clean interrupts
         signal.signal(signal.SIGINT, self._handle_interrupt)
@@ -429,46 +430,28 @@ class PenguinCLI:
             self.console.print(panel)
 
     def on_progress_update(self, iteration: int, max_iterations: int, message: Optional[str] = None):
-        """Handle progress updates from the core during multi-step processing"""
-        try:
-            if self.progress is None:
-                self.progress = Progress(
-                    SpinnerColumn(),
-                    TextColumn("[bold blue]{task.description}"),
-                    console=self.console
-                )
-                self.progress.start()
-                self.progress_task = self.progress.add_task(
-                    f"Thinking... (Step {iteration}/{max_iterations})", total=max_iterations
-                )
-            else:
-                # If we receive a finalizing message, ensure we update the progress visibly
-                if message and "Finalizing" in message:
-                    self.progress.update(
-                        self.progress_task,
-                        description=f"{message} (Step {iteration}/{max_iterations})",
-                        completed=max_iterations  # Force complete
-                    )
-                    # Add a small delay to ensure UI updates before stopping
-                    import time
-                    time.sleep(0.2)
-                    self._safely_stop_progress()
-                    return
-                
-                self.progress.update(
-                    self.progress_task, 
-                    description=f"{message or 'Thinking...'} (Step {iteration}/{max_iterations})",
-                    completed=iteration
-                )
-                
-                # If processing is complete, finish the progress bar
-                if iteration >= max_iterations:
-                    self.progress.update(self.progress_task, completed=max_iterations)
-                    self._safely_stop_progress()
-        except Exception as e:
-            # Catch any exceptions in progress handling to prevent UI issues
-            print(f"\nProgress update error: {str(e)}")
+        """Handle progress updates without interfering with execution"""
+        if not self.progress and iteration > 0:
+            # Only show progress if not already processing
             self._safely_stop_progress()
+            self.progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                console=self.console
+            )
+            self.progress.start()
+            self.progress_task = self.progress.add_task(
+                f"Thinking... (Step {iteration}/{max_iterations})", 
+                total=max_iterations
+            )
+        
+        if self.progress:
+            # Update without completing to prevent early termination
+            self.progress.update(
+                self.progress_task,
+                description=f"{message or 'Processing'} (Step {iteration}/{max_iterations})",
+                completed=min(iteration, max_iterations-1)  # Never mark fully complete
+            )
 
     def _safely_stop_progress(self):
         """Safely stop and clear the progress bar"""
@@ -488,7 +471,7 @@ class PenguinCLI:
         print("\033[2K", end="\r")  # Clear the current line
 
     async def chat_loop(self):
-        """Main chat loop"""
+        """Main chat loop with execution isolation"""
         # Initialize logging for this session
         timestamp = datetime.datetime.now()
         session_id = timestamp.strftime("%Y%m%d_%H%M")
