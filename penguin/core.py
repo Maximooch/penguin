@@ -119,6 +119,7 @@ from tenacity import (  # TODO: try this out. # type: ignore
     retry,
     stop_after_attempt,
     wait_exponential,
+    retry_if_exception_type,
 )
 from tqdm import tqdm
 
@@ -787,6 +788,8 @@ class PenguinCore:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
         reraise=True,
+        retry=retry_if_exception_type(Exception),
+        retry_error_callback=lambda retry_state: None if isinstance(retry_state.outcome.exception(), KeyboardInterrupt) else retry_state.outcome.exception()
     )
     async def process(
         self,
@@ -904,6 +907,10 @@ class PenguinCore:
             
             # Save the final conversation state
             self.conversation_system.save()
+            
+            # Final progress notification for completion
+            final_message = "Finalizing: Processing complete"
+            self.notify_progress(max_iterations, max_iterations, final_message)
             
             # Return the final response with all action results
             return {
