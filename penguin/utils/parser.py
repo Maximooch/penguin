@@ -93,17 +93,19 @@ def parse_action(content: str) -> List[CodeActAction]:
         logger.warning(f"Received invalid content in parse_action: {content}")
         return []
     
-    # Check for common action tag patterns
-    action_tag_pattern = r"<(execute|search|memory_search|perplexity_search|workspace_search|process_\w+|add_\w+_note|task_\w+|project_\w+|dependency_\w+)>"
-    if not re.search(action_tag_pattern, content, re.IGNORECASE):
+    # Check for common action tag patterns - using the enum values directly to ensure only valid actions are detected
+    action_tag_pattern = "|".join([action_type.value for action_type in ActionType])
+    action_tag_regex = f"<({action_tag_pattern})>"
+    
+    if not re.search(action_tag_regex, content, re.IGNORECASE):
         # No action tags found, return empty list immediately
         logger.debug("No action tags found in content")
         return []
         
     # Extract only the AI's response part
     try:
-        # Use more flexible pattern matching for action extraction
-        pattern = r"<(\w+)>(.*?)</\1>"
+        # Use more specific pattern matching to only extract valid action types
+        pattern = f"<({action_tag_pattern})>(.*?)</\\1>"
         matches = re.finditer(pattern, content, re.DOTALL)
 
         actions = []  # Initialize the actions list
@@ -121,7 +123,7 @@ def parse_action(content: str) -> List[CodeActAction]:
                 actions.append(action)
                 logger.debug(f"Found valid action: {action_type}")
             except KeyError:
-                # Ignore unrecognized action types
+                # This shouldn't happen with our updated regex, but just in case
                 logger.warning(f"Unrecognized action type: {action_type}")
                 pass
         

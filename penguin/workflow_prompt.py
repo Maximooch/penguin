@@ -25,6 +25,8 @@ When you need to perform actions, wrap them in the appropriate tags:
 After each action, you'll receive the results before deciding on your next step.
 """
 
+# TODO: merge some parts of these prompts (or entirely) with base prompt. Kind of duplicative now.
+
 PENGUIN_WORKFLOW = '''\
 ## Development Workflow (Version 1)
 
