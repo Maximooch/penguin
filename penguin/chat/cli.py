@@ -136,7 +136,7 @@ class PenguinCLI:
         self.conversation_menu = ConversationMenu(self.console)
         self.core.register_progress_callback(self.on_progress_update)
         self.progress = None
-        self._active_contexts = set()
+        # self._active_contexts = set()
         
         # Add signal handler for clean interrupts
         signal.signal(signal.SIGINT, self._handle_interrupt)
