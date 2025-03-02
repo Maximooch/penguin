@@ -5,7 +5,7 @@ import subprocess
 from typing import Any, Callable, Dict, List, Optional, Union
 
 # from utils.log_error import log_error
-# from .support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
+# from .core.support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
 from penguin.config import WORKSPACE_PATH
 from penguin.memory.summary_notes import SummaryNotes
 from penguin.utils import FileMap
@@ -13,12 +13,12 @@ from penguin.utils import FileMap
 # from .old2_memory_search import MemorySearch
 from penguin.utils.notebook import NotebookExecutor
 
-from .declarative_memory_tool import DeclarativeMemoryTool
-from .grep_search import GrepSearch
-from .lint_python import lint_python
-from .memory_search import MemorySearcher  # Import the new memory searcher
-from .perplexity_tool import PerplexityProvider
-from .workspace_search import CodeIndexer
+from penguin.tools.core.declarative_memory_tool import DeclarativeMemoryTool
+from penguin.tools.core.grep_search import GrepSearch
+from penguin.tools.core.lint_python import lint_python
+from penguin.tools.core.memory_search import MemorySearcher  # Import the new memory searcher
+from penguin.tools.core.perplexity_tool import PerplexityProvider
+from penguin.tools.core.workspace_search import CodeIndexer
 
 
 class ToolManager:

@@ -1,5 +1,23 @@
 import workflow_prompt
 
+# def generate_tools_section(loader: ToolLoader):
+#     tool_list = []
+    
+#     # Format core tools
+#     tool_list.append("## Core Tools\n")
+#     for tool in loader.core_tools:
+#         tool_list.append(f"- **{tool['name']}**: {tool['description']}")
+#         tool_list.append(f"  Parameters: {', '.join(tool['parameters'])}")
+    
+#     # Format third-party tools  
+#     if loader.third_party_tools:
+#         tool_list.append("\n## Third-Party Tools\n")
+#         for tool in loader.third_party_tools:
+#             tool_list.append(f"- {tool['name']} ({tool.get('author', 'Unknown')})")
+#             tool_list.append(f"  {tool['description']}")
+    
+#     return "\n".join(tool_list)
+
 
 
 BASE_PROMPT = """

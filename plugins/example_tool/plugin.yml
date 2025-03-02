@@ -1,0 +1,18 @@
+# plugins/example_tool/plugin.yml
+name: example_tool
+version: "1.0"
+description: "Example third-party tool"
+author: "Third Party Developer"
+entry_point: "main:ExampleTool"
+dependencies:
+  - requests>=2.25.0
+actions:
+  - name: example_action
+    description: "Performs an example action"
+    parameters:
+      - name: query
+        type: string
+        description: "Query parameter"
+        required: true
+permissions:
+  - network.request

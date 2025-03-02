@@ -1,0 +1,12 @@
+# integrations/mcp/config.yml
+name: mcp_integration
+version: "1.0"
+description: "Integration with Model Context Protocol"
+repository: "https://github.com/modelcontextprotocol/python-sdk"
+configuration:
+  protocol_version: "0.1.0"
+tools:
+  - external_name: "web_search"
+    internal_name: "penguin_web_search"
+    parameter_mapping:
+      query: "search_query"
