@@ -2,21 +2,31 @@ import io
 import os
 import sys
 
-from IPython.core.interactiveshell import InteractiveShell
+from IPython.core.interactiveshell import InteractiveShell # type: ignore
 
 from penguin.config import WORKSPACE_PATH
 from penguin.utils.process_manager import ProcessManager
+from penguin.utils import FileMap
 
 
 class NotebookExecutor:
     def __init__(self):
         self.shell = InteractiveShell.instance()
+        self.original_dir = os.getcwd()  # Track original directory
         os.chdir(WORKSPACE_PATH)  # Set the working directory to the workspace
         self.process_manager = ProcessManager()
         self.current_process = None
+        self.file_map = FileMap(WORKSPACE_PATH)
+        self.active_directory = WORKSPACE_PATH  # Explicit workspace tracking
 
     def execute_code(self, code: str) -> str:
         try:
+            # Store pre-execution state
+            pre_dir = os.getcwd()
+            os.chdir(self.active_directory)  # Ensure workspace context
+            
+            pre_state = self.file_map.get_file_map()
+            
             # Capture both stdout and stderr
             out = io.StringIO()
             err = io.StringIO()
@@ -29,6 +39,9 @@ class NotebookExecutor:
             # Restore stdout and stderr
             sys.stdout = sys.__stdout__
             sys.stderr = sys.__stderr__
+            
+            # Return to original directory after execution
+            os.chdir(pre_dir)
 
             # Get the captured outputs
             output = out.getvalue()
@@ -69,9 +82,13 @@ class NotebookExecutor:
                 shell = False
                 command = ["bash", "-c", command]
 
-            # Execute command
+            # Execute command in explicit workspace directory
             result = subprocess.run(
-                command, shell=shell, capture_output=True, text=True, cwd=WORKSPACE_PATH
+                command, 
+                shell=shell, 
+                capture_output=True, 
+                text=True, 
+                cwd=self.active_directory  # Force workspace context
             )
 
             # Combine stdout and stderr if present

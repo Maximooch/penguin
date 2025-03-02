@@ -278,6 +278,7 @@ class PenguinCore:
         self.tool_manager = tool_manager
         self._interrupted = False
         self.progress_callbacks = []
+        self._active_contexts = set()  # Track active execution contexts
 
         # Set system prompt from import
         self.system_prompt = SYSTEM_PROMPT
@@ -796,7 +797,8 @@ class PenguinCore:
         input_data: Dict[str, Any],
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
-        max_iterations: int = 5  # Prevent infinite loops
+        max_iterations: int = 5,  # Prevent infinite loops
+        execution_context: str = "default"  # Track execution source
     ) -> Dict[str, Any]:
         """Process a message with multi-step reasoning and action execution.
         
@@ -806,6 +808,15 @@ class PenguinCore:
         3. Analyze the results
         4. Decide whether to take more actions or provide a final response
         """
+        # Check for duplicate execution
+        if execution_context in self._active_contexts:
+            return {
+                "assistant_response": f"Already processing in {execution_context}",
+                "action_results": []
+            }
+            
+        self._active_contexts.add(execution_context)
+        
         try:
             # Extract message from input data
             message = input_data.get("text", "")
