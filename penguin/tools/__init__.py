@@ -1,7 +1,8 @@
-from .support import (
+from .core.support import (
     create_file,
     create_folder,
     encode_image_to_base64,
+    find_file,
     list_files,
     read_file,
     write_to_file,
@@ -19,4 +20,5 @@ __all__ = [
     "read_file",
     "list_files",
     "encode_image_to_base64",
+    "find_file",
 ]
