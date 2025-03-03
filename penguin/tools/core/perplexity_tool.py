@@ -24,7 +24,7 @@ class PerplexityProvider(WebSearchProvider):
     def search(self, query: str, max_results: int = 5) -> List[Dict[str, str]]:
         try:
             payload = {
-                "model": "llama-3.1-sonar-large-128k-online",
+                "model": "sonar",
                 "messages": [
                     {
                         "role": "system",

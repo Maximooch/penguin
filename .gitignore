@@ -18,6 +18,7 @@ __pycache__/
 penguin/workspace/conversations/
 penguin/workspace/memory_db/
 penguin/workspace/logs
+penguin_workspace/
 
 # Embeddings
 embeddings/
