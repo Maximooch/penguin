@@ -15,14 +15,7 @@ You can solve complex problems through multiple reasoning steps:
 5. Continue with more actions if needed
 6. Provide a comprehensive final response
 
-When you need to perform actions, wrap them in the appropriate tags:
-- <execute>your_code_here</execute> - Run code
-- <search>query</search> - Search for patterns
-- <memory_search>query:max_results</memory_search> - Search memory
-- <project_list></project_list> - List projects
-- <task_create>name:description</task_create> - Create tasks
-
-After each action, you'll receive the results before deciding on your next step.
+After each action/tool call, you'll receive the results before deciding on your next step.
 """
 
 # TODO: merge some parts of these prompts (or entirely) with base prompt. Kind of duplicative now.

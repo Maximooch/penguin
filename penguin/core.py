@@ -150,7 +150,7 @@ from penguin.system.conversation import ConversationSystem
 # System Prompt
 from penguin.system_prompt import SYSTEM_PROMPT
 # Workflow Prompt
-from penguin.workflow_prompt import PENGUIN_WORKFLOW
+from penguin.prompt_workflow import PENGUIN_WORKFLOW
 
 
 
