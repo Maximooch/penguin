@@ -176,7 +176,7 @@ class PenguinCLI:
             header = f"{emoji} {display_role}"
             
         # Enhanced code block formatting
-        processed_message = message
+        processed_message = message or ""
         code_blocks_found = False
         
         # Process all code block patterns

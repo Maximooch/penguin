@@ -292,15 +292,19 @@ class ConversationSystem:
 
     def add_message(self, role: str, content: Any) -> None:
         """Add a message to the conversation history."""
-        # Format content as per OpenAI's new API requirements
-        if isinstance(content, str):
-            formatted_content = [{"type": "text", "text": content}]
-        elif isinstance(content, dict) and "type" in content:
-            formatted_content = [content]  # Already properly formatted
-        elif isinstance(content, list):
-            formatted_content = content  # Assume it's already a list of content parts
+        # Preserve true empties
+        if isinstance(content, str) and not content:
+            formatted_content = []  # Allow empty content list
         else:
-            formatted_content = [{"type": "text", "text": str(content)}]
+            # Format content as per OpenAI's new API requirements
+            if isinstance(content, str):
+                formatted_content = [{"type": "text", "text": content}]
+            elif isinstance(content, dict) and "type" in content:
+                formatted_content = [content]  # Already properly formatted
+            elif isinstance(content, list):
+                formatted_content = content  # Assume it's already a list of content parts
+            else:
+                formatted_content = [{"type": "text", "text": str(content)}]
 
         message = {"role": role, "content": formatted_content}
         self.messages.append(message)
@@ -326,8 +330,9 @@ class ConversationSystem:
         self, user_input: str, image_path: Optional[str] = None
     ) -> None:
         """Prepare the conversation by adding necessary messages."""
-        if self.get_history() and self.get_last_message()["role"] == "user":
-            self.add_message("assistant", "Continuing the conversation...")
+        # if self.get_history() and self.get_last_message()["role"] == "user":
+        #     self.add_message("assistant", "Continuing the conversation...")
+            # You may need to comment this if statement out in the future.
 
         if not self.system_prompt_sent and self.system_prompt:
             system_tokens = self.diagnostics.count_tokens(self.system_prompt)

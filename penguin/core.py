@@ -561,25 +561,18 @@ class PenguinCore:
             )
             logger.debug(f"Raw API response: {response}")
 
-            # Process response format with improved error handling
-            try:
-                if self.api_client.model_config.use_assistants_api:
-                    if isinstance(response, dict):
-                        assistant_response = response.get("assistant_response", "") or str(response)
-                    else:
-                        assistant_response = str(response)
-                else:
-                    # Add deeper validation of the response structure
-                    if not response or not hasattr(response, 'choices') or not response.choices:
-                        logger.error("Invalid response structure from API")
-                        assistant_response = None
-                    else:
-                        assistant_response = response.choices[0].message.content
-            except Exception as e:
-                logger.error(f"Error extracting assistant response: {str(e)}")
-                assistant_response = None
+            # Modified response handling
+            assistant_response = None
+            if response and hasattr(response, 'choices') and response.choices:
+                assistant_response = response.choices[0].message.content
+            elif isinstance(response, dict):
+                assistant_response = response.get('assistant_response', '')
+            
+            # Remove empty response logging
+            if not assistant_response:
+                pass  # No longer log empty responses
 
-            # Count output tokens and update diagnostics
+            # Update token tracking only for non-empty content
             if assistant_response:
                 diagnostics.update_tokens("main_model", "", assistant_response)
 
@@ -860,11 +853,10 @@ class PenguinCore:
                     # Add action results to the overall collection
                     action_results_all.extend(current_action_results)
                     
-                    # Check for empty or "No response generated" responses
-                    if assistant_response == "No response generated" or not assistant_response:
-                        logger.debug("Breaking loop: No valid response was generated")
-                        final_response = "I apologize, but I was unable to generate a response. Please try again."
-                        break
+                    # Modified response validation
+                    if not assistant_response:
+                        logger.warning("Empty response received from API")
+                        break  # Continue processing with available data
                     
                     # Parse any actions in the response
                     actions = parse_action(assistant_response)
@@ -925,7 +917,7 @@ class PenguinCore:
             
             # Return the final response with all action results
             return {
-                "assistant_response": final_response or "No response generated",
+                "assistant_response": final_response if final_response is not None else "",
                 "action_results": action_results_all
             }
             

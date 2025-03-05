@@ -139,8 +139,13 @@ class APIClient:
                         "Converted system message to user message for provider"
                     )
 
+            # Preserve empty responses
+            formatted_messages = [
+                msg for msg in messages  # Preserve original content
+            ]
+
             # Format messages using the provider-specific adapter
-            formatted_messages = self.adapter.format_messages(messages)
+            formatted_messages = self.adapter.format_messages(formatted_messages)
 
             # Prepare parameters for the completion call
             completion_params = {
