@@ -1,0 +1,26 @@
+# integrations/mcp/config.yml
+name: mcp_integration
+version: "1.0"
+description: "Integration with Model Context Protocol"
+repository: "https://github.com/modelcontextprotocol/python-sdk"
+configuration:
+  protocol_version: "0.1.0"
+tools:
+  - external_name: "qr-code"
+    internal_name: "qr_code"
+    description: "Generate QR codes from text or URLs"
+    parameter_mapping:
+      content: "text"
+
+  - external_name: "search"
+    internal_name: "mcp_search"
+    description: "Search the web using MCP's search tool"
+
+# General configuration
+settings:
+  auto_register_all: false
+  default_expose_to_mcp: true
+
+prompts:
+  - external_name: "echo_prompt"
+    internal_name: "mcp_echo"

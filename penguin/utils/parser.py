@@ -88,9 +88,8 @@ def parse_action(content: str) -> List[CodeActAction]:
     Returns:
         A list of CodeActAction objects, empty if no actions found
     """
-    # Handle None content by returning an empty list
-    if content is None or content == "No response generated":
-        logger.warning(f"Received invalid content in parse_action: {content}")
+    # Remove string-based validation
+    if not content.strip():
         return []
     
     # Check for common action tag patterns - using the enum values directly to ensure only valid actions are detected
