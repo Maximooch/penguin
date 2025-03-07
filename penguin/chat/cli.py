@@ -14,6 +14,11 @@ from rich.panel import Panel  # type: ignore
 from rich.progress import Progress, SpinnerColumn, TextColumn  # type: ignore
 from rich.syntax import Syntax  # type: ignore
 import rich  # type: ignore
+from prompt_toolkit import PromptSession # type: ignore
+from prompt_toolkit.key_binding import KeyBindings # type: ignore
+from prompt_toolkit.keys import Keys # type: ignore
+from prompt_toolkit.styles import Style # type: ignore
+from prompt_toolkit.formatted_text import HTML # type: ignore
 
 from penguin.config import config
 from penguin.core import PenguinCore
@@ -138,8 +143,49 @@ class PenguinCLI:
         self.progress = None
         # self._active_contexts = set()
         
+        # Create prompt_toolkit session
+        self.session = self._create_prompt_session()
+        
         # Add signal handler for clean interrupts
         signal.signal(signal.SIGINT, self._handle_interrupt)
+    
+    def _create_prompt_session(self):
+        """Create and configure a prompt_toolkit session with multi-line support"""
+        # Define key bindings
+        kb = KeyBindings()
+        
+        # Add keybinding for Alt+Enter to create a new line
+        @kb.add(Keys.Escape, Keys.Enter)
+        def _(event):
+            """Insert a new line when Alt (or Option) + Enter is pressed."""
+            event.current_buffer.insert_text('\n')
+        
+        # Add keybinding for Enter to submit
+        @kb.add(Keys.Enter)
+        def _(event):
+            """Submit the input when Enter is pressed without modifiers."""
+            # If there's already text and cursor is at the end, submit
+            buffer = event.current_buffer
+            if buffer.text and buffer.cursor_position == len(buffer.text):
+                buffer.validate_and_handle()
+            else:
+                # Otherwise insert a new line
+                buffer.insert_text('\n')
+        
+        # Add a custom style
+        style = Style.from_dict({
+            'prompt': f'bold {self.USER_COLOR}',
+        })
+        
+        # Create the PromptSession
+        return PromptSession(
+            key_bindings=kb,
+            style=style,
+            multiline=True,  # Enable multi-line editing
+            vi_mode=False,   # Use Emacs keybindings by default
+            wrap_lines=True, # Wrap long lines
+            complete_in_thread=True
+        )
     
     def _handle_interrupt(self, sig, frame):
         self._safely_stop_progress()
@@ -506,12 +552,16 @@ Available Commands:
 Press Tab for command completion Use ↑↓ to navigate command history Press Ctrl+C to stop a running task"""
 
         self.display_message(welcome_message, "system")
+        self.display_message("TIP: Use Alt+Enter for new lines, Enter to submit", "system")
 
         while True:
             try:
                 # Clear any lingering progress bars before showing input
                 self._ensure_progress_cleared()
-                user_input = input(f"You [{self.message_count}]: ")
+                
+                # Use prompt_toolkit instead of input()
+                prompt_html = HTML(f'<prompt>You [{self.message_count}]: </prompt>')
+                user_input = await self.session.prompt_async(prompt_html)
 
                 if user_input.lower() in ["exit", "quit"]:
                     break
