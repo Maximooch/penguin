@@ -787,7 +787,7 @@ class PenguinCore:
     )
     async def process(
         self,
-        input_data: Dict[str, Any],
+        input_data: Union[Dict[str, Any], str],
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
         max_iterations: int = 5,  # Prevent infinite loops
@@ -800,19 +800,23 @@ class PenguinCore:
         2. Execute those actions
         3. Analyze the results
         4. Decide whether to take more actions or provide a final response
-        """
-        # # Check for duplicate execution
-        # if execution_context in self._active_contexts:
-        #     return {
-        #         "assistant_response": f"Already processing in {execution_context}",
-        #         "action_results": []
-        #     }
-            
-        # self._active_contexts.add(execution_context)
         
+        Args:
+            input_data: Either a dictionary with a 'text' key or a string message directly
+            context: Optional additional context for processing
+            conversation_id: Optional ID for conversation continuity
+            max_iterations: Maximum reasoning-action cycles (default: 5)
+        
+        Returns:
+            Dict containing assistant response and action results
+        """
         try:
-            # Extract message from input data
-            message = input_data.get("text", "")
+            # Handle flexible input - accept either string or dict
+            if isinstance(input_data, str):
+                message = input_data
+            else:
+                message = input_data.get("text", "")
+            
             if not message:
                 return {"assistant_response": "No input provided", "action_results": []}
             
@@ -823,6 +827,7 @@ class PenguinCore:
             # Prepare the conversation context with the new message.
             self.conversation_system.prepare_conversation(message)
             
+            # Rest of the method remains unchanged
             final_response = None
             iterations = 0
             action_results_all = []

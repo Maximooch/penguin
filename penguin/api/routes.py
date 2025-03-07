@@ -1,8 +1,8 @@
 from typing import Any, Dict, Optional
-from fastapi import APIRouter, Depends, WebSocket, HTTPException
-from pydantic import BaseModel
-from dataclasses import asdict
-from datetime import datetime
+from fastapi import APIRouter, Depends, WebSocket, HTTPException # type: ignore
+from pydantic import BaseModel # type: ignore
+from dataclasses import asdict # type: ignore
+from datetime import datetime # type: ignore
 
 from penguin.core import PenguinCore
 from penguin.system.conversation import ConversationLoader, ConversationMetadata
@@ -38,8 +38,17 @@ async def process_message(
     request: MessageRequest, core: PenguinCore = Depends(get_core)
 ):
     """Process a chat message, with optional conversation support."""
-    response = await core.process(request.text, request.context, conversation_id=request.conversation_id)
-    return {"response": response}
+    # Convert the message to the format expected by core.process
+    input_data = {"text": request.text}
+    process_result = await core.process(
+        input_data=input_data,
+        context=request.context,
+        conversation_id=request.conversation_id
+    )
+    
+    # The frontend expects a "response" field, but core.process returns "assistant_response"
+    # We need to rename the field to match what the frontend expects
+    return {"response": process_result.get("assistant_response", "")}
 
 
 @router.post("/api/v1/projects/create")
