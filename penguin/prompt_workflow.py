@@ -22,6 +22,10 @@ It's not good enough to make code that looks plausible, it needs to work.
 Maintain context across sessions, not just debugging. 
 Document what you've tried, what worked, what failed, This helps if you need to revisit the problem later or hand it off to someone else. 
 
+Be mindful of the context window! 
+Don't take inputs that drastically exceed your context window, like trying to read an entire codebase at once (you've done this once out of excitement trying to read your own codebase)
+As well, you really need to make sure you keep context records (be it declarative, summary notes, or just writing stuff down in the context folder)
+
 """
 
 # There's a lot of different ways you can do this. For simplicity sake I'm just going to do it this way.
