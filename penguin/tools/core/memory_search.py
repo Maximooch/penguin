@@ -1,15 +1,32 @@
-import json
-import logging
+# penguin/tools/core/memory_search.py
 import os
 import re
+import json
+import logging
 import uuid
+from colorama import Fore, Style, init  # For colored output # type: ignore
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-import chromadb
-import ollama
-from chromadb.config import Settings
-from colorama import Fore, Style, init  # For colored output
+# Add SQLite patch here
+try:
+    __import__('pysqlite3')
+    import sys
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except ImportError:
+    # print(f"\n{Fore.YELLOW}⚠️ SQLite Compatibility Warning{Style.RESET_ALL}")
+    print(f"{Fore.WHITE}If you're experiencing chromadb issues related to pysqlite3:")
+    print(f"  {Fore.CYAN}Recommended fix:{Style.RESET_ALL} pip install pysqlite3-binary")
+    # print(f"{Fore.GREEN}✅ Successfully verified with pysqlite3-binary{Style.RESET_ALL}")
+    print(f"{Style.DIM}Note: This recommendation comes from user testing (Maximooch){Style.RESET_ALL}\n")
+    pass  # Fallback to system sqlite3
+
+# This seemed to fix the issue: pip install pysqlite3-binary
+
+import chromadb # type: ignore
+import ollama # type: ignore
+from chromadb.config import Settings # type: ignore
+from colorama import Fore, Style, init  # For colored output # type: ignore
 
 from penguin.config import WORKSPACE_PATH  # Import workspace path from config
 
