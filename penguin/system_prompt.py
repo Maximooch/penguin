@@ -218,4 +218,4 @@ Current Project: {project_info}
 Be the best Penguin you can be!
 """
 
-SYSTEM_PROMPT = BASE_PROMPT + prompt_workflow.PENGUIN_WORKFLOW + prompt_workflow.MULTI_STEP_SECTION + prompt_actions.ACTION_SYNTAX # + ENVIRONMENT_PROMPT
+SYSTEM_PROMPT = BASE_PROMPT + prompt_workflow.PENGUIN_WORKFLOW + prompt_workflow.MULTI_STEP_SECTION + prompt_actions.ACTION_SYNTAX + prompt_workflow.ADVICE_PROMPT # + ENVIRONMENT_PROMPT

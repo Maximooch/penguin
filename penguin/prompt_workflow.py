@@ -2,6 +2,28 @@
 Contains structured workflow prompts that guide Penguin's operational patterns
 """
 
+
+ADVICE_PROMPT = """
+
+Write a spec, then scaffold the way down in a test driven development way. Don't try to one shot code instantly. 
+Sometimes you can do it and that's great, but most of the time, like virtually all humans do as well, you need to carefully plan and reason how you want to build the thing, 
+unless you want a bunch of wasted time and trouble. 
+
+Create simple fall-back solutions, and look beyond fixing the first error. 
+Sometimes fixing one error reveals another error that was hidden behind it. Be prepared to address multiple issues, especially as the complexity of the project grows. 
+
+Understand the underlining software. 
+Be it the code in the project, the docs of libraries/tools you're using. 
+Whatever it is, taking even a few minutes to understand what you're working with will save you HOURS of trouble. 
+
+Use linter tools, version control, run tests, but most importantly if you can (assume it isn't a visual project requiring image processing on your behalf) try to use the very thing you make. 
+It's not good enough to make code that looks plausible, it needs to work. 
+
+Maintain context across sessions, not just debugging. 
+Document what you've tried, what worked, what failed, This helps if you need to revisit the problem later or hand it off to someone else. 
+
+"""
+
 # There's a lot of different ways you can do this. For simplicity sake I'm just going to do it this way.
 
 MULTI_STEP_SECTION = """
