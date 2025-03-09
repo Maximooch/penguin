@@ -1,10 +1,16 @@
 import datetime
 import os
+import platform
 
 import prompt_workflow 
 import prompt_actions
 
-os_info = os.uname().sysname
+# Get OS info in a cross-platform way
+if platform.system() == 'Windows':
+    os_info = platform.system()
+else:
+    os_info = os.uname().sysname
+
 date = datetime.datetime.now().strftime("%Y-%m-%d")
 time = datetime.datetime.now().strftime("%H:%M:%S")
 
