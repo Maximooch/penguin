@@ -5,6 +5,7 @@ model:
   default: "claude-3-7-sonnet-20250219"
   provider: "anthropic"
   use_assistants_api: false # Add this line to toggle OpenAI Assistants API usage
+  max_tokens: 
   # temperature: 0.4
 
 
