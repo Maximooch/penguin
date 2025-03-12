@@ -6,8 +6,6 @@ Manages context window by prioritizing different message types:
 2. Working memory (documents and context)
 3. Conversational memory (user/assistant exchanges)
 4. Tool memory (tool calls and results)
-
-Uses a token budgeting approach to allocate context window space efficiently.
 """
 
 import logging
@@ -36,17 +34,6 @@ class MessageCategory(Enum):
 
 
 @dataclass
-class TokenBudget:
-    """Token budget for a message category"""
-    # Minimum tokens guaranteed for this category
-    min_tokens: int
-    # Maximum tokens this category can consume
-    max_tokens: int
-    # Current tokens used by this category
-    current_tokens: int = 0
-
-
-@dataclass
 class Message:
     """Message with category and metadata for prioritization"""
     role: str
@@ -69,8 +56,7 @@ class ContextManager:
     Manages conversation context with category-based prioritization.
     
     Maintains different categories of messages and prioritizes them when
-    token limits are exceeded, using a token budgeting system to allocate
-    space efficiently within the context window.
+    token limits are exceeded, keeping the most important context.
     """
     
     def __init__(
@@ -97,9 +83,6 @@ class ContextManager:
         self.available_tokens = self.max_tokens - self.reserved_tokens
         self.current_token_count = 0
         
-        # Initialize token budgets for each category
-        self._initialize_token_budgets()
-        
         # Initialize tokenizer if available
         self.tokenizer = None
         if TOKENIZER_AVAILABLE:
@@ -119,49 +102,6 @@ class ContextManager:
         
         # All messages in chronological order
         self.all_messages = []
-        
-    def _initialize_token_budgets(self):
-        """Initialize token budgets for each category based on allocations"""
-        self.token_budgets = {}
-        
-        # Calculate base allocations from percentages
-        for category, percentage in self.category_allocations.items():
-            # System prompt has special handling - must be preserved
-            if category == MessageCategory.SYSTEM_PROMPT:
-                # For system prompts, min and max are the same (guaranteed allocation)
-                max_tokens = int(self.available_tokens * percentage)
-                self.token_budgets[category] = TokenBudget(
-                    min_tokens=max_tokens,
-                    max_tokens=max_tokens
-                )
-            else:
-                # For other categories:
-                # - minimum is 25% of their allocation (guaranteed)
-                # - maximum is 200% of their allocation (can expand)
-                base_tokens = int(self.available_tokens * percentage)
-                min_tokens = int(base_tokens * 0.25)
-                max_tokens = int(base_tokens * 2.0)
-                
-                self.token_budgets[category] = TokenBudget(
-                    min_tokens=min_tokens,
-                    max_tokens=max_tokens
-                )
-        
-        logger.debug(f"Initialized token budgets: {self.token_budgets}")
-        
-        # Calculate minimum and maximum possible token usage
-        self.min_required_tokens = sum(budget.min_tokens for budget in self.token_budgets.values())
-        self.max_possible_tokens = sum(budget.max_tokens for budget in self.token_budgets.values())
-        
-        logger.debug(f"Token budgets - Min required: {self.min_required_tokens}, " 
-                     f"Max possible: {self.max_possible_tokens}, "
-                     f"Available: {self.available_tokens}")
-        
-        # Validate that minimum requirements can be met
-        if self.min_required_tokens > self.available_tokens:
-            logger.warning(f"Minimum token requirements ({self.min_required_tokens}) "
-                           f"exceed available tokens ({self.available_tokens}). "
-                           f"Some categories may be underallocated.")
     
     def count_tokens(self, text: Union[str, List, Dict]) -> int:
         """Count tokens in text using tokenizer or approximation"""
@@ -208,9 +148,8 @@ class ContextManager:
         self.messages[category].append(message)
         self.all_messages.append(message)
         
-        # Update token count and budget
+        # Update token count
         self.current_token_count += tokens
-        self.token_budgets[category].current_tokens += tokens
         
         # Check if need to trim context
         if self.current_token_count > self.available_tokens:
@@ -220,12 +159,6 @@ class ContextManager:
     
     def set_system_prompt(self, prompt: str) -> Message:
         """Set or update the system prompt"""
-        # Calculate tokens for existing system prompts
-        old_system_prompt_tokens = sum(
-            msg.tokens for msg in self.messages[MessageCategory.SYSTEM_PROMPT]
-            if msg.metadata and msg.metadata.get("type") == "system_prompt"
-        )
-        
         # Remove any existing system prompts
         self.messages[MessageCategory.SYSTEM_PROMPT] = [
             msg for msg in self.messages[MessageCategory.SYSTEM_PROMPT]
@@ -238,10 +171,6 @@ class ContextManager:
             if not (msg.category == MessageCategory.SYSTEM_PROMPT and 
                    msg.metadata and msg.metadata.get("type") == "system_prompt")
         ]
-        
-        # Adjust token count and budget
-        self.current_token_count -= old_system_prompt_tokens
-        self.token_budgets[MessageCategory.SYSTEM_PROMPT].current_tokens -= old_system_prompt_tokens
         
         # Create new system prompt message
         return self.add_message(
@@ -298,108 +227,44 @@ class ContextManager:
             metadata=metadata
         )
     
-    def clear_category(self, category: MessageCategory) -> None:
-        """Clear all messages in a specific category (except permanent ones)"""
-        # Identify messages to remove (non-permanent only)
-        msgs_to_remove = [
-            msg for msg in self.messages[category]
-            if not (msg.metadata and msg.metadata.get("permanent", False))
-        ]
-        
-        # Calculate tokens to remove
-        tokens_to_remove = sum(msg.tokens for msg in msgs_to_remove)
-        
-        # Update the category's message list
-        self.messages[category] = [
-            msg for msg in self.messages[category]
-            if msg.metadata and msg.metadata.get("permanent", False)
-        ]
-        
-        # Update all_messages list
-        for msg in msgs_to_remove:
-            if msg in self.all_messages:
-                self.all_messages.remove(msg)
-        
-        # Update token counts
-        self.current_token_count -= tokens_to_remove
-        self.token_budgets[category].current_tokens -= tokens_to_remove
-    
     def trim_context(self) -> None:
         """
-        Trim context using token budgeting approach.
-        
-        This method implements a sophisticated token budgeting strategy:
-        1. Never truncate system prompts
-        2. Ensure each category gets at least its minimum allocation
-        3. Allow categories to exceed their base allocation if others use less
-        4. When trimming, remove oldest messages first within each category
+        Trim context based on category allocations.
+        Preserves system prompt and prioritizes other categories by allocation.
         """
         if self.current_token_count <= self.available_tokens:
             return
         
         logger.info(f"Trimming context: {self.current_token_count}/{self.available_tokens}")
         
-        # Step 1: Update current token usage for each category
-        for category in self.token_budgets:
-            self.token_budgets[category].current_tokens = sum(
-                msg.tokens for msg in self.messages[category]
-            )
+        # Calculate total tokens used by system prompts (which we never truncate)
+        system_prompt_tokens = sum(msg.tokens for msg in self.messages[MessageCategory.SYSTEM_PROMPT])
         
-        # Step 2: Calculate excess tokens that need to be removed
-        excess_tokens = self.current_token_count - self.available_tokens
-        logger.debug(f"Need to remove {excess_tokens} tokens")
+        # Calculate tokens that can be allocated to other categories
+        remaining_tokens = self.available_tokens - system_prompt_tokens
         
-        # Step 3: Protect system prompts completely
-        # (System prompts should never be trimmed)
+        # If remaining tokens are negative, we can't fit everything
+        if remaining_tokens <= 0:
+            logger.warning("System prompts exceed available token limit!")
+            remaining_tokens = max(remaining_tokens, 0)
         
-        # Step 4: Determine which categories exceed their budget and by how much
-        category_excess = {}
-        for category in self.token_budgets:
+        # Calculate target tokens for each category based on allocations
+        total_non_system_allocation = sum(
+            self.category_allocations[cat] for cat in self.category_allocations
+            if cat != MessageCategory.SYSTEM_PROMPT
+        )
+        
+        target_tokens = {}
+        for category in self.category_allocations:
             if category == MessageCategory.SYSTEM_PROMPT:
-                # Skip system prompts - they're never trimmed
-                continue
-                
-            budget = self.token_budgets[category]
-            current = budget.current_tokens
-            
-            # If current usage is below minimum, there's no excess
-            if current <= budget.min_tokens:
-                category_excess[category] = 0
+                # System prompts are never truncated
+                target_tokens[category] = system_prompt_tokens
             else:
-                # Otherwise, calculate excess as anything above minimum guarantee
-                # This is the amount we can potentially reduce
-                category_excess[category] = current - budget.min_tokens
+                # Calculate proportional allocation for this category
+                proportion = self.category_allocations[category] / total_non_system_allocation
+                target_tokens[category] = int(remaining_tokens * proportion)
         
-        # Total excess across all categories
-        total_excess = sum(category_excess.values())
-        logger.debug(f"Total excess across categories: {total_excess}")
-        
-        # If we can't trim enough, we'll need to go below minimums for some categories
-        if total_excess < excess_tokens:
-            logger.warning(f"Insufficient excess ({total_excess}) to trim required tokens ({excess_tokens})")
-            
-            # Calculate how much we need to take from minimums
-            minimum_reduction_needed = excess_tokens - total_excess
-            
-            # Proportionally reduce minimum guarantees for non-system categories
-            # Calculate total of minimum guarantees for non-system categories
-            total_non_system_min = sum(
-                self.token_budgets[cat].min_tokens for cat in self.token_budgets
-                if cat != MessageCategory.SYSTEM_PROMPT
-            )
-            
-            # Adjust category excess based on proportional minimum reduction
-            for category in category_excess:
-                if category != MessageCategory.SYSTEM_PROMPT:
-                    proportion = self.token_budgets[category].min_tokens / total_non_system_min
-                    additional_reduction = int(minimum_reduction_needed * proportion)
-                    category_excess[category] += additional_reduction
-                    logger.debug(f"Adding {additional_reduction} tokens to {category.name} reduction target")
-        
-        # Step 5: For each category, trim messages if they exceed their allocation
-        tokens_removed = 0
-        
-        # Process categories in specific order (least important first)
+        # For each category, trim messages if they exceed their allocation
         for category in [
             MessageCategory.TOOL_MEMORY,
             MessageCategory.CONVERSATION,  
@@ -407,76 +272,35 @@ class ContextManager:
             MessageCategory.DECLARATIVE_NOTES,
             # System prompt is preserved
         ]:
-            # Skip system prompts entirely
-            if category == MessageCategory.SYSTEM_PROMPT:
+            current_category_tokens = sum(msg.tokens for msg in self.messages[category])
+            
+            # Skip if under target or no messages
+            if current_category_tokens <= target_tokens[category] or not self.messages[category]:
                 continue
                 
-            # Skip if no excess to trim in this category
-            if category_excess.get(category, 0) <= 0:
-                continue
+            # Sort messages by creation time (oldest first)
+            sorted_msgs = sorted(self.messages[category], key=lambda x: x.created_at)
             
-            # Calculate this category's proportion of the excess
-            if total_excess > 0:
-                proportion = category_excess[category] / total_excess
-                target_reduction = min(int(excess_tokens * proportion), category_excess[category])
-            else:
-                # Fallback if total_excess is 0 (shouldn't happen)
-                target_reduction = 0
-            
-            # Don't try to remove more than what exists
-            target_reduction = min(target_reduction, self.token_budgets[category].current_tokens)
-            
-            if target_reduction <= 0:
-                continue
-                
-            logger.debug(f"Target reduction for {category.name}: {target_reduction} tokens")
-            
-            # Identify messages to remove (excluding permanent ones)
-            # Sort by creation time (oldest first)
-            sorted_msgs = sorted(
-                [msg for msg in self.messages[category] 
-                 if not (msg.metadata and msg.metadata.get("permanent", False))],
-                key=lambda x: x.created_at
-            )
-            
-            # Remove oldest messages until we reach target reduction
-            removed_from_category = 0
+            # Remove oldest messages until under target
+            tokens_to_remove = current_category_tokens - target_tokens[category]
+            tokens_removed = 0
             removal_msgs = []
             
             for msg in sorted_msgs:
-                if removed_from_category >= target_reduction:
+                if tokens_removed >= tokens_to_remove:
                     break
                 removal_msgs.append(msg)
-                removed_from_category += msg.tokens
-                logger.debug(f"Removing {category.name} message: {msg.tokens} tokens")
+                tokens_removed += msg.tokens
+                logger.debug(f"Removing {category.name} message: {tokens_removed}/{tokens_to_remove}")
             
-            # Update lists and counters
+            # Update lists
             for msg in removal_msgs:
                 self.messages[category].remove(msg)
                 if msg in self.all_messages:
                     self.all_messages.remove(msg)
-            
-            # Update token counts
-            self.token_budgets[category].current_tokens -= removed_from_category
-            tokens_removed += removed_from_category
-            
-            # If we've removed enough tokens across all categories, stop
-            if tokens_removed >= excess_tokens:
-                break
         
-        # Recalculate token count to ensure accuracy
+        # Recalculate token count
         self.current_token_count = sum(msg.tokens for msg in self.all_messages)
-        logger.info(f"After trimming: {self.current_token_count}/{self.available_tokens} tokens")
-    
-    def get_current_allocations(self) -> Dict[MessageCategory, float]:
-        """Get current percentage allocations for each category"""
-        if self.current_token_count == 0:
-            return {category: 0.0 for category in self.token_budgets}
-            
-        return {
-            category: self.token_budgets[category].current_tokens / self.current_token_count 
-            for category in self.token_budgets
-        }
     
     def get_messages_for_api(self) -> List[Dict[str, Any]]:
         """Get formatted messages for API request"""

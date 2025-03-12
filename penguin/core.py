@@ -240,7 +240,7 @@ class PenguinCore:
 
             # Create core instance
             instance = cls(
-                config=config, api_client=api_client, tool_manager=tool_manager
+                config=config, api_client=api_client, tool_manager=tool_manager, model_config=model_config
             )
 
             if enable_cli:
@@ -271,6 +271,7 @@ class PenguinCore:
         config: Optional[Config] = None,
         api_client: Optional[APIClient] = None,
         tool_manager: Optional[ToolManager] = None,
+        model_config=None,
     ):
         """Initialize PenguinCore with required components."""
         self.config = config or Config.load_config()
@@ -293,11 +294,12 @@ class PenguinCore:
             disable_diagnostics()
         # Why is it initializing tool manager, diagnostics, and base_path here?
 
-        # Initialize conversation system
+        # Initialize conversation system with token budgeting
         self.conversation_system = ConversationSystem(
             tool_manager=self.tool_manager,
             diagnostics=diagnostics,
             base_path=Path(WORKSPACE_PATH),
+            model_config=model_config
         )
 
         # Initialize action executor with project manager
@@ -424,13 +426,20 @@ class PenguinCore:
         self,
         message: str,
         context: Optional[Dict[str, Any]] = None,
-        conversation_id: Optional[str] = None
+        conversation_id: Optional[str] = None,
+        context_files: Optional[List[str]] = None
     ) -> str:
         """Process a message with optional conversation support and token tracking.
 
         If a conversation_id is provided, load the corresponding conversation
         so that the new message is appended to its history. Otherwise, a new conversation
         will be started.
+        
+        Args:
+            message: The user message to process
+            context: Optional additional context for processing
+            conversation_id: Optional ID to continue an existing conversation
+            context_files: Optional list of context files to load before processing
         """
         try:
             # Track input tokens for the message.
@@ -439,6 +448,17 @@ class PenguinCore:
             # If a conversation_id is passed, load the existing conversation.
             if conversation_id:
                 self.conversation_system.load(conversation_id)
+            
+            # Load additional context files if provided
+            if context_files:
+                loaded_files = []
+                for file_path in context_files:
+                    success = self.conversation_system.load_context_file(file_path)
+                    if success:
+                        loaded_files.append(file_path)
+                        
+                if loaded_files:
+                    logger.info(f"Loaded {len(loaded_files)} context files before processing message")
             
             # Prepare the conversation context by adding the new user message.
             self.conversation_system.prepare_conversation(message)
@@ -633,10 +653,12 @@ class PenguinCore:
             if action_results:
                 lines = [f"- {r['action']}: {r['result']}" for r in action_results]
                 aggregated_tool_outputs = "Tool outputs:\n" + "\n".join(lines)
-                # Also add each tool output as a system message
+                # Also add each tool output as an action result
                 for result in action_results:
-                    self.conversation_system.add_message("system",
-                        f"Action executed: {result['action']}\nResult: {result['result']}"
+                    self.conversation_system.add_action_result(
+                        action_type=result['action'],
+                        result=result['result'],
+                        status=result.get('status', 'completed')
                     )
 
             # Update conversation with assistant response and aggregated tool outputs
@@ -665,9 +687,9 @@ class PenguinCore:
             for code_action in code_actions:
                 file_path = Path(WORKSPACE_PATH) / f"generated_{int(time.time())}.py"
                 file_path.write_text(code_action['result'])
-                self.conversation_system.add_message(
-                    "system",
-                    f"Code saved to: {file_path}"
+                self.conversation_system.add_action_result(
+                    action_type="save_code",
+                    result=f"Code saved to: {file_path}"
                 )
 
             return full_response, exit_continuation
@@ -719,6 +741,10 @@ class PenguinCore:
         self.conversation_system.reset()
         self.tool_manager.reset()
         self.action_executor.reset()
+        
+    def list_context_files(self) -> List[Dict[str, Any]]:
+        """List all available context files"""
+        return self.conversation_system.list_context_files()
 
     async def start_run_mode(
         self,
@@ -791,7 +817,7 @@ class PenguinCore:
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
         max_iterations: int = 5,  # Prevent infinite loops
-        # execution_context: str = "default"  # Track execution source
+        context_files: Optional[List[str]] = None  # Context files to load
     ) -> Dict[str, Any]:
         """Process a message with multi-step reasoning and action execution.
         
@@ -823,6 +849,17 @@ class PenguinCore:
             # If a conversation ID is provided, load the corresponding conversation.
             if conversation_id:
                 self.conversation_system.load(conversation_id)
+                
+            # Load additional context files if provided
+            if context_files:
+                loaded_files = []
+                for file_path in context_files:
+                    success = self.conversation_system.load_context_file(file_path)
+                    if success:
+                        loaded_files.append(file_path)
+                        
+                if loaded_files:
+                    logger.info(f"Loaded {len(loaded_files)} context files before processing message")
             
             # Prepare the conversation context with the new message.
             self.conversation_system.prepare_conversation(message)
