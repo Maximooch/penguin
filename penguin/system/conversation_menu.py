@@ -72,3 +72,34 @@ class ConversationMenu:
         except ValueError:
             self.console.print("[red]Please enter a valid number[/red]")
             return None
+            
+    def display_summary(self, messages: List[dict]) -> None:
+        """Display conversation summary"""
+        if not messages:
+            self.console.print("[yellow]No messages in this conversation[/yellow]")
+            return
+            
+        table = Table(show_header=True, header_style="bold blue")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Role", width=12)
+        table.add_column("Content", width=60)
+        
+        # Get message snippets
+        for idx, msg in enumerate(messages, 1):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            
+            # Truncate content for display
+            if isinstance(content, str):
+                content_preview = content[:60] + "..." if len(content) > 60 else content
+            elif isinstance(content, list):
+                # Handle structured content (e.g. messages with images)
+                content_preview = "Structured content"
+            else:
+                content_preview = str(content)[:60]
+                
+            table.add_row(str(idx), role, content_preview)
+            
+        self.console.print("\n📝 Conversation Summary:\n")
+        self.console.print(table)
+        self.console.print(f"\nTotal messages: {len(messages)}\n")
