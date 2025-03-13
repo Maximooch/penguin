@@ -2,7 +2,7 @@ import glob
 import json
 import logging
 import os
-import yaml
+import yaml # type: ignore
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -49,6 +49,25 @@ def parse_iso_datetime(date_str: str) -> str:
 
 
 @dataclass
+class ConversationSummary:
+    """Summary information for a conversation - used in menus"""
+    
+    session_id: str
+    title: str
+    message_count: int
+    last_active: str
+    
+    @property
+    def display_date(self) -> str:
+        """Get formatted display date"""
+        return self.last_active
+        
+    @property
+    def display_title(self) -> str:
+        """Get display-friendly title"""
+        return self.title if self.title else f"Conversation {self.session_id[-6:]}"
+
+@dataclass
 class ConversationMetadata:
     """Metadata for a conversation session"""
 
@@ -77,6 +96,15 @@ class ConversationMetadata:
                 # Truncate long titles
                 self.title = (text[:37] + "...") if len(text) > 40 else text
                 break
+                
+    def to_summary(self) -> ConversationSummary:
+        """Convert to a ConversationSummary"""
+        return ConversationSummary(
+            session_id=self.session_id,
+            title=self.title or f"Conversation {self.session_id[-6:]}",
+            message_count=self.message_count,
+            last_active=parse_iso_datetime(self.last_active)
+        )
 
 
 class ConversationLoader:
