@@ -279,6 +279,7 @@ class PenguinCore:
         self.tool_manager = tool_manager
         self._interrupted = False
         self.progress_callbacks = []
+        self.token_callbacks = []
         self._active_contexts = set()  # Track active execution contexts
 
         # Set system prompt from import
@@ -692,6 +693,9 @@ class PenguinCore:
                     result=f"Code saved to: {file_path}"
                 )
 
+            # Add this before returning
+            self._notify_token_usage()
+
             return full_response, exit_continuation
 
         except Exception as e:
@@ -956,6 +960,7 @@ class PenguinCore:
             # Final progress notification for completion
             final_message = "Finalizing: Processing complete"
             self.notify_progress(max_iterations, max_iterations, final_message)
+            self._notify_token_usage()
             
             # Return the final response with all action results
             return {
@@ -972,3 +977,29 @@ class PenguinCore:
                 "action_results": [],
                 "error": str(e)
             }
+
+    def register_token_callback(self, callback: Callable[[Dict[str, int]], None]) -> None:
+        """Register a callback for token usage updates.
+        
+        Args:
+            callback: Function that takes a token usage dictionary as a parameter
+        """
+        self.token_callbacks.append(callback)
+
+    def _notify_token_usage(self):
+        """Notify all registered callbacks about token usage updates."""
+        usage = {
+            "prompt": 0,
+            "completion": 0,
+            "total": self.total_tokens_used
+        }
+        
+        # Extract usage from main model if available
+        token_data = self.get_token_usage()
+        if "main_model" in token_data:
+            usage["prompt"] = token_data["main_model"].get("prompt", 0)
+            usage["completion"] = token_data["main_model"].get("completion", 0)
+        
+        # Use token_callbacks instead of progress_callbacks
+        for callback in self.token_callbacks:
+            callback(usage)  # Pass the dictionary to match what PenguinTUI.on_token_update expects

@@ -223,14 +223,42 @@ class PenguinInterface:
         self._active = False
         return {"status": "exit", "message": "Goodbye!"}
         
+    def get_detailed_token_usage(self) -> Dict[str, Any]:
+        """Get detailed token usage statistics by category from the conversation system"""
+        if not hasattr(self.core, 'conversation_system'):
+            return {"error": "Conversation system not available"}
+        
+        try:
+            # Get the category allocations from conversation system
+            allocations = self.core.conversation_system.get_current_allocations()
+            
+            # Convert Enum keys to strings for easier display
+            result = {
+                "categories": {str(category.name): value for category, value in allocations.items()},
+                "total": self.core.total_tokens_used,
+                "max_tokens": getattr(self.core.conversation_system, "max_tokens", 0)
+            }
+            
+            # Add raw counts where available
+            result["raw_counts"] = {}
+            for category, budget in self.core.conversation_system._token_budgets.items():
+                result["raw_counts"][str(category.name)] = budget.current_tokens
+            
+            return result
+        except Exception as e:
+            return {"error": f"Error getting token allocations: {str(e)}"}
+
     async def _handle_tokens_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle tokens command to show or reset token usage"""
         if args and args[0].lower() == "reset":
             # Reset token counters
             # This would need to be implemented in core.py
             return {"status": "Token counters reset"}
+        elif args and args[0].lower() == "detail":
+            # Show detailed token usage by category
+            return {"token_usage_detailed": self.get_detailed_token_usage()}
         else:
-            # Show detailed token usage
+            # Show standard token usage
             return {"token_usage": self.get_token_usage()}
             
     async def _handle_context_command(self, args: List[str]) -> Dict[str, Any]:
