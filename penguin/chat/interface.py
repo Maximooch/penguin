@@ -40,6 +40,7 @@ class PenguinInterface:
         
     def register_token_callback(self, callback: Callable[[Dict[str, int]], None]) -> None:
         """Register callback for token usage updates"""
+        print(f"[Interface] Registering token callback: {callback.__qualname__ if hasattr(callback, '__qualname__') else callback}")
         self._token_callbacks.append(callback)
         
     def _on_progress_update(self, iteration: int, max_iterations: int, message: Optional[str] = None) -> None:
@@ -47,28 +48,40 @@ class PenguinInterface:
         for callback in self._progress_callbacks:
             callback(iteration, max_iterations, message)
             
-    def _on_token_update(self, usage: Dict[str, int]) -> None:
+    def _on_token_update(self, usage: Dict[str, Any]) -> None:
         """Handle token updates from core and forward to UI"""
-        # Update our callbacks with the new usage data
+        # Get token counts directly from conversation system
+        token_usage = self.core.conversation_system.get_current_token_usage()
+        
+        # Format for UI display
+        simplified_usage = {
+            "prompt": token_usage["prompt_tokens"],
+            "completion": token_usage["completion_tokens"],
+            "total": token_usage["total_tokens"],
+            "max_tokens": token_usage["max_tokens"]
+        }
+        
+        # Update callbacks
         for callback in self._token_callbacks:
-            callback(usage)
+            try:
+                callback(simplified_usage)
+            except Exception as e:
+                print(f"[Interface] Error in token callback: {e}")
             
     def get_token_usage(self) -> Dict[str, int]:
         """Get current token usage statistics"""
-        usage = self.core.get_token_usage()
-        # Flatten the nested structure for simpler UI display
-        result = {
-            "prompt": 0,
-            "completion": 0,
-            "total": self.core.total_tokens_used
-        }
-        
-        # Extract usage from main model
-        if "main_model" in usage:
-            result["prompt"] = usage["main_model"].get("prompt", 0)
-            result["completion"] = usage["main_model"].get("completion", 0)
-            
-        return result
+        try:
+            # Get token usage directly from conversation system
+            usage = self.core.conversation_system.get_current_token_usage()
+            return {
+                "prompt": usage["prompt_tokens"],
+                "completion": usage["completion_tokens"],
+                "total": usage["total_tokens"],
+                "max_tokens": usage["max_tokens"]
+            }
+        except Exception as e:
+            print(f"Error getting token usage: {e}")
+            return {"prompt": 0, "completion": 0, "total": 0, "max_tokens": 200000}
         
     def update_token_display(self) -> None:
         """Update token usage display"""
@@ -110,6 +123,7 @@ class PenguinInterface:
             "exit": self._handle_exit_command,
             "tokens": self._handle_tokens_command,
             "context": self._handle_context_command,
+            "debug": self._handle_debug_command,
         }
         
         handler = handlers.get(cmd, self._invalid_command)
@@ -229,20 +243,43 @@ class PenguinInterface:
             return {"error": "Conversation system not available"}
         
         try:
-            # Get the category allocations from conversation system
-            allocations = self.core.conversation_system.get_current_allocations()
+            # Get basic token usage first (this should always work)
+            basic_usage = self.get_token_usage()
             
-            # Convert Enum keys to strings for easier display
+            # Prepare result with basics
             result = {
-                "categories": {str(category.name): value for category, value in allocations.items()},
                 "total": self.core.total_tokens_used,
-                "max_tokens": getattr(self.core.conversation_system, "max_tokens", 0)
+                "max_tokens": getattr(self.core.conversation_system, "max_tokens", 200000),
+                "categories": {},
+                "raw_counts": {}
             }
             
-            # Add raw counts where available
-            result["raw_counts"] = {}
-            for category, budget in self.core.conversation_system._token_budgets.items():
-                result["raw_counts"][str(category.name)] = budget.current_tokens
+            # Try to get allocations if the method exists
+            if hasattr(self.core.conversation_system, "get_current_allocations"):
+                try:
+                    allocations = self.core.conversation_system.get_current_allocations()
+                    result["categories"] = {str(category.name): value for category, value in allocations.items()}
+                except Exception as e:
+                    print(f"Error getting allocations: {e}")
+            else:
+                # Fallback to basic categories
+                total = max(basic_usage.get("total", 1), 1)  # Avoid division by zero
+                result["categories"] = {
+                    "PROMPT": basic_usage.get("prompt", 0) / total,
+                    "COMPLETION": basic_usage.get("completion", 0) / total
+                }
+            
+            # Try to get raw counts if _token_budgets exists
+            if hasattr(self.core.conversation_system, "_token_budgets"):
+                for category, budget in self.core.conversation_system._token_budgets.items():
+                    result["raw_counts"][str(category.name)] = budget.current_tokens
+            else:
+                # Fall back to basic counts
+                result["raw_counts"] = {
+                    "PROMPT": basic_usage.get("prompt", 0),
+                    "COMPLETION": basic_usage.get("completion", 0),
+                    "TOTAL": basic_usage.get("total", 0)
+                }
             
             return result
         except Exception as e:
@@ -298,3 +335,15 @@ class PenguinInterface:
     def is_active(self) -> bool:
         """Check if interface is active"""
         return self._active
+
+    async def _handle_debug_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle debug commands for development purposes"""
+        if not args:
+            return {"error": "Missing debug subcommand"}
+        
+        subcmd = args[0].lower()
+        if subcmd == "tokens":
+            # Directly invoke the notification (do not use 'await' here)
+            self.core._notify_token_usage()
+            return {"status": "Debug: Notified token usage based on conversation system data."}
+        return {"error": f"Unknown debug command: {subcmd}"}

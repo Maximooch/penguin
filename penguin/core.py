@@ -322,6 +322,9 @@ class PenguinCore:
         # Ensure error log directory exists
         self.validate_path(Path(WORKSPACE_PATH))
 
+        # Add an accumulated token counter
+        self.accumulated_tokens = {"prompt": 0, "completion": 0, "total": 0}
+
     def validate_path(self, path: Path):
         if not path.exists():
             path.mkdir(parents=True, exist_ok=True)
@@ -868,6 +871,9 @@ class PenguinCore:
             # Prepare the conversation context with the new message.
             self.conversation_system.prepare_conversation(message)
             
+            # Add token notifications after key operations
+            self._notify_token_usage()  # After processing input
+            
             # Rest of the method remains unchanged
             final_response = None
             iterations = 0
@@ -972,6 +978,7 @@ class PenguinCore:
             error_msg = f"Error in process method: {str(e)}"
             logger.error(f"{error_msg}\n{traceback.format_exc()}")
             log_error(e, context={"method": "process", "input_data": input_data, "conversation_id": conversation_id})
+            self._notify_token_usage()  # Notify even on error
             return {
                 "assistant_response": "I apologize, but an error occurred while processing your request.",
                 "action_results": [],
@@ -984,22 +991,20 @@ class PenguinCore:
         Args:
             callback: Function that takes a token usage dictionary as a parameter
         """
+        print(f"[Core] Registering token callback: {callback.__qualname__ if hasattr(callback, '__qualname__') else callback}")
         self.token_callbacks.append(callback)
 
     def _notify_token_usage(self):
-        """Notify all registered callbacks about token usage updates."""
-        usage = {
-            "prompt": 0,
-            "completion": 0,
-            "total": self.total_tokens_used
-        }
-        
-        # Extract usage from main model if available
-        token_data = self.get_token_usage()
-        if "main_model" in token_data:
-            usage["prompt"] = token_data["main_model"].get("prompt", 0)
-            usage["completion"] = token_data["main_model"].get("completion", 0)
-        
-        # Use token_callbacks instead of progress_callbacks
-        for callback in self.token_callbacks:
-            callback(usage)  # Pass the dictionary to match what PenguinTUI.on_token_update expects
+        """Notify all registered callbacks using conversation system token budgeting."""
+        try:
+            # Get token usage directly from conversation system
+            usage = self.conversation_system.get_current_token_usage()
+            
+            for callback in self.token_callbacks:
+                try:
+                    callback(usage)
+                except Exception as e:
+                    logger.error(f"Error in token callback: {str(e)}")
+                
+        except Exception as e:
+            logger.error(f"Error in _notify_token_usage: {str(e)}")

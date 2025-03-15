@@ -17,11 +17,14 @@ class TokenTracker:
 
     def update(self, input_tokens: int, output_tokens: int):
         """Update token counts directly with numbers"""
+        print(f"[TokenTracker] Updating tokens: +{input_tokens} input, +{output_tokens} output")
         self.tokens["input"] += input_tokens
         self.tokens["output"] += output_tokens
+        print(f"[TokenTracker] New token counts: {self.tokens['input']} input, {self.tokens['output']} output")
 
     def reset(self):
         """Reset token counts"""
+        print("[TokenTracker] Resetting token counts")
         self.tokens = {"input": 0, "output": 0}
 
 
@@ -47,17 +50,16 @@ class Diagnostics:
             logging.debug("Diagnostics disabled, skipping token update")
             return
 
+        print(f"[Diagnostics] Updating tokens for {tracker_name}")
+        
         input_tokens = self.count_tokens(input_text)
         output_tokens = self.count_tokens(output_text)
-
-        if tracker_name not in self.token_trackers:
-            logging.debug(f"Creating new tracker for {tracker_name}")
-            self.token_trackers[tracker_name] = TokenTracker()
-
-        self.token_trackers[tracker_name].update(input_tokens, output_tokens)
-        logging.debug(
-            f"Updated {tracker_name} - Input: {input_tokens}, Output: {output_tokens}"
-        )
+        
+        if tracker_name in self.token_trackers:
+            print(f"[Diagnostics] Counted {input_tokens} input tokens, {output_tokens} output tokens")
+            self.token_trackers[tracker_name].update(input_tokens, output_tokens)
+        else:
+            print(f"[Diagnostics] WARNING: Unknown tracker {tracker_name}")
 
     def log_token_usage(self):
         """Log current token usage with rich formatting"""
@@ -97,10 +99,15 @@ class Diagnostics:
 
     def get_total_tokens(self) -> int:
         """Get total tokens across all trackers"""
-        return sum(
-            tracker.tokens["input"] + tracker.tokens["output"]
-            for tracker in self.token_trackers.values()
-        )
+        if not self.enabled:
+            return 0
+            
+        total = 0
+        for name, tracker in self.token_trackers.items():
+            total += tracker.tokens["input"] + tracker.tokens["output"]
+        
+        print(f"[Diagnostics] Total tokens used: {total}")
+        return total
 
     def reset(self):
         """Reset all token trackers"""

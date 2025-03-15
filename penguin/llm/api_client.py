@@ -17,6 +17,9 @@ from PIL import Image  # type: ignore
 
 from .model_config import ModelConfig
 from .provider_adapters import get_provider_adapter
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def load_config() -> Dict[str, Any]:
@@ -267,6 +270,64 @@ class APIClient:
         """Reset the client state"""
         self.messages = []
         self.set_system_prompt(self.system_prompt)
+
+    def count_message_tokens(self, messages: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Count tokens for a list of messages using the provider's tokenizer"""
+        try:
+            # Initialize counts
+            counts = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "format_tokens": 0
+            }
+            
+            # Token counting constants for message formatting
+            per_message_tokens = 3  # Every message follows <|im_start|>{role}\n{content}<|im_end|>
+            per_name_tokens = 1     # If name is present, +1 token
+            
+            for message in messages:
+                try:
+                    # Get message components
+                    content = message.get("content", "")
+                    role = message.get("role", "")
+                    
+                    # Count content tokens using provider's tokenizer
+                    if self.adapter and hasattr(self.adapter, 'count_tokens'):
+                        content_tokens = self.adapter.count_tokens(content)
+                    else:
+                        # Fallback to approximate counting
+                        content_tokens = len(str(content)) // 4 + 1
+                    
+                    # Count format tokens
+                    format_tokens = per_message_tokens
+                    if "name" in message:
+                        format_tokens += per_name_tokens
+                        
+                    # Add to appropriate category
+                    if role == "assistant":
+                        counts["completion_tokens"] += content_tokens
+                    else:
+                        counts["prompt_tokens"] += content_tokens
+                        
+                    counts["format_tokens"] += format_tokens
+                    counts["total_tokens"] += content_tokens + format_tokens
+                    
+                except Exception as e:
+                    logger.warning(f"Error counting tokens for message: {e}")
+                    # Add conservative estimate for failed message
+                    counts["total_tokens"] += len(str(content)) // 3
+                    
+            return counts
+            
+        except Exception as e:
+            logger.error(f"Error in count_message_tokens: {e}")
+            return {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "format_tokens": 0
+            }
 
 
 # The following code is commented out and represents an older version of the API client.

@@ -473,7 +473,7 @@ class ConversationSystem:
     - Context loading from files
     """
 
-    def __init__(self, tool_manager, diagnostics, base_path: Path, model_config=None):
+    def __init__(self, tool_manager, diagnostics, base_path: Path, model_config=None, api_client=None):
         self.tool_manager = tool_manager
         self.diagnostics = diagnostics
         self.messages = []
@@ -541,6 +541,9 @@ class ConversationSystem:
             self.load_core_context()
         except Exception as e:
             logger.warning(f"Failed to load core context: {e}")
+
+        # Add API client reference
+        self.api_client = api_client
 
     def _initialize_token_budgets(self):
         """Initialize token budgets for each category based on allocations"""
@@ -669,40 +672,55 @@ class ConversationSystem:
         self.system_prompt_sent = False
 
     def count_tokens(self, text: Union[str, List, Dict]) -> int:
-        """Count tokens in text using tokenizer or approximation"""
-        if text is None:
-            return 0
+        """Count tokens using API client's tokenizer or fallback methods"""
+        try:
+            # Handle empty or None input
+            if not text:
+                return 0
             
-        # Convert structured content to string for token counting
-        if isinstance(text, (list, dict)):
-            # Handle structured content (e.g., for OpenAI format with images)
-            if isinstance(text, list) and all(isinstance(item, dict) for item in text):
-                # This is likely a message content array with text/image parts
-                combined_text = ""
-                for item in text:
-                    if isinstance(item, dict):
-                        if item.get("type") == "text":
-                            combined_text += item.get("text", "")
-                        # Images typically have fixed token counts, could add estimates
-                text = combined_text
-            else:
-                # For other structured content, convert to string
-                text = str(text)
-        
-        # Use tiktoken if available
-        if self.tokenizer and isinstance(text, str):
-            try:
-                tokens = len(self.tokenizer.encode(text))
-                return tokens
-            except Exception as e:
-                logger.warning(f"Error counting tokens with tokenizer: {e}")
-        
-        # Fallback approximate count (4 chars per token is rough approximation)
-        if isinstance(text, str):
+            # Convert structured content to string for token counting
+            if isinstance(text, (list, dict)):
+                # Handle structured content (e.g., for OpenAI format with images)
+                if isinstance(text, list) and all(isinstance(item, dict) for item in text):
+                    # This is likely a message content array with text/image parts
+                    combined_text = ""
+                    for item in text:
+                        if isinstance(item, dict):
+                            if item.get("type") == "text":
+                                combined_text += item.get("text", "")
+                            elif item.get("type") == "image_url":
+                                # Images typically count as ~85 tokens in Claude
+                                return 85
+                    text = combined_text
+                else:
+                    # For other structured content, convert to string
+                    text = str(text)
+                
+            # Try using API client's token counter first
+            if self.api_client:
+                try:
+                    # Create a temporary message to count tokens
+                    message = {"role": "user", "content": text}
+                    counts = self.api_client.count_message_tokens([message])
+                    return counts["total_tokens"] - counts["format_tokens"]  # Return only content tokens
+                except Exception as e:
+                    logger.warning(f"API client token counting failed: {e}, falling back to local methods")
+            
+            # Try using tiktoken if available
+            if self.tokenizer:
+                try:
+                    return len(self.tokenizer.encode(text))
+                except Exception as e:
+                    logger.warning(f"Tiktoken counting failed: {e}, falling back to approximation")
+            
+            # Fallback to character-based approximation
+            # This is a very rough approximation - about 4 characters per token
             return len(text) // 4 + 1
-        
-        # For unknown types
-        return 50  # Default estimate
+            
+        except Exception as e:
+            logger.error(f"Error counting tokens: {e}")
+            # Return a conservative estimate to prevent issues
+            return len(str(text)) // 3  # Even more conservative fallback
 
     def add_message(
         self, 
@@ -843,10 +861,12 @@ class ConversationSystem:
             return
         
         logger.info(f"Trimming context: {self.current_token_count}/{self.available_tokens}")
+        print(f"Trimming context: {self.current_token_count}/{self.available_tokens}")
         
         # Step 1: Calculate excess tokens that need to be removed
         excess_tokens = self.current_token_count - self.available_tokens
         logger.debug(f"Need to remove {excess_tokens} tokens")
+        print(f"Need to remove {excess_tokens} tokens")
         
         # Step 2: Determine which categories exceed their budget and by how much
         category_excess = {}
@@ -869,11 +889,12 @@ class ConversationSystem:
         # Total excess across all categories
         total_excess = sum(category_excess.values())
         logger.debug(f"Total excess across categories: {total_excess}")
+        print(f"Total excess across categories: {total_excess}")
         
         # If we can't trim enough, we'll need to go below minimums for some categories
         if total_excess < excess_tokens:
             logger.warning(f"Insufficient excess ({total_excess}) to trim required tokens ({excess_tokens})")
-            
+            print(f"Insufficient excess ({total_excess}) to trim required tokens ({excess_tokens})")
             # Calculate how much we need to take from minimums
             minimum_reduction_needed = excess_tokens - total_excess
             
@@ -891,7 +912,7 @@ class ConversationSystem:
                     additional_reduction = int(minimum_reduction_needed * proportion)
                     category_excess[category] += additional_reduction
                     logger.debug(f"Adding {additional_reduction} tokens to {category.name} reduction target")
-        
+                    print(f"Adding {additional_reduction} tokens to {category.name} reduction target")
         # Step 3: For each category, trim messages if they exceed their allocation
         tokens_removed = 0
         
@@ -1116,7 +1137,7 @@ class ConversationSystem:
         """
         return self.context_loader.list_available_files()
     
-    async def request_summary(self, api_client, messages, max_tokens=500, temperature=0.3):
+    async def request_summary(self, api_client, messages, max_tokens=2500, temperature=0.3):
         """
         Request a summary of messages using the API client.
         
@@ -1158,3 +1179,23 @@ class ConversationSystem:
         # Process response to extract summary
         summary_text, _ = api_client.process_response(response)
         return summary_text
+
+    def get_current_token_usage(self) -> Dict[str, int]:
+        """Get current token usage including formatting"""
+        # Calculate prompt tokens (system + user messages)
+        prompt_tokens = (
+            self.token_budgets[MessageCategory.SYSTEM_PROMPT].current_tokens +
+            sum(msg.get("tokens", 0) for msg in self.messages 
+                if msg["role"] == "user")
+        )
+        
+        # Calculate completion tokens (assistant messages)
+        completion_tokens = sum(msg.get("tokens", 0) for msg in self.messages 
+                              if msg["role"] == "assistant")
+        
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": self.current_token_count,
+            "max_tokens": self.max_tokens
+        }
