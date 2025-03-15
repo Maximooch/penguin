@@ -512,6 +512,19 @@ class PenguinTUI(App):
         if not user_input.strip():
             return
             
+        # Add debug command to manually update token stats
+        if user_input.strip().lower() == "/debug_tokens":
+            # Manually update token stats to test display
+            log("Manually updating token stats for debugging")
+            debug_usage = {
+                "prompt": 1000,
+                "completion": 500,
+                "total": 1500
+            }
+            self.token_display.update_token_stats(debug_usage)
+            await self.conversation_view.add_message("Debug: Manually updated token statistics with test values.", "system")
+            return
+            
         if user_input.strip().lower() == "exit":
             await self.conversation_view.add_message("Goodbye! Shutting down...", "system")
             await asyncio.sleep(1)
@@ -617,23 +630,23 @@ class PenguinTUI(App):
     
     def on_token_update(self, usage: Dict[str, int]):
         """Handle token usage updates."""
-        # Use Textual's log function for debugging
-        log(f"Token update received: {usage}")
-        
-        self.status_bar.update_status("Ready")
-        self.token_display.update_token_stats(usage)
-        
-        # If we have conversation system token data, update that too
-        if hasattr(self.interface.core, 'conversation_system'):
-            try:
-                detailed_data = self.get_detailed_token_data()
-                log("Detailed token data:", detailed_data)
-                # Make sure we're only updating if the detailed_token_display exists
-                if hasattr(self, "detailed_token_display"):
-                    self.detailed_token_display.update_token_data(detailed_data)
-            except Exception as e:
-                # Use Textual's log.error for error logging
-                log.error(f"Error updating detailed token data: {str(e)}")
+        try:
+            # Update token display with current context window state
+            self.token_display.update_token_stats({
+                "prompt": usage["prompt"],
+                "completion": usage["completion"],
+                "total": usage["total"],
+                "max_tokens": usage["max_tokens"]
+            })
+            
+            # Update status bar with current token count
+            self.status_bar.update_status(
+                "Ready", 
+                {"total": usage["total"]}
+            )
+            
+        except Exception as e:
+            log.error(f"[TUI] Error updating token display: {str(e)}")
 
     async def add_system_message(self, content: str):
         """Add a formatted system message."""
