@@ -11,8 +11,8 @@ import re
 from datetime import datetime
 from enum import Enum
 from html import unescape
-from typing import List
-
+from typing import List, Dict, Any
+import base64
 from penguin.local_task.manager import ProjectManager
 from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
@@ -71,6 +71,10 @@ class ActionType(Enum):
     PROJECT_LIST = "project_list"
     PROJECT_DISPLAY = "project_display"
     DEPENDENCY_DISPLAY = "dependency_display"
+    # Browser actions
+    BROWSER_NAVIGATE = "browser_navigate"
+    BROWSER_INTERACT = "browser_interact"
+    BROWSER_SCREENSHOT = "browser_screenshot"
 
 
 class CodeActAction:
@@ -136,11 +140,12 @@ def parse_action(content: str) -> List[CodeActAction]:
 
 
 class ActionExecutor:
-    def __init__(self, tool_manager: ToolManager, task_manager: ProjectManager):
+    def __init__(self, tool_manager: ToolManager, task_manager: ProjectManager, conversation_system=None):
         self.tool_manager = tool_manager
         self.task_manager = task_manager
         self.process_manager = ProcessManager()
         self.current_process = None
+        self.conversation_system = conversation_system
 
     async def execute_action(self, action: CodeActAction) -> str:
         logger.debug(f"Attempting to execute action: {action.action_type.value}")
@@ -195,6 +200,10 @@ class ActionExecutor:
             ActionType.TASK_LIST: self._task_list,
             ActionType.TASK_DISPLAY: self._task_display,
             ActionType.DEPENDENCY_DISPLAY: self._dependency_display,
+            # Browser actions
+            ActionType.BROWSER_NAVIGATE: self._browser_navigate,
+            ActionType.BROWSER_INTERACT: self._browser_interact,
+            ActionType.BROWSER_SCREENSHOT: self._browser_screenshot,
         }
 
         try:
@@ -628,3 +637,59 @@ class ActionExecutor:
 
         except Exception as e:
             return f"Error adding context: {str(e)}"
+
+    async def _browser_navigate(self, params: str) -> str:
+        """Navigate browser to a URL"""
+        return await self.tool_manager.execute_browser_navigate(params.strip())
+    
+    async def _browser_interact(self, params: str) -> str:
+        """Interact with browser elements. Format: action:selector:text"""
+        parts = params.split(':', 2)
+        if len(parts) < 2:
+            return "Error: Invalid format. Use action:selector[:text]"
+        
+        action = parts[0].strip()
+        selector = parts[1].strip()
+        text = parts[2].strip() if len(parts) > 2 else None
+        
+        if action not in ['click', 'input', 'submit']:
+            return f"Error: Invalid action '{action}'. Use click, input, or submit."
+        
+        return await self.tool_manager.execute_browser_interact(action, selector, text)
+    
+    async def _browser_screenshot(self, params: str) -> Dict[str, Any]:
+        """Capture browser screenshot"""
+        result = await self.tool_manager.execute_browser_screenshot()
+        
+        # If successful and we got an image
+        if "image" in result:
+            try:
+                # Format the result for add_action_result
+                # This leverages the existing action result system
+                self.conversation_system.add_action_result(
+                    action_type="browser_screenshot",
+                    result=f"Screenshot captured successfully. [Image data encoded in base64]",
+                    status="completed"
+                )
+                
+                # Additionally add the actual image using _add_image_message
+                self.conversation_system._add_image_message(
+                    user_input="", 
+                    image_base64=result["image"]
+                )
+                logging.info("Screenshot captured and added to conversation")
+                print("Screenshot captured and added to conversation")
+
+                # Debug: Save the screenshot locally to verify it works
+                try:
+                    with open("screenshot.png", "wb") as f:
+                        f.write(base64.b64decode(result["image"]))
+                    logging.info("Screenshot saved to screenshot.png")
+                except Exception as e:
+                    logging.error(f"Error saving screenshot: {str(e)}")
+                
+                return {"result": "Screenshot captured and added to conversation", "has_image": True}
+            except Exception as e:
+                return {"error": f"Screenshot captured but failed to add to conversation: {str(e)}"}
+        
+        return result

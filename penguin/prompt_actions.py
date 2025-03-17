@@ -1,4 +1,3 @@
-
 ACTION_SYNTAX = """
 
 
@@ -221,7 +220,40 @@ Example usage:
 4. View project status:
 <project_display>web-app</project_display>
 
+## Web Browser Interaction
 
+Use these commands to control and interact with web browsers:
+
+1. Navigate to a webpage:
+   <browser_navigate>https://example.com</browser_navigate>
+   
+   This opens the specified URL in the browser. Always include the full URL with protocol (http:// or https://).
+
+2. Interact with page elements:
+   <browser_interact>action:selector:text</browser_interact>
+   
+   Where:
+   - action: One of "click", "input", or "submit"
+   - selector: CSS selector or XPath to identify the element
+   - text: (Optional) Text to input when action is "input"
+   
+   Examples:
+   <browser_interact>click:#submit-button</browser_interact>
+   <browser_interact>input:#search-box:search query</browser_interact>
+   <browser_interact>submit:form#login</browser_interact>
+
+3. Capture a screenshot:
+   <browser_screenshot></browser_screenshot>
+   
+   This captures the current browser view and returns it as an image that will be added to our conversation.
+   Use this to verify actions, analyze pages, or troubleshoot issues.
+
+Web Browsing Best Practices:
+- Always navigate to a page before attempting to interact with elements
+- Use screenshots to verify the current state before and after interactions
+- When selecting elements, prefer IDs (#element-id) over classes (.class-name)
+- Wait for page loads between actions when necessary
+- For complex interactions, break tasks into multiple separate steps
 
 """
 
