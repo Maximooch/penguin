@@ -2,7 +2,9 @@ import base64
 import logging
 import os
 import subprocess
+import asyncio
 from typing import Any, Callable, Dict, List, Optional, Union
+import datetime
 
 # from utils.log_error import log_error
 # from .core.support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
@@ -19,6 +21,9 @@ from penguin.tools.core.lint_python import lint_python
 from penguin.tools.core.memory_search import MemorySearcher  # Import the new memory searcher
 from penguin.tools.core.perplexity_tool import PerplexityProvider
 from penguin.tools.core.workspace_search import CodeIndexer
+from penguin.tools.browser_tools import (
+    browser_manager, BrowserNavigationTool, BrowserInteractionTool, BrowserScreenshotTool
+)
 
 
 class ToolManager:
@@ -325,7 +330,57 @@ class ToolManager:
                     },
                 },
             },
+            {
+                "name": "browser_navigate",
+                "description": "Navigate to a URL in the browser. Use this to open websites and web applications.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The full URL to navigate to (e.g., https://www.example.com)"
+                        }
+                    },
+                    "required": ["url"]
+                }
+            },
+            {
+                "name": "browser_interact",
+                "description": "Interact with elements on the current webpage. Use this for clicking buttons, filling forms, or submitting data.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["click", "input", "submit"],
+                            "description": "The type of interaction to perform"
+                        },
+                        "selector": {
+                            "type": "string",
+                            "description": "CSS selector or XPath to identify the element"
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Text to input (only required for 'input' action)"
+                        }
+                    },
+                    "required": ["action", "selector"]
+                }
+            },
+            {
+                "name": "browser_screenshot",
+                "description": "Capture a screenshot of the current webpage. Use this to see the page content visually or for verification.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
         ]
+
+        # Don't initialize browser here
+        self.browser_navigation_tool = BrowserNavigationTool()
+        self.browser_interaction_tool = BrowserInteractionTool()
+        self.browser_screenshot_tool = BrowserScreenshotTool()
 
     def get_tools(self):
         return self.tools
@@ -383,6 +438,11 @@ class ToolManager:
             #     tool_input.get("max_results", 5),
             #     tool_input.get("search_depth", "advanced")
             # ),
+            "browser_navigate": lambda: asyncio.run(self.execute_browser_navigate(tool_input["url"])),
+            "browser_interact": lambda: asyncio.run(self.execute_browser_interact(
+                tool_input["action"], tool_input["selector"], tool_input.get("text")
+            )),
+            "browser_screenshot": lambda: asyncio.run(self.execute_browser_screenshot()),
         }
 
         logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
@@ -633,3 +693,71 @@ class ToolManager:
             logging.error(error_message)
             self.log_error(e, error_message)
             return error_message
+
+    async def execute_browser_navigate(self, url: str) -> str:
+        """Execute browser navigation to a URL"""
+        try:
+            result = await self.browser_navigation_tool.execute(url)
+            return result
+        except Exception as e:
+            error_message = f"Error navigating to URL: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return error_message
+    
+    async def execute_browser_interact(self, action: str, selector: str, text: Optional[str] = None) -> str:
+        """Execute browser interaction with page elements"""
+        try:
+            result = await self.browser_interaction_tool.execute(action, selector, text)
+            return result
+        except Exception as e:
+            error_message = f"Error interacting with browser: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return error_message
+    
+    async def execute_browser_screenshot(self) -> Dict[str, Any]:
+        """Execute browser screenshot capture"""
+        try:
+            result = await self.browser_screenshot_tool.execute()
+            return result
+        except Exception as e:
+            error_message = f"Error capturing screenshot: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    async def close_browser(self):
+        """Close the browser instance if it exists"""
+        return await browser_manager.close()
+
+    # def execute_browser_navigate_sync(self, url: str) -> str:
+    #     """Synchronous wrapper for execute_browser_navigate"""
+    #     loop = asyncio.new_event_loop()
+    #     asyncio.set_event_loop(loop)
+    #     try:
+    #         return loop.run_until_complete(self.execute_browser_navigate(url))
+    #     finally:
+    #         loop.close()
+
+    async def execute_with_screenshot_on_error(self, coroutine, description="browser action"):
+        """Execute a coroutine with screenshot capture on error"""
+        try:
+            return await coroutine
+        except Exception as e:
+            error_message = f"{description} failed: {str(e)}"
+            logging.error(error_message)
+            
+            # Try to capture screenshot of error state
+            try:
+                page = await browser_manager.get_page()
+                if page:
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    error_path = os.path.join(os.getcwd(), "error_screenshots", f"error_{timestamp}.png")
+                    os.makedirs(os.path.dirname(error_path), exist_ok=True)
+                    await page.screenshot(path=error_path)
+                    logging.info(f"Error screenshot saved to {error_path}")
+            except Exception as screenshot_e:
+                logging.error(f"Failed to capture error screenshot: {str(screenshot_e)}")
+            
+            raise e

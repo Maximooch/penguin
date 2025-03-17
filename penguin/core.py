@@ -112,6 +112,7 @@ import traceback
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union, Callable
+import asyncio
 
 from dotenv import load_dotenv  # type: ignore
 from rich.console import Console  # type: ignore
@@ -305,7 +306,9 @@ class PenguinCore:
 
         # Initialize action executor with project manager
         self.action_executor = ActionExecutor(
-            tool_manager=self.tool_manager, task_manager=self.project_manager
+            tool_manager=self.tool_manager, 
+            task_manager=self.project_manager,
+            conversation_system=self.conversation_system
         )
         # It's not really using api_client, seems like a duplication, until it's actually used.
         self.messages = []
@@ -741,13 +744,17 @@ class PenguinCore:
                 "status": "error",
             }
 
-    def reset_state(self):
+    async def reset_state(self):
         """Reset the core state"""
         self.messages = []
         self._interrupted = False
         self.conversation_system.reset()
         self.tool_manager.reset()
         self.action_executor.reset()
+        
+        # Close browser if it was initialized
+        from penguin.tools.browser_tools import browser_manager
+        asyncio.create_task(browser_manager.close())
         
     def list_context_files(self) -> List[Dict[str, Any]]:
         """List all available context files"""

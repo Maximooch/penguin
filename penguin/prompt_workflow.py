@@ -128,6 +128,23 @@ PENGUIN_WORKFLOW = '''\
 - Retry transient errors
 - Preserve partial results
 - Escalate persistent failures
+
+## Web Browsing Capabilities
+
+1. NAVIGATION
+- Browse to any public website
+- Access web applications
+- Follow links between pages
+
+2. INTERACTION
+- Click elements and buttons
+- Fill in forms and input fields
+- Submit forms and queries
+
+3. DATA COLLECTION
+- Capture screenshots for visual analysis
+- Extract text and structured content
+- Compare information across sources
 '''
 
 PENGUIN_VERIFICATION_PROMPT = '''
