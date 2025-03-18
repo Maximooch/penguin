@@ -1,3 +1,9 @@
+import os
+# Disable browser-use telemetry
+os.environ["ANONYMIZED_TELEMETRY"] = "false"
+# The fact I need to do this is a bit of a pain. And pretty concerning. I might need to look into alternatives. 
+
+
 from typing import Optional, Dict, Any
 from browser_use import Browser, BrowserConfig # type: ignore
 from PIL import Image # type: ignore
