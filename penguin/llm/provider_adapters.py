@@ -62,7 +62,55 @@ class OpenAIAdapter(ProviderAdapter):
                 formatted_content = []
                 for part in content:
                     if isinstance(part, dict):
-                        if "image_url" in part:
+                        if "image_path" in part:
+                            # Handle image paths by encoding them to base64
+                            try:
+                                image_path = part["image_path"]
+                                
+                                # Encode the image here
+                                import base64
+                                from PIL import Image # type: ignore
+                                import io
+                                import os
+                                
+                                # Check if file exists
+                                if not os.path.exists(image_path):
+                                    logging.error(f"Image file not found: {image_path}")
+                                    formatted_content.append({
+                                        "type": "text", 
+                                        "text": f"[Image not found: {image_path}]"
+                                    })
+                                    continue
+                                    
+                                # Process the image
+                                with Image.open(image_path) as img:
+                                    # Resize if needed
+                                    max_size = (1024, 1024)
+                                    img.thumbnail(max_size, Image.LANCZOS)
+                                    
+                                    # Convert to RGB if needed
+                                    if img.mode != "RGB":
+                                        img = img.convert("RGB")
+                                    
+                                    # Save to buffer and encode
+                                    buffer = io.BytesIO()
+                                    img.save(buffer, format="JPEG")
+                                    base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                                
+                                # Format specifically for OpenAI
+                                formatted_content.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{base64_image}"
+                                    }
+                                })
+                            except Exception as e:
+                                logging.error(f"Error encoding image: {str(e)}")
+                                formatted_content.append({
+                                    "type": "text", 
+                                    "text": f"[Failed to process image: {str(e)}]"
+                                })
+                        elif "image_url" in part:
                             # Ensure image_url format is consistent
                             formatted_content.append(
                                 {
@@ -82,7 +130,7 @@ class OpenAIAdapter(ProviderAdapter):
                 formatted_messages.append(
                     {
                         "role": message["role"],
-                        "content": [{"type": "text", "text": str(content)}],
+                        "content": content,  # Keep as string for OpenAI API
                     }
                 )
 
