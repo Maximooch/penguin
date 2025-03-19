@@ -150,24 +150,23 @@ class APIClient:
             # Format messages using the provider-specific adapter
             formatted_messages = self.adapter.format_messages(formatted_messages)
             
-            # Add debugging for Anthropic images
-            if self.model_config.provider.lower() == "anthropic":
-                print("\n=== ANTHROPIC IMAGE DEBUG ===")
-                for i, msg in enumerate(formatted_messages):
-                    print(f"Message {i+1}:")
-                    print(f"  Role: {msg.get('role')}")
-                    if isinstance(msg.get('content'), list):
-                        print(f"  Content parts: {len(msg['content'])}")
-                        for j, part in enumerate(msg['content']):
-                            print(f"    Part {j+1} type: {part.get('type')}")
-                            if part.get('type') == 'image_url':
-                                img_url = part.get('image_url', {}).get('url', '')
-                                print(f"    Image URL starts with: {img_url[:30]}...")
-                                print(f"    Is base64: {'data:image' in img_url}")
-                    else:
-                        content = str(msg.get('content', ''))
-                        print(f"  Content: {content[:50]}...")
-                print("===========================\n")
+            # Add debugging for all providers (not just Anthropic)
+            print(f"\n=== {self.model_config.provider.upper()} IMAGE DEBUG ===")
+            for i, msg in enumerate(formatted_messages):
+                print(f"Message {i+1}:")
+                print(f"  Role: {msg.get('role')}")
+                if isinstance(msg.get('content'), list):
+                    print(f"  Content parts: {len(msg['content'])}")
+                    for j, part in enumerate(msg['content']):
+                        print(f"    Part {j+1} type: {part.get('type')}")
+                        if part.get('type') == 'image_url':
+                            img_url = part.get('image_url', {}).get('url', '')
+                            print(f"    Image URL starts with: {img_url[:30]}...")
+                            print(f"    Is base64: {'data:image' in img_url}")
+                else:
+                    content = str(msg.get('content', ''))
+                    print(f"  Content: {content[:50]}...")
+            print("===========================\n")
 
             # Prepare parameters for the completion call
             completion_params = {
