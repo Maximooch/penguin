@@ -459,7 +459,6 @@ class SimpleContextLoader:
         
         return available_files
 
-
 class ConversationSystem:
     """
     Manages conversation state, history, and message preparation.
@@ -688,7 +687,7 @@ class ConversationSystem:
                         if isinstance(item, dict):
                             if item.get("type") == "text":
                                 combined_text += item.get("text", "")
-                            elif item.get("type") == "image_url":
+                            elif item.get("type") == "image_url" or item.get("type") == "image_path":
                                 # Images typically count as ~85 tokens in Claude
                                 return 85
                     text = combined_text
@@ -802,7 +801,13 @@ class ConversationSystem:
     def prepare_conversation(
         self, user_input: str, image_path: Optional[str] = None
     ) -> None:
-        """Prepare the conversation by adding necessary messages."""
+        """
+        Add a user message to the conversation, handling both text and image inputs.
+        
+        Args:
+            user_input: The text content from the user
+            image_path: Optional path to an image file to include
+        """
         if not self.system_prompt_sent and self.system_prompt:
             system_tokens = self.count_tokens(self.system_prompt)
             self.diagnostics.update_tokens("system_prompt", system_tokens, 0)
@@ -815,27 +820,16 @@ class ConversationSystem:
             self.system_prompt_sent = True
 
         if image_path:
-            self._add_image_message(user_input, image_path)
+            # Create a structured message with text and image path
+            # NO ENCODING HERE - just reference the path
+            content = [
+                {"type": "text", "text": user_input},
+                {"type": "image_url", "image_path": image_path}  # Use standardized format for adapters
+            ]
+            # Pass structured content to add_message
+            self.add_message("user", content, MessageCategory.CONVERSATION)
         else:
             self.add_message("user", user_input, MessageCategory.CONVERSATION)
-
-    def _add_image_message(self, user_input: str, image_path: str) -> None:
-        """Add an image message to the conversation."""
-        try:
-            base64_image = self.tool_manager.encode_image(image_path)
-            image_message = [
-                {"type": "text", "text": user_input},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
-                },
-            ]
-            # Add as properly structured content
-            self.add_message("user", image_message, MessageCategory.CONVERSATION)
-            logger.info("Image message added to conversation history")
-        except Exception as e:
-            logger.error(f"Error adding image message: {str(e)}")
-            raise
 
     def add_action_result(self, action_type: str, result: str, status: str = "completed") -> None:
         """Add an action result with proper formatting"""
@@ -1053,9 +1047,30 @@ class ConversationSystem:
             key=lambda x: x.get("timestamp", "")
         )
         
-        for msg in other_messages:
-            formatted_messages.append({"role": msg["role"], "content": msg["content"]})
-        
+        for message in self.messages:
+            content = message["content"]
+            role = message["role"]
+            
+            # Handle structured content with image paths
+            if isinstance(content, list):
+                formatted_content = []
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "image_path":
+                            # Don't encode here, just pass through the path
+                            formatted_content.append({
+                                "type": "image_url",
+                                "image_path": part["image_path"]
+                            })
+                        else:
+                            formatted_content.append(part)
+                    else:
+                        formatted_content.append({"type": "text", "text": str(part)})
+                
+                formatted_messages.append({"role": role, "content": formatted_content})
+            else:
+                formatted_messages.append({"role": role, "content": content})
+    
         return formatted_messages
 
     def get_last_message(self) -> Optional[Dict[str, Any]]:

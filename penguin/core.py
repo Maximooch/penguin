@@ -517,7 +517,7 @@ class PenguinCore:
             user_input = input_data.get("text", "")
             image_path = input_data.get("image_path")
 
-            # Prepare conversation context
+            # Prepare conversation context - this now handles images internally
             self.conversation_system.prepare_conversation(user_input, image_path)
 
         except Exception as e:
@@ -526,40 +526,6 @@ class PenguinCore:
                 context={
                     "component": "core",
                     "method": "process_input",
-                    "input_data": input_data,
-                },
-            )
-            raise
-
-    async def process_input_with_image(self, input_data: Dict) -> None:
-        try:
-            user_input = input_data.get("text", "")
-            image_path = input_data.get("image_path")
-
-            if image_path:
-                base64_image = self.tool_manager.encode_image(image_path)
-                message_content = [
-                    {"type": "text", "text": user_input},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
-                    },
-                ]
-            else:
-                message_content = user_input
-
-            response = self.api_client.create_message(
-                messages=[{"role": "user", "content": message_content}]
-            )
-
-            # Process the response...
-
-        except Exception as e:
-            log_error(
-                e,
-                context={
-                    "component": "core",
-                    "method": "process_input_with_image",
                     "input_data": input_data,
                 },
             )
@@ -854,10 +820,12 @@ class PenguinCore:
             # Handle flexible input - accept either string or dict
             if isinstance(input_data, str):
                 message = input_data
+                image_path = None
             else:
                 message = input_data.get("text", "")
+                image_path = input_data.get("image_path")  # Extract image path
             
-            if not message:
+            if not message and not image_path:
                 return {"assistant_response": "No input provided", "action_results": []}
             
             # If a conversation ID is provided, load the corresponding conversation.
@@ -875,8 +843,8 @@ class PenguinCore:
                 if loaded_files:
                     logger.info(f"Loaded {len(loaded_files)} context files before processing message")
             
-            # Prepare the conversation context with the new message.
-            self.conversation_system.prepare_conversation(message)
+            # Prepare the conversation context with the new message AND image if present
+            self.conversation_system.prepare_conversation(message, image_path)
             
             # Add token notifications after key operations
             self._notify_token_usage()  # After processing input

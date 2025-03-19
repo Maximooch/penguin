@@ -141,60 +141,115 @@ class AnthropicAdapter(ProviderAdapter):
 
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Format messages for Anthropic API - combines multiple content parts into a single string
-        to ensure compatibility with Anthropic's API requirements through LiteLLM.
+        Format messages for Anthropic API with proper image handling.
         """
         formatted_messages = []
         for message in messages:
             content = message.get("content", "")
             role = message.get("role", "user")
 
-            # Handle image path in message
-            if "image_path" in message:
-                import base64
-
-                # Read and encode image
-                with open(message["image_path"], "rb") as img_file:
-                    encoded_image = base64.b64encode(img_file.read()).decode("utf-8")
-
-                formatted_content = [
-                    {"type": "text", "text": content},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"},
-                    },
-                ]
-                formatted_messages.append({"role": role, "content": formatted_content})
-
-            # Handle list-type content (for existing image URLs)
-            elif isinstance(content, list):
+            # Handle list-type content (for structured content)
+            if isinstance(content, list):
+                # Process structured content with images
                 formatted_content = []
                 for part in content:
                     if isinstance(part, dict):
                         if part.get("type") == "text":
-                            formatted_content.append(
-                                {"type": "text", "text": part.get("text", "")}
-                            )
-                        elif part.get("type") == "image_url":
+                            # Text part - pass through
+                            formatted_content.append(part)
+                        elif "image_path" in part:
+                            # Image path needs to be encoded for Anthropic
+                            try:
+                                image_path = part["image_path"]
+                                
+                                # Encode the image here - THIS is where encoding belongs
+                                import base64
+                                from PIL import Image # type: ignore
+                                import io
+                                import os
+                                
+                                # Check if file exists
+                                if not os.path.exists(image_path):
+                                    logging.error(f"Image file not found: {image_path}")
+                                    formatted_content.append({
+                                        "type": "text", 
+                                        "text": f"[Image not found: {image_path}]"
+                                    })
+                                    continue
+                                    
+                                # Process the image
+                                with Image.open(image_path) as img:
+                                    # Resize if needed
+                                    max_size = (1024, 1024)
+                                    img.thumbnail(max_size, Image.LANCZOS)
+                                    
+                                    # Convert to RGB if needed
+                                    if img.mode != "RGB":
+                                        img = img.convert("RGB")
+                                    
+                                    # Save to buffer and encode
+                                    buffer = io.BytesIO()
+                                    img.save(buffer, format="JPEG")
+                                    base64_image = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                                
+                                # Format specifically for Anthropic
+                                formatted_content.append({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{base64_image}"
+                                    }
+                                })
+                            except Exception as e:
+                                logging.error(f"Error encoding image: {str(e)}")
+                                formatted_content.append({
+                                    "type": "text", 
+                                    "text": f"[Failed to process image: {str(e)}]"
+                                })
+                        else:
+                            # Other content types - pass through
                             formatted_content.append(part)
                     else:
+                        # Handle non-dict parts
                         formatted_content.append({"type": "text", "text": str(part)})
+                
+                # Use the formatted content
                 formatted_messages.append({"role": role, "content": formatted_content})
             else:
-                # Handle plain text content
-                formatted_messages.append(
-                    {"role": role, "content": [{"type": "text", "text": str(content)}]}
-                )
-
+                # Simple string content
+                formatted_messages.append({"role": role, "content": [{"type": "text", "text": str(content)}]})
+        
         return formatted_messages
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
         """Process Anthropic API response"""
-        if isinstance(response, dict):
-            if "choices" in response and len(response["choices"]) > 0:
-                message = response["choices"][0].get("message", {})
-                return message.get("content", ""), []
-        return str(response), []
+        try:
+            logging.info(f"Processing Anthropic response of type: {type(response)}")
+            
+            if isinstance(response, dict):
+                logging.info(f"Response keys: {list(response.keys())}")
+                
+                if "choices" in response and len(response["choices"]) > 0:
+                    message = response["choices"][0].get("message", {})
+                    content = message.get("content", "")
+                    logging.info(f"Extracted content of length: {len(content)}")
+                    return content, []
+                elif "content" in response:
+                    # Direct content in response
+                    content = response["content"]
+                    logging.info(f"Using direct content from response, length: {len(content)}")
+                    return content, []
+            
+            # Fallback to string conversion
+            result = str(response)
+            logging.info(f"Converted response to string, length: {len(result)}")
+            return result, []
+            
+        except Exception as e:
+            logging.error(f"Error in process_response: {str(e)}")
+            return f"Error processing response: {str(e)}", []
+
+    def supports_system_messages(self) -> bool:
+        return True
 
 
 class OllamaAdapter(ProviderAdapter):
