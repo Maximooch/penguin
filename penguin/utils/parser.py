@@ -656,33 +656,33 @@ class ActionExecutor:
         
         return await self.tool_manager.execute_browser_interact(action, selector, text)
 
-    async def _browser_screenshot(self, params: str) -> Dict[str, Any]:
+    async def _browser_screenshot(self, params: str) -> str:
         try:
             tool = BrowserScreenshotTool()
             result = await tool.execute()
             
-            if "image" in result:
+            if "filepath" in result:
                 # Extract description from params or use default
                 description = params.strip() if params else "What can you see in this screenshot?"
                 
-                # Create multimodal content similar to CLI's image command
+                # Create multimodal content in the same format as the /image command result
                 multimodal_content = [
                     {"type": "text", "text": description},
-                    {"type": "image_url", "image_url": {"url": result["image"]}}
+                    {"type": "image_url", "image_path": result["filepath"]}
                 ]
                 
-                # Add as a user message (not system message) for better model handling
+                # Add as a user message (matching how /image adds to conversation)
                 self.conversation_system.add_message(
                     role="user",
-                    content=multimodal_content
+                    content=multimodal_content,
+                    category=MessageCategory.CONVERSATION
                 )
                 
-                # Add a simple text message for action result tracking
-                return "Screenshot captured and added to conversation as a user message"
+                return f"Screenshot saved to {result['filepath']} and added to conversation"
             else:
-                return {"error": result.get("error", "Failed to capture screenshot")}
+                return result.get("error", "Failed to capture screenshot")
         except Exception as e:
-            return {"error": str(e)}
+            return f"Error taking screenshot: {str(e)}"
 
     async def _browser_navigate(self, params: str) -> str:
         if not await browser_manager.initialize():

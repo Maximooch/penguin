@@ -270,33 +270,28 @@ class BrowserScreenshotTool:
             # Get screenshot as bytes
             screenshot_bytes = await page.screenshot()
             
-            # Process image before encoding
-            from PIL import Image # type: ignore
-            import io
+            # Save to a file in the screenshots directory
+            import os
+            import datetime
+            from pathlib import Path
             
-            # Convert bytes to an image
-            img = Image.open(io.BytesIO(screenshot_bytes))
+            # Create screenshots directory if it doesn't exist
+            screenshots_dir = os.path.join(os.environ.get("WORKSPACE_PATH", "."), "screenshots")
+            os.makedirs(screenshots_dir, exist_ok=True)
             
-            # Resize image if too large
-            max_size = (1024, 1024)
-            img.thumbnail(max_size, Image.LANCZOS)
+            # Generate a filename based on timestamp
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"screenshot_{timestamp}.jpg"
+            filepath = os.path.join(screenshots_dir, filename)
             
-            # Convert to RGB if not already
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            
-            # Save to bytes buffer
-            img_byte_arr = io.BytesIO()
-            img.save(img_byte_arr, format="JPEG", quality=85)  # Use JPEG for smaller size
-            
-            # Encode the processed image to base64
-            base64_image = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
-            data_url = f"data:image/jpeg;base64,{base64_image}"
+            # Save the bytes to file
+            with open(filepath, "wb") as f:
+                f.write(screenshot_bytes)
             
             return {
                 "result": "Screenshot captured",
-                "image": data_url,
-                "base64": base64_image
+                "filepath": filepath,
+                "timestamp": timestamp
             }
         except Exception as e:
             return {"error": str(e)} 
