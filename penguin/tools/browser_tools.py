@@ -14,6 +14,7 @@ import logging
 import importlib.metadata
 import os
 import datetime
+import sys
 
 class BrowserManager:
     """Manages browser instance and provides access to browser tools"""
@@ -33,14 +34,48 @@ class BrowserManager:
         # logging.info(f"browser-use version: {browser_use.__version__}") # Doesn't work, fix later.
         
     async def initialize(self, headless: bool = True):
-        """Initialize the browser with minimal configuration"""
+        """Initialize the browser with OS-specific Chrome path"""
         if not self.browser:
             try:
-                self.browser = Browser(
-                    config=BrowserConfig(
-                        headless=headless
-                    )
+                # Prioritize Chromium paths
+                chrome_path = None
+                if os.name == 'nt':  # Windows
+                    paths = [
+                        'C:\\Program Files\\Chromium\\Application\\chrome.exe',
+                        'C:\\Program Files (x86)\\Chromium\\Application\\chrome.exe',
+                        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+                    ]
+                elif sys.platform == 'darwin':  # macOS
+                    paths = [
+                        '/Applications/Chromium.app/Contents/MacOS/Chromium',
+                        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+                    ]
+                else:  # Linux
+                    paths = [
+                        '/usr/bin/chromium',
+                        '/usr/bin/chromium-browser',
+                        '/usr/bin/google-chrome'
+                    ]
+
+                # Find first existing valid path
+                for path in paths:
+                    if os.path.exists(path):
+                        chrome_path = path
+                        break
+
+                config = BrowserConfig(
+                    headless=headless,
+                    chrome_instance_path=chrome_path,
+                    extra_chromium_args=[
+                        '--no-first-run',
+                        '--no-default-browser-check',
+                        '--disable-popup-blocking',
+                        '--disable-notifications'
+                    ]
                 )
+                
+                self.browser = Browser(config=config)
+                logging.info(f"Initializing browser with config: {config}")
                 
                 # Debug: Print available browser methods
                 logging.debug(f"Browser methods: {[m for m in dir(self.browser) if not m.startswith('_')]}")
@@ -58,24 +93,17 @@ class BrowserManager:
     async def _create_page(self):
         """Create a new page if none exists"""
         try:
-            # Create a context first, then create a tab
-            if hasattr(self.browser, 'new_context'):
-                # Store the context for future use
-                self.context = await self.browser.new_context()
-                
-                # Create a new tab
-                await self.context.create_new_tab()
-                # Could it be that self.context is not for a next context session 
-                
-                # Don't try to directly store the page - the context manages it
-                logging.info("Successfully created browser context and tab")
-                return True
-            else:
-                logging.error("Browser API missing expected methods (new_context)")
-                return False
+            if not hasattr(self, 'context') or not self.context:
+                if hasattr(self.browser, 'new_context'):
+                    self.context = await self.browser.new_context()
+                    await self.context.create_new_tab()
+                    logging.info("Created new browser context")
+                else:
+                    logging.error("Browser missing new_context method")
+                    return False
+            return True
         except Exception as e:
             logging.error(f"Error creating page: {str(e)}")
-            logging.error(f"Exception type: {type(e)}")
             return False
     
     async def get_page(self):
@@ -131,6 +159,12 @@ class BrowserManager:
             return False
         
         return True
+
+    async def navigate_to(self, url: str) -> str:
+        if not await self.validate_browser_state():
+            await self.initialize()
+        await self.context.navigate_to(url)
+        return f"Navigated to {url}"
 
 # Create a singleton instance
 browser_manager = BrowserManager()
@@ -227,31 +261,42 @@ class BrowserScreenshotTool:
         try:
             # First ensure browser is initialized
             if not await browser_manager.initialize(headless=False):
-                return {"error": "Failed to initialize browser"}
+                return {"error": "Browser not initialized"}
             
-            # Get page asynchronously
             page = await browser_manager.get_page()
             if not page:
                 return {"error": "No active browser page found. Try navigating to a page first."}
             
-            # Generate timestamp-based filename
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"screenshot_{timestamp}.png"
+            # Get screenshot as bytes
+            screenshot_bytes = await page.screenshot()
             
-            # Define screenshots directory (relative to workspace)
-            screenshots_dir = os.path.join(os.getcwd(), "screenshots")
-            os.makedirs(screenshots_dir, exist_ok=True)
+            # Process image before encoding
+            from PIL import Image # type: ignore
+            import io
             
-            filepath = os.path.join(screenshots_dir, filename)
+            # Convert bytes to an image
+            img = Image.open(io.BytesIO(screenshot_bytes))
             
-            # Take the screenshot - make sure to await this as well
-            await page.screenshot(path=filepath)
+            # Resize image if too large
+            max_size = (1024, 1024)
+            img.thumbnail(max_size, Image.LANCZOS)
+            
+            # Convert to RGB if not already
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            
+            # Save to bytes buffer
+            img_byte_arr = io.BytesIO()
+            img.save(img_byte_arr, format="JPEG", quality=85)  # Use JPEG for smaller size
+            
+            # Encode the processed image to base64
+            base64_image = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+            data_url = f"data:image/jpeg;base64,{base64_image}"
             
             return {
-                "result": f"Screenshot saved to {filepath}",
-                "filepath": filepath,
-                "filename": filename
+                "result": "Screenshot captured",
+                "image": data_url,
+                "base64": base64_image
             }
         except Exception as e:
-            logging.error(f"Screenshot failed: {str(e)}")
-            return {"error": f"Screenshot failed: {str(e)}"} 
+            return {"error": str(e)} 

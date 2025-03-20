@@ -668,6 +668,16 @@ class PenguinCore:
             # Add this before returning
             self._notify_token_usage()
 
+            # Validate messages before sending
+            formatted_messages = self.conversation_system.get_history()
+            if not any(msg.get("role") == "user" for msg in formatted_messages):
+                logging.error("No user message found in conversation history")
+                return {"error": "Conversation requires at least one user message"}, True
+            
+            # Add empty user message if needed for Anthropic
+            if self.config.model.provider == "anthropic" and formatted_messages[0]["role"] != "user":
+                formatted_messages.insert(0, {"role": "user", "content": "."})
+
             return full_response, exit_continuation
 
         except Exception as e:

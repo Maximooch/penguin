@@ -16,7 +16,8 @@ import base64
 from penguin.local_task.manager import ProjectManager
 from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
-
+from penguin.system.conversation import MessageCategory
+from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
 logger = logging.getLogger(__name__)
 
 
@@ -203,7 +204,7 @@ class ActionExecutor:
             # Browser actions
             ActionType.BROWSER_NAVIGATE: self._browser_navigate,
             ActionType.BROWSER_INTERACT: self._browser_interact,
-            ActionType.BROWSER_SCREENSHOT: self._browser_screenshot,
+            ActionType.BROWSER_SCREENSHOT: self._browser_screenshot
         }
 
         try:
@@ -220,6 +221,8 @@ class ActionExecutor:
             else:
                 logger.debug(f"Executing sync handler for {action.action_type.value}")
                 result = handler(action.params)
+                if asyncio.iscoroutine(result):
+                    result = await result
 
             logger.info(f"Action {action.action_type.value} executed successfully")
             return result
@@ -638,10 +641,6 @@ class ActionExecutor:
         except Exception as e:
             return f"Error adding context: {str(e)}"
 
-    async def _browser_navigate(self, params: str) -> str:
-        """Navigate browser to a URL"""
-        return await self.tool_manager.execute_browser_navigate(params.strip())
-    
     async def _browser_interact(self, params: str) -> str:
         """Interact with browser elements. Format: action:selector:text"""
         parts = params.split(':', 2)
@@ -656,40 +655,36 @@ class ActionExecutor:
             return f"Error: Invalid action '{action}'. Use click, input, or submit."
         
         return await self.tool_manager.execute_browser_interact(action, selector, text)
-    
-    async def _browser_screenshot(self, params: str) -> Dict[str, Any]:
-        """Capture browser screenshot"""
-        result = await self.tool_manager.execute_browser_screenshot()
-        
-        # If successful and we got an image
-        if "image" in result:
-            try:
-                # Format the result for add_action_result
-                # This leverages the existing action result system
-                self.conversation_system.add_action_result(
-                    action_type="browser_screenshot",
-                    result=f"Screenshot captured successfully. [Image data encoded in base64]",
-                    status="completed"
-                )
-                
-                # Additionally add the actual image using _add_image_message
-                self.conversation_system._add_image_message(
-                    user_input="", 
-                    image_base64=result["image"]
-                )
-                logging.info("Screenshot captured and added to conversation")
-                print("Screenshot captured and added to conversation")
 
-                # Debug: Save the screenshot locally to verify it works
-                try:
-                    with open("screenshot.png", "wb") as f:
-                        f.write(base64.b64decode(result["image"]))
-                    logging.info("Screenshot saved to screenshot.png")
-                except Exception as e:
-                    logging.error(f"Error saving screenshot: {str(e)}")
+    async def _browser_screenshot(self, params: str) -> Dict[str, Any]:
+        try:
+            tool = BrowserScreenshotTool()
+            result = await tool.execute()
+            
+            if "image" in result:
+                # Extract description from params or use default
+                description = params.strip() if params else "What can you see in this screenshot?"
                 
-                return {"result": "Screenshot captured and added to conversation", "has_image": True}
-            except Exception as e:
-                return {"error": f"Screenshot captured but failed to add to conversation: {str(e)}"}
-        
-        return result
+                # Create multimodal content similar to CLI's image command
+                multimodal_content = [
+                    {"type": "text", "text": description},
+                    {"type": "image_url", "image_url": {"url": result["image"]}}
+                ]
+                
+                # Add as a user message (not system message) for better model handling
+                self.conversation_system.add_message(
+                    role="user",
+                    content=multimodal_content
+                )
+                
+                # Add a simple text message for action result tracking
+                return "Screenshot captured and added to conversation as a user message"
+            else:
+                return {"error": result.get("error", "Failed to capture screenshot")}
+        except Exception as e:
+            return {"error": str(e)}
+
+    async def _browser_navigate(self, params: str) -> str:
+        if not await browser_manager.initialize():
+            return "Failed to initialize browser"
+        return await browser_manager.navigate_to(params)

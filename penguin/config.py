@@ -340,3 +340,7 @@ CONVERSATION_CONFIG = {
 
 # Add after loading config
 # print("Loaded DEEPSEEK_API_KEY exists:", os.getenv("DEEPSEEK_API_KEY") is not None)  # Debug check
+
+# class BrowserConfig:
+#     preferred_browser: str = 'chromium'  # 'chrome' or 'chromium'
+#     suppress_popups: bool = True
