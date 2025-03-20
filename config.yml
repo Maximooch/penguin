@@ -2,15 +2,15 @@
 # https://docs.litellm.ai/docs/providers
 
 model:
-  default: "gpt-4o"
-  provider: "openai"
+  default: "claude-3-7-sonnet-20250219"
+  provider: "anthropic"
   use_assistants_api: false # Add this line to toggle OpenAI Assistants API usage
   max_tokens: 
   # temperature: 0.4
 
 
 api:
-  base_url: "https://api.openai.com/v1"
+  base_url: "https://api.anthropic.com/v1/messages"
   # If you're using ollama, set the base_url to the ollama server url, which is usually http://127.0.0.1:11434
   # It'll tell you if you do `ollama serve` in the terminal.
 
