@@ -303,7 +303,8 @@ class PenguinCore:
             tool_manager=self.tool_manager,
             diagnostics=diagnostics,
             base_path=Path(WORKSPACE_PATH),
-            model_config=model_config
+            model_config=model_config,
+            api_client=self.api_client
         )
 
         # Initialize action executor with project manager
@@ -340,6 +341,10 @@ class PenguinCore:
             litellm.drop_params = False
         except Exception as e:
             logger.warning(f"Failed to disable LiteLLM debugging: {e}")
+
+        # Add these attributes
+        self.current_stream = None
+        self.stream_lock = asyncio.Lock()
 
     def validate_path(self, path: Path):
         if not path.exists():
@@ -579,11 +584,29 @@ class PenguinCore:
             if hasattr(self, 'cli') and hasattr(self.cli, 'stream_callback'):
                 stream_callback = self.cli.stream_callback
             
-            # Get response using API client's unified interface
-            assistant_response = await self.api_client.get_response(
-                messages=messages,
-                stream_callback=stream_callback
+            # Acquire stream lock and cancel any active stream
+            async with self.stream_lock:
+                if self.current_stream:
+                    try:
+                        # Cancel previous stream if it exists
+                        self.current_stream.cancel()
+                    except Exception as e:
+                        logger.debug(f"Error cancelling previous stream: {e}")
+                    self.current_stream = None
+            
+            # Start new stream and store reference 
+            self.current_stream = asyncio.create_task(
+                self.api_client.get_response(
+                    messages=messages,
+                    stream_callback=stream_callback
+                )
             )
+            
+            try:
+                # Wait for stream to complete
+                assistant_response = await self.current_stream
+            finally:
+                self.current_stream = None
             
             # Validate response
             if not assistant_response:
@@ -703,7 +726,7 @@ class PenguinCore:
             
             # Add empty user message if needed for Anthropic
             if self.config.model.provider == "anthropic" and formatted_messages[0]["role"] != "user":
-                formatted_messages.insert(0, {"role": "user", "content": "."})
+                formatted_messages.insert(0, {"role": "user", "content": "Continuing the conversation..."})
 
             return full_response, exit_continuation
 
@@ -1021,7 +1044,6 @@ class PenguinCore:
         """
         print(f"[Core] Registering token callback: {callback.__qualname__ if hasattr(callback, '__qualname__') else callback}")
         self.token_callbacks.append(callback)
-
     def _notify_token_usage(self):
         """Notify all registered callbacks using conversation system token budgeting."""
         try:
@@ -1036,3 +1058,4 @@ class PenguinCore:
                 
         except Exception as e:
             logger.error(f"Error in _notify_token_usage: {str(e)}")
+

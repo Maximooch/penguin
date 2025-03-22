@@ -2,7 +2,9 @@ import asyncio
 import base64
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple, AsyncIterator, Callable
+import time
+import traceback
+from typing import Any, Dict, List, Optional, Tuple, AsyncIterator, Callable, Union
 
 import anthropic
 from anthropic.types import ContentBlock, MessageParam # type: ignore
@@ -131,8 +133,14 @@ class AnthropicAdapter(BaseAdapter):
             # Create the streaming response
             stream = await self.async_client.messages.create(**params)
             
+            # Track content reception
+            received_content = False
+            last_chunk_time = time.time()
+            
             # Process each chunk as it comes in
             async for chunk in stream:
+                last_chunk_time = time.time()
+                
                 # Extract text content based on chunk type
                 content = None
                 
@@ -151,6 +159,7 @@ class AnthropicAdapter(BaseAdapter):
                 
                     # Process extracted content
                     if content:
+                        received_content = True
                         self.logger.debug(f"Extracted content: {content}")
                         # Call the callback with the content
                         if callback:
@@ -164,6 +173,14 @@ class AnthropicAdapter(BaseAdapter):
             
             # Join all chunks to get the complete response
             complete_response = ''.join(accumulated_response)
+            
+            # Check for suspiciously short responses after stream completes
+            if len(complete_response.strip()) <= 1:
+                self.logger.warning(f"Suspiciously short response received: '{complete_response}'")
+                # Only replace with error message if it's just punctuation or empty
+                if complete_response.strip() in ['', '.', '?', '!', ',']:
+                    return "I encountered an issue while generating a response. The connection may have been interrupted. Please try again." + complete_response + traceback.format_exc()
+            
             return complete_response
             
         except Exception as e:
@@ -395,14 +412,50 @@ class AnthropicAdapter(BaseAdapter):
         
         return formatted_messages
     
-    def count_tokens(self, text: str) -> int:
-        """Count tokens using Anthropic's tokenizer"""
+    def count_tokens(self, content: Union[str, List, Dict]) -> int:
+        """Count tokens using Anthropic's dedicated token counting endpoint"""
         try:
-            return self.sync_client.count_tokens(text)
+            # Handle simple string content directly
+            if isinstance(content, str):
+                return self.sync_client.count_tokens(content)
+            
+            # For complex content (including images), use the messages/count_tokens endpoint
+            if isinstance(content, list) or isinstance(content, dict):
+                # Format the content as a proper message
+                if isinstance(content, list):
+                    # If it's a list of message parts, wrap it as a user message
+                    formatted_content = {"role": "user", "content": content}
+                else:
+                    # If it's already a dict, use as is
+                    formatted_content = content
+                    
+                # Format as a complete messages request
+                messages = [formatted_content]
+                
+                # Call the count_tokens endpoint
+                response = self.sync_client.messages.count_tokens(messages=messages)
+                
+                # Return the token count from the response
+                return response.input_tokens
+            
+            # Fallback for other content types
+            return self.sync_client.count_tokens(str(content))
+            
         except Exception as e:
-            logger.error(f"Error counting tokens: {str(e)}")
-            # Fallback to approximate counting
-            return len(text) // 4 
+            logger.error(f"Error counting tokens via Anthropic API: {str(e)}")
+            # Fall back to approximate counting in case of API errors
+            if isinstance(content, list) and any(isinstance(part, dict) and part.get("type") in ["image", "image_url"] 
+                                                for part in content if isinstance(part, dict)):
+                # Conservative estimate for content with images
+                text_content = ' '.join([part.get("text", "") for part in content 
+                                        if isinstance(part, dict) and part.get("type") == "text"])
+                # Base text tokens plus 1500 per image (conservative estimate)
+                image_count = sum(1 for part in content if isinstance(part, dict) 
+                                 and part.get("type") in ["image", "image_url"])
+                return len(text_content) // 4 + (image_count * 1500)
+            else:
+                # Basic fallback
+                return len(str(content)) // 4
     
     def supports_system_messages(self) -> bool:
         """Whether this provider supports system messages"""
