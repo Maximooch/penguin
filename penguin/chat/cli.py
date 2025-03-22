@@ -381,6 +381,11 @@ class PenguinCLI:
                 # Make sure we don't duplicate this in the conversation
                 self._streamed_content = []
 
+        # If message is suspiciously short, could provide visual indication
+        if len(message.strip()) <= 1:
+            # Add visual indicator that response was truncated
+            message = f"{message} [Response truncated due to context limitations]"
+
     def _format_code_block(self, message, code, language, original_block):
         """Format a code block with syntax highlighting and return updated message"""
         # Get the display name for the language or use language code as fallback
