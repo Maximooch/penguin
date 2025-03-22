@@ -4,7 +4,7 @@ import io
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 import yaml  # type: ignore
 
@@ -16,7 +16,7 @@ from litellm import acompletion, completion  # type: ignore
 from PIL import Image  # type: ignore
 
 from .model_config import ModelConfig
-from .provider_adapters import get_provider_adapter
+from .adapters import get_adapter
 import logging
 
 logger = logging.getLogger(__name__)
@@ -71,7 +71,7 @@ class APIClient:
         """
         self.model_config = model_config
         self.system_prompt = None
-        self.adapter = get_provider_adapter(model_config.provider, model_config)
+        self.adapter = get_adapter(model_config.provider, model_config)
         self.api_key = os.getenv(f"{model_config.provider.upper()}_API_KEY")
         self.max_history_tokens = model_config.max_history_tokens or 200000
         # TODO: Make this dynamic based on max_tokens in model_config
@@ -150,6 +150,8 @@ class APIClient:
             # Format messages using the provider-specific adapter
             formatted_messages = self.adapter.format_messages(formatted_messages)
             
+            # Comment out this debugging block
+            '''
             # Add debugging for all providers (not just Anthropic)
             print(f"\n=== {self.model_config.provider.upper()} IMAGE DEBUG ===")
             for i, msg in enumerate(formatted_messages):
@@ -167,6 +169,7 @@ class APIClient:
                     content = str(msg.get('content', ''))
                     print(f"  Content: {content[:50]}...")
             print("===========================\n")
+            '''
 
             # Prepare parameters for the completion call
             completion_params = {
@@ -346,6 +349,110 @@ class APIClient:
                 "total_tokens": 0,
                 "format_tokens": 0
             }
+
+    async def create_streaming_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stream_callback: Optional[Callable[[str], None]] = None
+    ) -> str:
+        """Create a streaming completion request with proper text extraction."""
+        try:
+            # System prompt handling (unchanged)
+            if self.system_prompt:
+                if self.adapter.supports_system_messages():
+                    messages = [msg for msg in messages if msg.get("role") != "system"]
+                    messages.insert(0, {"role": "system", "content": self.system_prompt})
+                else:
+                    messages.insert(
+                        0,
+                        {
+                            "role": "user",
+                            "content": f"[SYSTEM PROMPT]: {self.system_prompt}",
+                        },
+                    )
+            
+            # Create accumulator for content
+            accumulated_content = []
+            
+            # Simple non-async wrapper for the callback
+            def text_callback(text):
+                # Call the original callback
+                if stream_callback:
+                    stream_callback(text)
+                # Also accumulate the text locally
+                accumulated_content.append(text)
+            
+            # Check if adapter supports streaming directly
+            if hasattr(self.adapter, 'create_completion'):
+                try:
+                    # Call adapter with our callback
+                    content = await self.adapter.create_completion(
+                        messages=messages,
+                        max_tokens=max_tokens or self.model_config.max_tokens,
+                        temperature=temperature or self.model_config.temperature,
+                        stream=True,
+                        stream_callback=text_callback
+                    )
+                    
+                    # Return either the adapter's accumulated content or our own
+                    if isinstance(content, str) and content:
+                        return content
+                    return ''.join(accumulated_content)
+                except Exception as e:
+                    self.logger.error(f"Streaming error in adapter: {str(e)}")
+                    if accumulated_content:
+                        # Return what we managed to get before the error
+                        return ''.join(accumulated_content)
+                    raise  # Re-raise if we got nothing
+            
+            # Fallback for non-streaming
+            self.logger.warning("Adapter doesn't support streaming, falling back to non-streaming mode")
+            response = await self.create_message(messages, max_tokens, temperature)
+            content, _ = self.process_response(response)
+            return content
+            
+        except Exception as e:
+            error_message = f"LLM API streaming error: {str(e)}"
+            self.logger.error(error_message)
+            # Return an error message instead of raising to avoid breaking the chat flow
+            return f"I encountered an error during streaming: {str(e)}"
+
+    async def get_response(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stream: Optional[bool] = None,
+        stream_callback: Optional[Callable[[str], None]] = None
+    ) -> str:
+        """Get a response with unified interface for streaming and non-streaming"""
+        # Determine if streaming should be used
+        use_streaming = stream if stream is not None else self.model_config.streaming_enabled
+        
+        try:
+            if use_streaming and stream_callback:
+                # Handle streaming with proper accumulation
+                accumulated_response = await self.create_streaming_completion(
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream_callback=stream_callback
+                )
+                return accumulated_response
+            else:
+                # Non-streaming path
+                response = await self.create_message(
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature
+                )
+                content, _ = self.process_response(response)
+                return content
+        except Exception as e:
+            logger.error(f"Error getting response: {str(e)}")
+            return f"Error: {str(e)}"
 
 
 # The following code is commented out and represents an older version of the API client.

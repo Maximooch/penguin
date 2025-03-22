@@ -12,6 +12,8 @@ class ModelConfig:
         temperature: float = None,
         use_assistants_api: bool = False,
         supports_vision: bool = None,
+        use_native_adapter: bool = True,
+        streaming_enabled: bool = True,
     ):
         self.model = model
         self.provider = provider
@@ -23,6 +25,8 @@ class ModelConfig:
             os.getenv("PENGUIN_ASSISTANT_ID") if use_assistants_api else False
         )
         self.supports_vision = supports_vision
+        self.use_native_adapter = use_native_adapter
+        self.streaming_enabled = streaming_enabled
 
     def get_config(self) -> Dict[str, Any]:
         config = {
@@ -59,5 +63,9 @@ class ModelConfig:
             use_assistants_api=os.getenv("PENGUIN_USE_ASSISTANTS_API", "false").lower()
             == "true",
             supports_vision=os.getenv("PENGUIN_SUPPORTS_VISION", "false").lower()
+            == "true",
+            use_native_adapter=os.getenv("PENGUIN_USE_NATIVE_ADAPTER", "false").lower()
+            == "true",
+            streaming_enabled=os.getenv("PENGUIN_STREAMING_ENABLED", "false").lower()
             == "true",
         )

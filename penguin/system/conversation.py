@@ -472,7 +472,14 @@ class ConversationSystem:
     - Context loading from files
     """
 
-    def __init__(self, tool_manager, diagnostics, base_path: Path, model_config=None, api_client=None):
+    def __init__(
+        self, 
+        tool_manager, 
+        diagnostics, 
+        base_path: Path, 
+        model_config=None,  # Now properly stored
+        api_client=None     # Now properly stored
+    ):
         self.tool_manager = tool_manager
         self.diagnostics = diagnostics
         self.messages = []
@@ -542,6 +549,10 @@ class ConversationSystem:
             logger.warning(f"Failed to load core context: {e}")
 
         # Add API client reference
+        self.api_client = api_client
+
+        # Add these lines to store configuration
+        self.model_config = model_config
         self.api_client = api_client
 
     def _initialize_token_budgets(self):
@@ -671,55 +682,35 @@ class ConversationSystem:
         self.system_prompt_sent = False
 
     def count_tokens(self, text: Union[str, List, Dict]) -> int:
-        """Count tokens using API client's tokenizer or fallback methods"""
+        """Safer token counting with fallbacks"""
         try:
-            # Handle empty or None input
-            if not text:
-                return 0
-            
-            # Convert structured content to string for token counting
-            if isinstance(text, (list, dict)):
-                # Handle structured content (e.g., for OpenAI format with images)
-                if isinstance(text, list) and all(isinstance(item, dict) for item in text):
-                    # This is likely a message content array with text/image parts
-                    combined_text = ""
-                    for item in text:
-                        if isinstance(item, dict):
-                            if item.get("type") == "text":
-                                combined_text += item.get("text", "")
-                            elif item.get("type") == "image_url" or item.get("type") == "image_path":
-                                # Images typically count as ~85 tokens in Claude
-                                return 85
-                    text = combined_text
-                else:
-                    # For other structured content, convert to string
-                    text = str(text)
-                
-            # Try using API client's token counter first
-            if self.api_client:
-                try:
-                    # Create a temporary message to count tokens
-                    message = {"role": "user", "content": text}
-                    counts = self.api_client.count_message_tokens([message])
-                    return counts["total_tokens"] - counts["format_tokens"]  # Return only content tokens
-                except Exception as e:
-                    logger.warning(f"API client token counting failed: {e}, falling back to local methods")
-            
-            # Try using tiktoken if available
-            if self.tokenizer:
-                try:
-                    return len(self.tokenizer.encode(text))
-                except Exception as e:
-                    logger.warning(f"Tiktoken counting failed: {e}, falling back to approximation")
-            
-            # Fallback to character-based approximation
-            # This is a very rough approximation - about 4 characters per token
-            return len(text) // 4 + 1
-            
+            if self.model_config and self.api_client:
+                return self.api_client.count_message_tokens(text).get("total_tokens", 0)
+            # Fallback to simple count if config/client missing
+            return len(str(text)) // 4
         except Exception as e:
-            logger.error(f"Error counting tokens: {e}")
-            # Return a conservative estimate to prevent issues
-            return len(str(text)) // 3  # Even more conservative fallback
+            logger.error(f"Token counting error: {str(e)}")
+            return 0  # Fail-safe return
+
+
+    # def count_tokens(self, text: Union[str, List, Dict]) -> int:
+    #     """Count tokens in text using the appropriate tokenizer"""
+    #     try:
+    #         # If we have a model_config and it has an adapter with count_tokens
+    #         if hasattr(self, 'model_config') and self.model_config:
+    #             # Use adapter's token counter if available
+    #             if hasattr(self.api_client, 'adapter') and hasattr(self.api_client.adapter, 'count_tokens'):
+    #                 return self.api_client.adapter.count_tokens(text)
+            
+    #         # Fallback to approximate counting
+    #         if isinstance(text, (list, dict)):
+    #             text = str(text)
+    #         # Approximate token count (4 chars ~= 1 token)
+    #         return max(1, len(str(text)) // 4)
+    #     except Exception as e:
+    #         logging.error(f"Token counting error: {e}")
+    #         # Fallback to approximate counting
+    #         return max(1, len(str(text)) // 4)
 
     def add_message(
         self, 

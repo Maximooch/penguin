@@ -242,6 +242,8 @@ class ModelConfig:
     default: str = "gpt-4"
     provider: str = "openai"
     use_assistants_api: bool = False
+    use_native_adapter: bool = False
+    streaming_enabled: bool = False
 
 
 @dataclass
@@ -294,6 +296,12 @@ class Config:
                     provider=config_data.get("model", {}).get("provider", "openai"),
                     use_assistants_api=config_data.get("model", {}).get(
                         "use_assistants_api", False
+                    ),
+                    use_native_adapter=config_data.get("model", {}).get(
+                        "use_native_adapter", False
+                    ),
+                    streaming_enabled=config_data.get("model", {}).get(
+                        "streaming_enabled", False
                     ),
                 ),
                 api=APIConfig(base_url=config_data.get("api", {}).get("base_url")),
