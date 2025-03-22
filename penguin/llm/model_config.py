@@ -14,6 +14,8 @@ class ModelConfig:
         supports_vision: bool = None,
         use_native_adapter: bool = True,
         streaming_enabled: bool = True,
+        # api_key: str = None,
+        vision_enabled: bool = None,
     ):
         self.model = model
         self.provider = provider
@@ -24,7 +26,27 @@ class ModelConfig:
         self.use_assistants_api = (
             os.getenv("PENGUIN_ASSISTANT_ID") if use_assistants_api else False
         )
-        self.supports_vision = supports_vision
+        
+        # Set vision capability
+        self.vision_enabled = vision_enabled
+        if vision_enabled is None:
+            # Automatically detect vision capability based on model name
+            if provider == "anthropic" and "claude-3" in model:
+                self.vision_enabled = True
+            elif provider == "openai" and ("gpt-4" in model and "vision" in model):
+                self.vision_enabled = True
+            else:
+                self.vision_enabled = False
+        
+        # This is for backward compatibility
+        self.supports_vision = self.vision_enabled
+        
+        # Store API key
+        # self.api_key = api_key
+        # if not self.api_key and provider:
+        #     # Try to get from environment if not provided
+        #     self.api_key = os.getenv(f"{provider.upper()}_API_KEY")
+            
         self.use_native_adapter = use_native_adapter
         self.streaming_enabled = streaming_enabled
 
@@ -68,4 +90,8 @@ class ModelConfig:
             == "true",
             streaming_enabled=os.getenv("PENGUIN_STREAMING_ENABLED", "false").lower()
             == "true",
+            # api_key=os.getenv(f"{os.getenv('PENGUIN_PROVIDER', '').upper()}_API_KEY"),
+            vision_enabled=os.getenv("PENGUIN_VISION_ENABLED", "").lower() == "true"
+            if os.getenv("PENGUIN_VISION_ENABLED")
+            else None,
         )

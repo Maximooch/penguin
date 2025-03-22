@@ -62,7 +62,8 @@ class AnthropicAdapter(BaseAdapter):
                 request_params["system"] = system_prompt
             
             # Make the API call
-            logger.debug(f"Sending request to Anthropic: {request_params}")
+            safe_params = self._safe_log_content(request_params.copy())
+            logger.debug(f"Sending request to Anthropic: {safe_params}")
             response = await self.async_client.messages.create(**request_params)
             
             return response
@@ -105,7 +106,8 @@ class AnthropicAdapter(BaseAdapter):
                 request_params["system"] = system_message
             
             # Make the API call
-            logger.debug(f"Sending request to Anthropic: {request_params}")
+            safe_params = self._safe_log_content(request_params.copy())
+            logger.debug(f"Sending request to Anthropic: {safe_params}")
             
             if stream:
                 return await self._handle_streaming(request_params, stream_callback)
@@ -200,7 +202,7 @@ class AnthropicAdapter(BaseAdapter):
             return f"Error processing response: {str(e)}", []
     
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Format messages for Anthropic API"""
+        """Format messages for Anthropic API, properly handling images"""
         formatted_messages = []
         
         for msg in messages:
@@ -220,37 +222,175 @@ class AnthropicAdapter(BaseAdapter):
             # Handle different content formats
             formatted_content = []
             
-            if isinstance(content, list):
+            # Handle string content
+            if isinstance(content, str):
+                formatted_content.append({"type": "text", "text": content})
+            
+            # Handle list content (multimodal)
+            elif isinstance(content, list):
                 for part in content:
                     if isinstance(part, dict):
-                        # Handle image parts
-                        if part.get("type") == "image_url":
+                        # Handle image parts - with more flexible field detection
+                        if part.get("type") in ["image_url", "image"]:
                             try:
-                                image_url = part.get("image_url", {}).get("url", "")
-                                formatted_content.append({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64" if "data:image" in image_url else "url",
-                                        "media_type": "image/jpeg",
-                                        "data": image_url.split("base64,")[1] if "data:image" in image_url else image_url
-                                    }
-                                })
+                                # Extract image URL from various possible formats
+                                image_url = None
+                                image_path = None
+                                
+                                # Handle direct image_url format (most common in your codebase)
+                                if "image_url" in part:
+                                    # Handle both string and dict variants
+                                    if isinstance(part["image_url"], dict) and "url" in part["image_url"]:
+                                        image_url = part["image_url"]["url"]
+                                    else:
+                                        image_url = part["image_url"]
+                                        
+                                # Also check for direct path
+                                elif "image_path" in part:
+                                    image_path = part["image_path"]
+                                # Check for direct url field
+                                elif "url" in part:
+                                    image_url = part["url"]
+                                # Also check for source.url pattern
+                                elif "source" in part and isinstance(part["source"], dict) and "url" in part["source"]:
+                                    image_url = part["source"]["url"]
+                                
+                                # Process the image source appropriately
+                                if image_url and image_url.startswith(('http://', 'https://')):
+                                    # For web URLs, use URL source type
+                                    formatted_content.append({
+                                        "type": "image",
+                                        "source": {
+                                            "type": "url",
+                                            "url": image_url
+                                        }
+                                    })
+                                elif image_path and os.path.exists(image_path):
+                                    # For local files, read and encode as base64
+                                    from PIL import Image # type: ignore
+                                    import io
+                                    
+                                    # Open and process the image
+                                    with Image.open(image_path) as img:
+                                        # Resize if needed
+                                        max_size = (1024, 1024)
+                                        img.thumbnail(max_size, Image.LANCZOS)
+                                        
+                                        # Convert to RGB if necessary
+                                        if img.mode != "RGB":
+                                            img = img.convert("RGB")
+                                        
+                                        # Determine media type based on file extension
+                                        ext = os.path.splitext(image_path)[1].lower()
+                                        media_type = {
+                                            '.jpg': 'image/jpeg',
+                                            '.jpeg': 'image/jpeg',
+                                            '.png': 'image/png',
+                                            '.gif': 'image/gif',
+                                            '.webp': 'image/webp'
+                                        }.get(ext, 'image/jpeg')
+                                        
+                                        # Encode to base64
+                                        buffer = io.BytesIO()
+                                        img.save(buffer, format=media_type.split('/')[1].upper())
+                                        base64_data = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                                        
+                                        # Format for Anthropic API using base64
+                                        formatted_content.append({
+                                            "type": "image",
+                                            "source": {
+                                                "type": "base64",
+                                                "media_type": media_type,
+                                                "data": base64_data
+                                            }
+                                        })
+                                elif image_url:
+                                    # For other URLs (like file:// or unsupported), try to load and convert to base64
+                                    try:
+                                        from PIL import Image # type: ignore
+                                        import io
+                                        # Import base64 again in this scope to avoid the variable shadowing issue
+                                        import base64 as image_base64
+                                        
+                                        # Try to open as local file by removing file:// prefix if present
+                                        local_path = image_url
+                                        if image_url.startswith('file://'):
+                                            local_path = image_url[7:]
+                                        
+                                        if os.path.exists(local_path):
+                                            with Image.open(local_path) as img:
+                                                # Same processing as above
+                                                max_size = (1024, 1024)
+                                                img.thumbnail(max_size, Image.LANCZOS)
+                                                if img.mode != "RGB":
+                                                    img = img.convert("RGB")
+                                                
+                                                # Determine media type
+                                                ext = os.path.splitext(local_path)[1].lower()
+                                                media_type = {
+                                                    '.jpg': 'image/jpeg',
+                                                    '.jpeg': 'image/jpeg',
+                                                    '.png': 'image/png',
+                                                    '.gif': 'image/gif',
+                                                    '.webp': 'image/webp'
+                                                }.get(ext, 'image/jpeg')
+                                                
+                                                # Encode to base64 using the renamed import
+                                                buffer = io.BytesIO()
+                                                img.save(buffer, format=media_type.split('/')[1].upper())
+                                                base64_data = image_base64.b64encode(buffer.getvalue()).decode('utf-8')
+                                                
+                                                # Format for Anthropic API using base64
+                                                formatted_content.append({
+                                                    "type": "image",
+                                                    "source": {
+                                                        "type": "base64",
+                                                        "media_type": media_type,
+                                                        "data": base64_data
+                                                    }
+                                                })
+                                        else:
+                                            self.logger.error(f"Image not found at path: {local_path}")
+                                            formatted_content.append({
+                                                "type": "text",
+                                                "text": f"[Failed to process image: File not found]"
+                                            })
+                                    except Exception as e:
+                                        self.logger.error(f"Error processing image URL {image_url}: {str(e)}")
+                                        formatted_content.append({
+                                            "type": "text",
+                                            "text": f"[Failed to process image: {str(e)}]"
+                                        })
+                                else:
+                                    # No valid image source found
+                                    self.logger.error(f"Invalid image format in message: {part}")
+                                    formatted_content.append({
+                                        "type": "text",
+                                        "text": "[Failed to process image: Invalid format]"
+                                    })
                             except Exception as e:
-                                logger.error(f"Error formatting image: {str(e)}")
+                                self.logger.error(f"Error formatting image: {str(e)}")
                                 formatted_content.append({
                                     "type": "text",
                                     "text": f"[Failed to process image: {str(e)}]"
                                 })
+                        elif part.get("type") == "text":
+                            # Text content in a list
+                            formatted_content.append({
+                                "type": "text", 
+                                "text": part.get("text", "")
+                            })
                         else:
-                            # Text or other content types
+                            # Unknown content type
                             formatted_content.append(part)
                     else:
                         # Plain strings in a list
                         formatted_content.append({"type": "text", "text": str(part)})
             else:
-                # Simple string content
+                # Fallback for any other content type
                 formatted_content.append({"type": "text", "text": str(content)})
             
+            # Create the formatted message with proper content array
             formatted_messages.append({"role": role, "content": formatted_content})
         
         return formatted_messages
@@ -271,3 +411,19 @@ class AnthropicAdapter(BaseAdapter):
     def supports_vision(self) -> bool:
         """Whether this provider supports vision/images"""
         return "claude-3" in self.model_config.model
+
+    def _safe_log_content(self, content):
+        """Create a safe version of content for logging, removing base64 data"""
+        if isinstance(content, list):
+            return [self._safe_log_content(item) for item in content]
+        elif isinstance(content, dict):
+            result = {}
+            for k, v in content.items():
+                if k == "data" and isinstance(v, str) and len(v) > 100:
+                    result[k] = f"[BASE64 DATA REDACTED: {len(v)} bytes]"
+                elif isinstance(v, dict) or isinstance(v, list):
+                    result[k] = self._safe_log_content(v)
+                else:
+                    result[k] = v
+            return result
+        return content

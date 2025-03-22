@@ -119,6 +119,7 @@ class APIClient:
         """
         try:
             # Handle system prompt compatibility
+            system_prompt = None
             if self.system_prompt:
                 if self.adapter.supports_system_messages():
                     # Remove existing system messages and add ours first
@@ -126,6 +127,7 @@ class APIClient:
                     messages.insert(
                         0, {"role": "system", "content": self.system_prompt}
                     )
+                    system_prompt = self.system_prompt
                 else:
                     # Convert system message to user message with prefix
                     print(
@@ -142,13 +144,24 @@ class APIClient:
                         "Converted system message to user message for provider"
                     )
 
-            # Preserve empty responses
-            formatted_messages = [
-                msg for msg in messages  # Preserve original content
-            ]
-
             # Format messages using the provider-specific adapter
-            formatted_messages = self.adapter.format_messages(formatted_messages)
+            formatted_messages = self.adapter.format_messages(messages)
+            
+            # Check if we can use direct adapter (bypass litellm)
+            if hasattr(self.adapter, 'create_message') and getattr(self.model_config, 'use_native_adapter', True):
+                self.logger.debug(f"Using direct {self.adapter.provider} adapter")
+                
+                # Call the adapter's create_message method directly
+                response = await self.adapter.create_message(
+                    messages=messages,
+                    max_tokens=max_tokens or self.model_config.max_tokens,
+                    temperature=temperature or self.model_config.temperature,
+                    system_prompt=system_prompt
+                )
+                return response
+                
+            # Fallback to litellm for providers without direct adapters
+            self.logger.debug(f"Using litellm for {self.adapter.provider}")
             
             # Comment out this debugging block
             '''
@@ -387,6 +400,10 @@ class APIClient:
             # Check if adapter supports streaming directly
             if hasattr(self.adapter, 'create_completion'):
                 try:
+                    # Make sure we're bypassing litellm entirely for Anthropic
+                    if self.adapter.provider == "anthropic":
+                        self.logger.debug("Using direct Anthropic adapter for streaming")
+                        
                     # Call adapter with our callback
                     content = await self.adapter.create_completion(
                         messages=messages,
