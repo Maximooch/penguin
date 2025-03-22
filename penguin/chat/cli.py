@@ -368,6 +368,19 @@ class PenguinCLI:
         )
         self.console.print(panel)
         
+        # After displaying the response, add:
+        # Reset streaming state for next message
+        if hasattr(self, '_streaming_started'):
+            self._streaming_started = False
+            print("\n")  # Add a newline after streaming completes
+        
+        if hasattr(self, '_streamed_content'):
+            # Add streamed content to conversation if it was captured
+            streamed_text = "".join(self._streamed_content)
+            if streamed_text and not streamed_text.isspace():
+                # Make sure we don't duplicate this in the conversation
+                self._streamed_content = []
+
     def _format_code_block(self, message, code, language, original_block):
         """Format a code block with syntax highlighting and return updated message"""
         # Get the display name for the language or use language code as fallback
@@ -810,29 +823,57 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                             await self.core.start_run_mode(name, description)
                         continue
 
-                # Process regular input and get response
-                # Initialize progress display for multi-step processing
-                self.display_message("Processing your request...", "system")
+                # Make sure to set CLI reference in core
+                self.core.cli = self
                 
-                # Process the input with multi-step reasoning (max_iterations=5 by default)
+                # Process regular input and get response
+                # Only show "Processing" message when streaming is disabled
+                streaming_enabled = (
+                    hasattr(self.core, 'model_config') and 
+                    hasattr(self.core.model_config, 'streaming_enabled') and 
+                    self.core.model_config.streaming_enabled
+                )
+                
+                if not streaming_enabled:
+                    self.display_message("Processing your request...", "system")
+                
                 try:
-                    response = await self.core.process({"text": user_input}, max_iterations=5)
+                    # Use process without specifying streaming (uses config default)
+                    response = await self.core.process(
+                        {"text": user_input}, 
+                        max_iterations=5
+                    )
                     
-                    # Display response
+                    # When using streaming, don't display the assistant_response again
+                    # as it's already been streamed via the callback
                     if isinstance(response, dict):
-                        if "assistant_response" in response:
+                        if not streaming_enabled and "assistant_response" in response:
+                            # Only display in non-streaming mode
                             self.display_message(response["assistant_response"])
+                        
+                        # Always display action results
                         if "action_results" in response:
                             for result in response["action_results"]:
-                                # Use the new display method for action results
                                 if isinstance(result, dict):
                                     self.display_action_result(result)
                                 else:
                                     self.display_message(str(result), "system")
                     else:
-                        self.display_message(str(response))
+                        # Only display non-dict responses in non-streaming mode
+                        if not streaming_enabled:
+                            self.display_message(str(response))
+                
+                    # Make sure we add a newline after streaming is done
+                    if streaming_enabled and hasattr(self, '_streaming_started') and self._streaming_started:
+                        print("\n")
+                        self._streaming_started = False
+                    
+                    # Reset streaming state for next message
+                    if hasattr(self, '_streamed_content'):
+                        self._streamed_content = []
+                
                 except KeyboardInterrupt:
-                    # Handle interrupt...
+                    # Handle interrupt
                     self.display_message("Processing interrupted by user", "system")
                     self._safely_stop_progress()
                     raise
@@ -917,24 +958,90 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
         else:
             self.display_message(f"Unknown conversation action: {action}", "error")
 
+    # Add this new method to support streaming display
+    def stream_callback(self, content: str):
+        """Handle streaming content from LLM"""
+        # 1. Better type checking and error handling
+        if not isinstance(content, str):
+            try:
+                # Convert non-string objects to their string representation
+                content = str(content)
+            except:
+                return  # Skip content that can't be converted to string
+        
+        # 2. Extract content from ModelResponse objects
+        if 'ModelResponse' in content or 'Message(content=' in content:
+            # Extract content from deeply nested ModelResponse objects
+            content_patterns = [
+                r'Message\(content="([^"]+)"',      # Match Message(content="text")
+                r"Message\(content='([^']+)'",      # Match Message(content='text')
+                r'content="([^"]+)"',               # Match content="text"
+                r"content='([^']+)'",               # Match content='text'
+                r'content=([^,\)]+)',               # Match content=text
+            ]
+            
+            for pattern in content_patterns:
+                match = re.search(pattern, content)
+                if match:
+                    content = match.group(1)
+                    break
+            else:
+                # If no pattern matched, this might be a non-text chunk, so skip it
+                return
+        
+        # 3. Skip empty or whitespace-only content after extraction
+        if not content.strip():
+            return
+        
+        # 4. Ensure progress indicators are cleared
+        if self.progress:
+            self._safely_stop_progress()
+        
+        # 5. Setup for first chunk
+        if not hasattr(self, '_streaming_started') or not self._streaming_started:
+            # Clear current line
+            print("\033[2K", end="\r")
+            # Print header
+            print("\n" + f"{self.PENGUIN_EMOJI} Penguin: ", end="", flush=True)
+            self._streaming_started = True
+            
+            # Initialize content collection
+            if not hasattr(self, '_streamed_content'):
+                self._streamed_content = []
+            else:
+                self._streamed_content = []
+        
+        # 6. Print the content
+        print(content, end="", flush=True)
+        
+        # 7. Store processed content
+        self._streamed_content.append(content)
+
 
 @app.command()
 def chat(
     model: str = typer.Option(None, "--model", "-m", help="Specify the model to use"),
-    workspace: Path = typer.Option(
-        None, "--workspace", "-w", help="Set custom workspace path"
-    ),
+    workspace: Path = typer.Option(None, "--workspace", "-w", help="Set custom workspace path"),
+    no_streaming: bool = typer.Option(False, "--no-streaming", help="Disable streaming mode")
 ):
     """Start an interactive chat session with Penguin"""
 
     async def run():
-        # Initialize core components
+        # Load configuration
+        loaded_config = config
+
+        # Initialize model configuration - respect config but allow CLI override
+        streaming_enabled = not no_streaming and loaded_config["model"].get("streaming_enabled", True)
+        
         model_config = ModelConfig(
-            model=model or config["model"]["default"],
-            provider=config["model"]["provider"],
-            api_base=config["api"]["base_url"],
+            model=model or loaded_config["model"]["default"],
+            provider=loaded_config["model"]["provider"],
+            api_base=loaded_config["api"]["base_url"],
+            use_native_adapter=loaded_config["model"].get("use_native_adapter", True),
+            streaming_enabled=streaming_enabled
         )
 
+        # Create API client
         api_client = APIClient(model_config=model_config)
         api_client.set_system_prompt(SYSTEM_PROMPT)
         tool_manager = ToolManager(log_error)

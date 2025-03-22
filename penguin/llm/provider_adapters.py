@@ -271,26 +271,31 @@ class AnthropicAdapter(ProviderAdapter):
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
         """Process Anthropic API response"""
         try:
-            logging.info(f"Processing Anthropic response of type: {type(response)}")
+            logging.debug(f"Processing Anthropic response of type: {type(response)}")
             
+            # Handle ModelResponse from LiteLLM
+            if hasattr(response, 'choices') and response.choices:
+                message = response.choices[0].message
+                if hasattr(message, 'content'):
+                    return message.content, []
+            
+            # Handle dictionary response
             if isinstance(response, dict):
-                logging.info(f"Response keys: {list(response.keys())}")
-                
-                if "choices" in response and len(response["choices"]) > 0:
+                if "choices" in response and response["choices"]:
                     message = response["choices"][0].get("message", {})
                     content = message.get("content", "")
-                    logging.info(f"Extracted content of length: {len(content)}")
                     return content, []
                 elif "content" in response:
-                    # Direct content in response
-                    content = response["content"]
-                    logging.info(f"Using direct content from response, length: {len(content)}")
-                    return content, []
+                    return response["content"], []
             
-            # Fallback to string conversion
-            result = str(response)
-            logging.info(f"Converted response to string, length: {len(result)}")
-            return result, []
+            # Last resort fallback for string content
+            if isinstance(response, str):
+                return response, []
+            
+            # If we've reached here, we can't extract properly
+            error_msg = f"Could not extract content from response: {str(response)[:100]}..."
+            logging.error(error_msg)
+            return error_msg, []
             
         except Exception as e:
             logging.error(f"Error in process_response: {str(e)}")

@@ -5,6 +5,8 @@ model:
   default: "claude-3-7-sonnet-20250219"
   provider: "anthropic"
   use_assistants_api: false # Add this line to toggle OpenAI Assistants API usage
+  use_native_adapter: true  # Use direct Anthropic SDK instead of LiteLLM
+  streaming_enabled: true   # Enable streaming support
   max_tokens: 
   # temperature: 0.4
 

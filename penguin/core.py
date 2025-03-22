@@ -226,10 +226,12 @@ class PenguinCore:
 
             # Initialize model configuration
             model_config = ModelConfig(
-                model=model or DEFAULT_MODEL,  # Use default if not provided
+                model=model or DEFAULT_MODEL,
                 provider=provider or DEFAULT_PROVIDER,
                 api_base=config.api.base_url,
-                use_assistants_api=False,  # Default to False
+                use_assistants_api=config.model.get("use_assistants_api", False),
+                use_native_adapter=config.model.get("use_native_adapter", True),  # Default to True
+                streaming_enabled=config.model.get("streaming_enabled", True)     # Default to True
             )
 
             # Create API client
@@ -328,6 +330,17 @@ class PenguinCore:
         # Add an accumulated token counter
         self.accumulated_tokens = {"prompt": 0, "completion": 0, "total": 0}
 
+        # Disable LiteLLM debugging
+        try:
+            from litellm import _logging # type: ignore
+            _logging._disable_debugging()
+            # Also set these to be safe
+            import litellm # type: ignore
+            litellm.set_verbose = False
+            litellm.drop_params = False
+        except Exception as e:
+            logger.warning(f"Failed to disable LiteLLM debugging: {e}")
+
     def validate_path(self, path: Path):
         if not path.exists():
             path.mkdir(parents=True, exist_ok=True)
@@ -424,17 +437,23 @@ class PenguinCore:
             else:
                 message += "\nYou are starting a multi-step reasoning process. You can analyze the user's request and take actions, then review the results to determine next steps."
         return message
-
     def _check_interrupt(self) -> bool:
         """Check if execution has been interrupted"""
         return self._interrupted
+
+    def _notify_token_usage(self):
+        """Notify about token usage if a callback is registered"""
+        if hasattr(self, 'token_usage_callback') and callable(self.token_usage_callback):
+            usage = self.get_token_usage()
+            self.token_usage_callback(usage)
 
     async def process_message(
         self,
         message: str,
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
-        context_files: Optional[List[str]] = None
+        context_files: Optional[List[str]] = None,
+        streaming: bool = False
     ) -> str:
         """Process a message with optional conversation support and token tracking.
 
@@ -447,8 +466,14 @@ class PenguinCore:
             context: Optional additional context for processing
             conversation_id: Optional ID to continue an existing conversation
             context_files: Optional list of context files to load before processing
+            streaming: Whether to use streaming mode for responses
         """
         try:
+            # Set streaming mode temporarily if requested
+            original_streaming = getattr(self.model_config, 'streaming_enabled', False) if hasattr(self, 'model_config') else False
+            if hasattr(self, 'model_config') and hasattr(self.model_config, 'streaming_enabled'):
+                self.model_config.streaming_enabled = streaming
+            
             # Track input tokens for the message.
             diagnostics.update_tokens("main_model", message)
             
@@ -492,8 +517,16 @@ class PenguinCore:
             # Save the updated conversation state.
             self.conversation_system.save()
             
+            # Restore original streaming setting
+            if hasattr(self, 'model_config') and hasattr(self.model_config, 'streaming_enabled'):
+                self.model_config.streaming_enabled = original_streaming
+            
             return formatted_response
         except Exception as e:
+            # Restore original streaming setting in case of error
+            if hasattr(self, 'model_config') and hasattr(self.model_config, 'streaming_enabled'):
+                self.model_config.streaming_enabled = original_streaming
+                
             log_error(
                 e,
                 context={
@@ -536,45 +569,36 @@ class PenguinCore:
         current_iteration: Optional[int] = None,
         max_iterations: Optional[int] = None,
     ) -> Tuple[Dict[str, Any], bool]:
-        """
-        Generate a response using the current conversation context.
-
-        This method handles the LLM interaction and response processing,
-        ensuring that tool execution is properly isolated.
-
-        Returns:
-            Tuple[Dict[str, Any], bool]: Response data and continuation flag
-        """
+        """Generate a response using the current conversation context."""
         try:
-            # Get raw response through API
-            response = await self.api_client.create_message(
-                messages=self.conversation_system.get_history(),
-                max_tokens=None,
-                temperature=None,
-            )
-            logger.debug(f"Raw API response: {response}")
-
-            # Modified response handling
-            assistant_response = None
-            if response and hasattr(response, 'choices') and response.choices:
-                assistant_response = response.choices[0].message.content
-            elif isinstance(response, dict):
-                assistant_response = response.get('assistant_response', '')
+            # Get the message history
+            messages = self.conversation_system.get_history()
             
-            # Remove empty response logging
+            # Get stream callback if available
+            stream_callback = None
+            if hasattr(self, 'cli') and hasattr(self.cli, 'stream_callback'):
+                stream_callback = self.cli.stream_callback
+            
+            # Get response using API client's unified interface
+            assistant_response = await self.api_client.get_response(
+                messages=messages,
+                stream_callback=stream_callback
+            )
+            
+            # Validate response
             if not assistant_response:
-                pass  # No longer log empty responses
-
+                logger.warning("Empty response from API")
+                return {"assistant_response": "", "action_results": []}, False
+            
+            # Parse actions and continue with action handling
+            actions = parse_action(assistant_response)
+            
+            # Check for task completion
+            exit_continuation = TASK_COMPLETION_PHRASE in assistant_response
+            
             # Update token tracking only for non-empty content
             if assistant_response:
                 diagnostics.update_tokens("main_model", "", assistant_response)
-
-            # Check for task completion
-            exit_continuation = TASK_COMPLETION_PHRASE in str(assistant_response or "")
-
-            # Parse actions without executing
-            # Add null check to handle None responses
-            actions = parse_action(assistant_response) if assistant_response is not None else []
 
             # Execute actions with interrupt checking
             action_results = []
@@ -599,13 +623,24 @@ class PenguinCore:
                                 "status": "completed",
                             }
                         )
+                        
+                        # Update conversation with action result
+                        self.conversation_system.add_action_result(
+                            action_type=action.action_type.value,
+                            result=str(result),
+                            status="completed"
+                        )
                 except Exception as e:
-                    action_results.append(
-                        {
-                            "action": action.action_type.value,
-                            "result": f"Error executing action: {str(e)}",
-                            "status": "error",
-                        }
+                    error_result = {
+                        "action": action.action_type.value,
+                        "result": f"Error executing action: {str(e)}",
+                        "status": "error",
+                    }
+                    action_results.append(error_result)
+                    self.conversation_system.add_action_result(
+                        action_type=action.action_type.value,
+                        result=f"Error executing action: {str(e)}",
+                        status="error"
                     )
                     logger.error(f"Action execution error: {str(e)}")
 
@@ -615,6 +650,7 @@ class PenguinCore:
                 return {
                     "assistant_response": aggregated,
                     "action_results": action_results,
+                    "actions": actions,
                     "metadata": {
                         "interrupted": True,
                         "completed_actions": len([a for a in action_results if a["status"] == "completed"]),
@@ -626,13 +662,6 @@ class PenguinCore:
             if action_results:
                 lines = [f"- {r['action']}: {r['result']}" for r in action_results]
                 aggregated_tool_outputs = "Tool outputs:\n" + "\n".join(lines)
-                # Also add each tool output as an action result
-                for result in action_results:
-                    self.conversation_system.add_action_result(
-                        action_type=result['action'],
-                        result=result['result'],
-                        status=result.get('status', 'completed')
-                    )
 
             # Update conversation with assistant response and aggregated tool outputs
             full_assistant_response = assistant_response if assistant_response is not None else "No response generated"
@@ -643,6 +672,7 @@ class PenguinCore:
             # Construct the final response payload
             full_response = {
                 "assistant_response": full_assistant_response,
+                "actions": actions,
                 "action_results": action_results,
                 "metadata": {
                     "iteration": current_iteration,
@@ -651,9 +681,6 @@ class PenguinCore:
             }
 
             diagnostics.log_token_usage()
-
-            # Update task progress
-            # await self._update_task_progress(assistant_response)
 
             # Add automatic code saving
             code_actions = [a for a in action_results if a['action'] == 'execute_code']
@@ -807,10 +834,15 @@ class PenguinCore:
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
         max_iterations: int = 5,  # Prevent infinite loops
-        context_files: Optional[List[str]] = None  # Context files to load
+        context_files: Optional[List[str]] = None,  # Context files to load
+        streaming: Optional[bool] = None  # Allow override but default to config setting
     ) -> Dict[str, Any]:
-        """Process a message with multi-step reasoning and action execution.
-        
+        """Process a message with multi-step reasoning and action execution."""
+        # Use config setting by default, can be overridden explicitly
+        use_streaming = streaming
+        if use_streaming is None and hasattr(self, 'model_config') and hasattr(self.model_config, 'streaming_enabled'):
+            use_streaming = self.model_config.streaming_enabled
+        """
         This method implements a reasoning-action loop that allows Penguin to:
         1. Generate a response and identify actions
         2. Execute those actions
@@ -822,10 +854,17 @@ class PenguinCore:
             context: Optional additional context for processing
             conversation_id: Optional ID for conversation continuity
             max_iterations: Maximum reasoning-action cycles (default: 5)
+            context_files: Optional list of context files to load
+            streaming: Whether to use streaming mode for responses
         
         Returns:
             Dict containing assistant response and action results
         """
+        # Temporarily set streaming mode for this process call
+        original_streaming = getattr(self.model_config, 'streaming_enabled', False) if hasattr(self, 'model_config') else False
+        if hasattr(self, 'model_config') and hasattr(self.model_config, 'streaming_enabled'):
+            self.model_config.streaming_enabled = use_streaming
+        
         try:
             # Handle flexible input - accept either string or dict
             if isinstance(input_data, str):
@@ -969,6 +1008,10 @@ class PenguinCore:
                 "action_results": [],
                 "error": str(e)
             }
+        finally:
+            # Restore original streaming setting
+            if hasattr(self, 'model_config') and hasattr(self.model_config, 'streaming_enabled'):
+                self.model_config.streaming_enabled = original_streaming
 
     def register_token_callback(self, callback: Callable[[Dict[str, int]], None]) -> None:
         """Register a callback for token usage updates.
