@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 
-from core import PenguinCore
+from penguin.core import PenguinCore
 from rich.console import Console  # type: ignore
 
 console = Console()

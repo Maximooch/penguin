@@ -73,6 +73,29 @@ class ConversationView(ScrollableContainer):
                 self.scroll_end()
             except (AttributeError, TypeError):
                 pass
+    
+    # Add this new method for stream support
+    async def stream_update(self, content: str, role: str = "assistant"):
+        """Update the most recent message of specified role with streamed content."""
+        # Find the most recent message of the specified role
+        messages = [m for m in self.query(MessageWidget) if isinstance(m, MessageWidget) and m.role == role]
+        
+        if not messages:
+            # Create a new message if none exists
+            return await self.add_message(content, role)
+        
+        # Update the most recent message
+        most_recent = messages[-1]
+        most_recent.update(most_recent._process_content(content))
+        
+        # Scroll to the bottom
+        try:
+            await self.scroll_end()
+        except (AttributeError, TypeError):
+            try:
+                self.scroll_end()
+            except (AttributeError, TypeError):
+                pass
 
 class TokenDisplay(Static):
     """Widget to display token usage statistics."""
@@ -347,6 +370,7 @@ class PenguinTUI(App):
         Binding("f1", "help", "Help"),
         Binding("f2", "token_details", "Token Details"),
         Binding("f3", "toggle_code_editor", "Toggle Code Editor"),
+        Binding("f4", "toggle_streaming", "Toggle Streaming"),
     ]
     
     CSS = """
@@ -450,7 +474,12 @@ class PenguinTUI(App):
         super().__init__()
         self.interface = PenguinInterface(core)
         self.code_editor_visible = False
+        self.streaming_content = ""  # Add this to track streaming content
         
+        # Register stream callback with the core if available
+        if hasattr(core, 'api_client') and hasattr(core.api_client, 'set_stream_callback'):
+            core.api_client.set_stream_callback(self.handle_stream_token)
+    
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
         yield Header(show_clock=True, name="Menu: Penguin AI Assistant", icon="🐧")
@@ -493,6 +522,13 @@ class PenguinTUI(App):
         # Register callbacks
         self.interface.register_progress_callback(self.on_progress_update)
         self.interface.register_token_callback(self.on_token_update)
+        
+        # Register streaming callback if core has the method
+        if hasattr(self.interface.core, 'api_client') and hasattr(self.interface.core.api_client, 'set_stream_callback'):
+            self.interface.core.api_client.set_stream_callback(self.handle_stream_token)
+        
+        # Add streaming indicator to status bar
+        self.streaming_active = False
         
         # Update token display with initial values
         initial_usage = self.interface.get_token_usage()
@@ -562,12 +598,14 @@ class PenguinTUI(App):
         # Show user message
         await self.conversation_view.add_message(user_input, "user")
         
-        # Update status
+        # Update status and reset streaming content
         self.status_bar.update_status("Processing...")
+        self.streaming_content = ""  # Reset streaming content
+        self.streaming_active = True  # Set streaming active flag
         
         try:
-            # Process input
-            response = await self.interface.process_input({"text": user_input})
+            # Process input with streaming enabled by default
+            response = await self.interface.process_input({"text": user_input, "streaming": True})
             
             # Check for exit
             if "status" in response and response["status"] == "exit":
@@ -614,12 +652,31 @@ class PenguinTUI(App):
             # Show token usage details if requested
             if "token_usage_detailed" in response:
                 await self.show_detailed_token_data(response["token_usage_detailed"])
+
+            # If we received streamed tokens, don't display the full response again
+            if self.streaming_content and "assistant_response" in response:
+                # Skip adding the message since we already streamed it
+                pass
+            elif "assistant_response" in response:
+                response_text = response["assistant_response"]
+                code_blocks = self.extract_code_blocks(response_text)
+                
+                # Display code blocks in editor if found
+                if code_blocks:
+                    if not self.code_editor_visible:
+                        await self.toggle_code_editor(True)
+                    lang, code = code_blocks[-1]
+                    self.code_editor.set_content(code, lang)
+                
+                # Show the response in the conversation view
+                await self.conversation_view.add_message(response_text, "assistant")
         except Exception as e:
             # Show error
             await self.conversation_view.add_message(f"Error: {str(e)}", "system")
         finally:
-            # Update status
+            # Update status and reset streaming state
             self.status_bar.update_status("Ready")
+            self.streaming_active = False
     
     def on_progress_update(self, iteration: int, max_iterations: int, message: Optional[str] = None):
         """Handle progress updates."""
@@ -631,18 +688,19 @@ class PenguinTUI(App):
     def on_token_update(self, usage: Dict[str, int]):
         """Handle token usage updates."""
         try:
-            # Update token display with current context window state
+            # Fix key names to match what comes from get_current_token_usage()
             self.token_display.update_token_stats({
-                "prompt": usage["prompt"],
-                "completion": usage["completion"],
-                "total": usage["total"],
-                "max_tokens": usage["max_tokens"]
+                # Change these keys to match the ones returned by conversation_system.get_current_token_usage()
+                "prompt": usage.get("prompt_tokens", 0),  
+                "completion": usage.get("completion_tokens", 0),
+                "total": usage.get("total_tokens", 0),
+                "max_tokens": usage.get("max_tokens", 200000)
             })
             
             # Update status bar with current token count
             self.status_bar.update_status(
                 "Ready", 
-                {"total": usage["total"]}
+                {"total": usage.get("total_tokens", 0)}  # Fix this key too
             )
             
         except Exception as e:
@@ -849,6 +907,48 @@ class PenguinTUI(App):
     def action_toggle_code_editor(self) -> None:
         """Action to toggle code editor."""
         asyncio.create_task(self.toggle_code_editor())
+
+    # Add a new method to handle streaming tokens
+    def handle_stream_token(self, token: str):
+        """Handle incoming streaming tokens from the API."""
+        # Append token to accumulated content
+        self.streaming_content += token
+        
+        # Update the UI in a non-blocking way
+        asyncio.create_task(self.update_streaming_content())
+    
+    # Add a method to update the UI with streamed content
+    async def update_streaming_content(self):
+        """Update the UI with current streaming content."""
+        # Only update if we have content
+        if self.streaming_content:
+            # Use the new stream_update method on conversation_view
+            await self.conversation_view.stream_update(self.streaming_content)
+
+    # Add a method to toggle streaming mode
+    async def toggle_streaming(self, enabled: bool = None):
+        """Toggle streaming mode."""
+        current = self.interface.get_streaming_status()
+        
+        if enabled is None:
+            # Toggle if no specific value
+            enabled = not current
+            
+        # Set streaming mode
+        success = self.interface.set_streaming(enabled)
+        
+        if success:
+            status = "enabled" if enabled else "disabled"
+            await self.conversation_view.add_message(f"Streaming mode {status}", "system")
+            return True
+        else:
+            await self.conversation_view.add_message("Unable to change streaming mode", "system")
+            return False
+    
+    # Add a new action handler for streaming
+    def action_toggle_streaming(self) -> None:
+        """Action to toggle streaming mode."""
+        asyncio.create_task(self.toggle_streaming())
 
 async def run_tui(core: PenguinCore):
     """Run the Textual UI."""
