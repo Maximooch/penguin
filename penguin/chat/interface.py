@@ -7,8 +7,8 @@ from pathlib import Path
 from rich.console import Console # type: ignore
 
 from penguin.core import PenguinCore
-from penguin.system.conversation import parse_iso_datetime
-from penguin.system.conversation_menu import ConversationSummary, ConversationMenu
+from penguin.system.conversation import parse_iso_datetime, ConversationSummary
+from penguin.system.conversation_menu import ConversationMenu
 
 class PenguinInterface:
     """Handles all CLI business logic and core integration"""
@@ -24,12 +24,15 @@ class PenguinInterface:
         self._progress_callbacks = []
         self._token_callbacks = []
         
+        # Enable streaming by default if possible
+        if hasattr(self.core, 'model_config') and hasattr(self.core.model_config, 'streaming_enabled'):
+            self.core.model_config.streaming_enabled = True
+        
         # Register for progress updates from core
         self.core.register_progress_callback(self._on_progress_update)
         
-        # Register for token updates from core (if available)
-        if hasattr(self.core, 'register_token_callback'):
-            self.core.register_token_callback(self._on_token_update)
+        # Register for token updates from core
+        self.core.register_token_callback(self._on_token_update)
         
         # Initial token update
         self.update_token_display()
@@ -50,38 +53,28 @@ class PenguinInterface:
             
     def _on_token_update(self, usage: Dict[str, Any]) -> None:
         """Handle token updates from core and forward to UI"""
-        # Get token counts directly from conversation system
-        token_usage = self.core.conversation_system.get_current_token_usage()
-        
-        # Format for UI display
-        simplified_usage = {
-            "prompt": token_usage["prompt_tokens"],
-            "completion": token_usage["completion_tokens"],
-            "total": token_usage["total_tokens"],
-            "max_tokens": token_usage["max_tokens"]
+        # Transform token usage from conversation system format to UI format if needed
+        transformed_usage = {
+            "prompt": usage.get("prompt_tokens", 0),
+            "completion": usage.get("completion_tokens", 0),
+            "total": usage.get("total_tokens", 0),
+            "max_tokens": usage.get("max_tokens", 200000)
         }
         
-        # Update callbacks
+        # Forward the token usage to UI callbacks
         for callback in self._token_callbacks:
             try:
-                callback(simplified_usage)
+                callback(transformed_usage)
             except Exception as e:
                 print(f"[Interface] Error in token callback: {e}")
             
     def get_token_usage(self) -> Dict[str, int]:
-        """Get current token usage statistics"""
+        """Get current token usage statistics directly from conversation system"""
         try:
-            # Get token usage directly from conversation system
-            usage = self.core.conversation_system.get_current_token_usage()
-            return {
-                "prompt": usage["prompt_tokens"],
-                "completion": usage["completion_tokens"],
-                "total": usage["total_tokens"],
-                "max_tokens": usage["max_tokens"]
-            }
+            return self.core.conversation_system.get_current_token_usage()
         except Exception as e:
             print(f"Error getting token usage: {e}")
-            return {"prompt": 0, "completion": 0, "total": 0, "max_tokens": 200000}
+            return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "max_tokens": 200000}
         
     def update_token_display(self) -> None:
         """Update token usage display"""
@@ -92,12 +85,15 @@ class PenguinInterface:
     async def process_input(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """Main processing entry point"""
         try:
+            # Ensure streaming is enabled for this input unless explicitly disabled
+            streaming = input_data.pop('streaming', True) if isinstance(input_data, dict) else True
+            
             # Check for command
             if "text" in input_data and input_data["text"].startswith("/"):
                 return await self.handle_command(input_data["text"][1:])
                 
-            # Process regular message
-            response = await self.core.process(input_data)
+            # Process regular message with streaming enabled by default
+            response = await self.core.process(input_data, streaming=streaming)
             
             # Update token usage after processing
             self.update_token_display()
@@ -124,6 +120,7 @@ class PenguinInterface:
             "tokens": self._handle_tokens_command,
             "context": self._handle_context_command,
             "debug": self._handle_debug_command,
+            "stream": self._handle_stream_command,  # Added stream command handler
         }
         
         handler = handlers.get(cmd, self._invalid_command)
@@ -142,7 +139,9 @@ class PenguinInterface:
         subcmd = args[0].lower()
         if subcmd == "list":
             conversations = self.core.conversation_system.loader.list_conversations()
-            return {"conversations": conversations}
+            # Convert to summaries for display
+            summaries = [conv.to_summary() for conv in conversations]
+            return {"conversations": summaries}
         elif subcmd == "load" and len(args) > 1:
             return await self._load_conversation(args[1])
         elif subcmd == "summary":
@@ -243,13 +242,16 @@ class PenguinInterface:
             return {"error": "Conversation system not available"}
         
         try:
-            # Get basic token usage first (this should always work)
+            # Get basic token usage first
             basic_usage = self.get_token_usage()
             
             # Prepare result with basics
             result = {
                 "total": self.core.total_tokens_used,
-                "max_tokens": getattr(self.core.conversation_system, "max_tokens", 200000),
+                "max_tokens": basic_usage.get("max_tokens", 200000),
+                "prompt_tokens": basic_usage.get("prompt_tokens", 0),
+                "completion_tokens": basic_usage.get("completion_tokens", 0),
+                "total_tokens": basic_usage.get("total_tokens", 0),
                 "categories": {},
                 "raw_counts": {}
             }
@@ -261,25 +263,11 @@ class PenguinInterface:
                     result["categories"] = {str(category.name): value for category, value in allocations.items()}
                 except Exception as e:
                     print(f"Error getting allocations: {e}")
-            else:
-                # Fallback to basic categories
-                total = max(basic_usage.get("total", 1), 1)  # Avoid division by zero
-                result["categories"] = {
-                    "PROMPT": basic_usage.get("prompt", 0) / total,
-                    "COMPLETION": basic_usage.get("completion", 0) / total
-                }
             
             # Try to get raw counts if _token_budgets exists
             if hasattr(self.core.conversation_system, "_token_budgets"):
                 for category, budget in self.core.conversation_system._token_budgets.items():
                     result["raw_counts"][str(category.name)] = budget.current_tokens
-            else:
-                # Fall back to basic counts
-                result["raw_counts"] = {
-                    "PROMPT": basic_usage.get("prompt", 0),
-                    "COMPLETION": basic_usage.get("completion", 0),
-                    "TOTAL": basic_usage.get("total", 0)
-                }
             
             return result
         except Exception as e:
@@ -288,9 +276,11 @@ class PenguinInterface:
     async def _handle_tokens_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle tokens command to show or reset token usage"""
         if args and args[0].lower() == "reset":
-            # Reset token counters
-            # This would need to be implemented in core.py
-            return {"status": "Token counters reset"}
+            # Reset token counters if available
+            if hasattr(self.core.conversation_system, "reset_token_budgets"):
+                self.core.conversation_system.reset_token_budgets()
+                return {"status": "Token counters reset"}
+            return {"status": "Token reset not implemented in this version"}
         elif args and args[0].lower() == "detail":
             # Show detailed token usage by category
             return {"token_usage_detailed": self.get_detailed_token_usage()}
@@ -317,6 +307,40 @@ class PenguinInterface:
         
         return {"error": f"Unknown context command: {action}"}
     
+    async def _handle_stream_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle streaming mode toggles"""
+        # Check if streaming is available in this configuration
+        if not hasattr(self.core, 'model_config') or not hasattr(self.core.model_config, 'streaming_enabled'):
+            return {"error": "Streaming configuration not available with current model"}
+        
+        if not args:
+            # Get current streaming status
+            streaming_enabled = self.core.model_config.streaming_enabled
+            return {"status": f"Streaming is currently {'enabled' if streaming_enabled else 'disabled'}"}
+            
+        action = args[0].lower()
+        if action in ["on", "enable", "true", "1"]:
+            self.core.model_config.streaming_enabled = True
+            return {"status": "Streaming enabled"}
+        elif action in ["off", "disable", "false", "0"]:
+            self.core.model_config.streaming_enabled = False
+            return {"status": "Streaming disabled"}
+        
+        return {"error": f"Unknown streaming command: {action}"}
+    
+    def set_streaming(self, enabled: bool = True) -> bool:
+        """Enable or disable streaming mode"""
+        if hasattr(self.core, 'model_config') and hasattr(self.core.model_config, 'streaming_enabled'):
+            self.core.model_config.streaming_enabled = enabled
+            return True
+        return False
+    
+    def get_streaming_status(self) -> Optional[bool]:
+        """Get current streaming mode setting"""
+        if hasattr(self.core, 'model_config') and hasattr(self.core.model_config, 'streaming_enabled'):
+            return self.core.model_config.streaming_enabled
+        return None
+    
     def _get_command_suggestions(self) -> List[str]:
         """Get valid command list"""
         return [
@@ -325,11 +349,13 @@ class PenguinInterface:
             "/project [create|run|status]",
             "/run [--247] [--time MINUTES]",
             "/image [PATH]",
+            "/stream [on|off] - Toggle streaming mode (on by default)",
             "/help - Show this help message",
             "/exit - Exit the program",
-            "/tokens [reset] - Show or reset token usage",
+            "/tokens [reset|detail] - Show or reset token usage",
             "/context [list|load FILE] - Manage context files",
-            "/list - Show projects and tasks"
+            "/list - Show projects and tasks",
+            "/debug [tokens] - Run debug functions"
         ]
         
     def is_active(self) -> bool:
@@ -343,7 +369,13 @@ class PenguinInterface:
         
         subcmd = args[0].lower()
         if subcmd == "tokens":
-            # Directly invoke the notification (do not use 'await' here)
+            # Directly invoke the notification
             self.core._notify_token_usage()
             return {"status": "Debug: Notified token usage based on conversation system data."}
+        elif subcmd == "stream":
+            # Stream related debugging
+            if hasattr(self.core, 'current_stream'):
+                stream_status = "active" if self.core.current_stream else "inactive"
+                return {"status": f"Debug: Stream status is {stream_status}"}
+            return {"status": "Debug: Stream functionality not available"}
         return {"error": f"Unknown debug command: {subcmd}"}

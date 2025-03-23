@@ -1,9 +1,12 @@
 from pathlib import Path
+import os
+import logging
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 
 from penguin.config import config
 
@@ -17,24 +20,48 @@ from penguin.utils.log_error import log_error
 
 from .routes import router
 
+logger = logging.getLogger(__name__)
 
 # Initialize core components
 def init_core():
-    model_config = ModelConfig(
-        model=config["model"]["default"],
-        provider=config["model"]["provider"],
-        api_base=config["api"]["base_url"],
-    )
+    try:
+        model_config = ModelConfig(
+            model=config["model"]["default"],
+            provider=config["model"]["provider"],
+            api_base=config["api"]["base_url"],
+            streaming_enabled=True,  # Enable streaming by default
+            use_native_adapter=config["model"].get("use_native_adapter", True),
+        )
 
-    api_client = APIClient(model_config=model_config)
-    api_client.set_system_prompt(SYSTEM_PROMPT)
-    tool_manager = ToolManager(log_error)
+        api_client = APIClient(model_config=model_config)
+        api_client.set_system_prompt(SYSTEM_PROMPT)
+        tool_manager = ToolManager(log_error)
 
-    return PenguinCore(api_client=api_client, tool_manager=tool_manager)
+        core = PenguinCore(
+            api_client=api_client, 
+            tool_manager=tool_manager, 
+            model_config=model_config
+        )
+        
+        # Initialize core systems
+        return core
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize core: {str(e)}")
+        raise
 
 
 def create_app():
-    app = FastAPI(title="Penguin AI")
+    app = FastAPI(title="Penguin AI", docs_url="/api/docs", redoc_url="/api/redoc")
+
+    # Configure CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allows all origins
+        allow_credentials=True,
+        allow_methods=["*"],  # Allows all methods
+        allow_headers=["*"],  # Allows all headers
+    )
 
     # Initialize core and attach to router
     core = init_core()
@@ -43,13 +70,30 @@ def create_app():
     # Include routes
     app.include_router(router)
 
-    # Mount static files
+    # Mount static files if they exist
     static_dir = Path(__file__).parent / "static"
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
-    @app.get("/")
-    async def read_root():
-        return FileResponse(str(static_dir / "index.html"))
+    if static_dir.exists():
+        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+        
+        @app.get("/")
+        async def read_root():
+            index_path = static_dir / "index.html"
+            if index_path.exists():
+                return FileResponse(str(index_path))
+            return {"message": "Penguin API is running. Web UI not found."}
+    else:
+        @app.get("/")
+        async def api_root():
+            return {
+                "name": "Penguin AI API",
+                "version": "0.1.0",
+                "status": "running",
+                "endpoints": {
+                    "docs": "/api/docs",
+                    "chat": "/api/v1/chat/message",
+                    "conversations": "/api/v1/conversations",
+                }
+            }
 
     return app
 
@@ -58,8 +102,13 @@ def main():
     """Entry point for the web server"""
     app = create_app()
     print("\n\033[96m=== Penguin AI Server ===\033[0m")
-    print("\033[96mVisit http://localhost:8000 to start using Penguin!\033[0m\n")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    print("\033[96mVisit http://localhost:8000 to start using Penguin!\033[0m")
+    print("\033[96mAPI documentation: http://localhost:8000/api/docs\033[0m\n")
+    
+    # Get port from environment or use default
+    port = int(os.environ.get("PORT", 8000))
+    
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 if __name__ == "__main__":
