@@ -401,15 +401,12 @@ class PenguinCore:
 
     @property
     def total_tokens_used(self) -> int:
-        """Get total tokens used in current session"""
-        return diagnostics.get_total_tokens()
+        """Get total tokens used in current session (disabled)"""
+        return 0
 
     def get_token_usage(self) -> Dict[str, Dict[str, int]]:
-        """Get detailed token usage statistics"""
-        return {
-            name: tracker.tokens.copy()
-            for name, tracker in diagnostics.token_trackers.items()
-        }
+        """Disabled token usage tracking."""
+        return {"main_model": {"prompt": 0, "completion": 0, "total": 0}}
 
     def prepare_conversation(
         self, message: str, tool_outputs: Optional[List[Dict[str, Any]]] = None
@@ -447,10 +444,8 @@ class PenguinCore:
         return self._interrupted
 
     def _notify_token_usage(self):
-        """Notify about token usage if a callback is registered"""
-        if hasattr(self, 'token_usage_callback') and callable(self.token_usage_callback):
-            usage = self.get_token_usage()
-            self.token_usage_callback(usage)
+        """Disabled token usage notification."""
+        pass
 
     async def process_message(
         self,
@@ -478,9 +473,6 @@ class PenguinCore:
             original_streaming = getattr(self.model_config, 'streaming_enabled', False) if hasattr(self, 'model_config') else False
             if hasattr(self, 'model_config') and hasattr(self.model_config, 'streaming_enabled'):
                 self.model_config.streaming_enabled = streaming
-            
-            # Track input tokens for the message.
-            diagnostics.update_tokens("main_model", message)
             
             # If a conversation_id is passed, load the existing conversation.
             if conversation_id:
@@ -515,10 +507,6 @@ class PenguinCore:
             else:
                 formatted_response = str(response_data)
             
-            # Update diagnostic tokens for the response.
-            diagnostics.update_tokens("main_model", "", formatted_response)
-            diagnostics.log_token_usage()
-
             # Save the updated conversation state.
             self.conversation_system.save()
             
@@ -619,10 +607,6 @@ class PenguinCore:
             # Check for task completion
             exit_continuation = TASK_COMPLETION_PHRASE in assistant_response
             
-            # Update token tracking only for non-empty content
-            if assistant_response:
-                diagnostics.update_tokens("main_model", "", assistant_response)
-
             # Execute actions with interrupt checking
             action_results = []
             for action in actions:
@@ -716,7 +700,7 @@ class PenguinCore:
                 )
 
             # Add this before returning
-            self._notify_token_usage()
+            # self._notify_token_usage()
 
             # Validate messages before sending
             formatted_messages = self.conversation_system.get_history()
@@ -918,9 +902,6 @@ class PenguinCore:
             # Prepare the conversation context with the new message AND image if present
             self.conversation_system.prepare_conversation(message, image_path)
             
-            # Add token notifications after key operations
-            self._notify_token_usage()  # After processing input
-            
             # Rest of the method remains unchanged
             final_response = None
             iterations = 0
@@ -1013,7 +994,6 @@ class PenguinCore:
             # Final progress notification for completion
             final_message = "Finalizing: Processing complete"
             self.notify_progress(max_iterations, max_iterations, final_message)
-            self._notify_token_usage()
             
             # Return the final response with all action results
             return {
@@ -1025,7 +1005,6 @@ class PenguinCore:
             error_msg = f"Error in process method: {str(e)}"
             logger.error(f"{error_msg}\n{traceback.format_exc()}")
             log_error(e, context={"method": "process", "input_data": input_data, "conversation_id": conversation_id})
-            self._notify_token_usage()  # Notify even on error
             return {
                 "assistant_response": "I apologize, but an error occurred while processing your request.",
                 "action_results": [],
@@ -1044,18 +1023,4 @@ class PenguinCore:
         """
         print(f"[Core] Registering token callback: {callback.__qualname__ if hasattr(callback, '__qualname__') else callback}")
         self.token_callbacks.append(callback)
-    def _notify_token_usage(self):
-        """Notify all registered callbacks using conversation system token budgeting."""
-        try:
-            # Get token usage directly from conversation system
-            usage = self.conversation_system.get_current_token_usage()
-            
-            for callback in self.token_callbacks:
-                try:
-                    callback(usage)
-                except Exception as e:
-                    logger.error(f"Error in token callback: {str(e)}")
-                
-        except Exception as e:
-            logger.error(f"Error in _notify_token_usage: {str(e)}")
 
