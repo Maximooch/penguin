@@ -258,7 +258,8 @@ class ConversationManager:
 ## Implementation Details
 
 ### Session Transition Logic
-- Transition based on message count (configurable, default 500)
+- Transition based on message count (configurable, default 500) 
+`(later can be as high as 5000, or even 10k. assuming an average of 30s per message, anywhere from 2-6 hours of a Penguin session, before transference of high context)`
 - When limit reached, create new session
 - Transfer all SYSTEM and CONTEXT messages to new session
 - Add special transition message
