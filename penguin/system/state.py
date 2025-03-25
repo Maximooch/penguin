@@ -27,7 +27,8 @@ class MessageCategory(Enum):
     CONTEXT = 2   # Important reference information. Declarative notes, context folders, etc.
     DIALOG = 3    # Main conversation between user and assistant
     ACTIONS = 4   # Results from tool executions, system outputs, etc.
-
+    
+# TODO: rename ACTIONS to SYSTEM_OUTPUTS since that's what it is and include things much more than ACTIONS, which could be misleading
 
 @dataclass
 class Message:
@@ -36,6 +37,16 @@ class Message:
     
     Messages have a role (user, assistant, system), content, and a category
     that determines its importance for context window management.
+    
+    The content field can be any type, supporting:
+    - Plain text (str)
+    - Structured content for multi-modal messages (list/dict)
+    
+    And later supports:
+
+    - Images (via OpenAI format {"type": "image_url", "image_url": {...}})
+    - Audio (via adapter-specific format)
+    - File attachments (via adapter-specific format)
     """
     role: str
     content: Any
@@ -72,8 +83,14 @@ class Message:
             "content": self.content
         }
     
-    def estimate_tokens(self) -> int:
-        """Estimate token count if not already calculated."""
+    def fallback_estimate_tokens(self) -> int:
+        """
+        Last-resort fallback for estimating token count when provider tokenizer 
+        and tiktoken are unavailable.
+        
+        This is a rough approximation and should only be used when proper tokenizers
+        cannot be accessed.
+        """
         if self.tokens > 0:
             return self.tokens
             
@@ -87,18 +104,21 @@ class Message:
                 if isinstance(item, dict):
                     if item.get("type") == "text":
                         total_chars += len(str(item.get("text", "")))
-                    elif item.get("type") == "image_url":
-                        # Image paths typically count as ~1000 tokens
+                    elif item.get("type") in ["image_url", "image"]:
+                        # Images typically count as ~1000 tokens
                         total_chars += 4000
+                    elif item.get("type") == "audio":
+                        # Audio typically counts as ~500 tokens
+                        total_chars += 2000
+                    elif item.get("type") == "file":
+                        # Files depend on content, estimate based on metadata
+                        total_chars += 1000
                 else:
                     total_chars += len(str(item))
             return total_chars // 4 + 1
         else:
             # General fallback
             return len(str(self.content)) // 4 + 1
-    # TODO: This should be called fallback_estimate_tokens, since it's a fallback. Should be...
-
-    #TODO: Is there image handling? The content is set to Any, so it could be anything.
 
 
 @dataclass
