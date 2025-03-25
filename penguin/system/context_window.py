@@ -39,17 +39,36 @@ class ContextWindowManager:
     
     def __init__(
         self,
-        max_tokens: int = 100000, #TODO: This should be configurable. By default, it should be the max tokens of the model being used.
+        model_config = None,
         token_counter: Optional[Callable[[Any], int]] = None
     ):
         """
         Initialize the context window manager.
         
         Args:
-            max_tokens: Maximum tokens in the entire context window
+            model_config: Optional model configuration with max_tokens
             token_counter: Function to count tokens for content
         """
-        self.max_tokens = max_tokens
+        # Get max_tokens from model_config if available
+        self.max_tokens = 100000  # Default fallback
+        
+        if model_config and hasattr(model_config, 'max_tokens') and model_config.max_tokens:
+            self.max_tokens = model_config.max_tokens
+            logger.info(f"Using model's max_tokens: {self.max_tokens}")
+        
+        # Try to load from config.yml if available
+        try:
+            from penguin.config import config
+            if 'model_configs' in config:
+                model_name = model_config.model if model_config and hasattr(model_config, 'model') else None
+                if model_name and model_name in config['model_configs'] and 'max_tokens' in config['model_configs'][model_name]:
+                    config_max_tokens = config['model_configs'][model_name]['max_tokens']
+                    if config_max_tokens:
+                        self.max_tokens = config_max_tokens
+                        logger.info(f"Using config.yml max_tokens for {model_name}: {self.max_tokens}")
+        except (ImportError, AttributeError) as e:
+            logger.warning(f"Could not load config.yml for max_tokens: {e}")
+            
         self.token_counter = token_counter or self._default_token_counter
         self._budgets = {}
         self._initialize_token_budgets()
@@ -80,10 +99,10 @@ class ContextWindowManager:
         
         # Default allocation percentages (can be made configurable)
         allocations = {
-            MessageCategory.SYSTEM: 0.10,      # 10% for system instructions
-            MessageCategory.CONTEXT: 0.35,     # 35% for important context
-            MessageCategory.DIALOG: 0.50,      # 50% for conversation history
-            MessageCategory.ACTIONS: 0.05      # 5% for action results
+            MessageCategory.SYSTEM: 0.10,     # 10% - highest priority (only system prompt)
+            MessageCategory.CONTEXT: 0.35,    # 35% - high priority
+            MessageCategory.DIALOG: 0.50,     # 50% - medium priority
+            MessageCategory.SYSTEM_OUTPUT: 0.05  # 5% - lowest priority (renamed from ACTIONS)
         }
         # This needs room for large messages, like images, audio, and files. 
         # It also needs to be dynamic based on letting some categories have more budget than others until they are full?
@@ -92,7 +111,7 @@ class ContextWindowManager:
         for category, percentage in allocations.items():
             budget = int(total_budget * percentage)
             
-            # Ensure system prompt has minimum viable space
+            # Only system messages need a minimum guarantee
             min_tokens = 1000 if category == MessageCategory.SYSTEM else 0
             
             self._budgets[category] = TokenBudget(
@@ -139,7 +158,7 @@ class ContextWindowManager:
     
     def analyze_session(self, session: Session) -> Dict[str, Any]:
         """
-        Analyze messages for token usage statistics and multimodal content.
+        Analyze a session for token usage statistics and multimodal content.
         
         Args:
             session: Session object containing messages
@@ -238,10 +257,17 @@ class ContextWindowManager:
                 if msg.category == category
             ]
             
-        # Trim categories in order of lowest to highest priority
-        # Note: MessageCategory enum has SYSTEM=1, CONTEXT=2, etc.
-        # Higher value = lower priority for trimming
-        for category in sorted(MessageCategory, key=lambda c: c.value, reverse=True):
+        # Get the order for trimming based on our priority (from lowest to highest priority)
+        # ACTIONS (4) trimmed first, then DIALOG (3), then CONTEXT (2), then SYSTEM (1)
+        trim_order = [
+            MessageCategory.SYSTEM_OUTPUT,   # Trim first - lowest priority
+            MessageCategory.DIALOG,    # Trim second
+            MessageCategory.CONTEXT,   # Trim third
+            MessageCategory.SYSTEM     # NEVER TRIM SYSTEM PROMPT- highest priority
+        ]
+            
+        # Trim categories in priority order
+        for category in trim_order:
             budget = self._budgets.get(category)
             category_msgs = categorized[category]
             category_tokens = stats["per_category"].get(category, 0)
@@ -287,10 +313,44 @@ class ContextWindowManager:
                 
         return result_session
     
+    def _contains_image(self, content: Any) -> bool:
+        """Check if content contains an image."""
+        if not isinstance(content, list):
+            return False
+        return any(isinstance(part, dict) and 
+                  (part.get("type") in ["image", "image_url"] or 
+                   "image_path" in part)
+                  for part in content)
+                
+    def _create_placeholder_message(self, msg: Message) -> Message:
+        """Create a message with image replaced by placeholder text."""
+        if not isinstance(msg.content, list):
+            return msg
+            
+        new_content = []
+        for part in msg.content:
+            if isinstance(part, dict) and part.get("type") in ["image", "image_url"]:
+                url_ref = part.get("image_url") or part.get("image_path")
+                new_part = {"type": "text", "text": "[Image removed to save tokens]"}
+                if url_ref:
+                    new_part["metadata"] = {"original_image_reference": url_ref}
+                new_content.append(new_part)
+            else:
+                new_content.append(part)
+        
+        return Message(
+            role=msg.role,
+            content=new_content,
+            category=msg.category,
+            id=msg.id,
+            timestamp=msg.timestamp,
+            metadata={**msg.metadata, "image_replaced": True},
+            tokens=self.token_counter(new_content)
+        )
+    
     def _handle_image_trimming(self, session: Session) -> Session:
         """
-        Special handling for trimming image content, which consumes many tokens.
-        This preserves the most recent image and converts others to text placeholders.
+        Replace all but the most recent image with placeholders.
         
         Args:
             session: Session object with messages
@@ -301,105 +361,42 @@ class ContextWindowManager:
         if not session.messages:
             return session
             
-        # What?!
-        # Why is this a new session?
+        # Find messages with images
+        image_messages = [(i, msg) for i, msg in enumerate(session.messages) 
+                          if self._contains_image(msg.content)]
         
-        # Create a new session to avoid modifying the original
-        result_session = Session(
+        # Nothing to trim if 0-1 images
+        if len(image_messages) <= 1:
+            return Session(
+                id=session.id,
+                created_at=session.created_at,
+                last_active=session.last_active,
+                metadata=session.metadata.copy(),
+                messages=[msg for msg in session.messages]
+            )
+        
+        # Keep most recent image intact
+        image_messages.sort(key=lambda x: x[1].timestamp)
+        most_recent_msg = image_messages[-1][1]
+        
+        # Create result with replaced images
+        result = Session(
             id=session.id,
             created_at=session.created_at,
             last_active=session.last_active,
             metadata=session.metadata.copy()
         )
         
-        # Find all messages with images
-        image_messages = []
-        for i, msg in enumerate(session.messages):
-            content = msg.content
-            has_image = False
-            
-            if isinstance(content, list):
-                # Check for standard image formats
-                has_image = any(
-                    isinstance(part, dict) and 
-                    (part.get("type") in ["image", "image_url"] or
-                     "image_path" in part or
-                     (isinstance(part.get("source"), dict) and 
-                      part["source"].get("type") in ["base64", "url"]))
-                    for part in content
-                )
-            
-            if has_image:
-                image_messages.append((i, msg))
-        
-        # If there's only one or zero images, nothing to trim
-        if len(image_messages) <= 1:
-            result_session.messages = [msg for msg in session.messages]
-            return result_session
-        
-        # Keep the most recent image intact
-        image_messages.sort(key=lambda x: x[1].timestamp)
-        most_recent_idx, most_recent_msg = image_messages[-1]
-        
-        # Create new message list with placeholders
-        for i, msg in enumerate(session.messages):
-            # Check if this is an image message that needs replacing
-            is_image_msg = False
-            for idx, image_msg in image_messages:
-                if idx == i and image_msg.id == msg.id and msg.id != most_recent_msg.id:
-                    is_image_msg = True
-                    break
-            
-            if not is_image_msg:
-                # Keep message as is
-                result_session.messages.append(msg)
-                continue
-                
-            # Replace images with text placeholders
-            content = msg.content
-            if isinstance(content, list):
-                new_content = []
-                for part in content:
-                    if isinstance(part, dict) and part.get("type") in ["image", "image_url"]:
-                        # Keep URL reference but replace with placeholder
-                        url_reference = None
-                        if "image_url" in part:
-                            url_reference = part["image_url"]
-                        elif "image_path" in part:
-                            url_reference = part["image_path"]
-                        
-                        new_part = {
-                            "type": "text",
-                            "text": f"[Image removed to save tokens]"
-                        }
-                        
-                        # Optionally add metadata about the removed image
-                        if url_reference:
-                            new_part["metadata"] = {"original_image_reference": url_reference}
-                            
-                        new_content.append(new_part)
-                    else:
-                        new_content.append(part)
-                
-                # Create a new message with modified content
-                new_message = Message(
-                    role=msg.role,
-                    content=new_content,
-                    category=msg.category,
-                    id=msg.id,
-                    timestamp=msg.timestamp,
-                    metadata={**msg.metadata, "image_replaced": True}
-                )
-                
-                # Update token count
-                new_message.tokens = self.token_counter(new_content)
-                
-                result_session.messages.append(new_message)
+        # Process each message
+        for msg in session.messages:
+            if msg.id != most_recent_msg.id and self._contains_image(msg.content):
+                # Replace image with placeholder
+                result.messages.append(self._create_placeholder_message(msg))
             else:
-                # Not list content, just add as is
-                result_session.messages.append(msg)
+                # Keep message as is
+                result.messages.append(msg)
         
-        return result_session
+        return result
     
     def get_current_allocations(self) -> Dict[MessageCategory, float]:
         """Get the current token allocations as percentages"""
