@@ -12,21 +12,11 @@ This module provides tools to:
 
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Dict, List, Optional, Union, Any, Callable
+from typing import Dict, List, Optional, Union, Any, Callable, Tuple
+
+from penguin.system.state import Message, MessageCategory, Session
 
 logger = logging.getLogger(__name__)
-
-class MessageCategory(Enum):
-    """Categories of messages for prioritization"""
-    SYSTEM_PROMPT = 1        # Highest priority - never truncated
-    DECLARATIVE_NOTES = 2    # Important context
-    WORKING_MEMORY = 3       # Documents and references
-    CONVERSATION = 4         # User/assistant exchanges
-    ACTION_RESULTS = 5       # Action result outputs
-    
-    def __str__(self):
-        return self.name
 
 @dataclass
 class TokenBudget:
@@ -49,7 +39,7 @@ class ContextWindowManager:
     
     def __init__(
         self,
-        max_tokens: int = 100000,
+        max_tokens: int = 100000, #TODO: This should be configurable. By default, it should be the max tokens of the model being used.
         token_counter: Optional[Callable[[Any], int]] = None
     ):
         """
@@ -90,19 +80,20 @@ class ContextWindowManager:
         
         # Default allocation percentages (can be made configurable)
         allocations = {
-            MessageCategory.SYSTEM_PROMPT: 0.10,      # 10% for system instructions
-            MessageCategory.DECLARATIVE_NOTES: 0.15,  # 15% for important context
-            MessageCategory.WORKING_MEMORY: 0.25,     # 25% for documents/references
-            MessageCategory.CONVERSATION: 0.40,       # 40% for conversation history
-            MessageCategory.ACTION_RESULTS: 0.10      # 10% for action results
+            MessageCategory.SYSTEM: 0.10,      # 10% for system instructions
+            MessageCategory.CONTEXT: 0.35,     # 35% for important context
+            MessageCategory.DIALOG: 0.50,      # 50% for conversation history
+            MessageCategory.ACTIONS: 0.05      # 5% for action results
         }
+        # This needs room for large messages, like images, audio, and files. 
+        # It also needs to be dynamic based on letting some categories have more budget than others until they are full?
         
         # Create token budgets based on percentages
         for category, percentage in allocations.items():
             budget = int(total_budget * percentage)
             
             # Ensure system prompt has minimum viable space
-            min_tokens = 1000 if category == MessageCategory.SYSTEM_PROMPT else budget // 2
+            min_tokens = 1000 if category == MessageCategory.SYSTEM else 0
             
             self._budgets[category] = TokenBudget(
                 min_tokens=min_tokens,
@@ -146,12 +137,12 @@ class ContextWindowManager:
         
         return sum(budget.current_tokens for budget in self._budgets.values()) > self.max_tokens
     
-    def analyze_messages(self, messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def analyze_session(self, session: Session) -> Dict[str, Any]:
         """
         Analyze messages for token usage statistics and multimodal content.
         
         Args:
-            messages: List of message dictionaries with role, content, and category
+            session: Session object containing messages
             
         Returns:
             Dict with token counts, image counts, and other statistics
@@ -160,16 +151,17 @@ class ContextWindowManager:
         per_category_tokens = {category: 0 for category in MessageCategory}
         image_count = 0
         
-        for msg in messages:
-            category = msg.get("category", MessageCategory.CONVERSATION)
-            if isinstance(category, str):
-                try:
-                    category = MessageCategory[category]
-                except (KeyError, TypeError):
-                    category = MessageCategory.CONVERSATION
+        for msg in session.messages:
+            category = msg.category
+            content = msg.content
             
-            content = msg.get("content", "")
-            token_count = self.token_counter(content)
+            # Use existing token count or calculate new one
+            token_count = msg.tokens
+            if token_count == 0:
+                token_count = self.token_counter(content)
+                # Update message token count for future reference
+                msg.tokens = token_count
+                
             total_tokens += token_count
             
             # Count images in multimodal content
@@ -182,9 +174,6 @@ class ContextWindowManager:
             if category in per_category_tokens:
                 per_category_tokens[category] += token_count
                 
-            # Store token count on message for efficient access
-            msg["_token_count"] = token_count
-            
         # Add a warning log if there are multiple images
         if image_count > 1:
             logger.warning(f"Multiple images detected ({image_count}). This may consume significant token budget.")
@@ -193,51 +182,65 @@ class ContextWindowManager:
             "total_tokens": total_tokens,
             "per_category": per_category_tokens,
             "image_count": image_count,
-            "over_budget": total_tokens > self.max_tokens
+            "over_budget": total_tokens > self.max_tokens,
+            "message_count": len(session.messages)
         }
     
-    def trim_messages(
-        self,
-        messages: List[Dict[str, Any]],
-        preserve_recency: bool = True
-    ) -> List[Dict[str, Any]]:
+    def trim_session(self, session: Session, preserve_recency: bool = True) -> Session:
         """
-        Trim messages to fit within token budget.
+        Trim session messages to fit within token budget.
         
         Args:
-            messages: List of message dictionaries
+            session: Session object to trim
             preserve_recency: Whether to prioritize keeping recent messages
             
         Returns:
-            Trimmed list of messages
+            New Session object with trimmed messages
         """
-        if not messages:
-            return []
+        if not session.messages:
+            return session
+            
+        # Create a new session to avoid modifying the original
+        # This maintains immutability principles
+        result_session = Session(
+            id=session.id,
+            created_at=session.created_at,
+            last_active=session.last_active,
+            metadata=session.metadata.copy()
+        )
             
         # Analyze current message state
-        stats = self.analyze_messages(messages)
+        stats = self.analyze_session(session)
         
         # If we're under budget, no trimming needed
         if not stats["over_budget"]:
-            return messages
+            result_session.messages = [msg for msg in session.messages]
+            return result_session
             
         # Special handling for images - they consume many tokens
         if stats["image_count"] > 1:
-            messages = self._handle_image_trimming(messages)
+            # First pass: handle images separately
+            session_with_image_placeholders = self._handle_image_trimming(session)
+            
             # Re-analyze after image trimming
-            stats = self.analyze_messages(messages)
+            stats = self.analyze_session(session_with_image_placeholders)
             if not stats["over_budget"]:
-                return messages
+                return session_with_image_placeholders
+                
+            # Continue with the image-trimmed session
+            session = session_with_image_placeholders
         
         # Group messages by category
         categorized = {}
         for category in MessageCategory:
             categorized[category] = [
-                msg for msg in messages 
-                if msg.get("category", MessageCategory.CONVERSATION) == category
+                msg for msg in session.messages 
+                if msg.category == category
             ]
             
         # Trim categories in order of lowest to highest priority
+        # Note: MessageCategory enum has SYSTEM=1, CONTEXT=2, etc.
+        # Higher value = lower priority for trimming
         for category in sorted(MessageCategory, key=lambda c: c.value, reverse=True):
             budget = self._budgets.get(category)
             category_msgs = categorized[category]
@@ -249,13 +252,13 @@ class ContextWindowManager:
                 
                 if preserve_recency:
                     # Sort oldest first for trimming
-                    category_msgs.sort(key=lambda m: m.get("timestamp", ""))
+                    category_msgs.sort(key=lambda m: m.timestamp)
                     
                 # Trim messages until we're under budget
                 remaining_msgs = []
                 tokens_to_remove = excess
                 for msg in category_msgs:
-                    msg_tokens = msg.get("_token_count", self.token_counter(msg.get("content", "")))
+                    msg_tokens = msg.tokens or self.token_counter(msg.content)
                     
                     if tokens_to_remove > 0 and msg_tokens <= tokens_to_remove:
                         # Skip this message (trim it)
@@ -266,38 +269,53 @@ class ContextWindowManager:
                 # Replace the category's messages with trimmed version
                 categorized[category] = remaining_msgs
         
-        # Reconstruct the message list preserving order
-        result = []
-        for msg in messages:
-            category = msg.get("category", MessageCategory.CONVERSATION)
-            if isinstance(category, str):
-                try:
-                    category = MessageCategory[category]
-                except (KeyError, TypeError):
-                    category = MessageCategory.CONVERSATION
-                    
-            # If this message is in the kept messages for its category, include it
-            category_msgs = categorized.get(category, [])
-            if msg in category_msgs:
-                result.append(msg)
+        # Reconstruct the message list preserving original order
+        # We'll use a dictionary to track which messages to keep
+        kept_messages = {}
+        for category in MessageCategory:
+            for msg in categorized[category]:
+                kept_messages[msg.id] = msg
                 
-        return result
+        # Build the result session maintaining original order
+        result_session.messages = [msg for msg in session.messages if msg.id in kept_messages]
+        
+        # Update message counts in metadata
+        result_session.metadata["message_count"] = len(result_session.messages)
+        dialog_count = sum(1 for msg in result_session.messages 
+                          if msg.category == MessageCategory.DIALOG)
+        result_session.metadata["dialog_message_count"] = dialog_count
+                
+        return result_session
     
-    def _handle_image_trimming(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _handle_image_trimming(self, session: Session) -> Session:
         """
         Special handling for trimming image content, which consumes many tokens.
         This preserves the most recent image and converts others to text placeholders.
         
         Args:
-            messages: List of message dictionaries
+            session: Session object with messages
             
         Returns:
-            Messages with image content trimmed
+            New Session with image content trimmed
         """
-        # Find all messages with images - enhanced detection
+        if not session.messages:
+            return session
+            
+        # What?!
+        # Why is this a new session?
+        
+        # Create a new session to avoid modifying the original
+        result_session = Session(
+            id=session.id,
+            created_at=session.created_at,
+            last_active=session.last_active,
+            metadata=session.metadata.copy()
+        )
+        
+        # Find all messages with images
         image_messages = []
-        for i, msg in enumerate(messages):
-            content = msg.get("content", "")
+        for i, msg in enumerate(session.messages):
+            content = msg.content
             has_image = False
             
             if isinstance(content, list):
@@ -306,48 +324,82 @@ class ContextWindowManager:
                     isinstance(part, dict) and 
                     (part.get("type") in ["image", "image_url"] or
                      "image_path" in part or
-                     (isinstance(part.get("source"), dict) and part["source"].get("type") in ["base64", "url"]))
+                     (isinstance(part.get("source"), dict) and 
+                      part["source"].get("type") in ["base64", "url"]))
                     for part in content
                 )
             
             if has_image:
                 image_messages.append((i, msg))
         
-        # If there's only one image, nothing to trim
+        # If there's only one or zero images, nothing to trim
         if len(image_messages) <= 1:
-            return messages
+            result_session.messages = [msg for msg in session.messages]
+            return result_session
         
         # Keep the most recent image intact
-        image_messages.sort(key=lambda x: x[1].get("timestamp", ""))
-        most_recent = image_messages[-1][1]
+        image_messages.sort(key=lambda x: x[1].timestamp)
+        most_recent_idx, most_recent_msg = image_messages[-1]
         
-        # Replace images in other messages with placeholders
-        result = messages.copy()
-        for idx, msg in image_messages:
-            # Skip the most recent image message
-            if msg is most_recent:
+        # Create new message list with placeholders
+        for i, msg in enumerate(session.messages):
+            # Check if this is an image message that needs replacing
+            is_image_msg = False
+            for idx, image_msg in image_messages:
+                if idx == i and image_msg.id == msg.id and msg.id != most_recent_msg.id:
+                    is_image_msg = True
+                    break
+            
+            if not is_image_msg:
+                # Keep message as is
+                result_session.messages.append(msg)
                 continue
                 
             # Replace images with text placeholders
-            content = msg.get("content", [])
+            content = msg.content
             if isinstance(content, list):
                 new_content = []
                 for part in content:
                     if isinstance(part, dict) and part.get("type") in ["image", "image_url"]:
-                        new_content.append({
+                        # Keep URL reference but replace with placeholder
+                        url_reference = None
+                        if "image_url" in part:
+                            url_reference = part["image_url"]
+                        elif "image_path" in part:
+                            url_reference = part["image_path"]
+                        
+                        new_part = {
                             "type": "text",
-                            "text": "[Image removed to save tokens]"
-                        })
+                            "text": f"[Image removed to save tokens]"
+                        }
+                        
+                        # Optionally add metadata about the removed image
+                        if url_reference:
+                            new_part["metadata"] = {"original_image_reference": url_reference}
+                            
+                        new_content.append(new_part)
                     else:
                         new_content.append(part)
                 
-                # Update the message with modified content
-                msg_copy = msg.copy()
-                msg_copy["content"] = new_content
-                msg_copy["_token_count"] = self.token_counter(new_content)
-                result[idx] = msg_copy
+                # Create a new message with modified content
+                new_message = Message(
+                    role=msg.role,
+                    content=new_content,
+                    category=msg.category,
+                    id=msg.id,
+                    timestamp=msg.timestamp,
+                    metadata={**msg.metadata, "image_replaced": True}
+                )
+                
+                # Update token count
+                new_message.tokens = self.token_counter(new_content)
+                
+                result_session.messages.append(new_message)
+            else:
+                # Not list content, just add as is
+                result_session.messages.append(msg)
         
-        return result
+        return result_session
     
     def get_current_allocations(self) -> Dict[MessageCategory, float]:
         """Get the current token allocations as percentages"""
@@ -373,4 +425,37 @@ class ContextWindowManager:
         # Add extra debug info
         usage["usage_percentage"] = (usage["total"] / self.max_tokens) * 100 if self.max_tokens else 0
         
-        return usage 
+        return usage
+        
+    def process_session(self, session: Session) -> Session:
+        """
+        Process a session through token budgeting and trimming.
+        Main entry point for integration with conversation system.
+        
+        Args:
+            session: Session object to process
+            
+        Returns:
+            Processed session (trimmed if needed)
+        """
+        # Analyze token usage
+        stats = self.analyze_session(session)
+        
+        # If under budget, no changes needed
+        if not stats["over_budget"]:
+            return session
+            
+        # Log trimming activity
+        logger.info(
+            f"Trimming session {session.id}: {stats['total_tokens']} tokens " +
+            f"(over budget by {stats['total_tokens'] - self.max_tokens})"
+        )
+        
+        # Perform trimming
+        trimmed_session = self.trim_session(session)
+        
+        # Calculate how many messages were removed
+        messages_removed = len(session.messages) - len(trimmed_session.messages)
+        logger.info(f"Removed {messages_removed} messages during trimming")
+        
+        return trimmed_session 
