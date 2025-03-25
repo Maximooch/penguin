@@ -26,10 +26,10 @@ class MessageCategory(Enum):
     SYSTEM = 1    # System instructions, never truncated
     CONTEXT = 2   # Important reference information. Declarative notes, context folders, etc.
     DIALOG = 3    # Main conversation between user and assistant
-    ACTIONS = 4   # Results from tool executions, system outputs, etc.
+    SYSTEM_OUTPUT = 4   # Results from tool executions, system outputs, etc.
     
-# TODO: rename ACTIONS to SYSTEM_OUTPUTS since that's what it is and include things much more than ACTIONS, which could be misleading
-
+    # TODO: Consider ERROR as a category? 
+    
 @dataclass
 class Message:
     """

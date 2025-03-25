@@ -111,11 +111,15 @@ class Session:
     # Helper methods for message manipulation and retrieval
 ```
 
-### 4. ContextWindowManager (Existing Approach)
-- Keep the existing token budgeting approach from current implementation
-- Maintain category-based priorities and allocations
-- Update interface to work with Session objects
-- Retain existing implementation in context_window.py
+### 4. ContextWindowManager - 🔄 IN PROGRESS
+- Token budgeting with following allocation:
+  - SYSTEM: 10% (highest priority, preserved longest)
+  - CONTEXT: 35% (high priority, preserved for reference)
+  - DIALOG: 50% (medium priority, oldest trimmed first)
+  - ACTIONS: 5% (lowest priority, trimmed first)
+- Uses immutable Session objects for trimming operations
+- Special handling for image-rich content
+- Maintains token counting and budget enforcement
 
 ### 5. SessionManager - ✅ IMPLEMENTED
 ```python
@@ -142,7 +146,7 @@ class SessionManager:
         """Check if session should transition to a new one"""
 ```
 
-### 6. ConversationSystem
+### 6. ConversationSystem (Planned)
 ```python
 class ConversationSystem:
     def __init__(self, session_manager, context_window):
@@ -161,7 +165,7 @@ class ConversationSystem:
         """Get formatted message history for API consumption"""
 ```
 
-### 7. ConversationManager
+### 7. ConversationManager (Planned)
 ```python
 class ConversationManager:
     def __init__(self, model_config=None, api_client=None):
@@ -233,10 +237,11 @@ class ConversationManager:
 5. Add transaction safety for file operations
 
 ### Phase 3: Context Integration (1 day)
-1. Keep existing context_window.py implementation
+1. Keep existing context_window.py implementation with adaptations
 2. Update interface to work with Session objects
 3. Move context_loader.py from memory/ to system/
 4. Connect ContextLoader with ConversationSystem
+5. Implement proper trimming priority (ACTIONS → DIALOG → CONTEXT → SYSTEM)
 
 ### Phase 4: Conversation Refactoring (3 days)
 1. Extract core functionality from current conversation.py
@@ -252,8 +257,8 @@ class ConversationManager:
 
 ### Phase 6: Testing & Documentation (2 days)
 1. Write unit tests for all new components
-2. Create integration tests for system boundaries
-3. Test with large conversation histories
+2. Create test utilities for generating sample sessions
+3. Implement integration tests for system boundaries
 4. Document new architecture and APIs
 
 ### Phase 7: Migration & Deployment (2 days)
@@ -264,39 +269,90 @@ class ConversationManager:
 
 ## Implementation Details
 
-### Session Transition Logic - ✅ IMPLEMENTED
-- Transition based on message count (configurable, default 500)
-- When limit reached, create new session
-- Transfer all SYSTEM and CONTEXT messages to new session
-- Add special transition marker
-- Update references to point to new session
+### Session Structure and Persistence Model
 
-### Token Counting Strategy - ✅ IMPLEMENTED
-- Use provider tokenizer when available
-- Fall back to tiktoken if provider doesn't support counting
-- Final fallback to approximate counting (chars/4)
-- Cache token counts on message objects
+There's an important distinction between in-memory Session objects and persistent files:
 
-### Transaction Safety - ✅ IMPLEMENTED
-- Use atomic file operations for session saving
-- Implement write-to-temp-then-rename pattern
-- Validate session data before saving
-- Backup previous version before overwriting
+1. **In-Memory Immutability**: 
+   - Session and Message objects follow the immutability pattern
+   - Operations create new instances rather than modifying existing ones
+   - This is a programming pattern for safer code, not related to file creation
 
-### Security Considerations
-- Validate all loaded session data
-- Check message structure and types during deserialization
+2. **Persistent Session Files**:
+   - One session = one JSON file (identified by session ID)
+   - New session files are only created in specific circumstances:
+     - Starting a new conversation
+     - Reaching a session boundary (e.g., 500 dialog messages)
+     - Explicitly creating a continuation session
+   - Normal message exchange does not create new files
 
-### Integration with ContextWindowManager
-- ConversationSystem will integrate with ContextWindowManager
-- Core will reference the ConversationManager which handles:
-  1. Session boundaries via SessionManager
-  2. Token budgeting via ContextWindowManager
-  3. Context loading via ContextLoader
-- ContextWindowManager receives complete Session objects
-- Trimming operations maintain message categories and priorities
+3. **Relationship Between Objects and Files**:
+   - SessionManager maintains current session state
+   - Auto-save periodically writes to disk
+   - When loading, deserializes from disk to Session objects
+   - When modifying, creates new Session objects in memory
+   - When saving, serializes to disk
+
+This pattern maintains immutability for code safety while minimizing file operations.
+
+### Token Trimming Priority
+
+Messages are trimmed in the following priority order:
+
+1. **ACTIONS (5%)**: First to be trimmed
+   - Tool outputs, code execution results
+   - Can usually be regenerated if needed
+   - Least impact on conversation coherence
+
+2. **DIALOG (50%)**: Second to be trimmed
+   - User-assistant conversation exchanges
+   - Trimmed from oldest to newest
+   - Maintains recent conversation context
+
+3. **CONTEXT (35%)**: Third to be trimmed
+   - Important reference information
+   - Documentation, requirements, specifications
+   - Preserved as long as possible
+
+4. **SYSTEM (10%)**: Last to be trimmed
+   - System instructions and prompts
+   - Essential for assistant behavior
+   - Never trimmed if possible
+
+This prioritization ensures the most critical context is preserved even as the context window fills up.
+
+### Image Handling Strategy
+
+Special handling for images in the context window:
+
+1. Detect image-heavy conversations
+2. Preserve the most recent image in full
+3. Replace older images with text placeholders
+4. Maintain references to removed images
+5. Optimize token usage for multi-modal content
 
 ## Future Considerations
+
+### Image Re-viewing Capability
+- Add mechanism to "re-view" previously trimmed images
+- Store image references in a specialized cache
+- Implement commands to recall specific images
+- Create an image gallery view across the conversation
+- Enable search by image description or content
+
+### Workspace Memory Integration
+- Create a memory system that can scan conversation files
+- Build embeddings of key points from conversations
+- Allow semantic search across past sessions
+- Enable "remember when we discussed X" functionality
+- Connect related conversations through topics/themes
+
+### Dual File Format System
+- Human-readable JSON for conversations (easily viewable/editable)
+- Optimized binary format for system operations (faster/smaller)
+- Automatic conversion between formats
+- Specialized index files for efficient searching
+- Allow users to directly view/edit conversation files
 
 ### Storage Performance
 - Consider MessagePack or Protobuf for improved serialization performance
@@ -463,15 +519,15 @@ messages = session_loader.load_messages(
 ### Updated Timeline
 - ✅ Phase 1: Core State Design (COMPLETED)
 - ✅ Phase 2: Session Management (COMPLETED)
-- Phase 3: Context Integration (1 day)
+- 🔄 Phase 3: Context Integration (IN PROGRESS)
 - Phase 4: Conversation Refactoring (3 days)
 - Phase 5: API Integration (2 days)
 - Phase 6: Testing & Documentation (2 days)
 - Phase 7: Migration & Deployment (2 days)
-- Total Remaining: ~10 days
+- Total Remaining: ~9 days
 
 ### Required Resources
-- Developer time: ~10 days
+- Developer time: ~9 days
 - No additional dependencies required
 - Testing environment with large conversation histories
 
