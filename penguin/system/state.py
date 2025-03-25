@@ -1,5 +1,16 @@
+"""
+Core state management classes for Penguin conversation system.
+
+This module defines the fundamental data structures used to represent and
+manage conversation state, including messages, sessions, and categories.
+"""
+
+import json
+import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 
 class SystemState(Enum):
@@ -8,6 +19,225 @@ class SystemState(Enum):
     CHAT = "chat"
     ERROR = "error"
     SHUTDOWN = "shutdown"
+
+
+class MessageCategory(Enum):
+    """Categories of messages for priority-based handling in the context window."""
+    SYSTEM = 1    # System instructions, never truncated
+    CONTEXT = 2   # Important reference information. Declarative notes, context folders, etc.
+    DIALOG = 3    # Main conversation between user and assistant
+    ACTIONS = 4   # Results from tool executions, system outputs, etc.
+
+
+@dataclass
+class Message:
+    """
+    Represents a single message in a conversation.
+    
+    Messages have a role (user, assistant, system), content, and a category
+    that determines its importance for context window management.
+    """
+    role: str
+    content: Any
+    category: MessageCategory
+    id: str = field(default_factory=lambda: f"msg_{uuid.uuid4().hex[:8]}")
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    tokens: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert message to a dictionary for serialization."""
+        result = asdict(self)
+        # Convert enum to string for serialization
+        result["category"] = self.category.name
+        return result
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Message":
+        """Create a Message instance from a dictionary."""
+        # Convert category string back to enum
+        if "category" in data and isinstance(data["category"], str):
+            try:
+                data["category"] = MessageCategory[data["category"]]
+            except KeyError:
+                # Default to DIALOG if category is invalid
+                data["category"] = MessageCategory.DIALOG
+        
+        return cls(**data)
+    
+    def to_api_format(self) -> Dict[str, Any]:
+        """Format message for API consumption."""
+        return {
+            "role": self.role,
+            "content": self.content
+        }
+    
+    def estimate_tokens(self) -> int:
+        """Estimate token count if not already calculated."""
+        if self.tokens > 0:
+            return self.tokens
+            
+        # Simple approximation: ~4 characters per token
+        if isinstance(self.content, str):
+            return len(self.content) // 4 + 1
+        elif isinstance(self.content, list):
+            # Handle OpenAI-style content list with text/image parts
+            total_chars = 0
+            for item in self.content:
+                if isinstance(item, dict):
+                    if item.get("type") == "text":
+                        total_chars += len(str(item.get("text", "")))
+                    elif item.get("type") == "image_url":
+                        # Image paths typically count as ~1000 tokens
+                        total_chars += 4000
+                else:
+                    total_chars += len(str(item))
+            return total_chars // 4 + 1
+        else:
+            # General fallback
+            return len(str(self.content)) // 4 + 1
+    # TODO: This should be called fallback_estimate_tokens, since it's a fallback. Should be...
+
+    #TODO: Is there image handling? The content is set to Any, so it could be anything.
+
+
+@dataclass
+class Session:
+    """
+    Represents a conversation session containing multiple messages.
+    
+    Sessions have their own identity and metadata, and manage a collection
+    of messages that belong to the conversation.
+    """
+    id: str = field(default_factory=lambda: f"session_{uuid.uuid4().hex[:8]}")
+    messages: List[Message] = field(default_factory=list)
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    last_active: str = field(default_factory=lambda: datetime.now().isoformat())
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    @property
+    def message_count(self) -> int:
+        """Get the number of messages in this session."""
+        return len(self.messages)
+    
+    @property
+    def total_tokens(self) -> int:
+        """Get total token count for all messages in this session."""
+        return sum(msg.tokens for msg in self.messages)
+    
+    def get_messages_by_category(self, category: MessageCategory) -> List[Message]:
+        """Get all messages of a specific category."""
+        return [msg for msg in self.messages if msg.category == category]
+    
+    def get_formatted_history(self) -> List[Dict[str, Any]]:
+        """Get messages formatted for API consumption."""
+        return [msg.to_api_format() for msg in self.messages]
+    
+    def add_message(self, message: Message) -> None:
+        """Add a message to the session."""
+        self.messages.append(message)
+        self.last_active = datetime.now().isoformat()
+        self.metadata["message_count"] = len(self.messages)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert session to a dictionary for serialization."""
+        return {
+            "id": self.id,
+            "created_at": self.created_at,
+            "last_active": self.last_active,
+            "metadata": self.metadata,
+            "messages": [msg.to_dict() for msg in self.messages]
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Session":
+        """Create a Session instance from a dictionary."""
+        # Handle the messages separately
+        messages_data = data.pop("messages", [])
+        session = cls(**data)
+        
+        # Add the messages
+        session.messages = [Message.from_dict(msg) for msg in messages_data]
+        return session
+    
+    def to_json(self) -> str:
+        """Convert session to JSON string."""
+        return json.dumps(self.to_dict(), indent=2)
+    
+    @classmethod
+    def from_json(cls, json_str: str) -> "Session":
+        """Create a Session instance from a JSON string."""
+        try:
+            data = json.loads(json_str)
+            return cls.from_dict(data)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Invalid JSON format: {e}")
+    
+    def validate(self) -> bool:
+        """Validate session data integrity."""
+        # Check for required fields
+        if not self.id or not isinstance(self.id, str):
+            return False
+        
+        # Validate timestamps
+        try:
+            datetime.fromisoformat(self.created_at)
+            datetime.fromisoformat(self.last_active)
+        except (ValueError, TypeError):
+            return False
+        
+        # Validate messages
+        for msg in self.messages:
+            if not isinstance(msg, Message):
+                return False
+            if not msg.role or not isinstance(msg.role, str):
+                return False
+                
+        return True
+
+
+def create_message(
+    role: str, 
+    content: Any, 
+    category: MessageCategory,
+    metadata: Optional[Dict[str, Any]] = None,
+    tokens: int = 0
+) -> Message:
+    """
+    Helper function to create a new message.
+    
+    Args:
+        role: Message role (user, assistant, system)
+        content: Message content (text or structured data)
+        category: Message category for priority handling
+        metadata: Optional metadata for the message
+        tokens: Optional pre-calculated token count
+        
+    Returns:
+        Message object
+    """
+    return Message(
+        role=role,
+        content=content,
+        category=category,
+        metadata=metadata or {},
+        tokens=tokens
+    )
+
+
+def create_session() -> Session:
+    """
+    Helper function to create a new empty session.
+    
+    Returns:
+        Session object
+    """
+    return Session(
+        metadata={
+            "created_at": datetime.now().isoformat(),
+            "message_count": 0
+        }
+    )
 
 
 class PenguinState:

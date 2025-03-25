@@ -1,7 +1,7 @@
 from .conversation import ConversationSystem
 from .conversation_menu import ConversationMenu
 from .file_manager import FileManager
-from .session import Session
+# from .file_session import Session
 
 # from .diagnostics import Diagnostics
 from .state import PenguinState
@@ -12,7 +12,7 @@ __all__ = [
     "FileManager",
     "ConversationSystem",
     "PenguinState",
-    "Session",
+    # "Session",
     "ConversationMenu",
     "Conversation",
 ]
