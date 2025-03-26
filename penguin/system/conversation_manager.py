@@ -69,7 +69,10 @@ class ConversationManager:
         logger.info("Initializing conversation components...")
         
         # Token window manager for content trimming
-        self.context_window = ContextWindowManager(model_config)
+        self.context_window = ContextWindowManager(
+            model_config=model_config,
+            api_client=api_client
+        )
         logger.info(f"Context window initialized with max tokens: {self.context_window.max_tokens}")
         
         # Session manager for persistence and caching

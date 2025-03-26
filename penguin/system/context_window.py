@@ -40,7 +40,8 @@ class ContextWindowManager:
     def __init__(
         self,
         model_config = None,
-        token_counter: Optional[Callable[[Any], int]] = None
+        token_counter: Optional[Callable[[Any], int]] = None,
+        api_client=None
     ):
         """
         Initialize the context window manager.
@@ -48,6 +49,7 @@ class ContextWindowManager:
         Args:
             model_config: Optional model configuration with max_tokens
             token_counter: Function to count tokens for content
+            api_client: API client for token counting
         """
         # Get max_tokens from model_config if available
         self.max_tokens = 100000  # Default fallback
@@ -69,16 +71,16 @@ class ContextWindowManager:
         except (ImportError, AttributeError) as e:
             logger.warning(f"Could not load config.yml for max_tokens: {e}")
 
-        # Setup token counter with proper fallback chain
+        # Try to get token counter with clearer logging
         if token_counter:
-            # Use provided counter if explicitly passed
+            logger.info("Using explicit token counter")
             self.token_counter = token_counter
-            logger.info("Using explicitly provided token counter")
-        elif model_config and hasattr(model_config, 'api_client') and model_config.api_client:
-            # Use API client directly - it will handle proper delegation to adapter
-            api_client = model_config.api_client
+        elif api_client and hasattr(api_client, 'count_tokens'):
+            logger.info(f"Using API client token counter from {getattr(api_client.adapter, 'provider', 'unknown')}")
             self.token_counter = api_client.count_tokens
-            logger.info(f"Using {getattr(api_client.adapter, 'provider', 'unknown')} tokenizer via API client")
+        elif model_config and hasattr(model_config, 'api_client') and model_config.api_client:
+            logger.info(f"Using model_config.api_client token counter")
+            self.token_counter = model_config.api_client.count_tokens
         else:
             # No API client, make a best effort
             try:

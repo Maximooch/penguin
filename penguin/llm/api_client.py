@@ -325,63 +325,37 @@ class APIClient:
                     return self.adapter.count_tokens(content)
                 except Exception as e:
                     logger.warning(f"Error using adapter token counting: {e}")
+                    # Check if this is an image_url error with Anthropic
+                    if 'image_url' in str(e) and self.adapter.provider == 'anthropic':
+                        # Emergency conversion: replace image_url types with image types
+                        try:
+                            if isinstance(content, list) and any(isinstance(item, dict) and item.get('type') == 'image_url' for item in content):
+                                # Convert image_url to image.source format
+                                fixed_content = []
+                                for item in content:
+                                    if isinstance(item, dict) and item.get('type') == 'image_url':
+                                        image_url = item.get('image_url')
+                                        if isinstance(image_url, str) and image_url.startswith(('http://', 'https://')):
+                                            fixed_content.append({
+                                                "type": "image",
+                                                "source": {
+                                                    "type": "url",
+                                                    "url": image_url
+                                                }
+                                            })
+                                        else:
+                                            # Skip images we can't fix easily
+                                            fixed_content.append({"type": "text", "text": "[Image]"})
+                                    else:
+                                        fixed_content.append(item)
+                                
+                                logger.debug("Retrying token counting with fixed image format")
+                                return self.adapter.count_tokens(fixed_content)
+                        except Exception as inner_e:
+                            logger.warning(f"Error during emergency image format conversion: {inner_e}")
             
-            # Fallback to tiktoken if available
-            try:
-                import tiktoken # type: ignore
-                # Use cl100k for consistency (used by both OpenAI and Anthropic)
-                logger.debug("Using tiktoken fallback")
-                encoder = tiktoken.get_encoding("cl100k_base")
-                
-                # Handle different content types
-                if isinstance(content, str):
-                    return len(encoder.encode(content))
-                elif isinstance(content, list):
-                    # Handle content arrays with possible images
-                    total = 0
-                    for item in content:
-                        if isinstance(item, dict):
-                            if item.get("type") == "text":
-                                total += len(encoder.encode(item.get("text", "")))
-                            elif item.get("type") in ["image", "image_url"]:
-                                # Approximation for image tokens
-                                total += 4000  # Claude models use ~4000 tokens per image
-                            else:
-                                # Other dict items
-                                total += len(encoder.encode(str(item)))
-                        else:
-                            # String items
-                            total += len(encoder.encode(str(item)))
-                    return total
-                elif isinstance(content, dict):
-                    # Handle dict objects
-                    return len(encoder.encode(str(content)))
-                else:
-                    # Fallback for any other type
-                    return len(encoder.encode(str(content)))
-            except (ImportError, Exception) as e:
-                logger.debug(f"Tiktoken counting failed: {e}")
-            
-            # Last resort fallback - character approximation
-            logger.debug("Using character approximation fallback. Last resort.")
-            if isinstance(content, str):
-                return len(content) // 4 + 1
-            elif isinstance(content, list):
-                # Estimate with images
-                char_count = 0
-                image_count = 0
-                for item in content:
-                    if isinstance(item, dict):
-                        if item.get("type") == "text":
-                            char_count += len(item.get("text", ""))
-                        elif item.get("type") in ["image", "image_url"]:
-                            image_count += 1
-                    else:
-                        char_count += len(str(item))
-                
-                return (char_count // 4 + 1) + (image_count * 4000)
-            else:
-                return len(str(content)) // 4 + 1
+            # Fallback to approximate counting    
+            return self._approximate_token_count(content)
             
         except Exception as e:
             logger.error(f"Token counting error: {e}")
