@@ -918,17 +918,33 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
         action = command_parts[1].lower()
 
         if action == "list":
-            conversations = [
-                ConversationSummary(
+            conversations = []
+            for idx, session in enumerate(self.core.conversation_manager.list_conversations()):
+                # Try to extract a meaningful title from the first user message
+                title = session.get("title", "")
+                if not title:
+                    # Search for first user message in metadata if available
+                    if "snippets" in session and isinstance(session["snippets"], list):
+                        for snippet in session["snippets"]:
+                            if snippet.get("role") == "user":
+                                content = snippet.get("content", "")
+                                if isinstance(content, str):
+                                    # Use first line or first few words
+                                    first_line = content.split('\n', 1)[0]
+                                    title = (first_line[:37] + '...') if len(first_line) > 40 else first_line
+                                    break
+                
+                    # If still no title, use default
+                    if not title:
+                        title = f"Conversation {idx + 1}"
+                
+                # Create ConversationSummary
+                conversations.append(ConversationSummary(
                     session_id=session["id"],
-                    title=session.get("title", f"Conversation {idx + 1}"),
+                    title=title,
                     message_count=session.get("message_count", 0),
-                    last_active=parse_iso_datetime(session.get("last_active", "")),
-                )
-                for idx, session in enumerate(
-                    self.core.conversation_manager.list_conversations()
-                )
-            ]
+                    last_active=parse_iso_datetime(session.get("last_active", ""))
+                ))
             session_id = self.conversation_menu.select_conversation(conversations)
             if session_id:
                 try:
