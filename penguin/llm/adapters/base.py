@@ -22,7 +22,15 @@ class BaseAdapter(ABC):
     
     @abstractmethod
     def count_tokens(self, text: str) -> int:
-        """Count tokens in the given text"""
+        """
+        Count tokens in the given text or structured content.
+        
+        Args:
+            text: Text string or structured content to count tokens for
+            
+        Returns:
+            Approximate token count
+        """
         pass
     
     @abstractmethod

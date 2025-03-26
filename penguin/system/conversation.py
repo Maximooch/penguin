@@ -2,6 +2,7 @@ import glob
 import json
 import logging
 import os
+import uuid
 import yaml # type: ignore
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -10,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from penguin.config import CONVERSATION_CONFIG, WORKSPACE_PATH
+from penguin.system.state import Message, MessageCategory, Session
+from penguin.utils.diagnostics import diagnostics
 
 # Optional - can be replaced with approximation method for multiple providers
 try:
@@ -20,976 +23,381 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-
-def parse_iso_datetime(date_str: str) -> str:
-    """Parse ISO format date string and return formatted display string"""
-    try:
-        # Split into date and time parts
-        if "T" in date_str:
-            date_str = (
-                date_str.split("T")[0] + " " + date_str.split("T")[1].split(".")[0]
-            )
-        elif " " in date_str:
-            date_str = date_str.split(".")[0]
-
-        # Basic format check
-        if len(date_str) < 16:  # Minimum "YYYY-MM-DD HH:MM"
-            return date_str
-
-        # Manual parsing
-        year = date_str[0:4]
-        month = date_str[5:7]
-        day = date_str[8:10]
-        hour = date_str[11:13]
-        minute = date_str[14:16]
-
-        return f"{year}-{month}-{day} {hour}:{minute}"
-    except (IndexError, ValueError):
-        return date_str
-
-
-@dataclass
-class ConversationSummary:
-    """Summary information for a conversation - used in menus"""
-    
-    session_id: str
-    title: str
-    message_count: int
-    last_active: str
-    
-    @property
-    def display_date(self) -> str:
-        """Get formatted display date"""
-        return self.last_active
-        
-    @property
-    def display_title(self) -> str:
-        """Get display-friendly title"""
-        return self.title if self.title else f"Conversation {self.session_id[-6:]}"
-
-@dataclass
-class ConversationMetadata:
-    """Metadata for a conversation session"""
-
-    created_at: str
-    last_active: str
-    message_count: int
-    session_id: str
-    title: Optional[str] = None
-    tags: List[str] = field(default_factory=list)
-
-    @property
-    def display_date(self) -> str:
-        """Get formatted display date"""
-        return parse_iso_datetime(self.last_active)
-
-    def update_title_from_messages(self, messages: List[Dict]) -> None:
-        """Set title from first user message"""
-        for message in messages:
-            if message["role"] == "user":
-                content = message["content"]
-                # Handle both string and list content formats
-                if isinstance(content, list):
-                    text = next((c["text"] for c in content if c["type"] == "text"), "")
-                else:
-                    text = str(content)
-                # Truncate long titles
-                self.title = (text[:37] + "...") if len(text) > 40 else text
-                break
-                
-    def to_summary(self) -> ConversationSummary:
-        """Convert to a ConversationSummary"""
-        return ConversationSummary(
-            session_id=self.session_id,
-            title=self.title or f"Conversation {self.session_id[-6:]}",
-            message_count=self.message_count,
-            last_active=parse_iso_datetime(self.last_active)
-        )
-
-
-class ConversationLoader:
-    """Handles loading and managing conversation history."""
-
-    def __init__(self, conversations_path: str = None):
-        """Initialize the conversation loader with configurable path."""
-        self.conversations_path = conversations_path or os.path.join(
-            WORKSPACE_PATH, "conversations"
-        )
-        os.makedirs(self.conversations_path, exist_ok=True)
-
-        # Load conversation config
-        self.max_history = CONVERSATION_CONFIG.get("max_history", 1000000)
-        self.auto_save = CONVERSATION_CONFIG.get("auto_save", True)
-        self.save_format = CONVERSATION_CONFIG.get("save_format", "json")
-
-    def load_conversation(
-        self, conversation_id: str
-    ) -> Tuple[List[Dict[str, Any]], ConversationMetadata]:
-        """Load a conversation by ID with error handling and validation."""
-        try:
-            file_path = os.path.join(
-                self.conversations_path, f"{conversation_id}.{self.save_format}"
-            )
-
-            if not os.path.exists(file_path):
-                return [], ConversationMetadata(
-                    created_at=datetime.now().isoformat(),
-                    last_active=datetime.now().isoformat(),
-                    message_count=0,
-                    session_id=conversation_id,
-                )
-
-            with open(file_path, encoding="utf-8") as f:
-                data = json.load(f)
-
-            # Handle both old and new format
-            if isinstance(data, dict) and "messages" in data:
-                messages = data["messages"]
-                metadata = data.get("metadata", {})
-            else:
-                messages = data
-                metadata = {}
-
-            # Create metadata object
-            metadata = ConversationMetadata(
-                session_id=conversation_id,
-                created_at=metadata.get("created_at", datetime.now().isoformat()),
-                last_active=metadata.get("last_active", datetime.now().isoformat()),
-                message_count=len(messages),
-                title=metadata.get("title", None),
-            )
-
-            # Update title if not set
-            if not metadata.title:
-                metadata.update_title_from_messages(messages)
-
-            return messages, metadata
-
-        except Exception as e:
-            logger.error(f"Error loading conversation {conversation_id}: {str(e)}")
-            raise
-
-    def save_conversation(
-        self,
-        conversation_id: str,
-        messages: List[Dict[str, Any]],
-        metadata: Optional[ConversationMetadata] = None,
-    ) -> bool:
-        """Save conversation with proper error handling and validation."""
-        if not self.auto_save:
-            return False
-
-        try:
-            # Ensure conversation ID has proper prefix
-            if not conversation_id.startswith("conversation_"):
-                conversation_id = f"conversation_{conversation_id}"
-
-            file_path = os.path.join(
-                self.conversations_path, f"{conversation_id}.{self.save_format}"
-            )
-
-            # Sanitize messages to ensure they're serializable
-            sanitized_messages = [
-                {
-                    "role": msg.get("role", ""),
-                    "content": msg.get("content", ""),
-                    "timestamp": msg.get("timestamp", datetime.now().isoformat()),
-                    "category": msg.get("category", "CONVERSATION"),
-                    "metadata": msg.get("metadata", {})
-                }
-                for msg in messages
-                if isinstance(msg, dict) and "content" in msg
-            ]
-
-            # Add metadata if provided
-            data_to_save = {"messages": sanitized_messages}
-            if metadata:
-                data_to_save["metadata"] = asdict(metadata)
-
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(data_to_save, f, indent=2, ensure_ascii=False)
-            return True
-
-        except OSError as e:
-            logger.error(f"Error saving conversation {conversation_id}: {str(e)}")
-            return False
-
-    def list_conversations(self) -> List[ConversationMetadata]:
-        """List all available conversations with metadata."""
-        try:
-            # Only look for conversation_* files in the conversations directory
-            pattern = os.path.join(self.conversations_path, "conversation_*.json")
-            conversations = []
-
-            for file_path in glob.glob(pattern):
-                try:
-                    with open(file_path, encoding="utf-8") as f:
-                        data = json.load(f)
-
-                        # Handle both old and new format
-                        messages = data.get(
-                            "messages", data
-                        )  # If data is dict, get messages, else use data
-                        metadata = data.get("metadata", {})
-
-                        session_id = os.path.splitext(os.path.basename(file_path))[0]
-
-                        # Parse ISO format dates manually if needed
-                        created_at = metadata.get(
-                            "created_at", datetime.now().isoformat()
-                        )
-                        last_active = metadata.get(
-                            "last_active", datetime.now().isoformat()
-                        )
-
-                        metadata = ConversationMetadata(
-                            session_id=session_id,
-                            created_at=created_at,
-                            last_active=last_active,
-                            message_count=len(messages),
-                            title=metadata.get("title", None),
-                        )
-
-                        # Try to extract title from messages if not in metadata
-                        if not metadata.title:
-                            metadata.update_title_from_messages(messages)
-
-                        conversations.append(metadata)
-
-                except Exception as e:
-                    logger.error(f"Error reading conversation {file_path}: {str(e)}")
-                    continue
-
-            return sorted(conversations, key=lambda x: x.last_active, reverse=True)
-
-        except Exception as e:
-            logger.error(f"Error listing conversations: {str(e)}")
-            return []
-
-
-class MessageCategory(Enum):
-    """Categories of messages for prioritization"""
-    SYSTEM_PROMPT = 1        # Highest priority - never truncated
-    DECLARATIVE_NOTES = 2    # Important context
-    WORKING_MEMORY = 3       # Documents and references
-    CONVERSATION = 4         # User/assistant exchanges
-    ACTION_RESULTS = 5       # Action result outputs
-
-
-@dataclass
-class TokenBudget:
-    """Token budget for a message category"""
-    # Minimum tokens guaranteed for this category
-    min_tokens: int
-    # Maximum tokens this category can consume
-    max_tokens: int
-    # Current tokens used by this category
-    current_tokens: int = 0
-
-
-class SimpleContextLoader:
-    """
-    Minimal context folder loader with basic configuration.
-    
-    Loads files from a context folder based on user configuration.
-    Users specify 'core_files' that should always be loaded.
-    Additional files can be loaded on demand.
-    """
-    
-    def __init__(
-        self, 
-        conversation_system,
-        context_folder: str = "context"
-    ):
-        """
-        Initialize the SimpleContextLoader.
-        
-        Args:
-            conversation_system: The conversation system instance to add content to
-            context_folder: Path to the context folder within the workspace
-        """
-        self.conversation_system = conversation_system
-        # Use the workspace path from config with the context subfolder
-        self.context_folder = os.path.join(WORKSPACE_PATH, context_folder)
-        self.config_file = os.path.join(self.context_folder, "context_config.yml")
-        self.core_files: List[str] = []  # List of essential files to always load
-        
-        # Create context folder if it doesn't exist
-        if not os.path.exists(self.context_folder):
-            os.makedirs(self.context_folder)
-        
-        # Create a sample config file if it doesn't exist
-        if not os.path.exists(self.config_file):
-            self._create_sample_config()
-        
-        self._load_config()
-        
-    def _create_sample_config(self):
-        """Create a sample configuration file if none exists"""
-        try:
-            sample_config = {
-                "core_files": [
-                    # Example files that will be loaded at startup
-                    # "project_overview.md",
-                    # "api_reference.md"
-                ],
-                "notes": "Add paths to files that should always be loaded as context"
-            }
-            
-            with open(self.config_file, 'w') as f:
-                yaml.dump(sample_config, f, default_flow_style=False)
-                
-            logger.info(f"Created sample context configuration at {self.config_file}")
-        except Exception as e:
-            logger.warning(f"Failed to create sample config: {e}")
-    
-    def _load_config(self):
-        """Load core file list from config if available"""
-        if os.path.exists(self.config_file):
-            try:
-                with open(self.config_file, 'r') as f:
-                    config = yaml.safe_load(f) or {}
-                self.core_files = config.get('core_files', [])
-                logger.info(f"Loaded context configuration with {len(self.core_files)} core files")
-            except Exception as e:
-                # Fall back to empty list if config can't be loaded
-                logger.warning(f"Failed to load context configuration: {e}")
-                self.core_files = []
-    
-    def load_core_context(self) -> List[str]:
-        """
-        Load core context files defined by the user.
-        
-        Returns:
-            List of successfully loaded file paths
-        """
-        loaded = []
-        
-        for file_path in self.core_files:
-            full_path = os.path.join(self.context_folder, file_path)
-            if os.path.exists(full_path) and os.path.isfile(full_path):
-                try:
-                    with open(full_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    
-                    # Add to conversation system working memory
-                    self.conversation_system.add_working_memory(
-                        content=content,
-                        source=f"context/{file_path}"
-                    )
-                    loaded.append(file_path)
-                    logger.debug(f"Loaded core context file: {file_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to load core context file {file_path}: {e}")
-            else:
-                logger.warning(f"Core context file not found: {file_path}")
-        
-        return loaded
-    
-    def load_file(self, file_path: str) -> bool:
-        """
-        Load a specific file from the context folder on demand.
-        
-        Args:
-            file_path: Relative path to the file within the context folder
-            
-        Returns:
-            True if loaded successfully, False otherwise
-        """
-        full_path = os.path.join(self.context_folder, file_path)
-        if not os.path.exists(full_path) or not os.path.isfile(full_path):
-            logger.warning(f"Context file not found: {file_path}")
-            return False
-            
-        try:
-            with open(full_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Add to conversation system working memory
-            self.conversation_system.add_working_memory(
-                content=content,
-                source=f"context/{file_path}"
-            )
-            logger.debug(f"Loaded context file on demand: {file_path}")
-            return True
-        except Exception as e:
-            logger.warning(f"Failed to load context file {file_path}: {e}")
-            return False
-    
-    def list_available_files(self) -> List[Dict[str, Any]]:
-        """
-        List all available files in the context folder.
-        
-        Returns:
-            List of file information dictionaries with path and metadata
-        """
-        available_files = []
-        
-        if not os.path.exists(self.context_folder):
-            return available_files
-            
-        for root, _, files in os.walk(self.context_folder):
-            for file in files:
-                # Skip config file and hidden files
-                if file == os.path.basename(self.config_file) or file.startswith('.'):
-                    continue
-                    
-                full_path = os.path.join(root, file)
-                rel_path = os.path.relpath(full_path, self.context_folder)
-                
-                # Get basic file stats
-                stats = os.stat(full_path)
-                
-                # Categorize by file type
-                file_type = "text"
-                if file.endswith(('.md', '.markdown')):
-                    file_type = "markdown"
-                elif file.endswith(('.yml', '.yaml')):
-                    file_type = "yaml"
-                elif file.endswith(('.txt')):
-                    file_type = "text"
-                
-                available_files.append({
-                    'path': rel_path,
-                    'size': stats.st_size,
-                    'modified': stats.st_mtime,
-                    'is_core': rel_path in self.core_files,
-                    'type': file_type
-                })
-        
-        return available_files
-
 class ConversationSystem:
     """
-    Manages conversation state, history, and message preparation.
-
-    Responsibilities:
-    - Conversation history management
-    - Message preparation and formatting
-    - System prompt management
-    - Image message handling
-    - Token budget management for context window
-    - Context loading from files
+    Manages conversation state and message preparation.
+    
+    Handles message categorization, history management, and API formatting.
+    Uses external systems for token budgeting and context management.
     """
-
+    
     def __init__(
         self, 
-        tool_manager, 
-        diagnostics, 
-        base_path: Path, 
-        model_config=None,  # Now properly stored
-        api_client=None     # Now properly stored
+        context_window_manager=None,
+        session_manager=None,
+        system_prompt: str = "",
     ):
-        self.tool_manager = tool_manager
-        self.diagnostics = diagnostics
-        self.messages = []
-        self.system_prompt = ""
+        """
+        Initialize the conversation system.
+        
+        Args:
+            context_window_manager: Manager for token budgeting and context trimming
+            session_manager: Manager for session persistence and boundaries
+            system_prompt: Initial system prompt
+        """
+        self.context_window = context_window_manager
+        self.session_manager = session_manager
+        self.system_prompt = system_prompt
         self.system_prompt_sent = False
-        self.session_id = self._generate_session_id()
-        self.metadata = ConversationMetadata(
-            created_at=datetime.now().isoformat(),
-            last_active=datetime.now().isoformat(),
-            message_count=0,
-            session_id=self.session_id,
-        )
-        conversations_path = os.path.join(base_path, "conversations")
-        self.loader = ConversationLoader(conversations_path)
-        self.max_history_length = 1000000
-
-        # Import workspace path from config for context loading
-        from penguin.config import WORKSPACE_PATH
-        self.workspace_path = WORKSPACE_PATH
-
-        # Token budgeting configuration
-        self.max_tokens = 128000  # Default
-        if model_config and hasattr(model_config, 'max_tokens') and model_config.max_tokens:
-            self.max_tokens = model_config.max_tokens
-            
-        # Default allocation percentages for each category
-        self.category_allocations = {
-            MessageCategory.SYSTEM_PROMPT: 0.15,     # 15% of context - never truncated
-            MessageCategory.DECLARATIVE_NOTES: 0.20, # 20% of context
-            MessageCategory.WORKING_MEMORY: 0.20,    # 20% of context
-            MessageCategory.CONVERSATION: 0.30,      # 30% of context
-            MessageCategory.ACTION_RESULTS: 0.15     # 15% of context
-        }
         
-        # Calculate tokens reserved for response (10% of max)
-        self.reserved_tokens = int(self.max_tokens * 0.1)
-        self.available_tokens = self.max_tokens - self.reserved_tokens
-        self.current_token_count = 0
+        # Create or load initial session
+        if session_manager and session_manager.current_session:
+            self.session = session_manager.current_session
+        else:
+            self.session = Session()
+            if session_manager:
+                session_manager.current_session = self.session
         
-        # Initialize tokenizer if available
-        self.tokenizer = None
-        if TOKENIZER_AVAILABLE:
-            try:
-                self.tokenizer = tiktoken.get_encoding("cl100k_base")
-            except Exception as e:
-                logger.warning(f"Could not load tokenizer: {e}")
-                
-        # Initialize token budgets for categories
-        self._initialize_token_budgets()
-        
-        # Message storage by category
-        self.categorized_messages = {
-            MessageCategory.SYSTEM_PROMPT: [],
-            MessageCategory.DECLARATIVE_NOTES: [],
-            MessageCategory.WORKING_MEMORY: [],
-            MessageCategory.CONVERSATION: [],
-            MessageCategory.ACTION_RESULTS: []
-        }
-        
-        # Initialize context loader
-        self.context_loader = SimpleContextLoader(self)
-        
-        # Load core context files
-        try:
-            self.load_core_context()
-        except Exception as e:
-            logger.warning(f"Failed to load core context: {e}")
-
-        # Add API client reference
-        self.api_client = api_client
-
-        # Add these lines to store configuration
-        self.model_config = model_config
-        self.api_client = api_client
-
-    def _initialize_token_budgets(self):
-        """Initialize token budgets (disabled)"""
-        # Create empty placeholders for token budgets
-        self.token_budgets = {category: None for category in MessageCategory}
-        self.min_required_tokens = 0
-        self.max_possible_tokens = 0
-        self.current_token_count = 0
-
-    def _generate_session_id(self) -> str:
-        """Generate a unique session ID"""
-        return f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-
-    def save(self) -> None:
-        """Save current conversation state"""
-        # Update metadata
-        self.metadata.last_active = datetime.now().isoformat()
-        self.metadata.message_count = len(self.messages)
-
-        # Ensure session ID has proper prefix and is in conversations directory
-        if not self.session_id.startswith("conversation_"):
-            self.session_id = f"conversation_{self.session_id}"
-
-        # Save to conversations directory
-        self.loader.save_conversation(self.session_id, self.messages, self.metadata)
-
-    def load(self, session_id: str) -> None:
-        """Load a saved conversation"""
-        try:
-            messages, metadata = self.loader.load_conversation(session_id)
-            self.reset()  # Clear existing state
-            self.metadata = metadata
-            self.session_id = session_id
-            
-            # Process each message and add to categorized storage
-            for msg in messages:
-                role = msg.get("role", "")
-                content = msg.get("content", "")
-                category_str = msg.get("category", None)
-                metadata = msg.get("metadata", {})
-                timestamp = msg.get("timestamp", datetime.now().isoformat())
-                
-                # Determine category
-                category = None
-                if category_str:
-                    try:
-                        category = MessageCategory[category_str]
-                    except (KeyError, ValueError):
-                        category = None
-                
-                if category is None:
-                    # Default category based on role and content
-                    if role == "system":
-                        if self.system_prompt and content == self.system_prompt:
-                            category = MessageCategory.SYSTEM_PROMPT
-                        elif "Action executed: " in str(content) or "Code saved to: " in str(content):
-                            category = MessageCategory.ACTION_RESULTS
-                        else:
-                            category = MessageCategory.DECLARATIVE_NOTES
-                    elif role == "user" or role == "assistant":
-                        category = MessageCategory.CONVERSATION
-                    else:
-                        category = MessageCategory.CONVERSATION  # Default fallback
-                
-                # Create internal representation
-                tokens = self.count_tokens(content)
-                message = {
-                    "role": role,
-                    "content": content,
-                    "category": category.name,
-                    "timestamp": timestamp,
-                    "tokens": tokens,
-                    "metadata": metadata or {}
-                }
-                
-                # Add to appropriate category and messages list
-                self.categorized_messages[category].append(message)
-                self.messages.append(message)
-                
-                # Update token counts
-                self.current_token_count += tokens
-                self.token_budgets[category].current_tokens += tokens
-            
-            # Check if system prompt is present in loaded conversation
-            self.system_prompt_sent = any(
-                msg.get("category") == MessageCategory.SYSTEM_PROMPT.name 
-                for msg in self.messages
-            )
-            
-        except Exception as e:
-            logger.error(f"Error loading conversation: {str(e)}")
-            raise
+        # Track if save is needed
+        self._modified = False
 
     def set_system_prompt(self, prompt: str) -> None:
-        """Set the system prompt and mark it as not sent."""
+        """Set system prompt and mark for sending on next interaction."""
         self.system_prompt = prompt
         self.system_prompt_sent = False
-
-    def count_tokens(self, text: Union[str, List, Dict]) -> int:
-        """Disabled token counter"""
-        return 0
 
     def add_message(
         self, 
         role: str, 
         content: Any,
-        category: Optional[MessageCategory] = None,
+        category: MessageCategory = None, 
         metadata: Optional[Dict[str, Any]] = None
-    ) -> None:
+    ) -> Message:
         """
-        Add a message to the conversation history (token counting disabled).
-        """
-        # Normalize content format
-        if isinstance(content, str) and not content:
-            formatted_content = ""  # Empty string is allowed
-        elif isinstance(content, list) and not content:
-            formatted_content = []  # Empty list is allowed
-        else:
-            # Format based on what we receive
-            if isinstance(content, (list, dict)):
-                # Keep structured content as is
-                formatted_content = content
-            else:
-                # Convert anything else to string
-                formatted_content = str(content)
-        
-        # Determine category if not provided
-        if category is None:
-            if role == "system":
-                # Check content to determine system message type
-                content_str = str(content).lower()
-                if self.system_prompt and content == self.system_prompt:
-                    category = MessageCategory.SYSTEM_PROMPT
-                elif "action executed: " in content_str or "code saved to: " in content_str:
-                    category = MessageCategory.ACTION_RESULTS
-                else:
-                    category = MessageCategory.DECLARATIVE_NOTES
-            else:
-                category = MessageCategory.CONVERSATION
-        
-        # REMOVED: Token counting
-        tokens = 0
-        
-        # Create the message
-        timestamp = datetime.now().isoformat()
-        message = {
-            "role": role, 
-            "content": formatted_content, 
-            "timestamp": timestamp,
-            "category": category.name,
-            "metadata": metadata or {},
-            "tokens": tokens
-        }
-        
-        # Add to the appropriate category and the main messages list
-        self.categorized_messages[category].append(message)
-        self.messages.append(message)
-        
-        # REMOVED: Token budget updates
-        
-        # Update title if this is the first user message
-        if (
-            role == "user"
-            and len([m for m in self.messages if m["role"] == "user"]) == 1
-        ):
-            self.metadata.update_title_from_messages(self.messages)
-        
-        # REMOVED: Context trimming based on tokens
-
-    def prepare_conversation(
-        self, user_input: str, image_path: Optional[str] = None
-    ) -> None:
-        """
-        Add a user message to the conversation, handling both text and image inputs.
+        Add a message to the current session.
         
         Args:
-            user_input: The text content from the user
-            image_path: Optional path to an image file to include
+            role: Message role (system, user, assistant)
+            content: Message content (string, list, or dict)
+            category: Message category for token budgeting
+            metadata: Optional metadata for the message
+            
+        Returns:
+            The created Message object
         """
+        # Set default category based on role if not specified
+        if category is None:
+            if role == "system":
+                if content == self.system_prompt:
+                    category = MessageCategory.SYSTEM
+                elif any(marker in str(content).lower() for marker in 
+                        ["action executed:", "code saved to:", "result:", "status:"]):
+                    category = MessageCategory.SYSTEM_OUTPUT
+                else:
+                    category = MessageCategory.CONTEXT
+            else:
+                category = MessageCategory.DIALOG
+        
+        # Create the message
+        message = Message(
+            role=role,
+            content=content,
+            category=category,
+            id=f"msg_{uuid.uuid4().hex[:8]}",
+            timestamp=datetime.now().isoformat(),
+            metadata=metadata or {},
+        )
+        
+        # Add to current session
+        self.session.messages.append(message)
+        self._modified = True
+        
+        # Process session through context window manager if available
+        if self.context_window:
+            self.session = self.context_window.process_session(self.session)
+        
+        # Check session boundaries and handle transitions automatically
+        if self.session_manager and self.session_manager.check_session_boundary(self.session):
+            logger.info(f"Session {self.session.id} reached boundary, creating continuation")
+            
+            # Save current session before transitioning
+            self.save()
+            
+            # Create continuation session and switch to it
+            new_session = self.session_manager.create_continuation_session(self.session)
+            self.session = new_session
+            self._modified = True
+            
+            # Log transition for debugging
+            logger.info(f"Transitioned to continuation session {new_session.id}")
+        
+        return message
+
+    def prepare_conversation(
+        self, 
+        user_input: str, 
+        image_path: Optional[str] = None
+    ) -> None:
+        """
+        Prepare conversation with user input and optional image.
+        
+        Adds system prompt if needed, then adds the user message.
+        
+        Args:
+            user_input: User message text
+            image_path: Optional path to an image file
+        """
+        # Send system prompt if not sent yet
         if not self.system_prompt_sent and self.system_prompt:
-            system_tokens = self.count_tokens(self.system_prompt)
-            self.diagnostics.update_tokens("system_prompt", system_tokens, 0)
             self.add_message(
                 "system", 
                 self.system_prompt, 
-                MessageCategory.SYSTEM_PROMPT, 
-                {"type": "system_prompt", "permanent": True}
+                MessageCategory.SYSTEM,
+                {"type": "system_prompt"}
             )
             self.system_prompt_sent = True
 
+        # Handle image content if provided
         if image_path:
-            # Create a structured message with text and image path
-            # NO ENCODING HERE - just reference the path
+            # Create multimodal content with text and image
             content = [
                 {"type": "text", "text": user_input},
                 {"type": "image_url", "image_path": image_path}  # Use standardized format for adapters
             ]
-            # Pass structured content to add_message
-            self.add_message("user", content, MessageCategory.CONVERSATION)
+            self.add_message("user", content)
         else:
-            self.add_message("user", user_input, MessageCategory.CONVERSATION)
-
-    def add_action_result(self, action_type: str, result: str, status: str = "completed") -> None:
-        """Add an action result with proper formatting"""
+            # Simple text content
+            self.add_message("user", user_input)
+            
+    def add_assistant_message(self, content: str) -> Message:
+        """Add a message from the assistant."""
+        return self.add_message("assistant", content)
+        
+    def add_action_result(
+        self, 
+        action_type: str, 
+        result: str, 
+        status: str = "completed"
+    ) -> Message:
+        """
+        Add an action result message.
+        
+        Args:
+            action_type: Type of action executed
+            result: Result of the action
+            status: Status of execution (completed, error, etc.)
+            
+        Returns:
+            The created Message object
+        """
         content = f"Action executed: {action_type}\nResult: {result}\nStatus: {status}"
-        self.add_message(
+        return self.add_message(
             "system", 
             content, 
-            MessageCategory.ACTION_RESULTS, 
+            MessageCategory.SYSTEM_OUTPUT,
             {"action_type": action_type, "status": status}
         )
 
-    def trim_context(self) -> None:
-        """Context trimming disabled."""
-        pass
-
-    def get_current_allocations(self) -> Dict[MessageCategory, float]:
-        """Get current percentage allocations for each category"""
-        if self.current_token_count == 0:
-            return {category: 0.0 for category in self.token_budgets}
+    def add_context(
+        self, 
+        content: str, 
+        source: Optional[str] = None
+    ) -> Message:
+        """
+        Add context information to the conversation.
+        
+        Args:
+            content: Context content (documentation, files, etc.)
+            source: Optional source identifier
             
-        return {
-            category: self.token_budgets[category].current_tokens / self.current_token_count 
-            for category in self.token_budgets
-        }
-
-    def clear_category(self, category: MessageCategory) -> None:
-        """Clear all messages in a specific category (except permanent ones)"""
-        # Identify messages to remove (non-permanent only)
-        msgs_to_remove = [
-            msg for msg in self.categorized_messages[category]
-            if not msg.get("metadata", {}).get("permanent", False)
-        ]
+        Returns:
+            The created Message object
+        """
+        return self.add_message(
+            "system", 
+            content, 
+            MessageCategory.CONTEXT,
+            {"source": source} if source else {}
+        )
         
-        # Calculate tokens to remove
-        tokens_to_remove = sum(msg.get("tokens", 0) for msg in msgs_to_remove)
+    def add_iteration_marker(
+        self, 
+        iteration: int, 
+        max_iterations: int
+    ) -> Message:
+        """
+        Add an iteration marker for multi-step processing.
         
-        # Update the category's message list
-        self.categorized_messages[category] = [
-            msg for msg in self.categorized_messages[category]
-            if msg.get("metadata", {}).get("permanent", False)
-        ]
-        
-        # Update main messages list
-        for msg in msgs_to_remove:
-            if msg in self.messages:
-                self.messages.remove(msg)
-        
-        # Update token counts
-        self.current_token_count -= tokens_to_remove
-        self.token_budgets[category].current_tokens -= tokens_to_remove
+        Args:
+            iteration: Current iteration number
+            max_iterations: Maximum number of iterations
+            
+        Returns:
+            The created Message object
+        """
+        content = f"--- Beginning iteration {iteration}/{max_iterations} ---"
+        return self.add_message(
+            "system",
+            content,
+            MessageCategory.SYSTEM_OUTPUT,
+            {"type": "iteration_marker", "iteration": iteration}
+        )
 
     def get_history(self) -> List[Dict[str, Any]]:
-        """Get the full conversation history."""
+        """
+        Get formatted conversation history for API consumption.
+        
+        Returns:
+            List of messages in API-compatible format
+        """
         # Format for API consumption (remove extra fields)
         return [
-            {"role": msg["role"], "content": msg["content"]}
-            for msg in self.messages
+            {"role": msg.role, "content": msg.content}
+            for msg in self.session.messages
         ]
-
-    def get_formatted_history(self) -> List[Dict[str, Any]]:
-        """Get conversation history arranged by category priority."""
-        formatted_messages = []
         
-        # Add system messages first (never truncated)
-        for msg in self.categorized_messages[MessageCategory.SYSTEM_PROMPT]:
-            formatted_messages.append({"role": msg["role"], "content": msg["content"]})
+    def get_formatted_messages(self) -> List[Dict[str, Any]]:
+        """
+        Get formatted messages optimized for API consumption.
         
-        # Add declarative notes next
-        for msg in self.categorized_messages[MessageCategory.DECLARATIVE_NOTES]:
-            formatted_messages.append({"role": msg["role"], "content": msg["content"]})
+        Organizes messages by category priority and formats for the AI model.
+        Returns:
+            List of formatted message dictionaries
+        """
+        # Group by category
+        categorized = {
+            MessageCategory.SYSTEM: [],
+            MessageCategory.CONTEXT: [],
+            MessageCategory.DIALOG: [],
+            MessageCategory.SYSTEM_OUTPUT: []
+        }
         
-        # Add working memory
-        for msg in self.categorized_messages[MessageCategory.WORKING_MEMORY]:
-            formatted_messages.append({"role": msg["role"], "content": msg["content"]})
-        
-        # Add conversation and action results in chronological order
-        other_messages = sorted(
-            self.categorized_messages[MessageCategory.CONVERSATION] + 
-            self.categorized_messages[MessageCategory.ACTION_RESULTS],
-            key=lambda x: x.get("timestamp", "")
-        )
-        
-        for message in self.messages:
-            content = message["content"]
-            role = message["role"]
+        # Populate categories
+        for msg in self.session.messages:
+            categorized[msg.category].append(msg)
             
-            # Handle structured content with image paths
-            if isinstance(content, list):
-                formatted_content = []
-                for part in content:
-                    if isinstance(part, dict):
-                        if part.get("type") == "image_path":
-                            # Don't encode here, just pass through the path
-                            formatted_content.append({
-                                "type": "image_url",
-                                "image_path": part["image_path"]
-                            })
-                        else:
-                            formatted_content.append(part)
-                    else:
-                        formatted_content.append({"type": "text", "text": str(part)})
+        # Create ordered list with proper priority
+        messages = []
+        
+        # System messages first (highest priority)
+        messages.extend([{"role": msg.role, "content": msg.content} 
+                        for msg in categorized[MessageCategory.SYSTEM]])
+        
+        # Context information next
+        messages.extend([{"role": msg.role, "content": msg.content} 
+                        for msg in categorized[MessageCategory.CONTEXT]])
+        
+        # Merge dialogue and system output by timestamp
+        dialog_and_output = (
+            categorized[MessageCategory.DIALOG] + 
+            categorized[MessageCategory.SYSTEM_OUTPUT]
+        )
+        dialog_and_output.sort(key=lambda msg: msg.timestamp)
+        
+        # Add merged messages
+        messages.extend([{"role": msg.role, "content": msg.content} 
+                        for msg in dialog_and_output])
                 
-                formatted_messages.append({"role": role, "content": formatted_content})
-            else:
-                formatted_messages.append({"role": role, "content": content})
-    
-        return formatted_messages
-
-    def get_last_message(self) -> Optional[Dict[str, Any]]:
-        """Get the last message in the conversation history."""
-        return self.messages[-1] if self.messages else None
-
-    def add_summary_note(self, category: str, content: str) -> None:
-        """Add a summary note as a system message."""
-        metadata = {
-            "type": "summary_note",
-            "category": category,
-            "timestamp": datetime.now().isoformat()
-        }
-        self.add_message(
-            "system",
-            content,
-            MessageCategory.DECLARATIVE_NOTES,
-            metadata
-        )
-
-    def reset(self):
-        """Reset the conversation state"""
-        self.messages = []
-        self.categorized_messages = {
-            MessageCategory.SYSTEM_PROMPT: [],
-            MessageCategory.DECLARATIVE_NOTES: [],
-            MessageCategory.WORKING_MEMORY: [],
-            MessageCategory.CONVERSATION: [],
-            MessageCategory.ACTION_RESULTS: []
-        }
-        self.current_token_count = 0
-        for category in self.token_budgets:
-            self.token_budgets[category].current_tokens = 0
-        self.system_prompt_sent = False
-
-    def add_iteration_marker(self, iteration: int, max_iterations: int) -> None:
-        """Add a marker for the start of a new iteration in the multi-step process."""
-        content = f"--- Beginning iteration {iteration}/{max_iterations} ---"
-        metadata = {"type": "iteration_marker", "iteration": iteration}
-        self.add_message(
-            "system",
-            content,
-            MessageCategory.ACTION_RESULTS,  # Changed from DECLARATIVE_NOTES
-            metadata
-        )
+        return messages
         
-    def add_working_memory(self, content: str, source=None) -> None:
-        """Add content to working memory"""
-        metadata = {"source": source} if source else {}
-        self.add_message(
-            "system",
-            content,
-            MessageCategory.WORKING_MEMORY,
-            metadata
-        )
+    def save(self) -> bool:
+        """
+        Save the current session through session manager.
         
-    def load_core_context(self):
-        """Load core context files from the context folder"""
-        return self.context_loader.load_core_context()
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self._modified:
+            return True
+            
+        if self.session_manager:
+            success = self.session_manager.save_session(self.session)
+            if success:
+                self._modified = False
+            return success
+        return False
+        
+    def load(self, session_id: str) -> bool:
+        """
+        Load a session by ID via session manager.
+        
+        Args:
+            session_id: ID of the session to load
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.session_manager:
+            logger.error("Cannot load: No session manager available")
+            return False
+            
+        loaded_session = self.session_manager.load_session(session_id)
+        if loaded_session:
+            self.session = loaded_session
+            self._modified = False
+            # Update sent status
+            self.system_prompt_sent = any(
+                msg.category == MessageCategory.SYSTEM 
+                for msg in self.session.messages
+            )
+            return True
+            
+        return False
         
     def load_context_file(self, file_path: str) -> bool:
         """
-        Load a specific context file on demand
+        Load a context file into the conversation.
         
         Args:
-            file_path: Path to file (relative to context folder)
+            file_path: Path to the file to load
             
         Returns:
-            True if loaded successfully, False otherwise
+            True if successful, False otherwise
         """
-        return self.context_loader.load_file(file_path)
+        try:
+            full_path = os.path.join(WORKSPACE_PATH, file_path)
+            if not os.path.exists(full_path):
+                logger.warning(f"Context file not found: {full_path}")
+                return False
+                
+            with open(full_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+            self.add_context(content, source=file_path)
+            logger.info(f"Loaded context file: {file_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Error loading context file {file_path}: {str(e)}")
+            return False
         
     def list_context_files(self) -> List[Dict[str, Any]]:
         """
-        List all available context files
+        List available context files in workspace.
         
         Returns:
             List of file information dictionaries
         """
-        return self.context_loader.list_available_files()
-    
-    async def request_summary(self, api_client, messages, max_tokens=2500, temperature=0.3):
-        """
-        Request a summary of messages using the API client.
-        
-        Args:
-            api_client: The API client to use
-            messages: Messages to summarize
-            max_tokens: Maximum tokens for summary
-            temperature: Temperature setting for generation
+        context_dir = os.path.join(WORKSPACE_PATH, "context")
+        if not os.path.exists(context_dir):
+            return []
             
-        Returns:
-            Summary text string
-        """
-        # Construct a summary request prompt
-        summary_prompt = (
-            "Summarize the key points of the following conversation. "
-            "Focus on important facts, decisions, and context that would be "
-            "needed to continue the conversation effectively:"
-        )
+        files = []
+        for entry in os.scandir(context_dir):
+            if entry.is_file() and not entry.name.startswith('.'):
+                files.append({
+                    'path': f"context/{entry.name}",
+                    'name': entry.name,
+                    'size': entry.stat().st_size,
+                    'modified': datetime.fromtimestamp(entry.stat().st_mtime).isoformat()
+                })
+                
+        return files
         
-        # Format message content for summarization
-        message_content = "\n\n".join([
-            f"{msg['role']}: {msg['content']}" 
-            for msg in messages
-        ])
+    def reset(self) -> None:
+        """Reset the conversation state with a new empty session."""
+        self.session = Session()
+        self.system_prompt_sent = False
+        self._modified = True
         
-        # Create summary request messages
-        summary_request = [
-            {"role": "system", "content": summary_prompt},
-            {"role": "user", "content": message_content}
-        ]
-        
-        # Get summary from API
-        response = await api_client.create_message(
-            messages=summary_request,
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
-        
-        # Process response to extract summary
-        summary_text, _ = api_client.process_response(response)
-        return summary_text
-
-    def get_current_token_usage(self) -> Dict[str, int]:
-        """Get token usage statistics (disabled)."""
-        return {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "max_tokens": self.max_tokens
-        }
+        if self.session_manager:
+            self.session_manager.current_session = self.session

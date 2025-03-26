@@ -4,9 +4,10 @@ import io
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Dict, List, Optional, Callable, Union
 
 import yaml  # type: ignore
+import tiktoken  # type: ignore
 
 # TODO: decouple litellm from api_client.
 # TODO: greatly simplify api_client while maintaining full functionality
@@ -91,7 +92,8 @@ class APIClient:
             self.logger.info("Using OpenAI Assistants API")
             # print("Using OpenAI Assistants API")
         else:
-            self.logger.info("Using regular OpenAI API")
+            pass # not using assistants API, so no need to print
+            # self.logger.info("Using regular OpenAI API")
             # print("Using regular OpenAI API")
 
     def set_system_prompt(self, prompt: str) -> None:
@@ -305,63 +307,85 @@ class APIClient:
         self.messages = []
         self.set_system_prompt(self.system_prompt)
 
-    def count_message_tokens(self, messages: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Count tokens for a list of messages using the provider's tokenizer"""
+    def count_tokens(self, content: Union[str, List, Dict]) -> int:
+        """
+        Count tokens for content, using the provider's tokenizer when available.
+        
+        Args:
+            content: Text or structured content to count tokens for
+            
+        Returns:
+            Token count as integer
+        """
         try:
-            # Initialize counts
-            counts = {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-                "format_tokens": 0
-            }
-            
-            # Token counting constants for message formatting
-            per_message_tokens = 3  # Every message follows <|im_start|>{role}\n{content}<|im_end|>
-            per_name_tokens = 1     # If name is present, +1 token
-            
-            for message in messages:
+            # If adapter implements token counting, use that
+            if self.adapter and hasattr(self.adapter, 'count_tokens'):
                 try:
-                    # Get message components
-                    content = message.get("content", "")
-                    role = message.get("role", "")
-                    
-                    # Count content tokens using provider's tokenizer
-                    if self.adapter and hasattr(self.adapter, 'count_tokens'):
-                        content_tokens = self.adapter.count_tokens(content)
-                    else:
-                        # Fallback to approximate counting
-                        content_tokens = len(str(content)) // 4 + 1
-                    
-                    # Count format tokens
-                    format_tokens = per_message_tokens
-                    if "name" in message:
-                        format_tokens += per_name_tokens
-                        
-                    # Add to appropriate category
-                    if role == "assistant":
-                        counts["completion_tokens"] += content_tokens
-                    else:
-                        counts["prompt_tokens"] += content_tokens
-                        
-                    counts["format_tokens"] += format_tokens
-                    counts["total_tokens"] += content_tokens + format_tokens
-                    
+                    logger.debug(f"Using {self.adapter.provider} native tokenizer")
+                    return self.adapter.count_tokens(content)
                 except Exception as e:
-                    logger.warning(f"Error counting tokens for message: {e}")
-                    # Add conservative estimate for failed message
-                    counts["total_tokens"] += len(str(content)) // 3
-                    
-            return counts
+                    logger.warning(f"Error using adapter token counting: {e}")
+            
+            # Fallback to tiktoken if available
+            try:
+                import tiktoken # type: ignore
+                # Use cl100k for consistency (used by both OpenAI and Anthropic)
+                logger.debug("Using tiktoken fallback")
+                encoder = tiktoken.get_encoding("cl100k_base")
+                
+                # Handle different content types
+                if isinstance(content, str):
+                    return len(encoder.encode(content))
+                elif isinstance(content, list):
+                    # Handle content arrays with possible images
+                    total = 0
+                    for item in content:
+                        if isinstance(item, dict):
+                            if item.get("type") == "text":
+                                total += len(encoder.encode(item.get("text", "")))
+                            elif item.get("type") in ["image", "image_url"]:
+                                # Approximation for image tokens
+                                total += 4000  # Claude models use ~4000 tokens per image
+                            else:
+                                # Other dict items
+                                total += len(encoder.encode(str(item)))
+                        else:
+                            # String items
+                            total += len(encoder.encode(str(item)))
+                    return total
+                elif isinstance(content, dict):
+                    # Handle dict objects
+                    return len(encoder.encode(str(content)))
+                else:
+                    # Fallback for any other type
+                    return len(encoder.encode(str(content)))
+            except (ImportError, Exception) as e:
+                logger.debug(f"Tiktoken counting failed: {e}")
+            
+            # Last resort fallback - character approximation
+            logger.debug("Using character approximation fallback. Last resort.")
+            if isinstance(content, str):
+                return len(content) // 4 + 1
+            elif isinstance(content, list):
+                # Estimate with images
+                char_count = 0
+                image_count = 0
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            char_count += len(item.get("text", ""))
+                        elif item.get("type") in ["image", "image_url"]:
+                            image_count += 1
+                    else:
+                        char_count += len(str(item))
+                
+                return (char_count // 4 + 1) + (image_count * 4000)
+            else:
+                return len(str(content)) // 4 + 1
             
         except Exception as e:
-            logger.error(f"Error in count_message_tokens: {e}")
-            return {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-                "format_tokens": 0
-            }
+            logger.error(f"Token counting error: {e}")
+            return len(str(content)) // 4 + 1  # Very rough approximation
 
     async def create_streaming_completion(
         self,

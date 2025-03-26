@@ -14,6 +14,8 @@ class ModelConfig:
         supports_vision: bool = None,
         use_native_adapter: bool = True,
         streaming_enabled: bool = True,
+        # Add token counting config
+        enable_token_counting: bool = True,
         # api_key: str = None,
         vision_enabled: bool = None,
     ):
@@ -40,6 +42,9 @@ class ModelConfig:
         
         # This is for backward compatibility
         self.supports_vision = self.vision_enabled
+        
+        # Enable token counting by default
+        self.enable_token_counting = enable_token_counting
         
         # Store API key
         # self.api_key = api_key

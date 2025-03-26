@@ -25,7 +25,7 @@ from penguin.core import PenguinCore
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig
 from penguin.run_mode import RunMode
-from penguin.system.conversation import parse_iso_datetime
+from penguin.system.state import parse_iso_datetime
 from penguin.system.conversation_menu import ConversationMenu, ConversationSummary
 from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
@@ -887,7 +887,7 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     self._safely_stop_progress()
 
                 # Save conversation after each message exchange
-                self.core.conversation_system.save()
+                self.core.conversation_manager.save()
 
                 self.message_count += 1
 
@@ -920,19 +920,19 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
         if action == "list":
             conversations = [
                 ConversationSummary(
-                    session_id=meta.session_id,
-                    title=meta.title or f"Conversation {idx + 1}",
-                    message_count=meta.message_count,
-                    last_active=parse_iso_datetime(meta.last_active),
+                    session_id=session["id"],
+                    title=session.get("title", f"Conversation {idx + 1}"),
+                    message_count=session.get("message_count", 0),
+                    last_active=parse_iso_datetime(session.get("last_active", "")),
                 )
-                for idx, meta in enumerate(
-                    self.core.conversation_system.loader.list_conversations()
+                for idx, session in enumerate(
+                    self.core.conversation_manager.list_conversations()
                 )
             ]
             session_id = self.conversation_menu.select_conversation(conversations)
             if session_id:
                 try:
-                    self.core.conversation_system.load(session_id)
+                    self.core.conversation_manager.load(session_id)
                     self.display_message("Conversation loaded successfully", "system")
                 except Exception as e:
                     self.display_message(
@@ -944,7 +944,7 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
             await self.handle_conversation_command(["conv", "list"])
 
         elif action == "summary":
-            messages = self.core.conversation_system.get_history()
+            messages = self.core.conversation_manager.conversation.get_history()
             self.conversation_menu.display_summary(messages)
 
         elif action == "run":
@@ -954,11 +954,10 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
             )
 
             # After completion
-            conversation = self.core.conversation_system.get_conversation(
-                command_parts[2]
-            )
-            conversation.messages.extend(self.core.run_mode_messages)
-            conversation.save()
+            conversation = self.core.get_conversation(command_parts[2])
+            if conversation and hasattr(self.core, 'run_mode_messages'):
+                # Need to handle this differently with new conversation system
+                self.display_message("Task execution completed", "system")
 
         else:
             self.display_message(f"Unknown conversation action: {action}", "error")

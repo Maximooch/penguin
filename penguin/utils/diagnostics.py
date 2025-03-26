@@ -38,11 +38,50 @@ class Diagnostics:
         }
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
 
-    def count_tokens(self, text: str) -> int:
-        """Count tokens in text using tiktoken"""
-        if not text:
-            return 0
-        return len(self.tokenizer.encode(text))
+    def count_tokens(self, text):
+        """Count tokens using tiktoken with fallback for non-string content"""
+        try:
+            # Handle different content types
+            if isinstance(text, str):
+                # Normal string processing
+                return len(self.tokenizer.encode(text))
+            elif isinstance(text, list):
+                # For content arrays with possible images
+                total = 0
+                for item in text:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            total += len(self.tokenizer.encode(item.get("text", "")))
+                        elif item.get("type") in ["image", "image_url"]:
+                            # Approximation for image tokens
+                            total += 4000  # Claude models use ~4000 tokens per image
+                        else:
+                            # Other dict items
+                            total += len(self.tokenizer.encode(str(item)))
+                    else:
+                        # String items
+                        total += len(self.tokenizer.encode(str(item)))
+                return total
+            elif isinstance(text, dict):
+                # Handle dict objects
+                return len(self.tokenizer.encode(str(text)))
+            else:
+                # Fallback for any other type
+                return len(self.tokenizer.encode(str(text)))
+        except (TypeError, ValueError, AttributeError):
+            # Fallback to character estimation
+            if isinstance(text, str):
+                return len(text) // 4 + 1
+            elif isinstance(text, list):
+                total = 0
+                for item in text:
+                    if isinstance(item, dict) and item.get("type") in ["image", "image_url"]:
+                        total += 4000  # Approximation for images
+                    else:
+                        total += len(str(item)) // 4 + 1
+                return total
+            else:
+                return len(str(text)) // 4 + 1
 
     def update_tokens(self, tracker_name: str, input_text: str, output_text: str = ""):
         """Update token counts for a specific tracker"""
