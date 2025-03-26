@@ -10,6 +10,7 @@ This module coordinates between:
 
 import logging
 import os
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, AsyncGenerator, Callable
 
@@ -362,7 +363,49 @@ class ConversationManager:
         Returns:
             List of conversation metadata dictionaries
         """
-        conversations = self.session_manager.list_sessions(limit=100000, offset=0) # why a limit of 100000? 
+        # Get basic conversation listing from session manager
+        conversations = self.session_manager.list_sessions(limit=100000, offset=0)
+        
+        # Enhance with meaningful titles
+        for conversation in conversations:
+            session_id = conversation.get("id")
+            if session_id and not conversation.get("title"):
+                # Try to load just enough of the session to extract a title
+                try:
+                    # Check if session is already in memory cache
+                    if session_id in self.session_manager.sessions:
+                        session = self.session_manager.sessions[session_id][0]
+                    else:
+                        # Load session file but only scan for title
+                        session_path = self.session_manager.base_path / f"{session_id}.{self.session_manager.format}"
+                        if session_path.exists():
+                            with open(session_path, 'r', encoding='utf-8') as f:
+                                data = json.load(f)
+                                # Find first user message
+                                title = None
+                                if "messages" in data:
+                                    for msg in data["messages"]:
+                                        if msg.get("role") == "user":
+                                            content = msg.get("content", "")
+                                            if isinstance(content, str):
+                                                # Use first line or first few words
+                                                first_line = content.split('\n', 1)[0]
+                                                title = (first_line[:37] + '...') if len(first_line) > 40 else first_line
+                                                break
+                                            elif isinstance(content, list) and content:
+                                                # Handle structured content (like with images)
+                                                for part in content:
+                                                    if isinstance(part, dict) and part.get("type") == "text":
+                                                        text = part.get("text", "")
+                                                        first_line = text.split('\n', 1)[0]
+                                                        title = (first_line[:37] + '...') if len(first_line) > 40 else first_line
+                                                        break
+                            
+                                if title:
+                                    conversation["title"] = title
+                except Exception as e:
+                    logger.warning(f"Error extracting title for session {session_id}: {e}")
+                    # Keep default title if extraction fails
         
         # Filter by search term if provided
         if search_term and search_term.strip():
