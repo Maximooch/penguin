@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Any
 
 from rich.console import Console  # type: ignore
 from rich.prompt import Prompt  # type: ignore
@@ -11,17 +11,25 @@ class ConversationSummary:
     session_id: str
     title: str
     message_count: int
-    last_active: str
+    last_active: Any  # Can be string or datetime
 
     @property
     def display_date(self) -> str:
-        """Return the already formatted date string"""
-        return self.last_active
+        """Format the last_active date for display"""
+        if hasattr(self.last_active, 'strftime'):
+            # It's a datetime object
+            return self.last_active.strftime("%Y-%m-%d %H:%M")
+        elif isinstance(self.last_active, str):
+            # It's already a string
+            return self.last_active
+        else:
+            # Something else
+            return str(self.last_active) if self.last_active else "Unknown"
 
     @property
     def display_name(self) -> str:
         """Format conversation for display"""
-        return f"{self.title[:40]} ({self.message_count} msgs) - {self.last_active}"
+        return f"{self.title[:40]} ({self.message_count} msgs) - {self.display_date}"
 
 
 class ConversationMenu:
