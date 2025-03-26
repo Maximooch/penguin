@@ -675,7 +675,7 @@ class ActionExecutor:
                 self.conversation_system.add_message(
                     role="user",
                     content=multimodal_content,
-                    category=MessageCategory.CONVERSATION
+                    category=MessageCategory.DIALOG
                 )
                 
                 return f"Screenshot saved to {result['filepath']} and added to conversation"

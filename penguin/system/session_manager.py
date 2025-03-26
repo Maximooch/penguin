@@ -5,16 +5,19 @@ This module handles session lifecycle operations including:
 - Creating and loading sessions
 - Saving sessions with transaction safety
 - Managing session boundaries and transitions
-- Creating continuation sessions for long conversations
+- Creating continuation sessions for long-running conversations
 """
 
 import json
 import logging
 import os
 import shutil
+import threading
+import time
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 from penguin.config import CONVERSATIONS_PATH
 from penguin.system.state import Message, MessageCategory, Session, create_message
@@ -31,14 +34,16 @@ class SessionManager:
     - Saving sessions with transaction safety
     - Detecting when to create a new session
     - Creating continuation sessions for long-running conversations
+    - Maintaining a lightweight index of all sessions
     """
-    #TODO: fully implement dialog message count later
 
     def __init__(
         self, 
         base_path: str = CONVERSATIONS_PATH,
-        max_messages_per_session: int = 500, #TODO: This should be configurable
-        format: str = "json"
+        max_messages_per_session: int = 5000,  # Increased from 500 to 5000
+        max_sessions_in_memory: int = 20,
+        format: str = "json",
+        auto_save_interval: int = 60  # seconds
     ):
         """
         Initialize the session manager.
@@ -46,16 +51,129 @@ class SessionManager:
         Args:
             base_path: Directory for storing session files
             max_messages_per_session: Maximum messages before creating a new session
+            max_sessions_in_memory: Maximum number of sessions to keep in memory
             format: File format for session storage (json only for now)
+            auto_save_interval: Seconds between auto-saves of modified sessions
         """
         self.base_path = Path(base_path)
         self.max_messages_per_session = max_messages_per_session
+        self.max_sessions_in_memory = max_sessions_in_memory
         self.format = format
         self.current_session: Optional[Session] = None
-        self.sessions: Dict[str, Session] = {}
+        
+        # Use OrderedDict as an LRU cache for sessions
+        self.sessions: OrderedDict[str, Tuple[Session, bool]] = OrderedDict()  # (session, is_modified)
         
         # Create directory if it doesn't exist
         os.makedirs(self.base_path, exist_ok=True)
+        
+        # Initialize the session index
+        self.index_path = self.base_path / "session_index.json"
+        self.session_index = self._load_or_create_index()
+        
+        # Setup auto-save thread if interval > 0
+        self.auto_save_interval = auto_save_interval
+        if auto_save_interval > 0:
+            self._stop_auto_save = threading.Event()
+            self._auto_save_thread = threading.Thread(
+                target=self._auto_save_loop, 
+                daemon=True
+            )
+            self._auto_save_thread.start()
+    
+    def _load_or_create_index(self) -> Dict[str, Dict[str, Any]]:
+        """Load the session index or create it if it doesn't exist."""
+        if not self.index_path.exists():
+            # Create an empty index
+            index = {}
+            self._save_index(index)
+            return index
+            
+        try:
+            with open(self.index_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading session index: {str(e)}")
+            # Create a new index by scanning the directory
+            return self._rebuild_index()
+    
+    def _rebuild_index(self) -> Dict[str, Dict[str, Any]]:
+        """Rebuild the session index by scanning session files."""
+        logger.info("Rebuilding session index from files")
+        index = {}
+        
+        # Scan for session files
+        for path in self.base_path.glob(f"*.{self.format}"):
+            if path.name == f"session_index.{self.format}":
+                continue
+                
+            session_id = path.stem
+            try:
+                # Load minimal metadata without loading all messages
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    
+                # Extract key metadata
+                metadata = data.get("metadata", {})
+                created_at = data.get("created_at", "")
+                last_active = data.get("last_active", "")
+                
+                index[session_id] = {
+                    "created_at": created_at,
+                    "last_active": last_active,
+                    "message_count": metadata.get("message_count", 0),
+                    "title": metadata.get("title", f"Session {session_id[-8:]}")
+                }
+            except Exception as e:
+                logger.error(f"Error reading session metadata from {path}: {str(e)}")
+        
+        # Save the rebuilt index
+        self._save_index(index)
+        return index
+    
+    def _save_index(self, index: Dict[str, Dict[str, Any]]) -> None:
+        """Save the session index to disk."""
+        try:
+            # Write to temp file first - fix the suffix 
+            temp_path = Path(f"{self.index_path}.temp")  # Fix: Use explicit Path constructor
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(index, f, indent=2)
+                
+            # Atomic rename
+            os.replace(temp_path, self.index_path)
+        except Exception as e:
+            logger.error(f"Error saving session index: {str(e)}")
+    
+    def _auto_save_loop(self) -> None:
+        """Background thread that auto-saves modified sessions."""
+        while not self._stop_auto_save.is_set():
+            try:
+                self._auto_save_sessions()
+            except Exception as e:
+                logger.error(f"Error in auto-save loop: {str(e)}")
+                
+            # Sleep for the configured interval
+            self._stop_auto_save.wait(self.auto_save_interval)
+    
+    def _auto_save_sessions(self) -> None:
+        """Save all modified sessions."""
+        modified_sessions = []
+        
+        # Find all modified sessions
+        for session_id, (session, is_modified) in list(self.sessions.items()):
+            if is_modified:
+                modified_sessions.append(session)
+                
+        # Save each modified session
+        for session in modified_sessions:
+            self.save_session(session)
+            # Mark as not modified in the cache
+            if session.id in self.sessions:
+                self.sessions[session.id] = (session, False)
+                
+        # If current session is modified, save it too
+        if self.current_session and self.current_session.id not in self.sessions:
+            self.save_session(self.current_session)
     
     def create_session(self) -> Session:
         """
@@ -65,10 +183,20 @@ class SessionManager:
             New Session object
         """
         session = Session()
-        # Initialize dialog message count
-        session.metadata["dialog_message_count"] = 0
-        self.sessions[session.id] = session
+        # Initialize message count
+        session.metadata["message_count"] = 0
+        self.sessions[session.id] = (session, True)  # True = modified
         self.current_session = session
+        
+        # Update the index
+        self.session_index[session.id] = {
+            "created_at": session.created_at,
+            "last_active": session.last_active,
+            "message_count": 0,
+            "title": f"Session {session.id[-8:]}"
+        }
+        self._save_index(self.session_index)
+        
         logger.debug(f"Created new session: {session.id}")
         return session
     
@@ -84,8 +212,11 @@ class SessionManager:
         """
         # Check if already loaded
         if session_id in self.sessions:
-            self.current_session = self.sessions[session_id]
-            return self.current_session
+            # Move to end of OrderedDict to mark as most recently used
+            session, is_modified = self.sessions.pop(session_id)
+            self.sessions[session_id] = (session, is_modified)
+            self.current_session = session
+            return session
             
         # Try primary file
         primary_path = self.base_path / f"{session_id}.{self.format}"
@@ -95,7 +226,7 @@ class SessionManager:
             # Try loading from primary file
             session = self._load_from_file(primary_path)
             if session and session.validate():
-                self.sessions[session_id] = session
+                self._add_to_session_cache(session_id, session)
                 self.current_session = session
                 logger.debug(f"Loaded session from primary file: {session_id}")
                 return session
@@ -107,7 +238,7 @@ class SessionManager:
                 if backup_path.exists():
                     session = self._load_from_file(backup_path)
                     if session and session.validate():
-                        self.sessions[session_id] = session
+                        self._add_to_session_cache(session_id, session)
                         self.current_session = session
                         
                         # Restore from backup
@@ -120,6 +251,24 @@ class SessionManager:
         # If we get here, both primary and backup loading failed
         logger.warning(f"Could not load session {session_id}, creating recovery session")
         return self._create_recovery_session(session_id)
+    
+    def _add_to_session_cache(self, session_id: str, session: Session) -> None:
+        """Add a session to the cache, managing the LRU behavior."""
+        # Add to sessions cache
+        self.sessions[session_id] = (session, False)  # False = not modified
+        
+        # If we've exceeded max_sessions_in_memory, remove oldest
+        if len(self.sessions) > self.max_sessions_in_memory:
+            # Get oldest (first) item from OrderedDict
+            oldest_id, (oldest_session, is_modified) = next(iter(self.sessions.items()))
+            
+            # If modified, save before removing
+            if is_modified:
+                self.save_session(oldest_session)
+                
+            # Remove from cache
+            del self.sessions[oldest_id]
+            logger.debug(f"Evicted session {oldest_id} from cache (LRU policy)")
     
     def _load_from_file(self, file_path: Path) -> Optional[Session]:
         """
@@ -139,12 +288,9 @@ class SessionManager:
 
         session = Session.from_dict(data)
         
-        # Ensure dialog_message_count exists in metadata
-        if "dialog_message_count" not in session.metadata:
-            # Count dialog messages if not present in metadata
-            dialog_count = sum(1 for msg in session.messages 
-                             if msg.category == MessageCategory.DIALOG)
-            session.metadata["dialog_message_count"] = dialog_count
+        # Ensure message_count exists in metadata
+        if "message_count" not in session.metadata:
+            session.metadata["message_count"] = len(session.messages)
             
         return session
     
@@ -170,8 +316,7 @@ class SessionManager:
             metadata={
                 "recovered_from": original_id,
                 "recovery_time": datetime.now().isoformat(),
-                "message_count": 1,
-                "dialog_message_count": 0  # No dialog messages yet
+                "message_count": 1
             }
         )
         
@@ -179,13 +324,22 @@ class SessionManager:
         recovery_message = create_message(
             role="system",
             content=f"This is a recovery session. The original session '{original_id}' could not be loaded due to file corruption or other errors.",
-            category=MessageCategory.SYSTEM, # system as in system prompt? or system message? So in that case, ACTIONS? Although ACTIONS should probably be renamed to SYSTEM_OUTPUTS since that's what it is and include things much more than ACTIONS, which could be misleading
+            category=MessageCategory.SYSTEM, 
             metadata={"type": "recovery_notice"}
         )
         session.add_message(recovery_message)
         
-        # Store in sessions dict
-        self.sessions[session.id] = session
+        # Store in sessions dict and update index
+        self._add_to_session_cache(session.id, session)
+        self.session_index[session.id] = {
+            "created_at": session.created_at,
+            "last_active": session.last_active,
+            "message_count": 1,
+            "title": f"Recovery of {original_id[-8:]}",
+            "recovered_from": original_id
+        }
+        self._save_index(self.session_index)
+        
         self.current_session = session
         logger.info(f"Created recovery session {session.id} for failed session {original_id}")
         
@@ -211,6 +365,10 @@ class SessionManager:
             backup_path = self.base_path / f"{session.id}.{self.format}.bak"
             target_path = self.base_path / f"{session.id}.{self.format}"
             
+            # Update session metadata
+            session.metadata["message_count"] = len(session.messages)
+            session.last_active = datetime.now().isoformat()
+            
             # Write to temp file first
             with open(temp_path, 'w', encoding='utf-8') as f:
                 f.write(session.to_json())
@@ -221,6 +379,19 @@ class SessionManager:
                 
             # Atomic rename of temp to target
             os.replace(temp_path, target_path)
+            
+            # Update the session index
+            self.session_index[session.id] = {
+                "created_at": session.created_at,
+                "last_active": session.last_active,
+                "message_count": session.metadata.get("message_count", 0),
+                "title": session.metadata.get("title", f"Session {session.id[-8:]}")
+            }
+            self._save_index(self.session_index)
+            
+            # Update cache status
+            if session.id in self.sessions:
+                self.sessions[session.id] = (session, False)  # Mark as not modified
             
             logger.debug(f"Saved session {session.id}")
             return True
@@ -243,8 +414,9 @@ class SessionManager:
         if not session:
             return False
             
-        # Check if message count exceeds limit
-        return session.message_count >= self.max_messages_per_session
+        # Simple boundary check based on total message count only
+        # Token budget concerns are handled by ContextWindowManager
+        return len(session.messages) >= self.max_messages_per_session
     
     def create_continuation_session(self, source_session: Optional[Session] = None) -> Session:
         """
@@ -269,7 +441,7 @@ class SessionManager:
                 "original_created_at": source_session.created_at,
                 "continuation_index": self._get_continuation_index(source_session.id),
                 "message_count": 0,
-                "dialog_message_count": 0
+                "source_session_tokens": source_session.total_tokens  # Track token count from source
             }
         )
         
@@ -281,7 +453,7 @@ class SessionManager:
                     content=msg.content,
                     category=msg.category,
                     metadata=msg.metadata.copy(),
-                    tokens=msg.tokens
+                    tokens=msg.tokens  # Preserve token counts
                 ))
         
         # Add transition marker
@@ -291,14 +463,32 @@ class SessionManager:
             category=MessageCategory.SYSTEM,
             metadata={
                 "type": "session_transition", 
-                "previous_session": source_session.id
+                "previous_session": source_session.id,
+                "previous_session_tokens": source_session.total_tokens
             }
         )
         continuation.add_message(transition_message)
         
+        # Update source session metadata to link forward as well
+        source_session.metadata["continued_to"] = continuation.id
+        source_session.metadata["continuation_time"] = datetime.now().isoformat()
+        
         # Update state
-        self.sessions[continuation.id] = continuation
+        self._add_to_session_cache(continuation.id, continuation)
         self.current_session = continuation
+        
+        # Update index
+        self.session_index[continuation.id] = {
+            "created_at": continuation.created_at,
+            "last_active": continuation.last_active,
+            "message_count": len(continuation.messages),
+            "title": source_session.metadata.get("title", f"Continuation of {source_session.id[-8:]}"),
+            "continued_from": source_session.id,
+            "token_count": continuation.total_tokens,
+            "source_session_tokens": source_session.total_tokens
+        }
+        self._save_index(self.session_index)
+        
         logger.info(f"Created continuation session {continuation.id} from {source_session.id}")
         
         # Save both sessions
@@ -309,7 +499,7 @@ class SessionManager:
     
     def _get_continuation_index(self, session_id: str) -> int:
         """
-        Get the continuation index for a session.
+        Get the continuation index for a session using the index.
         
         Args:
             session_id: ID of the session to check
@@ -317,31 +507,17 @@ class SessionManager:
         Returns:
             Continuation index (1 for first continuation, etc.)
         """
-        base_sessions = []
-        continuation_sessions = []
-        
-        # Find all related sessions
-        for path in self.base_path.glob(f"*.{self.format}"):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    
-                # Check if this is a continuation of our target
-                if data.get("metadata", {}).get("continued_from") == session_id:
-                    continuation_sessions.append(data)
-                    
-                # Check if this is the target
-                if data.get("id") == session_id:
-                    base_sessions.append(data)
-            except Exception:
-                pass
+        # Use the index to find continuation sessions
+        continuation_count = 0
+        for metadata in self.session_index.values():
+            if metadata.get("continued_from") == session_id:
+                continuation_count += 1
                 
-        # Return continuation count + 1
-        return len(continuation_sessions) + 1
+        return continuation_count + 1
     
     def list_sessions(self, limit: int = 100, offset: int = 0) -> List[Dict]:
         """
-        List available sessions with metadata.
+        List available sessions with metadata using the index.
         
         Args:
             limit: Maximum number of sessions to return
@@ -350,35 +526,24 @@ class SessionManager:
         Returns:
             List of session metadata dictionaries
         """
-        sessions = []
+        # Use the index for efficient listing
+        sorted_sessions = sorted(
+            self.session_index.items(),
+            key=lambda x: x[1].get("last_active", ""),
+            reverse=True
+        )
         
-        # Scan directory for session files
-        for path in sorted(self.base_path.glob(f"*.{self.format}"), 
-                          key=os.path.getmtime, reverse=True):
-            if len(sessions) >= offset + limit:
-                break
-                
-            if len(sessions) < offset:
-                continue
-                
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    
-                # Extract metadata
-                metadata = data.get("metadata", {})
-                sessions.append({
-                    "id": data.get("id", ""),
-                    "created_at": data.get("created_at", ""),
-                    "last_active": data.get("last_active", ""),
-                    "message_count": metadata.get("message_count", 0),
-                    "dialog_message_count": metadata.get("dialog_message_count", 0),
-                    "title": metadata.get("title", f"Session {data.get('id', '')[-8:]}")
-                })
-            except Exception as e:
-                logger.error(f"Error reading session from {path}: {str(e)}")
-                
-        return sessions[offset:offset+limit]
+        # Apply pagination
+        paginated = sorted_sessions[offset:offset+limit]
+        
+        # Format the results
+        return [
+            {
+                "id": session_id,
+                **metadata
+            }
+            for session_id, metadata in paginated
+        ]
     
     def delete_session(self, session_id: str) -> bool:
         """
@@ -399,6 +564,11 @@ class SessionManager:
             if self.current_session and self.current_session.id == session_id:
                 self.current_session = None
                 
+            # Remove from index
+            if session_id in self.session_index:
+                del self.session_index[session_id]
+                self._save_index(self.session_index)
+                
             # Remove files
             for suffix in [f".{self.format}", f".{self.format}.bak", f".{self.format}.temp"]:
                 path = self.base_path / f"{session_id}{suffix}"
@@ -409,4 +579,23 @@ class SessionManager:
             return True
         except Exception as e:
             logger.error(f"Error deleting session {session_id}: {str(e)}")
-            return False 
+            return False
+    
+    def mark_session_modified(self, session_id: str) -> None:
+        """Mark a session as modified in the cache."""
+        if session_id in self.sessions:
+            session, _ = self.sessions[session_id]
+            self.sessions[session_id] = (session, True)
+    
+    def __del__(self):
+        """Clean up resources."""
+        if hasattr(self, '_stop_auto_save') and hasattr(self, '_auto_save_thread'):
+            self._stop_auto_save.set()
+            if self._auto_save_thread.is_alive():
+                self._auto_save_thread.join(timeout=1.0)
+        
+        # Auto-save any modified sessions
+        try:
+            self._auto_save_sessions()
+        except Exception as e:
+            logger.error(f"Error during cleanup: {str(e)}") 

@@ -68,8 +68,28 @@ class ContextWindowManager:
                         logger.info(f"Using config.yml max_tokens for {model_name}: {self.max_tokens}")
         except (ImportError, AttributeError) as e:
             logger.warning(f"Could not load config.yml for max_tokens: {e}")
+
+        # Setup token counter with proper fallback chain
+        if token_counter:
+            # Use provided counter if explicitly passed
+            self.token_counter = token_counter
+            logger.info("Using explicitly provided token counter")
+        elif model_config and hasattr(model_config, 'api_client') and model_config.api_client:
+            # Use API client directly - it will handle proper delegation to adapter
+            api_client = model_config.api_client
+            self.token_counter = api_client.count_tokens
+            logger.info(f"Using {getattr(api_client.adapter, 'provider', 'unknown')} tokenizer via API client")
+        else:
+            # No API client, make a best effort
+            try:
+                from penguin.utils.diagnostics import diagnostics
+                self.token_counter = diagnostics.count_tokens
+                logger.info("Using tiktoken via diagnostics for token counting")
+            except (ImportError, AttributeError):
+                # Last resort: Use fallback counter
+                self.token_counter = self._default_token_counter
+                logger.warning("Using fallback token counter - counts may be inaccurate")
             
-        self.token_counter = token_counter or self._default_token_counter
         self._budgets = {}
         self._initialize_token_budgets()
         
@@ -212,6 +232,7 @@ class ContextWindowManager:
         Args:
             session: Session object to trim
             preserve_recency: Whether to prioritize keeping recent messages
+                (if False, messages would be selected arbitrarily for removal)
             
         Returns:
             New Session object with trimmed messages
@@ -231,11 +252,6 @@ class ContextWindowManager:
         # Analyze current message state
         stats = self.analyze_session(session)
         
-        # If we're under budget, no trimming needed
-        if not stats["over_budget"]:
-            result_session.messages = [msg for msg in session.messages]
-            return result_session
-            
         # Special handling for images - they consume many tokens
         if stats["image_count"] > 1:
             # First pass: handle images separately
@@ -243,10 +259,6 @@ class ContextWindowManager:
             
             # Re-analyze after image trimming
             stats = self.analyze_session(session_with_image_placeholders)
-            if not stats["over_budget"]:
-                return session_with_image_placeholders
-                
-            # Continue with the image-trimmed session
             session = session_with_image_placeholders
         
         # Group messages by category
@@ -258,42 +270,71 @@ class ContextWindowManager:
             ]
             
         # Get the order for trimming based on our priority (from lowest to highest priority)
-        # ACTIONS (4) trimmed first, then DIALOG (3), then CONTEXT (2), then SYSTEM (1)
+        # SYSTEM_OUTPUT (4) trimmed first, then DIALOG (3), then CONTEXT (2), then SYSTEM (1)
         trim_order = [
             MessageCategory.SYSTEM_OUTPUT,   # Trim first - lowest priority
-            MessageCategory.DIALOG,    # Trim second
-            MessageCategory.CONTEXT,   # Trim third
-            MessageCategory.SYSTEM     # NEVER TRIM SYSTEM PROMPT- highest priority
+            MessageCategory.DIALOG,          # Trim second
+            MessageCategory.CONTEXT,         # Trim third
+            MessageCategory.SYSTEM           # NEVER TRIM SYSTEM PROMPT- highest priority
         ]
             
+        # Check if total is over budget
+        total_over_budget = stats["total_tokens"] > self.max_tokens
+        tokens_to_trim = max(0, stats["total_tokens"] - self.max_tokens) if total_over_budget else 0
+        
         # Trim categories in priority order
         for category in trim_order:
             budget = self._budgets.get(category)
             category_msgs = categorized[category]
             category_tokens = stats["per_category"].get(category, 0)
             
-            # If this category is over its budget, trim it
+            # If this category is over its individual budget, trim it regardless of total
             if category_tokens > budget.max_tokens:
-                excess = category_tokens - budget.min_tokens
+                # Determine how much to trim
+                category_excess = category_tokens - budget.max_tokens
                 
-                if preserve_recency:
-                    # Sort oldest first for trimming
-                    category_msgs.sort(key=lambda m: m.timestamp)
+                # If the overall budget is also exceeded, we might need to trim even more
+                if total_over_budget:
+                    category_excess = max(category_excess, min(tokens_to_trim, category_tokens - budget.min_tokens))
                     
-                # Trim messages until we're under budget
+                # Always preserve recency by sorting oldest first for trimming
+                # This is now a required behavior for coherent trimming
+                category_msgs.sort(key=lambda m: m.timestamp)
+                
+                # Strictly chronological trimming - remove oldest messages first
                 remaining_msgs = []
-                tokens_to_remove = excess
+                tokens_removed = 0
+                
+                # First pass: Remove oldest messages until we reach our token target
+                msgs_to_keep = []
                 for msg in category_msgs:
                     msg_tokens = msg.tokens or self.token_counter(msg.content)
                     
-                    if tokens_to_remove > 0 and msg_tokens <= tokens_to_remove:
-                        # Skip this message (trim it)
-                        tokens_to_remove -= msg_tokens
+                    if tokens_removed < category_excess:
+                        # Remove this message (oldest first)
+                        tokens_removed += msg_tokens
+                        # Update the overall token trimming target
+                        tokens_to_trim = max(0, tokens_to_trim - msg_tokens)
+                        # Log the removed message
+                        logger.debug(f"Trimmed {category.name} message: {msg.id} ({msg_tokens} tokens)")
                     else:
-                        remaining_msgs.append(msg)
-                        
+                        # Keep this message
+                        msgs_to_keep.append(msg)
+                
                 # Replace the category's messages with trimmed version
-                categorized[category] = remaining_msgs
+                categorized[category] = msgs_to_keep
+                
+                # Update statistics for next category
+                stats["per_category"][category] = category_tokens - tokens_removed
+                stats["total_tokens"] -= tokens_removed
+                
+                # Log the trimming operation
+                logger.debug(f"Trimmed {category.name}: removed {tokens_removed} tokens " + 
+                            f"({len(category_msgs) - len(msgs_to_keep)} messages)")
+                
+                # Check if we've trimmed enough overall
+                if tokens_to_trim <= 0:
+                    total_over_budget = False
         
         # Reconstruct the message list preserving original order
         # We'll use a dictionary to track which messages to keep
@@ -438,21 +479,184 @@ class ContextWindowManager:
         # Analyze token usage
         stats = self.analyze_session(session)
         
-        # If under budget, no changes needed
-        if not stats["over_budget"]:
-            return session
+        # Check if any categories exceed their individual budgets
+        # Start with lowest priority first (SYSTEM_OUTPUT)
+        categories_over_budget = []
+        for category in reversed(list(MessageCategory)):  # Reversed to start with lowest priority
+            budget = self._budgets.get(category)
+            category_tokens = stats["per_category"].get(category, 0)
+            if category_tokens > budget.max_tokens:
+                categories_over_budget.append(category)
+                logger.info(
+                    f"Category {category.name} is over budget: {category_tokens} tokens " +
+                    f"(exceeds by {category_tokens - budget.max_tokens})"
+                )
+        
+        # If total is over budget or any individual categories are over budget, trim
+        if stats["over_budget"] or categories_over_budget:
+            # Perform trimming
+            if stats["over_budget"]:
+                logger.info(
+                    f"Trimming session {session.id}: {stats['total_tokens']} tokens " +
+                    f"(over total budget by {stats['total_tokens'] - self.max_tokens})"
+                )
+            else:
+                logger.info(
+                    f"Trimming session {session.id} categories: {[c.name for c in categories_over_budget]}"
+                )
             
-        # Log trimming activity
-        logger.info(
-            f"Trimming session {session.id}: {stats['total_tokens']} tokens " +
-            f"(over budget by {stats['total_tokens'] - self.max_tokens})"
-        )
+            trimmed_session = self.trim_session(session)
+            
+            # Calculate how many messages were removed
+            messages_removed = len(session.messages) - len(trimmed_session.messages)
+            logger.info(f"Removed {messages_removed} messages during trimming")
+            
+            return trimmed_session
         
-        # Perform trimming
-        trimmed_session = self.trim_session(session)
+        # If we get here, no trimming needed
+        return session
+    
+    def format_token_usage(self) -> str:
+        """
+        Format token usage in a human-readable format for CLI display.
         
-        # Calculate how many messages were removed
-        messages_removed = len(session.messages) - len(trimmed_session.messages)
-        logger.info(f"Removed {messages_removed} messages during trimming")
+        Returns:
+            String representation of token usage by category
+        """
+        usage = self.get_token_usage()
+        total = usage.get("total", 0)
+        available = usage.get("available", 0)
+        max_tokens = usage.get("max", 0)
         
-        return trimmed_session 
+        # Calculate percentage of total budget used
+        percentage = (total / max_tokens * 100) if max_tokens > 0 else 0
+        
+        output = [
+            f"Token Usage: {total:,}/{max_tokens:,} ({percentage:.1f}%)",
+            f"Available: {available:,} tokens",
+            "\nBy Category:"
+        ]
+        
+        # Add category breakdowns
+        for category in MessageCategory:
+            category_tokens = usage.get(str(category), 0)
+            category_max = self._budgets[category].max_tokens if category in self._budgets else 0
+            category_pct = (category_tokens / category_max * 100) if category_max > 0 else 0
+            
+            output.append(f"  {category.name}: {category_tokens:,}/{category_max:,} ({category_pct:.1f}%)")
+        
+        return "\n".join(output)
+    
+    def format_token_usage_rich(self) -> str:
+        """
+        Format token usage with rich for prettier CLI output.
+        
+        Returns:
+            Rich console markup for token usage
+        """
+        try:
+            from rich.console import Console # type: ignore
+            from rich.table import Table # type: ignore
+            from rich.text import Text # type: ignore
+            from rich.box import Box, SIMPLE  # Import Box objects # type: ignore
+            
+            usage = self.get_token_usage()
+            total = usage.get("total", 0)
+            available = usage.get("available", 0)
+            max_tokens = usage.get("max", 0)
+            
+            # Create rich table with proper Box object
+            table = Table(
+                title=f"Token Usage: {total:,}/{max_tokens:,} ({total/max_tokens*100:.1f}%)",
+                expand=False,
+                box=SIMPLE,  # Use SIMPLE box instead of boolean
+                safe_box=True  # Prevents rendering issues
+            )
+            
+            # Add columns with fixed width
+            table.add_column("Category", style="cyan", width=15)
+            table.add_column("Tokens", style="green", width=8, justify="right")
+            table.add_column("Allocation", style="yellow", width=12)
+            table.add_column("Budget", style="blue", width=7, justify="right")
+            table.add_column("Usage", style="magenta", width=30)
+            
+            # Add rows for each category
+            for category in MessageCategory:
+                category_tokens = usage.get(str(category), 0)
+                category_budget = self._budgets.get(category)
+                
+                if category_budget:
+                    # Create progress bar with clean rendering
+                    max_tokens = category_budget.max_tokens
+                    if max_tokens > 0:
+                        usage_pct = min(100, category_tokens / max_tokens * 100)
+                        bar_width = 20
+                        filled = int(usage_pct / 100 * bar_width)
+                        
+                        # Create a simple string for the progress bar
+                        progress_bar = f"[{'█' * filled}{' ' * (bar_width - filled)}] {usage_pct:.1f}%"
+                        
+                        # Add row as simple strings
+                        table.add_row(
+                            category.name,
+                            f"{category_tokens:,}",
+                            f"{category_budget.min_tokens:,}-{max_tokens:,}",
+                            f"{max_tokens/self.max_tokens*100:.1f}%",
+                            progress_bar
+                        )
+                    else:
+                        # Handle zero case
+                        table.add_row(
+                            category.name,
+                            f"{category_tokens:,}",
+                            f"{category_budget.min_tokens:,}-{max_tokens:,}",
+                            f"{max_tokens/self.max_tokens*100:.1f}%",
+                            "[" + " " * 20 + "] 0.0%"
+                        )
+                
+            # Add summary row with simple string progress bar
+            total_progress_bar = f"[{'█' * int(total/self.max_tokens*20)}{' ' * (20 - int(total/self.max_tokens*20))}] {total/self.max_tokens*100:.1f}%"
+            
+            table.add_row(
+                "TOTAL", 
+                f"{total:,}",
+                f"0-{self.max_tokens:,}",
+                "100.0%",
+                total_progress_bar,
+                style="bold"
+            )
+            
+            # Render table to string
+            console = Console(width=80, record=True)
+            console.print(table)
+            return console.export_text()
+            
+        except ImportError:
+            # Fallback if rich is not installed
+            return self.format_token_usage_simple()
+        
+    def format_token_usage_simple(self) -> str:
+        """Simple token usage formatting without dependencies"""
+        usage = self.get_token_usage()
+        total = usage.get("total", 0)
+        available = usage.get("available", 0)
+        max_tokens = usage.get("max", 0)
+        
+        # Calculate percentage of total budget used
+        percentage = (total / max_tokens * 100) if max_tokens else 0
+        
+        output = [
+            f"Token Usage: {total:,}/{max_tokens:,} ({percentage:.1f}%)",
+            f"Available: {available:,} tokens",
+            "\nBy Category:"
+        ]
+        
+        # Add category breakdowns
+        for category in MessageCategory:
+            category_tokens = usage.get(str(category), 0)
+            budget = self._budgets.get(category)
+            if budget:
+                category_pct = (category_tokens / budget.max_tokens * 100) if budget.max_tokens else 0
+                output.append(f"  {category.name}: {category_tokens:,}/{budget.max_tokens:,} ({category_pct:.1f}%)")
+        
+        return "\n".join(output) 

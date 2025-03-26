@@ -10,7 +10,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Callable
 
 
 class SystemState(Enum):
@@ -129,7 +129,7 @@ class Session:
     Sessions have their own identity and metadata, and manage a collection
     of messages that belong to the conversation.
     """
-    id: str = field(default_factory=lambda: f"session_{uuid.uuid4().hex[:8]}")
+    id: str = field(default_factory=lambda: f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}")
     messages: List[Message] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_active: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -214,6 +214,21 @@ class Session:
                 return False
                 
         return True
+    
+    def update_token_counts(self, counter_function: Callable[[Any], int]) -> None:
+        """
+        Update token counts for all messages using the provided counter function.
+        
+        Args:
+            counter_function: Function that takes content and returns token count
+        """
+        for msg in self.messages:
+            if msg.tokens == 0:  # Only count if not already counted
+                try:
+                    msg.tokens = counter_function(msg.content)
+                except Exception:
+                    # Use fallback estimation in case of failure
+                    msg.tokens = msg.fallback_estimate_tokens()
 
 
 def create_message(
@@ -291,3 +306,12 @@ class PenguinState:
             self.global_state = SystemState.IDLE
         else:
             self.global_state = SystemState.PROCESSING
+
+
+def parse_iso_datetime(iso_string: str) -> datetime:
+    """Parse an ISO format datetime string into a datetime object."""
+    try:
+        return datetime.fromisoformat(iso_string)
+    except (ValueError, TypeError):
+        # Return current time as fallback
+        return datetime.now()

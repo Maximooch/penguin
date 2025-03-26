@@ -100,11 +100,20 @@ class SimpleContextLoader:
                     with open(full_path, 'r', encoding='utf-8') as f:
                         content = f.read()
                     
-                    # Add to context manager
-                    self.context_manager.add_working_memory(
-                        content=content,
-                        source=f"context/{file_path}"
-                    )
+                    # Add to context manager - use add_context instead of add_working_memory
+                    if hasattr(self.context_manager, 'add_context'):
+                        self.context_manager.add_context(
+                            content=content,
+                            source=f"context/{file_path}"
+                        )
+                    elif hasattr(self.context_manager, 'add_working_memory'):
+                        self.context_manager.add_working_memory(
+                            content=content,
+                            source=f"context/{file_path}"
+                        )
+                    else:
+                        logger.warning(f"Context manager doesn't have add_context or add_working_memory methods")
+                        
                     loaded.append(file_path)
                     logger.debug(f"Loaded core context file: {file_path}")
                 except Exception as e:

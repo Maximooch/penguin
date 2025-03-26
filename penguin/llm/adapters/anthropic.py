@@ -415,47 +415,91 @@ class AnthropicAdapter(BaseAdapter):
     def count_tokens(self, content: Union[str, List, Dict]) -> int:
         """Count tokens using Anthropic's dedicated token counting endpoint"""
         try:
-            # Handle simple string content directly
+            # For all content types, we need to format as a messages array
+            messages = []
+            
             if isinstance(content, str):
-                return self.sync_client.count_tokens(content)
-            
-            # For complex content (including images), use the messages/count_tokens endpoint
-            if isinstance(content, list) or isinstance(content, dict):
-                # Format the content as a proper message
-                if isinstance(content, list):
-                    # If it's a list of message parts, wrap it as a user message
-                    formatted_content = {"role": "user", "content": content}
+                # Format string as a simple message
+                messages = [{"role": "user", "content": [{"type": "text", "text": content}]}]
+            elif isinstance(content, list):
+                # Is this already a content array?
+                if all(isinstance(item, dict) for item in content) and any('type' in item for item in content):
+                    messages = [{"role": "user", "content": content}]
                 else:
-                    # If it's already a dict, use as is
-                    formatted_content = content
-                    
-                # Format as a complete messages request
-                messages = [formatted_content]
-                
-                # Call the count_tokens endpoint
-                response = self.sync_client.messages.count_tokens(messages=messages)
-                
-                # Return the token count from the response
-                return response.input_tokens
+                    # Convert list items to text parts
+                    messages = [{"role": "user", "content": [{"type": "text", "text": str(item)} for item in content]}]
+            elif isinstance(content, dict):
+                # Is this already a message?
+                if 'role' in content and 'content' in content:
+                    messages = [content]
+                else:
+                    # Convert dict to text
+                    messages = [{"role": "user", "content": [{"type": "text", "text": str(content)}]}]
+            else:
+                # Convert anything else to string
+                messages = [{"role": "user", "content": [{"type": "text", "text": str(content)}]}]
             
-            # Fallback for other content types
-            return self.sync_client.count_tokens(str(content))
+            # Call Anthropic's count_tokens endpoint - add the required model parameter
+            response = self.sync_client.messages.count_tokens(
+                model=self.model_config.model,  # Add the model parameter
+                messages=messages
+            )
+            return response.input_tokens
             
         except Exception as e:
             logger.error(f"Error counting tokens via Anthropic API: {str(e)}")
-            # Fall back to approximate counting in case of API errors
-            if isinstance(content, list) and any(isinstance(part, dict) and part.get("type") in ["image", "image_url"] 
-                                                for part in content if isinstance(part, dict)):
-                # Conservative estimate for content with images
-                text_content = ' '.join([part.get("text", "") for part in content 
-                                        if isinstance(part, dict) and part.get("type") == "text"])
-                # Base text tokens plus 1500 per image (conservative estimate)
-                image_count = sum(1 for part in content if isinstance(part, dict) 
-                                 and part.get("type") in ["image", "image_url"])
-                return len(text_content) // 4 + (image_count * 1500)
+            # Fall back to approximate counting
+            return self._approximate_token_count(content)
+    
+    def _approximate_token_count(self, content) -> int:
+        """Fallback method for token counting when API fails"""
+        try:
+            # Try tiktoken first
+            import tiktoken # type: ignore
+            encoder = tiktoken.get_encoding("cl100k_base")
+            
+            if isinstance(content, str):
+                return len(encoder.encode(content))
+            elif isinstance(content, list):
+                # Handle content array with images
+                text_content = ""
+                image_count = 0
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            text_content += item.get("text", "")
+                        elif item.get("type") in ["image", "image_url"]:
+                            image_count += 1
+                    else:
+                        text_content += str(item)
+                
+                # Count text tokens + estimate for images
+                text_tokens = len(encoder.encode(text_content))
+                image_tokens = image_count * 1300  # Claude's approx for images
+                return text_tokens + image_tokens
             else:
-                # Basic fallback
-                return len(str(content)) // 4
+                return len(encoder.encode(str(content)))
+            
+        except Exception:
+            # Ultimate fallback - character-based estimation
+            if isinstance(content, str):
+                return len(content) // 4 + 1
+            elif isinstance(content, list):
+                # Estimate with images
+                char_count = 0
+                image_count = 0
+                for item in content:
+                    if isinstance(item, dict):
+                        if item.get("type") == "text":
+                            char_count += len(item.get("text", ""))
+                        elif item.get("type") in ["image", "image_url"]:
+                            image_count += 1
+                    else:
+                        char_count += len(str(item))
+                
+                return (char_count // 4 + 1) + (image_count * 1300)
+            else:
+                return len(str(content)) // 4 + 1
     
     def supports_system_messages(self) -> bool:
         """Whether this provider supports system messages"""
