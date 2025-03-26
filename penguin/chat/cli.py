@@ -918,33 +918,60 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
         action = command_parts[1].lower()
 
         if action == "list":
+            # Get raw conversation list
+            raw_conversations = self.core.conversation_manager.list_conversations()
+            
+            # Process each conversation to extract better titles
             conversations = []
-            for idx, session in enumerate(self.core.conversation_manager.list_conversations()):
-                # Try to extract a meaningful title from the first user message
-                title = session.get("title", "")
-                if not title:
-                    # Search for first user message in metadata if available
-                    if "snippets" in session and isinstance(session["snippets"], list):
-                        for snippet in session["snippets"]:
-                            if snippet.get("role") == "user":
-                                content = snippet.get("content", "")
-                                if isinstance(content, str):
-                                    # Use first line or first few words
-                                    first_line = content.split('\n', 1)[0]
-                                    title = (first_line[:37] + '...') if len(first_line) > 40 else first_line
-                                    break
+            for idx, session in enumerate(raw_conversations):
+                session_id = session["id"]
                 
-                    # If still no title, use default
-                    if not title:
+                # Try to get a more descriptive title
+                title = session.get("title", "")
+                
+                # If no title is set, try to load the session to get the first user message
+                if not title or title.startswith("Session "):
+                    try:
+                        # Load the session object
+                        loaded_session = self.core.conversation_manager.session_manager.load_session(session_id)
+                        if loaded_session:
+                            # Find the first user message
+                            for msg in loaded_session.messages:
+                                if msg.role == "user":
+                                    # Use first line of first user message as title
+                                    content = msg.content
+                                    if isinstance(content, str):
+                                        first_line = content.split('\n', 1)[0]
+                                        title = (first_line[:37] + '...') if len(first_line) > 40 else first_line
+                                        break
+                                    elif isinstance(content, list):
+                                        # Handle structured content like messages with images
+                                        for item in content:
+                                            if isinstance(item, dict) and item.get("type") == "text":
+                                                text = item.get("text", "")
+                                                first_line = text.split('\n', 1)[0]
+                                                title = (first_line[:37] + '...') if len(first_line) > 40 else first_line
+                                                break
+                                        if title:
+                                            break
+                    except Exception as e:
+                        # Fall back to session ID if there's an error
                         title = f"Conversation {idx + 1}"
                 
-                # Create ConversationSummary
+                # If still no title, use default
+                if not title or title.startswith("Session "):
+                    title = f"Conversation {idx + 1}"
+                
+                # Create the ConversationSummary with the extracted title
                 conversations.append(ConversationSummary(
-                    session_id=session["id"],
+                    session_id=session_id,
                     title=title,
                     message_count=session.get("message_count", 0),
-                    last_active=parse_iso_datetime(session.get("last_active", ""))
+                    # Format the datetime properly
+                    last_active=parse_iso_datetime(session.get("last_active", "")).strftime("%Y-%m-%d %H:%M")
+                    if session.get("last_active") else "Unknown date",
                 ))
+            # Let user select a conversation
             session_id = self.conversation_menu.select_conversation(conversations)
             if session_id:
                 try:

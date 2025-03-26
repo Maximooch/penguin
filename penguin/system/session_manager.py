@@ -536,14 +536,80 @@ class SessionManager:
         # Apply pagination
         paginated = sorted_sessions[offset:offset+limit]
         
-        # Format the results
-        return [
-            {
+        # Format the results with titles from first user messages
+        result = []
+        for session_id, metadata in paginated:
+            session_data = {
                 "id": session_id,
                 **metadata
             }
-            for session_id, metadata in paginated
-        ]
+            
+            # Try to extract a title from the first user message if not already set
+            if not session_data.get("title"):
+                try:
+                    # Check if session is in memory cache first
+                    if session_id in self.sessions:
+                        session = self.sessions[session_id][0]
+                        # Find first user message
+                        for msg in session.messages:
+                            if msg.role == "user":
+                                # Use content as title
+                                content = msg.content
+                                if isinstance(content, str):
+                                    first_line = content.split('\n', 1)[0]
+                                    session_data["title"] = (first_line[:37] + '...') if len(first_line) > 40 else first_line
+                                    break
+                                elif isinstance(content, list) and len(content) > 0:
+                                    # Try to extract text from structured content
+                                    for item in content:
+                                        if isinstance(item, dict) and item.get("type") == "text":
+                                            text = item.get("text", "")
+                                            first_line = text.split('\n', 1)[0]
+                                            session_data["title"] = (first_line[:37] + '...') if len(first_line) > 40 else first_line
+                                            break
+                                    break
+                    else:
+                        # If not in memory, check the file (but don't load fully)
+                        session_path = self.base_path / f"{session_id}.{self.format}"
+                        if not session_path.exists():
+                            session_data["title"] = f"Session {session_id[-8:]}"
+                            result.append(session_data)
+                            continue
+                            
+                        with open(session_path, 'r', encoding='utf-8') as f:
+                            try:
+                                # Load only part of the file to find first user message
+                                data = json.load(f)
+                                # Look for first user message
+                                if "messages" in data:
+                                    for msg in data["messages"]:
+                                        if msg.get("role") == "user":
+                                            content = msg.get("content", "")
+                                            if isinstance(content, str):
+                                                first_line = content.split('\n', 1)[0]
+                                                session_data["title"] = (first_line[:37] + '...') if len(first_line) > 40 else first_line
+                                                break
+                                            elif isinstance(content, list) and len(content) > 0:
+                                                # Try to extract text from structured content
+                                                for item in content:
+                                                    if isinstance(item, dict) and item.get("type") == "text":
+                                                        text = item.get("text", "")
+                                                        first_line = text.split('\n', 1)[0]
+                                                        session_data["title"] = (first_line[:37] + '...') if len(first_line) > 40 else first_line
+                                                        break
+                                                break
+                            except json.JSONDecodeError:
+                                pass
+                except Exception as e:
+                    logger.debug(f"Error extracting title for session {session_id}: {e}")
+                
+                # Fallback if we couldn't extract a title
+                if not session_data.get("title"):
+                    session_data["title"] = f"Session {session_id[-8:]}"
+                    
+            result.append(session_data)
+        
+        return result
     
     def delete_session(self, session_id: str) -> bool:
         """
