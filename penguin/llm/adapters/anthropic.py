@@ -415,41 +415,50 @@ class AnthropicAdapter(BaseAdapter):
     def count_tokens(self, content: Union[str, List, Dict]) -> int:
         """Count tokens using Anthropic's dedicated token counting endpoint"""
         try:
-            # For all content types, we need to format as a messages array
-            messages = []
-            
+            # Use the same message formatting logic we use for actual API calls
             if isinstance(content, str):
                 # Format string as a simple message
-                messages = [{"role": "user", "content": [{"type": "text", "text": content}]}]
+                messages = [{"role": "user", "content": content}]
+                formatted_messages = self.format_messages(messages)
             elif isinstance(content, list):
-                # Is this already a content array?
+                # Handle list content (likely a content array)
                 if all(isinstance(item, dict) for item in content) and any('type' in item for item in content):
+                    # This is already a content array, wrap it in a message
                     messages = [{"role": "user", "content": content}]
+                    formatted_messages = self.format_messages(messages)
                 else:
-                    # Convert list items to text parts
-                    messages = [{"role": "user", "content": [{"type": "text", "text": str(item)} for item in content]}]
+                    # Convert other list items
+                    messages = [{"role": "user", "content": content}]
+                    formatted_messages = self.format_messages(messages)
             elif isinstance(content, dict):
-                # Is this already a message?
+                # Handle dict content
                 if 'role' in content and 'content' in content:
-                    messages = [content]
+                    # This is already a message
+                    formatted_messages = self.format_messages([content])
                 else:
-                    # Convert dict to text
-                    messages = [{"role": "user", "content": [{"type": "text", "text": str(content)}]}]
+                    # Convert dict to message
+                    messages = [{"role": "user", "content": content}]
+                    formatted_messages = self.format_messages(messages)
             else:
-                # Convert anything else to string
-                messages = [{"role": "user", "content": [{"type": "text", "text": str(content)}]}]
+                # Convert anything else to string message
+                messages = [{"role": "user", "content": str(content)}]
+                formatted_messages = self.format_messages(messages)
             
-            # Call Anthropic's count_tokens endpoint - add the required model parameter
+            # Call Anthropic's count_tokens endpoint
+            logger.debug(f"Counting tokens with Anthropic API for: {type(content)}")
             response = self.sync_client.messages.count_tokens(
-                model=self.model_config.model,  # Add the model parameter
-                messages=messages
+                model=self.model_config.model,
+                messages=formatted_messages
             )
+            logger.debug(f"Token count from Anthropic API: {response.input_tokens}")
             return response.input_tokens
             
         except Exception as e:
             logger.error(f"Error counting tokens via Anthropic API: {str(e)}")
             # Fall back to approximate counting
-            return self._approximate_token_count(content)
+            token_count = self._approximate_token_count(content)
+            logger.debug(f"Using approximate token count: {token_count}")
+            return token_count
     
     def _approximate_token_count(self, content) -> int:
         """Fallback method for token counting when API fails"""
