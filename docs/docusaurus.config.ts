@@ -9,6 +9,12 @@ const config = {
   organizationName: 'LinkAI',
   projectName: 'penguin',
 
+  markdown: {
+    mermaid: true,
+  },
+
+  themes: ['@docusaurus/theme-mermaid'],
+
   presets: [
     [
       'classic',
@@ -25,6 +31,9 @@ const config = {
   ],
 
   themeConfig: {
+    mermaid: {
+      theme: { light: 'neutral', dark: 'forest' },
+    },
     navbar: {
       title: 'Penguin AI Assistant',
       logo: {
