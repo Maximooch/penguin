@@ -369,6 +369,10 @@ class SessionManager:
             session.metadata["message_count"] = len(session.messages)
             session.last_active = datetime.now().isoformat()
             
+            # Add token count to metadata - ensure it's calculated from the current state
+            token_count = session.total_tokens
+            session.metadata["token_count"] = token_count
+            
             # Write to temp file first
             with open(temp_path, 'w', encoding='utf-8') as f:
                 f.write(session.to_json())
@@ -380,20 +384,34 @@ class SessionManager:
             # Atomic rename of temp to target
             os.replace(temp_path, target_path)
             
-            # Update the session index
+            # Update the session index with consistent token information
             self.session_index[session.id] = {
                 "created_at": session.created_at,
                 "last_active": session.last_active,
                 "message_count": session.metadata.get("message_count", 0),
+                "token_count": token_count,  # Always include token count
                 "title": session.metadata.get("title", f"Session {session.id[-8:]}")
             }
+            
+            # Add link fields and token information for continuation sessions
+            if "continued_from" in session.metadata:
+                source_id = session.metadata["continued_from"]
+                source_tokens = session.metadata.get("source_session_tokens", 0)
+                
+                self.session_index[session.id]["continued_from"] = source_id
+                self.session_index[session.id]["source_session_tokens"] = source_tokens
+                self.session_index[session.id]["total_chain_tokens"] = token_count + source_tokens
+                
+            if "continued_to" in session.metadata:
+                self.session_index[session.id]["continued_to"] = session.metadata["continued_to"]
+            
             self._save_index(self.session_index)
             
             # Update cache status
             if session.id in self.sessions:
                 self.sessions[session.id] = (session, False)  # Mark as not modified
             
-            logger.debug(f"Saved session {session.id}")
+            logger.debug(f"Saved session {session.id} with {token_count} tokens")
             return True
             
         except Exception as e:
@@ -433,28 +451,36 @@ class SessionManager:
         source_session = source_session or self.current_session
         if not source_session:
             raise ValueError("No source session provided for continuation")
-            
-        # Create new session
+        
+        # Ensure source session has accurate token count
+        source_token_count = source_session.total_tokens
+        source_session.metadata["token_count"] = source_token_count
+        
+        # Create new session with proper metadata
         continuation = Session(
             metadata={
                 "continued_from": source_session.id,
                 "original_created_at": source_session.created_at,
                 "continuation_index": self._get_continuation_index(source_session.id),
                 "message_count": 0,
-                "source_session_tokens": source_session.total_tokens  # Track token count from source
+                "source_session_tokens": source_token_count,
+                "token_count": 0  # Will be updated after adding messages
             }
         )
         
         # Transfer all SYSTEM and CONTEXT messages
+        token_counter = getattr(self, 'token_counter', None)
+        
         for category in [MessageCategory.SYSTEM, MessageCategory.CONTEXT]:
             for msg in source_session.get_messages_by_category(category):
-                continuation.add_message(Message(
+                transferred_msg = Message(
                     role=msg.role,
                     content=msg.content,
                     category=msg.category,
                     metadata=msg.metadata.copy(),
                     tokens=msg.tokens  # Preserve token counts
-                ))
+                )
+                continuation.add_message(transferred_msg)
         
         # Add transition marker
         transition_message = create_message(
@@ -464,32 +490,46 @@ class SessionManager:
             metadata={
                 "type": "session_transition", 
                 "previous_session": source_session.id,
-                "previous_session_tokens": source_session.total_tokens
+                "previous_session_tokens": source_token_count
             }
         )
         continuation.add_message(transition_message)
         
-        # Update source session metadata to link forward as well
+        # Update source session metadata with link to continuation
         source_session.metadata["continued_to"] = continuation.id
         source_session.metadata["continuation_time"] = datetime.now().isoformat()
+        source_session.metadata["token_count"] = source_token_count
         
-        # Update state
-        self._add_to_session_cache(continuation.id, continuation)
-        self.current_session = continuation
+        # Calculate token count for continuation session
+        continuation_token_count = continuation.total_tokens
+        continuation.metadata["token_count"] = continuation_token_count
         
-        # Update index
+        # Update session index with comprehensive token tracking
         self.session_index[continuation.id] = {
             "created_at": continuation.created_at,
             "last_active": continuation.last_active,
             "message_count": len(continuation.messages),
-            "title": source_session.metadata.get("title", f"Continuation of {source_session.id[-8:]}"),
+            "title": f"Continuation of {source_session.id[-8:]}",
             "continued_from": source_session.id,
-            "token_count": continuation.total_tokens,
-            "source_session_tokens": source_session.total_tokens
+            "token_count": continuation_token_count,
+            "source_session_tokens": source_token_count,
+            "total_chain_tokens": continuation_token_count + source_token_count
         }
+        
+        # Update source session index entry
+        if source_session.id in self.session_index:
+            self.session_index[source_session.id]["token_count"] = source_token_count
+            self.session_index[source_session.id]["continued_to"] = continuation.id
+        
         self._save_index(self.session_index)
         
-        logger.info(f"Created continuation session {continuation.id} from {source_session.id}")
+        # Add to session cache
+        self._add_to_session_cache(continuation.id, continuation)
+        self.current_session = continuation
+        
+        # Log creation with token information
+        logger.info(f"Created continuation session {continuation.id} from {source_session.id} " +
+                    f"(source tokens: {source_token_count}, continuation tokens: {continuation_token_count})")
         
         # Save both sessions
         self.save_session(source_session)

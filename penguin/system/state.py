@@ -11,6 +11,9 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union, Callable
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class SystemState(Enum):
@@ -222,13 +225,22 @@ class Session:
         Args:
             counter_function: Function that takes content and returns token count
         """
+        total_tokens = 0
         for msg in self.messages:
-            if msg.tokens == 0:  # Only count if not already counted
-                try:
-                    msg.tokens = counter_function(msg.content)
-                except Exception:
-                    # Use fallback estimation in case of failure
-                    msg.tokens = msg.fallback_estimate_tokens()
+            try:
+                # Always recalculate for consistency
+                msg.tokens = counter_function(msg.content)
+                total_tokens += msg.tokens
+            except Exception as e:
+                # Use fallback estimation in case of failure
+                msg.tokens = msg.fallback_estimate_tokens()
+                total_tokens += msg.tokens
+                logger.warning(f"Using fallback token estimation for message {msg.id}: {e}")
+        
+        # Update session metadata
+        self.metadata["token_count"] = total_tokens
+        
+        return total_tokens
 
 
 def create_message(

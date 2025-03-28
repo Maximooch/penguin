@@ -1,4 +1,4 @@
-# This code is not yet implemented, just a placeholder for now
+# It could use some improvements, but it's a good start.
 
 """
 Context window management for managing token budgets and content trimming.
@@ -9,6 +9,19 @@ This module provides tools to:
 3. Handle special content types like images
 4. Ensure context windows don't exceed model limits
 """
+
+# TODO: 
+# - Add a function to get the total token usage for a session
+# - Add a function to get the token usage for a specific category
+# - Add a function to get the token usage as a percentage of the total budget
+# - Add a function to get the token usage for a specific message
+# - Add a function to get the token usage for a specific message category
+# - Add a function to get the token usage for a specific message role
+
+# TODO:
+# - Don't hardcode the categories, make them configurable. Which means here it deals with the budgets of categories based on the priority they're infered from the config.
+# - Make the budgets dynamic based on the content of the messages. Maybe?
+
 
 import logging
 from dataclasses import dataclass, field
@@ -133,8 +146,11 @@ class ContextWindowManager:
         for category, percentage in allocations.items():
             budget = int(total_budget * percentage)
             
-            # Only system messages need a minimum guarantee
-            min_tokens = 1000 if category == MessageCategory.SYSTEM else 0
+            # Set minimum tokens to a reasonable value but never higher than the budget itself
+            if category == MessageCategory.SYSTEM:
+                min_tokens = min(1000, budget)  # Use 1000 or budget, whichever is smaller
+            else:
+                min_tokens = 0
             
             self._budgets[category] = TokenBudget(
                 min_tokens=min_tokens,
@@ -257,7 +273,9 @@ class ContextWindowManager:
         # Special handling for images - they consume many tokens
         if stats["image_count"] > 1:
             # First pass: handle images separately
-            session_with_image_placeholders = self._handle_image_trimming(session)
+            session_with_image_placeholders = self._handle_image_trimming(session) 
+            
+            # why use session_with_image_placeholders? Isn't that approximate character count instead of using a real tokenizer?
             
             # Re-analyze after image trimming
             stats = self.analyze_session(session_with_image_placeholders)
@@ -277,7 +295,6 @@ class ContextWindowManager:
             MessageCategory.SYSTEM_OUTPUT,   # Trim first - lowest priority
             MessageCategory.DIALOG,          # Trim second
             MessageCategory.CONTEXT,         # Trim third
-            MessageCategory.SYSTEM           # NEVER TRIM SYSTEM PROMPT- highest priority
         ]
             
         # Check if total is over budget
@@ -338,10 +355,19 @@ class ContextWindowManager:
                 if tokens_to_trim <= 0:
                     total_over_budget = False
         
+        # Add SYSTEM messages without any trimming (preserve all of them)
+        system_messages = categorized.get(MessageCategory.SYSTEM, [])
+        
         # Reconstruct the message list preserving original order
         # We'll use a dictionary to track which messages to keep
         kept_messages = {}
-        for category in MessageCategory:
+        
+        # First add ALL system messages (guaranteed to be kept)
+        for msg in system_messages:
+            kept_messages[msg.id] = msg
+        
+        # Then add messages from other categories that survived trimming
+        for category in [MessageCategory.CONTEXT, MessageCategory.DIALOG, MessageCategory.SYSTEM_OUTPUT]:
             for msg in categorized[category]:
                 kept_messages[msg.id] = msg
                 
@@ -481,10 +507,21 @@ class ContextWindowManager:
         # Analyze token usage
         stats = self.analyze_session(session)
         
+        # Reset budgets to match the actual session content
+        self.reset_usage()
+        
+        # Update budget tracking
+        for msg in session.messages:
+            self.update_usage(msg.category, msg.tokens)
+        
         # Check if any categories exceed their individual budgets
         # Start with lowest priority first (SYSTEM_OUTPUT)
         categories_over_budget = []
         for category in reversed(list(MessageCategory)):  # Reversed to start with lowest priority
+            # Skip SYSTEM messages - NEVER consider them for trimming
+            if category == MessageCategory.SYSTEM:
+                continue
+                
             budget = self._budgets.get(category)
             category_tokens = stats["per_category"].get(category, 0)
             if category_tokens > budget.max_tokens:
@@ -494,13 +531,19 @@ class ContextWindowManager:
                     f"(exceeds by {category_tokens - budget.max_tokens})"
                 )
         
-        # If total is over budget or any individual categories are over budget, trim
-        if stats["over_budget"] or categories_over_budget:
+        # If total is over budget or any non-SYSTEM categories are over budget, trim
+        # For total budget, subtract SYSTEM tokens as those are never trimmed
+        system_tokens = stats["per_category"].get(MessageCategory.SYSTEM, 0)
+        adjusted_total = stats["total_tokens"] - system_tokens
+        adjusted_budget = self.max_tokens - system_tokens
+        total_over_budget = adjusted_total > adjusted_budget
+        
+        if total_over_budget or categories_over_budget:
             # Perform trimming
-            if stats["over_budget"]:
+            if total_over_budget:
                 logger.info(
-                    f"Trimming session {session.id}: {stats['total_tokens']} tokens " +
-                    f"(over total budget by {stats['total_tokens'] - self.max_tokens})"
+                    f"Trimming session {session.id}: {adjusted_total} tokens " +
+                    f"(over adjusted budget by {adjusted_total - adjusted_budget})"
                 )
             else:
                 logger.info(
@@ -512,6 +555,36 @@ class ContextWindowManager:
             # Calculate how many messages were removed
             messages_removed = len(session.messages) - len(trimmed_session.messages)
             logger.info(f"Removed {messages_removed} messages during trimming")
+            
+            # Double-check that SYSTEM messages were preserved
+            original_system_count = len([msg for msg in session.messages 
+                                         if msg.category == MessageCategory.SYSTEM])
+            trimmed_system_count = len([msg for msg in trimmed_session.messages 
+                                        if msg.category == MessageCategory.SYSTEM])
+            
+            if original_system_count != trimmed_system_count:
+                logger.error(f"SYSTEM messages were incorrectly trimmed! Before: {original_system_count}, After: {trimmed_system_count}")
+                # Fix by restoring all SYSTEM messages
+                system_msgs = [msg for msg in session.messages if msg.category == MessageCategory.SYSTEM]
+                
+                # Create a new session with SYSTEM messages preserved
+                fixed_session = Session(
+                    id=trimmed_session.id,
+                    created_at=trimmed_session.created_at,
+                    last_active=trimmed_session.last_active,
+                    metadata=trimmed_session.metadata.copy(),
+                    messages=system_msgs + [msg for msg in trimmed_session.messages 
+                                           if msg.category != MessageCategory.SYSTEM]
+                )
+                
+                # Use fixed session instead
+                trimmed_session = fixed_session
+                logger.info("Restored all SYSTEM messages after trimming")
+            
+            # Update budget tracking for trimmed session
+            self.reset_usage()
+            for msg in trimmed_session.messages:
+                self.update_usage(msg.category, msg.tokens)
             
             return trimmed_session
         
@@ -661,4 +734,9 @@ class ContextWindowManager:
                 category_pct = (category_tokens / budget.max_tokens * 100) if budget.max_tokens else 0
                 output.append(f"  {category.name}: {category_tokens:,}/{budget.max_tokens:,} ({category_pct:.1f}%)")
         
-        return "\n".join(output) 
+        return "\n".join(output)
+    
+    def get_usage(self, category: MessageCategory) -> int:
+        """Get current token usage for a specific category."""
+        budget = self._budgets.get(category)
+        return budget.current_tokens if budget else 0 

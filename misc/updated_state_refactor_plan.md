@@ -60,7 +60,7 @@ The conversation manager successfully delegates to subsystems, and the state man
 - Separate concerns: state management, token budgeting, persistence
 - Maintain functionality while simplifying architecture 
 - Support conversation IDs throughout the system
-- Use cleaner message category system (SYSTEM, CONTEXT, DIALOG, ACTIONS)
+- Use cleaner message category system (SYSTEM, CONTEXT, DIALOG, SYSTEM_OUTPUT)
 - Add session boundary management for long-running conversations
 
 ## Architecture Overview
@@ -133,7 +133,7 @@ class MessageCategory(Enum):
     SYSTEM = 1    # System instructions, never truncated
     CONTEXT = 2   # Important reference information 
     DIALOG = 3    # Main conversation between user and assistant
-    ACTIONS = 4   # Results from tool executions
+    SYSTEM_OUTPUT = 4   # Results from tool executions
 ```
 
 ### 2. Message (Dataclass) - ✅ IMPLEMENTED
@@ -167,7 +167,7 @@ class Session:
   - SYSTEM: 10% (highest priority, preserved longest)
   - CONTEXT: 35% (high priority, preserved for reference)
   - DIALOG: 50% (medium priority, oldest trimmed first)
-  - ACTIONS: 5% (lowest priority, trimmed first)
+  - SYSTEM_OUTPUTS: 5% (lowest priority, trimmed first)
 - Uses immutable Session objects for trimming operations
 - Special handling for image-rich content
 - Maintains token counting and budget enforcement
@@ -292,7 +292,7 @@ class ConversationManager:
 2. Update interface to work with Session objects
 3. Move context_loader.py from memory/ to system/
 4. Connect ContextLoader with ConversationSystem
-5. Implement proper trimming priority (ACTIONS → DIALOG → CONTEXT → SYSTEM)
+5. Implement proper trimming priority (SYSTEM_OUTPUT → DIALOG → CONTEXT → SYSTEM)
 
 ### Phase 4: Conversation Refactoring (3 days)
 1. Extract core functionality from current conversation.py
@@ -350,7 +350,7 @@ This pattern maintains immutability for code safety while minimizing file operat
 
 Messages are trimmed in the following priority order:
 
-1. **ACTIONS (5%)**: First to be trimmed
+1. **SYSTEM_OUTPUT (5%)**: First to be trimmed
    - Tool outputs, code execution results
    - Can usually be regenerated if needed
    - Least impact on conversation coherence
