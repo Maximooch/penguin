@@ -18,6 +18,16 @@ const sidebars: SidebarsConfig = {
     'configuration',
     {
       type: 'category',
+      label: 'System',
+      items: [
+        'system/context-window',
+        'system/conversation-manager',
+        'system/run-mode',
+        'system/state-management',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Usage Guide',
       items: ['usage/basic_usage', 'usage/automode', 'usage/task_management', 'usage/project_management'],
     },
