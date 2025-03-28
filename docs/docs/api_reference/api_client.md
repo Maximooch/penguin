@@ -48,19 +48,34 @@ classDiagram
         +provider = "anthropic"
         +format_messages()
         +count_tokens()
+        +create_completion()
     }
     
     class OpenAIAdapter {
         +provider = "openai"
         +format_messages()
-        +count_tokens()
+        +process_response()
+    }
+    
+    class OllamaAdapter {
+        +provider = "ollama" 
+        +format_messages()
+        +process_response()
+    }
+    
+    class DeepseekAdapter {
+        +provider = "deepseek"
+        +format_messages()
+        +process_response()
     }
     
     APIClient --> BaseAdapter : uses
     BaseAdapter <|-- NativeAdapter : implements
     BaseAdapter <|-- LiteLLMAdapter : implements
     NativeAdapter <|-- AnthropicAdapter : extends
-    NativeAdapter <|-- OpenAIAdapter : extends
+    BaseAdapter <|-- OpenAIAdapter : implements
+    BaseAdapter <|-- OllamaAdapter : implements
+    BaseAdapter <|-- DeepseekAdapter : implements
 ```
 
 ## Provider Architecture
@@ -78,22 +93,23 @@ flowchart TD
     FindNative -- No --> LiteLLM
     
     NativeAdapter --> Anthropic[Anthropic SDK]
-    NativeAdapter --> OpenAI[OpenAI SDK]
     
     LiteLLM --> AnthropicLL[Anthropic]
     LiteLLM --> OpenAILL[OpenAI]
+    LiteLLM --> OllamaLL[Ollama]
     LiteLLM --> Azure[Azure OpenAI]
     LiteLLM --> Bedrock[AWS Bedrock]
-    LiteLLM --> Ollama[Ollama]
+    LiteLLM --> DeepseekLL[Deepseek]
     LiteLLM --> More[... and more]
     
     classDef client fill:#f9f,stroke:#333,stroke-width:2px
     classDef native fill:#bbf,stroke:#333,stroke-width:1px
     classDef external fill:#bfb,stroke:#333,stroke-width:1px
+    classDef planned fill:#fbb,stroke:#333,stroke-width:1px,stroke-dasharray: 5 5
     
     class APIClient client
     class NativeAdapter,FindNative native
-    class LiteLLM,AnthropicLL,OpenAILL,Azure,Bedrock,Ollama,More external
+    class LiteLLM,AnthropicLL,OpenAILL,OllamaLL,Azure,Bedrock,DeepseekLL,More external
 ```
 
 ## Message Flow
@@ -201,22 +217,23 @@ The `APIClient` supports multiple providers through adapter architecture:
 
 1. **Native Adapters**: Direct SDK implementations for:
    - Anthropic (Claude models)
-   - OpenAI (GPT models)
+   - *OpenAI (GPT models) - Planned but not yet implemented*
    - More to come
 
 2. **Generic Adapters** via LiteLLM:
    - OpenAI
    - Anthropic
    - Ollama
-   - AWS Bedrock
+   - DeepSeek
    - Azure OpenAI
+   - AWS Bedrock
    - And many more
 
 The selection between native and generic adapters is controlled by the `use_native_adapter` flag in the model configuration.
 
 ## Provider-Specific Features
 
-### Anthropic
+### Anthropic (Native Adapter)
 
 ```python
 class AnthropicAdapter(BaseAdapter):
@@ -226,18 +243,39 @@ class AnthropicAdapter(BaseAdapter):
 - Native multi-modal support
 - Streaming implementation
 - Direct token counting
+- Base64 image handling
+- Vision support for Claude 3 models
 
-### OpenAI
+### OpenAI (via LiteLLM)
 
 ```python
-class OpenAIAdapter(BaseAdapter):
-    # Direct implementation using OpenAI's SDK
+class OpenAIAdapter(ProviderAdapter):
+    # Implementation for OpenAI through provider adapter
 ```
 
-- Native tool calling
-- Function calling support
-- Multi-modal content
-- Optional Assistants API
+- Multi-modal content support
+- Message formatting for OpenAI-specific features
+- Support for OpenAI's message structure
+
+### Ollama (via LiteLLM)
+
+```python
+class OllamaAdapter(ProviderAdapter):
+    # Implementation for Ollama through provider adapter
+```
+
+- Local model support
+- Basic message formatting
+
+### DeepSeek (via LiteLLM)
+
+```python
+class DeepseekAdapter(ProviderAdapter):
+    # Implementation for DeepSeek through provider adapter
+```
+
+- System message handling
+- Role alternation enforcement
 
 ## Configuration
 
@@ -257,6 +295,8 @@ class ModelConfig:
     use_assistants_api: bool = False
     use_native_adapter: bool = True  # Controls adapter selection
     streaming_enabled: bool = False
+    enable_token_counting: bool = True
+    vision_enabled: bool = None
 ```
 
 Setting `use_native_adapter=False` forces the use of LiteLLM adapters.
@@ -329,6 +369,7 @@ response = await api_client.get_response(messages)
 
 To add a new provider:
 
-1. Create a new native adapter implementing `BaseAdapter` interface
-2. Ensure it's registered in the provider-to-module mapping in `adapters/__init__.py`
-3. For generic support, add to provider_adapters.py 
+1. Create a new adapter implementing `BaseAdapter` interface or extend the `ProviderAdapter` class
+2. Implement the required methods: `format_messages()`, `process_response()`, and `count_tokens()`
+3. Add to provider_adapters.py to register the adapter
+4. For native adapters, create a new implementation in the adapters directory 
