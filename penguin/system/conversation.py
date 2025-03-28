@@ -297,6 +297,10 @@ class ConversationSystem:
         # Add merged messages
         messages.extend([{"role": msg.role, "content": msg.content} 
                         for msg in dialog_and_output])
+        
+        # If no messages, add a default user message to prevent API errors
+        if not messages:
+            messages.append({"role": "user", "content": "Placeholder message to prevent API errors"})
                 
         return messages
         

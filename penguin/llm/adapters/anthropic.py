@@ -415,41 +415,80 @@ class AnthropicAdapter(BaseAdapter):
     def count_tokens(self, content: Union[str, List, Dict]) -> int:
         """Count tokens using Anthropic's dedicated token counting endpoint"""
         try:
-            # Use the same message formatting logic we use for actual API calls
-            if isinstance(content, str):
-                # Format string as a simple message
-                messages = [{"role": "user", "content": content}]
-                formatted_messages = self.format_messages(messages)
-            elif isinstance(content, list):
-                # Handle list content (likely a content array)
-                if all(isinstance(item, dict) for item in content) and any('type' in item for item in content):
-                    # This is already a content array, wrap it in a message
-                    messages = [{"role": "user", "content": content}]
-                    formatted_messages = self.format_messages(messages)
-                else:
-                    # Convert other list items
-                    messages = [{"role": "user", "content": content}]
-                    formatted_messages = self.format_messages(messages)
-            elif isinstance(content, dict):
-                # Handle dict content
-                if 'role' in content and 'content' in content:
-                    # This is already a message
-                    formatted_messages = self.format_messages([content])
-                else:
-                    # Convert dict to message
-                    messages = [{"role": "user", "content": content}]
-                    formatted_messages = self.format_messages(messages)
-            else:
-                # Convert anything else to string message
-                messages = [{"role": "user", "content": str(content)}]
-                formatted_messages = self.format_messages(messages)
+            # Convert to simplest possible format for count_tokens endpoint
+            simple_messages = []
             
-            # Call Anthropic's count_tokens endpoint
-            logger.debug(f"Counting tokens with Anthropic API for: {type(content)}")
+            # Handle different content types
+            if isinstance(content, str):
+                # Simple string
+                simple_messages.append({
+                    "role": "user",
+                    "content": [{"type": "text", "text": content}]
+                })
+            elif isinstance(content, list):
+                # Convert list to simple text-only content
+                text_parts = []
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        # Add just the text content without other fields
+                        text_parts.append({"type": "text", "text": item.get("text", "")})
+                    elif isinstance(item, dict) and item.get("type") in ["image", "image_url"]:
+                        # Replace images with text placeholder 
+                        text_parts.append({"type": "text", "text": "[Image: ~1300 tokens]"})
+                    else:
+                        # Convert anything else to simple text
+                        text_parts.append({"type": "text", "text": str(item)})
+                
+                simple_messages.append({
+                    "role": "user", 
+                    "content": text_parts
+                })
+            elif isinstance(content, dict):
+                if "role" in content and "content" in content:
+                    # It's a message, extract role and convert content to simple format
+                    role = "assistant" if content["role"] == "assistant" else "user"
+                    
+                    if isinstance(content["content"], list):
+                        # Process list content
+                        text_parts = []
+                        for item in content["content"]:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                text_parts.append({"type": "text", "text": item.get("text", "")})
+                            elif isinstance(item, dict) and item.get("type") in ["image", "image_url"]:
+                                text_parts.append({"type": "text", "text": "[Image: ~1300 tokens]"})
+                            else:
+                                text_parts.append({"type": "text", "text": str(item)})
+                            
+                        simple_messages.append({
+                            "role": role,
+                            "content": text_parts
+                        })
+                    else:
+                        # Convert to simple text
+                        simple_messages.append({
+                            "role": role,
+                            "content": [{"type": "text", "text": str(content["content"])}]
+                        })
+                else:
+                    # Treat as generic content
+                    simple_messages.append({
+                        "role": "user",
+                        "content": [{"type": "text", "text": str(content)}]
+                    })
+            else:
+                # Fallback for any other type
+                simple_messages.append({
+                    "role": "user",
+                    "content": [{"type": "text", "text": str(content)}]
+                })
+            
+            # Call token counting API with simplified messages
+            logger.debug(f"Counting tokens with simplified format: {simple_messages}")
             response = self.sync_client.messages.count_tokens(
                 model=self.model_config.model,
-                messages=formatted_messages
+                messages=simple_messages
             )
+            
             logger.debug(f"Token count from Anthropic API: {response.input_tokens}")
             return response.input_tokens
             

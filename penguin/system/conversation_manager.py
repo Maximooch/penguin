@@ -112,7 +112,8 @@ class ConversationManager:
         conversation_id: Optional[str] = None,
         image_path: Optional[str] = None,
         streaming: bool = False,
-        stream_callback: Optional[Callable[[str], None]] = None
+        stream_callback: Optional[Callable[[str], None]] = None,
+        context_files: Optional[List[str]] = None
     ) -> Union[str, AsyncGenerator[str, None]]:
         """
         Process a user message and get AI response.
@@ -123,6 +124,7 @@ class ConversationManager:
             image_path: Optional path to image for multi-modal input
             streaming: Whether to stream the response
             stream_callback: Callback for streaming chunks
+            context_files: Optional list of context files to load
             
         Returns:
             AI assistant's response or streaming generator
@@ -132,12 +134,26 @@ class ConversationManager:
             if conversation_id:
                 if not self.load(conversation_id):
                     logger.warning(f"Failed to load conversation {conversation_id}, creating new one")
-                    
+                    self.create_new_conversation()
+                
+            # Load context files if specified
+            if context_files:
+                for file_path in context_files:
+                    self.load_context_file(file_path)
+                
+            # Make sure we have a valid session
+            if not self.conversation or not self.conversation.session:
+                self.create_new_conversation()
+            
             # Prepare conversation with user input
             self.conversation.prepare_conversation(message, image_path)
             
-            # Get formatted messages for API
+            # Get formatted messages for API and ensure they're not empty
             messages = self.conversation.get_formatted_messages()
+            if not messages:
+                logger.error("No messages to send to API - this should never happen")
+                # Add a fallback message 
+                messages = [{"role": "user", "content": message}]
             
             # Get response from API
             if streaming and self.api_client:
@@ -158,19 +174,28 @@ class ConversationManager:
                 else:
                     logger.warning("API client doesn't support streaming, falling back to non-streaming")
                     streaming = False
-                    
-            # Non-streaming path
-            if self.api_client:
-                response = await self.api_client.get_response(messages)
-                # Add assistant's response to conversation
-                self.conversation.add_assistant_message(response)
-                # Save conversation state
-                self.save()
-                return response
             else:
-                error_msg = "No API client available"
-                logger.error(error_msg)
-                return error_msg
+                # Non-streaming path
+                if self.api_client:
+                    response = await self.api_client.get_response(messages)
+                    # Add assistant's response to conversation
+                    self.conversation.add_assistant_message(response)
+                    
+                    # Save conversation state and update token counts
+                    self.save()
+                    
+                    # Update session token counts in the index
+                    session = self.conversation.session
+                    session_id = session.id
+                    if session_id in self.session_manager.session_index:
+                        self.session_manager.session_index[session_id]["token_count"] = session.total_tokens
+                        self.session_manager._save_index(self.session_manager.session_index)
+                    
+                    return response
+                else:
+                    error_msg = "No API client available"
+                    logger.error(error_msg)
+                    return error_msg
                 
         except Exception as e:
             error_msg = f"Error processing message: {str(e)}"
@@ -245,79 +270,102 @@ class ConversationManager:
         
     def get_token_usage(self) -> Dict[str, Any]:
         """
-        Get current token usage statistics.
+        Get token usage statistics for the current conversation across all sessions.
         
         Returns:
-            Dictionary with token usage information
+            Dictionary with token usage by category, session, and total
         """
-        # Start with context window usage 
-        usage = self.context_window.get_token_usage() if self.context_window else {
+        if not self.conversation or not self.conversation.session:
+            return {"total": 0}
+        
+        # Get current session
+        current_session = self.conversation.session
+        session_manager = self.session_manager
+        
+        # Initialize usage dictionary
+        usage = {
             "total": 0,
-            "available": 0,
-            "max": 0
+            "sessions": {}
         }
         
-        # Add sessions tracking
-        usage["sessions"] = {}
+        # First, get tokens from current context window by category
+        for category in MessageCategory:
+            category_tokens = self.context_window.get_usage(category)
+            usage[str(category)] = category_tokens
+            usage["total"] += category_tokens
         
-        # Get current session tokens
-        current_session = self.conversation.session
-        if current_session:
-            session_id = current_session.id
+        # Track visited sessions to avoid double-counting
+        visited_sessions = set()
+        
+        # Helper to add tokens from each session and track linkages
+        def add_session_tokens(session_id: str, is_current: bool = False):
+            if session_id in visited_sessions:
+                return 0
             
-            # Update token counts if needed
-            if hasattr(current_session, 'update_token_counts') and self.api_client:
-                # Use API client for token counting if it has count_tokens method
-                if hasattr(self.api_client, 'count_tokens'):
-                    current_session.update_token_counts(self.api_client.count_tokens)
-                elif hasattr(self.api_client.adapter, 'count_tokens'):
-                    current_session.update_token_counts(self.api_client.adapter.count_tokens)
+            visited_sessions.add(session_id)
             
-            # Get total token count
-            session_tokens = current_session.total_tokens
+            # Try to get token count from session object first
+            session_tokens = 0
             
-            # Add to session dict
+            # For current session, use window value instead of metadata
+            if is_current:
+                session_tokens = usage["total"]
+            else:
+                # For non-current sessions, try to get from index first
+                index_data = session_manager.session_index.get(session_id, {})
+                if "token_count" in index_data:
+                    session_tokens = index_data["token_count"]
+                
+                # If not in index, try to get from session object
+                elif session_id in session_manager.sessions:
+                    session = session_manager.sessions[session_id][0]
+                    session_tokens = session.total_tokens
+            
+            # Add to sessions dict 
             usage["sessions"][session_id] = {"total": session_tokens}
             
-            # Update global total
-            usage["total"] = max(usage["total"], session_tokens)
+            # Check for continuation sessions
+            index_entry = session_manager.session_index.get(session_id, {})
             
-            # Try to count tokens using API client
-            if self.api_client and hasattr(self.api_client, 'count_message_tokens'):
-                try:
-                    messages = self.conversation.get_formatted_messages()
-                    api_counts = self.api_client.count_message_tokens(messages, session_id)
-                    
-                    # Add to sessions dict
-                    usage["sessions"][session_id].update(api_counts)
-                    
-                    # Update global totals if API counting worked
-                    if api_counts.get("total_tokens", 0) > 0:
-                        usage["prompt"] = api_counts.get("prompt_tokens", 0)
-                        usage["completion"] = api_counts.get("completion_tokens", 0)
-                        usage["total"] = api_counts.get("total_tokens", usage["total"])
-                except Exception as e:
-                    logger.warning(f"Error getting token counts from API client: {e}")
+            # Get continued_from sessions
+            if "continued_from" in index_entry and not is_current:
+                prev_session = index_entry["continued_from"]
+                add_session_tokens(prev_session)
+            
+            # Get continued_to sessions    
+            if "continued_to" in index_entry and not is_current:
+                next_session = index_entry["continued_to"]
+                add_session_tokens(next_session)
+            
+            return session_tokens
         
-        # Try to include continuation session stats
-        try:
-            if hasattr(self, 'session_manager') and self.session_manager:
-                # Get continuation information from current session
-                if current_session and current_session.metadata.get("continued_from"):
-                    source_id = current_session.metadata["continued_from"]
-                    source_tokens = current_session.metadata.get("source_session_tokens", 0)
-                    usage["sessions"][source_id] = {"total": source_tokens}
-                    
-                # Or if current session continues to another
-                if current_session and current_session.metadata.get("continued_to"):
-                    target_id = current_session.metadata["continued_to"]
-                    # Get info from session manager if available
-                    if hasattr(self.session_manager, 'session_index'):
-                        target_info = self.session_manager.session_index.get(target_id, {})
-                        target_tokens = target_info.get("token_count", 0)
-                        usage["sessions"][target_id] = {"total": target_tokens}
-        except Exception as e:
-            logger.warning(f"Error retrieving continuation session info: {e}")
+        # Track tokens from current session
+        current_tokens = add_session_tokens(current_session.id, is_current=True)
+        
+        # Now add up the total across all sessions
+        chain_total = 0
+        for session_id, data in usage["sessions"].items():
+            # For continuation sessions, only count what's not in the current session
+            # ----
+            index_data = session_manager.session_index.get(session_id, {})
+            is_in_chain = (
+                index_data.get("continued_from") in visited_sessions or
+                index_data.get("continued_to") in visited_sessions
+            )
+            # ----
+            # Only add tokens for non-current sessions to avoid double counting
+            if session_id != current_session.id:
+                chain_total += data["total"]
+        
+        # Add chain total to usage dict
+        usage["chain_total"] = chain_total + current_tokens
+        
+        # Use chain_total as the master total if it's larger
+        if chain_total + current_tokens > usage["total"]:
+            usage["total"] = chain_total + current_tokens
+        
+        # Add a total across all sessions regardless of chain relationships
+        # usage["total_all_sessions"] = sum(data["total"] for data in usage["sessions"].values())
         
         return usage
         

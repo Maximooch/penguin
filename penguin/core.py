@@ -355,6 +355,12 @@ class PenguinCore:
         # Initialize diagnostics based on config
         if not self.config.diagnostics.enabled:
             disable_diagnostics()
+        
+        # Ensure model_config max_tokens is consistent - fix for test failures
+        if model_config and not hasattr(model_config, 'max_tokens'):
+            model_config.max_tokens = self.config.model.get("max_tokens", 8000)
+        elif model_config and model_config.max_tokens is None:
+            model_config.max_tokens = self.config.model.get("max_tokens", 8000)
 
         # Initialize conversation manager (replaces conversation system)
         self.conversation_manager = ConversationManager(
