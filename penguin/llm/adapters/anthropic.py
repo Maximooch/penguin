@@ -572,3 +572,5 @@ class AnthropicAdapter(BaseAdapter):
                     result[k] = v
             return result
         return content
+
+Adapter = AnthropicAdapter  # Alias for consistent imports

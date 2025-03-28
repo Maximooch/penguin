@@ -672,6 +672,14 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                                 response = self.core.project_manager.get_task_status(
                                     name
                                 )
+                            elif action == "run":
+                                # Verify task exists
+                                task = self.core.project_manager._find_task_by_name(name)
+                                if not task:
+                                    self.display_message(f"Task not found: {name}", "error")
+                                    continue
+                                # Start run mode for task
+                                await self.core.start_run_mode(name=name, description=None)
                             else:
                                 self.display_message(
                                     f"Unknown task action: {action}", "error"

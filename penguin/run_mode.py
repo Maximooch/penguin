@@ -204,7 +204,7 @@ class RunMode:
 
                 # task_prompt += f"Respond with {self.TASK_COMPLETION_PHRASE} when finished."
 
-                await self.core.process_input({"text": task_prompt})
+                await self.core.process({"text": task_prompt})
                 response, exit_flag = await self.core.get_response(
                     current_iteration=iteration + 1, max_iterations=self.max_iterations
                 )
@@ -430,7 +430,7 @@ class RunMode:
                     task_prompt += f"\nContext: {json.dumps(context, indent=2)}"
 
                 # Process task through core
-                await self.core.process_input({"text": task_prompt})
+                await self.core.process({"text": task_prompt})
 
                 # Get response from core
                 response, exit_flag = await self.core.get_response(
