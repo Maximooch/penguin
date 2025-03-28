@@ -44,6 +44,8 @@ const sidebars: SidebarsConfig = {
         'api_reference/chat_manager',
         'api_reference/tool_manager',
         'api_reference/api_client',
+        'api_reference/model_config',
+        'api_reference/provider_adapters',
       ],
     },
   ],
