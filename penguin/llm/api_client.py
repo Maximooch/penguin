@@ -19,6 +19,7 @@ from PIL import Image  # type: ignore
 from .model_config import ModelConfig
 from .adapters import get_adapter
 import logging
+from penguin.llm.provider_adapters import get_provider_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,11 @@ class APIClient:
         """
         self.model_config = model_config
         self.system_prompt = None
+        
+        # Try to get native adapter first
         self.adapter = get_adapter(model_config.provider, model_config)
+        
+        # Store API key and set other properties
         self.api_key = os.getenv(f"{model_config.provider.upper()}_API_KEY")
         self.max_history_tokens = model_config.max_history_tokens or 200000
         # TODO: Make this dynamic based on max_tokens in model_config

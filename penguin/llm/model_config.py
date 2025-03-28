@@ -1,41 +1,40 @@
 import os
 from typing import Any, Dict, Optional
+from dataclasses import dataclass
 
 
+@dataclass
 class ModelConfig:
-    def __init__(
-        self,
-        model: str,
-        provider: str,
-        api_base: str = None,
-        max_tokens: int = None,
-        temperature: float = None,
-        use_assistants_api: bool = False,
-        supports_vision: bool = None,
-        use_native_adapter: bool = True,
-        streaming_enabled: bool = True,
-        # Add token counting config
-        enable_token_counting: bool = True,
-        # api_key: str = None,
-        vision_enabled: bool = None,
-    ):
-        self.model = model
-        self.provider = provider
-        self.api_base = api_base
-        self.max_tokens = max_tokens
-        self.temperature = temperature
-        self.max_history_tokens: Optional[int] = None
+    """Configuration for a model."""
+    model: str
+    provider: str
+    api_base: Optional[str] = None
+    api_key: Optional[str] = None
+    api_version: Optional[str] = None
+    max_tokens: Optional[int] = None
+    max_history_tokens: Optional[int] = None
+    temperature: float = 0.7
+    use_assistants_api: bool = False
+    use_native_adapter: bool = True
+    streaming_enabled: bool = False
+    # Add token counting config
+    enable_token_counting: bool = True
+    # api_key: str = None,
+    vision_enabled: bool = None
+
+    def __post_init__(self):
+        self.max_history_tokens = self.max_history_tokens or 200000
         self.use_assistants_api = (
-            os.getenv("PENGUIN_ASSISTANT_ID") if use_assistants_api else False
+            os.getenv("PENGUIN_ASSISTANT_ID") if self.use_assistants_api else False
         )
         
         # Set vision capability
-        self.vision_enabled = vision_enabled
-        if vision_enabled is None:
+        self.vision_enabled = self.vision_enabled
+        if self.vision_enabled is None:
             # Automatically detect vision capability based on model name
-            if provider == "anthropic" and "claude-3" in model:
+            if self.provider == "anthropic" and "claude-3" in self.model:
                 self.vision_enabled = True
-            elif provider == "openai" and ("gpt-4" in model and "vision" in model):
+            elif self.provider == "openai" and ("gpt-4" in self.model and "vision" in self.model):
                 self.vision_enabled = True
             else:
                 self.vision_enabled = False
@@ -44,16 +43,15 @@ class ModelConfig:
         self.supports_vision = self.vision_enabled
         
         # Enable token counting by default
-        self.enable_token_counting = enable_token_counting
+        self.enable_token_counting = self.enable_token_counting
         
         # Store API key
         # self.api_key = api_key
-        # if not self.api_key and provider:
+        # if not self.api_key and self.provider:
         #     # Try to get from environment if not provided
-        #     self.api_key = os.getenv(f"{provider.upper()}_API_KEY")
+        #     self.api_key = os.getenv(f"{self.provider.upper()}_API_KEY")
             
-        self.use_native_adapter = use_native_adapter
-        self.streaming_enabled = streaming_enabled
+        self.streaming_enabled = self.streaming_enabled
 
     def get_config(self) -> Dict[str, Any]:
         config = {
