@@ -196,15 +196,10 @@ class RunMode:
                     f"Respond with {self.TASK_COMPLETION_PHRASE} ONLY when finished with the task, not the message!."
                 )
 
-                # Future context handling
-
-                # # Add context to prompt if available
-                # if "context" in current_task:
-                #     task_prompt += f"Context: {current_task['context']}\n"
-
-                # task_prompt += f"Respond with {self.TASK_COMPLETION_PHRASE} when finished."
-
-                await self.core.process({"text": task_prompt})
+                # Use the conversation system to prepare the message without executing anything yet
+                self.core.conversation_manager.conversation.prepare_conversation(task_prompt)
+                
+                # Get response and execute actions in one step (no multi-step needed for run mode commands)
                 response, exit_flag = await self.core.get_response(
                     current_iteration=iteration + 1, max_iterations=self.max_iterations
                 )
@@ -429,13 +424,28 @@ class RunMode:
                 if context:
                     task_prompt += f"\nContext: {json.dumps(context, indent=2)}"
 
-                # Process task through core
-                await self.core.process({"text": task_prompt})
-
-                # Get response from core
+                # Process task directly by preparing the conversation
+                self.core.conversation_manager.conversation.prepare_conversation(task_prompt)
+                
+                # Get response and execute actions in one step
                 response, exit_flag = await self.core.get_response(
                     current_iteration=iteration, max_iterations=self.max_iterations
                 )
+
+                # Ensure we have a valid response with traceback and debug info
+                if not response.get("assistant_response"):
+                    debug_info = {
+                        "timestamp": datetime.now().isoformat(),
+                        "iteration": iteration,
+                        "traceback": traceback.format_stack(),
+                        "last_task": self.core.conversation_manager.conversation.get_last_message(),
+                    }
+                    response["assistant_response"] = (
+                        "I apologize, but I encountered an issue generating a response.\n"
+                        f"Debug Traceback:\n{json.dumps(debug_info, indent=2)}"
+                    )
+                    logger.error("Empty response with debug context", extra={"debug_info": debug_info})
+
 
                 # Display Penguin's thoughts
                 if response.get("assistant_response"):

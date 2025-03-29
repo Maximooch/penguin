@@ -29,12 +29,24 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Usage Guide',
-      items: ['usage/basic_usage', 'usage/automode', 'usage/task_management', 'usage/project_management'],
+      items: [
+        'usage/basic_usage', 
+        'usage/automode', 
+        'usage/task_management', 
+        'usage/project_management',
+        'usage/api_usage',
+      ],
     },
     {
       type: 'category',
       label: 'Advanced Topics',
-      items: ['advanced/custom_tools', 'advanced/error_handling', 'advanced/diagnostics'],
+      items: [
+        'advanced/custom_tools', 
+        'advanced/error_handling', 
+        'advanced/diagnostics',
+        'advanced/future_considerations',
+        'advanced/roadmap',
+      ],
     },
     {
       type: 'category',
@@ -46,6 +58,8 @@ const sidebars: SidebarsConfig = {
         'api_reference/api_client',
         'api_reference/model_config',
         'api_reference/provider_adapters',
+        'api_reference/api_server',
+        'api_reference/webui',
       ],
     },
   ],

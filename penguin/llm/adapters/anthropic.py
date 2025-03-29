@@ -126,8 +126,10 @@ class AnthropicAdapter(BaseAdapter):
         params: Dict[str, Any], 
         callback: Optional[Callable[[str], None]] = None
     ) -> str:
-        """Handle streaming response from Anthropic API"""
+        """Handle streaming response from Anthropic API with enhanced error handling"""
         accumulated_response = []
+        stream_start_time = time.time()
+        streaming_timeout = 30  # seconds
         
         try:
             # Create the streaming response
@@ -136,10 +138,13 @@ class AnthropicAdapter(BaseAdapter):
             # Track content reception
             received_content = False
             last_chunk_time = time.time()
+            chunk_timeout = 10  # seconds
+            chunk_count = 0
             
             # Process each chunk as it comes in
             async for chunk in stream:
                 last_chunk_time = time.time()
+                chunk_count += 1
                 
                 # Extract text content based on chunk type
                 content = None
@@ -156,11 +161,11 @@ class AnthropicAdapter(BaseAdapter):
                         elif chunk.type == 'content_block_start' and hasattr(chunk, 'content_block'):
                             if chunk.content_block.type == 'text' and hasattr(chunk.content_block, 'text'):
                                 content = chunk.content_block.text
-                
+                    
                     # Process extracted content
                     if content:
                         received_content = True
-                        self.logger.debug(f"Extracted content: {content}")
+                        self.logger.debug(f"Extracted content from chunk {chunk_count}: {content[:20]}...")
                         # Call the callback with the content
                         if callback:
                             callback(content)
@@ -168,27 +173,77 @@ class AnthropicAdapter(BaseAdapter):
                         accumulated_response.append(content)
                         
                 except Exception as e:
-                    error_msg = f"Error processing chunk: {str(e)}"
-                    self.logger.error(error_msg)
+                    error_msg = f"Error processing chunk {chunk_count}: {str(e)}"
+                    self.logger.error(f"{error_msg}\n{traceback.format_exc()}")
+                
+                # Check for chunk timeout
+                current_time = time.time()
+                if current_time - last_chunk_time > chunk_timeout:
+                    self.logger.warning(f"No chunks received for {chunk_timeout} seconds, stopping stream")
+                    break
+                
+                # Check for overall timeout
+                if current_time - stream_start_time > streaming_timeout:
+                    self.logger.warning(f"Streaming exceeded timeout of {streaming_timeout} seconds, stopping")
+                    break
+            
+            # Log streaming stats
+            total_stream_time = time.time() - stream_start_time
+            self.logger.info(f"Streaming complete: {chunk_count} chunks in {total_stream_time:.2f}s, received content: {received_content}")
             
             # Join all chunks to get the complete response
             complete_response = ''.join(accumulated_response)
             
-            # Check for suspiciously short responses after stream completes
-            if len(complete_response.strip()) <= 1:
+            # Validate the response
+            if not received_content or len(complete_response.strip()) <= 5:
+                # Handle suspiciously short responses
                 self.logger.warning(f"Suspiciously short response received: '{complete_response}'")
-                # Only replace with error message if it's just punctuation or empty
-                if complete_response.strip() in ['', '.', '?', '!', ',']:
-                    return "I encountered an issue while generating a response. The connection may have been interrupted. Please try again." + complete_response + traceback.format_exc()
+                
+                # Check if it's effectively empty (just whitespace or minimal punctuation)
+                if complete_response.strip() in ['', '.', '?', '!', ','] or len(complete_response.strip()) <= 1:
+                    error_message = "I encountered an issue while generating a response. The connection may have been interrupted."
+                    self.logger.error(f"Empty response detected: {complete_response}")
+                    
+                    # If we got nothing but have some chunks, try to salvage
+                    if chunk_count > 0:
+                        return error_message
+                    else:
+                        # Truly empty - raise exception to trigger retry
+                        raise ValueError("Stream produced no content")
+            
+            # Add detailed debugging for very short responses
+            if 1 < len(complete_response.strip()) <= 5:
+                self.logger.warning(f"Very short but non-empty response: '{complete_response}', from {chunk_count} chunks")
             
             return complete_response
             
+        except asyncio.CancelledError:
+            self.logger.warning("Anthropic streaming was cancelled")
+            # Return what we've accumulated so far or an error message
+            if accumulated_response:
+                self.logger.info(f"Returning partial response from cancelled stream ({len(accumulated_response)} chunks)")
+                return ''.join(accumulated_response)
+            else:
+                raise  # Re-raise to properly handle cancellation
+            
         except Exception as e:
             error_msg = f"Error during Anthropic streaming: {str(e)}"
-            self.logger.error(error_msg)
+            self.logger.error(f"{error_msg}\n{traceback.format_exc()}")
+            
+            # Log more details about the streaming state
+            elapsed_time = time.time() - stream_start_time
+            self.logger.error(f"Stream error details: elapsed_time={elapsed_time:.2f}s, chunks_received={len(accumulated_response)}")
+            
             if callback:
                 callback(f"\n[Streaming Error: {str(e)}]")
-            return ''.join(accumulated_response) or error_msg
+                
+            # Return partial response if we have any content
+            if accumulated_response:
+                self.logger.info(f"Returning partial response despite error ({len(accumulated_response)} chunks)")
+                return ''.join(accumulated_response)
+            
+            # Otherwise return an error message
+            return f"Error during response generation: {str(e)}"
     
     def process_response(self, response: Any) -> Tuple[str, List[Any]]:
         """Process Anthropic API response into standardized format"""

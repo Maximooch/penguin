@@ -7,7 +7,9 @@ model:
   use_assistants_api: false # Add this line to toggle OpenAI Assistants API usage
   use_native_adapter: true  # Use direct Anthropic SDK instead of LiteLLM
   streaming_enabled: true   # Enable streaming support
-  max_tokens: 
+  max_tokens: 8192
+  temperature: 0.4
+  context_window: 200000
   # temperature: 0.4
 
 
