@@ -153,12 +153,17 @@ class BrowserManager:
             logging.warning("No browser context available")
             return False
         
-        page = self.get_page()
-        if not page:
-            logging.warning("No active page available")
+        try:
+            # Fix: Properly await the coroutine
+            page = await self.get_page()
+            if not page:
+                logging.warning("No active page available")
+                return False
+            
+            return True
+        except Exception as e:
+            logging.error(f"Error validating browser state: {str(e)}")
             return False
-        
-        return True
 
     async def navigate_to(self, url: str) -> str:
         if not await self.validate_browser_state():

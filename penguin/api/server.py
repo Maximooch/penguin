@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
-from penguin.config import config
+from penguin.config import config, Config
 
 # Use absolute imports
 from penguin.core import PenguinCore
@@ -25,19 +25,29 @@ logger = logging.getLogger(__name__)
 # Initialize core components
 def init_core():
     try:
+        # Create a proper Config object instead of using the raw dictionary
+        config_obj = Config.load_config()
+        
+        # Create ModelConfig for the LLM with parameters from config dictionary
         model_config = ModelConfig(
             model=config["model"]["default"],
             provider=config["model"]["provider"],
             api_base=config["api"]["base_url"],
-            streaming_enabled=True,  # Enable streaming by default
+            streaming_enabled=config["model"].get("streaming_enabled", True),
             use_native_adapter=config["model"].get("use_native_adapter", True),
+            max_tokens=config["model"].get("max_tokens", 8000),
+            temperature=config["model"].get("temperature", 0.7),
+            enable_token_counting=config["model"].get("enable_token_counting", True),
+            vision_enabled=config["model"].get("vision_enabled", None)
         )
 
         api_client = APIClient(model_config=model_config)
         api_client.set_system_prompt(SYSTEM_PROMPT)
         tool_manager = ToolManager(log_error)
 
+        # Pass the proper Config object, not the raw dictionary
         core = PenguinCore(
+            config=config_obj,
             api_client=api_client, 
             tool_manager=tool_manager, 
             model_config=model_config

@@ -545,30 +545,56 @@ class PenguinCore:
             # Get formatted messages from conversation manager
             messages = self.conversation_manager.conversation.get_formatted_messages()
             
-            # Acquire stream lock and cancel any active stream
-            async with self.stream_lock:
-                if self.current_stream:
-                    try:
-                        self.current_stream.cancel()
-                    except Exception as e:
-                        logger.debug(f"Error cancelling previous stream: {e}")
+            # Maximum retry attempts for empty responses
+            max_retries = 2
+            retry_count = 0
+            
+            while retry_count <= max_retries:
+                # Acquire stream lock and handle any active stream
+                async with self.stream_lock:
+                    if self.current_stream and not self.current_stream.done():
+                        try:
+                            logger.debug("Cancelling previous stream")
+                            self.current_stream.cancel()
+                            # Give it a moment to clean up
+                            await asyncio.sleep(0.1)
+                        except Exception as e:
+                            logger.debug(f"Error cancelling previous stream: {e}")
+                        self.current_stream = None
+                
+                # Start new stream and store reference
+                logger.debug("Starting new API response stream")
+                self.current_stream = asyncio.create_task(
+                    self.api_client.get_response(messages=messages)
+                )
+                
+                try:
+                    # Wait for stream to complete
+                    assistant_response = await self.current_stream
+                except asyncio.CancelledError:
+                    logger.warning("Response stream was cancelled")
+                    assistant_response = None
+                except Exception as e:
+                    logger.error(f"Error in response stream: {str(e)}")
+                    assistant_response = None
+                finally:
                     self.current_stream = None
-            
-            # Start new stream and store reference
-            self.current_stream = asyncio.create_task(
-                self.api_client.get_response(messages=messages)
-            )
-            
-            try:
-                # Wait for stream to complete
-                assistant_response = await self.current_stream
-            finally:
-                self.current_stream = None
-            
-            # Validate response
-            if not assistant_response:
-                logger.warning("Empty response from API")
-                return {"assistant_response": "", "action_results": []}, False
+                
+                # Validate response
+                if not assistant_response or not assistant_response.strip():
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        logger.warning(f"Empty response from API (attempt {retry_count}/{max_retries}), retrying...")
+                        # Small exponential backoff
+                        await asyncio.sleep(1 * retry_count)
+                        continue
+                    else:
+                        logger.warning(f"Empty response from API after {max_retries} attempts")
+                        assistant_response = "I apologize, but I encountered an issue generating a response. Please try again."
+                        break
+                else:
+                    # We got a valid response, break the retry loop
+                    break
             
             # Add assistant response to conversation
             self.conversation_manager.conversation.add_assistant_message(assistant_response)
@@ -717,14 +743,13 @@ class PenguinCore:
         streaming: Optional[bool] = None
     ) -> Dict[str, Any]:
         """
-        Process a message with multi-step reasoning and action execution.
+        Process a message with Penguin.
         
         This method serves as the primary interface for external systems 
         (CLI, API, etc.) to interact with Penguin's capabilities. It handles:
         - Input preprocessing
         - Conversation loading/management
-        - Multi-step reasoning
-        - Action execution
+        - Delegating to multi-step processing
         - Error handling and retries
         
         Args:
@@ -759,11 +784,65 @@ class PenguinCore:
             if context_files:
                 for file_path in context_files:
                     self.conversation_manager.load_context_file(file_path)
-                    
-            # Process message with multi-step reasoning
+            
+            # Delegate to multi-step processing
+            return await self.multi_step_process(
+                message=message,
+                image_path=image_path,
+                context=context,
+                max_iterations=max_iterations,
+                streaming=streaming
+            )
+            
+        except Exception as e:
+            error_msg = f"Error in process method: {str(e)}"
+            logger.error(f"{error_msg}\n{traceback.format_exc()}")
+            log_error(e, context={"method": "process", "input_data": input_data})
+            return {
+                "assistant_response": "I apologize, but an error occurred while processing your request.",
+                "action_results": [],
+                "error": str(e)
+            }
+
+    async def multi_step_process(
+        self,
+        message: str,
+        image_path: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+        max_iterations: int = 5,
+        streaming: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        """
+        Process a message with multi-step reasoning and action execution.
+        
+        This method handles the core logic of:
+        - Multi-step reasoning
+        - Action execution
+        - Progress tracking
+        
+        Args:
+            message: The text message to process
+            image_path: Optional path to an image to include
+            context: Optional additional context for processing
+            max_iterations: Maximum reasoning-action cycles
+            streaming: Whether to use streaming mode for responses
+            
+        Returns:
+            Dict containing assistant response and action results
+        """
+        try:
+            # Process context if provided
+            if context:
+                for key, value in context.items():
+                    self.conversation_manager.add_context(f"{key}: {value}")
+            
+            # Multi-step processing loop
             final_response = None
             iterations = 0
             action_results_all = []
+            
+            # Prepare conversation with user input (only done once)
+            self.conversation_manager.conversation.prepare_conversation(message, image_path)
             
             # Multi-step processing loop
             while iterations < max_iterations:
@@ -771,10 +850,6 @@ class PenguinCore:
                 
                 # Notify progress callbacks
                 self.notify_progress(iterations, max_iterations, f"Processing step {iterations}/{max_iterations}...")
-                
-                # Prepare conversation with user input (only on first iteration)
-                if iterations == 1:
-                    self.conversation_manager.conversation.prepare_conversation(message, image_path)
                 
                 # Get the next response (which may contain actions)
                 response_data, exit_continuation = await self.get_response(
@@ -784,7 +859,7 @@ class PenguinCore:
                 
                 # Extract assistant response and action results
                 assistant_response = response_data.get("assistant_response", "")
-                current_action_results = response_data.get("action_results", [])
+                current_action_results = response_data.get("action_results", []) # TODO: I wonder if the empty response issue is due to duplicative action results, look into this
                 
                 # Add action results to overall collection
                 action_results_all.extend(current_action_results)
@@ -796,7 +871,7 @@ class PenguinCore:
                     
                 # If continuing, notify of next iteration
                 self.notify_progress(iterations, max_iterations, "Proceeding to next iteration...")
-                
+            
             # Save the final conversation state
             self.conversation_manager.save()
             
@@ -807,15 +882,15 @@ class PenguinCore:
             }
             
         except Exception as e:
-            error_msg = f"Error in process method: {str(e)}"
+            error_msg = f"Error in multi_step_process method: {str(e)}"
             logger.error(f"{error_msg}\n{traceback.format_exc()}")
-            log_error(e, context={"method": "process", "input_data": input_data})
+            log_error(e, context={"method": "multi_step_process", "message": message})
             return {
-                "assistant_response": "I apologize, but an error occurred while processing your request.",
+                "assistant_response": "I apologize, but an error occurred during multi-step processing.",
                 "action_results": [],
                 "error": str(e)
             }
-            
+
     def list_conversations(self, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
         """
         List available conversations.

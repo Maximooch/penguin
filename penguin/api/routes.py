@@ -1,13 +1,17 @@
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks # type: ignore
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks, UploadFile, File, Form # type: ignore
 from pydantic import BaseModel # type: ignore
 from dataclasses import asdict # type: ignore
 from datetime import datetime # type: ignore
 import asyncio
 import logging
+import os
+from pathlib import Path
+import shutil
+import uuid
 
+from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
-from penguin.system.conversation import ConversationLoader, ConversationMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +20,9 @@ class MessageRequest(BaseModel):
     conversation_id: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
     context_files: Optional[List[str]] = None
-    streaming: Optional[bool] = None
+    streaming: Optional[bool] = True
     max_iterations: Optional[int] = 5
+    image_path: Optional[str] = None
 
 class StreamResponse(BaseModel):
     id: str
@@ -54,7 +59,13 @@ async def process_message(
     """Process a chat message, with optional conversation support."""
     try:
         # Create input data dictionary from request
-        input_data = {"text": request.text}
+        input_data = {
+            "text": request.text
+        }
+        
+        # Add image path if provided
+        if request.image_path:
+            input_data["image_path"] = request.image_path
         
         # Process the message with all available options
         process_result = await core.process(
@@ -91,7 +102,9 @@ async def stream_chat(
     
     try:
         # Register callbacks
-        core.register_token_callback(token_callback)
+        token_callbacks = getattr(core, "token_callbacks", [])
+        if hasattr(core, "token_callbacks") and stream_callback not in token_callbacks:
+            core.token_callbacks.append(token_callback)
         
         while True:
             data = await websocket.receive_json()
@@ -100,7 +113,14 @@ async def stream_chat(
             text = data.get("text", "")
             conversation_id = data.get("conversation_id")
             context_files = data.get("context_files")
+            context = data.get("context")
             max_iterations = data.get("max_iterations", 5)
+            image_path = data.get("image_path")
+            
+            # Prepare input data
+            input_data = {"text": text}
+            if image_path:
+                input_data["image_path"] = image_path
             
             # Enable streaming for this particular request
             if hasattr(core, "model_config"):
@@ -114,9 +134,25 @@ async def stream_chat(
                 original_callback = core.api_client.stream_callback
                 core.api_client.stream_callback = stream_callback
             
+            # Register progress callback for multi-step processing
+            def progress_callback(iteration, max_iter, message=None):
+                asyncio.create_task(
+                    websocket.send_json({
+                        "event": "progress", 
+                        "data": {
+                            "iteration": iteration,
+                            "max_iterations": max_iter,
+                            "message": message
+                        }
+                    })
+                )
+            
             try:
+                # Register progress callback if core supports it
+                if hasattr(core, "register_progress_callback"):
+                    core.register_progress_callback(progress_callback)
+                
                 # Process with streaming enabled
-                input_data = {"text": text}
                 await websocket.send_json({"event": "start", "data": {}})
                 
                 process_result = await core.process(
@@ -124,6 +160,7 @@ async def stream_chat(
                     conversation_id=conversation_id,
                     max_iterations=max_iterations,
                     context_files=context_files,
+                    context=context,
                     streaming=True
                 )
                 
@@ -144,6 +181,11 @@ async def stream_chat(
                 # Restore original callback if modified
                 if stream_cb_attr and hasattr(core, "api_client"):
                     core.api_client.stream_callback = original_callback
+                    
+                # Remove progress callback
+                if hasattr(core, "progress_callbacks"):
+                    if progress_callback in core.progress_callbacks:
+                        core.progress_callbacks.remove(progress_callback)
                     
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
@@ -201,24 +243,25 @@ async def get_token_usage(core: PenguinCore = Depends(get_core)):
 
 
 @router.get("/api/v1/conversations")
-async def list_conversations():
+async def list_conversations(core: PenguinCore = Depends(get_core)):
     """List all available conversations."""
     try:
-        loader = ConversationLoader()
-        conversations = loader.list_conversations()
-        conv_data = [asdict(conv) for conv in conversations]
-        return {"conversations": conv_data}
+        conversations = core.list_conversations()
+        return {"conversations": conversations}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error retrieving conversations: {str(e)}")
 
 
 @router.get("/api/v1/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str):
+async def get_conversation(conversation_id: str, core: PenguinCore = Depends(get_core)):
     """Retrieve conversation details by ID."""
     try:
-        loader = ConversationLoader()
-        messages, metadata = loader.load_conversation(conversation_id)
-        return {"metadata": asdict(metadata), "messages": messages}
+        conversation = core.get_conversation(conversation_id)
+        if not conversation:
+            raise HTTPException(status_code=404, detail=f"Conversation {conversation_id} not found")
+        return conversation
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -227,31 +270,10 @@ async def get_conversation(conversation_id: str):
 
 
 @router.post("/api/v1/conversations/create")
-async def create_conversation():
+async def create_conversation(core: PenguinCore = Depends(get_core)):
     """Create a new conversation."""
     try:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        conversation_id = f"conversation_{timestamp}"
-        
-        # Initialize with welcome message
-        messages = [{
-            "role": "system",
-            "content": "Welcome to Penguin AI! How can I help you today?",
-            "timestamp": datetime.now().isoformat()
-        }]
-        
-        # Create metadata
-        metadata = ConversationMetadata(
-            created_at=datetime.now().isoformat(),
-            last_active=datetime.now().isoformat(),
-            message_count=1,
-            session_id=conversation_id
-        )
-        
-        # Save initial conversation state
-        loader = ConversationLoader()
-        loader.save_conversation(conversation_id, messages, metadata)
-        
+        conversation_id = core.create_conversation()
         return {"conversation_id": conversation_id}
     except Exception as e:
         raise HTTPException(
@@ -280,10 +302,78 @@ async def load_context_file(
 ):
     """Load a context file into the current conversation."""
     try:
-        success = core.conversation_system.load_context_file(request.file_path)
+        # Check if core has conversation_manager attribute (new style)
+        if hasattr(core, "conversation_manager"):
+            success = core.conversation_manager.load_context_file(request.file_path)
+        # Check if core has conversation_system attribute (old style)
+        elif hasattr(core, "conversation_system"):
+            success = core.conversation_system.load_context_file(request.file_path)
+        else:
+            raise HTTPException(
+                status_code=500, 
+                detail="No conversation manager found in core"
+            )
+            
         return {"success": success, "file_path": request.file_path}
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Error loading context file: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Error loading context file: {str(e)}"
         )
+
+
+@router.post("/api/v1/upload")
+async def upload_file(
+    file: UploadFile = File(...),
+    core: PenguinCore = Depends(get_core)
+):
+    """Upload a file (primarily images) to be used in conversations."""
+    try:
+        # Create uploads directory if it doesn't exist
+        uploads_dir = Path(WORKSPACE_PATH) / "uploads"
+        uploads_dir.mkdir(exist_ok=True)
+        
+        # Generate a unique filename
+        file_extension = file.filename.split('.')[-1] if '.' in file.filename else ''
+        unique_filename = f"{uuid.uuid4()}.{file_extension}"
+        file_path = uploads_dir / unique_filename
+        
+        # Save the file
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        # Return the path that can be referenced in future requests
+        return {
+            "path": str(file_path),
+            "filename": file.filename,
+            "content_type": file.content_type
+        }
+    except Exception as e:
+        logger.error(f"Error uploading file: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
+
+
+@router.get("/api/v1/capabilities")
+async def get_capabilities(core: PenguinCore = Depends(get_core)):
+    """Get model capabilities like vision support."""
+    try:
+        capabilities = {
+            "vision_enabled": False,
+            "streaming_enabled": True
+        }
+        
+        # Check if the model supports vision
+        if hasattr(core, "model_config") and hasattr(core.model_config, "vision_enabled"):
+            capabilities["vision_enabled"] = core.model_config.vision_enabled
+            
+        # Check streaming support
+        if hasattr(core, "model_config") and hasattr(core.model_config, "streaming_enabled"):
+            capabilities["streaming_enabled"] = core.model_config.streaming_enabled
+            
+        return capabilities
+    except Exception as e:
+        logger.error(f"Error getting capabilities: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
