@@ -408,10 +408,7 @@ class RunMode:
 
             while iteration < self.max_iterations:
                 if self._interrupted:
-                    return {
-                        "status": "interrupted",
-                        "message": "Task execution interrupted by user",
-                    }
+                    return {"status": "interrupted", "message": "Task execution interrupted by user"}
 
                 # Create task prompt
                 task_prompt = (
@@ -424,32 +421,29 @@ class RunMode:
                 if context:
                     task_prompt += f"\nContext: {json.dumps(context, indent=2)}"
 
-                # Process task directly by preparing the conversation
-                self.core.conversation_manager.conversation.prepare_conversation(task_prompt)
-                
-                # Get response and execute actions in one step
-                response, exit_flag = await self.core.get_response(
-                    current_iteration=iteration, max_iterations=self.max_iterations
+                # Use core.process directly with run_mode context
+                # This will automatically use the optimized path
+                response = await self.core.process(
+                    task_prompt, 
+                    context=context,
+                    max_iterations=1  # Just one iteration needed here
                 )
 
-                # Ensure we have a valid response with traceback and debug info
+                # Enhanced error handling for empty responses
                 if not response.get("assistant_response"):
-                    debug_info = {
-                        "timestamp": datetime.now().isoformat(),
+                    error_info = {
                         "iteration": iteration,
-                        "traceback": traceback.format_stack(),
-                        "last_task": self.core.conversation_manager.conversation.get_last_message(),
+                        "timestamp": datetime.now().isoformat(),
+                        "response_data": response,
                     }
+                    logger.error(f"Empty response in task execution", extra={"debug_info": error_info}) # TODO:Include traceback
                     response["assistant_response"] = (
-                        "I apologize, but I encountered an issue generating a response.\n"
-                        f"Debug Traceback:\n{json.dumps(debug_info, indent=2)}"
+                        "I apologize, but I encountered an issue generating a response. "
+                        "Let me try to continue with the task."
                     )
-                    logger.error("Empty response with debug context", extra={"debug_info": debug_info})
-
 
                 # Display Penguin's thoughts
-                if response.get("assistant_response"):
-                    self._display_message(response["assistant_response"], "assistant")
+                self._display_message(response["assistant_response"], "assistant")
 
                 # Display action results
                 for result in response.get("action_results", []):

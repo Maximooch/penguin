@@ -51,6 +51,19 @@ class AnthropicAdapter(BaseAdapter):
             # Format messages for Anthropic
             formatted_messages = self.format_messages(messages)
             
+            # DEBUGGING: Examine raw messages before formatting
+            # self.logger.warning(f"PRE-FORMATTING: {len(messages)} MESSAGES")
+            # for i, msg in enumerate(messages):
+            #     self.logger.warning(f"RAW MSG {i}: role={msg.get('role')}, content_type={type(msg.get('content'))}, length={len(str(msg.get('content', '')))}")
+            #     if i < 2 or i > len(messages) - 3:  # Show first 2 and last 2 only to avoid log spam
+            #         content_preview = str(msg.get('content', ''))[:100] + '...' if len(str(msg.get('content', ''))) > 100 else str(msg.get('content', ''))
+            #         self.logger.warning(f"CONTENT {i}: {content_preview}")
+            
+            # # DEBUGGING: Log formatted messages
+            # self.logger.warning(f"POST-FORMATTING: {len(formatted_messages)} MESSAGES")
+            # for i, msg in enumerate(formatted_messages):
+            #     self.logger.warning(f"FORMATTED MSG {i}: role={msg.get('role')}, content_parts={len(msg.get('content', []))}")
+            
             # Prepare request parameters
             request_params = {
                 "model": self.model_config.model,
@@ -65,13 +78,20 @@ class AnthropicAdapter(BaseAdapter):
             
             # Make the API call
             safe_params = self._safe_log_content(request_params.copy())
-            logger.debug(f"Sending request to Anthropic: {safe_params}")
+            # logger.warning(f"FINAL REQUEST TO ANTHROPIC: {safe_params}")
             response = await self.async_client.messages.create(**request_params)
             
             return response
         
         except Exception as e:
             logger.error(f"Error in Anthropic API call: {str(e)}")
+            # Add detailed error information
+            logger.error(f"Error details: {traceback.format_exc()}")
+            # Check if specific Anthropic error
+            if hasattr(e, 'status_code'):
+                logger.error(f"Anthropic API error code: {getattr(e, 'status_code')}")
+            if hasattr(e, 'response'):
+                logger.error(f"Response data: {getattr(e, 'response')}")
             raise
     
     async def create_completion(
@@ -276,12 +296,29 @@ class AnthropicAdapter(BaseAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Format messages for Anthropic API, properly handling images"""
         formatted_messages = []
+        # system_content = []  # Collect system messages to combine
         
+        # # First pass - extract system messages
+        # for msg in messages:
+        #     if msg.get("role") == "system" and msg.get("content"):
+        #         # Skip the special system prompt which is handled separately
+        #         if not (isinstance(msg.get("content"), str) and len(msg.get("content", "")) > 1000 
+        #                and "You are Penguin" in msg.get("content", "")):
+        #             system_content.append(str(msg.get("content", "")))
+        
+        # # Add collected system messages as a user message if we have any
+        # if system_content:
+        #     formatted_messages.append({
+        #         "role": "user", 
+        #         "content": [{"type": "text", "text": "Context from previous steps:\n" + "\n".join(system_content)}]
+        #     })
+        
+        # Second pass - handle regular messages
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             
-            # Skip system messages (handled separately in create_message)
+            # Skip all system messages (handled separately)
             if role == "system":
                 continue
             

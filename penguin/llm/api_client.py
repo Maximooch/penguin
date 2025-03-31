@@ -452,6 +452,23 @@ class APIClient:
         use_streaming = stream if stream is not None else self.model_config.streaming_enabled
         
         try:
+            # Debug token counts
+            # try:
+            #     token_count = self.count_tokens(messages)
+            #     logger.warning(f"TOKEN COUNT FOR REQUEST: {token_count} tokens")
+            #     if token_count > 100000:  # Arbitrary high number as warning threshold
+            #         logger.error(f"EXTREMELY HIGH TOKEN COUNT: {token_count}. This will likely fail.")
+                    
+            #     # Calculate token counts for each message
+            #     for i, msg in enumerate(messages):
+            #         try:
+            #             msg_tokens = self.count_tokens(msg)
+            #             logger.warning(f"Message {i}: {msg_tokens} tokens, role={msg.get('role')}")
+            #         except Exception as e:
+            #             logger.warning(f"Could not count tokens for message {i}: {e}")
+            # except Exception as e:
+            #     logger.warning(f"Token counting failed: {e}")
+            
             if use_streaming and stream_callback:
                 # Handle streaming with proper accumulation
                 accumulated_response = await self.create_streaming_completion(
