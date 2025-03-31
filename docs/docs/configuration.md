@@ -32,4 +32,21 @@ OPENAI_API_KEY=insert_your_key_here
 
 
 
-# todo: add configuration for ollama!
+# Ollama Configuration
+
+Penguin supports using local models through Ollama. To use Ollama models:
+
+1. Install Ollama from [ollama.ai](https://ollama.ai)
+2. Pull your desired model: `ollama pull llama3` (or any other model)
+3. Configure Penguin to use Ollama:
+
+```yaml
+# In config.yml
+model: llama3
+provider: ollama
+model_configs:
+  temperature: 0.7
+  max_tokens: 2000
+```
+
+**Note about System Messages**: Ollama models typically don't natively support system messages. Penguin handles this by converting system messages to user messages with a special prefix. This ensures your system prompts and instructions are still passed to the model effectively.
