@@ -14,6 +14,15 @@ print("Hello World")
 x = 5 + 3
 </execute>
 
+To execute a command, use the <execute_command> tag.
+
+Note: The commands themselves depend on the OS, obviously. Don't try to run bash commands if the OS you're running on is Windows
+
+<execute_command>
+# Example:
+ls -l
+</execute_command>
+
 NOTE: 
 - Always include actual executable Python code within <execute> tags
 - Only do code edits to the specific parts of the file that need to be changed, rather than rewriting the whole file.

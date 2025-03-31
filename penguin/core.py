@@ -785,14 +785,24 @@ class PenguinCore:
                 for file_path in context_files:
                     self.conversation_manager.load_context_file(file_path)
             
-            # Delegate to multi-step processing
-            return await self.multi_step_process(
-                message=message,
-                image_path=image_path,
-                context=context,
-                max_iterations=max_iterations,
-                streaming=streaming
-            )
+            # Check if we're in run mode by looking at the core state
+            in_run_mode = hasattr(self, '_continuous_mode') and self._continuous_mode
+            
+            # If we're in run mode, bypass multi_step_process
+            if in_run_mode:
+                # Direct approach for run mode
+                self.conversation_manager.conversation.prepare_conversation(message, image_path)
+                response, _ = await self.get_response()
+                return response
+            else:
+                # Standard multi-step processing for normal operation
+                return await self.multi_step_process(
+                    message=message,
+                    image_path=image_path,
+                    context=context,
+                    max_iterations=max_iterations,
+                    streaming=streaming
+                )
             
         except Exception as e:
             error_msg = f"Error in process method: {str(e)}"

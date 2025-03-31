@@ -25,6 +25,7 @@ class ActionType(Enum):
     # READ = "read"
     # WRITE = "write"
     EXECUTE = "execute"
+    EXECUTE_COMMAND = "execute_command"
     SEARCH = "search"
     # CREATE_FILE = "create_file"
     # CREATE_FOLDER = "create_folder"
@@ -154,6 +155,7 @@ class ActionExecutor:
             # ActionType.READ: lambda params: self.tool_manager.execute_tool("read_file", {"path": params}),
             # ActionType.WRITE: self._write_file,
             ActionType.EXECUTE: self._execute_code,
+            ActionType.EXECUTE_COMMAND: self._execute_command, #TODO: FULLY IMPLEMENT THIS
             ActionType.SEARCH: lambda params: self.tool_manager.execute_tool(
                 "grep_search", {"pattern": params}
             ),
@@ -244,6 +246,11 @@ class ActionExecutor:
     def _execute_code(self, params: str) -> str:
         logger.debug(f"Executing code: {params}")
         return self.tool_manager.execute_code(params)
+
+    def _execute_command(self, params: str) -> str:
+        """Execute a shell command using the tool manager."""
+        logger.debug(f"Executing command: {params}")
+        return self.tool_manager.execute_tool("execute_command", {"command": params})
 
     # def _lint_python(self, params: str) -> str:
     #     parts = params.split(':', 1)
