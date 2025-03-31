@@ -13,15 +13,20 @@ logger = logging.getLogger(__name__)
 class PerplexityProvider(WebSearchProvider):
     def __init__(self):
         self.api_key = PERPLEXITY_API_KEY
-        if not self.api_key:
-            raise ValueError("PERPLEXITY_API_KEY environment variable is not set")
+        self.is_available = bool(self.api_key)
+        if not self.is_available:
+            logger.warning("PERPLEXITY_API_KEY environment variable is not set. Perplexity search will be unavailable.")
         self.base_url = "https://api.perplexity.ai/chat/completions"
         self.headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
             "Content-Type": "application/json",
         }
 
     def search(self, query: str, max_results: int = 5) -> List[Dict[str, str]]:
+        if not self.is_available:
+            logger.warning("Perplexity search attempted but API key is not set")
+            return [{"title": "Perplexity Search Unavailable", "snippet": "Perplexity API key is not set. Please set the PERPLEXITY_API_KEY environment variable to use this feature."}]
+            
         try:
             payload = {
                 "model": "sonar",

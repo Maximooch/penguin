@@ -274,13 +274,25 @@ class PenguinCore:
 
             # Initialize model configuration
             pbar.set_description("Creating model config")
+            # Handle different types of config.model (dict or ModelConfig)
+            if hasattr(config.model, "get"):
+                # It's a dictionary-like object
+                use_assistants_api = config.model.get("use_assistants_api", False)
+                use_native_adapter = config.model.get("use_native_adapter", True)
+                streaming_enabled = config.model.get("streaming_enabled", True)
+            else:
+                # It's a ModelConfig object
+                use_assistants_api = getattr(config.model, "use_assistants_api", False)
+                use_native_adapter = getattr(config.model, "use_native_adapter", True)
+                streaming_enabled = getattr(config.model, "streaming_enabled", True)
+                
             model_config = ModelConfig(
                 model=model or DEFAULT_MODEL,
                 provider=provider or DEFAULT_PROVIDER,
                 api_base=config.api.base_url,
-                use_assistants_api=config.model.get("use_assistants_api", False),
-                use_native_adapter=config.model.get("use_native_adapter", True),
-                streaming_enabled=config.model.get("streaming_enabled", True)
+                use_assistants_api=use_assistants_api,
+                use_native_adapter=use_native_adapter,
+                streaming_enabled=streaming_enabled
             )
             pbar.update(1)
 
@@ -358,9 +370,17 @@ class PenguinCore:
         
         # Ensure model_config max_tokens is consistent - fix for test failures
         if model_config and not hasattr(model_config, 'max_tokens'):
-            model_config.max_tokens = self.config.model.get("max_tokens", 8000)
+            # Handle different types of config.model (dict or ModelConfig)
+            if hasattr(self.config.model, "get"):
+                model_config.max_tokens = self.config.model.get("max_tokens", 8000)
+            else:
+                model_config.max_tokens = getattr(self.config.model, "max_tokens", 8000)
         elif model_config and model_config.max_tokens is None:
-            model_config.max_tokens = self.config.model.get("max_tokens", 8000)
+            # Handle different types of config.model (dict or ModelConfig)
+            if hasattr(self.config.model, "get"):
+                model_config.max_tokens = self.config.model.get("max_tokens", 8000)
+            else:
+                model_config.max_tokens = getattr(self.config.model, "max_tokens", 8000)
 
         # Initialize conversation manager (replaces conversation system)
         self.conversation_manager = ConversationManager(
