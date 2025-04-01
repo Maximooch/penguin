@@ -65,7 +65,7 @@ class ContextWindowManager:
             api_client: API client for token counting
         """
         # Get max_tokens from model_config if available
-        self.max_tokens = 100000  # Default fallback
+        self.max_tokens = 150000  # Default fallback
         
         if model_config and hasattr(model_config, 'max_tokens') and model_config.max_tokens:
             self.max_tokens = model_config.max_tokens
