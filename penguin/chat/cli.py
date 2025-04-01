@@ -785,10 +785,13 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     if command == "run":
                         if len(command_parts) < 2:
                             self.display_message(
-                                "Usage: /run <task_name> [description] [--247]\n"
+                                "Usage: /run [task_name] [description] [--247] [message] [--time minutes]\n"
                                 "Examples:\n"
-                                "  Run single task: /run setup-project\n"
+                                "  Run single task: /run setup-project Set up the project\n"
                                 "  Run 24/7 mode: /run --247\n"
+                                "  Run specific task in 24/7: /run setup-project --247\n"
+                                "  Run 24/7 with message: /run --247 Continue the UI work\n"
+                                "  Run specific task in 24/7 with message: /run setup-project --247 Focus on the UI\n"
                                 "  Run with time limit: /run --247 --time 5\n"
                                 "\nNote: --247 enables continuous operation mode",
                                 "system",
@@ -804,16 +807,44 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                                 time_index = command_parts.index("--time")
                                 if len(command_parts) > time_index + 1:
                                     time_limit = int(command_parts[time_index + 1])
+                                    # Remove --time and its value from command_parts
+                                    command_parts.pop(time_index)  # Remove --time
+                                    command_parts.pop(time_index)  # Remove value
                         except ValueError:
                             self.display_message(
                                 "Invalid time limit format. Using default.", "error"
                             )
+                            
+                        # Create a working copy of command_parts to parse
+                        parts = command_parts.copy()
+                        
+                        # Remove 'run' from the parts
+                        if parts and parts[0] == "run":
+                            parts.pop(0)
+                        
+                        # Remove --247 flag if present in parts
+                        if "--247" in parts:
+                            parts.remove("--247")
+                            
+                        # Extract name and description
+                        name = None
+                        description = None
+                        
+                        if parts:
+                            # First remaining part is the task name (if any)
+                            name = parts[0]
+                            
+                            # Additional parts form the description
+                            if len(parts) > 1:
+                                description = " ".join(parts[1:])
 
                         if continuous:
-                            # Start continuous mode
-                            run_mode = RunMode(self.core)
+                            # Start continuous mode with core.start_run_mode
                             self.display_message(
-                                "[DEBUG] Initializing 24/7 operation mode", "system"
+                                "[DEBUG] Initializing 24/7 operation mode" + 
+                                (f" with task: {name}" if name else "") +
+                                (f" with message: {description}" if description else ""),
+                                "system"
                             )
                             self.display_message(
                                 "[DEBUG] Time limit: " + str(time_limit)
@@ -821,15 +852,22 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                                 else "None",
                                 "system",
                             )
-                            await run_mode.start_continuous()
-                        else:
-                            # Regular single task execution
-                            name = command_parts[1]
-                            description = (
-                                " ".join(command_parts[2:])
-                                if len(command_parts) > 2
-                                else None
+                            # Pass everything to core.start_run_mode
+                            await self.core.start_run_mode(
+                                name=name, 
+                                description=description, 
+                                continuous=True,
+                                time_limit=time_limit
                             )
+                        else:
+                            # Regular single task execution - must have a name
+                            if not name:
+                                self.display_message(
+                                    "Error: Task name is required for non-continuous mode",
+                                    "error"
+                                )
+                                continue
+                                
                             self.display_message(
                                 f"[DEBUG] Starting task: {name}", "system"
                             )

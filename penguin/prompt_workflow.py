@@ -240,3 +240,32 @@ TOOL_USAGE_GUIDANCE = '''
 - Search memory before starting new tasks
 - Maintain project and task tracking diligently
 '''
+
+COMPLETION_PHRASES_GUIDE = '''
+## Completion Phrases Usage Guide
+
+### TASK_COMPLETED
+- Use when a single, standalone task has been fully completed
+- After verification that all requirements are met
+- For non-continuous tasks (e.g., `/run task_name`)
+- Include a summary of what was accomplished
+
+### CONTINUOUS_COMPLETED
+- Use when the overall goal of a continuous session is achieved
+- When there's nothing more to do in the current project context
+- After all planned tasks and subtasks are complete
+- Include a comprehensive summary of accomplishments
+
+### NEED_USER_CLARIFICATION
+- Use when you need user input to proceed
+- When facing a decision that requires user preference
+- If discovering ambiguity in project requirements
+- When multiple valid approaches exist and user direction is needed
+- Always explain clearly what you need clarification on before using this phrase
+
+### General Guidelines
+- Use these phrases only at the end of your message
+- Explain your reasoning for ending the session/requesting clarification
+- In continuous mode (`/run --247`), prefer NEED_USER_CLARIFICATION over TASK_COMPLETED
+- Document the current state clearly when pausing for user input
+'''

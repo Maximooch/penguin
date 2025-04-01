@@ -20,6 +20,7 @@ from penguin.config import (
     EMERGENCY_STOP_PHRASE,
     MAX_TASK_ITERATIONS,
     TASK_COMPLETION_PHRASE,
+    NEED_USER_CLARIFICATION_PHRASE,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ class RunMode:
         self.TASK_COMPLETION_PHRASE = TASK_COMPLETION_PHRASE
         self.CONTINUOUS_COMPLETION_PHRASE = CONTINUOUS_COMPLETION_PHRASE
         self.EMERGENCY_STOP_PHRASE = EMERGENCY_STOP_PHRASE
-
+        self.NEED_USER_CLARIFICATION_PHRASE = NEED_USER_CLARIFICATION_PHRASE
         self._shutdown_requested = False
 
     def _display_message(self, message_text: str, message_type: str = "system") -> None:
@@ -264,13 +265,21 @@ class RunMode:
             f"Exiting run mode\nDebug: {logger.getEffectiveLevel()}\nTraceback: {traceback.format_stack()}"
         )
 
-    async def start_continuous(self) -> None:
-        """Start continuous operation mode"""
+    async def start_continuous(self, specified_task_name: Optional[str] = None, task_description: Optional[str] = None) -> None:
+        """
+        Start continuous operation mode
+        
+        Args:
+            specified_task_name: Optional name of a specific task to prioritize
+            task_description: Optional description/message if no specific task
+        """
         try:
             self.continuous_mode = True
             self._display_message("[DEBUG] Starting continuous operation mode")
             self._display_message(
                 "Starting continuous operation mode\n"
+                + (f"Task: {specified_task_name}\n" if specified_task_name else "")
+                + (f"Description: {task_description}\n" if task_description else "")
                 + (
                     f"Time limit: {self.time_limit.total_seconds() / 60:.1f} minutes\n"
                     if self.time_limit
@@ -281,6 +290,16 @@ class RunMode:
 
             self._shutdown_requested = False
             self.start_time = datetime.now()
+            
+            # If user specified a task name but no specific description, try to find its description
+            if specified_task_name and not task_description:
+                task = self.core.project_manager._find_task_by_name(specified_task_name)
+                if task:
+                    task_description = task.description
+            
+            # If user specified a description but no task name, create a temporary task
+            if task_description and not specified_task_name:
+                specified_task_name = "user_specified_task"
 
             while not self._shutdown_requested:
                 self._display_message(
@@ -304,16 +323,51 @@ class RunMode:
                     await asyncio.sleep(0.1)
                     continue
 
-                # I do wonder if it'll be more logical for the Penguin to just decide what's the next task to do from seeing the list.
-                # Because it saves a lot of hassle about priority, scheduling, mostly DAGs.
-
                 # Get next task from project manager
-                next_task = await self.core.project_manager.get_next_task()
+                next_task = None
+                
+                # If user specified a task, prioritize it over get_next_task
+                if specified_task_name:
+                    self._display_message(f"[DEBUG] Using user-specified task: {specified_task_name}")
+                    
+                    # Check if it's an existing task
+                    task = self.core.project_manager._find_task_by_name(specified_task_name)
+                    if task:
+                        # Convert to the format expected by _execute_task
+                        next_task = {
+                            "title": task.title,
+                            "description": task.description if task_description is None else task_description,
+                            "id": task.id,
+                            "project_id": task.project_id,
+                            "priority": task.priority,
+                            "metadata": task.metadata if hasattr(task, "metadata") else {},
+                            "status": task.status,
+                            "progress": task.progress if hasattr(task, "progress") else 0,
+                            "due_date": task.due_date if hasattr(task, "due_date") else None,
+                        }
+                    else:
+                        # It's a new task specified by the user (not in project_manager)
+                        next_task = {
+                            "title": specified_task_name,
+                            "description": task_description or f"Complete the task: {specified_task_name}",
+                            "id": "user_specified",
+                            "project_id": None,
+                            "priority": 1,
+                            "metadata": {},
+                            "status": "active",
+                            "progress": 0,
+                            "due_date": None,
+                        }
+                
+                # If no user-specified task or it was processed already, get next from project_manager
+                if not next_task:
+                    next_task = await self.core.project_manager.get_next_task()
+                
                 if next_task:
                     self._display_message(
                         f"[DEBUG] Processing task: {next_task['title']}"
                     )
-                    await self._execute_task(
+                    task_result = await self._execute_task(
                         next_task["title"],
                         next_task["description"],
                         {
@@ -326,9 +380,33 @@ class RunMode:
                             "due_date": next_task.get("due_date"),
                         },
                     )
+                    
+                    # Check if we should exit continuous mode based on the result
+                    if isinstance(task_result, dict):
+                        if task_result.get("completion_type") == "user_specified":
+                            self._display_message("User-specified task completed, waiting for further instructions")
+                            self._shutdown_requested = True
+                            break
+                    
+                    # If this was the user-specified task, clear it after execution
+                    # so we can move on to other tasks
+                    if specified_task_name and next_task["title"] == specified_task_name:
+                        specified_task_name = None
+                        task_description = None
                 else:
-                    self._display_message("[DEBUG] No tasks available")
-                    await asyncio.sleep(1 if not self.time_limit else 0.1)
+                    # No specific task, determine next step using existing task execution
+                    self._display_message("[DEBUG] No scheduled tasks, determining next step")
+                    task_result = await self._execute_task(
+                        "determine_next_step",
+                        "Based on the current project state, context files, and conversation history, determine the next logical step to take.",
+                    )
+                    
+                    # Check if we should exit continuous mode based on the result
+                    if isinstance(task_result, dict):
+                        if task_result.get("completion_type") == "user_specified":
+                            self._display_message("Awaiting further instructions from user")
+                            self._shutdown_requested = True
+                            break
 
                 await self._health_check()
 
@@ -476,6 +554,19 @@ class RunMode:
 
                 if self.TASK_COMPLETION_PHRASE in response_text:
                     self._display_message(f"[DEBUG] Task completion detected: {name}")
+                    
+                    # Check if this is a user-specified temporary task (not in task manager)
+                    if name == "user_specified_task" or name == "determine_next_step" or context.get("id") == "user_specified":
+                        self._display_message(f"Task completed: {name}", "output")
+                        # For user-specified tasks, we should pause for user input rather than continue
+                        self._display_message("Pausing for user input - use /run to continue", "system")
+                        return {
+                            "status": "completed",
+                            "message": f"Task '{name}' completed successfully. Awaiting further instructions.",
+                            "completion_type": "user_specified",
+                        }
+                    
+                    # For registered tasks, try to mark as complete in task manager
                     result = self.core.project_manager.complete_task(name)
 
                     # Enhanced state checks and error handling
@@ -502,6 +593,16 @@ class RunMode:
                             "metadata": result.get("metadata", {}),
                         }
                     else:
+                        # If task completion fails but it's likely a user-specified task not in the system
+                        if "No task found with name" in result.get("result", ""):
+                            self._display_message(f"Task completed: {name}", "output")
+                            self._display_message("Pausing for user input - use /run to continue", "system")
+                            return {
+                                "status": "completed", 
+                                "message": f"Task '{name}' completed successfully. Awaiting further instructions.",
+                                "completion_type": "user_specified",
+                            }
+                        # Otherwise it's a real error
                         error_msg = f"Task completion error: {result.get('result', 'Unknown error')}"
                         self._display_message(f"[DEBUG] {error_msg}")
                         return {"status": "error", "message": error_msg}

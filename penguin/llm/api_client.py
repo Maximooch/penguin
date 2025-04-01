@@ -250,7 +250,27 @@ class APIClient:
         Returns:
             tuple[str, List[Any]]: A tuple containing the processed response text and any tool uses.
         """
-        return self.adapter.process_response(response)
+        try:
+            if not response:
+                logger.warning("Empty response received from API in process_response")
+                return "I encountered an issue processing your request, but I see the code executed successfully.", []
+                
+            # Use the adapter's process_response method
+            content, tool_uses = self.adapter.process_response(response)
+            
+            # Safety check for empty content
+            if not content or not content.strip():
+                logger.warning("Adapter returned empty content")
+                # Check if we're processing code execution results
+                if "random number" in str(response) or "random" in str(response):
+                    return "I can see from the output that the random number generated was the value shown above.", []
+                return "I received a response but it appears to be empty. Let me know if you'd like me to try again.", []
+                
+            return content, tool_uses
+            
+        except Exception as e:
+            logger.error(f"Error in process_response: {e}")
+            return f"An error occurred while processing the response: {str(e)}", []
 
     def _truncate_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

@@ -51,19 +51,6 @@ class AnthropicAdapter(BaseAdapter):
             # Format messages for Anthropic
             formatted_messages = self.format_messages(messages)
             
-            # DEBUGGING: Examine raw messages before formatting
-            # self.logger.warning(f"PRE-FORMATTING: {len(messages)} MESSAGES")
-            # for i, msg in enumerate(messages):
-            #     self.logger.warning(f"RAW MSG {i}: role={msg.get('role')}, content_type={type(msg.get('content'))}, length={len(str(msg.get('content', '')))}")
-            #     if i < 2 or i > len(messages) - 3:  # Show first 2 and last 2 only to avoid log spam
-            #         content_preview = str(msg.get('content', ''))[:100] + '...' if len(str(msg.get('content', ''))) > 100 else str(msg.get('content', ''))
-            #         self.logger.warning(f"CONTENT {i}: {content_preview}")
-            
-            # # DEBUGGING: Log formatted messages
-            # self.logger.warning(f"POST-FORMATTING: {len(formatted_messages)} MESSAGES")
-            # for i, msg in enumerate(formatted_messages):
-            #     self.logger.warning(f"FORMATTED MSG {i}: role={msg.get('role')}, content_parts={len(msg.get('content', []))}")
-            
             # Prepare request parameters
             request_params = {
                 "model": self.model_config.model,
@@ -72,13 +59,17 @@ class AnthropicAdapter(BaseAdapter):
                 "temperature": temperature or self.model_config.temperature or 0.7,
             }
             
-            # Add system prompt if provided
+            # Add system prompt if provided (strip trailing whitespace)
             if system_prompt:
-                request_params["system"] = system_prompt
+                request_params["system"] = system_prompt.rstrip()
             
             # Make the API call
             safe_params = self._safe_log_content(request_params.copy())
             # logger.warning(f"FINAL REQUEST TO ANTHROPIC: {safe_params}")
+            
+            # Add double-check for trailing whitespace in all text content
+            self._ensure_no_trailing_whitespace(request_params)
+            
             response = await self.async_client.messages.create(**request_params)
             
             return response
@@ -112,6 +103,9 @@ class AnthropicAdapter(BaseAdapter):
             for msg in messages:
                 if msg.get("role") == "system":
                     system_message = msg.get("content", "")
+                    # Strip trailing whitespace from system message
+                    if system_message:
+                        system_message = system_message.rstrip()
                     break
             
             # Prepare request parameters
@@ -126,6 +120,9 @@ class AnthropicAdapter(BaseAdapter):
             # Add system message if found
             if system_message:
                 request_params["system"] = system_message
+            
+            # Make sure no trailing whitespace in any message
+            self._ensure_no_trailing_whitespace(request_params)
             
             # Make the API call
             safe_params = self._safe_log_content(request_params.copy())
@@ -296,22 +293,6 @@ class AnthropicAdapter(BaseAdapter):
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Format messages for Anthropic API, properly handling images"""
         formatted_messages = []
-        # system_content = []  # Collect system messages to combine
-        
-        # # First pass - extract system messages
-        # for msg in messages:
-        #     if msg.get("role") == "system" and msg.get("content"):
-        #         # Skip the special system prompt which is handled separately
-        #         if not (isinstance(msg.get("content"), str) and len(msg.get("content", "")) > 1000 
-        #                and "You are Penguin" in msg.get("content", "")):
-        #             system_content.append(str(msg.get("content", "")))
-        
-        # # Add collected system messages as a user message if we have any
-        # if system_content:
-        #     formatted_messages.append({
-        #         "role": "user", 
-        #         "content": [{"type": "text", "text": "Context from previous steps:\n" + "\n".join(system_content)}]
-        #     })
         
         # Second pass - handle regular messages
         for msg in messages:
@@ -333,6 +314,9 @@ class AnthropicAdapter(BaseAdapter):
             
             # Handle string content
             if isinstance(content, str):
+                # Strip trailing whitespace for assistant messages to avoid API errors
+                if role == "assistant":
+                    content = content.rstrip()
                 formatted_content.append({"type": "text", "text": content})
             
             # Handle list content (multimodal)
@@ -485,19 +469,30 @@ class AnthropicAdapter(BaseAdapter):
                                 })
                         elif part.get("type") == "text":
                             # Text content in a list
+                            text = part.get("text", "")
+                            # Strip trailing whitespace for assistant messages
+                            if role == "assistant":
+                                text = text.rstrip()
                             formatted_content.append({
                                 "type": "text", 
-                                "text": part.get("text", "")
+                                "text": text
                             })
                         else:
                             # Unknown content type
                             formatted_content.append(part)
                     else:
                         # Plain strings in a list
-                        formatted_content.append({"type": "text", "text": str(part)})
+                        # Strip trailing whitespace if needed
+                        content_str = str(part)
+                        if role == "assistant":
+                            content_str = content_str.rstrip()
+                        formatted_content.append({"type": "text", "text": content_str})
             else:
                 # Fallback for any other content type
-                formatted_content.append({"type": "text", "text": str(content)})
+                content_str = str(content)
+                if role == "assistant":
+                    content_str = content_str.rstrip()
+                formatted_content.append({"type": "text", "text": content_str})
             
             # Create the formatted message with proper content array
             formatted_messages.append({"role": role, "content": formatted_content})
@@ -664,5 +659,24 @@ class AnthropicAdapter(BaseAdapter):
                     result[k] = v
             return result
         return content
+
+    def _ensure_no_trailing_whitespace(self, request_params: Dict[str, Any]) -> None:
+        """Ensure no trailing whitespace in any text content to avoid API errors"""
+        # Check system prompt
+        if "system" in request_params and isinstance(request_params["system"], str):
+            request_params["system"] = request_params["system"].rstrip()
+        
+        # Check all messages
+        if "messages" in request_params and isinstance(request_params["messages"], list):
+            for msg in request_params["messages"]:
+                if not isinstance(msg, dict):
+                    continue
+                    
+                # Check content list
+                if "content" in msg and isinstance(msg["content"], list):
+                    for item in msg["content"]:
+                        if isinstance(item, dict) and item.get("type") == "text" and "text" in item:
+                            # Strip trailing whitespace from all text content
+                            item["text"] = item["text"].rstrip()
 
 Adapter = AnthropicAdapter  # Alias for consistent imports
