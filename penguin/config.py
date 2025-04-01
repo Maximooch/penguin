@@ -102,7 +102,8 @@ PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY")
 TASK_COMPLETION_PHRASE = "TASK_COMPLETED"  # Single task completion
 CONTINUOUS_COMPLETION_PHRASE = "CONTINUOUS_COMPLETED"  # End of continuous session
 EMERGENCY_STOP_PHRASE = "EMERGENCY_STOP"  # Immediate termination needed
-MAX_TASK_ITERATIONS = 100
+NEED_USER_CLARIFICATION_PHRASE = "NEED_USER_CLARIFICATION"  # Pause for user input
+MAX_TASK_ITERATIONS = 100 # Check to see if it works fine with 100 messages before more
 
 
 def load_config():

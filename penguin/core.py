@@ -75,7 +75,8 @@ Core Methods:
         description: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
         continuous: bool = False,
-        time_limit: Optional[int] = None
+        time_limit: Optional[int] = None,
+        mode_type: str = "task",
     ) -> None:
         Start autonomous run mode for task execution
 
@@ -982,6 +983,7 @@ class PenguinCore:
         context: Optional[Dict[str, Any]] = None,
         continuous: bool = False,
         time_limit: Optional[int] = None,
+        mode_type: str = "task",
     ) -> None:
         """
         Start autonomous run mode for executing a task.
@@ -992,6 +994,7 @@ class PenguinCore:
             context: Optional additional context or parameters
             continuous: Whether to run in continuous mode
             time_limit: Optional time limit in minutes
+            mode_type: Type of mode (task or project)
         """
         try:
             run_mode = RunMode(self, time_limit=time_limit)
@@ -1006,7 +1009,7 @@ class PenguinCore:
             )
 
             if continuous:
-                await run_mode.start_continuous()
+                await run_mode.start_continuous(specified_task_name=name, task_description=description)
             else:
                 await run_mode.start(
                     name=name, description=description, context=context

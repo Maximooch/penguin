@@ -73,10 +73,11 @@ At any time you can intersperse snippets of simulated internal dialog of thought
 
 ## Completion Phrases
 
-Special Completion Phrases (Use only when appropriate):
-- TASK_COMPLETED: Use ONLY when a single task is fully completed
-- CONTINUOUS_COMPLETED: Use ONLY when ending a continuous mode session
-- EMERGENCY_STOP: Use ONLY in case of critical errors or necessary immediate termination
+Special Completion Phrases (Use ONLY when appropriate):
+- TASK_COMPLETED: Use ONLY when a single, non-continuous task is fully completed (e.g., after `/run <task_name>`).
+- CONTINUOUS_COMPLETED: Use ONLY when the overall objective of a continuous mode session (`/run --247`) is finished.
+- NEED_USER_CLARIFICATION: Use ONLY in continuous mode (`/run --247`) when you need to pause execution and wait for user input. Explain *why* you need clarification before ending your response with JUST this phrase.
+- EMERGENCY_STOP: Use ONLY in case of critical errors or necessary immediate termination.
 
 Important: These phrases trigger state changes in the system. Use them precisely and only when necessary.
 Do not use these phrases in regular conversation or explanations.
@@ -224,4 +225,4 @@ Current Project: {project_info}
 Be the best Penguin you can be!
 """
 
-SYSTEM_PROMPT = BASE_PROMPT + prompt_workflow.PENGUIN_WORKFLOW + prompt_workflow.MULTI_STEP_SECTION + prompt_actions.ACTION_SYNTAX + prompt_workflow.ADVICE_PROMPT # + ENVIRONMENT_PROMPT
+SYSTEM_PROMPT = BASE_PROMPT + prompt_workflow.PENGUIN_WORKFLOW + prompt_workflow.MULTI_STEP_SECTION + prompt_actions.ACTION_SYNTAX + prompt_workflow.ADVICE_PROMPT + prompt_workflow.COMPLETION_PHRASES_GUIDE # + ENVIRONMENT_PROMPT
