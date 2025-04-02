@@ -169,6 +169,9 @@ CONTEXT_MANAGEMENT = '''
 - Use a scratchpad to plan and reason, can be any file, but it's best to use a dedicated one for the particular task/project. TASK_SCRATCHPAD.md
 - Track progress in TRACK.md, keep it short and concise. Preferably a single line per task. (make sure of its existence before writing to it)
 
+NOTE: For an execute tag to work, YOU MUST have both tags including the content in between them IN THE SAME MESSAGE. OTHERWISE IT WILL NOT WORK. SAME FOR ANY OTHER TAG.
+
+
 ### Documentation Practices
 - Document key decisions and rationale
 - Maintain changelog for significant updates
