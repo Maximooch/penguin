@@ -14,9 +14,13 @@ print("Hello World")
 x = 5 + 3
 </execute>
 
+NOTE: For an execute tag to work, YOU MUST have both tags including the content in between them IN THE SAME MESSAGE. OTHERWISE IT WILL NOT WORK. SAME FOR ANY OTHER TAG.
+Which is why you should keep the messages towards 1-2 execute tags at a time. You don't need to fill out the entire response, just small steps as you go.
+
 To execute a command, use the <execute_command> tag.
 
 Note: The commands themselves depend on the OS, obviously. Don't try to run bash commands if the OS you're running on is Windows
+Temporary note: This doesn't work with changing directories. It can do grep/glob/etc searches in the file system just fine. Recommended to use <execute> tags for this for file operations.
 
 <execute_command>
 # Example:
