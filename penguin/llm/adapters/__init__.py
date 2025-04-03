@@ -8,9 +8,9 @@ from typing import Optional
 def get_adapter(provider: str, model_config):
     """
     Get the appropriate adapter for the provider.
-    Tries to use native adapter first, falls back to provider_adapters if needed.
+    Uses client_preference to determine whether to use native adapter or generic one.
     """
-    # Try to import native adapter first
+    # Try to import native adapter first if client_preference is 'native'
     try:
         # Map provider names to module & class names
         provider_mapping = {
@@ -19,8 +19,8 @@ def get_adapter(provider: str, model_config):
             # Add more mappings as needed
         }
         
-        # Check if we should use native adapter
-        if getattr(model_config, 'use_native_adapter', True) and provider in provider_mapping:
+        # Check if we should use native adapter based on client_preference
+        if getattr(model_config, 'client_preference', 'native') == 'native' and provider in provider_mapping:
             module_name, class_name = provider_mapping[provider]
             adapter_module = __import__(f"penguin.llm.adapters.{module_name}", fromlist=[class_name])
             adapter_class = getattr(adapter_module, class_name)

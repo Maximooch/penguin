@@ -2,21 +2,24 @@
 # https://docs.litellm.ai/docs/providers
 
 model:
-  default: "claude-3-7-sonnet-20250219"
+  default: "anthropic/claude-3-7-sonnet-20250219"
   provider: "anthropic"
-  use_assistants_api: false # Add this line to toggle OpenAI Assistants API usage
-  use_native_adapter: true  # Use direct Anthropic SDK instead of LiteLLM
-  streaming_enabled: true   # Enable streaming support
+  client_preference: "litellm"  # Use 'litellm' for LiteLLM gateway or 'native' for direct SDK
+  use_assistants_api: false     # Toggle OpenAI Assistants API usage
+  streaming_enabled: true       # Enable streaming support
   max_tokens: 8192
-  temperature: 0.4
+  # temperature: 0.4
   context_window: 200000
   # temperature: 0.4
 
 
 api:
-  base_url: "https://api.anthropic.com/v1/messages"
-  # If you're using ollama, set the base_url to the ollama server url, which is usually http://127.0.0.1:11434
-  # It'll tell you if you do `ollama serve` in the terminal.
+  base_url: null # LiteLLM uses api_base per model, remove global one? Or keep for default? Let's remove for clarity.
+  # If you're using ollama via LiteLLM, set api_base in its model_config below
+
+# base_url: "https://api.anthropic.com/v1/messages"
+#   # If you're using ollama, set the base_url to the ollama server url, which is usually http://127.0.0.1:11434
+#   # It'll tell you if you do `ollama serve` in the terminal.
 
 # /Users/maximusputnam/Documents/code/Penguin/workspace
 
@@ -43,20 +46,45 @@ diagnostics:
 # Model Configs. You can ignore these unless you want to change the default model configs. 
 # ------------------------------------------------------------------------------------------------
 model_configs:
-  gpt-4o: 
+  # Example using LiteLLM for Anthropic (overrides default)
+  anthropic/claude-3-5-sonnet-20240620:
+    provider: anthropic
+    client_preference: litellm # Explicitly use LiteLLM
+    max_tokens: 8192
+    temperature: 0.4
+    vision_enabled: true # Explicitly enable vision
+
+  # Example using Native Adapter for Anthropic (different preference)
+  anthropic-native/claude-3-opus-20240229: # Use a distinct name if needed
+    model: claude-3-opus-20240229 # Simple name for native adapter
+    provider: anthropic
+    client_preference: native # Explicitly use Native Adapter
+    max_tokens: 4096
+    temperature: 0.7
+    vision_enabled: true
+
+  # Example using LiteLLM for OpenAI
+  openai/gpt-4o:
+    provider: openai
+    client_preference: litellm
     max_tokens: 4096
     temperature: 0.4
-    supports_vision: true
-  gpt-3.5-turbo:
+    vision_enabled: true
+
+  # Example using LiteLLM for Ollama
+  ollama/llama3:
+    provider: ollama # Provider helps find API key env vars if needed, though often not for ollama
+    client_preference: litellm
+    api_base: "http://localhost:11434" # API base needed for Ollama
     max_tokens: 4096
     temperature: 0.7
-  gpt-4:
+    vision_enabled: false
+
+  # Example old style config (will default to client_preference: native)
+  gpt-4: # Model name used directly if native client is chosen
+    provider: openai
+    # client_preference: native # (Implied default)
     max_tokens: 8192
-    temperature: 0.7
-  claude-3-opus-20240229:
-    provider: "anthropic"
-    # api_base: "https://api.anthropic.com/v1/messages"
-    max_tokens: 4096
     temperature: 0.7
 
 # Add other non-sensitive configuration options as needed

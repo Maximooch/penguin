@@ -173,7 +173,7 @@ from penguin.run_mode import RunMode
 
 # Core systems
 from penguin.system.conversation_manager import ConversationManager
-from penguin.system.state import MessageCategory
+from penguin.system.state import MessageCategory, Message
 
 # System Prompt
 from penguin.system_prompt import SYSTEM_PROMPT
@@ -280,7 +280,7 @@ class PenguinCore:
                 provider=provider or DEFAULT_PROVIDER,
                 api_base=config.api.base_url,
                 use_assistants_api=config.model.get("use_assistants_api", False),
-                use_native_adapter=config.model.get("use_native_adapter", True),
+                client_preference=config.model.get("client_preference", "native"),
                 streaming_enabled=config.model.get("streaming_enabled", True)
             )
             pbar.update(1)
@@ -825,21 +825,6 @@ class PenguinCore:
     ) -> Dict[str, Any]:
         """
         Process a message with multi-step reasoning and action execution.
-        
-        This method handles the core logic of:
-        - Multi-step reasoning
-        - Action execution
-        - Progress tracking
-        
-        Args:
-            message: The text message to process
-            image_path: Optional path to an image to include
-            context: Optional additional context for processing
-            max_iterations: Maximum reasoning-action cycles
-            streaming: Whether to use streaming mode for responses
-            
-        Returns:
-            Dict containing assistant response and action results
         """
         try:
             # Process context if provided
@@ -847,12 +832,12 @@ class PenguinCore:
                 for key, value in context.items():
                     self.conversation_manager.add_context(f"{key}: {value}")
             
-            # Multi-step processing loop
             final_response = None
             iterations = 0
             action_results_all = []
+            last_assistant_response = "" # Keep track of the last actual response text
             
-            # Prepare conversation with user input (only done once)
+            # Prepare conversation with initial user input (only done once)
             self.conversation_manager.conversation.prepare_conversation(message, image_path)
             
             # Multi-step processing loop
@@ -870,14 +855,56 @@ class PenguinCore:
                 
                 # Extract assistant response and action results
                 assistant_response = response_data.get("assistant_response", "")
-                current_action_results = response_data.get("action_results", []) # TODO: I wonder if the empty response issue is due to duplicative action results, look into this
+                current_action_results = response_data.get("action_results", [])
                 
-                # Add action results to overall collection
-                action_results_all.extend(current_action_results)
+                # Store the actual assistant text, filtering out our specific message
+                if not assistant_response.startswith("[Model finished"):
+                    last_assistant_response = assistant_response
                 
-                # Check if we should break the loop
-                if not parse_action(assistant_response) or exit_continuation or iterations >= max_iterations:
-                    final_response = assistant_response
+                # Add successfully executed action results to overall collection
+                # and add a structured message to the conversation history
+                if current_action_results:
+                    action_summary_parts = []
+                    for result in current_action_results:
+                         action_results_all.append(result) # Keep track for final return
+                         if result.get("status") == "completed":
+                             action_summary_parts.append(
+                                 f"- Action '{result.get('action', 'unknown')}' completed. Result:\n```\n{result.get('result', 'No output')}\n```"
+                             )
+                         elif result.get("status") == "error":
+                             action_summary_parts.append(
+                                 f"- Action '{result.get('action', 'unknown')}' failed. Error:\n```\n{result.get('result', 'Unknown error')}\n```"
+                             )
+                         # Add other statuses like 'interrupted' if needed
+                         
+                    if action_summary_parts:
+                         action_summary_message = "Action Results:\n" + "\n".join(action_summary_parts)
+                         # Add this summary as a system message for the *next* LLM call
+                         self.conversation_manager.conversation.add_message(
+                             role="system", # Or maybe a new 'tool_result' role? System seems ok for now.
+                             content=action_summary_message,
+                             category=MessageCategory.SYSTEM_OUTPUT, # Use existing category
+                             metadata={"type": "action_summary"}
+                         )
+                         logger.debug(f"Added action summary message to conversation history.")
+
+
+                # Check if we should break the loop:
+                # 1. If the assistant response contains the task completion phrase.
+                # 2. If there were no actions parsed in the *last actual* assistant response.
+                # 3. If the loop limit is reached.
+                # 4. If the exit_continuation flag is set by get_response (e.g., TASK_COMPLETED).
+                
+                # Check for actions in the *actual* assistant response, not the placeholder
+                actions_in_last_response = parse_action(last_assistant_response) 
+                
+                # Also check if the current response IS the placeholder
+                is_placeholder_response = assistant_response.startswith("[Model finished")
+
+                if exit_continuation or iterations >= max_iterations or (not actions_in_last_response and not is_placeholder_response):
+                     # If the last response was the placeholder, we use the one before it
+                    final_response = last_assistant_response if not is_placeholder_response else assistant_response
+                    logger.info(f"Breaking multi-step loop. Reason: exit_continuation={exit_continuation}, iterations={iterations}>={max_iterations}, no_actions={not actions_in_last_response}, is_placeholder={is_placeholder_response}")
                     break
                     
                 # If continuing, notify of next iteration
@@ -886,9 +913,9 @@ class PenguinCore:
             # Save the final conversation state
             self.conversation_manager.save()
             
-            # Return the final response with all action results
+            # Return the *last meaningful* assistant response and all action results
             return {
-                "assistant_response": final_response if final_response is not None else "",
+                "assistant_response": final_response if final_response is not None else last_assistant_response, # Fallback to last known good response
                 "action_results": action_results_all
             }
             
