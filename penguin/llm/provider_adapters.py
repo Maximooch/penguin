@@ -311,11 +311,59 @@ class OllamaAdapter(ProviderAdapter):
         return "ollama"
 
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        # Ollama's LLaVA models accept the same format as OpenAI
-        return messages
+        """
+        Format messages for Ollama API, converting system messages to user messages
+        since Ollama models typically don't support system messages.
+        """
+        # Extract system messages and other messages
+        system_messages = [msg for msg in messages if msg.get("role") == "system"]
+        other_messages = [msg for msg in messages if msg.get("role") != "system"]
+        
+        formatted_messages = []
+        
+        # Handle system messages by converting them to user messages with a prefix
+        if system_messages:
+            # Combine all system messages into one user message at the beginning
+            system_content = "\n\n".join([msg.get("content", "") for msg in system_messages])
+            formatted_messages.append({
+                "role": "user",
+                "content": f"[SYSTEM INSTRUCTIONS]: {system_content}\n\nPlease acknowledge these instructions."
+            })
+            
+            # Add a simulated assistant response acknowledging the system instructions
+            formatted_messages.append({
+                "role": "assistant",
+                "content": "I'll follow these instructions."
+            })
+        
+        # Add all other messages
+        formatted_messages.extend(other_messages)
+        
+        return formatted_messages
 
     def process_response(self, response: Any) -> tuple[str, List[Any]]:
-        return response["message"]["content"], []
+        """Process Ollama API response"""
+        try:
+            # Handle dictionary response
+            if isinstance(response, dict):
+                if "message" in response and "content" in response["message"]:
+                    return response["message"]["content"], []
+                elif "response" in response:  # Some Ollama versions use this format
+                    return response["response"], []
+            
+            # Handle string response
+            if isinstance(response, str):
+                return response, []
+            
+            # Fallback for unknown formats
+            return str(response), []
+        except Exception as e:
+            logging.error(f"Error processing Ollama response: {str(e)}")
+            return str(response), []
+            
+    def supports_system_messages(self) -> bool:
+        """Ollama doesn't natively support system messages, but we handle them"""
+        return False  # We return False to indicate native support is missing
 
 
 class DeepseekAdapter(ProviderAdapter):

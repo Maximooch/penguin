@@ -2,19 +2,20 @@
 # https://docs.litellm.ai/docs/providers
 
 model:
-  default: "claude-3-7-sonnet-20250219"
-  provider: "anthropic"
+  default: "ollama/deepseek-r1:1.5b"
+  provider: "ollama"
   use_assistants_api: false # Add this line to toggle OpenAI Assistants API usage
-  use_native_adapter: true  # Use direct Anthropic SDK instead of LiteLLM
-  streaming_enabled: true   # Enable streaming support
-  max_tokens: 8192
-  temperature: 0.4
-  context_window: 200000
+  use_native_adapter: false  # Use direct Anthropic SDK instead of LiteLLM
+  streaming_enabled: false   # Enable streaming support
+  # max_tokens: 8192
+  # temperature: 0.4
+  # context_window: 200000
   # temperature: 0.4
 
 
 api:
-  base_url: "https://api.anthropic.com/v1/messages"
+  # base_url: "https://api.anthropic.com/v1/messages"
+  base_url: "http://127.0.0.1:11434"
   # If you're using ollama, set the base_url to the ollama server url, which is usually http://127.0.0.1:11434
   # It'll tell you if you do `ollama serve` in the terminal.
 
