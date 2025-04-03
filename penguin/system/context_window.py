@@ -89,7 +89,7 @@ class ContextWindowManager:
             logger.info("Using explicit token counter")
             self.token_counter = token_counter
         elif api_client and hasattr(api_client, 'count_tokens'):
-            logger.info(f"Using API client token counter from {getattr(api_client.adapter, 'provider', 'unknown')}")
+            logger.info(f"Using API client token counter from {getattr(api_client.client_handler, 'provider', 'unknown') if hasattr(api_client, 'client_handler') else 'unknown'}")
             self.token_counter = api_client.count_tokens
         elif model_config and hasattr(model_config, 'api_client') and model_config.api_client:
             logger.info(f"Using model_config.api_client token counter")

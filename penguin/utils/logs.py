@@ -3,8 +3,27 @@ import json
 import logging
 import os
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
-from penguin.config import WORKSPACE_PATH
+# Remove direct import from config
+# from penguin.config import WORKSPACE_PATH
+
+# Instead, use a function to get the workspace path
+def get_workspace_path():
+    """Get the workspace path without importing from config to avoid circular imports."""
+    # Default workspace path for development environment
+    default_path = Path.home() / "Documents" / "code" / "Penguin" / "penguin_workspace"
+    
+    # Try to get from environment variable first
+    ws_path = os.getenv('PENGUIN_WORKSPACE')
+    if ws_path:
+        return Path(ws_path)
+    
+    # Return default if environment variable not set
+    return default_path
+
+# Use the function instead of the imported variable
+WORKSPACE_PATH = get_workspace_path()
 
 
 def setup_logger(

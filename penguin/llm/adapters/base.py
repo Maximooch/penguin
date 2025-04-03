@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, AsyncIterator, Callable
+from typing import Any, Dict, List, Optional, Tuple, AsyncIterator, Callable, Union
 
 class BaseAdapter(ABC):
     """Base adapter interface for LLM providers"""
@@ -43,6 +43,30 @@ class BaseAdapter(ABC):
         stream_callback: Optional[Callable[[str], None]] = None
     ) -> Any:
         """Create a completion request with optional streaming"""
+        pass
+    
+    @abstractmethod
+    async def get_response(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stream: bool = False,
+        stream_callback: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        """
+        Get a response from the provider's LLM.
+
+        Args:
+            messages: List of message dictionaries (standard format).
+            max_tokens: Max tokens for the response.
+            temperature: Sampling temperature.
+            stream: Whether to stream the response.
+            stream_callback: Callback for streaming chunks.
+
+        Returns:
+            The complete response string.
+        """
         pass
     
     def supports_system_messages(self) -> bool:

@@ -34,7 +34,7 @@ def init_core():
             provider=config["model"]["provider"],
             api_base=config["api"]["base_url"],
             streaming_enabled=config["model"].get("streaming_enabled", True),
-            use_native_adapter=config["model"].get("use_native_adapter", True),
+            client_preference=config["model"].get("client_preference", "native"),
             max_tokens=config["model"].get("max_tokens", 8000),
             temperature=config["model"].get("temperature", 0.7),
             enable_token_counting=config["model"].get("enable_token_counting", True),

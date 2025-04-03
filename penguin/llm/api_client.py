@@ -13,13 +13,14 @@ import tiktoken  # type: ignore
 # TODO: greatly simplify api_client while maintaining full functionality
 # TODO: add streaming support
 # TODO: add support for images, files, audio, and video
-from litellm import acompletion, completion  # type: ignore
+from litellm import acompletion, completion, token_counter, cost_per_token, completion_cost # Keep litellm imports for now? maybe remove acompletion/completion direct use # type: ignore
 from PIL import Image  # type: ignore
 
 from .model_config import ModelConfig
-from .adapters import get_adapter
-import logging
-from penguin.llm.provider_adapters import get_provider_adapter
+from .adapters import get_adapter # Keep for native preference
+from .litellm_gateway import LiteLLMGateway # Import the gateway
+from .openrouter_gateway import OpenRouterGateway # Import the OpenRouter gateway
+# from penguin.llm.provider_adapters import get_provider_adapter # Seems unused
 
 logger = logging.getLogger(__name__)
 
@@ -50,17 +51,13 @@ MODEL_CONFIGS = load_config().get("model_configs", {})
 
 class APIClient:
     """
-    A client for interacting with various AI model APIs.
-
-    This class provides methods to send requests to AI models, process their responses,
-    and manage conversation history.
+    A client for interacting with various AI model APIs, routing requests
+    to either a native adapter or the LiteLLM gateway based on configuration.
 
     Attributes:
         model_config (ModelConfig): Configuration for the AI model.
         system_prompt (str): The system prompt to be sent with each request.
-        adapter: The provider-specific adapter for formatting messages and processing responses.
-        api_key (str): The API key for the model provider.
-        max_history_tokens (int): Maximum number of tokens to keep in conversation history.
+        client_handler (Any): The actual handler instance (native adapter or LiteLLMGateway).
         logger (logging.Logger): Logger for this class.
     """
 
@@ -69,395 +66,118 @@ class APIClient:
         Initialize the APIClient.
 
         Args:
-            model_config (ModelConfig): Configuration for the AI model.
+            model_config (ModelConfig): Configuration for the AI model, including
+                                        the 'client_preference'.
         """
         self.model_config = model_config
         self.system_prompt = None
-        
-        # Try to get native adapter first
-        self.adapter = get_adapter(model_config.provider, model_config)
-        
-        # Store API key and set other properties
-        self.api_key = os.getenv(f"{model_config.provider.upper()}_API_KEY")
-        self.max_history_tokens = model_config.max_history_tokens or 200000
-        # TODO: Make this dynamic based on max_tokens in model_config
-        # TODO: Better handling of truncation/chunking
         self.logger = logging.getLogger(__name__)
+        self.client_handler = None # Will be set based on preference
 
-        # Yes I know print statements are bad, messy, ugly, and evil. But this was necessary.
+        self.logger.info(f"Initializing APIClient for model: {model_config.model}, "
+                         f"Provider: {model_config.provider}, "
+                         f"Preference: {model_config.client_preference}")
 
-        # print("\n=== API Client Initialization ===")
-        # print(f"Model: {model_config.model}")
-        # print(f"Provider: {model_config.provider}")
-        # print(f"Use Assistants API: {model_config.use_assistants_api}")
-        # print(f"API Key Present: {bool(self.api_key)}")
-        # print("===============================\n")
-
-        if model_config.use_assistants_api:
-            self.logger.info("Using OpenAI Assistants API")
-            # print("Using OpenAI Assistants API")
-        else:
-            pass # not using assistants API, so no need to print
-            # self.logger.info("Using regular OpenAI API")
-            # print("Using regular OpenAI API")
-
-    def set_system_prompt(self, prompt: str) -> None:
-        """Set the system prompt and update assistant if using Assistants API"""
-        self.system_prompt = prompt
-        if self.model_config.use_assistants_api and self.adapter.assistant_manager:
-            self.adapter.assistant_manager.update_system_prompt(prompt)
-
-    async def create_message(
-        self,
-        messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-    ) -> Any:
-        """
-        Asynchronously create a message using the configured model.
-
-        Args:
-            messages: List of message dictionaries
-            max_tokens: Optional max tokens to generate
-            temperature: Optional temperature parameter
-
-        Returns:
-            Response from the model API
-        """
-        try:
-            # Handle system prompt compatibility
-            system_prompt = None
-            if self.system_prompt:
-                if self.adapter.supports_system_messages():
-                    # Remove existing system messages and add ours first
-                    messages = [msg for msg in messages if msg.get("role") != "system"]
-                    messages.insert(
-                        0, {"role": "system", "content": self.system_prompt}
-                    )
-                    system_prompt = self.system_prompt
-                else:
-                    # Convert system message to user message with prefix
-                    print(
-                        f"Converting system message to user message for provider: {self.adapter.provider}"
-                    )
-                    messages.insert(
-                        0,
-                        {
-                            "role": "user",
-                            "content": f"[SYSTEM PROMPT]: {self.system_prompt}",
-                        },
-                    )
-                    self.logger.debug(
-                        "Converted system message to user message for provider"
-                    )
-
-            # Format messages using the provider-specific adapter
-            formatted_messages = self.adapter.format_messages(messages)
-            
-            # Check if we can use direct adapter (bypass litellm)
-            if hasattr(self.adapter, 'create_message') and getattr(self.model_config, 'use_native_adapter', True):
-                self.logger.debug(f"Using direct {self.adapter.provider} adapter")
-                
-                # Call the adapter's create_message method directly
-                response = await self.adapter.create_message(
-                    messages=messages,
-                    max_tokens=max_tokens or self.model_config.max_tokens,
-                    temperature=temperature or self.model_config.temperature,
-                    system_prompt=system_prompt
-                )
-                return response
-                
-            # Fallback to litellm for providers without direct adapters
-            self.logger.debug(f"Using litellm for {self.adapter.provider}")
-            
-            # Comment out this debugging block
-            '''
-            # Add debugging for all providers (not just Anthropic)
-            print(f"\n=== {self.model_config.provider.upper()} IMAGE DEBUG ===")
-            for i, msg in enumerate(formatted_messages):
-                print(f"Message {i+1}:")
-                print(f"  Role: {msg.get('role')}")
-                if isinstance(msg.get('content'), list):
-                    print(f"  Content parts: {len(msg['content'])}")
-                    for j, part in enumerate(msg['content']):
-                        print(f"    Part {j+1} type: {part.get('type')}")
-                        if part.get('type') == 'image_url':
-                            img_url = part.get('image_url', {}).get('url', '')
-                            print(f"    Image URL starts with: {img_url[:30]}...")
-                            print(f"    Is base64: {'data:image' in img_url}")
-                else:
-                    content = str(msg.get('content', ''))
-                    print(f"  Content: {content[:50]}...")
-            print("===========================\n")
-            '''
-
-            # Prepare parameters for the completion call
-            completion_params = {
-                "model": self.model_config.model,
-                "messages": formatted_messages,
-                "max_tokens": max_tokens or self.model_config.max_tokens,
-                "temperature": temperature or self.model_config.temperature,
-                "api_base": self.model_config.api_base,
-                "headers": {
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
-            }  # TODO: Get rid of this
-
-            # Remove None values
-            completion_params = {
-                k: v for k, v in completion_params.items() if v is not None
-            }
-
-            if self.api_key:
-                completion_params["api_key"] = self.api_key
-
-            self.logger.debug(f"Sending formatted messages: {formatted_messages}")
-
-            # Make the API call asynchronously
+        # --- Instantiate the correct handler ---
+        if model_config.client_preference == 'litellm':
             try:
-                if self.model_config.use_assistants_api:
-                    # For assistants API, wrap synchronous call in asyncio.to_thread
-                    response = await asyncio.to_thread(completion, **completion_params)
-                else:
-                    # For regular API, use async call
-                    response = await acompletion(**completion_params)
+                # LiteLLM gateway handles API keys/base internally based on model_config
+                self.client_handler = LiteLLMGateway(model_config)
+                self.logger.info(f"Using LiteLLMGateway for {model_config.model}")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize LiteLLMGateway: {e}", exc_info=True)
+                raise ValueError(f"Could not initialize LiteLLMGateway: {e}") from e
 
-                # Log the raw response for debugging
-                self.logger.debug(f"Raw API response: {response}")
+        elif model_config.client_preference == 'openrouter':
+            try:
+                # Initialize OpenRouter gateway with model_config
+                self.client_handler = OpenRouterGateway(model_config)
+                self.logger.info(f"Using OpenRouterGateway for {model_config.model}")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize OpenRouterGateway: {e}", exc_info=True)
+                raise ValueError(f"Could not initialize OpenRouterGateway: {e}") from e
 
-                return response
+        elif model_config.client_preference == 'native':
+            try:
+                # Get native adapter
+                # Note: Native adapters might expect simpler model names in model_config.model
+                self.client_handler = get_adapter(model_config.provider, model_config)
+                if not self.client_handler:
+                     raise ValueError(f"No native adapter found for provider: {model_config.provider}")
+                self.logger.info(f"Using native adapter for provider: {model_config.provider} "
+                                 f"(Model: {model_config.model})")
+                # Native adapter might need API key directly (handled by get_adapter?)
+                # self.api_key = model_config.api_key # Store if needed separately? get_adapter should handle it.
 
             except Exception as e:
-                self.logger.error(f"API call error: {str(e)}")
-                raise
+                self.logger.error(f"Failed to initialize native adapter for {model_config.provider}: {e}", exc_info=True)
+                raise ValueError(f"Could not initialize native adapter: {e}") from e
+        else:
+            raise ValueError(f"Invalid client_preference: {model_config.client_preference}. Must be 'native', 'litellm', or 'openrouter'.")
 
-        except Exception as e:
-            error_message = f"LLM API error: {str(e)}"
-            self.logger.error(error_message)
-            raise Exception(error_message)
+        # Common properties (potentially less relevant now?)
+        self.max_history_tokens = model_config.max_history_tokens or 200000
 
-    def process_response(self, response: Any) -> tuple[str, List[Any]]:
-        """
-        Process the raw response from the AI model.
+        # Clean up old logging/prints
+        # print("\n=== API Client Initialization ===")
+        # print(f"Model: {model_config.model}") # Logged above
+        # print(f"Provider: {model_config.provider}") # Logged above
+        # print(f"Client Handler: {type(self.client_handler).__name__}") # Logged above
+        # print(f"API Key Present: {bool(model_config.api_key)}") # Less direct control now
+        # print("===============================\n")
 
-        This method uses the provider-specific adapter to extract the relevant information
-        from the API response.
+        # OpenAI Assistants API handling - needs review
+        # This seems tied to OpenAI native implementation. How does it fit with LiteLLM?
+        # LiteLLM has its own proxy endpoint for assistants. If using that, this logic is wrong.
+        # If using OpenAI native adapter, this might still be relevant.
+        # Let's comment it out for now, needs rethinking based on how Assistants are used.
+        # if model_config.use_assistants_api and model_config.provider == 'openai' and model_config.client_preference == 'native':
+        #     self.logger.info("Attempting to use OpenAI Assistants API via native adapter")
+        #     # Logic for Assistants API tied to native adapter needs confirmation
+        #     if hasattr(self.client_handler, 'assistant_manager'):
+        #          self.logger.info("Native adapter has assistant manager.")
+        #     else:
+        #          self.logger.warning("Native adapter selected with use_assistants_api=True, but adapter lacks assistant_manager.")
+        # else:
+        #      pass # Not using assistants or not using OpenAI native
 
-        Args:
-            response (Any): The raw response from the AI model.
+    def set_system_prompt(self, prompt: str) -> None:
+        """Set the system prompt."""
+        self.system_prompt = prompt
+        # TODO: How to pass system prompt?
+        # Native adapters might have specific methods.
+        # LiteLLM expects it in the messages list.
+        # We might need to handle this within get_response based on handler type.
+        self.logger.debug(f"System prompt set. Length: {len(prompt)}")
+        # Commenting out assistant-specific update for now
+        # if self.model_config.use_assistants_api and hasattr(self.client_handler, 'assistant_manager'):
+        #     self.client_handler.assistant_manager.update_system_prompt(prompt)
 
-        Returns:
-            tuple[str, List[Any]]: A tuple containing the processed response text and any tool uses.
-        """
-        try:
-            if not response:
-                logger.warning("Empty response received from API in process_response")
-                return "I encountered an issue processing your request, but I see the code executed successfully.", []
-                
-            # Use the adapter's process_response method
-            content, tool_uses = self.adapter.process_response(response)
-            
-            # Safety check for empty content
-            if not content or not content.strip():
-                logger.warning("Adapter returned empty content")
-                # Check if we're processing code execution results
-                if "random number" in str(response) or "random" in str(response):
-                    return "I can see from the output that the random number generated was the value shown above.", []
-                return "I received a response but it appears to be empty. Let me know if you'd like me to try again.", []
-                
-            return content, tool_uses
-            
-        except Exception as e:
-            logger.error(f"Error in process_response: {e}")
-            return f"An error occurred while processing the response: {str(e)}", []
+    def _prepare_messages_with_system_prompt(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Injects the system prompt into the message list if applicable."""
+        processed_messages = messages[:] # Create a copy
 
-    def _truncate_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Truncate the conversation history to fit within the maximum token limit.
+        if self.system_prompt:
+            # Check if handler supports system messages natively (relevant for native adapters)
+            handler_supports_system = False
+            if self.model_config.client_preference == 'native' and hasattr(self.client_handler, 'supports_system_messages'):
+                 handler_supports_system = self.client_handler.supports_system_messages()
 
-        This method iterates through the messages in reverse order, adding them to the truncated
-        history until the token limit is reached.
+            # LiteLLM generally expects system message in the list for most providers
+            # Native adapters might handle it differently (e.g., dedicated parameter)
 
-        Args:
-            messages (List[Dict[str, Any]]): The full conversation history.
+            # For simplicity, let's standardize on adding it to the message list here.
+            # Native adapters that *don't* support it in the list might need special handling
+            # in their format_messages method, or we remove this logic and pass it separately.
+            # Let's assume adding to the list is the most common way.
 
-        Returns:
-            List[Dict[str, Any]]: The truncated conversation history.
-        """
-        total_tokens = 0
-        truncated_messages = []
-        for message in reversed(messages):
-            message_tokens = self.adapter.count_tokens(str(message.get("content", "")))
-            if total_tokens + message_tokens > self.max_history_tokens:
-                break
-            total_tokens += message_tokens
-            truncated_messages.insert(0, message)
-        return truncated_messages
+            # Remove existing system message(s) first
+            processed_messages = [msg for msg in processed_messages if msg.get("role") != "system"]
+            # Add our system prompt at the beginning
+            processed_messages.insert(0, {"role": "system", "content": self.system_prompt})
+            self.logger.debug("Injected system prompt into messages.")
 
-    def encode_image_to_base64(self, image_path: str) -> str:
-        """
-        Encode an image file to a base64 string.
-
-        This method opens an image file, resizes it if necessary, converts it to RGB format,
-        and then encodes it to a base64 string.
-
-        Args:
-            image_path (str): The path to the image file.
-
-        Returns:
-            str: The base64-encoded string of the image, or an error message if encoding fails.
-        """
-        try:
-            with Image.open(image_path) as img:
-                # Resize the image if it's larger than 1024x1024
-                max_size = (1024, 1024)
-                img.thumbnail(max_size, Image.LANCZOS)
-
-                # Convert to RGB if it's not already
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-
-                # Save the image to a bytes buffer
-                img_byte_arr = io.BytesIO()
-                img.save(img_byte_arr, format="JPEG")
-
-                # Encode the image bytes to base64
-                return base64.b64encode(img_byte_arr.getvalue()).decode("utf-8")
-        except Exception as e:
-            return f"Error encoding image: {str(e)}"
-
-    def reset(self):
-        """Reset the client state"""
-        self.messages = []
-        self.set_system_prompt(self.system_prompt)
-
-    def count_tokens(self, content: Union[str, List, Dict]) -> int:
-        """
-        Count tokens for content, using the provider's tokenizer when available.
-        
-        Args:
-            content: Text or structured content to count tokens for
-            
-        Returns:
-            Token count as integer
-        """
-        try:
-            # If adapter implements token counting, use that
-            if self.adapter and hasattr(self.adapter, 'count_tokens'):
-                try:
-                    logger.debug(f"Using {self.adapter.provider} native tokenizer")
-                    return self.adapter.count_tokens(content)
-                except Exception as e:
-                    logger.warning(f"Error using adapter token counting: {e}")
-                    # Check if this is an image_url error with Anthropic
-                    if 'image_url' in str(e) and self.adapter.provider == 'anthropic':
-                        # Emergency conversion: replace image_url types with image types
-                        try:
-                            if isinstance(content, list) and any(isinstance(item, dict) and item.get('type') == 'image_url' for item in content):
-                                # Convert image_url to image.source format
-                                fixed_content = []
-                                for item in content:
-                                    if isinstance(item, dict) and item.get('type') == 'image_url':
-                                        image_url = item.get('image_url')
-                                        if isinstance(image_url, str) and image_url.startswith(('http://', 'https://')):
-                                            fixed_content.append({
-                                                "type": "image",
-                                                "source": {
-                                                    "type": "url",
-                                                    "url": image_url
-                                                }
-                                            })
-                                        else:
-                                            # Skip images we can't fix easily
-                                            fixed_content.append({"type": "text", "text": "[Image]"})
-                                    else:
-                                        fixed_content.append(item)
-                                
-                                logger.debug("Retrying token counting with fixed image format")
-                                return self.adapter.count_tokens(fixed_content)
-                        except Exception as inner_e:
-                            logger.warning(f"Error during emergency image format conversion: {inner_e}")
-            
-            # Fallback to approximate counting    
-            return self._approximate_token_count(content)
-            
-        except Exception as e:
-            logger.error(f"Token counting error: {e}")
-            return len(str(content)) // 4 + 1  # Very rough approximation
-
-    async def create_streaming_completion(
-        self,
-        messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        stream_callback: Optional[Callable[[str], None]] = None
-    ) -> str:
-        """Create a streaming completion request with proper text extraction."""
-        try:
-            # System prompt handling (unchanged)
-            if self.system_prompt:
-                if self.adapter.supports_system_messages():
-                    messages = [msg for msg in messages if msg.get("role") != "system"]
-                    messages.insert(0, {"role": "system", "content": self.system_prompt})
-                else:
-                    messages.insert(
-                        0,
-                        {
-                            "role": "user",
-                            "content": f"[SYSTEM PROMPT]: {self.system_prompt}",
-                        },
-                    )
-            
-            # Create accumulator for content
-            accumulated_content = []
-            
-            # Simple non-async wrapper for the callback
-            def text_callback(text):
-                # Call the original callback
-                if stream_callback:
-                    stream_callback(text)
-                # Also accumulate the text locally
-                accumulated_content.append(text)
-            
-            # Check if adapter supports streaming directly
-            if hasattr(self.adapter, 'create_completion'):
-                try:
-                    # Make sure we're bypassing litellm entirely for Anthropic
-                    if self.adapter.provider == "anthropic":
-                        self.logger.debug("Using direct Anthropic adapter for streaming")
-                        
-                    # Call adapter with our callback
-                    content = await self.adapter.create_completion(
-                        messages=messages,
-                        max_tokens=max_tokens or self.model_config.max_tokens,
-                        temperature=temperature or self.model_config.temperature,
-                        stream=True,
-                        stream_callback=text_callback
-                    )
-                    
-                    # Return either the adapter's accumulated content or our own
-                    if isinstance(content, str) and content:
-                        return content
-                    return ''.join(accumulated_content)
-                except Exception as e:
-                    self.logger.error(f"Streaming error in adapter: {str(e)}")
-                    if accumulated_content:
-                        # Return what we managed to get before the error
-                        return ''.join(accumulated_content)
-                    raise  # Re-raise if we got nothing
-            
-            # Fallback for non-streaming
-            self.logger.warning("Adapter doesn't support streaming, falling back to non-streaming mode")
-            response = await self.create_message(messages, max_tokens, temperature)
-            content, _ = self.process_response(response)
-            return content
-            
-        except Exception as e:
-            error_message = f"LLM API streaming error: {str(e)}"
-            self.logger.error(error_message)
-            # Return an error message instead of raising to avoid breaking the chat flow
-            return f"I encountered an error during streaming: {str(e)}"
+        return processed_messages
 
     async def get_response(
         self,
@@ -467,89 +187,282 @@ class APIClient:
         stream: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None
     ) -> str:
-        """Get a response with unified interface for streaming and non-streaming"""
-        # Determine if streaming should be used
+        """
+        Get a response from the configured AI model, using the chosen client handler.
+
+        Args:
+            messages: List of message dictionaries (OpenAI format).
+            max_tokens: Optional max tokens to generate.
+            temperature: Optional temperature parameter.
+            stream: Optional override for streaming preference.
+            stream_callback: Callback for handling streaming chunks.
+
+        Returns:
+            The complete response text from the model.
+        """
+        if not self.client_handler:
+            raise RuntimeError("APIClient handler not initialized.")
+
         use_streaming = stream if stream is not None else self.model_config.streaming_enabled
-        
+        prepared_messages = self._prepare_messages_with_system_prompt(messages)
+
+        # <<<--- ADD THIS LOGGING for PREPARED MESSAGES ---<<<
+        request_id_api = os.urandom(4).hex() # Simple ID for this layer
+        self.logger.info(f"[Request:{request_id_api}] APIClient calling handler {type(self.client_handler).__name__}.get_response")
         try:
-            # Debug token counts
-            # try:
-            #     token_count = self.count_tokens(messages)
-            #     logger.warning(f"TOKEN COUNT FOR REQUEST: {token_count} tokens")
-            #     if token_count > 100000:  # Arbitrary high number as warning threshold
-            #         logger.error(f"EXTREMELY HIGH TOKEN COUNT: {token_count}. This will likely fail.")
-                    
-            #     # Calculate token counts for each message
-            #     for i, msg in enumerate(messages):
-            #         try:
-            #             msg_tokens = self.count_tokens(msg)
-            #             logger.warning(f"Message {i}: {msg_tokens} tokens, role={msg.get('role')}")
-            #         except Exception as e:
-            #             logger.warning(f"Could not count tokens for message {i}: {e}")
-            # except Exception as e:
-            #     logger.warning(f"Token counting failed: {e}")
-            
-            if use_streaming and stream_callback:
-                # Handle streaming with proper accumulation
-                accumulated_response = await self.create_streaming_completion(
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    stream_callback=stream_callback
-                )
-                return accumulated_response
-            else:
-                # Non-streaming path
-                response = await self.create_message(
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=temperature
-                )
-                content, _ = self.process_response(response)
-                return content
-        except Exception as e:
-            logger.error(f"Error getting response: {str(e)}")
-            return f"Error: {str(e)}"
+             safe_msgs_for_log = []
+             for msg in prepared_messages:
+                  role = msg.get('role', 'unknown')
+                  content_log = "[omitted]"
+                  if isinstance(msg.get('content'), str):
+                       content_log = msg['content'][:100] + ("..." if len(msg['content']) > 100 else "")
+                  elif isinstance(msg.get('content'), list):
+                       content_log = f"[{len(msg['content'])} parts: " + ", ".join([p.get('type', 'unknown') for p in msg['content']]) + "]"
+                  safe_msgs_for_log.append({"role": role, "content": content_log})
+             self.logger.debug(f"[Request:{request_id_api}] Messages passed to handler (summary): {safe_msgs_for_log}")
 
+             # <<<--- Add Token Count Logging ---<<<
+             try:
+                 final_token_count = self.count_tokens(prepared_messages)
+                 self.logger.info(f"[Request:{request_id_api}] Estimated token count for prepared messages: {final_token_count}")
+                 if final_token_count > (self.max_history_tokens * 0.95): # Warn if close to limit
+                      self.logger.warning(f"[Request:{request_id_api}] Prepared message token count ({final_token_count}) is close to limit ({self.max_history_tokens}).")
+             except Exception as count_err:
+                 self.logger.warning(f"[Request:{request_id_api}] Failed to count tokens for prepared messages: {count_err}")
+             # >>> --- End Token Count Logging --- >>>
 
-# The following code is commented out and represents an older version of the API client.
-# It's kept for reference but is not currently in use.
-"""
-class BaseAPIClient:
-    def create_message(self, model, max_tokens, system, messages, tools, tool_choice):
-        raise NotImplementedError
+        except Exception as log_err:
+             self.logger.warning(f"[Request:{request_id_api}] Error creating safe log/counting tokens for prepared_messages: {log_err}")
+        # >>>------------------------------------------- >>>
 
-    def process_response(self, response):
-        raise NotImplementedError
-
-    def count_tokens(self, text):
-        raise NotImplementedError    
-
-class OpenAIClient(BaseAPIClient):
-    def __init__(self, api_key: str):
-        openai.api_key = api_key
-
-    def create_message(self, model, max_tokens, system, messages, tools, tool_choice):
         try:
-            response = openai.Completion.create(
-                model=model,
-                max_tokens=max_tokens,
-                prompt=system + "\n" + "\n".join([msg["content"] for msg in messages])
+            # --- Ideal Flow (Enforce Interface - See Step 2) ---
+            if not hasattr(self.client_handler, 'get_response'):
+                 # This should ideally not happen if Step 2 is done.
+                 self.logger.error(f"CRITICAL: Client handler {type(self.client_handler).__name__} missing required 'get_response' method!")
+                 return f"[Error: Handler {type(self.client_handler).__name__} interface mismatch]"
+
+            response_text = await self.client_handler.get_response(
+                messages=prepared_messages,
+                max_tokens=max_tokens or self.model_config.max_tokens,
+                temperature=temperature if temperature is not None else self.model_config.temperature,
+                stream=use_streaming,
+                stream_callback=stream_callback if use_streaming else None,
             )
-            return response
+
+            # <<<--- ADD Check for Error/Placeholder Strings ---<<<
+            if isinstance(response_text, str):
+                if response_text.startswith("[Error:") or response_text.startswith("[Model finished"):
+                     self.logger.warning(f"[Request:{request_id_api}] Handler returned non-content string: {response_text}")
+                     # Propagate this specific info instead of just empty?
+                     # Maybe core.py needs to check for these specific strings too.
+                     # For now, returning it might still trigger core's retry loop if core only checks for "" or None.
+                     # Let's return it as is for now, core needs adjustment later if this is the case.
+
+                elif not response_text.strip() and not use_streaming:
+                     # Log if we get an empty string in non-streaming mode
+                     self.logger.warning(f"[Request:{request_id_api}] Handler returned empty string in non-streaming mode.")
+            # >>>----------------------------------------------->>>
+
+            return response_text
+            # --- End Ideal Flow ---
+
         except Exception as e:
-            raise Exception(f"Error calling OpenAI API: {str(e)}")
+            error_message = f"LLM API call failed via {type(self.client_handler).__name__}: {str(e)}"
+            self.logger.error(error_message, exc_info=True)
+            # Return the error message to the user interface
+            return f"Error: {error_message}"
 
-    def process_response(self, response):
-        assistant_response = response.choices[0].text.strip()
-        tool_uses = []  # OpenAI might not have tool uses in the same way
-        return assistant_response, tool_uses
 
-    def count_tokens(self, text):
+    # --- Methods below might be simplified or removed if get_response handles all ---
+
+    # process_response is likely no longer needed here, as the handler should return processed text
+    # def process_response(self, response: Any) -> tuple[str, List[Any]]:
+    #     """Process the raw response (delegated to handler if possible)."""
+    #     # This logic is now likely within the handler's get_response or internal methods
+    #     logger.warning("APIClient.process_response called - this might be deprecated.")
+    #     if hasattr(self.client_handler, 'process_response'):
+    #         try:
+    #              # Assuming native adapter style response processing
+    #              content, tool_uses = self.client_handler.process_response(response)
+    #              return content, tool_uses
+    #         except Exception as e:
+    #              logger.error(f"Error in handler's process_response: {e}", exc_info=True)
+    #              return f"[Error processing response: {e}]", []
+    #     else:
+    #          # LiteLLM gateway handles processing internally in its get_response
+    #          logger.info("Handler does not have process_response, assuming processed result already handled.")
+    #          # We expect get_response to return the final string now
+    #          if isinstance(response, str):
+    #               return response, [] # Assume response *is* the content string
+    #          else:
+    #               return "[Error: Unexpected response type after handler call]", []
+
+
+    # create_message might be replaced by get_response logic
+    # async def create_message(
+    #     self,
+    #     messages: List[Dict[str, Any]],
+    #     max_tokens: Optional[int] = None,
+    #     temperature: Optional[float] = None,
+    # ) -> Any:
+    #     """ Deprecated: Use get_response instead """
+    #     logger.warning("APIClient.create_message called - this is likely deprecated. Use get_response.")
+    #     # This logic should be part of the get_response implementation or the handler itself
+    #     response_text = await self.get_response(
+    #         messages=messages,
+    #         max_tokens=max_tokens,
+    #         temperature=temperature,
+    #         stream=False # create_message implies non-streaming
+    #     )
+    #     # Need to return something compatible with old flow if called?
+    #     # This is problematic. Better to refactor callers to use get_response.
+    #     return {"choices": [{"message": {"content": response_text}}]} # Simulate OpenAI structure
+
+
+    # create_streaming_completion might be replaced by get_response logic
+    # async def create_streaming_completion(
+    #     self,
+    #     messages: List[Dict[str, Any]],
+    #     max_tokens: Optional[int] = None,
+    #     temperature: Optional[float] = None,
+    #     stream_callback: Optional[Callable[[str], None]] = None
+    # ) -> str:
+    #     """ Deprecated: Use get_response with stream=True instead """
+    #     logger.warning("APIClient.create_streaming_completion called - this is likely deprecated. Use get_response.")
+    #     return await self.get_response(
+    #          messages=messages,
+    #          max_tokens=max_tokens,
+    #          temperature=temperature,
+    #          stream=True,
+    #          stream_callback=stream_callback
+    #     )
+
+
+    # Token counting delegated
+    def count_tokens(self, content: Union[str, List, Dict]) -> int:
+        """
+        Count tokens for content, using the chosen client handler.
+
+        Args:
+            content: Text or structured content to count tokens for
+
+        Returns:
+            Token count as integer
+        """
+        if not self.client_handler:
+            self.logger.error("Cannot count tokens, client handler not initialized.")
+            return len(str(content)) // 4 # Very rough fallback
+
+        if not self.model_config.enable_token_counting:
+             self.logger.debug("Token counting disabled in ModelConfig.")
+             return 0
+
+        if hasattr(self.client_handler, 'count_tokens'):
+            try:
+                # Use the handler's count_tokens method
+                return self.client_handler.count_tokens(content)
+            except Exception as e:
+                self.logger.warning(f"Token counting failed using {type(self.client_handler).__name__}: {e}")
+                # Fallback to LiteLLM's generic counter if handler fails?
+                try:
+                     logger.info(f"Falling back to LiteLLM generic token counter for model {self.model_config.model}")
+                     # Ensure model name is suitable for LiteLLM counter
+                     model_for_counting = self.model_config.model
+                     if isinstance(content, str):
+                          return token_counter(model=model_for_counting, text=content)
+                     elif isinstance(content, list):
+                           # Assume OpenAI message format for LiteLLM counter
+                          return token_counter(model=model_for_counting, messages=content)
+                     else:
+                          return len(str(content)) // 4 # Rough fallback
+                except Exception as litellm_e:
+                     self.logger.error(f"LiteLLM generic token counter also failed: {litellm_e}")
+                     return len(str(content)) // 4 # Final rough fallback
+        else:
+            self.logger.warning(f"Client handler {type(self.client_handler).__name__} does not implement count_tokens.")
+            # Fallback to LiteLLM generic counter?
+            try:
+                logger.info(f"Falling back to LiteLLM generic token counter for model {self.model_config.model}")
+                model_for_counting = self.model_config.model
+                if isinstance(content, str):
+                    return token_counter(model=model_for_counting, text=content)
+                elif isinstance(content, list):
+                    return token_counter(model=model_for_counting, messages=content)
+                else:
+                    return len(str(content)) // 4
+            except Exception as litellm_e:
+                self.logger.error(f"LiteLLM generic token counter also failed: {litellm_e}")
+                return len(str(content)) // 4
+
+    def _truncate_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Truncate the conversation history to fit within the maximum token limit,
+        using the handler's token counting method.
+        """
+        total_tokens = 0
+        truncated_messages = []
+        # Ensure system prompt is preserved if present (should be first)
+        system_msg = None
+        processed_messages = messages[:] # Copy
+        if processed_messages and processed_messages[0].get("role") == "system":
+             system_msg = processed_messages.pop(0)
+             # Count system prompt tokens separately
+             system_tokens = self.count_tokens(system_msg['content']) if system_msg else 0
+             total_tokens += system_tokens
+
+
+        # Iterate through remaining messages in reverse
+        for message in reversed(processed_messages):
+            # Count tokens for the current message
+            message_tokens = self.count_tokens(message) # Use the central count_tokens method
+
+            if total_tokens + message_tokens > self.max_history_tokens:
+                self.logger.warning(
+                    f"Truncating history: Limit {self.max_history_tokens}, "
+                    f"Current total {total_tokens}, "
+                    f"Next msg tokens {message_tokens}. Stopping."
+                )
+                break
+            total_tokens += message_tokens
+            truncated_messages.insert(0, message) # Add to the beginning
+
+        # Re-add system prompt if it existed
+        if system_msg:
+            truncated_messages.insert(0, system_msg)
+
+        num_truncated = len(messages) - len(truncated_messages)
+        if num_truncated > 0:
+            self.logger.info(f"Truncated {num_truncated} messages from history. "
+                             f"Final token count (approx): {total_tokens}")
+
+        return truncated_messages
+
+    def encode_image_to_base64(self, image_path: str) -> str:
+        """
+        Encode an image file to a base64 string. (Moved to gateway, keep here for compatibility?)
+        This might only be relevant for native adapters that don't handle it.
+        LiteLLM gateway handles encoding internally. Let's keep it for now.
+        """
+        # ... (encode_image_to_base64 remains the same) ...
         try:
-            token_count = len(openai.Completion.create(model="text-davinci-003", prompt=text, max_tokens=1).choices[0].logprobs.tokens)
-            return token_count
+            with Image.open(image_path) as img:
+                max_size = (1024, 1024)
+                img.thumbnail(max_size, Image.LANCZOS)
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                img_byte_arr = io.BytesIO()
+                img.save(img_byte_arr, format="JPEG")
+                return base64.b64encode(img_byte_arr.getvalue()).decode("utf-8")
         except Exception as e:
-            print(f"Error counting tokens: {str(e)}")
-            return 0
-"""
+            self.logger.error(f"Error encoding image {image_path}: {str(e)}")
+            return f"Error encoding image: {str(e)}"
+
+
+    def reset(self):
+        """Reset the client state (primarily the system prompt)."""
+        # self.messages = [] # History is managed by the caller (e.g., Core)
+        # Resetting the handler might be complex, just clear the prompt for now
+        self.system_prompt = None
+        self.logger.info("APIClient state reset (system prompt cleared).")
+        # Re-applying system prompt might require calling set_system_prompt again by caller

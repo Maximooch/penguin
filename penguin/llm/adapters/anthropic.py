@@ -55,8 +55,8 @@ class AnthropicAdapter(BaseAdapter):
             request_params = {
                 "model": self.model_config.model,
                 "messages": formatted_messages,
-                "max_tokens": max_tokens or self.model_config.max_tokens or 4096,
-                "temperature": temperature or self.model_config.temperature or 0.7,
+                "max_tokens": max_tokens or self.model_config.max_tokens or 8192,
+                "temperature": temperature or self.model_config.temperature or 0.4,
             }
             
             # Add system prompt if provided (strip trailing whitespace)
@@ -66,12 +66,30 @@ class AnthropicAdapter(BaseAdapter):
             # Make the API call
             safe_params = self._safe_log_content(request_params.copy())
             # logger.warning(f"FINAL REQUEST TO ANTHROPIC: {safe_params}")
-            
+
+            # Log estimated input tokens before call
+            try:
+                input_tokens = self.count_tokens(messages) # Count original messages
+                self.logger.debug(f"Estimated input tokens for Anthropic call: {input_tokens}")
+            except Exception as tk_err:
+                self.logger.warning(f"Could not estimate input tokens before call: {tk_err}")
+
             # Add double-check for trailing whitespace in all text content
             self._ensure_no_trailing_whitespace(request_params)
             
+            self.logger.debug(f"Sending non-streaming request to Anthropic: Model={request_params['model']}, MaxTokens={request_params['max_tokens']}, Temp={request_params['temperature']}, SystemPromptLength={len(request_params.get('system', ''))}, NumMessages={len(request_params['messages'])}")
+            
             response = await self.async_client.messages.create(**request_params)
             
+            # Log the raw response object
+            try:
+                # Use pformat for potentially large/complex objects
+                import pprint
+                raw_response_str = pprint.pformat(response.model_dump()) # Convert pydantic model to dict for logging
+                self.logger.debug(f"Raw Anthropic non-streaming response object:\n{raw_response_str}")
+            except Exception as log_err:
+                self.logger.warning(f"Error logging raw Anthropic response: {log_err}")
+
             return response
         
         except Exception as e:
@@ -82,7 +100,13 @@ class AnthropicAdapter(BaseAdapter):
             if hasattr(e, 'status_code'):
                 logger.error(f"Anthropic API error code: {getattr(e, 'status_code')}")
             if hasattr(e, 'response'):
-                logger.error(f"Response data: {getattr(e, 'response')}")
+                # Log raw error response if available
+                try:
+                    import pprint
+                    error_response_str = pprint.pformat(getattr(e, 'response'))
+                    logger.error(f"Raw error response data:\n{error_response_str}")
+                except Exception as log_err:
+                    logger.warning(f"Error logging raw error response data: {log_err}")
             raise
     
     async def create_completion(
@@ -124,14 +148,28 @@ class AnthropicAdapter(BaseAdapter):
             # Make sure no trailing whitespace in any message
             self._ensure_no_trailing_whitespace(request_params)
             
+            # Log estimated input tokens before call
+            try:
+                input_tokens = self.count_tokens(messages) # Count original messages
+                self.logger.debug(f"Estimated input tokens for Anthropic call: {input_tokens}")
+            except Exception as tk_err:
+                self.logger.warning(f"Could not estimate input tokens before call: {tk_err}")
+                
             # Make the API call
             safe_params = self._safe_log_content(request_params.copy())
-            logger.debug(f"Sending request to Anthropic: {safe_params}")
+            self.logger.debug(f"Sending request to Anthropic: Model={request_params['model']}, MaxTokens={request_params['max_tokens']}, Temp={request_params['temperature']}, SystemPromptLength={len(request_params.get('system', ''))}, NumMessages={len(request_params['messages'])}, Stream={stream}")
             
             if stream:
                 return await self._handle_streaming(request_params, stream_callback)
             else:
                 response = await self.async_client.messages.create(**request_params)
+                # Log the raw response object for non-streaming completion as well
+                try:
+                    import pprint
+                    raw_response_str = pprint.pformat(response.model_dump())
+                    self.logger.debug(f"Raw Anthropic non-streaming completion response object:\n{raw_response_str}")
+                except Exception as log_err:
+                    self.logger.warning(f"Error logging raw Anthropic non-streaming completion response: {log_err}")
                 return response
                 
         except Exception as e:
@@ -147,6 +185,10 @@ class AnthropicAdapter(BaseAdapter):
         accumulated_response = []
         stream_start_time = time.time()
         streaming_timeout = 30  # seconds
+        final_response_object = None # To store the final message object
+        stream_error = None # To store any exception during streaming
+        stop_reason = None # To store the stop reason if available
+        usage_info = None # To store usage info if available
         
         try:
             # Create the streaming response
@@ -168,21 +210,34 @@ class AnthropicAdapter(BaseAdapter):
                 
                 try:
                     # Handle different event types
+                    self.logger.debug(f"Received chunk type: {chunk.type} (Chunk {chunk_count})")
                     if hasattr(chunk, 'type'):
-                        self.logger.debug(f"Received chunk type: {chunk.type}")
                         
-                        if chunk.type == 'content_block_delta' and hasattr(chunk, 'delta'):
+                        if chunk.type == 'message_stop':
+                             # Capture the final response object from the stream if possible
+                             # Note: The structure might vary, need to check Anthropic docs/examples
+                             # For now, just log that we stopped. The final object might not be in the chunk itself.
+                             self.logger.debug("Stream processing stopped due to 'message_stop' event.")
+                             # We might get the final message object *after* the loop, see below
+
+                        elif chunk.type == 'content_block_delta' and hasattr(chunk, 'delta'):
                             if chunk.delta.type == 'text_delta' and hasattr(chunk.delta, 'text'):
                                 content = chunk.delta.text
                         
                         elif chunk.type == 'content_block_start' and hasattr(chunk, 'content_block'):
                             if chunk.content_block.type == 'text' and hasattr(chunk.content_block, 'text'):
                                 content = chunk.content_block.text
-                    
+                        
+                        elif chunk.type == 'message_delta' and hasattr(chunk, 'usage') and hasattr(chunk, 'stop_reason'):
+                            # Capture usage and stop reason from message_delta if available
+                            stop_reason = chunk.stop_reason
+                            usage_info = chunk.usage
+                            self.logger.debug(f"Received message_delta: stop_reason={stop_reason}, usage={usage_info}")
+
                     # Process extracted content
                     if content:
                         received_content = True
-                        self.logger.debug(f"Extracted content from chunk {chunk_count}: {content[:20]}...")
+                        # self.logger.debug(f"Extracted content from chunk {chunk_count}: {content[:20]}...") # Less verbose logging
                         # Call the callback with the content
                         if callback:
                             callback(content)
@@ -197,16 +252,34 @@ class AnthropicAdapter(BaseAdapter):
                 current_time = time.time()
                 if current_time - last_chunk_time > chunk_timeout:
                     self.logger.warning(f"No chunks received for {chunk_timeout} seconds, stopping stream")
+                    stream_error = TimeoutError(f"Chunk timeout after {chunk_timeout}s")
                     break
                 
                 # Check for overall timeout
                 if current_time - stream_start_time > streaming_timeout:
                     self.logger.warning(f"Streaming exceeded timeout of {streaming_timeout} seconds, stopping")
+                    stream_error = TimeoutError(f"Streaming timeout after {streaming_timeout}s")
                     break
-            
+
+            # ---- After the loop ----
+            # Try to get the final message object AFTER the stream completes
+            try:
+                final_response_object = await stream.get_final_message()
+                if final_response_object:
+                    # Log the raw final message object from the stream
+                    import pprint
+                    final_object_str = pprint.pformat(final_response_object.model_dump())
+                    self.logger.debug(f"Raw Anthropic final message object from stream:\n{final_object_str}")
+                    # Extract final stop reason and usage if not already captured
+                    if not stop_reason: stop_reason = final_response_object.stop_reason
+                    if not usage_info: usage_info = final_response_object.usage
+            except Exception as e:
+                 self.logger.warning(f"Could not get final message object from stream: {e}")
+
+
             # Log streaming stats
             total_stream_time = time.time() - stream_start_time
-            self.logger.info(f"Streaming complete: {chunk_count} chunks in {total_stream_time:.2f}s, received content: {received_content}")
+            self.logger.info(f"Streaming complete: {chunk_count} chunks in {total_stream_time:.2f}s. Received content: {received_content}. Stop Reason: {stop_reason}. Usage: {usage_info}. Error: {stream_error}")
             
             # Join all chunks to get the complete response
             complete_response = ''.join(accumulated_response)
@@ -214,28 +287,30 @@ class AnthropicAdapter(BaseAdapter):
             # Validate the response
             if not received_content or len(complete_response.strip()) <= 5:
                 # Handle suspiciously short responses
-                self.logger.warning(f"Suspiciously short response received: '{complete_response}'")
+                self.logger.warning(f"Suspiciously short response received: '{complete_response}'. Stop Reason: {stop_reason}, Usage: {usage_info}")
                 
                 # Check if it's effectively empty (just whitespace or minimal punctuation)
                 if complete_response.strip() in ['', '.', '?', '!', ','] or len(complete_response.strip()) <= 1:
-                    error_message = "I encountered an issue while generating a response. The connection may have been interrupted."
-                    self.logger.error(f"Empty response detected: {complete_response}")
+                    error_message = f"I encountered an issue generating a response. The connection may have been interrupted or the response filtered. Stop Reason: {stop_reason}"
+                    self.logger.error(f"Empty response detected: '{complete_response}'. Stop Reason: {stop_reason}, Usage: {usage_info}")
                     
                     # If we got nothing but have some chunks, try to salvage
                     if chunk_count > 0:
                         return error_message
                     else:
                         # Truly empty - raise exception to trigger retry
-                        raise ValueError("Stream produced no content")
+                        raise ValueError(f"Stream produced no content. Stop Reason: {stop_reason}")
             
             # Add detailed debugging for very short responses
             if 1 < len(complete_response.strip()) <= 5:
-                self.logger.warning(f"Very short but non-empty response: '{complete_response}', from {chunk_count} chunks")
+                self.logger.warning(f"Very short but non-empty response: '{complete_response}', from {chunk_count} chunks. Stop Reason: {stop_reason}")
             
+            self.logger.debug(f"Returning final accumulated streaming response (length {len(complete_response)} chars)")
             return complete_response
             
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as e:
             self.logger.warning("Anthropic streaming was cancelled")
+            stream_error = e
             # Return what we've accumulated so far or an error message
             if accumulated_response:
                 self.logger.info(f"Returning partial response from cancelled stream ({len(accumulated_response)} chunks)")
@@ -244,52 +319,105 @@ class AnthropicAdapter(BaseAdapter):
                 raise  # Re-raise to properly handle cancellation
             
         except Exception as e:
+            stream_error = e
             error_msg = f"Error during Anthropic streaming: {str(e)}"
             self.logger.error(f"{error_msg}\n{traceback.format_exc()}")
             
             # Log more details about the streaming state
             elapsed_time = time.time() - stream_start_time
-            self.logger.error(f"Stream error details: elapsed_time={elapsed_time:.2f}s, chunks_received={len(accumulated_response)}")
+            self.logger.error(f"Stream error details: elapsed_time={elapsed_time:.2f}s, chunks_received={chunk_count}, stop_reason={stop_reason}, usage={usage_info}")
             
             if callback:
                 callback(f"\n[Streaming Error: {str(e)}]")
                 
             # Return partial response if we have any content
             if accumulated_response:
-                self.logger.info(f"Returning partial response despite error ({len(accumulated_response)} chunks)")
+                self.logger.info(f"Returning partial response despite error ({chunk_count} chunks)")
                 return ''.join(accumulated_response)
             
-            # Otherwise return an error message
-            return f"Error during response generation: {str(e)}"
-    
+            # Otherwise return an error message including stop reason if available
+            return f"Error during response generation: {str(e)}. Stop Reason: {stop_reason}"
+        finally:
+            # Log final state regardless of how we exited
+             total_stream_time = time.time() - stream_start_time
+             self.logger.info(f"Exiting _handle_streaming: Time={total_stream_time:.2f}s, Chunks={chunk_count}, ReceivedContent={received_content}, StopReason={stop_reason}, Usage={usage_info}, Error={stream_error}")
+
+
     def process_response(self, response: Any) -> Tuple[str, List[Any]]:
         """Process Anthropic API response into standardized format"""
         try:
-            logger.debug(f"Processing Anthropic response of type: {type(response)}")
-            
-            # Handle AsyncAnthropic Message object
-            if hasattr(response, 'content'):
+            # Log the raw response object being processed
+            self.logger.debug(f"Processing Anthropic response of type: {type(response)}")
+            if hasattr(response, 'model_dump'): # Check if pydantic model
+                 try:
+                     import pprint
+                     raw_response_str = pprint.pformat(response.model_dump())
+                     self.logger.debug(f"Raw response object received by process_response:\n{raw_response_str}")
+                 except Exception as log_err:
+                     self.logger.warning(f"Error logging raw response in process_response: {log_err}")
+            else:
+                 self.logger.debug(f"Response object received by process_response (non-pydantic): {str(response)[:500]}...") # Log snippet if not easily dumpable
+
+
+            # Handle AsyncAnthropic Message object (from non-streaming calls)
+            if hasattr(response, 'content') and hasattr(response, 'stop_reason'):
+                stop_reason = response.stop_reason
+                usage = getattr(response, 'usage', None)
+                
                 # Extract text from content blocks
                 text_content = []
-                for block in response.content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text_content.append(block.get("text", ""))
-                    elif hasattr(block, "text") and hasattr(block, "type") and block.type == "text":
-                        text_content.append(block.text)
+                if response.content: # Ensure content is not None or empty
+                    for block in response.content:
+                        # Check if block is a ContentBlock pydantic model or dict
+                        block_type = getattr(block, 'type', None) or (isinstance(block, dict) and block.get("type"))
+                        block_text = getattr(block, 'text', None) or (isinstance(block, dict) and block.get("text"))
+
+                        if block_type == "text" and block_text is not None:
+                            text_content.append(block_text)
+                        else:
+                            self.logger.warning(f"Skipping non-text or empty text block in response content: type={block_type}")
+                else:
+                     # Content is empty, log the reason
+                     self.logger.warning(f"Response object has no content blocks. Stop Reason: {stop_reason}, Usage: {usage}")
+
+                final_text = "\n".join(text_content)
+                self.logger.debug(f"Extracted text from non-streaming response (Length: {len(final_text)}): '{final_text[:100]}...' Stop Reason: {stop_reason}, Usage: {usage}")
                 
-                return "\n".join(text_content), []
+                # Check stop reason - handle empty content with normal stop_reason
+                if not final_text.strip() and stop_reason in ['end_turn', 'stop_sequence']:
+                    self.logger.warning(f"Empty content extracted despite normal stop_reason: {stop_reason}. Returning specific message.")
+                    # Return a more informative message instead of just empty string
+                    info_message = f"[Model finished ({stop_reason}) but produced no text content. Input Tokens: {usage.input_tokens if usage else 'N/A'}, Output Tokens: {usage.output_tokens if usage else 'N/A'}]"
+                    return info_message, []
+                elif not final_text.strip():
+                    # Handle empty content due to other stop reasons (like max_tokens)
+                     self.logger.warning(f"Empty content extracted, likely due to stop_reason: {stop_reason}. Returning empty string.")
+                     # Could return specific messages based on other stop_reasons if needed
+                     # e.g., if stop_reason == 'max_tokens': return "[Response truncated due to token limit]", []
+
+                # TODO: Add tool use extraction if Anthropic starts returning tool calls here
+                tool_uses = [] 
+                return final_text, tool_uses
             
-            # Fallback for string or other response types
+            # Fallback for string response (likely from streaming completion or error handling)
             if isinstance(response, str):
+                # Check if the string indicates an error or specific state from streaming
+                if "[Model finished" in response and "produced no text content" in response:
+                    # Pass through the informative message from streaming
+                    self.logger.debug(f"Processing informative string response from streaming: '{response[:100]}...'")
+                else:
+                     self.logger.debug(f"Processing generic string response (Length: {len(response)}): '{response[:100]}...'")
                 return response, []
             
-            # Last resort - convert to string
+            # Last resort - handle unexpected types
+            self.logger.warning(f"Processing unexpected response type: {type(response)}. Converting to string.")
             return str(response), []
             
         except Exception as e:
-            logger.error(f"Error processing Anthropic response: {str(e)}")
+            self.logger.error(f"Error processing Anthropic response: {str(e)}")
+            self.logger.error(f"Processing error details: {traceback.format_exc()}")
             return f"Error processing response: {str(e)}", []
-    
+            
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Format messages for Anthropic API, properly handling images"""
         formatted_messages = []

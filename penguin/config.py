@@ -1,9 +1,12 @@
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+import logging
+
+logger = logging.getLogger(__name__)
 
 # import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Literal
 
 import yaml  # type: ignore
 from dotenv import load_dotenv  # type: ignore
@@ -27,8 +30,28 @@ def load_config():
     config_path = Path(__file__).parent.parent / "config.yml"
     try:
         with open(config_path) as f:
-            return yaml.safe_load(f)
+            config = yaml.safe_load(f)
+
+            # Initialize diagnostics based on config
+            if "diagnostics" in config:
+                # Move import inside the function to avoid circular imports
+                try:
+                    from penguin.utils.diagnostics import (
+                        disable_diagnostics,
+                        enable_diagnostics,
+                    )
+
+                    if not config["diagnostics"].get("enabled", False):
+                        disable_diagnostics()
+                    else:
+                        enable_diagnostics()
+                except ImportError:
+                    logger.warning("Could not import diagnostics module, skipping diagnostics setup")
+
+            return config
     except FileNotFoundError:
+        return {}
+    except yaml.YAMLError:
         return {}
 
 def get_workspace_root() -> Path:
@@ -104,34 +127,6 @@ CONTINUOUS_COMPLETION_PHRASE = "CONTINUOUS_COMPLETED"  # End of continuous sessi
 EMERGENCY_STOP_PHRASE = "EMERGENCY_STOP"  # Immediate termination needed
 NEED_USER_CLARIFICATION_PHRASE = "NEED_USER_CLARIFICATION"  # Pause for user input
 MAX_TASK_ITERATIONS = 100 # Check to see if it works fine with 100 messages before more
-
-
-def load_config():
-    config_path = Path(__file__).parent.parent / "config.yml"
-    # logger.debug(f"Attempting to load config from: {config_path}")
-    try:
-        with open(config_path) as config_file:
-            config = yaml.safe_load(config_file)
-
-            # Initialize diagnostics based on config
-            if "diagnostics" in config:
-                from penguin.utils.diagnostics import (
-                    disable_diagnostics,
-                    enable_diagnostics,
-                )
-
-                if not config["diagnostics"].get("enabled", False):
-                    disable_diagnostics()
-                else:
-                    enable_diagnostics()
-
-            return config
-    except FileNotFoundError:
-        # logger.error(f"Config file not found at {config_path}")
-        return {}
-    except yaml.YAMLError:
-        # logger.error(f"Error parsing config file: {e}")
-        return {}
 
 
 # Default model configuration
@@ -239,22 +234,14 @@ class DiagnosticsConfig:
 
 
 @dataclass
-class ModelConfig:
-    default: str = "gpt-4"
-    provider: str = "openai"
-    use_assistants_api: bool = False
-    use_native_adapter: bool = False
-    streaming_enabled: bool = False
-
-
-@dataclass
 class APIConfig:
     base_url: Optional[str] = None
 
 
 @dataclass
 class Config:
-    model: ModelConfig = field(default_factory=ModelConfig)
+    # Use forward reference for type hint to avoid circular import
+    model_config: Any = None  # Will be set in load_config
     api: APIConfig = field(default_factory=APIConfig)
     workspace_path: Path = field(default_factory=lambda: Path(WORKSPACE_PATH))
     temperature: float = field(default=0.7)
@@ -267,62 +254,92 @@ class Config:
         ).expanduser()
     )
 
+    def __post_init__(self):
+        # Initialize model_config if it's None
+        if self.model_config is None:
+            # Import inside the method to avoid circular imports
+            from penguin.llm.model_config import ModelConfig as LLMModelConfig
+            self.model_config = LLMModelConfig.from_env()
+
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "Config":
         """Load configuration from config.yml"""
+        # Import ModelConfig here to avoid circular imports
+        from penguin.llm.model_config import ModelConfig as LLMModelConfig
+        
         if config_path is None:
-            config_path = Path(__file__).parent.parent / "config.yml"
+            config_data = load_config()
+        else:
+            try:
+                with open(config_path) as f:
+                    config_data = yaml.safe_load(f)
+            except (FileNotFoundError, yaml.YAMLError):
+                config_data = {}
 
-        try:
-            with open(config_path) as f:
-                config_data = yaml.safe_load(f)
+        if not config_data:
+            print("Warning: Configuration file not found or empty. Using default settings.")
+            return cls()
 
-            # Load diagnostics config
-            diagnostics_config = DiagnosticsConfig(
-                enabled=config_data.get("diagnostics", {}).get("enabled", False),
-                max_context_tokens=config_data.get("diagnostics", {}).get(
-                    "max_context_tokens", 200000
-                ),
-            )
+        diagnostics_config = DiagnosticsConfig(
+            enabled=config_data.get("diagnostics", {}).get("enabled", False),
+            max_context_tokens=config_data.get("diagnostics", {}).get(
+                "max_context_tokens", 200000
+            ),
+            log_to_file=config_data.get("diagnostics", {}).get("log_to_file", False),
+            log_path=Path(config_data["diagnostics"]["log_path"]) if config_data.get("diagnostics", {}).get("log_path") else None
+        )
 
-            # Initialize diagnostics based on config
-            if not diagnostics_config.enabled:
-                from utils.diagnostics import disable_diagnostics
+        if diagnostics_config.enabled:
+            log_level = logging.DEBUG if os.getenv("PENGUIN_DEBUG") else logging.INFO
+            log_kwargs = {"level": log_level, "format": '%(asctime)s - %(name)s - %(levelname)s - %(message)s'}
+            if diagnostics_config.log_to_file and diagnostics_config.log_path:
+                diagnostics_config.log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_kwargs["filename"] = str(diagnostics_config.log_path)
+                log_kwargs["filemode"] = 'a'
+            logging.basicConfig(**log_kwargs)
+            logging.info("Diagnostics enabled via config.yml.")
 
-                disable_diagnostics()
+        default_model_settings = config_data.get("model", {})
+        default_model_id = default_model_settings.get("default", "anthropic/claude-3-5-sonnet-20240620")
+        default_provider = default_model_settings.get("provider", "anthropic")
+        default_client_pref = default_model_settings.get("client_preference", "litellm")
 
-            return cls(
-                model=ModelConfig(
-                    default=config_data.get("model", {}).get("default", "gpt-4"),
-                    provider=config_data.get("model", {}).get("provider", "openai"),
-                    use_assistants_api=config_data.get("model", {}).get(
-                        "use_assistants_api", False
-                    ),
-                    use_native_adapter=config_data.get("model", {}).get(
-                        "use_native_adapter", False
-                    ),
-                    streaming_enabled=config_data.get("model", {}).get(
-                        "streaming_enabled", False
-                    ),
-                ),
-                api=APIConfig(base_url=config_data.get("api", {}).get("base_url")),
-                workspace_path=Path(WORKSPACE_PATH),
-                temperature=config_data.get("temperature", 0.7),
-                max_tokens=config_data.get("max_tokens"),
-                diagnostics=diagnostics_config,
-            )
+        specific_config = config_data.get("model_configs", {}).get(default_model_id, {})
 
-        except (FileNotFoundError, yaml.YAMLError):
-            return cls()  # Return default config if file not found or invalid
+        model_name_for_init = specific_config.get("model", default_model_id)
+        provider_for_init = specific_config.get("provider", default_provider)
+        client_pref_for_init = specific_config.get("client_preference", default_client_pref)
+
+        default_llm_model_config = LLMModelConfig(
+            model=model_name_for_init,
+            provider=provider_for_init,
+            client_preference=client_pref_for_init,
+            api_base=specific_config.get("api_base", default_model_settings.get("api_base")),
+            max_tokens=specific_config.get("max_tokens", default_model_settings.get("max_tokens")),
+            temperature=specific_config.get("temperature", default_model_settings.get("temperature", 0.7)),
+            streaming_enabled=specific_config.get("streaming_enabled", default_model_settings.get("streaming_enabled", True)),
+            vision_enabled=specific_config.get("vision_enabled", default_model_settings.get("vision_enabled", None)),
+            max_history_tokens=specific_config.get("max_history_tokens", default_model_settings.get("max_history_tokens")),
+            api_version=specific_config.get("api_version", default_model_settings.get("api_version")),
+        )
+
+        return cls(
+            model_config=default_llm_model_config,
+            api=APIConfig(base_url=config_data.get("api", {}).get("base_url")),
+            workspace_path=Path(WORKSPACE_PATH),
+            temperature=config_data.get("temperature", 0.7),
+            max_tokens=config_data.get("max_tokens"),
+            diagnostics=diagnostics_config,
+        )
 
     def to_dict(self) -> Dict[str, Any]:
-        if not self.model.default:
-            raise ValueError("model_name must be specified")
+        if not self.model_config.model:
+            raise ValueError("model_name must be specified in the effective model config")
 
         return {
-            "model_name": self.model.default,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "default_model_config": self.model_config.get_config(),
+            "global_temperature": self.temperature,
+            "global_max_tokens": self.max_tokens,
             "diagnostics": {
                 "enabled": self.diagnostics.enabled,
                 "max_context_tokens": self.diagnostics.max_context_tokens,
@@ -333,18 +350,19 @@ class Config:
             },
             "workspace_dir": str(self.workspace_dir),
             "cache_dir": str(self.cache_dir),
+            "workspace_path": str(self.workspace_path),
         }
 
 
 # Add to existing config.py
-CONVERSATIONS_PATH = os.path.join(WORKSPACE_PATH, "conversations")
-os.makedirs(CONVERSATIONS_PATH, exist_ok=True)
+CONVERSATIONS_PATH = WORKSPACE_PATH / "conversations"
+CONVERSATIONS_PATH.mkdir(exist_ok=True)
 
 # Add conversation-specific configuration
 CONVERSATION_CONFIG = {
-    "max_history": 1000000,  # Maximum number of messages to keep in history
-    "auto_save": True,  # Automatically save conversations
-    "save_format": "json",  # Format to save conversations in
+    "max_history": 1000000,
+    "auto_save": True,
+    "save_format": "json",
 }
 
 # Add after loading config

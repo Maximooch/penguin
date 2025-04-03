@@ -1130,7 +1130,7 @@ def chat(
             model=model or loaded_config["model"]["default"],
             provider=loaded_config["model"]["provider"],
             api_base=loaded_config["api"]["base_url"],
-            use_native_adapter=loaded_config["model"].get("use_native_adapter", True),
+            client_preference=loaded_config["model"].get("client_preference", "native"),
             streaming_enabled=streaming_enabled
         )
 
