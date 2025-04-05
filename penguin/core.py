@@ -59,13 +59,16 @@ Core Methods:
         conversation_id: Optional[str] = None,
         max_iterations: int = 5,
         context_files: Optional[List[str]] = None,
-        streaming: Optional[bool] = None
+        streaming: Optional[bool] = None,
+        stream_callback: Optional[Callable[[str], None]] = None
     ) -> Dict[str, Any]:
         Process input with multi-step reasoning and action execution
 
     async get_response(
         current_iteration: Optional[int] = None,
-        max_iterations: Optional[int] = None
+        max_iterations: Optional[int] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
+        streaming: Optional[bool] = None
     ) -> Tuple[Dict[str, Any], bool]:
         Generate response using conversation context
         Returns response data and continuation flag
@@ -525,6 +528,8 @@ class PenguinCore:
         self,
         current_iteration: Optional[int] = None,
         max_iterations: Optional[int] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
+        streaming: Optional[bool] = None
     ) -> Tuple[Dict[str, Any], bool]:
         """
         Generate a response using the conversation context and execute any actions.
@@ -532,6 +537,8 @@ class PenguinCore:
         Args:
             current_iteration: Current iteration number for multi-step processing
             max_iterations: Maximum iterations for multi-step processing
+            stream_callback: Optional callback function for handling streaming output chunks.
+            streaming: Whether to use streaming mode for responses
             
         Returns:
             Tuple of (response data, exit continuation flag)
@@ -563,14 +570,20 @@ class PenguinCore:
                             logger.debug(f"Error cancelling previous stream: {e}")
                         self.current_stream = None
                 
-                # Start new stream and store reference
-                logger.debug("Starting new API response stream")
+                # Start new stream, PASSING both streaming flag and callback
+                logger.debug(f"Starting new API response stream (Streaming: {streaming}, Callback provided: {stream_callback is not None})")
                 self.current_stream = asyncio.create_task(
-                    self.api_client.get_response(messages=messages)
+                    self.api_client.get_response(
+                        messages=messages, 
+                        stream=streaming,
+                        stream_callback=stream_callback
+                    ) 
                 )
                 
                 try:
                     # Wait for stream to complete
+                    # The response here will be the *complete* message even if streamed,
+                    # as the callback handles the chunks.
                     assistant_response = await self.current_stream
                 except asyncio.CancelledError:
                     logger.warning("Response stream was cancelled")
@@ -598,7 +611,10 @@ class PenguinCore:
                     break
             
             # Add assistant response to conversation
-            self.conversation_manager.conversation.add_assistant_message(assistant_response)
+            # Ensure we add the complete response, even if it was streamed.
+            # The APIClient should return the full string after streaming completes.
+            if assistant_response:
+                self.conversation_manager.conversation.add_assistant_message(assistant_response)
             
             # Parse actions and continue with action handling
             actions = parse_action(assistant_response)
@@ -741,7 +757,8 @@ class PenguinCore:
         conversation_id: Optional[str] = None,
         max_iterations: int = 5,
         context_files: Optional[List[str]] = None,
-        streaming: Optional[bool] = None
+        streaming: Optional[bool] = None,
+        stream_callback: Optional[Callable[[str], None]] = None
     ) -> Dict[str, Any]:
         """
         Process a message with Penguin.
@@ -759,7 +776,8 @@ class PenguinCore:
             conversation_id: Optional ID for conversation continuity
             max_iterations: Maximum reasoning-action cycles (default: 5)
             context_files: Optional list of context files to load
-            streaming: Whether to use streaming mode for responses
+            streaming: Whether to use streaming mode for responses.
+            stream_callback: Optional callback function for handling streaming output chunks.
             
         Returns:
             Dict containing assistant response and action results
@@ -789,21 +807,23 @@ class PenguinCore:
             # Check if we're in run mode by looking at the core state
             in_run_mode = hasattr(self, '_continuous_mode') and self._continuous_mode
             
-            # If we're in run mode, bypass multi_step_process
-            if in_run_mode:
-                # Direct approach for run mode
-                self.conversation_manager.conversation.prepare_conversation(message, image_path)
-                response, _ = await self.get_response()
-                return response
-            else:
-                # Standard multi-step processing for normal operation
-                return await self.multi_step_process(
-                    message=message,
-                    image_path=image_path,
-                    context=context,
-                    max_iterations=max_iterations,
-                    streaming=streaming
-                )
+            # Direct approach for single-step processing (formerly run mode / now default)
+            self.conversation_manager.conversation.prepare_conversation(message, image_path)
+            # Pass both streaming and stream_callback down
+            response, _ = await self.get_response(
+                stream_callback=stream_callback,
+                streaming=streaming
+            )
+            return response
+            # else:
+            #     # Standard multi-step processing for normal operation
+            #     return await self.multi_step_process(
+            #         message=message,
+            #         image_path=image_path,
+            #         context=context,
+            #         max_iterations=max_iterations,
+            #         streaming=streaming
+            #     )
             
         except Exception as e:
             error_msg = f"Error in process method: {str(e)}"

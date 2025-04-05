@@ -1,0 +1,247 @@
+
+/* Base styles */
+Screen {
+    background: #1e1e2e;
+    color: #cdd6f4;
+}
+
+Header {
+    background: #181825;
+    color: #f5e0dc;
+}
+
+Footer {
+    background: #181825;
+    color: #f5e0dc;
+}
+
+/* Chat container layout */
+#chat-container {
+    layout: vertical;
+    width: 100%;
+    height: 100%;
+}
+
+#message-container {
+    width: 100%;
+    height: 1fr;
+    border-bottom: solid #313244;
+    padding: 1;
+}
+
+#input-container {
+    width: 100%;
+    height: auto;
+    padding: 1;
+}
+
+/* Message styling */
+MessageDisplay {
+    margin: 0 0 1 0;
+    padding: 1;
+    background: #313244;
+    border: solid #313244;
+}
+
+MessageDisplay.user-message {
+    background: #45475a;
+}
+
+MessageDisplay.assistant-message {
+    background: #313244;
+}
+
+MessageDisplay.system-message {
+    background: #1e1e2e;
+    border: solid #45475a;
+}
+
+MessageDisplay.tool-message {
+    background: #2a2b3c;
+    border: solid #45475a;
+}
+
+MessageDisplay.error-message {
+    background: #432635;
+    border: solid #f38ba8;
+}
+
+MessageDisplay.warning-message {
+    background: #3a3530;
+    border: solid #fab387;
+}
+
+.message-content {
+    margin: 0 0 0 1;
+    padding-left: 1;
+}
+
+.msg-role {
+    color: #89b4fa;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+.user-role {
+    color: #a6e3a1;
+}
+
+.assistant-role {
+    color: #89b4fa;
+}
+
+.system-role {
+    color: #f38ba8;
+}
+
+.status-completed {
+    color: #a6e3a1;
+}
+
+.status-error {
+    color: #f38ba8;
+}
+
+/* Input styling */
+#user-input {
+    margin: 0 1 0 0;
+    background: #313244;
+    color: #cdd6f4;
+    border: none;
+    width: 1fr;
+}
+
+#send-button {
+    background: #89b4fa;
+    color: #1e1e2e;
+    max-width: 15;
+}
+
+/* Status bar */
+#status-bar {
+    height: 1;
+    margin-top: 1;
+    width: 100%;
+    background: #181825;
+    color: #a6adc8;
+}
+
+#model-info {
+    width: 1fr;
+    text-align: left;
+    padding: 0 1;
+}
+
+#status-text {
+    width: 1fr;
+    text-align: center;
+    padding: 0 1;
+}
+
+#token-count {
+    width: 1fr;
+    text-align: right;
+    padding: 0 1;
+}
+
+.status-busy {
+    background: #45475a;
+}
+
+.status-error {
+    background: #432635;
+}
+
+/* Loading indicator */
+#loading-indicator {
+    align: center middle;
+    background: rgba(30, 30, 46, 0.8);
+    color: #89b4fa;
+}
+
+/* Help container */
+#help-container {
+    align: center middle;
+    width: 80%;
+    height: 80%;
+    background: #313244;
+    border: solid #45475a;
+    layout: vertical;
+    padding: 1;
+}
+
+#help-title {
+    text-align: center;
+    text-style: bold;
+    color: #89b4fa;
+    margin-bottom: 1;
+}
+
+#help-content {
+    width: 100%;
+    height: 1fr;
+    background: #1e1e2e;
+    border: solid #45475a;
+    padding: 1;
+}
+
+#close-help-button {
+    margin-top: 1;
+    background: #89b4fa;
+    color: #1e1e2e;
+    width: 100%;
+}
+
+/* Model selector */
+#model-selector {
+    align: center middle;
+    width: 80%;
+    height: 80%;
+    background: #313244;
+    border: solid #45475a;
+    layout: vertical;
+    padding: 1;
+}
+
+#model-selector-title {
+    text-align: center;
+    text-style: bold;
+    color: #89b4fa;
+    margin-bottom: 1;
+}
+
+#model-list {
+    width: 100%;
+    height: 1fr;
+    background: #1e1e2e;
+    border: solid #45475a;
+    padding: 1;
+}
+
+.provider-header {
+    color: #f5e0dc;
+    background: #45475a;
+    margin: 1 0;
+    padding: 0 1;
+}
+
+.model-button {
+    margin: 0 0 1 2;
+    background: #313244;
+    color: #cdd6f4;
+    border: solid #45475a;
+    width: 90%;
+}
+
+#close-model-selector-button {
+    margin-top: 1;
+    background: #89b4fa;
+    color: #1e1e2e;
+    width: 100%;
+}
+
+/* Utility */
+.hidden {
+    display: none;
+}
+    

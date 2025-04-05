@@ -44,6 +44,7 @@ try:
             "rich>=10.0.0",
             "typer>=0.4.0",
             "requests>=2.26.0",
+            "textual>=0.52.0",  # For Textual CLI
             # Development
             "pytest>=6.0.0",
             "black>=21.0.0",
@@ -61,6 +62,7 @@ try:
             "console_scripts": [
                 "penguin=penguin.chat.cli:app",
                 "penguin-web=penguin.api.server:main",
+                "penguin-textual=penguin.chat.textual_cli:main_wrapper",
             ],
         },
     )

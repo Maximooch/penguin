@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Penguin Control Center</title>
+    <script src="https://unpkg.com/vue@3.2.47/dist/vue.global.prod.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --radius: 0.25rem;
+            --background: hsl(220 13% 6%);
+            --foreground: hsl(210 20% 98%);
+            --muted: hsl(223 10% 10%);
+            --muted-foreground: hsl(216 15% 55%);
+            --popover: hsl(220 13% 7%);
+            --popover-foreground: hsl(210 20% 98%);
+            --card: hsl(220 13% 6%);
+            --card-foreground: hsl(210 20% 98%);
+            --border: hsl(216 10% 18%);
+            --input: hsl(216 10% 15%);
+            --primary: hsl(210 20% 90%);
+            --primary-foreground: hsl(220 13% 6%);
+            --secondary: hsl(216 10% 15%);
+            --secondary-foreground: hsl(210 20% 94%);
+            --accent: hsl(216 10% 20%);
+            --accent-foreground: hsl(210 20% 98%);
+            --destructive: hsl(0 70% 50%);
+            --destructive-foreground: hsl(0 0% 100%);
+            --ring: hsl(210 30% 70%);
+            /* Chat sidebar width */
+            --chat-sidebar-width: 250px; /* Default width */
+        }
+
+        body { font-family: 'Inter', sans-serif; background-color: var(--background); color: var(--foreground); overflow: hidden; font-size: 14px; }
+        
+        /* Vue cloak styling to prevent template flash */
+        [v-cloak] { display: none; }
+        
+        .button { padding: 0.35rem 0.7rem; border-radius: var(--radius); display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; font-size: 0.875rem; font-weight: 500; transition: background-color 0.15s, color 0.15s, border-color 0.15s; }
+        .button-primary { background-color: var(--primary); color: var(--primary-foreground); }
+        .button-primary:hover:not(:disabled) { background-color: hsl(210 20% 85%); }
+        .button-secondary { background-color: var(--secondary); color: var(--secondary-foreground); border: 1px solid var(--border); }
+        .button-secondary:hover:not(:disabled) { background-color: var(--accent); border-color: var(--accent); }
+        .button:disabled { opacity: 0.4; cursor: not-allowed; }
+        .button-icon { padding: 0.35rem; line-height: 1; }
+        .button-ghost { background-color: transparent; color: var(--muted-foreground); border: none; }
+        .button-ghost:hover:not(:disabled) { background-color: var(--accent); color: var(--accent-foreground); }
+        .textarea { border-radius: var(--radius); background-color: var(--input); border: 1px solid var(--border); color: var(--foreground); padding: 0.6rem 0.8rem; width: 100%; transition: border-color 0.15s, box-shadow 0.15s; resize: none; min-height: 38px; max-height: 200px; overflow-y: auto; font-size: 0.875rem; }
+        .textarea:focus { outline: none; border-color: var(--ring); box-shadow: 0 0 0 1px var(--ring); }
+        .sidebar-item { border-radius: var(--radius); display: flex; align-items: center; padding: 0.6rem 0.8rem; transition: background-color 0.15s; cursor: pointer; font-weight: 500; font-size: 0.875rem; }
+        .sidebar-item:hover { background-color: var(--accent); }
+        .sidebar-item.active { background-color: var(--primary); color: var(--primary-foreground); }
+        .sidebar-item .icon { width: 1rem; height: 1rem; margin-right: 0.5rem; opacity: 0.8; }
+        .markdown-content pre { border-radius: var(--radius); background: var(--muted); padding: 0.8rem; overflow-x: auto; }
+        .markdown-content code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 0.85em; background-color: var(--muted); padding: 0.1em 0.3em; border-radius: 0.2rem; }
+        .markdown-content pre code { background-color: transparent; padding: 0; font-size: inherit; border-radius: 0; }
+        .markdown-content p { margin-bottom: 0.5rem; }
+        .markdown-content ul, .markdown-content ol { margin-left: 1.25rem; margin-bottom: 0.5rem; }
+        .markdown-content li { margin-bottom: 0.25rem; }
+        .markdown-content strong { font-weight: 600; color: var(--foreground); }
+        .h-screen-no-scroll { height: 100vh; overflow: hidden; }
+        .flex-grow-scroll { flex-grow: 1; overflow-y: auto; }
+        .message { max-width: 95%; margin: 0.75rem 0; padding: 0.75rem 1rem; padding-bottom: 1.2rem; /* Space for timestamp */ border-radius: var(--radius); line-height: 1.5; border: 1px solid var(--border); position: relative; }
+        .message-user { background-color: var(--accent); color: var(--accent-foreground); margin-left: auto; }
+        .message-assistant { background-color: var(--muted); color: var(--foreground); margin-right: auto; }
+        .message-system { background-color: transparent; border: 1px dashed var(--border); color: var(--muted-foreground); font-size: 0.8rem; width: 100%; text-align: center; padding: 0.4rem; margin: 0.5rem 0; }
+        .message-timestamp { position: absolute; bottom: 0.25rem; right: 0.5rem; font-size: 10px; color: var(--muted-foreground); opacity: 0.7; }
+        .message-user .message-timestamp { color: hsl(210 20% 80% / 0.6); }
+        .card { background-color: transparent; border: 1px solid var(--border); border-radius: var(--radius); padding: 0.75rem 1rem; margin-bottom: 1rem; }
+        .dashboard-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+        .setting-item { display: flex; justify-content: space-between; align-items: center; padding: 0.6rem 0; border-bottom: 1px solid var(--border); font-size: 0.875rem; }
+        .setting-item:last-child { border-bottom: none; }
+        .setting-item span:first-child { color: var(--muted-foreground); }
+        .setting-item span:last-child { font-weight: 500; color: var(--foreground); }
+        .setting-item .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+        .task-status-badge { font-size: 0.75rem; padding: 0.15rem 0.4rem; border-radius: var(--radius); font-weight: 500; }
+        .status-todo { background-color: var(--muted); color: var(--muted-foreground); border: 1px solid var(--border); }
+        .status-inprogress { background-color: hsl(48 96% 50% / 0.1); color: hsl(48 96% 60%); border: 1px solid hsl(48 96% 50% / 0.3); }
+        .status-done { background-color: hsl(140 70% 40% / 0.1); color: hsl(140 70% 50%); border: 1px solid hsl(140 70% 40% / 0.3); }
+        .placeholder-card { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 80px; /* Ensure some height */ text-align: center; color: var(--muted-foreground); border: 1px dashed var(--border); padding: 0.5rem; border-radius: var(--radius); background-color: var(--muted); }
+        .placeholder-card svg { width: 1.5rem; height: 1.5rem; margin-bottom: 0.25rem; opacity: 0.4; }
+        .file-upload { position: relative; display: inline-block; margin-right: 0.5rem; }
+        .file-upload input[type="file"] { position: absolute; left: 0; top: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+        .file-upload-button { background-color: var(--secondary); color: var(--secondary-foreground); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.5rem; font-size: 1rem; line-height: 1; transition: background-color 0.15s; }
+        .file-upload-button:hover { background-color: var(--accent); }
+        .file-preview { max-width: 80px; max-height: 38px; object-fit: contain; margin-left: 0.5rem; border-radius: calc(var(--radius) / 1.5); vertical-align: bottom; border: 1px solid var(--border);}
+        /* Chat Layout & Resizable Sidebar */
+        .chat-layout { display: flex; height: 100%; }
+        .chat-main-area { flex-grow: 1; display: flex; flex-direction: column; height: 100%; overflow: hidden; } /* Added overflow hidden */
+        .chat-resize-handle { width: 5px; background-color: var(--border); cursor: col-resize; flex-shrink: 0; position: relative; transition: background-color 0.15s; }
+        .chat-resize-handle:hover { background-color: var(--ring); }
+        .chat-resize-handle::after { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 1px; height: 20px; background-color: var(--muted-foreground); opacity: 0.5; }
+        .chat-right-sidebar { width: var(--chat-sidebar-width); min-width: 150px; max-width: 500px; /* Set bounds */ flex-shrink: 0; border-left: 1px solid var(--border); display: flex; flex-direction: column; height: 100%; background-color: var(--muted); overflow-y: auto; } /* Added overflow */
+        .sidebar-section { padding: 1rem; border-bottom: 1px solid var(--border); }
+        .sidebar-section:last-child { border-bottom: none; }
+        .sidebar-title { font-weight: 600; margin-bottom: 0.75rem; font-size: 0.875rem; color: var(--foreground); }
+        .sidebar-content { font-size: 0.8rem; color: var(--muted-foreground); }
+        .sidebar-content ul { list-style: none; padding: 0; }
+        .sidebar-content li { margin-bottom: 0.4rem; display: flex; justify-content: space-between; align-items: center; }
+        .sidebar-content li span:first-child { opacity: 0.8; }
+        .task-step { display: flex; align-items: center; margin-bottom: 0.3rem; padding: 0.1rem 0; }
+        .task-step-icon { width: 8px; height: 8px; margin-right: 0.5rem; border-radius: 50%; flex-shrink: 0; }
+        .task-step.done .task-step-icon { background-color: var(--dot-done); }
+        .task-step.inprogress .task-step-icon { background-color: var(--dot-inprogress); border: 1px solid hsl(48 96% 60%); }
+        .task-step.todo .task-step-icon { border: 1px solid var(--muted-foreground); }
+        .task-step.current { font-weight: 500; color: var(--foreground); background-color: var(--accent); margin: 0 -0.25rem; padding: 0.1rem 0.25rem; border-radius: 0.15rem; }
+        .context-file-item { padding: 0.2rem 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        /* Project List/Detail */
+        .project-list-item { border-bottom: 1px solid var(--border); padding: 0.75rem 0; transition: background-color 0.15s; cursor: pointer; }
+        .project-list-item:hover { background-color: var(--muted); }
+        .project-list-item:last-child { border-bottom: none; }
+        .project-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem; }
+        .project-title { font-size: 1rem; font-weight: 600; }
+        .project-description { font-size: 0.875rem; color: var(--muted-foreground); margin-bottom: 0.5rem; }
+        .project-detail-view .task-list { margin-top: 1rem; padding-left: 0.5rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+        .project-detail-view .task-row { display: flex; align-items: center; justify-content: space-between; padding: 0.4rem 0; font-size: 0.875rem; border-bottom: 1px solid hsl(216 10% 12%); }
+        .project-detail-view .task-row:last-child { border-bottom: none; }
+        .project-detail-view .task-name { flex-grow: 1; margin-right: 1rem; }
+        .project-detail-view .status-text { color: var(--muted-foreground); font-size: 0.8rem; width: 70px; text-align: right; flex-shrink: 0; }
+        /* File Manager */
+        .file-tree { font-size: 0.875rem; }
+        .file-item, .folder-item { display: flex; align-items: center; padding: 0.3rem 0.5rem; border-radius: var(--radius); cursor: pointer; }
+        .file-item:hover, .folder-item:hover { background-color: var(--accent); }
+        .file-icon, .folder-icon { width: 1rem; height: 1rem; margin-right: 0.5rem; flex-shrink: 0; opacity: 0.8; }
+        .file-name, .folder-name { flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .folder-item .folder-icon { color: var(--primary); }
+        .file-details { color: var(--muted-foreground); font-size: 0.75rem; margin-left: auto; padding-left: 1rem; flex-shrink: 0; }
+        .file-tree ul { margin-left: 1.25rem; border-left: 1px solid var(--border); padding-left: 0.75rem; }
+        /* User Settings Area */
+        .user-settings-area { padding: 0.5rem; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 0.5rem; background-color: hsl(223 10% 8%); /* Slightly different bg */ }
+        .user-avatar { width: 24px; height: 24px; border-radius: 50%; background-color: var(--muted-foreground); flex-shrink: 0; /* Placeholder */ }
+        .user-info { flex-grow: 1; font-size: 0.8rem; line-height: 1.2; }
+        .user-name { font-weight: 500; color: var(--foreground); }
+        .user-status { color: var(--muted-foreground); font-size: 0.7rem; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+        /* Status Dots */
+        .status-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; vertical-align: middle; flex-shrink: 0; margin-right: 0.5rem; }
+        .dot-todo { background-color: var(--muted-foreground); }
+        .dot-inprogress { background-color: hsl(48 96% 50%); }
+        .dot-done { background-color: hsl(140 70% 40%); }
+    </style>
+</head>
+<body>
+    <div id="app" class="h-screen-no-scroll flex text-sm">
+        <!-- Main Sidebar -->
+        <div class="w-60 flex-shrink-0 sidebar flex flex-col border-r border-border">
+            <div class="p-4 border-b border-border flex items-center gap-2">
+                 <svg class="h-6 w-6 text-primary" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M32 0C14.327 0 0 14.327 0 32C0 49.673 14.327 64 32 64C49.673 64 64 49.673 64 32C64 14.327 49.673 0 32 0Z" fill="#212121"/><path d="M32 8C21.507 8 13 16.507 13 27C13 34.46 17.79 40.7 24 43.086V52C24 54.209 25.791 56 28 56H36C38.209 56 40 54.209 40 52V43.086C46.21 40.7 51 34.46 51 27C51 16.507 42.493 8 32 8Z" fill="#EEEEEE"/><path d="M24 27C24 22.582 27.582 19 32 19C36.418 19 40 22.582 40 27C40 31.418 36.418 35 32 35C27.582 35 24 31.418 24 27Z" fill="#212121"/><ellipse cx="26" cy="25" rx="2" ry="3" fill="#EEEEEE"/><ellipse cx="38" cy="25" rx="2" ry="3" fill="#EEEEEE"/><path d="M32 40C36 40 38.167 38.889 39 38C38.167 37.111 36 36 32 36C28 36 25.833 37.111 25 38C25.833 38.889 28 40 32 40Z" fill="#FF9800"/><path d="M24 43.086L25 48H39L40 43.086C46.21 40.7 51 34.46 51 27H13C13 34.46 17.79 40.7 24 43.086Z" fill="#212121"/></svg>
+                 <h1 class="text-lg font-semibold tracking-tight">Penguin</h1>
+            </div>
+            <nav class="flex-grow-scroll p-3 space-y-1">
+                <div @click="setView('chat')" :class="['sidebar-item', currentView === 'chat' && 'active']"> <svg class="icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 5.523-4.477 10-10 10S1 17.523 1 12 5.477 2 11 2s10 4.477 10 10z" /></svg> Chat </div>
+                <div @click="setView('projects')" :class="['sidebar-item', (currentView === 'projects' || currentView === 'projectDetail') && 'active']"> <svg class="icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 3v11.25A2.25 2.25 0 006 16.5h2.25M3.75 3h-1.5m1.5 0h16.5m0 0h1.5m-1.5 0v11.25A2.25 2.25 0 0118 16.5h-2.25m-7.5 0h7.5m-7.5 0l-1 1.75M3.75 16.5l1-1.75m0 0H12m0 0l1 1.75m-1-1.75V3" /></svg> Projects </div>
+                <div @click="setView('files')" :class="['sidebar-item', currentView === 'files' && 'active']"> <svg class="icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg> Files </div>
+                <div @click="setView('dashboard')" :class="['sidebar-item', currentView === 'dashboard' && 'active']"> <svg class="icon" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg> Dashboard </div>
+                <hr class="border-border/50 my-3">
+                <div class="px-2 py-1 text-xs font-medium text-muted-foreground uppercase tracking-wider"> Conversations </div>
+                <div v-for="conv in chat.conversations" :key="conv.id" @click="selectConversation(conv.id)" :class="['sidebar-item text-xs', currentView === 'chat' && chat.selectedConversationId === conv.id && 'active']">
+                    <span class="truncate flex-grow pr-2">{{ conv.title || 'New Conversation' }}</span>
+                    <span class="text-muted-foreground flex-shrink-0">{{ conv.message_count }}</span>
+                </div>
+            </nav>
+             <!-- User Settings Area -->
+             <div class="user-settings-area">
+                 <div class="user-avatar"></div> <!-- Placeholder -->
+                 <div class="user-info">
+                     <div class="user-name">Maximus</div> <!-- Placeholder -->
+                     <div class="user-status">Online</div> <!-- Placeholder -->
+                 </div>
+                 <button class="button button-icon button-ghost" title="User Settings">
+                     <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                 </button>
+            </div>
+        </div>
+
+        <!-- Main Content Area -->
+        <div class="flex-1 flex flex-col bg-background overflow-hidden">
+
+            <!-- Chat View with Right Sidebar -->
+            <div v-if="currentView === 'chat'" class="chat-layout">
+                <div class="chat-main-area">
+                    <!-- Chat messages area -->
+                    <div class="flex-grow-scroll p-4" ref="chatContainer">
+                        <div class="max-w-3xl mx-auto space-y-3">
+                            <template v-for="(message, index) in chat.messages" :key="index">
+                                <div :class="['message', message.role === 'user' ? 'message-user' : message.role === 'system' ? 'message-system' : 'message-assistant']">
+                                    <div class="whitespace-pre-wrap markdown-content" v-html="renderMarkdown(message.content)"></div>
+                                    <span class="message-timestamp">{{ formatTime(message.timestamp) }}</span>
+                                    <span v-if="message.status === 'sending'" class="absolute top-1 right-1 text-[10px] text-muted-foreground">...</span>
+                                </div>
+                            </template>
+                            <div v-if="chat.isTyping" class="message message-assistant opacity-75">Thinking...</div>
+                        </div>
+                    </div>
+                    <!-- Input area -->
+                    <div class="flex-shrink-0 p-3 border-t border-border bg-muted/50">
+                        <div class="max-w-3xl mx-auto">
+                            <div v-if="chat.uploadedImage" class="mb-1.5 flex items-center">
+                                <img :src="chat.uploadedImage" class="file-preview" />
+                                <button @click="clearImage" class="ml-2 text-xs button button-ghost button-icon text-destructive hover:bg-destructive/10" title="Remove Image">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                                </button>
+                            </div>
+                            <div class="flex items-end gap-2">
+                                <div class="file-upload" v-if="chat.supportsImages" title="Attach Image">
+                                    <input type="file" @change="handleFileUpload" accept="image/*" :disabled="chat.isTyping" />
+                                    <button class="file-upload-button">📷</button>
+                                </div>
+                                <textarea ref="messageInput" v-model="chat.newMessage" @keydown="handleKeyDown" @input="autoResize" placeholder="Send message..." :disabled="chat.isTyping" class="textarea flex-1" rows="1"></textarea>
+                                <button @click="sendMessage" :disabled="(!chat.newMessage.trim() && !chat.uploadedImage) || chat.isTyping" class="button button-primary self-end">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor"><path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" /></svg>
+                                </button>
+                            </div>
+                            <div class="text-xs text-muted-foreground mt-1.5 flex justify-end">
+                                <span v-if="chat.statusInfo" class="font-mono text-[11px]">{{ chat.statusInfo }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- Resize Handle -->
+                <div class="chat-resize-handle" @mousedown="startResize"></div>
+                <!-- Right Sidebar -->
+                <div class="chat-right-sidebar flex-grow-scroll" ref="chatRightSidebar">
+                    <!-- Content: Task Info, System Status, Context Files -->
+                     <div class="sidebar-section">
+                         <div class="sidebar-title">Task Info</div>
+                         <div class="sidebar-content">
+                             <div class="text-sm font-medium mb-1 text-foreground">{{ currentTask.name || 'No Active Task' }}</div>
+                             <div class="text-xs mb-2">Status: <span :class="['task-status-badge', getStatusBadgeClass(currentTask.status)]">{{ currentTask.status || 'N/A'}}</span></div>
+                             <div v-if="currentTask.steps && currentTask.steps.length > 0">
+                                 <div class="text-xs font-medium mb-1">Steps:</div>
+                                 <ul><li v-for="(step, index) in currentTask.steps" :key="index" :class="['task-step', step.status.toLowerCase(), index === currentTask.currentStepIndex ? 'current' : '']"> <span class="task-step-icon"></span> <span>{{ step.name }}</span> </li></ul>
+                             </div>
+                         </div>
+                     </div>
+                     <div class="sidebar-section">
+                         <div class="sidebar-title">System Status</div>
+                         <div class="sidebar-content">
+                             <ul>
+                                  <li><span>Mode:</span> <span>{{ dashboard.status }}</span></li>
+                                  <li><span>Model:</span> <span class="font-mono text-xs">{{ dashboard.settings.model }}</span></li>
+                                  <li><span>Workspace:</span> <span class="font-mono text-xs">/penguin_workspace</span></li>
+                                  <li><span>Tokens:</span> <span class="font-mono text-xs">{{ dashboard.tokens.sessionTotal.toLocaleString() }}</span></li>
+                             </ul>
+                         </div>
+                     </div>
+                     <div class="sidebar-section">
+                          <div class="sidebar-title">Context Files</div>
+                          <div class="sidebar-content">
+                              <ul>
+                                  <li v-for="file in currentTask.contextFiles" :key="file" class="context-file-item font-mono text-xs" :title="file"> <svg xmlns="http://www.w3.org/2000/svg" class="inline h-3 w-3 mr-1 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg> {{ file.split('/').pop() }} </li>
+                                  <li v-if="!currentTask.contextFiles || currentTask.contextFiles.length === 0" class="text-xs italic">No files in context.</li>
+                              </ul>
+                          </div>
+                     </div>
+                </div>
+            </div>
+
+            <!-- Projects List View -->
+            <div v-if="currentView === 'projects'" class="flex-grow-scroll p-4 md:p-6">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold tracking-tight">Projects</h2>
+                    <button class="button button-secondary"> <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" /></svg> New Project </button>
+                </div>
+                <div>
+                    <div v-for="project in projects.list" :key="project.id"
+                         class="project-list-item px-2" @click="viewProjectDetail(project.id)">
+                        <div class="project-header">
+                            <h3 class="project-title">{{ project.name }}</h3>
+                            <!-- Maybe add a task count or status summary here later -->
+                        </div>
+                        <p class="project-description">{{ project.description }}</p>
+                    </div>
+                     <div v-if="projects.list.length === 0" class="text-muted-foreground text-center py-8">No projects yet.</div>
+                </div>
+            </div>
+
+             <!-- Project Detail View -->
+              <div v-if="currentView === 'projectDetail' && currentProject" class="flex-grow-scroll p-4 md:p-6 project-detail-view">
+                  <div class="mb-4">
+                       <button @click="setView('projects')" class="button button-ghost mb-2 text-xs">
+                           <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                           Back to Projects
+                                    </button>
+                       <h2 class="text-2xl font-semibold tracking-tight">{{ currentProject.name }}</h2>
+                       <p class="text-muted-foreground mt-1">{{ currentProject.description }}</p>
+                  </div>
+
+                  <!-- Project specific content - e.g., Tasks list -->
+                  <div class="card">
+                       <h3 class="text-base font-semibold mb-3">Tasks</h3>
+                       <div class="task-list border-t-0 pt-0"> 
+                           <div v-if="currentProject.tasks.length === 0" class="text-xs text-muted-foreground py-2 pl-1">No tasks in this project.</div>
+                           <div v-for="task in currentProject.tasks" :key="task.id" class="task-row">
+                                <div class="flex items-center flex-grow">
+                                    <span :class="['status-dot', getStatusDotClass(task.status)]"></span>
+                                    <span class="task-name">{{ task.name }}</span>
+                                </div>
+                                <span class="status-text">{{ task.status }}</span>
+                           </div>
+                       </div>
+                  </div>
+
+                  <!-- Other project detail sections (Context files, etc.) -->
+                   <div class="card mt-4">
+                       <h3 class="text-base font-semibold mb-3">Context Files</h3>
+                       <ul class="text-xs font-mono text-muted-foreground space-y-1">
+                           <li v-for="file in ['main.py', 'utils/helpers.py']" :key="file"> <!-- Mock data -->
+                                <svg xmlns="http://www.w3.org/2000/svg" class="inline h-3 w-3 mr-1 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
+                                {{ file }}
+                           </li>
+                       </ul>
+                        </div>
+                    </div>
+
+            <!-- Files View -->
+            <div v-if="currentView === 'files'" class="flex-grow-scroll p-4 md:p-6">
+                <h2 class="text-xl font-semibold tracking-tight mb-4">Workspace Files</h2>
+                <div class="file-tree card"> <file-tree-node :node="files.root" :level="0"></file-tree-node> </div>
+                    </div>
+
+            <!-- Dashboard View -->
+            <div v-if="currentView === 'dashboard'" class="flex-grow-scroll p-4 md:p-6">
+                <h2 class="text-xl font-semibold tracking-tight mb-4">Dashboard & Settings</h2>
+                <div class="dashboard-grid">
+                    <!-- Core Status/Config Cards -->
+                    <div class="card"> <h3 class="text-base font-semibold mb-3">Penguin Status</h3> <div class="setting-item"> <span>Status</span> <span :class="['task-status-badge', getStatusBadgeClass(dashboard.status)]">{{ dashboard.status }}</span> </div> <div class="setting-item" v-if="dashboard.status !== 'Idle'"><span>Current Task</span> <span class="font-medium">{{ dashboard.currentTask || 'N/A' }}</span></div> <div class="setting-item"><span>Uptime</span> <span>{{ dashboard.uptime }}</span></div> <div class="setting-item"><span>Tokens (Session)</span> <span class="font-mono">{{ dashboard.tokens.sessionTotal.toLocaleString() }}</span></div> </div>
+                    <div class="card"> <h3 class="text-base font-semibold mb-3">Model Configuration</h3> <div class="setting-item"><span>Model</span> <span class="font-mono">{{ dashboard.settings.model }}</span></div> <div class="setting-item"><span>Provider</span> <span>{{ dashboard.settings.provider }}</span></div> <div class="setting-item"><span>Max Tokens</span> <span class="font-mono">{{ dashboard.settings.maxTokens.toLocaleString() }}</span></div> <div class="setting-item"><span>Streaming</span> <span :class="['task-status-badge', getStatusBadgeClass(dashboard.settings.streaming ? 'Enabled' : 'Disabled')]">{{ dashboard.settings.streaming ? 'On' : 'Off' }}</span></div> <div class="setting-item"><span>Vision</span> <span :class="['task-status-badge', getStatusBadgeClass(dashboard.settings.vision ? 'Enabled' : 'Disabled')]">{{ dashboard.settings.vision ? 'On' : 'Off' }}</span></div> </div>
+                    <div class="card"> <h3 class="text-base font-semibold mb-3">Resource Usage</h3> <div class="setting-item"><span>Memory</span> <span>{{ dashboard.resources.memory }}</span></div> <div class="setting-item"><span>CPU</span> <span>{{ dashboard.resources.cpu }}</span></div> </div>
+                    <div class="card"> <h3 class="text-base font-semibold mb-3">Recent Activity</h3> <ul class="space-y-1 max-h-48 overflow-y-auto text-xs"> <li v-for="(log, index) in dashboard.activityLog" :key="index" class="text-muted-foreground flex justify-between"> <span>{{ log.message }}</span> <span class="font-mono flex-shrink-0 pl-2">{{ formatTime(log.timestamp) }}</span> </li> </ul> </div>
+                </div>
+                <!-- Integrations Section -->
+                 <h3 class="text-lg font-semibold tracking-tight mt-6 mb-3">Integrations</h3>
+                 <div class="dashboard-grid">
+                     <div class="card placeholder-card"> <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg> <span class="text-sm font-medium">Version Control</span> <span class="text-xs mt-1">Connect Git repository...</span> </div>
+                     <div class="card placeholder-card"> <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 11c0 3.517-1.009 6.799-2.753 9.571m-3.44-2.04l.054-.09A13.916 13.916 0 008 11a4 4 0 118 0c0 1.017-.07 2.019-.203 3m-2.118 6.844A21.88 21.88 0 0012.174 22a21.88 21.88 0 003.813-7.397M6.45 20.91l.054-.09A13.94 13.94 0 0112.174 22a13.94 13.94 0 015.668-1.09" /></svg> <span class="text-sm font-medium">Deployment</span> <span class="text-xs mt-1">Configure targets...</span> </div>
+                     <div class="card placeholder-card"> <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg> <span class="text-sm font-medium">Security</span> <span class="text-xs mt-1">Run security scans...</span> </div>
+                     <div class="card placeholder-card"> <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" /></svg> <span class="text-sm font-medium">Data Integrations</span> <span class="text-xs mt-1">Connect data sources...</span> </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- File Tree Node Component Template -->
+    <template id="file-tree-node"> <div> <div :class="[node.type === 'folder' ? 'folder-item' : 'file-item']" @click="toggleFolder"> <svg v-if="node.type === 'folder'" class="folder-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" :d="isOpen ? 'M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 01-2 2z' : 'M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z'" /></svg> <svg v-else class="file-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg> <span :class="[node.type === 'folder' ? 'folder-name' : 'file-name']">{{ node.name }}</span> <span v-if="node.type === 'file'" class="file-details">{{ node.size }} - {{ node.modified }}</span> </div> <ul v-if="node.type === 'folder' && isOpen && node.children && node.children.length"> <file-tree-node v-for="child in node.children" :key="child.name" :node="child" :level="level + 1"></file-tree-node> </ul> </div> </template>
+
+    <script>
+        // Check if Vue is defined
+        if (typeof Vue === 'undefined') {
+            document.body.innerHTML = `
+                <div style="padding: 20px; text-align: center; color: white;">
+                    <h1>Penguin UI</h1>
+                    <p>Vue.js failed to load properly. Please check console for errors.</p>
+                </div>
+            `;
+            console.error("Vue is not defined! Check Vue CDN import.");
+        } else {
+            // Vue is available, initialize app with proper structure
+            try {
+                const { createApp, ref, reactive, onMounted, nextTick, watch, computed, defineComponent } = Vue;
+                
+                // Define FileTreeNode component
+                const FileTreeNode = defineComponent({ 
+                    name: 'FileTreeNode', 
+                    props: { node: Object, level: Number }, 
+                    template: '#file-tree-node', 
+                    setup(props) { 
+                        const isOpen = ref(props.level < 1); 
+                        const toggleFolder = () => { 
+                            if (props.node.type === 'folder') isOpen.value = !isOpen.value; 
+                        }; 
+                        return { isOpen, toggleFolder }; 
+                    } 
+                });
+
+                // Create main app
+                createApp({
+                    components: { FileTreeNode },
+                    setup() {
+                        // All setup code remains the same
+                        const currentView = ref('chat');
+                        const currentProjectId = ref(null);
+                        const messageInput = ref(null);
+                        const chatRightSidebar = ref(null);
+                        const isResizing = ref(false);
+
+                        // --- Reactive Data ---
+                        const chat = reactive({ 
+                            conversations: [
+                                { id: 'conv-1', title: 'First Conversation', message_count: 3 }
+                            ], 
+                            messages: [
+                                { role: 'system', content: 'Welcome to Penguin AI!', timestamp: new Date().toISOString() },
+                                { role: 'assistant', content: 'Hello, I\'m here to help you build awesome projects. How can I assist you today?', timestamp: new Date().toISOString() }
+                            ], 
+                            newMessage: '', 
+                            selectedConversationId: 'conv-1', 
+                            isTyping: false, 
+                            error: null, 
+                            ws: null, 
+                            currentStreamedResponse: '', 
+                            streamProgress: null, 
+                            uploadedImage: null, 
+                            imagePath: null, 
+                            supportsImages: true, 
+                            statusInfo: 'Tokens: 0/128,000 (0.0%)'
+                        });
+                        const projects = reactive({ 
+                            list: [ 
+                                { id: 'proj-1', name: 'Penguin UI Refactor', description: 'Improve the web interface.', 
+                                  tasks: [ 
+                                      { id: 'task-1a', name: 'Implement Sidebar Nav', status: 'Done', projectId: 'proj-1' }, 
+                                      { id: 'task-1b', name: 'Create Project View', status: 'In Progress', projectId: 'proj-1' }, 
+                                      { id: 'task-1c', name: 'Add Settings Page', status: 'To Do', projectId: 'proj-1' }
+                                  ] 
+                                },
+                                { id: 'proj-2', name: 'Context Window Optimization', description: 'Enhance token management.',
+                                  tasks: [ 
+                                      { id: 'task-2a', name: 'Budget Tracking', status: 'Done', projectId: 'proj-2' }, 
+                                      { id: 'task-2b', name: 'Trimming Strategies', status: 'Done', projectId: 'proj-2' }, 
+                                      { id: 'task-2c', name: 'Add usage endpoint', status: 'To Do', projectId: 'proj-2' }
+                                  ] 
+                                },
+                                { id: 'proj-3', name: 'New Tool Integration', description: 'Add support for external tool.',
+                                  tasks: [
+                                      {id: 'task-3a', name: 'Define Tool Schema', status: 'To Do', projectId: 'proj-3'}
+                                  ] 
+                                } 
+                            ] 
+                        });
+                        const dashboard = reactive({ 
+                            status: 'Idle', 
+                            currentTask: null, 
+                            uptime: '0h 18m', 
+                            tokens: { sessionTotal: 1234 }, 
+                            settings: { 
+                                model: 'openai/gpt-4o', 
+                                provider: 'OpenAI', 
+                                maxTokens: 128000, 
+                                streaming: true, 
+                                vision: true 
+                            }, 
+                            resources: { 
+                                memory: '260 MB', 
+                                cpu: '18%' 
+                            }, 
+                            activityLog: [ 
+                                { timestamp: new Date().toISOString(), message: 'System initialized.' }, 
+                                { timestamp: new Date(Date.now() - 5 * 60000).toISOString(), message: 'Task started: UI Refactor' }, 
+                                { timestamp: new Date(Date.now() - 2 * 60000).toISOString(), message: 'Step completed: Sidebar Nav' }
+                            ] 
+                        });
+                        const files = reactive({ 
+                            root: { 
+                                name: 'penguin_workspace', 
+                                type: 'folder', 
+                                children: [ 
+                                    { name: 'main.py', type: 'file', size: '1.5 KB', modified: '2m ago' }, 
+                                    { name: 'utils', type: 'folder', children: [ 
+                                        { name: 'helpers.py', type: 'file', size: '800 B', modified: '5m ago' }, 
+                                        { name: 'parsers.py', type: 'file', size: '2.1 KB', modified: '1h ago' } 
+                                    ] }, 
+                                    { name: 'requirements.txt', type: 'file', size: '150 B', modified: '1d ago' }, 
+                                    { name: 'README.md', type: 'file', size: '2.5 KB', modified: '1d ago' } 
+                                ] 
+                            } 
+                        });
+                        const currentTask = reactive({ 
+                            name: 'Create Project View', 
+                            status: 'In Progress', 
+                            currentStepIndex: 1, 
+                            steps: [ 
+                                { name: 'Design Kanban layout', status: 'Done' }, 
+                                { name: 'Implement Vue components', status: 'In Progress' }, 
+                                { name: 'Style columns and cards', status: 'To Do' }, 
+                                { name: 'Add placeholder data', status: 'To Do' }
+                            ], 
+                            contextFiles: ['penguin/api/static/index.html', 'penguin/api/static/styles.css'] 
+                        });
+
+                        // --- Computed ---
+                        const currentProject = computed(() => projects.list.find(p => p.id === currentProjectId.value));
+
+                        // --- Methods ---
+                        const setView = (view) => { 
+                            currentView.value = view; 
+                            currentProjectId.value = null; // Reset project detail when changing main view 
+                        };
+                        const viewProjectDetail = (projectId) => { 
+                            currentProjectId.value = projectId; 
+                            currentView.value = 'projectDetail'; 
+                        };
+                        const getStatusBadgeClass = (status) => { 
+                            if (!status) return 'status-todo'; 
+                            const ls = status.toLowerCase(); 
+                            if (ls === 'done' || ls === 'enabled' || ls === 'idle') return 'status-done'; 
+                            if (ls === 'in progress') return 'status-inprogress'; 
+                            return 'status-todo'; 
+                        };
+                        const getStatusDotClass = (status) => { 
+                            if (status === 'Done') return 'dot-done'; 
+                            if (status === 'In Progress') return 'dot-inprogress'; 
+                            return 'dot-todo'; 
+                        };
+
+                        // Resizing Logic
+                        const startResize = (event) => {
+                            isResizing.value = true;
+                            document.addEventListener('mousemove', doResize);
+                            document.addEventListener('mouseup', stopResize);
+                            document.body.style.userSelect = 'none'; // Prevent text selection during resize
+                            document.body.style.cursor = 'col-resize';
+                        };
+                        const doResize = (event) => {
+                            if (!isResizing.value || !chatRightSidebar.value) return;
+                            const newWidth = window.innerWidth - event.clientX;
+                            // Apply bounds
+                            const boundedWidth = Math.max(150, Math.min(newWidth, 500));
+                            document.documentElement.style.setProperty('--chat-sidebar-width', `${boundedWidth}px`);
+                        };
+                        const stopResize = () => {
+                            if (!isResizing.value) return;
+                            isResizing.value = false;
+                            document.removeEventListener('mousemove', doResize);
+                            document.removeEventListener('mouseup', stopResize);
+                            document.body.style.userSelect = '';
+                            document.body.style.cursor = '';
+                            // Save width to localStorage
+                            const currentWidth = document.documentElement.style.getPropertyValue('--chat-sidebar-width');
+                            if (currentWidth) {
+                                localStorage.setItem('chatSidebarWidth', currentWidth);
+                            }
+                        };
+
+                        // Load sidebar width from localStorage on mount
+                        const loadSidebarWidth = () => {
+                            const savedWidth = localStorage.getItem('chatSidebarWidth');
+                            if (savedWidth) {
+                                document.documentElement.style.setProperty('--chat-sidebar-width', savedWidth);
+                            } else {
+                                // Ensure default is applied if nothing is saved
+                                document.documentElement.style.setProperty('--chat-sidebar-width', '250px');
+                            }
+                        };
+
+
+                        // --- Existing Methods ---
+                        const scrollToBottom = async (containerRef) => { 
+                            await nextTick(); 
+                            const container = containerRef || document.querySelector('.chat-main-area .flex-grow-scroll'); 
+                            if (container) container.scrollTop = container.scrollHeight; 
+                        };
+                        const refreshConversations = async () => { 
+                            try { 
+                                const r = await fetch('/api/v1/conversations'); 
+                                const d = await r.json(); 
+                                const m = new Map(); 
+                                (d.conversations || []).forEach(c => { 
+                                    const id = c.session_id || c.id; 
+                                    if (id && !m.has(id)) m.set(id, { 
+                                        id, 
+                                        title: c.title || c.metadata?.title || `Conversation ${id.substring(0, 6)}`, 
+                                        message_count: c.message_count || c.metadata?.message_count || 0 
+                                    }); 
+                                }); 
+                                chat.conversations = Array.from(m.values()); 
+                            } catch (e) { 
+                                console.error("Error fetching convos:", e); 
+                            } 
+                        };
+                        const selectConversation = async (id) => { 
+                            chat.selectedConversationId = id; 
+                            setView('chat'); 
+                            try { 
+                                const r=await fetch(`/api/v1/conversations/${id}`); 
+                                const d=await r.json(); 
+                                chat.messages = (d.messages||[]).map(m=>({
+                                    role: m.role, 
+                                    content: Array.isArray(m.content)?m.content.map(c=>c.text||'').join(' '):(m.content||''), 
+                                    timestamp: m.timestamp||new Date().toISOString()
+                                })); 
+                                await scrollToBottom(); 
+                            } catch(e){
+                                console.error(e);
+                            } 
+                        };
+                        const startNewConversation = async () => { 
+                            try { 
+                                const r=await fetch('/api/v1/conversations/create',{method:'POST'}); 
+                                const d=await r.json(); 
+                                await refreshConversations(); 
+                                await selectConversation(d.conversation_id); 
+                                chat.messages = [{role:'system', content:'New chat started.', timestamp: new Date().toISOString()}]; 
+                                chat.uploadedImage=null; 
+                                chat.imagePath=null; 
+                            } catch(e){
+                                console.error(e);
+                            } 
+                        };
+                        const renderMarkdown = (content) => { 
+                            if (!content) return ''; 
+                            const html = marked.parse(content); 
+                            nextTick(() => { 
+                                document.querySelectorAll('.markdown-content pre code').forEach(hljs.highlightElement); 
+                            }); 
+                            return html; 
+                        };
+                        const formatTime = (timestamp) => { 
+                            if (!timestamp) return ''; 
+                            try { 
+                                return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); 
+                            } catch (e) { 
+                                return ''; 
+                            } 
+                        };
+                        const connectWebSocket = () => { 
+                            if (chat.ws && chat.ws.readyState === WebSocket.OPEN) return; 
+                            const proto=location.protocol==='https:'?'wss:':'ws:'; 
+                            const url=`${proto}//${location.host}/api/v1/chat/stream`; 
+                            chat.ws=new WebSocket(url); 
+                            chat.ws.onopen=()=>console.log('WS open'); 
+                            chat.ws.onclose=()=>console.log('WS close'); 
+                            chat.ws.onerror=(err)=>{
+                                console.error('WS Error:', err); 
+                                showError('WebSocket connection error.'); 
+                                chat.isTyping=false;
+                            }; 
+                            chat.ws.onmessage=(ev)=>handleWebSocketMessage(ev); 
+                        };
+                        const handleWebSocketMessage = (event) => { 
+                            const data = JSON.parse(event.data); 
+                            let assistantMsgIndex = chat.messages.length > 0 && chat.messages[chat.messages.length-1].role === 'assistant' ? chat.messages.length-1 : -1; 
+                            if(data.event==='token'){
+                                chat.currentStreamedResponse+=data.data.token; 
+                                if(assistantMsgIndex===-1){
+                                    chat.messages.push({
+                                        role:'assistant',
+                                        content:chat.currentStreamedResponse,
+                                        timestamp:new Date().toISOString()
+                                    }); 
+                                    assistantMsgIndex=chat.messages.length-1;
+                                }else{
+                                    chat.messages[assistantMsgIndex].content=chat.currentStreamedResponse;
+                                } 
+                                scrollToBottom();
+                            }else if(data.event==='progress'){
+                                chat.streamProgress=data.data;
+                            }else if(data.event==='start'){
+                                chat.isTyping=true; 
+                                chat.currentStreamedResponse=''; 
+                                chat.streamProgress={iteration:1,max_iterations:5}; 
+                                chat.messages.push({
+                                    role:'assistant',
+                                    content:'',
+                                    timestamp:new Date().toISOString()
+                                }); 
+                                assistantMsgIndex=chat.messages.length-1; 
+                                scrollToBottom();
+                            }else if(data.event==='complete'){
+                                chat.isTyping=false; 
+                                chat.streamProgress=null; 
+                                if(assistantMsgIndex!==-1){
+                                    chat.messages[assistantMsgIndex].content=data.data.response||chat.currentStreamedResponse||"[No response text]";
+                                }
+                                (data.data.action_results||[]).forEach(a=>{
+                                    chat.messages.push({
+                                        role:'system',
+                                        content:`Action '${a.action}' ${a.status}:\n${a.result}`,
+                                        timestamp:new Date().toISOString()
+                                    });
+                                }); 
+                                chat.currentStreamedResponse=''; 
+                                refreshConversations(); 
+                                updateStatusInfo(); 
+                                scrollToBottom();
+                            }else if(data.event==='error'){
+                                chat.isTyping=false; 
+                                chat.streamProgress=null; 
+                                showError(`Stream Error: ${data.data.message}`); 
+                                if(assistantMsgIndex!==-1&&chat.messages[assistantMsgIndex].content===''){
+                                    chat.messages.pop();
+                                }
+                            }else if(data.event === 'tokens'){ 
+                                dashboard.tokens = data.data.usage || { sessionTotal: dashboard.tokens.sessionTotal }; 
+                                updateStatusInfo(); 
+                            }
+                        };
+                        const sendMessage = async () => { 
+                            const msgContent=chat.newMessage.trim(); 
+                            if((!msgContent&&!chat.uploadedImage)||chat.isTyping) return; 
+                            chat.isTyping=true; 
+                            const userMsg={
+                                role:'user',
+                                content:msgContent||(chat.uploadedImage?"[Image Sent]":""),
+                                timestamp:new Date().toISOString(), 
+                                status:'sent'
+                            }; 
+                            chat.messages.push(userMsg); 
+                            chat.newMessage=''; 
+                            autoResize(); 
+                            await scrollToBottom(); 
+                            try { 
+                                if(!chat.ws||chat.ws.readyState!==WebSocket.OPEN){
+                                    connectWebSocket(); 
+                                    await new Promise(r=>setTimeout(r,500)); 
+                                    if(!chat.ws||chat.ws.readyState!==WebSocket.OPEN) 
+                                        throw new Error("WebSocket connection failed.");
+                                } 
+                                chat.ws.send(JSON.stringify({
+                                    text:msgContent, 
+                                    conversation_id:chat.selectedConversationId, 
+                                    image_path:chat.imagePath
+                                })); 
+                                chat.uploadedImage=null; 
+                                chat.imagePath=null; 
+                            } catch(err){
+                                console.error(err); 
+                                showError(`Send Error: ${err.message}`); 
+                                chat.isTyping=false; 
+                                userMsg.status='failed';
+                            } 
+                        };
+                        const handleKeyDown = (e) => { 
+                            if(e.key==='Enter'&&!e.shiftKey){
+                                e.preventDefault(); 
+                                sendMessage();
+                            }else if(e.key==='Escape'){
+                                chat.newMessage=''; 
+                                autoResize();
+                            } 
+                        };
+                        const autoResize = () => { 
+                            const ta=messageInput.value; 
+                            if(!ta) return; 
+                            ta.style.height='auto'; 
+                            ta.style.height=`${Math.min(ta.scrollHeight,200)}px`; 
+                        };
+                        const handleFileUpload = async (event) => { 
+                            const file=event.target.files[0]; 
+                            if(!file||!chat.supportsImages) return; 
+                            chat.uploadedImage=URL.createObjectURL(file); 
+                            const formData=new FormData(); 
+                            formData.append('file', file); 
+                            try { 
+                                const r=await fetch('/api/v1/upload',{method:'POST',body:formData}); 
+                                if(!r.ok) throw new Error(`Upload failed: ${r.statusText}`); 
+                                const data=await r.json(); 
+                                chat.imagePath=data.path; 
+                            } catch(e){
+                                console.error(e); 
+                                showError(`Upload failed: ${e.message}`); 
+                                chat.uploadedImage=null; 
+                                chat.imagePath=null;
+                            } 
+                        };
+                        const clearImage = () => { 
+                            chat.uploadedImage=null; 
+                            chat.imagePath=null; 
+                            const fileInput = document.querySelector('.file-upload input[type="file"]'); 
+                            if(fileInput) fileInput.value=''; 
+                        };
+                        const showError = (msg) => { 
+                            chat.error = msg; 
+                            setTimeout(() => chat.error = null, 5000); 
+                        };
+                        const updateStatusInfo = async () => { 
+                            try { 
+                                const tokens = dashboard.tokens.sessionTotal || 0; 
+                                const maxTokens = dashboard.settings.maxTokens || 0; 
+                                if (maxTokens > 0) { 
+                                    const percent = (tokens / maxTokens * 100).toFixed(1); 
+                                    chat.statusInfo = `Tokens: ${tokens.toLocaleString()}/${maxTokens.toLocaleString()} (${percent}%)`; 
+                                } else { 
+                                    chat.statusInfo = `Tokens: ${tokens.toLocaleString()}`; 
+                                } 
+                            } catch (e) { 
+                                console.error("Error updating status info:", e); 
+                            } 
+                        };
+                        const checkImageSupport = async () => { 
+                            try { 
+                                const r=await fetch('/api/v1/capabilities'); 
+                                if(r.ok){ 
+                                    const d=await r.json(); 
+                                    chat.supportsImages = d.vision_enabled||false; 
+                                    dashboard.settings.vision=chat.supportsImages;
+                                } 
+                            } catch(e){
+                                console.error(e); 
+                                chat.supportsImages=false;
+                            } 
+                        };
+
+                        // --- Lifecycle Hooks ---
+                        onMounted(async () => {
+                            loadSidebarWidth(); // Load width first
+                            
+                            // Only try to connect WebSocket if we're actually connecting to a backend
+                            try {
+                                await checkImageSupport();
+                                connectWebSocket();
+                                await refreshConversations();
+                                
+                                // Only start a new conversation if there are no hardcoded messages
+                                if (chat.messages.length === 0) {
+                                    if (chat.conversations.length > 0) {
+                                        await selectConversation(chat.conversations[0].id);
+                                    } else {
+                                        await startNewConversation();
+                                    }
+                                }
+                            } catch (e) {
+                                console.log('Running in demo mode, using placeholder data');
+                                // In demo mode, just make sure we have a current view set
+                                setView('chat');
+                            }
+                            
+                            autoResize();
+                            updateStatusInfo();
+                        });
+
+                        watch(() => chat.newMessage, () => nextTick(autoResize));
+
+                        // Return all the reactive state and methods
+                        return {
+                            // State
+                            currentView, currentProjectId, chat, projects, dashboard, files, currentTask, messageInput, chatRightSidebar,
+                            // Computed
+                            currentProject,
+                            // Methods
+                            setView, viewProjectDetail, getStatusBadgeClass, getStatusDotClass,
+                            renderMarkdown, formatTime, sendMessage, handleKeyDown, autoResize,
+                            handleFileUpload, clearImage, refreshConversations, selectConversation, startNewConversation,
+                            updateStatusInfo,
+                            // Resize Methods
+                            startResize
+                        };
+                    }
+                }).mount('#app');
+                
+                console.log("Vue app initialized successfully!");
+            } catch (error) {
+                console.error("Error initializing Vue:", error);
+                document.body.innerHTML = `
+                    <div style="padding: 20px; text-align: center; color: white;">
+                        <h1>Penguin UI</h1>
+                        <p>Error initializing Vue: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+    </script>
+</body>
+</html> 
