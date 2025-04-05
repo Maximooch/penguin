@@ -3,9 +3,9 @@ import logging
 import asyncio
 from typing import List, Dict, Optional, Any, Union, Callable, AsyncIterator
 
-import openai
-import tiktoken
-from openai import AsyncOpenAI, APIError
+import openai # type: ignore
+import tiktoken # type: ignore
+from openai import AsyncOpenAI, APIError # type: ignore
 
 # Assuming ModelConfig is in the same directory or adjust import path
 try:
@@ -98,10 +98,16 @@ class OpenRouterGateway:
             The complete response text content.
             Returns an error string "[Error: ...]" if an API call fails.
         """
+        # Determine if streaming should be used *based on the passed flag first*
+        # If stream is explicitly False, don't stream, even if config says yes.
+        # If stream is explicitly True, try to stream.
+        # If stream is None, fall back to config.
         use_streaming = stream if stream is not None else self.model_config.streaming_enabled
+        
+        # If streaming is decided but no callback is provided, log warning and disable
         if use_streaming and stream_callback is None:
-            self.logger.error("Streaming enabled but no stream_callback provided.")
-            return "[Error: stream_callback missing for streaming request]"
+            self.logger.warning("Streaming requested/configured but no stream_callback provided. Falling back to non-streaming mode.")
+            use_streaming = False
 
         request_params = {
             "model": self.model_config.model,
@@ -166,9 +172,34 @@ class OpenRouterGateway:
 
                 if not full_response_content:
                      self.logger.warning(f"OpenRouter non-streaming response had no text content. Response: {completion}")
+                     # Check if there's an error in the response object
+                     error_info = getattr(completion, 'error', None)
+                     if error_info:
+                         error_code = error_info.get('code', 'unknown')
+                         error_message = error_info.get('message', 'Unknown error')
+                         provider_info = error_info.get('metadata', {}).get('provider_name', 'unknown provider')
+                         
+                         # Handle provider-specific errors
+                         if 'quota' in error_message.lower() or error_code == 429:
+                             return f"[Error: Provider quota exceeded ({provider_info}). {error_message}]"
+                         
+                         return f"[Error: Provider error ({provider_info}, code {error_code}). {error_message}]"
+                     
+                     # If no error but still empty content (common with some Gemini models)
+                     # Check usage to see if it was actually completed
+                     usage = getattr(completion, 'usage', None)
+                     completion_tokens = getattr(usage, 'completion_tokens', 0) if usage else 0
+                     
+                     if completion_tokens > 0:
+                         # Something was generated but response is empty (happens with some models)
+                         self.logger.info(f"Model generated {completion_tokens} tokens but returned empty content")
+                         return "[Note: Model processed the request but returned empty content. Try rephrasing your query.]"
+                         
                      # Check finish reason?
                      finish_reason = completion.choices[0].finish_reason if completion.choices else "unknown"
-                     return f"[Model finished, reason: {finish_reason}, no content]"
+                     # Return empty string instead of the placeholder
+                     self.logger.warning(f"Model finished (reason: {finish_reason}) but returned no content and generated 0 completion tokens.")
+                     return ""
 
                 self.logger.debug(f"Non-streaming response received. Content length: {len(full_response_content or '')}")
                 return full_response_content or "" # Ensure string return

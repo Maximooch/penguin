@@ -2,14 +2,14 @@
 # https://docs.litellm.ai/docs/providers
 
 model:
-  default: "anthropic/claude-3-7-sonnet-20250219"
-  provider: "anthropic"
-  client_preference: "litellm"  # Use 'litellm' for LiteLLM gateway or 'native' for direct SDK
+  default: "openrouter/quasar-alpha"
+  provider: "openrouter"
+  client_preference: "openrouter"  # Use 'litellm' for LiteLLM gateway, 'native' for direct SDK, or 'openrouter' for OpenRouter
   use_assistants_api: false     # Toggle OpenAI Assistants API usage
   streaming_enabled: true       # Enable streaming support
-  max_tokens: 8192
+  max_tokens: 30000
   # temperature: 0.4
-  context_window: 200000
+  context_window: 9000000
   # temperature: 0.4
 
 
@@ -70,6 +70,31 @@ model_configs:
     max_tokens: 4096
     temperature: 0.4
     vision_enabled: true
+    
+  # OpenRouter model examples
+  openai/gpt-4o-openrouter:
+    model: openai/gpt-4o
+    provider: openrouter
+    client_preference: openrouter
+    max_tokens: 4096
+    temperature: 0.7
+    vision_enabled: true
+    
+  anthropic/claude-3-5-sonnet-openrouter:
+    model: anthropic/claude-3-5-sonnet-20240620
+    provider: openrouter
+    client_preference: openrouter
+    max_tokens: 8192
+    temperature: 0.7
+    vision_enabled: true
+    
+  google/gemini-2.0-flash:
+    model: google/gemini-2.0-flash-exp:free
+    provider: openrouter
+    client_preference: openrouter
+    max_tokens: 4096
+    temperature: 0.7
+    vision_enabled: true
 
   # Example using LiteLLM for Ollama
   ollama/llama3:
@@ -86,6 +111,42 @@ model_configs:
     # client_preference: native # (Implied default)
     max_tokens: 8192
     temperature: 0.7
+
+  # Free models for testing and fallback
+  openai/gpt-3.5-turbo-free:
+    model: openai/gpt-3.5-turbo-0125
+    provider: openrouter
+    client_preference: openrouter
+    max_tokens: 4096
+    temperature: 0.7
+    vision_enabled: false
+    
+  google/gemini-pro-free:
+    model: google/gemini-pro
+    provider: openrouter
+    client_preference: openrouter
+    max_tokens: 4096
+    temperature: 0.7
+    vision_enabled: false
+    
+  mistral/mistral-large-free:
+    model: mistral/mistral-large-latest
+    provider: openrouter
+    client_preference: openrouter
+    max_tokens: 4096
+    temperature: 0.7
+    vision_enabled: false
+
+  # DeepSeek model with adjusted parameters to reduce empty responses
+  deepseek/deepseek-chat:
+    model: deepseek/deepseek-chat-v3-0324:free
+    provider: openrouter
+    client_preference: openrouter
+    max_tokens: 8192
+    temperature: 0.9  # Higher temperature to avoid default outputs
+    top_p: 0.95  # Slightly reduce top_p to encourage more varied responses
+    frequency_penalty: 0.1  # Add a small frequency penalty
+    vision_enabled: false
 
 # Add other non-sensitive configuration options as needed
 

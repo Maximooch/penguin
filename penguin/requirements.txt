@@ -18,6 +18,7 @@ bs4
 plotext
 matplotlib
 tqdm
+openai>=1.0.0  # Required for OpenRouter support
 
 chromadb
 ollama

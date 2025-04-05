@@ -191,6 +191,7 @@ TOOL_USAGE_GUIDANCE = '''
 - **Avoid file modification commands** (use `<execute>` instead).
 - **`cd` does not persist.** Use full paths or workspace-relative paths.
 - Verify output in the next message.
+- FILTER OUT NODE_MODULES AND OTHER UNWANTED FILES FROM OUTPUT, IT WILL FLOOD THE CONTEXT WINDOW
 
 ### Process Management (`process_*`)
 - Manage background tasks. Check status/list before start/stop. `process_exit` when done.

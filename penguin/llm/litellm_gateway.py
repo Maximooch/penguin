@@ -67,6 +67,13 @@ class LiteLLMGateway:
         """
         request_id = os.urandom(4).hex() # Generate a simple request ID for tracking
         logger.info(f"[Request:{request_id}] LiteLLMGateway.get_response called.")
+        
+        # Determine if streaming should be used; fall back to non-streaming if 
+        # streaming is requested but no callback is provided
+        use_streaming = stream and stream_callback is not None
+        if stream and not stream_callback:
+            logger.warning(f"[Request:{request_id}] Streaming requested but no stream_callback provided. Falling back to non-streaming mode.")
+            
         try:
             # 1. Format messages (especially handle images for vision models)
             formatted_messages = self._format_messages(messages)
@@ -91,7 +98,7 @@ class LiteLLMGateway:
                  logger.warning(f"[Request:{request_id}] Error creating safe log for params: {log_err}")
 
             # 3. Call LiteLLM (streaming or non-streaming)
-            if stream and stream_callback:
+            if use_streaming:
                 logger.info(f"[Request:{request_id}] Initiating STREAMING call via LiteLLM: {litellm_params.get('model', 'Unknown Model')}")
                 full_response = await self._handle_streaming(
                     litellm_params, stream_callback, request_id

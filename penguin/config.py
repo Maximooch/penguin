@@ -253,6 +253,32 @@ class Config:
             os.getenv("PENGUIN_CACHE_DIR", "~/.cache/penguin")
         ).expanduser()
     )
+    
+    # Dictionary-like access to model settings
+    @property
+    def model(self) -> Dict[str, Any]:
+        """
+        Provide dictionary-like access to model settings.
+        For compatibility with code expecting a dict-like interface.
+        """
+        if self.model_config is None:
+            return {}
+            
+        result = {}
+        # Common model parameters
+        attrs = ["provider", "client_preference", "streaming_enabled", "api_base", 
+                 "max_tokens", "temperature", "vision_enabled", "use_assistants_api"]
+        
+        for attr in attrs:
+            if hasattr(self.model_config, attr):
+                result[attr] = getattr(self.model_config, attr)
+        
+        # Add method for dictionary-like access
+        def get(key, default=None):
+            return result.get(key, default)
+            
+        result["get"] = get
+        return result
 
     def __post_init__(self):
         # Initialize model_config if it's None

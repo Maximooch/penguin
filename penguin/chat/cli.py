@@ -889,14 +889,17 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     self.display_message("Processing your request...", "system")
                 
                 try:
-                    # Use process without specifying streaming (uses config default)
+                    # Pass the callback if streaming is enabled
+                    callback_to_pass = self.stream_callback if streaming_enabled else None
+                    
                     response = await self.core.process(
                         {"text": user_input}, 
-                        max_iterations=5
+                        max_iterations=5,
+                        streaming=streaming_enabled,  # Explicitly pass the flag determined here
+                        stream_callback=callback_to_pass 
                     )
                     
                     # When using streaming, don't display the assistant_response again
-                    # as it's already been streamed via the callback
                     if isinstance(response, dict):
                         if not streaming_enabled and "assistant_response" in response:
                             # Only display in non-streaming mode
