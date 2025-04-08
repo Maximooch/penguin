@@ -3,6 +3,13 @@ import logging
 import asyncio
 from typing import List, Dict, Optional, Any, Union, Callable, AsyncIterator
 
+# --- Added Imports for Vision Handling ---
+import base64
+import io
+import mimetypes
+from PIL import Image as PILImage # Use alias
+# --- End Added Imports ---
+
 import openai # type: ignore
 import tiktoken # type: ignore
 from openai import AsyncOpenAI, APIError # type: ignore
@@ -74,6 +81,72 @@ class OpenRouterGateway:
         else:
              self.logger.debug(f"Using extra headers: {self.extra_headers}")
 
+    async def _encode_image(self, image_path: str) -> Optional[str]:
+        """Encodes an image file to a base64 data URI."""
+        if not os.path.exists(image_path):
+            self.logger.error(f"Image path does not exist: {image_path}")
+            return None
+        try:
+            logger.debug(f"Encoding image from path: {image_path}")
+            with PILImage.open(image_path) as img:
+                max_size = (1024, 1024) # Configurable?
+                img.thumbnail(max_size, PILImage.LANCZOS)
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                buffer = io.BytesIO()
+                img.save(buffer, format="JPEG") # Use JPEG for efficiency
+                image_bytes = buffer.getvalue()
+
+            base64_image = base64.b64encode(image_bytes).decode("utf-8")
+            mime_type, _ = mimetypes.guess_type(image_path)
+            if not mime_type or not mime_type.startswith("image"):
+                mime_type = "image/jpeg"
+            data_uri = f"data:{mime_type};base64,{base64_image}"
+            self.logger.debug(f"Encoded image to data URI (length: {len(data_uri)})")
+            return data_uri
+        except FileNotFoundError:
+            self.logger.error(f"Image file not found during encoding: {image_path}")
+            return None
+        except Exception as e:
+            self.logger.error(f"Error encoding image {image_path}: {e}", exc_info=True)
+            return None
+
+    async def _process_messages_for_vision(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Processes messages to encode images specified by 'image_path'."""
+        processed_messages = []
+        for message in messages:
+            if isinstance(message.get("content"), list):
+                new_content = []
+                image_processed = False
+                for item in message["content"]:
+                    if isinstance(item, dict) and item.get("type") == "image_url" and "image_path" in item:
+                        image_path = item["image_path"]
+                        data_uri = await self._encode_image(image_path)
+                        if data_uri:
+                            # Replace item with OpenAI format
+                            new_content.append({
+                                "type": "image_url",
+                                "image_url": {"url": data_uri}
+                            })
+                            image_processed = True
+                        else:
+                            # Failed to encode, maybe add a text note?
+                            new_content.append({"type": "text", "text": f"[Error: Could not load image at {image_path}]"})
+                    else:
+                        # Keep other content parts as is
+                        new_content.append(item)
+                
+                # If an image was processed, update the message content
+                if image_processed:
+                    processed_messages.append({**message, "content": new_content})
+                else:
+                    # No image processed, keep original message
+                    processed_messages.append(message)
+            else:
+                # Not a list content, keep message as is
+                processed_messages.append(message)
+        return processed_messages
+
     async def get_response(
         self,
         messages: List[Dict[str, Any]],
@@ -109,9 +182,17 @@ class OpenRouterGateway:
             self.logger.warning("Streaming requested/configured but no stream_callback provided. Falling back to non-streaming mode.")
             use_streaming = False
 
+        # --- Process messages for vision --- 
+        try:
+            processed_messages = await self._process_messages_for_vision(messages)
+        except Exception as e:
+            self.logger.error(f"Error processing messages for vision: {e}", exc_info=True)
+            return f"[Error: Failed to process message content - {str(e)}]"
+        # --- End vision processing ---
+
         request_params = {
             "model": self.model_config.model,
-            "messages": messages,
+            "messages": processed_messages, # Use processed messages
             "max_tokens": max_tokens or self.model_config.max_tokens,
             "temperature": temperature if temperature is not None else self.model_config.temperature,
             "stream": use_streaming,

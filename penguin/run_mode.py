@@ -489,7 +489,7 @@ class RunMode:
             task_prompt = (
                 f"Execute task: {name}\n"
                 f"Description: {task_description}\n"
-                "Respond with TASK_COMPLETE when finished."
+                "Respond with TASK_COMPLETED when finished."
             )
             if context:
                 task_prompt += f"\nContext: {json.dumps(context, indent=2)}"
@@ -571,7 +571,19 @@ class RunMode:
                      }
 
                 # Check for TASK_COMPLETION_PHRASE (or the exit_flag from get_response)
-                if self.TASK_COMPLETION_PHRASE in response_text or exit_flag:
+                # --- MODIFIED CHECK FOR ROBUSTNESS ---
+                # Normalize response text for checking
+                normalized_response = response_text.strip().upper().replace("*", "") 
+                
+                # Check against configured phrase (and maybe the common variation)
+                # Ensure configured phrase is also upper case for comparison
+                task_completed_found = (
+                    self.TASK_COMPLETION_PHRASE.upper() in normalized_response or 
+                    "TASK_COMPLETE" in normalized_response # Check the common LLM variation too
+                )
+
+                if task_completed_found or exit_flag:
+                # --- END MODIFIED CHECK ---
                     self._display_message(f"[DEBUG] Task completion detected: {name}")
 
                     # (Keep existing logic for handling user_specified vs managed tasks)

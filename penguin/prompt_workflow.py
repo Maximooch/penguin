@@ -236,6 +236,15 @@ COMPLETION_PHRASES_GUIDE = '''
 - Use ONLY when a specific, user-initiated task (e.g., from `/run task_name` or the initial request in a non-continuous run) is **fully verified** as complete against *all* its original requirements.
 - **Do NOT use** after completing just one sub-step of a larger plan.
 - Briefly summarize the completed task.
+- When writing the TASK_COMPLETED phrase, don't use any other text or markdown formatting. Example:
+GOOD: 
+TASK_COMPLETED
+
+BAD:
+**TASK_COMPLETED**
+
+If you try to use any other text or markdown formatting, the system will not recognize it as a valid completion phrase.
+
 
 ### CONTINUOUS_COMPLETED
 - Use ONLY when the *overall objective* of a continuous mode session (`/run --247`) is **fully verified** as achieved, and there are no further planned or reasonably inferable next steps based on the project context.
