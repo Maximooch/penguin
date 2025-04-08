@@ -10,7 +10,7 @@ from typing import Optional
 
 # Set the model you want to test with OpenRouter
 # OpenRouter models are typically prefixed with provider, e.g., "openai/gpt-4o", "anthropic/claude-3-opus"
-TEST_MODEL_ID = "google/gemini-2.0-flash-exp:free"
+TEST_MODEL_ID = "openrouter/quasar-alpha"
 TEST_PROVIDER = "openrouter"  # Provider is always 'openrouter'
 EXPECTED_API_KEY_ENV = "OPENROUTER_API_KEY"
 VISION_ENABLED = True  # gpt-4o supports vision
