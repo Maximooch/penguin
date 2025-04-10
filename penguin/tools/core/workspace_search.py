@@ -28,7 +28,11 @@ class CodeIndexer:
     def get_ignore_patterns(self) -> List[str]:
         ignore_patterns = [
             "penguin_venv/*",
+            ".venv/*",
             "__pycache__/*",
+            "node_modules/*",
+            "build/*",
+            "dist/*",
             "*.pyc",
             "*.pyo",
             "*.pyd",
@@ -64,34 +68,43 @@ class CodeIndexer:
                     self.index_file(file_path, relative_path)
 
     def parse_ast(self, content: str) -> Dict[str, Any]:
-        tree = ast.parse(content)
         ast_info = {"classes": [], "functions": [], "imports": []}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef):
-                ast_info["classes"].append(
-                    {
-                        "name": node.name,
-                        "line": node.lineno,
-                        "end_line": node.end_lineno,
-                        "methods": [
-                            m.name for m in node.body if isinstance(m, ast.FunctionDef)
-                        ],
-                    }
-                )
-            elif isinstance(node, ast.FunctionDef):
-                ast_info["functions"].append(
-                    {
-                        "name": node.name,
-                        "line": node.lineno,
-                        "end_line": node.end_lineno,
-                        "args": [a.arg for a in node.args.args],
-                    }
-                )
-            elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                for alias in node.names:
-                    ast_info["imports"].append(
-                        {"name": alias.name, "line": node.lineno}
+        try:
+            tree = ast.parse(content)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ClassDef):
+                    ast_info["classes"].append(
+                        {
+                            "name": node.name,
+                            "line": node.lineno,
+                            "end_line": node.end_lineno,
+                            "methods": [
+                                m.name for m in node.body if isinstance(m, ast.FunctionDef)
+                            ],
+                        }
                     )
+                elif isinstance(node, ast.FunctionDef):
+                    ast_info["functions"].append(
+                        {
+                            "name": node.name,
+                            "line": node.lineno,
+                            "end_line": node.end_lineno,
+                            "args": [a.arg for a in node.args.args],
+                        }
+                    )
+                elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                    for alias in node.names:
+                        ast_info["imports"].append(
+                            {"name": alias.name, "line": node.lineno}
+                        )
+        except SyntaxError as e:
+            # Log specific syntax errors during parsing but return empty ast_info
+            # This allows indexing to proceed (potentially with embeddings) even if AST parsing fails.
+            logging.warning(f"SyntaxError parsing AST: {e}. File content might not be valid Python.")
+            # Return the initialized empty dict, indicating no AST info could be extracted
+            return ast_info 
+            
+        # Return the populated ast_info if parsing was successful
         return ast_info
 
     def index_file(self, file_path: str, relative_path: str):

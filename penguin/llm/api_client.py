@@ -242,13 +242,28 @@ class APIClient:
                  self.logger.error(f"CRITICAL: Client handler {type(self.client_handler).__name__} missing required 'get_response' method!")
                  return f"[Error: Handler {type(self.client_handler).__name__} interface mismatch]"
 
+            # <<< ADD LOGGING HERE >>>
+            effective_callback = stream_callback if use_streaming else None
+            self.logger.debug(f"[APIClient:{request_id_api}] Calling {type(self.client_handler).__name__}.get_response. Streaming: {use_streaming}. Callback Provided: {effective_callback is not None}")
+            if effective_callback:
+                 self.logger.debug(f"[APIClient:{request_id_api}] Callback object details: {effective_callback}")
+            # <<< END LOGGING >>>
+
             response_text = await self.client_handler.get_response(
                 messages=prepared_messages,
                 max_tokens=max_tokens or self.model_config.max_tokens,
                 temperature=temperature if temperature is not None else self.model_config.temperature,
                 stream=use_streaming,
-                stream_callback=stream_callback if use_streaming else None,
+                stream_callback=effective_callback, # Pass the potentially None callback
             )
+
+            # If streaming, the callback handled output. Return minimal response.
+            # The response_text here is the final accumulated text from the gateway.
+            if use_streaming:
+                logger.info(f"[APIClient:{request_id_api}] Stream finished. Returning accumulated text (length: {len(response_text or '')}).")
+                # In streaming mode, we rely on the callback for output.
+                # We return the final accumulated text, but core.py might ignore it.
+                return response_text or "" # Return accumulated string
 
             # <<<--- ADD Check for Error/Placeholder Strings ---<<<
             if isinstance(response_text, str):

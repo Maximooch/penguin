@@ -134,7 +134,7 @@ class SessionManager:
     def _save_index(self, index: Dict[str, Dict[str, Any]]) -> None:
         """Save the session index to disk."""
         try:
-            # Write to temp file first - fix the suffix 
+            # Write to temp file first - fix the suffix
             temp_path = Path(f"{self.index_path}.temp")  # Fix: Use explicit Path constructor
             with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(index, f, indent=2)

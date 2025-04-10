@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import uuid
+import websockets
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
@@ -53,7 +54,7 @@ async def get_core():
 
 
 @router.post("/api/v1/chat/message")
-async def process_message(
+async def handle_chat_message(
     request: MessageRequest, core: PenguinCore = Depends(get_core)
 ):
     """Process a chat message, with optional conversation support."""
@@ -89,56 +90,100 @@ async def process_message(
 async def stream_chat(
     websocket: WebSocket, core: PenguinCore = Depends(get_core)
 ):
-    """Stream chat responses in real-time."""
+    """Stream chat responses in real-time using a queue."""
     await websocket.accept()
-    
-    # Define callback for streaming tokens
-    async def stream_callback(token: str):
-        await websocket.send_json({"event": "token", "data": {"token": token}})
-    
-    # Define callback for token usage updates
-    async def token_callback(usage: Dict[str, int]):
-        await websocket.send_json({"event": "tokens", "data": {"usage": usage}})
-    
-    try:
-        # Register callbacks
-        token_callbacks = getattr(core, "token_callbacks", [])
-        if hasattr(core, "token_callbacks") and stream_callback not in token_callbacks:
-            core.token_callbacks.append(token_callback)
-        
+    response_queue = asyncio.Queue()
+    sender_task = None
+
+    # Task to send messages from the queue to the client
+    async def sender(queue: asyncio.Queue):
+        nonlocal sender_task
+        send_buffer = ""
+        BUFFER_SEND_SIZE = 5 # Send after accumulating this many chars
+        BUFFER_TIMEOUT = 0.1 # Or send after this many seconds of inactivity
+
         while True:
-            data = await websocket.receive_json()
-            
-            # Extract parameters from websocket message
+            token = None
+            try:
+                # Wait for a token with a timeout
+                token = await asyncio.wait_for(queue.get(), timeout=BUFFER_TIMEOUT)
+
+                if token is None: # Sentinel value to stop
+                    logger.debug("[Sender Task] Received stop signal.")
+                    # Send any remaining buffer before stopping
+                    if send_buffer:
+                        logger.debug(f"[Sender Task] Sending final buffer: '{send_buffer}'")
+                        await websocket.send_json({"event": "token", "data": {"token": send_buffer}})
+                        send_buffer = ""
+                    queue.task_done()
+                    break
+
+                # Add token to buffer
+                send_buffer += token
+                queue.task_done()
+                logger.debug(f"[Sender Task] Added to buffer: '{token}'. Buffer size: {len(send_buffer)}")
+
+                # Send buffer if it reaches size threshold
+                if len(send_buffer) >= BUFFER_SEND_SIZE:
+                    logger.debug(f"[Sender Task] Buffer reached size {BUFFER_SEND_SIZE}. Sending: '{send_buffer}'")
+                    await websocket.send_json({"event": "token", "data": {"token": send_buffer}})
+                    send_buffer = "" # Reset buffer
+
+            except asyncio.TimeoutError:
+                # Timeout occurred - send buffer if it has content
+                if send_buffer:
+                    logger.debug(f"[Sender Task] Timeout reached. Sending buffer: '{send_buffer}'")
+                    await websocket.send_json({"event": "token", "data": {"token": send_buffer}})
+                    send_buffer = ""
+                # Continue waiting for next token or stop signal
+                continue
+
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning("[Sender Task] WebSocket closed while sending/waiting.")
+                break # Exit if connection is closed
+            except Exception as e:
+                logger.error(f"[Sender Task] Error: {e}", exc_info=True)
+                break
+
+        logger.info("[Sender Task] Exiting.")
+
+    # Define callback for streaming tokens - this will ONLY put tokens on the queue
+    async def stream_callback(token: str):
+        try:
+            logger.debug(f"[stream_callback] Putting token on queue: '{token}'")
+            await response_queue.put(token)
+        except Exception as e:
+            # Log error putting onto queue, but don't stop the main process
+            logger.error(f"[stream_callback] Error putting token on queue: {e}", exc_info=True)
+
+    try:
+        # Start the sender task
+        sender_task = asyncio.create_task(sender(response_queue))
+        logger.info("Sender task started.")
+
+        while True: # Keep handling incoming client messages
+            data = await websocket.receive_json() # Wait for a request from client
+            logger.info(f"Received request from client: {data.get('text', '')[:50]}...")
+
+            # Extract parameters
             text = data.get("text", "")
             conversation_id = data.get("conversation_id")
             context_files = data.get("context_files")
             context = data.get("context")
             max_iterations = data.get("max_iterations", 5)
             image_path = data.get("image_path")
-            
-            # Prepare input data
+
             input_data = {"text": text}
             if image_path:
                 input_data["image_path"] = image_path
-            
-            # Enable streaming for this particular request
-            if hasattr(core, "model_config"):
-                original_streaming = getattr(core.model_config, "streaming_enabled", False)
-                core.model_config.streaming_enabled = True
-            
-            # Set stream callback temporarily
-            stream_cb_attr = None
-            if hasattr(core, "api_client") and hasattr(core.api_client, "stream_callback"):
-                stream_cb_attr = "api_client.stream_callback"
-                original_callback = core.api_client.stream_callback
-                core.api_client.stream_callback = stream_callback
-            
-            # Register progress callback for multi-step processing
-            def progress_callback(iteration, max_iter, message=None):
-                asyncio.create_task(
+
+            # Progress callback setup (no changes needed here)
+            progress_callback_task = None
+            async def progress_callback(iteration, max_iter, message=None):
+                nonlocal progress_callback_task
+                progress_callback_task = asyncio.create_task(
                     websocket.send_json({
-                        "event": "progress", 
+                        "event": "progress",
                         "data": {
                             "iteration": iteration,
                             "max_iterations": max_iter,
@@ -146,52 +191,103 @@ async def stream_chat(
                         }
                     })
                 )
-            
+                try:
+                    await progress_callback_task
+                except asyncio.CancelledError:
+                    logger.debug("Progress callback task cancelled")
+                except Exception as e:
+                    logger.error(f"Error sending progress update: {e}")
+
+            process_task = None
             try:
-                # Register progress callback if core supports it
                 if hasattr(core, "register_progress_callback"):
                     core.register_progress_callback(progress_callback)
-                
-                # Process with streaming enabled
-                await websocket.send_json({"event": "start", "data": {}})
-                
-                process_result = await core.process(
+
+                await websocket.send_json({"event": "start", "data": {}}) # Signal start to client
+                logger.info("Sent 'start' event to client.")
+
+                # Run core.process as a task - NOTE: We don't await the *result* here immediately
+                # The stream_callback puts tokens on the queue for the sender_task
+                logger.info("Starting core.process...")
+                process_task = asyncio.create_task(core.process(
                     input_data=input_data,
                     conversation_id=conversation_id,
                     max_iterations=max_iterations,
                     context_files=context_files,
                     context=context,
-                    streaming=True
-                )
-                
-                # Send final complete response
+                    streaming=True,
+                    stream_callback=stream_callback
+                ))
+
+                # Wait for the core process to finish
+                process_result = await process_task
+                logger.info(f"core.process finished. Result keys: {list(process_result.keys())}")
+
+                # Signal sender task to finish *after* core.process is done
+                logger.debug("Putting stop signal (None) on queue for sender task.")
+                await response_queue.put(None)
+
+                # Wait for sender task to process remaining items and finish
+                # Add a timeout to prevent hanging indefinitely
+                try:
+                    logger.debug("Waiting for sender task to finish...")
+                    await asyncio.wait_for(sender_task, timeout=10.0) # Wait max 10s for sender
+                    logger.info("Sender task finished cleanly.")
+                except asyncio.TimeoutError:
+                    logger.warning("Sender task timed out after core.process completed. Cancelling.")
+                    if sender_task and not sender_task.done():
+                        sender_task.cancel()
+                except Exception as e:
+                    logger.error(f"Error waiting for sender task: {e}", exc_info=True)
+                    if sender_task and not sender_task.done():
+                        sender_task.cancel()
+
+                # Send final complete message AFTER sender is done
+                logger.info("Sending 'complete' event to client.")
                 await websocket.send_json({
-                    "event": "complete", 
+                    "event": "complete",
                     "data": {
                         "response": process_result.get("assistant_response", ""),
                         "action_results": process_result.get("action_results", [])
                     }
                 })
-                
+                logger.info("Sent 'complete' event to client.")
+
+            except Exception as process_err:
+                logger.error(f"Error during message processing: {process_err}", exc_info=True)
+                # Try to send error to client if possible
+                if websocket.client_state == websocket.client_state.CONNECTED:
+                    await websocket.send_json({"event": "error", "data": {"message": str(process_err)}})
+                # Ensure tasks are cancelled on error
+                if process_task and not process_task.done(): process_task.cancel()
+                if sender_task and not sender_task.done(): sender_task.cancel()
+                break # Exit loop on processing error
             finally:
-                # Restore original streaming setting
-                if hasattr(core, "model_config"):
-                    core.model_config.streaming_enabled = original_streaming
-                
-                # Restore original callback if modified
-                if stream_cb_attr and hasattr(core, "api_client"):
-                    core.api_client.stream_callback = original_callback
-                    
-                # Remove progress callback
-                if hasattr(core, "progress_callbacks"):
-                    if progress_callback in core.progress_callbacks:
-                        core.progress_callbacks.remove(progress_callback)
-                    
+                # Clean up progress callback
+                if hasattr(core, "progress_callbacks") and progress_callback in core.progress_callbacks:
+                    core.progress_callbacks.remove(progress_callback)
+                # Ensure tasks are awaited/cancelled if they are still running (e.g., due to early exit)
+                if process_task and not process_task.done(): process_task.cancel()
+                if sender_task and not sender_task.done(): sender_task.cancel()
+                # Wait briefly for tasks to cancel
+                await asyncio.sleep(0.1)
+
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
     except Exception as e:
-        logger.error(f"Error in websocket: {str(e)}")
-        await websocket.send_json({"event": "error", "data": {"message": str(e)}})
+        logger.error(f"Unhandled error in websocket handler: {str(e)}", exc_info=True)
+    finally:
+        logger.info("Cleaning up stream_chat handler.")
+        # Ensure sender task is cancelled if connection closes unexpectedly
+        if sender_task and not sender_task.done():
+            logger.info("Cancelling sender task due to handler exit.")
+            sender_task.cancel()
+            try:
+                await sender_task # Allow cancellation to propagate
+            except asyncio.CancelledError:
+                logger.debug("Sender task cancellation confirmed.")
+            except Exception as final_cancel_err:
+                logger.error(f"Error during final sender task cancellation: {final_cancel_err}")
 
 
 @router.post("/api/v1/projects/create")
@@ -219,21 +315,6 @@ async def execute_task(
         time_limit=request.time_limit,
     )
     return {"status": "started"}
-
-
-@router.websocket("/ws/chat")
-async def websocket_endpoint(
-    websocket: WebSocket, core: PenguinCore = Depends(get_core)
-):
-    """Real-time chat interface."""
-    await websocket.accept()
-    while True:
-        try:
-            data = await websocket.receive_json()
-            response = await core.process(data["text"])
-            await websocket.send_json({"response": response})
-        except Exception as e:
-            await websocket.send_json({"error": str(e)})
 
 
 @router.get("/api/v1/token-usage")
@@ -297,23 +378,21 @@ async def list_context_files(core: PenguinCore = Depends(get_core)):
 
 @router.post("/api/v1/context-files/load")
 async def load_context_file(
-    request: ContextFileRequest, 
+    request: ContextFileRequest,
     core: PenguinCore = Depends(get_core)
 ):
     """Load a context file into the current conversation."""
     try:
-        # Check if core has conversation_manager attribute (new style)
+        # Use the ConversationManager directly
         if hasattr(core, "conversation_manager"):
             success = core.conversation_manager.load_context_file(request.file_path)
-        # Check if core has conversation_system attribute (old style)
-        elif hasattr(core, "conversation_system"):
-            success = core.conversation_system.load_context_file(request.file_path)
+        # Removed the fallback check for core.conversation_system
         else:
             raise HTTPException(
-                status_code=500, 
-                detail="No conversation manager found in core"
+                status_code=500,
+                detail="Conversation manager not found in core. Initialization might have failed."
             )
-            
+
         return {"success": success, "file_path": request.file_path}
     except HTTPException:
         raise
