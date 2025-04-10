@@ -204,7 +204,7 @@ class PenguinCore:
     Acts as an integration point between:
     - ConversationManager: Handles messages, context, and conversation state
     - ToolManager: Provides access to available tools and actions
-    - ActionExecutor: Executes actions and processes results
+    - ActionExecutor: Executes actions from LLM responses
     - ProjectManager: Manages projects and tasks
     
     This class focuses on coordination rather than direct implementation,
@@ -558,43 +558,29 @@ class PenguinCore:
             retry_count = 0
             
             while retry_count <= max_retries:
-                # Acquire stream lock and handle any active stream
-                async with self.stream_lock:
-                    if self.current_stream and not self.current_stream.done():
-                        try:
-                            logger.debug("Cancelling previous stream")
-                            self.current_stream.cancel()
-                            # Give it a moment to clean up
-                            await asyncio.sleep(0.1)
-                        except Exception as e:
-                            logger.debug(f"Error cancelling previous stream: {e}")
-                        self.current_stream = None
-                
                 # Start new stream, PASSING both streaming flag and callback
-                logger.debug(f"Starting new API response stream (Streaming: {streaming}, Callback provided: {stream_callback is not None})")
-                self.current_stream = asyncio.create_task(
-                    self.api_client.get_response(
-                        messages=messages, 
+                logger.debug(f"Calling API directly (Streaming: {streaming}, Callback provided: {stream_callback is not None})")
+
+                # --- MODIFIED PART: Directly await the API call --- 
+                # self.current_stream = asyncio.create_task(...)
+                assistant_response = None # Initialize
+                try:
+                    # Directly await the call, passing the callback
+                    assistant_response = await self.api_client.get_response(
+                        messages=messages,
                         stream=streaming,
                         stream_callback=stream_callback
-                    ) 
-                )
-                
-                try:
-                    # Wait for stream to complete
-                    # The response here will be the *complete* message even if streamed,
-                    # as the callback handles the chunks.
-                    assistant_response = await self.current_stream
+                    )
                 except asyncio.CancelledError:
-                    logger.warning("Response stream was cancelled")
-                    assistant_response = None
+                    # This might happen if the outer request (e.g., websocket) is cancelled
+                    logger.warning("APIClient response retrieval was cancelled")
+                    # No specific stream task to cancel here
                 except Exception as e:
-                    logger.error(f"Error in response stream: {str(e)}")
-                    assistant_response = None
-                finally:
-                    self.current_stream = None
-                
-                # Validate response
+                    logger.error(f"Error during APIClient response retrieval: {str(e)}", exc_info=True)
+                # No finally block needed here for stream management
+                # --- END MODIFIED PART --- 
+
+                # Validate response (retry logic remains the same)
                 if not assistant_response or not assistant_response.strip():
                     retry_count += 1
                     if retry_count <= max_retries:
@@ -610,10 +596,22 @@ class PenguinCore:
                     # We got a valid response, break the retry loop
                     break
             
-            # Add assistant response to conversation
-            # Ensure we add the complete response, even if it was streamed.
-            # The APIClient should return the full string after streaming completes.
+                # Let's return it as is for now, core needs adjustment later if this is the case.
+    
+            # --- Return collected text if streaming, otherwise proceed to post-processing ---
+            if streaming:
+                logger.debug("[Core.get_response] Streaming=True. Returning accumulated text immediately.")
+                # Return minimal data, relying on callback for actual streaming output
+                return {"assistant_response": assistant_response or "", "action_results": []}, False
+
+            # --- Non-Streaming Post-Processing --- 
+            logger.debug("[Core.get_response] Streaming=False. Proceeding with history update and action parsing.")
+
+            # Add assistant response to conversation (only happens *after* the stream task is fully complete)
             if assistant_response:
+                # Add assistant response to conversation
+                # Ensure we add the complete response, even if it was streamed.
+                # The APIClient should return the full string after streaming completes.
                 self.conversation_manager.conversation.add_assistant_message(assistant_response)
             
             # Parse actions and continue with action handling
@@ -841,7 +839,8 @@ class PenguinCore:
         image_path: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
         max_iterations: int = 5,
-        streaming: Optional[bool] = None
+        streaming: Optional[bool] = None,
+        stream_callback: Optional[Callable[[str], None]] = None
     ) -> Dict[str, Any]:
         """
         Process a message with multi-step reasoning and action execution.
@@ -869,8 +868,10 @@ class PenguinCore:
                 
                 # Get the next response (which may contain actions)
                 response_data, exit_continuation = await self.get_response(
-                    current_iteration=iterations, 
-                    max_iterations=max_iterations
+                    current_iteration=iterations,
+                    max_iterations=max_iterations,
+                    streaming=streaming,
+                    stream_callback=stream_callback
                 )
                 
                 # Extract assistant response and action results

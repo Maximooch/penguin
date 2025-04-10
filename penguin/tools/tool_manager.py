@@ -25,6 +25,7 @@ from penguin.tools.browser_tools import (
     browser_manager, BrowserNavigationTool, BrowserInteractionTool, BrowserScreenshotTool
 )
 
+logger = logging.getLogger(__name__) # Add logger
 
 class ToolManager:
     def __init__(self, log_error_func: Callable):
@@ -43,6 +44,31 @@ class ToolManager:
         )
         self.code_indexer.wait_for_initialization()
         self.memory_searcher = MemorySearcher()
+
+        # # --- Add Workspace Indexing ---
+        # try:
+        #     logger.info("Starting workspace indexing...")
+        #     # Index the project root directory defined in config
+        #     self.code_indexer.index_directory(self.project_root)
+        #     logger.info("Workspace indexing completed.")
+        # except Exception as e:
+        #     error_message = f"Error during initial workspace indexing: {str(e)}"
+        #     logger.error(error_message)
+        #     self.log_error(e, error_message)
+        #     # Decide if this should be fatal? For now, log and continue.
+        # # --- End Add Workspace Indexing ---
+        
+        # # Log confirmation of indexer/searcher setup
+        # if self.code_indexer and hasattr(self.code_indexer, 'client'):
+        #      logger.debug("CodeIndexer initialized successfully.")
+        # else:
+        #      logger.warning("CodeIndexer might not have initialized correctly.")
+             
+        # if self.memory_searcher and hasattr(self.memory_searcher, 'client') and self.memory_searcher._initialized:
+        #      logger.debug("MemorySearcher initialized successfully.")
+        # else:
+        #      logger.warning("MemorySearcher might not have initialized correctly.")
+
         self.tools = [
             {
                 "name": "create_folder",
