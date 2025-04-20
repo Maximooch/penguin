@@ -2,7 +2,7 @@
 # https://docs.litellm.ai/docs/providers
 
 model:
-  default: "openrouter/quasar-alpha"
+  default: "google/gemini-2.5-pro-preview-03-25"
   provider: "openrouter"
   client_preference: "openrouter"  # Use 'litellm' for LiteLLM gateway, 'native' for direct SDK, or 'openrouter' for OpenRouter
   use_assistants_api: false     # Toggle OpenAI Assistants API usage

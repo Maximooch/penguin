@@ -1,5 +1,13 @@
+# God bless us all! 
+# April 15, 2025AD 941a
+
+# April 16th 2025AD 301p
+
+# Did a copy-write. Lots of indentation issues, but I'm not going to fix them because this file doesn't actually run.
+# Just for understanding the code.
+
 """
-PenguinCore acts as the central nervous system for the Penguin AI assistant, orchestrating interactions between various subsystems.
+PenguinCore acts as the central nervous system for the Penguin Agent, orchestrating interactions between various subsystems.
 
 Key Systems:
 - ConversationManager: Handles messages, context, conversation persistence, and formatting
@@ -50,17 +58,17 @@ Core Methods:
         conversation_id: Optional[str] = None,
         context_files: Optional[List[str]] = None,
         streaming: bool = False
-    ) -> str:
-        Process a user message and return formatted response
+    ) -> str: 
+        Process a user message and return formatted response 
 
     async process(
-        input_data: Union[Dict[str, Any], str],
+        input_data: Union[Dict[str, Any], str], # This gotta be the cause for empty responses, right?
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
-        max_iterations: int = 5,
+        max_iterations: int =5,
         context_files: Optional[List[str]] = None,
         streaming: Optional[bool] = None,
-        stream_callback: Optional[Callable[[str], None]] = None
+        stream_callback: Optional[Callable[[str], None]] = None # what?
     ) -> Dict[str, Any]:
         Process input with multi-step reasoning and action execution
 
@@ -79,7 +87,7 @@ Core Methods:
         context: Optional[Dict[str, Any]] = None,
         continuous: bool = False,
         time_limit: Optional[int] = None,
-        mode_type: str = "task",
+        mode_types: str = "task",
     ) -> None:
         Start autonomous run mode for task execution
 
@@ -87,7 +95,7 @@ Conversation Management:
     list_conversations(limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
         List available conversations with pagination
 
-    get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
+    get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]: # Why optional-dict-str?
         Get a specific conversation by ID
 
     create_conversation() -> str:
@@ -98,7 +106,7 @@ Conversation Management:
 
     get_conversation_stats() -> Dict[str, Any]:
         Get statistics about conversations
-
+        
     list_context_files() -> List[Dict[str, Any]]:
         List all available context files
 
@@ -108,29 +116,30 @@ State Management:
 
     async reset_state() -> None:
         Reset core state including messages, tools, and external resources
-
-    set_system_prompt(prompt: str) -> None:
-        Set system prompt for conversation
+    
+    set_system_prompt(prompt: str) -> None: 
+        Set system prompt for conversation 
 
     register_progress_callback(callback: Callable[[int, int, Optional[str]], None]) -> None:
-        Register a callback for progress updates
+        Get total token used in current session
 
 Properties:
+
     total_tokens_used -> int:
         Get total tokens used in current session
 
-    get_token_usage() -> Dict[str, Dict[str, int]]:
+    get_token_usage() -> Dict[str, Dict[str, int]]: # What the hell are these types
         Get detailed token usage statistics
 
-Action Handling:
+Action Handling: 
     async execute_action(action) -> Dict[str, Any]:
         Execute an action and return structured result
 
-Usage:
+Usage: 
 The core should be initialized with required configuration and subsystems before use.
-It provides high-level methods for message processing, task execution, and system control.
+It provides high-level methods for message processing, task execution, and system control. 
 
-Example:
+Example: 
     core = await PenguinCore.create(config=config)
     response = await core.process_message("Hello!")
     await core.start_run_mode(name="coding_task")
@@ -143,12 +152,10 @@ import traceback
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union, Callable
-import asyncio
-import json
 
-from dotenv import load_dotenv  # type: ignore
-from rich.console import Console  # type: ignore
-from tenacity import (  # type: ignore
+from dotenv import load_dotenv # type: ignore
+from rich.console import Console # type: ignore
+from tenacity import ( # type: ignore 
     retry,
     stop_after_attempt,
     wait_exponential,
@@ -175,14 +182,14 @@ from penguin.local_task.manager import ProjectManager
 # RunMode
 from penguin.run_mode import RunMode
 
-# Core systems
+# Core Systems
 from penguin.system.conversation_manager import ConversationManager
 from penguin.system.state import MessageCategory, Message
 
 # System Prompt
 from penguin.system_prompt import SYSTEM_PROMPT
 # Workflow Prompt
-from penguin.prompt_workflow import PENGUIN_WORKFLOW
+from penguin.prompt_workflow import PENGUIN_WORKFLOW # Not directly needed, since already imported from system_prompt
 
 # Tools and Processing
 from penguin.tools import ToolManager
@@ -190,26 +197,24 @@ from penguin.utils.diagnostics import diagnostics, enable_diagnostics, disable_d
 from penguin.utils.log_error import log_error
 from penguin.utils.parser import ActionExecutor, parse_action
 
-
 if TYPE_CHECKING:
     from penguin.chat.cli import PenguinCLI
 
 logger = logging.getLogger(__name__)
 console = Console()
 
-
 class PenguinCore:
     """
-    Central coordinator for the Penguin AI assistant.
+    Central coordinator for the Penguin agent
     
     Acts as an integration point between:
-    - ConversationManager: Handles messages, context, and conversation state
+    - ConversationManager: Handles messages, context, and conversatoin state
     - ToolManager: Provides access to available tools and actions
     - ActionExecutor: Executes actions from LLM responses
-    - ProjectManager: Manages projects and tasks
+    - ProjectManager: Manages projects and  tasks
     
     This class focuses on coordination rather than direct implementation,
-    delegating most functionality to specialized components.
+    delegating most functionality to specialized components
     
     Attributes:
         conversation_manager (ConversationManager): Manages conversations and context
@@ -220,7 +225,7 @@ class PenguinCore:
         config (Config): System configuration
         model_config (ModelConfig): Model-specific configuration
     """
-    
+
     @classmethod
     async def create(
         cls,
@@ -234,7 +239,7 @@ class PenguinCore:
         Factory method for creating PenguinCore instance.
         Returns either PenguinCore alone or with CLI if enable_cli=True
         """
-        try:
+        try: 
             # Initialize progress bar
             steps = [
                 "Loading environment",
@@ -258,7 +263,7 @@ class PenguinCore:
             load_dotenv()
             pbar.update(1)
 
-            # Step 2: Initialize logging
+            # Step 2. Initialize logging
             pbar.set_description("Setting up logging")
             logging.basicConfig(level=logging.WARNING)
             for logger_name in [
@@ -271,13 +276,13 @@ class PenguinCore:
                 logging.getLogger(logger_name).setLevel(logging.WARNING)
             logging.getLogger("chat").setLevel(logging.DEBUG)
             pbar.update(1)
-
+            
             # Load configuration
-            pbar.set_description("Loading configuration")
+            pbar.set_description("Loading Configuration")
             config = config or Config.load_config()
             pbar.update(1)
 
-            # Initialize model configuration
+            # Initialixe model configuration
             pbar.set_description("Creating model config")
             model_config = ModelConfig(
                 model=model or DEFAULT_MODEL,
@@ -289,24 +294,23 @@ class PenguinCore:
             )
             pbar.update(1)
 
-            # Create API client
+            # Step 3: Initialize API client
             pbar.set_description("Initializing API client")
             api_client = APIClient(model_config=model_config)
-            api_client.set_system_prompt(SYSTEM_PROMPT)
             pbar.update(1)
 
-            # Initialize tool manager
+            # Step 4: Create tool manager
             pbar.set_description("Creating tool manager")
             tool_manager = ToolManager(log_error)
             pbar.update(1)
 
-            # Create core instance
+            # Step 5: Create core instance
             pbar.set_description("Creating core instance")
             instance = cls(
-                config=config, 
-                api_client=api_client, 
-                tool_manager=tool_manager, 
-                model_config=model_config
+                config=config,
+                api_client=api_client,
+                tool_manager=tool_manager,
+                model_config=model_config,
             )
             pbar.update(1)
 
@@ -314,33 +318,34 @@ class PenguinCore:
                 # Import CLI only when needed
                 pbar.set_description("Initializing CLI")
                 from penguin.chat.cli import PenguinCLI
-                cli = PenguinCLI(instance)
+                cli = PenguinCLI(core=instance)
                 pbar.update(1)
 
-            # Close progress bar
+            # Finalize progress bar
             pbar.close()
 
             # Show total initialization time
             init_time = time.time() - start_time
-            logger.info(f"Initialization completed in {init_time:.2f} seconds")
+            logger.info(f"Penguin initialized in {init_time:.2f} seconds")
 
             return instance if not enable_cli else (instance, cli)
-
+        
         except Exception as e:
             # Close progress bar on error
             if "pbar" in locals():
                 pbar.close()
+
             error_msg = f"Failed to initialize PenguinCore: {str(e)}"
             logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
-
+            raise Exception(error_msg) from e
+        
     def __init__(
-        self,
-        config: Optional[Config] = None,
-        api_client: Optional[APIClient] = None,
-        tool_manager: Optional[ToolManager] = None,
-        model_config: Optional[ModelConfig] = None,
-    ):
+            self,
+            config: Optional[Config] = None,
+            api_client: Optional[APIClient] = None,
+            tool_manager: Optional[ToolManager] = None,
+            model_config: Optional[ModelConfig] = None,
+    ): 
         """Initialize PenguinCore with required components."""
         self.config = config or Config.load_config()
         self.api_client = api_client
@@ -349,7 +354,7 @@ class PenguinCore:
         self._interrupted = False
         self.progress_callbacks = []
         self.token_callbacks = []
-        self._active_contexts = set()  # Track active execution contexts
+        self._active_contexts = set() # Track active execution contexts
 
         # Set system prompt from import
         self.system_prompt = SYSTEM_PROMPT
@@ -360,7 +365,9 @@ class PenguinCore:
         # Initialize diagnostics based on config
         if not self.config.diagnostics.enabled:
             disable_diagnostics()
-        
+
+        # This seems strange. 
+        # I'm not sure why we need to check if model_config has max_tokens
         # Ensure model_config max_tokens is consistent - fix for test failures
         if model_config and not hasattr(model_config, 'max_tokens'):
             model_config.max_tokens = self.config.model.get("max_tokens", 8000)
@@ -369,7 +376,7 @@ class PenguinCore:
 
         # Initialize conversation manager (replaces conversation system)
         self.conversation_manager = ConversationManager(
-            model_config=model_config,
+            model_config=model_config, 
             api_client=api_client,
             workspace_path=WORKSPACE_PATH,
             system_prompt=SYSTEM_PROMPT,
@@ -380,7 +387,7 @@ class PenguinCore:
 
         # Initialize action executor with project manager and conversation manager
         self.action_executor = ActionExecutor(
-            tool_manager=self.tool_manager, 
+            tool_manager=self.tool_manager,
             task_manager=self.project_manager,
             conversation_system=self.conversation_manager.conversation
         )
@@ -399,7 +406,7 @@ class PenguinCore:
         # Ensure error log directory exists
         self.validate_path(Path(WORKSPACE_PATH))
 
-        # Add an accumulated token counter
+        # Add an accumulated token counter (Seems like a duplicate of the conversation manager, and progress callbacks)
         self.accumulated_tokens = {"prompt": 0, "completion": 0, "total": 0}
 
         # Disable LiteLLM debugging
@@ -423,9 +430,9 @@ class PenguinCore:
             path.mkdir(parents=True, exist_ok=True)
         if not os.access(path, os.W_OK):
             raise PermissionError(f"No write access to {path}")
-
+        
     def register_progress_callback(self, callback: Callable[[int, int, Optional[str]], None]) -> None:
-        """Register a callback for progress updates during multi-step processing."""
+        """Registers a callback for progress updates during multi-step processing."""
         self.progress_callbacks.append(callback)
 
     def notify_progress(self, iteration: int, max_iterations: int, message: Optional[str] = None) -> None:
@@ -438,15 +445,14 @@ class PenguinCore:
         Reset conversation context and diagnostics.
         
         This method clears the current conversation state and resets all
-        tools and diagnostics. Use this between different conversation
-        sessions.
+        tools and diagnostics. Use this between different conversation sessions.
         """
         diagnostics.reset()
         self._interrupted = False
-        
+
         # Reset conversation via manager
         self.conversation_manager.reset()
-        
+
         # Reset tools
         if self.tool_manager:
             self.tool_manager.reset()
@@ -456,55 +462,55 @@ class PenguinCore:
     @property
     def total_tokens_used(self) -> int:
         """Get total tokens used via conversation manager"""
-        try:
+        try: 
             token_usage = self.conversation_manager.get_token_usage()
             return token_usage.get("total", 0)
         except Exception:
-            return 0
-
+            return 0 # why?
+        
     def get_token_usage(self) -> Dict[str, Dict[str, int]]:
         """Get token usage via conversation manager"""
-        try:
+        try: 
             usage = self.conversation_manager.get_token_usage()
             return {"main_model": {"prompt": usage.get("total", 0), "completion": 0, "total": usage.get("total", 0)}}
         except Exception:
             return {"main_model": {"prompt": 0, "completion": 0, "total": 0}}
-
+        
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt for both core and API client."""
         self.system_prompt = prompt
         if self.api_client:
             self.api_client.set_system_prompt(prompt)
-        self.conversation_manager.set_system_prompt(prompt)
+        self.conversation_manager.set_system_prompt(prompt) # wat
 
     def _check_interrupt(self) -> bool:
         """Check if execution has been interrupted"""
         return self._interrupted
-
+    
     async def process_message(
-        self,
-        message: str,
-        context: Optional[Dict[str, Any]] = None,
-        conversation_id: Optional[str] = None,
-        context_files: Optional[List[str]] = None,
-        streaming: bool = False
+            self,
+            message: str,
+            context: Optional[Dict[str, Any]] = None,
+            conversation_id: Optional[str] = None,
+            context_files: Optional[List[str]] = None,
+            streaming: bool = False
     ) -> str:
         """
         Process a message with optional conversation support.
         
-        Args:
+        Args: 
             message: The user message to process
             context: Optional additional context for processing
             conversation_id: Optional ID to continue an existing conversation
             context_files: Optional list of context files to load
-            streaming: Whether to use streaming mode for responses
+            streaming: Whether to stream the response
         """
-        try:
+        try: 
             # Add context if provided
             if context:
                 for key, value in context.items():
                     self.conversation_manager.add_context(f"{key}: {value}")
-                    
+
             # Process through conversation manager (handles context files)
             return await self.conversation_manager.process_message(
                 message=message,
@@ -512,7 +518,7 @@ class PenguinCore:
                 streaming=streaming,
                 context_files=context_files
             )
-            
+        
         except Exception as e:
             error_msg = f"Error processing message: {str(e)}"
             log_error(
@@ -524,40 +530,40 @@ class PenguinCore:
                 },
             )
             return error_msg
-
+        
     async def get_response(
-        self,
+        self, 
         current_iteration: Optional[int] = None,
         max_iterations: Optional[int] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
-        streaming: Optional[bool] = None
-    ) -> Tuple[Dict[str, Any], bool]:
+        streaming: Optional[bool] = None:
+    ) - > Tuple[Dict[str, Any], bool]:
         """
         Generate a response using the conversation context and execute any actions.
         
-        Args:
+        Args: 
             current_iteration: Current iteration number for multi-step processing
             max_iterations: Maximum iterations for multi-step processing
             stream_callback: Optional callback function for handling streaming output chunks.
-            streaming: Whether to use streaming mode for responses
+            streaming: Wheter to use streaming mode for responses
             
         Returns:
             Tuple of (response data, exit continuation flag)
         """
-        try:
+        try: 
             # Add iteration marker if in multi-step processing
-            if current_iteration is not None and max_iterations is not None:
+            if current_iteration is not None and max_iterations is not None: # why?
                 self.conversation_manager.conversation.add_iteration_marker(
                     current_iteration, max_iterations
                 )
             
             # Get formatted messages from conversation manager
             messages = self.conversation_manager.conversation.get_formatted_messages()
-            
+
             # Maximum retry attempts for empty responses
             max_retries = 2
             retry_count = 0
-            
+
             while retry_count <= max_retries:
                 # Start new stream, PASSING both streaming flag and callback
                 logger.debug(f"Calling API directly (Streaming: {streaming}, Callback provided: {stream_callback is not None})")
@@ -567,7 +573,6 @@ class PenguinCore:
                 assistant_response = None # Initialize
                 try:
                     # Directly await the call, passing the callback
-                    logger.debug(json.dumps(self.conversation_manager.conversation.get_formatted_messages(), indent=2))
                     assistant_response = await self.api_client.get_response(
                         messages=messages,
                         stream=streaming,
@@ -597,71 +602,71 @@ class PenguinCore:
                 else:
                     # We got a valid response, break the retry loop
                     break
-            
-                # Let's return it as is for now, core needs adjustment later if this is the case.
-    
-            # Process response and execute actions regardless of streaming mode
-            logger.debug(f"[Core.get_response] Processing response and executing actions. Streaming={streaming}")
 
-            # Add assistant response to conversation (only happens *after* the stream task is fully complete)
-            if assistant_response:
-                # Add assistant response to conversation
-                # Ensure we add the complete response, even if it was streamed.
-                # The APIClient should return the full string after streaming completes.
-                self.conversation_manager.conversation.add_assistant_message(assistant_response)
-            
-            # Parse actions and continue with action handling
-            actions = parse_action(assistant_response)
-            
-            # Check for task completion
-            exit_continuation = TASK_COMPLETION_PHRASE in assistant_response
-            
-            # Execute actions with interrupt checking
-            action_results = []
-            for action in actions:
-                if self._check_interrupt():
-                    action_results.append({
-                        "action": action.action_type.value,
-                        "result": "Action skipped due to interrupt",
-                        "status": "interrupted",
-                    })
-                    continue
+                    # Let's return it as is for now, core needs adjustment later if this is the case.
+                
+                # Process response and execute actions regardless of streaming mode
+                logger.debug(f"[Core.get_response] Processing response and executing actions. Streaming={streaming}")
 
-                try:
-                    result = await self.action_executor.execute_action(action)
-                    if result is not None:
-                        action_results.append({
-                            "action": action.action_type.value,
-                            "result": str(result),
-                            "status": "completed",
-                        })
-                        
-                        # Update conversation with action result
-                        self.conversation_manager.add_action_result(
-                            action_type=action.action_type.value,
-                            result=str(result),
-                            status="completed"
-                        )
-                except Exception as e:
-                    error_result = {
-                        "action": action.action_type.value,
-                        "result": f"Error executing action: {str(e)}",
-                        "status": "error",
-                    }
-                    action_results.append(error_result)
-                    self.conversation_manager.add_action_result(
-                        action_type=action.action_type.value,
-                        result=f"Error executing action: {str(e)}",
-                        status="error"
-                    )
-                    logger.error(f"Action execution error: {str(e)}")
+                # Add assistant response to conversation (only happens *after* the stream task is fully complete)
+                if assistant_response:
+                    # Add assistant response to conversation
+                    # Ensure we add the complete response, even if it was streamed.
+                    # The APIClient should return the full string after streaming completes.
+                    self.conversation_manager.conversation.add_assistant_message(assistant_response)
+
+                    # Parse actions and continue with action handling
+                    actions = parse_action(assistant_response)
+
+                    # Check for task completion
+                    exit_continuation = TASK_COMPLETION_PHRASE in assistant_response
+
+                    # Execute actions with interrupt checking
+                    action_results = []
+                    for action in actions:
+                        if self._check_interrupt():
+                            action_results.append({
+                                "action": action.action_type.value,
+                                "result": "Action skipped due to interrupt",
+                                "status": "interrupted",
+                            })
+                            continue
+
+                        try:
+                            result = await self.action_executor.execute_action(action)
+                            if result is not None:
+                                action_results.append({
+                                    "action": action.action_type.value,
+                                    "result": str(result),
+                                    "status": "completed",
+                                })
+                            
+                                # Update conversation with action result
+                                self.conversation_manager.add_action_results(
+                                    action_type=action.action_type.value,
+                                    result=str(result),
+                                    status="completed"
+                                )
+                        except Exception as e:
+                            error_result = {
+                                "action": action.action_type.value,
+                                "result": f"Error executing actions: {str(e)}",
+                                "status": "error",
+                            }
+                            action_results.append(error_result)
+                            self.conversation_manager.add_action_result(
+                                action_type=action.action_type.value,
+                                result=f"Error executing action: {str(e)}",
+                                status="error"
+                            )
+                            logger.error(f"Action execution error: {str(e)}")
 
             # Save the updated conversation state
             self.conversation_manager.save()
-            
+
             # Construct the final response payload
             full_response = {
-                "assistant_response": assistant_response,
+                "assistant_response": assistant_response, 
                 "actions": actions,
                 "action_results": action_results,
                 "metadata": {
@@ -670,11 +675,8 @@ class PenguinCore:
                 },
             }
 
-            logger.debug(f"ACTION RESULT TEST: System outputs visible to LLM: {[msg for msg in messages if 'system' in msg.get('role', '') and 'Action executed' in str(msg.get('content', ''))]}")
-            print(f"ACTION RESULT TEST: System outputs visible to LLM: {[msg for msg in messages if 'system' in msg.get('role', '') and 'Action executed' in str(msg.get('content', ''))]}")
-
             return full_response, exit_continuation
-
+    
         except Exception as e:
             error_data = log_error(
                 e,
@@ -686,10 +688,10 @@ class PenguinCore:
                 },
             )
             return {
-                "assistant_response": f"I apologize, but an error occurred: {str(e)}",
+                "assistant_response": f"I apologize, but an error occured: {str(e)}",
                 "action_results": [],
             }, False
-
+    
     async def execute_action(self, action) -> Dict[str, Any]:
         """Execute an action and return structured result"""
         try:
@@ -698,7 +700,7 @@ class PenguinCore:
             return {
                 "action": action.action_type.value,
                 "result": str(result) if result is not None else "",
-                "status": "completed",
+                 
             }
         except Exception as e:
             log_error(
@@ -714,37 +716,36 @@ class PenguinCore:
                 "result": f"Error: {str(e)}",
                 "status": "error",
             }
-
+        
     async def reset_state(self):
         """
         Reset the core state completely.
         
-        This method performs a more comprehensive reset than reset_context:
+        This methods performs a more comprehensive reset than reset_context:
         - Resets all conversation state
         - Clears interrupt flags
-        - Closes external resources like browser instances
+        - Close external resources like browser instances
         
-        Use this when switching between entirely different tasks or at
-        application shutdown.
+        Use this when switching between entirely different tasks or at application shutdown.
         """
         self.reset_context()
         self._interrupted = False
-        
-        # Close browser if it was initialized
+
+        # Close browser if it was initalized
         from penguin.tools.browser_tools import browser_manager
         asyncio.create_task(browser_manager.close())
-        
-    def list_context_files(self) -> List[Dict[str, Any]]:
-        """List all available context files"""
-        return self.conversation_manager.list_context_files()
 
+    def list_context_files(self) -> List[Dict[str, Any]]:
+        """List all available context files"""        
+        return self.conversation_manager.list_context_files()
+    
     @retry(
         stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
+        wait=wait_exponential(multipler=1, min=4, max=10),
         reraise=True,
         retry=retry_if_exception_type(Exception),
-        retry_error_callback=lambda retry_state: None 
-            if isinstance(retry_state.outcome.exception(), KeyboardInterrupt) 
+        retry_error_callback=lambda retry_state: None
+            if isinstance(retry_state.outcome.exception(), KeyboardInterrupt)
             else retry_state.outcome.exception()
     )
     async def process(
@@ -760,7 +761,7 @@ class PenguinCore:
         """
         Process a message with Penguin.
         
-        This method serves as the primary interface for external systems 
+        This method serves as a primary interface for external systems
         (CLI, API, etc.) to interact with Penguin's capabilities. It handles:
         - Input preprocessing
         - Conversation loading/management
@@ -775,7 +776,7 @@ class PenguinCore:
             context_files: Optional list of context files to load
             streaming: Whether to use streaming mode for responses.
             stream_callback: Optional callback function for handling streaming output chunks.
-            
+
         Returns:
             Dict containing assistant response and action results
         """
@@ -783,27 +784,27 @@ class PenguinCore:
         if isinstance(input_data, str):
             message = input_data
             image_path = None
-        else:
+        else: 
             message = input_data.get("text", "")
             image_path = input_data.get("image_path")
-            
+
         if not message and not image_path:
             return {"assistant_response": "No input provided", "action_results": []}
-            
+        
         try:
             # Load conversation if ID provided
             if conversation_id:
                 if not self.conversation_manager.load(conversation_id):
                     logger.warning(f"Failed to load conversation {conversation_id}")
-                    
+
             # Load context files if specified
             if context_files:
                 for file_path in context_files:
                     self.conversation_manager.load_context_file(file_path)
-            
+
             # Check if we're in run mode by looking at the core state
             in_run_mode = hasattr(self, '_continuous_mode') and self._continuous_mode
-            
+
             # Direct approach for single-step processing (formerly run mode / now default)
             self.conversation_manager.conversation.prepare_conversation(message, image_path)
             # Pass both streaming and stream_callback down
@@ -812,62 +813,53 @@ class PenguinCore:
                 streaming=streaming
             )
 
-            # Remove redundant summary of action_results (they're already returned in response):
             # Format action results for better visibility in future interactions
-            # if "action_results" in response and response["action_results"]:
-            #     action_summary_parts = []
-            #     for result in response["action_results"]:
-            #         if result.get("status") == "completed":
-            #             action_summary_parts.append(
-            #                 f"- Action '{result.get('action', 'unknown')}' completed. Result:\n```\n{result.get('result', 'No output')}\n```"
-            #             )
-            #         elif result.get("status") == "error":
-            #             action_summary_parts.append(
-            #                 f"- Action '{result.get('action', 'unknown')}' failed. Error:\n```\n{result.get('result', 'Unknown error')}\n```"
-            #             )
-            #     if action_summary_parts:
-            #         action_summary_message = "Action Results:\n" + "\n".join(action_summary_parts)
-            #         # Add this summary as a system message for the next LLM call
-            #         self.conversation_manager.conversation.add_message(
-            #             role="system",
-            #             content=action_summary_message,
-            #             category=MessageCategory.SYSTEM_OUTPUT,
-            #             metadata={"type": "action_summary"}
-            #         )
-            #         logger.debug(f"Added action summary message to conversation history.")
+            if "action_results" in response and response["action_results"]:
+                action_summary_parts = []
+                for result in response["action_results"]:
+                    if result.get("status") == "completed":
+                        action_summary_parts.append(
+                            f"- Action '{result.get('action', 'unknown')}' completed. Result:\n```\n{result.get('result', 'No output')}\n```" # Is this the culprit?
+                        )
+                    elif result.get("status") == "error":
+                        action_summary_parts.append(
+                            f"- Action '{result.get('action', 'unknown')}' failed. Error:\n```\n{result.get('result', 'Unknown error')}\n```"
+                        )
+                
+                if action_summary_parts:
+                    action_summary_message = "Action Results:\n" + "\n".join(action_summary_parts)
+                    # Add this summary as a system message for the next LLM call
+                    self.conversation_manager.conversation.add_message(
+                        role="system",
+                        content=action_summary_message,
+                        category=MessageCategory.SYSTEM_OUTPUT,
+                        metadata={"type": "action_summary"}
+                    )
+                    logger.debug(f"Action added summary message to conversation history")
 
             # Ensure conversation is saved after processing (including action results)
             self.conversation_manager.save()
 
             return response
-            # else:
-            #     # Standard multi-step processing for normal operation
-            #     return await self.multi_step_process(
-            #         message=message,
-            #         image_path=image_path,
-            #         context=context,
-            #         max_iterations=max_iterations,
-            #         streaming=streaming
-            #     )
-            
+            # Commented out multi-step processing for now
+
         except Exception as e:
-            error_msg = f"Error in process method: {str(e)}"
-            logger.error(f"{error_msg}\n{traceback.format_exc()}")
+            error_msg = f"Error processing input: {str(e)}"
+            logger.error(error_msg)
             log_error(e, context={"method": "process", "input_data": input_data})
             return {
                 "assistant_response": "I apologize, but an error occurred while processing your request.",
                 "action_results": [],
                 "error": str(e)
             }
-
+    
     async def multi_step_process(
-        self,
-        message: str,
-        image_path: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None,
-        max_iterations: int = 5,
-        streaming: Optional[bool] = None,
-        stream_callback: Optional[Callable[[str], None]] = None
+            self,
+            message: str,
+            image_path: Optional[str] = None,
+            context: Optional[Dict[str, Any]] = None,
+            max_iterations: int = 5,
+            stream_callback: Optional[Callable[[str], None]] = None
     ) -> Dict[str, Any]:
         """
         Process a message with multi-step reasoning and action execution.
@@ -877,22 +869,22 @@ class PenguinCore:
             if context:
                 for key, value in context.items():
                     self.conversation_manager.add_context(f"{key}: {value}")
-            
+
             final_response = None
             iterations = 0
             action_results_all = []
             last_assistant_response = "" # Keep track of the last actual response text
-            
+
             # Prepare conversation with initial user input (only done once)
             self.conversation_manager.conversation.prepare_conversation(message, image_path)
-            
+
             # Multi-step processing loop
-            while iterations < max_iterations:
+            while iterations < max_iterations: 
                 iterations += 1
-                
+
                 # Notify progress callbacks
                 self.notify_progress(iterations, max_iterations, f"Processing step {iterations}/{max_iterations}...")
-                
+
                 # Get the next response (which may contain actions)
                 response_data, exit_continuation = await self.get_response(
                     current_iteration=iterations,
@@ -900,45 +892,41 @@ class PenguinCore:
                     streaming=streaming,
                     stream_callback=stream_callback
                 )
-                
+
                 # Extract assistant response and action results
                 assistant_response = response_data.get("assistant_response", "")
                 current_action_results = response_data.get("action_results", [])
-                
+
                 # Store the actual assistant text, filtering out our specific message
                 if not assistant_response.startswith("[Model finished"):
                     last_assistant_response = assistant_response
                 
                 # Add successfully executed action results to overall collection
                 # and add a structured message to the conversation history
-                # if current_action_results:
-                #     action_summary_parts = []
-                #     for result in current_action_results:
-                #          action_results_all.append(result) # Keep track for final return
-                #          if result.get("status") == "completed":
-                #              action_summary_parts.append(
-                #                  f"- Action '{result.get('action', 'unknown')}' completed. Result:\n```\n{result.get('result', 'No output')}\n```"
-                #              )
-                #          elif result.get("status") == "error":
-                #              action_summary_parts.append(
-                #                  f"- Action '{result.get('action', 'unknown')}' failed. Error:\n```\n{result.get('result', 'Unknown error')}\n```"
-                #              )
-                #          # Add other statuses like 'interrupted' if needed
-                #          
-                #     if action_summary_parts:
-                #          action_summary_message = "Action Results:\n" + "\n".join(action_summary_parts)
-                #          # Add this summary as a system message for the *next* LLM call
-                #          self.conversation_manager.conversation.add_message(
-                #              role="system", # Or maybe a new 'tool_result' role? System seems ok for now.
-                #              content=action_summary_message,
-                #              category=MessageCategory.SYSTEM_OUTPUT, # Use existing category
-                #              metadata={"type": "action_summary"}
-                #          )
-                #          logger.debug(f"Added action summary message to conversation history.")
-
                 if current_action_results:
+                    action_summary_parts = []
                     for result in current_action_results:
-                        action_results_all.append(result)
+                        action_results_all.append(result) # Keep track for final return
+                        if result.get("status") == "completed":
+                            action_summary_parts.append(
+                                f"- Action '{result.get('action', 'unknown')}' complete. Result:\n```\n{result.get('result', 'No output')}\n```" # Is "no output" hardcoded?
+                            )
+                        elif result.get("status") == "error":
+                            action_summary_parts.append(
+                                f"- Action '{result.get('action', 'unknown')}' failed. Error:\n```\n{result.get('result', 'Unknown error')}\n```"
+                            )
+                        # Add other statuses like 'interrupted' if needed
+                        
+                    if action_summary_parts:
+                        action_summary_message = "Action Results:\n" + "\n".join(action_summary_parts)
+                        # Add this summary as a system message for the *next* LLM call # Hasn't this already been done like 3 times?
+                        self.conversation_manager.conversation.add_message(
+                            role="system",
+                            content=action_summary_message,
+                            category=MessageCategory.SYSTEM_OUTPUT,
+                            metadata={"type": "action_summary"}
+                        )
+                        logger.debug(f"Added action summary message to conversation history.")
 
                 # Check if we should break the loop:
                 # 1. If the assistant response contains the task completion phrase.
@@ -947,29 +935,29 @@ class PenguinCore:
                 # 4. If the exit_continuation flag is set by get_response (e.g., TASK_COMPLETED).
                 
                 # Check for actions in the *actual* assistant response, not the placeholder
-                actions_in_last_response = parse_action(last_assistant_response) 
-                
+                actions_in_last_response = parse_action(last_assistant_response)
+
                 # Also check if the current response IS the placeholder
                 is_placeholder_response = assistant_response.startswith("[Model finished")
 
                 if exit_continuation or iterations >= max_iterations or (not actions_in_last_response and not is_placeholder_response):
-                     # If the last response was the placeholder, we use the one before it
+                    # If the last response was the placeholder, we use the one before it
                     final_response = last_assistant_response if not is_placeholder_response else assistant_response
                     logger.info(f"Breaking multi-step loop. Reason: exit_continuation={exit_continuation}, iterations={iterations}>={max_iterations}, no_actions={not actions_in_last_response}, is_placeholder={is_placeholder_response}")
                     break
-                    
+
                 # If continuing, notify of next iteration
                 self.notify_progress(iterations, max_iterations, "Proceeding to next iteration...")
             
             # Save the final conversation state
             self.conversation_manager.save()
-            
+
             # Return the *last meaningful* assistant response and all action results
             return {
                 "assistant_response": final_response if final_response is not None else last_assistant_response, # Fallback to last known good response
                 "action_results": action_results_all
             }
-            
+        
         except Exception as e:
             error_msg = f"Error in multi_step_process method: {str(e)}"
             logger.error(f"{error_msg}\n{traceback.format_exc()}")
@@ -979,35 +967,32 @@ class PenguinCore:
                 "action_results": [],
                 "error": str(e)
             }
-
+        
     def list_conversations(self, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
         """
         List available conversations.
-        
+
         Args:
             limit: Maximum number of conversations to return
             offset: Offset for pagination
-            
+        
         Returns:
             List of conversations with metadata
         """
         return self.conversation_manager.list_conversations(limit=limit, offset=offset)
-        
+    
     def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         """
         Get a specific conversation by ID.
         
         Args:
             conversation_id: ID of the conversation to retrieve
-            
-        Returns:
-            Conversation data or None if not found
         """
         if self.conversation_manager.load(conversation_id):
             session = self.conversation_manager.get_current_session()
             if not session:
                 return None
-                
+            
             return {
                 "id": session.id,
                 "messages": [
@@ -1023,16 +1008,16 @@ class PenguinCore:
                 "metadata": session.metadata
             }
         return None
-        
+    
     def create_conversation(self) -> str:
         """
         Create a new conversation.
-        
+
         Returns:
             ID of the new conversation
         """
         return self.conversation_manager.create_new_conversation()
-        
+    
     def delete_conversation(self, conversation_id: str) -> bool:
         """
         Delete a conversation.
@@ -1044,13 +1029,11 @@ class PenguinCore:
             True if successful, False otherwise
         """
         return self.conversation_manager.delete_conversation(conversation_id)
-        
+
     def get_conversation_stats(self) -> Dict[str, Any]:
         """
         Get statistics about conversations.
         
-        Returns:
-            Dictionary with conversation statistics
         """
         return self.conversation_manager.get_session_stats()
 

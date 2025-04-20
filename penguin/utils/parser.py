@@ -100,11 +100,11 @@ def parse_action(content: str) -> List[CodeActAction]:
     
     # Check for common action tag patterns - using the enum values directly to ensure only valid actions are detected
     action_tag_pattern = "|".join([action_type.value for action_type in ActionType])
-    action_tag_regex = f"<({action_tag_pattern})>"
+    action_tag_regex = f"<({action_tag_pattern})>.*?</\\1>"  # Match complete tag pairs only
     
-    if not re.search(action_tag_regex, content, re.IGNORECASE):
-        # No action tags found, return empty list immediately
-        logger.debug("No action tags found in content")
+    if not re.search(action_tag_regex, content, re.DOTALL | re.IGNORECASE):
+        # No properly formed action tags found
+        logger.debug("No properly formed action tags found in content")
         return []
         
     # Extract only the AI's response part

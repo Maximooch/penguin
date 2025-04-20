@@ -302,6 +302,15 @@ class ConversationSystem:
         if not messages:
             messages.append({"role": "user", "content": "Placeholder message to prevent API errors"})
                 
+        # --- Add logging here ---
+        # try:
+        #     # Use json.dumps for potentially complex content structures
+        #     messages_json = json.dumps(messages, indent=2)
+        #     logger.debug(f"Formatted messages being sent to LLM:\n{messages_json}")
+        # except Exception as e:
+        #     logger.error(f"Error logging formatted messages: {e}") # Log formatting errors too
+        # --- End logging ---
+        
         return messages
         
     def save(self) -> bool:

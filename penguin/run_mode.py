@@ -678,4 +678,4 @@ class RunMode:
     #     if message:
     #         self._display_message(message)
     #     self._display_message(f"[DEBUG] Current continuous_mode state: {self.continuous_mode}")
-    #     self._shutdown_requested = True
+    #     self._shutdown_requested = Truelis

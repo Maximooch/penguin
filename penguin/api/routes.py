@@ -308,11 +308,12 @@ async def execute_task(
     """Execute a task in the background."""
     # Use background tasks to execute long-running tasks
     background_tasks.add_task(
-        core.start_run_mode,
+        core.start_run_mode, # This now accepts the callback
         name=request.name,
         description=request.description,
         continuous=request.continuous,
         time_limit=request.time_limit,
+        stream_event_callback=None # Pass None for the non-streaming endpoint
     )
     return {"status": "started"}
 
@@ -456,3 +457,114 @@ async def get_capabilities(core: PenguinCore = Depends(get_core)):
     except Exception as e:
         logger.error(f"Error getting capabilities: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- New WebSocket Endpoint for Run Mode Streaming ---
+@router.websocket("/api/v1/tasks/stream")
+async def stream_task(
+    websocket: WebSocket,
+    core: PenguinCore = Depends(get_core)
+):
+    """Stream run mode task execution events in real-time."""
+    await websocket.accept()
+    task_execution = None
+    run_mode_callback_task = None
+
+    # Define the callback function to send events over WebSocket
+    async def run_mode_event_callback(event_type: str, data: Dict[str, Any]):
+        nonlocal run_mode_callback_task
+        # Ensure this runs as a task to avoid blocking RunMode
+        run_mode_callback_task = asyncio.create_task(
+            websocket.send_json({"event": event_type, "data": data})
+        )
+        try:
+            await run_mode_callback_task
+        except asyncio.CancelledError:
+            logger.debug(f"Run mode callback send task cancelled for event: {event_type}")
+        except Exception as e:
+            logger.error(f"Error sending run mode event '{event_type}' via WebSocket: {e}")
+            # Optionally try to close WebSocket on send error
+            # await websocket.close(code=1011) # Internal error
+
+    try:
+        while True: # Keep connection open to handle potential multiple task requests?
+            # Or expect one task request per connection?
+            # Let's assume one task per connection for simplicity now.
+            data = await websocket.receive_json()
+            logger.info(f"Received run mode request: {data}")
+
+            # Extract task parameters from the received data
+            name = data.get("name")
+            description = data.get("description")
+            continuous = data.get("continuous", False)
+            time_limit = data.get("time_limit")
+            context = data.get("context") # Allow passing context
+
+            if not name:
+                await websocket.send_json({"event": "error", "data": {"message": "Task name is required."}})
+                await websocket.close(code=1008) # Policy violation
+                return # Exit after closing
+
+            # Start the run mode task in the background using core.start_run_mode
+            # Pass the WebSocket callback function
+            logger.info(f"Starting streaming run mode for task: {name}")
+            task_execution = asyncio.create_task(
+                core.start_run_mode(
+                    name=name,
+                    description=description,
+                    continuous=continuous,
+                    time_limit=time_limit,
+                    context=context,
+                    stream_event_callback=run_mode_event_callback
+                )
+            )
+
+            # Wait for the task execution to complete or error out
+            try:
+                await task_execution
+                logger.info(f"Run mode task '{name}' execution finished.")
+                # The 'complete' or 'error' event should be sent by RunMode itself
+                # via the callback before the task finishes.
+            except Exception as task_err:
+                logger.error(f"Error during run mode task '{name}' execution: {task_err}", exc_info=True)
+                # Send error via websocket if possible
+                if websocket.client_state == websocket.client_state.CONNECTED:
+                     await websocket.send_json({"event": "error", "data": {"message": f"Task execution failed: {task_err}"}})
+
+            # Once the task is done (completed, errored, interrupted), we can break the loop
+            # Assuming one task per connection.
+            break
+
+    except WebSocketDisconnect:
+        logger.info("Run mode WebSocket client disconnected")
+        # If client disconnects, we should try to interrupt the running task
+        if task_execution and not task_execution.done():
+            logger.warning(f"Client disconnected, attempting to interrupt task execution...")
+            # Need a way to signal interruption to RunMode/Core gracefully.
+            # For now, just cancel the asyncio task.
+            task_execution.cancel()
+    except Exception as e:
+        logger.error(f"Unhandled error in stream_task handler: {e}", exc_info=True)
+        # Try to send error to client if connection is still open
+        if websocket.client_state == websocket.client_state.CONNECTED:
+            try:
+                await websocket.send_json({"event": "error", "data": {"message": f"Server error: {e}"}})
+            except Exception as send_err:
+                logger.error(f"Failed to send final error to client: {send_err}")
+    finally:
+        logger.info("Cleaning up stream_task handler.")
+        # Ensure the task is cancelled if the handler exits unexpectedly
+        if task_execution and not task_execution.done():
+            logger.info("Cancelling run mode task due to handler exit.")
+            task_execution.cancel()
+            try:
+                await task_execution # Allow cancellation to propagate
+            except asyncio.CancelledError:
+                logger.debug("Run mode task cancellation confirmed.")
+            except Exception as final_cancel_err:
+                logger.error(f"Error during final task cancellation: {final_cancel_err}")
+        # Close WebSocket connection if it's still open
+        if websocket.client_state == websocket.client_state.CONNECTED:
+             await websocket.close()
+
+# --- End New WebSocket Endpoint ---
