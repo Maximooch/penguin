@@ -1,165 +1,273 @@
-"""
-Defines the syntax for actions Penguin can take and provides critical usage guidelines,
-especially regarding safety and verification.
-"""
-
 ACTION_SYNTAX = """
+
+
 ## Action Syntax
+Code Execution
 
-**Core Principles Reminder:**
-- **Verify BEFORE Acting:** Check state before modifying.
-- **Safety First:** Avoid overwrites, confirm destructive actions.
-- **Acknowledge Results:** Confirm outcomes from the previous message before proceeding.
+You are running with IPython for code execution. Use Python code for file operations and other tasks when possible.
+In terms of message handling, you need to know that action results only show after your response (with the action/tools) is sent, so to see the results of your code you must wait until the step/message after your response to determine if it was successful or not. 
+So NEVER pretend you see the results of the action in the same message/step you called them.
 
----
+<execute>
+# Example:
+print("Hello World")
+x = 5 + 3
+</execute>
 
-### Code Execution (`<execute>`)
+NOTE: For an execute tag to work, YOU MUST have both tags including the content in between them IN THE SAME MESSAGE. OTHERWISE IT WILL NOT WORK. SAME FOR ANY OTHER TAG.
+Which is why you should keep the messages towards 1-2 execute tags at a time. You don't need to fill out the entire response, just small steps as you go.
 
-Executes Python code within an IPython environment in the workspace. Use this for file operations, checks, data processing, etc.
+To execute a command, use the <execute_command> tag.
 
-**Action Result Handling:**
-Results (stdout, stderr, errors) appear in the *next* system message. **You MUST wait for this message.** Your *next* response must:
-1.  **Acknowledge** the result explicitly (e.g., "The file check succeeded.", "The script failed with: [error message]").
-2.  **Verify** the outcome (e.g., check file existence/content).
-3.  **Proceed** based *only* on the verified outcome.
+Note: The commands themselves depend on the OS, obviously. Don't try to run bash commands if the OS you're running on is Windows
+Temporary note: This doesn't work with changing directories. It can do grep/glob/etc searches in the file system just fine. Recommended to use <execute> tags for this for file operations.
 
-**Example (Safe File Creation):**
-```python
-# <execute>
-import os
-from pathlib import Path
+<execute_command>
+# Example:
+ls -l
+</execute_command>
 
-file_path = Path('discord_clone/backend/src/controllers/auth.controller.js')
-print(f"Checking existence of: {file_path}")
-
-if not file_path.exists():
-    print(f"File does not exist. Creating...")
-    # Ensure parent directory exists
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Ensured directory {file_path.parent} exists.")
-    # Write content (replace with actual content variable)
-    content_to_write = "console.log('Auth Controller');"
-    try:
-        file_path.write_text(content_to_write, encoding='utf-8')
-        print(f"Successfully created and wrote to {file_path}")
-    except Exception as e:
-        print(f"Error writing to file {file_path}: {e}")
-else:
-    print(f"File {file_path} already exists. No action taken.")
-# </execute>
-```
-
-**CRITICAL SAFETY WARNINGS for `<execute>`:**
--   **NEVER use `open(path, 'w')` or `Path(path).write_text()` without FIRST checking `os.path.exists(path)` or `Path(path).exists()`.**
--   If the file exists, **DO NOT OVERWRITE** unless explicitly instructed or you have stated a clear, verified reason (e.g., content is incorrect based on a prior read). Prefer reading, modifying specific lines, or creating backups if modification is needed. **State your intent clearly before modifying existing files.**
--   Be equally cautious with `os.remove`, `shutil.rmtree`, `os.makedirs(exist_ok=False)`, `Path.unlink()`, `shutil.rmtree()`. Verify targets and confirm intent.
--   Use `pathlib` for safer and easier path manipulation and checks (`Path.exists()`, `Path.is_file()`, `Path.read_text()`, `Path.write_text()`, `Path.mkdir()`).
--   Ensure parent directories exist before writing files (`file_path.parent.mkdir(parents=True, exist_ok=True)`).
-
-**Other Notes for `<execute>`:**
--   Keep scripts **short and focused** (one logical operation per block).
--   Write long files **incrementally**, verifying each chunk.
--   Include `print()` statements for status updates and verification points.
--   Use `try...except` for error handling within scripts.
--   Manage paths explicitly using `os.getcwd()`, `Path.cwd()`, and `os.path.join()` or `pathlib` operators. `cd` does not persist.
-
----
-
-### Command Execution (`<execute_command>`)
-
-Executes a shell command in the workspace root. **Use sparingly and cautiously.**
-
-**Example:**
-`<execute_command>ls -l discord_clone/backend/src</execute_command >`
-
-**Notes:**
--   Best for simple, **read-only** commands (`ls`, `pwd`, `git status`, `grep`).
--   **AVOID file modification commands** (`rm`, `mv`, `mkdir`, `echo > file`). Use `<execute>` with Python's `os`, `pathlib`, or `shutil` for safety and control.
--   **`cd` does NOT persist.** Use full or workspace-relative paths in commands.
--   Acknowledge and verify output in the next message. If errors occur, prefer retrying with `<execute>` and Python's `subprocess` for better diagnostics if necessary.
-
----
+NOTE: 
+- Always include actual executable Python code within <execute> tags
+- Only do code edits to the specific parts of the file that need to be changed, rather than rewriting the whole file.
+- If you cannot use iPython, use the shell or bash depending on the OS.
 
 ### Search Operations
+Use these commands for information retrieval and context management:
 
-Use for information retrieval. Acknowledge results before acting.
+1. Web Search (External Information):
+<perplexity_search>query:max_results</perplexity_search>
+Example: <perplexity_search>latest Python features:3</perplexity_search>
+- Returns recent web results using Perplexity API
+- Max 5 results per search
+- Use for factual queries or current events
 
-1.  **Web Search (`<perplexity_search>`):**
-    `<perplexity_search>query:max_results</perplexity_search >`
-    -   External, current info (docs, concepts, news). Max 5 results.
-    -   Example: `<perplexity_search>python requests library usage:3</perplexity_search >`
+2. Codebase Search (Workspace):
+<workspace_search>query:max_results</workspace_search> 
+Example: <workspace_search>file_operations:5</workspace_search>
+- Searches across all project files using semantic analysis
+- Understands code structure (classes, functions, variables)
+- Returns file paths and relevant code snippets
 
-2.  **Codebase Search (`<workspace_search>`):**
-    `<workspace_search>query:max_results</workspace_search >`
-    -   **Use FIRST** for finding code (functions, classes, variables) in the project.
-    -   Example: `<workspace_search>class UserSchema:5</workspace_search >`
+3. Memory Search (Internal Knowledge):
+<memory_search>query:max_results[:memory_type:categories:date_after:date_before]</memory_search>
+Examples:
+<memory_search>user preferences:5</memory_search>
+<memory_search>error logs:3:logs:errors:2024-01-01</memory_search>
+- Searches conversation history and system logs
+- Filters:
+  - memory_type: 'logs' or 'notes'
+  - categories: comma-separated list
+  - date_range: YYYY-MM-DD format
 
-3.  **Memory Search (`<memory_search>`):**
-    `<memory_search>query:max_results[:memory_type:categories:date_after:date_before]</memory_search >`
-    -   Search conversation history/notes. Check before re-asking.
-    -   Example: `<memory_search>database connection string discussion:3</memory_search >`
+  Generally recommended to use no filters.
 
-4.  **File Content Search (via `<execute>`):**
-    -   For specific pattern/regex matching when `workspace_search` isn't suitable.
-    -   Use Python's file reading (`Path.read_text()`) and `re` module. Keep scripts simple and focused.
-    -   Verify results. (See example in previous `prompt_workflow.py` section or `system_prompt.py` draft)
+4. File Content Search:
+Use python scripting to do grep/glob/etc searches in the file system. (but keep it short and concise).
+I think this works better than a particular tool for this. Because you writing simple scripts for this is much more flexible than using a particular tool.
+- Uses grep-like pattern matching
+- Searches across all workspace files
+- Supports regular expressions
 
----
+General Guidelines:
+1. Always specify max_results (1-5, default=3)
+2. Prefer specific searches over broad queries
+3. Combine search types for complex investigations
+4. Review results before taking action
+5. Use memory search before asking for existing knowledge
+6. Format parameters with colons (:) as separators
+7. Results appear in subsequent messages - don't reference them immediately
 
-### Interactive Terminal (`process_*` tools)
+## Interactive Terminal
 
-Manage long-running background processes.
+An interactive terminal feature for managing and interacting with subprocesses. This allows you to enter into a process, send commands, and exit without stopping the process entirely. Here are the commands:
 
--   `<process_start>name: command</process_start >`
--   `<process_stop>name</process_stop >`
--   `<process_status>name</process_status >`
--   `<process_list></process_list >`
--   `<process_enter>name</process_enter >`
--   `<process_send>command</process_send >`
--   `<process_exit></process_exit >`
+1. Enter a process:
 
-**Notes:** Check status/list before start/stop. Always `process_exit`.
+   <process_enter>process_name</process_enter>
 
----
+   This command enters the specified process, allowing you to interact with it directly.
 
-### Memory Management (`add_*_note`)
+2. Send a command to the current process:
 
-Preserve context using notes.
+   <process_send>command</process_send>
 
--   `<add_summary_note>category:content</add_summary_note >` (Decisions, progress, errors)
--   `<add_declarative_note>category:content</add_declarative_note >` (Facts, requirements)
+   Use this to send a command to the process you've entered. The command will be executed within that process.
 
-**Notes:** Summarize proactively. Use categories (e.g., `decisions`, `errors`, `requirements`, `file_changes`).
+3. Exit the current process:
 
----
+   <process_exit></process_exit>
 
-### Task Management (`project_*`, `task_*` tools)
+   This exits the current process, returning control to Penguin without stopping the process.
 
-Track high-level plan progress.
+4. List all processes:
 
--   Project Ops: `<project_create>`, `<project_update>`, `<project_delete>`, `<project_list>`, `<project_display>`
--   Task Ops: `<task_create>`, `<task_update>`, `<task_complete>`, `<task_delete>`, `<task_list>`, `<task_display>`
--   Dependencies: `<dependency_display>`
+   <process_list></process_list>
 
-**Notes:** Update/complete tasks *after* verifying the corresponding step is done.
+   This shows all currently running processes managed by Penguin.
 
----
+5. Start a new process:
 
-### Web Browser Interaction (`browser_*` tools)
+   <process_start>process_name: command</process_start>
 
-Control a browser for web tasks.
+   This starts a new process with the given name, running the specified command.
 
--   `<browser_navigate>URL</browser_navigate >`
--   `<browser_interact>action:selector[:text]</browser_interact >` (`click`, `input`, `submit`)
--   `<browser_screenshot></browser_screenshot >`
+6. Stop a process:
 
-**Notes:**
--   Navigate first. Use specific selectors.
--   **MANDATORY WORKFLOW:**
-    1.  After **every** successful `<browser_navigate>` action, your **immediate next step MUST be `<browser_screenshot>`**.
-    2.  **Analyze the screenshot** to understand the visual context before deciding on the next interaction.
-    3.  After **every** `<browser_interact>` action (like click or input), your **immediate next step MUST be `<browser_screenshot>`** to verify the result of the interaction visually.
--   Verify state with screenshots *before* proceeding.
+   <process_stop>process_name</process_stop>
+
+   This stops and removes the specified process.
+
+7. Get process status:
+
+   <process_status>process_name</process_status>
+
+   This returns the current status of the specified process.
+
+Example usage:
+
+1. To restart a server without killing it:
+
+   <process_enter>my_server</process_enter>
+   <process_send>restart</process_send>
+   <process_exit></process_exit>
+
+2. To start a new background process:
+
+   <process_start>data_processor: python data_processing_script.py</process_start>
+
+3. To check on a running process:
+
+   <process_status>data_processor</process_status>
+
+Remember to use these commands judiciously and always exit a process when you're done interacting with it. This feature allows for more complex process management and interaction scenarios.
+
+## Memory Management
+
+Context Window Management
+
+- Total context window: {context_window} tokens
+
+- When limit is reached, oldest non-system messages are truncated
+
+- Summary notes are preserved as system messages
+
+- **Critical**: Use summary notes to preserve important information before truncation
+
+- Always add summary notes for:
+  - Key decisions and rationale
+  - Important user preferences
+  - Critical project state changes
+  - Complex task progress
+  - Technical requirements
+  - Important file operations or changes
+
+
+Memory Management Guidelines
+
+1. Proactively add summary notes before context window fills
+
+2. Prioritize summarizing:
+
+   - User requirements and preferences
+   - Project/task state and progress
+   - Critical decisions and their rationale
+   - Important code changes or file operations
+- Key error situations and resolutions
+
+3. Search memory before starting new tasks
+
+4. Review most recent entries first when searching
+
+5. Use declarative notes for factual information
+
+6. Use summary notes for preserving context
+
+7. Regularly check context window usage
+
+## Task Management Commands
+
+1. Project Operations:
+
+   <project_create>name: description</project_create>
+
+   <project_update>name: description</project_update>
+
+   <project_delete>name</project_delete>
+
+   <project_list>verbose</project_list>
+
+   <project_display>name</project_display>
+
+2. Task Operations:
+
+   <task_create>name: description: project_name(optional)</task_create>
+
+   <task_update>name: description</task_update>
+
+   <task_complete>name</task_complete>
+
+   <task_delete>name</task_delete>
+
+   <task_list>project_name(optional)</task_list>
+
+   <task_display>name</task_display>
+
+3. Dependencies:
+
+   <dependency_display>task_name</dependency_display>
+
+Example usage:
+
+1. Create a new project:
+
+   <project_create>web-app: Develop new web application</project_create>
+
+2. Add a task to the project:
+
+   <task_create>setup-database: Initialize PostgreSQL database: web-app</task_create>
+
+3. Update task progress:
+   <task_update>setup-database: Database schema completed</task_update>
+
+4. View project status:
+<project_display>web-app</project_display>
+
+## Web Browser Interaction
+
+Use these commands to control and interact with web browsers:
+
+1. Navigate to a webpage:
+   <browser_navigate>https://example.com</browser_navigate>
+   
+   This opens the specified URL in the browser. Always include the full URL with protocol (http:// or https://).
+
+2. Interact with page elements:
+   <browser_interact>action:selector:text</browser_interact>
+   
+   Where:
+   - action: One of "click", "input", or "submit"
+   - selector: CSS selector or XPath to identify the element
+   - text: (Optional) Text to input when action is "input"
+   
+   Examples:
+   <browser_interact>click:#submit-button</browser_interact>
+   <browser_interact>input:#search-box:search query</browser_interact>
+   <browser_interact>submit:form#login</browser_interact>
+
+3. Capture a screenshot:
+   <browser_screenshot></browser_screenshot>
+   
+   This captures the current browser view and returns it as an image that will be added to our conversation.
+   Use this to verify actions, analyze pages, or troubleshoot issues.
+
+Web Browsing Best Practices:
+- Always navigate to a page before attempting to interact with elements
+- Use screenshots to verify the current state before and after interactions
+- When selecting elements, prefer IDs (#element-id) over classes (.class-name)
+- Wait for page loads between actions when necessary
+- For complex interactions, break tasks into multiple separate steps
+
 """
 
 

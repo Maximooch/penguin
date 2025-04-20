@@ -154,30 +154,36 @@ class APIClient:
         #     self.client_handler.assistant_manager.update_system_prompt(prompt)
 
     def _prepare_messages_with_system_prompt(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Injects the system prompt into the message list if applicable."""
-        processed_messages = messages[:] # Create a copy
+        """
+        Inject the system prompt while preserving other system‑role
+        messages (e.g. action results, iteration markers).
+        """
+        if not self.system_prompt:
+            return messages[:]          # nothing to do
 
-        if self.system_prompt:
-            # Check if handler supports system messages natively (relevant for native adapters)
-            handler_supports_system = False
-            if self.model_config.client_preference == 'native' and hasattr(self.client_handler, 'supports_system_messages'):
-                 handler_supports_system = self.client_handler.supports_system_messages()
+        processed = []
+        prompt_already_present = False
 
-            # LiteLLM generally expects system message in the list for most providers
-            # Native adapters might handle it differently (e.g., dedicated parameter)
+        for msg in messages:
+            if msg.get("role") == "system":
+                if msg.get("content") == self.system_prompt:
+                    # Drop existing duplicate of the global prompt
+                    prompt_already_present = True
+                else:
+                    # KEEP other system messages (action results, etc.)
+                    processed.append(msg)
+            else:
+                processed.append(msg)
 
-            # For simplicity, let's standardize on adding it to the message list here.
-            # Native adapters that *don't* support it in the list might need special handling
-            # in their format_messages method, or we remove this logic and pass it separately.
-            # Let's assume adding to the list is the most common way.
+        # Ensure the global system prompt is in slot‑0
+        if not prompt_already_present:
+            processed.insert(0, {"role": "system", "content": self.system_prompt})
+        else:
+            # If some other message grabbed index‑0, still enforce the prompt first
+            if processed and processed[0].get("content") != self.system_prompt:
+                processed.insert(0, {"role": "system", "content": self.system_prompt})
 
-            # Remove existing system message(s) first
-            processed_messages = [msg for msg in processed_messages if msg.get("role") != "system"]
-            # Add our system prompt at the beginning
-            processed_messages.insert(0, {"role": "system", "content": self.system_prompt})
-            self.logger.debug("Injected system prompt into messages.")
-
-        return processed_messages
+        return processed
 
     async def get_response(
         self,
