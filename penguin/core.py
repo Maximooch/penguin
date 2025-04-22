@@ -385,12 +385,22 @@ class PenguinCore:
             conversation_system=self.conversation_manager.conversation
         )
 
-        # Initialize core systems (commented out during refactoring)
-        # TODO: Cognition system is temporarily disabled while refactoring conversation architecture
-        # self.cognition = CognitionSystem(
-        #     api_client=self.api_client, 
-        #     diagnostics=diagnostics
-        # )
+        # ------------------- Engine Initialization -------------------
+        try:
+            from penguin.engine import Engine, EngineSettings, TokenBudgetStop, WallClockStop  # type: ignore
+            engine_settings = EngineSettings()
+            default_stops = [TokenBudgetStop()]
+            self.engine = Engine(
+                engine_settings,
+                self.conversation_manager,
+                self.api_client,
+                self.tool_manager,
+                self.action_executor,
+                stop_conditions=default_stops,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to initialize Engine layer (fallback to legacy core processing): {e}")
+            self.engine = None
 
         # State
         self.initialized = True
@@ -446,12 +456,12 @@ class PenguinCore:
         
         # Reset conversation via manager
         self.conversation_manager.reset()
-        
+
         # Reset tools
-        if self.tool_manager:
-            self.tool_manager.reset()
-        if self.action_executor:
-            self.action_executor.reset()
+        # if self.tool_manager: # ToolManager does not have a reset method currently
+        #     self.tool_manager.reset()
+        # if self.action_executor: # ActionExecutor does not have a reset method currently
+        #     self.action_executor.reset()
 
     @property
     def total_tokens_used(self) -> int:
@@ -801,54 +811,23 @@ class PenguinCore:
                 for file_path in context_files:
                     self.conversation_manager.load_context_file(file_path)
             
-            # Check if we're in run mode by looking at the core state
-            in_run_mode = hasattr(self, '_continuous_mode') and self._continuous_mode
-            
-            # Direct approach for single-step processing (formerly run mode / now default)
-            self.conversation_manager.conversation.prepare_conversation(message, image_path)
-            # Pass both streaming and stream_callback down
-            response, _ = await self.get_response(
-                stream_callback=stream_callback,
-                streaming=streaming
-            )
+            # Use new Engine layer if available
+            if self.engine:
+                # Note: Engine will call prepare_conversation internally
+                response = await self.engine.run_single_turn(message, streaming=streaming)
+            else:
+                # ---------- Legacy path (fallback) ----------
+                # Prepare conversation and call get_response directly
+                self.conversation_manager.conversation.prepare_conversation(message, image_path)
+                response, _ = await self.get_response(
+                    stream_callback=stream_callback,
+                    streaming=streaming
+                )
 
-            # Remove redundant summary of action_results (they're already returned in response):
-            # Format action results for better visibility in future interactions
-            # if "action_results" in response and response["action_results"]:
-            #     action_summary_parts = []
-            #     for result in response["action_results"]:
-            #         if result.get("status") == "completed":
-            #             action_summary_parts.append(
-            #                 f"- Action '{result.get('action', 'unknown')}' completed. Result:\n```\n{result.get('result', 'No output')}\n```"
-            #             )
-            #         elif result.get("status") == "error":
-            #             action_summary_parts.append(
-            #                 f"- Action '{result.get('action', 'unknown')}' failed. Error:\n```\n{result.get('result', 'Unknown error')}\n```"
-            #             )
-            #     if action_summary_parts:
-            #         action_summary_message = "Action Results:\n" + "\n".join(action_summary_parts)
-            #         # Add this summary as a system message for the next LLM call
-            #         self.conversation_manager.conversation.add_message(
-            #             role="system",
-            #             content=action_summary_message,
-            #             category=MessageCategory.SYSTEM_OUTPUT,
-            #             metadata={"type": "action_summary"}
-            #         )
-            #         logger.debug(f"Added action summary message to conversation history.")
-
-            # Ensure conversation is saved after processing (including action results)
+            # Ensure conversation is saved after processing
             self.conversation_manager.save()
 
             return response
-            # else:
-            #     # Standard multi-step processing for normal operation
-            #     return await self.multi_step_process(
-            #         message=message,
-            #         image_path=image_path,
-            #         context=context,
-            #         max_iterations=max_iterations,
-            #         streaming=streaming
-            #     )
             
         except Exception as e:
             error_msg = f"Error in process method: {str(e)}"
