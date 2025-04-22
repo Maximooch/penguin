@@ -53,6 +53,7 @@ const sidebars: SidebarsConfig = {
       label: 'API Reference',
       items: [
         'api_reference/core',
+        'api_reference/engine',
         'api_reference/chat_manager',
         'api_reference/tool_manager',
         'api_reference/api_client',
