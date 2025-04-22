@@ -479,6 +479,25 @@ class RunMode:
                 - due_date: Optional due date
         """
         try:
+            # If Engine exists, delegate the multi‑step loop to it
+            if hasattr(self.core, "engine") and self.core.engine:
+                task_prompt_full = (
+                    f"Execute task: {name}\n"
+                    f"Description: {description or f'Complete the task: {name}'}\n"
+                    "Respond with TASK_COMPLETED when finished."
+                )
+                if context:
+                    task_prompt_full += f"\nContext: {json.dumps(context, indent=2)}"
+
+                assistant_response = await self.core.engine.run_task(task_prompt_full, max_iterations=self.max_iterations)
+
+                # Display final assistant response
+                self._display_message(assistant_response, "assistant")
+
+                return {"status": "completed", "message": assistant_response}
+
+            # ---------------- Legacy loop (will be removed later) ----------------
+
             iteration = 0
             self._display_message(f"Starting task: {name}")
 
