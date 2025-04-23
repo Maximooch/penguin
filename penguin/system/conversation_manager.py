@@ -102,6 +102,17 @@ class ConversationManager:
         if loaded_files:
             logger.info(f"Loaded {len(loaded_files)} core context files")
         
+        # -----------------------------------------------------------
+        # Snapshot / Restore support (Phase 3)
+        # -----------------------------------------------------------
+        try:
+            from penguin.system.snapshot_manager import SnapshotManager  # local import to avoid circulars
+            snapshots_path = Path(self.workspace_path) / "snapshots" / "snapshots.db"
+            self.snapshot_manager: Optional[SnapshotManager] = SnapshotManager(snapshots_path)
+        except Exception as e:
+            logger.warning(f"Failed to initialise SnapshotManager – snapshot/restore disabled: {e}")
+            self.snapshot_manager = None
+        
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt."""
         self.conversation.set_system_prompt(prompt)
@@ -565,3 +576,58 @@ class ConversationManager:
                 self.save()
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Snapshot / Branching API (delegates to SnapshotManager)
+    # ------------------------------------------------------------------
+
+    def create_snapshot(self, *, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """Serialise current conversation + persist snapshot. Returns snapshot_id."""
+        if not self.snapshot_manager:
+            logger.warning("SnapshotManager unavailable – cannot snapshot")
+            return None
+        payload = json.dumps(self.conversation.session.to_dict(), ensure_ascii=False)
+        parent_id = self.conversation.session.metadata.get("snapshot_parent")
+        snap_id = self.snapshot_manager.snapshot(payload, parent_id=parent_id, meta=meta)
+        # Track lineage inside session metadata so subsequent branches know where they came from
+        self.conversation.session.metadata["snapshot_id"] = snap_id
+        self.conversation.session.metadata["snapshot_parent"] = parent_id
+        return snap_id
+
+    def restore_snapshot(self, snapshot_id: str) -> bool:
+        """Hydrate conversation from *snapshot_id*."""
+        if not self.snapshot_manager:
+            logger.warning("SnapshotManager unavailable – cannot restore snapshot")
+            return False
+        payload = self.snapshot_manager.restore(snapshot_id)
+        if payload is None:
+            return False
+        try:
+            data = json.loads(payload)
+            session = Session.from_dict(data)
+            self.conversation.session = session
+            self.session_manager.current_session = session
+            return True
+        except Exception as e:
+            logger.error(f"Failed to hydrate session from snapshot {snapshot_id}: {e}")
+            return False
+
+    def branch_from_snapshot(self, snapshot_id: str, *, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """Fork a snapshot & load the branched copy as current session."""
+        if not self.snapshot_manager:
+            logger.warning("SnapshotManager unavailable – cannot branch snapshot")
+            return None
+        try:
+            new_id, payload = self.snapshot_manager.branch_from(snapshot_id, meta=meta)
+            session = Session.from_dict(json.loads(payload))
+            # Update lineage in new session so future branches chain correctly
+            session.metadata["snapshot_parent"] = snapshot_id
+            session.metadata["snapshot_id"] = new_id
+            # Register new session with SessionManager so it persists separately on save()
+            self.session_manager.current_session = session
+            self.conversation.session = session
+            self.conversation._modified = True
+            return new_id
+        except Exception as e:
+            logger.error(f"Failed branching from snapshot {snapshot_id}: {e}")
+            return None
