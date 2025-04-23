@@ -748,6 +748,22 @@ class PenguinCore:
         """List all available context files"""
         return self.conversation_manager.list_context_files()
 
+    # ------------------------------------------------------------------
+    # Snapshot / Restore wrappers (Phase 3 integration)
+    # ------------------------------------------------------------------
+
+    def create_snapshot(self, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """Persist current conversation state and return snapshot_id."""
+        return self.conversation_manager.create_snapshot(meta=meta)
+
+    def restore_snapshot(self, snapshot_id: str) -> bool:
+        """Load conversation from snapshot; returns success bool."""
+        return self.conversation_manager.restore_snapshot(snapshot_id)
+
+    def branch_from_snapshot(self, snapshot_id: str, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """Fork a snapshot into a new branch and load it."""
+        return self.conversation_manager.branch_from_snapshot(snapshot_id, meta=meta)
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
