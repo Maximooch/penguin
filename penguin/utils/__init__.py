@@ -5,6 +5,7 @@ from .logs import log_event, setup_logger
 from .path_utils import normalize_path
 from .process_manager import ProcessManager
 from .timing import track_startup_time
+from .events import EventBus, TaskEvent, EventPriority
 
 __all__ = [
     "diagnostics",
@@ -18,4 +19,7 @@ __all__ = [
     "track_startup_time",
     "error_handler",
     "setup_global_error_handling",
+    "EventBus",
+    "TaskEvent",
+    "EventPriority",
 ]

@@ -251,6 +251,22 @@ class APIClient:
             # <<< ADD LOGGING HERE >>>
             effective_callback = stream_callback if use_streaming else None
             self.logger.debug(f"[APIClient:{request_id_api}] Calling {type(self.client_handler).__name__}.get_response. Streaming: {use_streaming}. Callback Provided: {effective_callback is not None}")
+            
+            # Ensure the callback is async if provided
+            if effective_callback and not asyncio.iscoroutinefunction(effective_callback):
+                # Convert to async function if it's not already
+                original_callback = effective_callback
+                self.logger.debug(f"[APIClient:{request_id_api}] Converting non-async callback to async")
+                
+                async def async_callback_wrapper(chunk: str):
+                    # Call the original callback in an asyncio-friendly way
+                    try:
+                        original_callback(chunk)
+                    except Exception as e:
+                        self.logger.error(f"[APIClient:{request_id_api}] Error in callback: {e}")
+                
+                effective_callback = async_callback_wrapper
+            
             if effective_callback:
                  self.logger.debug(f"[APIClient:{request_id_api}] Callback object details: {effective_callback}")
             # <<< END LOGGING >>>
@@ -260,7 +276,7 @@ class APIClient:
                 max_tokens=max_tokens or self.model_config.max_tokens,
                 temperature=temperature if temperature is not None else self.model_config.temperature,
                 stream=use_streaming,
-                stream_callback=effective_callback, # Pass the potentially None callback
+                stream_callback=effective_callback, # Pass the potentially wrapped async callback
             )
 
             # If streaming, the callback handled output. Return minimal response.

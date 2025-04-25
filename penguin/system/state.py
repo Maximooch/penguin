@@ -24,6 +24,29 @@ class SystemState(Enum):
     SHUTDOWN = "shutdown"
 
 
+class TaskState(Enum):
+    """State machine for tasks in the Penguin system."""
+    PENDING = "pending"     # Task is created but not started
+    ACTIVE = "active"       # Task is currently in progress
+    PAUSED = "paused"       # Task execution is temporarily paused, can be resumed
+    COMPLETED = "completed" # Task is successfully completed
+    FAILED = "failed"       # Task execution failed
+    BLOCKED = "blocked"     # Task is blocked by dependencies
+    
+    @classmethod
+    def get_valid_transitions(cls, current_state):
+        """Returns valid state transitions from the current state."""
+        transitions = {
+            cls.PENDING: [cls.ACTIVE, cls.FAILED, cls.BLOCKED],
+            cls.ACTIVE: [cls.PAUSED, cls.COMPLETED, cls.FAILED, cls.BLOCKED],
+            cls.PAUSED: [cls.ACTIVE, cls.FAILED, cls.BLOCKED],
+            cls.COMPLETED: [],  # Terminal state
+            cls.FAILED: [cls.PENDING],  # Allow retry from failed
+            cls.BLOCKED: [cls.PENDING, cls.ACTIVE] # When dependencies resolved
+        }
+        return transitions.get(current_state, [])
+
+
 class MessageCategory(Enum):
     """Categories of messages for priority-based handling in the context window."""
     SYSTEM = 1    # System instructions, never truncated

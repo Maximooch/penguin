@@ -76,7 +76,79 @@ class RunMode:
         self.CONTINUOUS_COMPLETION_PHRASE = CONTINUOUS_COMPLETION_PHRASE
         self.EMERGENCY_STOP_PHRASE = EMERGENCY_STOP_PHRASE
         self.NEED_USER_CLARIFICATION_PHRASE = NEED_USER_CLARIFICATION_PHRASE
-        self._shutdown_requested = False
+        self._shutdown_requested = False        
+        # Setup event handling if available
+        self._setup_event_handlers()
+
+    def _setup_event_handlers(self):
+        """Set up event handlers for task events if available."""
+        try:
+            from penguin.utils.events import EventBus, TaskEvent, EventPriority
+            
+            self.event_bus = EventBus.get_instance()
+            
+            # Subscribe to task events
+            self.event_bus.subscribe(
+                TaskEvent.STARTED.value,
+                self._on_task_started,
+                EventPriority.NORMAL
+            )
+            self.event_bus.subscribe(
+                TaskEvent.PROGRESSED.value,
+                self._on_task_progress,
+                EventPriority.NORMAL
+            )
+            self.event_bus.subscribe(
+                TaskEvent.COMPLETED.value,
+                self._on_task_completed,
+                EventPriority.NORMAL
+            )
+            self.event_bus.subscribe(
+                TaskEvent.NEEDS_INPUT.value,
+                self._on_task_needs_input,
+                EventPriority.HIGH  # Higher priority for user input
+            )
+        except (ImportError, AttributeError):
+            # EventBus not available yet, continue with normal operation
+            logger.warning("(RunMode) EventBus not available yet, continue with normal operation")
+            print("(RunMode) EventBus not available yet, continue with normal operation")
+            pass
+    
+    def _on_task_started(self, data):
+        """Handle task started event."""
+        task_prompt = data.get("task_prompt", "Unknown task")
+        max_iterations = data.get("max_iterations", self.max_iterations)
+        
+        # Display start message
+        self._display_message(f"Starting task execution (max {max_iterations} iterations)")
+    
+    def _on_task_progress(self, data):
+        """Handle task progress event."""
+        iteration = data.get("iteration", 0)
+        max_iterations = data.get("max_iterations", self.max_iterations)
+        progress = data.get("progress", 0)
+        
+        # Display progress message
+        self._display_message(f"Iteration {iteration}/{max_iterations} - Progress: {progress}%")
+    
+    def _on_task_completed(self, data):
+        """Handle task completed event."""
+        iteration = data.get("iteration", 0)
+        
+        # Display completion message
+        self._display_message(f"Task completed after {iteration} iterations")
+    
+    def _on_task_needs_input(self, data):
+        """Handle task needs input event."""
+        prompt = data.get("prompt", "Task needs input")
+        
+        # Display input request
+        self._display_message(f"Task needs user input: {prompt}", "error")
+        
+        # Here we would prompt the user for input
+        # For now, just display a message
+        # TODO: Implement user input functionality
+        self._display_message("User input functionality will be implemented in a future update")
 
     def _display_message(self, message_text: str, message_type: str = "system") -> None:
         """Display formatted message with consistent styling"""
@@ -464,8 +536,8 @@ class RunMode:
         context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Execute a task iteratively, allowing conversation state to build.
-
+        Execute a task using the Engine's run_task method.
+        
         Args:
             name: Name of the task
             description: Task description
@@ -479,217 +551,309 @@ class RunMode:
                 - due_date: Optional due date
         """
         try:
+            # Log details to help with debugging
+            logger.debug(f"Starting _execute_task for task: {name}")
+            logger.debug(f"Description: {description}")
+            logger.debug(f"Context: {context}")
+            
             # If Engine exists, delegate the multi‑step loop to it
             if hasattr(self.core, "engine") and self.core.engine:
+                logger.debug("Using enhanced Engine.run_task method")
+                
                 task_prompt_full = (
                     f"Execute task: {name}\n"
                     f"Description: {description or f'Complete the task: {name}'}\n"
                     "Respond with TASK_COMPLETED when finished."
                 )
+                
+                # Add context as formatted text if provided
                 if context:
-                    task_prompt_full += f"\nContext: {json.dumps(context, indent=2)}"
-
-                assistant_response = await self.core.engine.run_task(task_prompt_full, max_iterations=self.max_iterations)
-
-                # Display final assistant response
-                self._display_message(assistant_response, "assistant")
-
-                return {"status": "completed", "message": assistant_response}
-
-            # ---------------- Legacy loop (will be removed later) ----------------
-
-            iteration = 0
-            self._display_message(f"Starting task: {name}")
-
-            # Provide default description if none exists
-            task_description = description or f"Complete the task: {name}"
-
-            # Create task prompt ONCE outside the loop
-            task_prompt = (
-                f"Execute task: {name}\n"
-                f"Description: {task_description}\n"
-                "Respond with TASK_COMPLETED when finished."
-            )
-            if context:
-                task_prompt += f"\nContext: {json.dumps(context, indent=2)}"
-
-            # Add to conversation ONCE before looping
-            self.core.conversation_manager.conversation.prepare_conversation(task_prompt)
-
-            while iteration < self.max_iterations:
-                if self._interrupted:
-                    return {"status": "interrupted", "message": "Task execution interrupted by user"}
-
-                # Use get_response which builds on existing conversation
-                response_data, exit_flag = await self.core.get_response(
-                    current_iteration=iteration + 1, max_iterations=self.max_iterations
-                )
-
-                # Handle response (similar to existing code, just using response_data)
-                if not response_data.get("assistant_response"):
-                    # Error handling for empty responses...
-                    error_info = {
-                        "iteration": iteration,
-                        "timestamp": datetime.now().isoformat(),
-                        "response_data": response_data, # Log the structure received
-                    }
-                    logger.error(f"Empty response in task execution", extra={"debug_info": error_info}) # TODO:Include traceback
-                    # Ensure response_data is a dict before modifying
-                    if not isinstance(response_data, dict):
-                         response_data = {}
-                    response_data["assistant_response"] = (
-                        "I apologize, but I encountered an issue generating a response. "
-                        "Let me try to continue with the task."
-                    )
-                    # Make sure action_results exists if we created response_data
-                    if "action_results" not in response_data:
-                        response_data["action_results"] = []
-
-
-                # Display Penguin's thoughts
-                self._display_message(response_data["assistant_response"], "assistant")
-
-                # Display action results
-                for result in response_data.get("action_results", []):
-                    self._display_message(
-                        f"{result.get('action', 'Unknown Action')}: {result.get('result', 'No result text')}",
-                        "output" if result.get("status") == "completed" else "error",
-                    )
-
-                # Check completion phrases
-                response_text = str(response_data.get("assistant_response", ""))
-
-                if self.EMERGENCY_STOP_PHRASE in response_text:
-                    self._display_message("Emergency stop requested")
-                    return {
-                        "status": "error",
-                        "message": "Emergency stop requested by task",
-                    }
-
-                # Check for continuous completion phrase
-                if self.CONTINUOUS_COMPLETION_PHRASE in response_text:
-                    self._display_message(
-                        "[DEBUG] Continuous mode completion requested during task execution"
-                    )
-                    self.continuous_mode = False
-                    self.core._continuous_mode = False # Also update core's flag
-                    return {
-                        "status": "completed",
-                        "message": "Continuous mode session completed",
-                        "completion_type": "continuous",
-                    }
-                
-                # Check for need user clarification phrase
-                if self.NEED_USER_CLARIFICATION_PHRASE in response_text:
-                     self._display_message("User clarification requested, pausing task.")
-                     self._shutdown_requested = True # Use the shutdown mechanism to pause
-                     return {
-                         "status": "paused",
-                         "message": "Task paused, awaiting user input.",
-                         "completion_type": "clarification_needed",
-                     }
-
-                # Check for TASK_COMPLETION_PHRASE (or the exit_flag from get_response)
-                # --- MODIFIED CHECK FOR ROBUSTNESS ---
-                # Normalize response text for checking
-                normalized_response = response_text.strip().upper().replace("*", "") 
-                
-                # Check against configured phrase (and maybe the common variation)
-                # Ensure configured phrase is also upper case for comparison
-                task_completed_found = (
-                    self.TASK_COMPLETION_PHRASE.upper() in normalized_response or 
-                    "TASK_COMPLETE" in normalized_response # Check the common LLM variation too
-                )
-
-                if task_completed_found or exit_flag:
-                # --- END MODIFIED CHECK ---
-                    self._display_message(f"[DEBUG] Task completion detected: {name}")
-
-                    # (Keep existing logic for handling user_specified vs managed tasks)
-                    if name == "user_specified_task" or name == "determine_next_step" or context.get("id") == "user_specified":
-                         self._display_message(f"Task completed: {name}", "output")
-                         self._display_message("Pausing for user input - use /run or provide instructions", "system")
-                         # Ensure shutdown is requested to exit the continuous loop if this was the only task
-                         self._shutdown_requested = True
-                         return {
-                             "status": "completed",
-                             "message": f"Task '{name}' completed successfully. Awaiting further instructions.",
-                             "completion_type": "user_specified",
-                         }
+                    context_str = "\n".join(f"{k}: {v}" for k, v in context.items() if k not in ["metadata"])
+                    if context_str:
+                        task_prompt_full += f"\nContext: {context_str}"
                     
-                    # For registered tasks, try to mark as complete in task manager
-                    result = self.core.project_manager.complete_task(name)
+                    # Add metadata as a separate section if it exists
+                    if "metadata" in context and context["metadata"]:
+                        metadata_str = "\n".join(f"{k}: {v}" for k, v in context["metadata"].items())
+                        if metadata_str:
+                            task_prompt_full += f"\nMetadata: {metadata_str}"
+                
+                # Set up completion callback to handle UI updates
+                async def on_task_completion(result: Dict[str, Any]) -> None:
+                    """Handle task completion from Engine."""
+                    status = result.get("status", "unknown")
+                    if status == "completed":
+                        self._display_message(f"Task '{name}' completed successfully")
+                    elif status == "error":
+                        self._display_message(f"Task failed: {result.get('error', 'Unknown error')}", "error")
+                    elif status == "stopped":
+                        self._display_message("Task execution stopped", "system")
+                    elif status == "iterations_exceeded":
+                        self._display_message("Maximum iterations reached without completion", "system")
+                
+                # Create a message callback to display real-time messages
+                async def message_callback(message: str, message_type: str) -> None:
+                    """Display messages in real-time during task execution."""
+                    self._display_message(message, message_type)
+                
+                # Set up custom completion phrases to check for
+                completion_phrases = [
+                    self.TASK_COMPLETION_PHRASE,
+                    "TASK_COMPLETE",  # Common variation
+                    self.CONTINUOUS_COMPLETION_PHRASE
+                ]
+                
+                # Extract task_id from context if available
+                task_id = context.get("id") if context else None
+                if task_id == "user_specified":
+                    task_id = f"user_task_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                
+                self._display_message(f"Starting task execution: {name}")
+                
+                # Call the enhanced run_task method with message_callback
+                result = await self.core.engine.run_task(
+                    task_prompt=task_prompt_full,
+                    max_iterations=self.max_iterations,
+                    task_context=context,
+                    task_id=task_id,
+                    task_name=name,
+                    completion_phrases=completion_phrases,
+                    on_completion=on_task_completion,
+                    enable_events=True,
+                    message_callback=message_callback
+                )
+                
+                # No need to display assistant_response here as it's already displayed via callback
+                # Just show the final status
+                self._display_message(f"Task completed with status: {result.get('status')}")
+                
+                # Convert engine result to compatible return format
+                completion_type = self._determine_completion_type(name, context, result)
+                
+                return {
+                    "status": result.get("status", "unknown"),
+                    "message": result.get("assistant_response", ""),
+                    "completion_type": completion_type,
+                    "metadata": context.get("metadata", {}) if context else {},
+                    "iterations": result.get("iterations", 0),
+                    "execution_time": result.get("execution_time", 0),
+                }
+            
+            else:
+                logger.warning("Engine not available, falling back to legacy implementation")
+                
+                iteration = 0
+                self._display_message(f"Starting task: {name}")
 
-                    # (Start existing completion logic)
-                    self._display_message("[DEBUG] Completion state check:")
-                    self._display_message(
-                        f"[DEBUG] - RunMode continuous_mode: {self.continuous_mode}"
-                    )
-                    self._display_message(
-                        f"[DEBUG] - Core continuous_mode: {getattr(self.core, '_continuous_mode', 'N/A')}"
-                    )
-                    self._display_message(
-                        f"[DEBUG] - Result status: {result['status']}"
-                    )
-                    self._display_message(
-                        f"[DEBUG] - Result metadata: {result.get('metadata', {})}"
+                # Provide default description if none exists
+                task_description = description or f"Complete the task: {name}"
+
+                # Create task prompt ONCE outside the loop
+                task_prompt = (
+                    f"Execute task: {name}\n"
+                    f"Description: {task_description}\n"
+                    "Respond with TASK_COMPLETED when finished."
+                )
+                if context:
+                    task_prompt += f"\nContext: {json.dumps(context, indent=2)}"
+
+                # Add to conversation ONCE before looping
+                self.core.conversation_manager.conversation.prepare_conversation(task_prompt)
+
+                while iteration < self.max_iterations:
+                    if self._interrupted:
+                        return {"status": "interrupted", "message": "Task execution interrupted by user"}
+
+                    # Use get_response which builds on existing conversation
+                    response_data, exit_flag = await self.core.get_response(
+                        current_iteration=iteration + 1, max_iterations=self.max_iterations
                     )
 
-                    if result["status"] == "completed":
-                        self._display_message(f"Task completed: {name}", "output")
+                    # Handle response (similar to existing code, just using response_data)
+                    if not response_data.get("assistant_response"):
+                        # Error handling for empty responses...
+                        error_info = {
+                            "iteration": iteration,
+                            "timestamp": datetime.now().isoformat(),
+                            "response_data": response_data, # Log the structure received
+                        }
+                        logger.error(f"Empty response in task execution", extra={"debug_info": error_info}) # TODO:Include traceback
+                        # Ensure response_data is a dict before modifying
+                        if not isinstance(response_data, dict):
+                             response_data = {}
+                        response_data["assistant_response"] = (
+                            "I apologize, but I encountered an issue generating a response. "
+                            "Let me try to continue with the task."
+                        )
+                        # Make sure action_results exists if we created response_data
+                        if "action_results" not in response_data:
+                            response_data["action_results"] = []
+
+
+                    # Display Penguin's thoughts
+                    self._display_message(response_data["assistant_response"], "assistant")
+
+                    # Display action results
+                    for result in response_data.get("action_results", []):
+                        self._display_message(
+                            f"{result.get('action', 'Unknown Action')}: {result.get('result', 'No result text')}",
+                            "output" if result.get("status") == "completed" else "error",
+                        )
+
+                    # Check completion phrases
+                    response_text = str(response_data.get("assistant_response", ""))
+
+                    if self.EMERGENCY_STOP_PHRASE in response_text:
+                        self._display_message("Emergency stop requested")
+                        return {
+                            "status": "error",
+                            "message": "Emergency stop requested by task",
+                        }
+
+                    # Check for continuous completion phrase
+                    if self.CONTINUOUS_COMPLETION_PHRASE in response_text:
+                        self._display_message(
+                            "[DEBUG] Continuous mode completion requested during task execution"
+                        )
+                        self.continuous_mode = False
+                        self.core._continuous_mode = False # Also update core's flag
                         return {
                             "status": "completed",
-                            "message": f"Task '{name}' completed successfully",
-                            "completion_type": "task",
-                            "metadata": result.get("metadata", {}),
+                            "message": "Continuous mode session completed",
+                            "completion_type": "continuous",
                         }
-                    else:
-                        # If task completion fails but it's likely a user-specified task not in the system
-                        if "No task found with name" in result.get("result", ""):
+                    
+                    # Check for need user clarification phrase
+                    if self.NEED_USER_CLARIFICATION_PHRASE in response_text:
+                         self._display_message("User clarification requested, pausing task.")
+                         self._shutdown_requested = True # Use the shutdown mechanism to pause
+                         return {
+                             "status": "paused",
+                             "message": "Task paused, awaiting user input.",
+                             "completion_type": "clarification_needed",
+                         }
+
+                    # Check for TASK_COMPLETION_PHRASE (or the exit_flag from get_response)
+                    # --- MODIFIED CHECK FOR ROBUSTNESS ---
+                    # Normalize response text for checking
+                    normalized_response = response_text.strip().upper().replace("*", "") 
+                    
+                    # Check against configured phrase (and maybe the common variation)
+                    # Ensure configured phrase is also upper case for comparison
+                    task_completed_found = (
+                        self.TASK_COMPLETION_PHRASE.upper() in normalized_response or 
+                        "TASK_COMPLETE" in normalized_response # Check the common LLM variation too
+                    )
+
+                    if task_completed_found or exit_flag:
+                    # --- END MODIFIED CHECK ---
+                        self._display_message(f"[DEBUG] Task completion detected: {name}")
+
+                        # (Keep existing logic for handling user_specified vs managed tasks)
+                        if name == "user_specified_task" or name == "determine_next_step" or context.get("id") == "user_specified":
+                             self._display_message(f"Task completed: {name}", "output")
+                             self._display_message("Pausing for user input - use /run or provide instructions", "system")
+                             # Ensure shutdown is requested to exit the continuous loop if this was the only task
+                             self._shutdown_requested = True
+                             return {
+                                 "status": "completed",
+                                 "message": f"Task '{name}' completed successfully. Awaiting further instructions.",
+                                 "completion_type": "user_specified",
+                             }
+                        
+                        # For registered tasks, try to mark as complete in task manager
+                        result = self.core.project_manager.complete_task(name)
+
+                        # (Start existing completion logic)
+                        self._display_message("[DEBUG] Completion state check:")
+                        self._display_message(
+                            f"[DEBUG] - RunMode continuous_mode: {self.continuous_mode}"
+                        )
+                        self._display_message(
+                            f"[DEBUG] - Core continuous_mode: {getattr(self.core, '_continuous_mode', 'N/A')}"
+                        )
+                        self._display_message(
+                            f"[DEBUG] - Result status: {result['status']}"
+                        )
+                        self._display_message(
+                            f"[DEBUG] - Result metadata: {result.get('metadata', {})}"
+                        )
+
+                        if result["status"] == "completed":
                             self._display_message(f"Task completed: {name}", "output")
-                            self._display_message("Pausing for user input - use /run or provide instructions", "system")
-                            # Ensure shutdown is requested
-                            self._shutdown_requested = True
                             return {
                                 "status": "completed",
-                                "message": f"Task '{name}' completed successfully. Awaiting further instructions.",
-                                "completion_type": "user_specified",
+                                "message": f"Task '{name}' completed successfully",
+                                "completion_type": "task",
+                                "metadata": result.get("metadata", {}),
                             }
-                        # Otherwise it's a real error
-                        error_msg = f"Task completion error: {result.get('result', 'Unknown error')}"
-                        self._display_message(f"[DEBUG] {error_msg}")
-                        return {"status": "error", "message": error_msg}
-                    # (End existing completion logic)
+                        else:
+                            # If task completion fails but it's likely a user-specified task not in the system
+                            if "No task found with name" in result.get("result", ""):
+                                self._display_message(f"Task completed: {name}", "output")
+                                self._display_message("Pausing for user input - use /run or provide instructions", "system")
+                                # Ensure shutdown is requested
+                                self._shutdown_requested = True
+                                return {
+                                    "status": "completed",
+                                    "message": f"Task '{name}' completed successfully. Awaiting further instructions.",
+                                    "completion_type": "user_specified",
+                                }
+                            # Otherwise it's a real error
+                            error_msg = f"Task completion error: {result.get('result', 'Unknown error')}"
+                            self._display_message(f"[DEBUG] {error_msg}")
+                            return {"status": "error", "message": error_msg}
+                        # (End existing completion logic)
 
 
-                # Update iteration counter
-                iteration += 1
+                    # Update iteration counter
+                    iteration += 1
 
-                # (health check and time limit logic remains the same)
-                if datetime.now() - self.last_health_check > self.health_check_interval:
-                    self._display_message("[DEBUG] Performing health check")
-                    self.last_health_check = datetime.now()
+                    # (health check and time limit logic remains the same)
+                    if datetime.now() - self.last_health_check > self.health_check_interval:
+                        self._display_message("[DEBUG] Performing health check")
+                        self.last_health_check = datetime.now()
 
-                # Check time limit if set
-                if (
-                    self.time_limit
-                    and datetime.now() - self.start_time > self.time_limit
-                ):
-                    return {
-                        "status": "error",
-                        "message": "Task execution time limit exceeded",
-                    }
+                    # Check time limit if set
+                    if (
+                        self.time_limit
+                        and datetime.now() - self.start_time > self.time_limit
+                    ):
+                        return {
+                            "status": "error",
+                            "message": "Task execution time limit exceeded",
+                        }
 
-            # Max iterations reached
-            return {
-                "status": "error",
-                "message": f"Max iterations ({self.max_iterations}) reached without completion",
-            }
+                # Max iterations reached
+                return {
+                    "status": "error",
+                    "message": f"Max iterations ({self.max_iterations}) reached without completion",
+                }
 
         except Exception as e:
-            self._display_message(f"[DEBUG] Error in task execution: {str(e)}")
-            self._display_message(f"[DEBUG] Traceback:\n{traceback.format_exc()}")
-            return {"status": "error", "message": str(e)}
+            error_msg = f"Error in task execution: {str(e)}"
+            logger.error(error_msg)
+            logger.error(f"Error type: {type(e).__name__}")
+            logger.exception("Traceback for task execution error:")
+            self._display_message(error_msg, "error")
+            return {"status": "error", "message": error_msg}
+
+    def _determine_completion_type(self, name: str, context: Optional[Dict[str, Any]], result: Dict[str, Any]) -> str:
+        """Determine the completion type based on the task and result."""
+        # Check for user-specified tasks
+        if name == "user_specified_task" or name == "determine_next_step":
+            return "user_specified"
+        
+        if context and context.get("id") == "user_specified":
+            return "user_specified"
+        
+        # Check if CONTINUOUS_COMPLETION_PHRASE was detected
+        response = result.get("assistant_response", "")
+        if self.CONTINUOUS_COMPLETION_PHRASE in response:
+            return "continuous"
+            
+        # Standard task completion
+        return "task"
 
     # def _request_shutdown(self, message: str = None):
     #     """Request graceful shutdown with optional message"""
