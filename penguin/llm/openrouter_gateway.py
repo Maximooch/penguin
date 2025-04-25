@@ -239,9 +239,13 @@ class OpenRouterGateway:
                         full_response_content += content_delta
                         if stream_callback:
                             try:
-                                self.logger.debug("[OpenRouterGateway] Awaiting stream_callback...")
-                                await stream_callback(content_delta) # Call callback with the text chunk
-                                self.logger.debug("[OpenRouterGateway] stream_callback awaited successfully.")
+                                # Only send non-empty content to the callback
+                                if content_delta.strip():
+                                    self.logger.debug("[OpenRouterGateway] Awaiting stream_callback...")
+                                    await stream_callback(content_delta) # Call callback with the text chunk
+                                    self.logger.debug("[OpenRouterGateway] stream_callback awaited successfully.")
+                                else:
+                                    self.logger.debug("[OpenRouterGateway] Skipping empty content_delta in stream callback")
                             except Exception as cb_err:
                                 self.logger.error(f"[OpenRouterGateway] Error occurred during stream_callback execution: {cb_err}", exc_info=True)
                         else:
@@ -305,9 +309,11 @@ class OpenRouterGateway:
                          
                      # Check finish reason?
                      finish_reason = completion.choices[0].finish_reason if completion.choices else "unknown"
-                     # Return empty string instead of the placeholder
+                     provider = getattr(completion, 'provider', 'Unknown')
+                     
+                     # Return a placeholder message instead of empty string for debugging
                      self.logger.warning(f"Model finished (reason: {finish_reason}) but returned no content and generated 0 completion tokens.")
-                     return ""
+                     return f"[Model finished with no content from {provider}. Please try again or try with a different model.]"
 
                 self.logger.debug(f"Non-streaming response received. Content length: {len(full_response_content or '')}")
                 return full_response_content or "" # Ensure string return

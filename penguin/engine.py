@@ -13,13 +13,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import asyncio
 import multiprocessing as mp
-from typing import Any, Callable, Coroutine, List, Optional, Sequence
+from typing import Any, Callable, Coroutine, List, Optional, Sequence, Dict, Awaitable
 
 from penguin.system.conversation_manager import ConversationManager  # type: ignore
 from penguin.utils.parser import parse_action, CodeActAction, ActionExecutor  # type: ignore
 from penguin.system.state import MessageCategory  # type: ignore
 from penguin.llm.api_client import APIClient  # type: ignore
 from penguin.tools import ToolManager  # type: ignore
+from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -123,24 +125,202 @@ class Engine:
         async for chunk in self._llm_stream(prompt):
             yield chunk
 
-    async def run_task(self, task_prompt: str, max_iterations: Optional[int] = None) -> str:
-        """Multi‑step loop – exits on stop‑condition or completion phrase."""
+    async def run_task(
+        self, 
+        task_prompt: str, 
+        max_iterations: Optional[int] = None,
+        task_context: Optional[Dict[str, Any]] = None,
+        task_id: Optional[str] = None,
+        task_name: Optional[str] = None,
+        completion_phrases: Optional[List[str]] = None,
+        on_completion: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
+        enable_events: bool = True,
+        message_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
+    ) -> Dict[str, Any]:
+        """
+        Multi‑step reasoning loop with comprehensive task handling.
+        
+        Args:
+            task_prompt: The prompt for the task
+            max_iterations: Maximum number of iterations (overrides settings default)
+            task_context: Additional context for the task (metadata, environment, etc.)
+            task_id: Optional task ID for tracking and events
+            task_name: Optional task name for display and logging
+            completion_phrases: Additional completion phrases to check for
+            on_completion: Optional callback when task completes
+            enable_events: Whether to publish events (defaults to True)
+            message_callback: Optional callback to display messages during execution (message, type)
+            
+        Returns:
+            Dictionary with task execution results including:
+            - assistant_response: The final response from the assistant
+            - iterations: Number of iterations performed
+            - status: Task status (completed, iterations_exceeded, stopped)
+            - action_results: Results of any actions executed
+        """
         max_iters = max_iterations or self.settings.max_iterations_default
         self.current_iteration = 0
         self.start_time = datetime.utcnow()
-        self.conversation_manager.conversation.prepare_conversation(task_prompt) # Does run_task start a new conversation, or go off the existing one? Can this be configured?
+        self.conversation_manager.conversation.prepare_conversation(task_prompt)
+        
+        # Prepare task metadata
+        task_metadata = {
+            "id": task_id or f"task_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
+            "name": task_name or "Unnamed Task",
+            "context": task_context or {},
+            "max_iterations": max_iters,
+            "start_time": self.start_time.isoformat(),
+        }
+        
+        # Get standard and custom completion phrases
+        standard_phrase = TASK_COMPLETION_PHRASE
+        all_completion_phrases = [standard_phrase]
+        if completion_phrases:
+            all_completion_phrases.extend(completion_phrases)
+        
+        # Store action results from all iterations
+        all_action_results = []
+
+        # Publish task start event if EventBus is available
+        if enable_events:
+            try:
+                from penguin.utils.events import EventBus, TaskEvent
+                event_bus = EventBus.get_instance()
+                await event_bus.publish(TaskEvent.STARTED.value, {
+                    "task_id": task_metadata["id"],
+                    "task_name": task_metadata["name"],
+                    "task_prompt": task_prompt,
+                    "max_iterations": max_iters,
+                    "context": task_context
+                })
+            except (ImportError, AttributeError):
+                # EventBus not available yet, continue with normal operation
+                logger.warning("EventBus not available, continuing without event publishing")
 
         last_response = ""
-        while self.current_iteration < max_iters:
-            self.current_iteration += 1
-            logger.debug("Engine iteration %s", self.current_iteration)
+        completion_status = "iterations_exceeded"  # Default status
+        
+        try:
+            # Main execution loop
+            while self.current_iteration < max_iters:
+                self.current_iteration += 1
+                logger.debug("Engine iteration %s", self.current_iteration)
 
-            response_data = await self._llm_step()
-            last_response = response_data.get("assistant_response", "")
+                # Get the next response via LLM
+                response_data = await self._llm_step()
+                last_response = response_data.get("assistant_response", "")
+                
+                # Call the message callback if provided
+                if message_callback and last_response:
+                    await message_callback(last_response, "assistant")
+                
+                # Add any action results from this step
+                iteration_results = response_data.get("action_results", [])
+                if iteration_results:
+                    all_action_results.extend(iteration_results)
+                    
+                    # Display action results via callback
+                    if message_callback:
+                        for result in iteration_results:
+                            if isinstance(result, dict):
+                                result_type = "output" if result.get("status") == "completed" else "error"
+                                result_msg = f"{result.get('action', 'Unknown')}: {result.get('result', 'No output')}"
+                            else:
+                                # Handle string results
+                                result_type = "output"
+                                result_msg = str(result)
+                            await message_callback(result_msg, result_type)
 
-            if await self._check_stop():
-                break
-        return last_response
+                # Publish progress event
+                if enable_events:
+                    try:
+                        from penguin.utils.events import EventBus, TaskEvent
+                        event_bus = EventBus.get_instance()
+                        await event_bus.publish(TaskEvent.PROGRESSED.value, {
+                            "task_id": task_metadata["id"],
+                            "task_name": task_metadata["name"],
+                            "iteration": self.current_iteration,
+                            "max_iterations": max_iters,
+                            "response": last_response,
+                            "progress": min(100, int(100 * self.current_iteration / max_iters))
+                        })
+                    except (ImportError, AttributeError):
+                        pass
+
+                # Check for any stop conditions
+                if await self._check_stop():
+                    completion_status = "stopped"
+                    break
+                
+                # Check for completion phrases
+                completed = any(phrase in last_response for phrase in all_completion_phrases)
+                if completed:
+                    completion_status = "completed"
+                    logger.debug(f"Task completion detected. Found one of these phrases: {all_completion_phrases}")
+                    
+                    # Publish completion event
+                    if enable_events:
+                        try:
+                            from penguin.utils.events import EventBus, TaskEvent
+                            event_bus = EventBus.get_instance()
+                            await event_bus.publish(TaskEvent.COMPLETED.value, {
+                                "task_id": task_metadata["id"],
+                                "task_name": task_metadata["name"],
+                                "response": last_response,
+                                "iteration": self.current_iteration,
+                                "max_iterations": max_iters,
+                                "context": task_context
+                            })
+                        except (ImportError, AttributeError):
+                            pass
+                            
+                    break
+        
+        except Exception as e:
+            # Handle any execution errors
+            logger.error(f"Error executing task: {str(e)}")
+            completion_status = "error"
+            
+            # Call message callback if provided
+            if message_callback:
+                await message_callback(f"Error executing task: {str(e)}", "error")
+            
+            # Publish error event
+            if enable_events:
+                try:
+                    from penguin.utils.events import EventBus, TaskEvent
+                    event_bus = EventBus.get_instance()
+                    await event_bus.publish(TaskEvent.FAILED.value, {
+                        "task_id": task_metadata["id"],
+                        "task_name": task_metadata["name"],
+                        "error": str(e),
+                        "iteration": self.current_iteration,
+                        "max_iterations": max_iters
+                    })
+                except (ImportError, AttributeError):
+                    # EventBus not available yet, continue with normal operation
+                    logger.warning("(Engine) EventBus not available yet, continue with normal operation")
+                    print("(Engine) EventBus not available yet, continue with normal operation")
+                    pass
+
+        # Prepare result structure
+        result = {
+            "assistant_response": last_response,
+            "iterations": self.current_iteration,
+            "status": completion_status,
+            "action_results": all_action_results,
+            "task": task_metadata,
+            "execution_time": (datetime.utcnow() - self.start_time).total_seconds()
+        }
+        
+        # Call completion callback if provided
+        if on_completion:
+            try:
+                await on_completion(result)
+            except Exception as e:
+                logger.error(f"Error in completion callback: {str(e)}")
+        
+        return result
 
     # ------------------------------------------------------------------
     # Child‑engine spawning (stub – process mode)
