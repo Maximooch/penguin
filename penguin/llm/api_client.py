@@ -29,7 +29,9 @@ def load_config() -> Dict[str, Any]:
     """
     Load the configuration from the config.yml file.
 
-    This function reads the config.yml file located two directories up from the current file.
+    This function reads the config.yml file located one directory up 
+    (expected to be penguin/penguin/) from the current file's directory 
+    (penguin/penguin/llm/).
     It uses the yaml library to parse the YAML content into a Python dictionary.
 
     Returns:
@@ -40,9 +42,23 @@ def load_config() -> Dict[str, Any]:
         FileNotFoundError: If the config.yml file is not found.
         yaml.YAMLError: If there's an error parsing the YAML content.
     """
-    config_path = Path(__file__).parent.parent.parent / "config.yml"
-    with open(config_path) as config_file:
-        return yaml.safe_load(config_file)
+    # Path(__file__) is .../llm/api_client.py
+    # .parent is .../llm/
+    # .parent is .../ (the penguin/penguin/ directory)
+    config_path = Path(__file__).parent.parent / "config.yml" # Updated path
+    if not config_path.exists():
+        logger.error(f"Config file not found at expected location: {config_path}")
+        raise FileNotFoundError(f"Config file not found at {config_path}")
+        
+    try:
+        with open(config_path) as config_file:
+            return yaml.safe_load(config_file)
+    except yaml.YAMLError as e:
+        logger.error(f"Error parsing config file {config_path}: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error loading config file {config_path}: {e}")
+        raise
 
 
 # Load the model configurations from the config file
