@@ -31,6 +31,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 @dataclass
+class ResourceSnapshot:
+    """Represents resource usage at a point in time."""
+    tokens_prompt: int = 0
+    tokens_completion: int = 0
+    wall_clock_sec: float = 0.0
+    # Future: cpu_sec, mem_mb, network_kb, docker_exit_code, …
+
+@dataclass
 class EngineSettings:
     """Immutable configuration for an Engine instance."""
 

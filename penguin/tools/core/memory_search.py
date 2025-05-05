@@ -54,10 +54,10 @@ class MemorySearcher:
         # Ensure directory exists
         os.makedirs(persist_directory, exist_ok=True)
 
-        # Define memory paths relative to workspace
+        # Define memory paths relative to workspace (Updated: conversations instead of logs)
         self.memory_paths = {
-            "logs": os.path.join(WORKSPACE_PATH, "logs"),
             "notes": os.path.join(WORKSPACE_PATH, "notes"),
+            "conversations": os.path.join(WORKSPACE_PATH, "conversations"), # Added conversations path
         }
 
         # Initialize ChromaDB client with persistent storage
@@ -69,14 +69,14 @@ class MemorySearcher:
                 ),
             )
 
-            # Initialize collections
-            self.logs_collection = self.client.get_or_create_collection(
-                name="logs", metadata={"description": "Log entries and history"}
-            )
-
+            # Initialize collections (Updated: conversations instead of logs)
             self.notes_collection = self.client.get_or_create_collection(
                 name="notes",
                 metadata={"description": "Declarative notes and documentation"},
+            )
+            self.conversations_collection = self.client.get_or_create_collection(
+                name="conversations", # New collection for conversations
+                metadata={"description": "User conversation history"}
             )
 
             # Set up logging
@@ -182,8 +182,18 @@ class MemorySearcher:
 
             # Add to appropriate collection
             collection = (
-                self.logs_collection if memory_type == "logs" else self.notes_collection
+                self.conversations_collection if memory_type == "conversations"
+                else self.notes_collection # Default to notes if not conversations
             )
+            # Ensure we only add to notes or conversations explicitly
+            if memory_type == "notes":
+                collection = self.notes_collection
+            elif memory_type == "conversations":
+                collection = self.conversations_collection
+            else:
+                self.logger.warning(f"Attempting to index memory with unhandled type '{memory_type}'. Skipping.")
+                return # Don't index if type isn't notes or conversations
+
             collection.add(
                 documents=[content],
                 metadatas=[metadata],
@@ -222,7 +232,10 @@ class MemorySearcher:
                     continue
 
                 for filename in os.listdir(base_path):
-                    if filename.endswith((".md", ".txt")):
+                    # Index markdown, text, and JSON files (especially for conversations)
+                    # We previously skipped .json files which are the default format for conversation logs.
+                    # This prevented the memory search from finding any conversation history.
+                    if filename.endswith((".md", ".txt", ".json")):
                         file_path = os.path.join(base_path, filename)
 
                         # Check if file needs indexing
@@ -230,6 +243,10 @@ class MemorySearcher:
                             skipped_count += 1
                             new_metadata[file_path] = index_metadata[file_path]
                             continue
+
+                        # Provide progress feedback occasionally
+                        if indexed_count == 0:
+                            print("Memory indexing in progress…")
 
                         # Index the file
                         with open(file_path, encoding="utf-8") as f:
@@ -248,6 +265,12 @@ class MemorySearcher:
                             self.index_memory(content, memory_type, metadata)
                             new_metadata[file_path] = self._get_file_metadata(file_path)
                             indexed_count += 1
+
+                            # Show a progress update every 50 indexed files to avoid flooding stdout
+                            if verbose := True:  # Future-proof: toggle this to False to silence
+                                if indexed_count % 50 == 0:
+                                    rel_path = os.path.relpath(file_path, WORKSPACE_PATH)
+                                    print(f"  • Indexed {indexed_count} files so far (latest: {rel_path})")
 
             # Save updated metadata
             self._save_index_metadata(new_metadata)
@@ -286,35 +309,51 @@ class MemorySearcher:
             all_results = []
             collections = []
 
-            # Get embeddings for query
-            response = self.ollama_client.embeddings(
-                model="nomic-embed-text", prompt=query
-            )
-            query_embedding = response["embedding"]
+            # Get embeddings for query if Ollama is available
+            query_embedding = None
+            if self.use_embeddings:
+                try:
+                    response = self.ollama_client.embeddings(
+                        model="nomic-embed-text", prompt=query
+                    )
+                    query_embedding = response["embedding"]
+                except Exception as e:
+                    # If we fail to get embeddings for any reason, log and gracefully fall back
+                    self.logger.warning(
+                        f"Falling back to text search due to embedding failure: {str(e)}"
+                    )
+                    query_embedding = None
 
             # Determine which collections to search
-            if memory_type == "logs":
-                collections = [self.logs_collection]
-            elif memory_type == "notes":
+            if memory_type == "notes":
                 collections = [self.notes_collection]
+            elif memory_type == "conversations":
+                collections = [self.conversations_collection]
             else:
-                collections = [self.logs_collection, self.notes_collection]
+                # If no specific type or an unknown type, search both notes and conversations
+                collections = [self.notes_collection, self.conversations_collection]
 
             # Build where clause
             where = self._build_where_clause(categories, date_after, date_before)
 
             # Search each collection
             for collection in collections:
-                results = collection.query(
-                    query_embeddings=[query_embedding],
-                    n_results=max_results,
-                    where=where,
-                    include=[
-                        "metadatas",
-                        "documents",
-                        "distances",
-                    ],  # Specify exactly what we want
-                )
+                if query_embedding is not None:
+                    # Vector based search
+                    results = collection.query(
+                        query_embeddings=[query_embedding],
+                        n_results=max_results,
+                        where=where,
+                        include=["metadatas", "documents", "distances"],
+                    )
+                else:
+                    # Fallback to simple text search using query_texts
+                    results = collection.query(
+                        query_texts=[query],
+                        n_results=max_results,
+                        where=where,
+                        include=["metadatas", "documents", "distances"],
+                    )
 
                 # Check if we got any results
                 if not results["documents"] or not results["documents"][0]:
@@ -596,7 +635,7 @@ if __name__ == "__main__":
                 break
 
             memory_type = (
-                input("Filter by type (logs/notes, Enter to skip): ").strip() or None
+                input("Filter by type (notes/conversations, Enter to skip): ").strip() or None
             )
             categories_input = input(
                 "Filter by categories (comma-separated, Enter to skip): "

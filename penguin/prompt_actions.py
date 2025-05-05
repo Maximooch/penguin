@@ -95,7 +95,6 @@ Use for information retrieval. Acknowledge results before acting.
     -   Example: `<workspace_search>class UserSchema:5</workspace_search >`
 
 3.  **Memory Search (`<memory_search>`):**
-    `<memory_search>query:max_results[:memory_type:categories:date_after:date_before]</memory_search >`
     -   Search conversation history/notes. Check before re-asking.
     -   Example: `<memory_search>database connection string discussion:3</memory_search >`
 

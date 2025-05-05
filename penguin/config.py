@@ -26,8 +26,8 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent
 
 def load_config():
-    """Load configuration from config.yml"""
-    config_path = Path(__file__).parent.parent / "config.yml"
+    """Load configuration from config.yml in the same directory as this file."""
+    config_path = Path(__file__).parent / "config.yml"
     try:
         with open(config_path) as f:
             config = yaml.safe_load(f)
@@ -294,17 +294,20 @@ class Config:
         from penguin.llm.model_config import ModelConfig as LLMModelConfig
         
         if config_path is None:
-            config_data = load_config()
-        else:
-            try:
-                with open(config_path) as f:
-                    config_data = yaml.safe_load(f)
-            except (FileNotFoundError, yaml.YAMLError):
-                config_data = {}
+            # Default to loading from the same directory as this config.py file
+            config_path = Path(__file__).parent / "config.yml"
+            
+        try:
+            with open(config_path) as f:
+                config_data = yaml.safe_load(f)
+        except (FileNotFoundError, yaml.YAMLError):
+            config_data = {}
 
         if not config_data:
             print("Warning: Configuration file not found or empty. Using default settings.")
-            return cls()
+            # If config fails to load, create a default ModelConfig using environment variables
+            default_llm_model_config = LLMModelConfig.from_env()
+            return cls(model_config=default_llm_model_config)
 
         diagnostics_config = DiagnosticsConfig(
             enabled=config_data.get("diagnostics", {}).get("enabled", False),
@@ -325,10 +328,12 @@ class Config:
             logging.basicConfig(**log_kwargs)
             logging.info("Diagnostics enabled via config.yml.")
 
+        # --- Determine Model Config --- #
         default_model_settings = config_data.get("model", {})
-        default_model_id = default_model_settings.get("default", "anthropic/claude-3-5-sonnet-20240620")
-        default_provider = default_model_settings.get("provider", "anthropic")
-        default_client_pref = default_model_settings.get("client_preference", "litellm")
+        # Use model ID from config if present, else default from env/hardcoded
+        default_model_id = default_model_settings.get("default") or os.getenv("PENGUIN_DEFAULT_MODEL", "anthropic/claude-3-5-sonnet-20240620") 
+        default_provider = default_model_settings.get("provider") or os.getenv("PENGUIN_DEFAULT_PROVIDER", "anthropic") 
+        default_client_pref = default_model_settings.get("client_preference") or os.getenv("PENGUIN_CLIENT_PREFERENCE", "litellm")
 
         specific_config = config_data.get("model_configs", {}).get(default_model_id, {})
 
@@ -336,25 +341,26 @@ class Config:
         provider_for_init = specific_config.get("provider", default_provider)
         client_pref_for_init = specific_config.get("client_preference", default_client_pref)
 
-        default_llm_model_config = LLMModelConfig(
+        llm_model_config = LLMModelConfig(
             model=model_name_for_init,
             provider=provider_for_init,
             client_preference=client_pref_for_init,
-            api_base=specific_config.get("api_base", default_model_settings.get("api_base")),
-            max_tokens=specific_config.get("max_tokens", default_model_settings.get("max_tokens")),
-            temperature=specific_config.get("temperature", default_model_settings.get("temperature", 0.7)),
-            streaming_enabled=specific_config.get("streaming_enabled", default_model_settings.get("streaming_enabled", True)),
-            vision_enabled=specific_config.get("vision_enabled", default_model_settings.get("vision_enabled", None)),
-            max_history_tokens=specific_config.get("max_history_tokens", default_model_settings.get("max_history_tokens")),
-            api_version=specific_config.get("api_version", default_model_settings.get("api_version")),
+            # Pull other settings from specific_config or defaults
+            api_base=specific_config.get("api_base", default_model_settings.get("api_base", os.getenv("PENGUIN_API_BASE"))),
+            max_tokens=specific_config.get("max_tokens", default_model_settings.get("max_tokens", int(os.getenv("PENGUIN_MAX_TOKENS")) if os.getenv("PENGUIN_MAX_TOKENS") else None)),
+            temperature=specific_config.get("temperature", default_model_settings.get("temperature", float(os.getenv("PENGUIN_TEMPERATURE")) if os.getenv("PENGUIN_TEMPERATURE") else 0.7)),
+            streaming_enabled=specific_config.get("streaming_enabled", default_model_settings.get("streaming_enabled", os.getenv("PENGUIN_STREAMING_ENABLED", "true").lower() == "true")),
+            vision_enabled=specific_config.get("vision_enabled", default_model_settings.get("vision_enabled", os.getenv("PENGUIN_VISION_ENABLED", "").lower() == "true" if os.getenv("PENGUIN_VISION_ENABLED") != "" else None)),
+            max_history_tokens=specific_config.get("max_history_tokens", default_model_settings.get("max_history_tokens", int(os.getenv("PENGUIN_MAX_HISTORY_TOKENS")) if os.getenv("PENGUIN_MAX_HISTORY_TOKENS") else None)),
+            api_version=specific_config.get("api_version", default_model_settings.get("api_version", os.getenv("API_VERSION"))), # Added API version
         )
 
         return cls(
-            model_config=default_llm_model_config,
+            model_config=llm_model_config,
             api=APIConfig(base_url=config_data.get("api", {}).get("base_url")),
-            workspace_path=Path(WORKSPACE_PATH),
-            temperature=config_data.get("temperature", 0.7),
-            max_tokens=config_data.get("max_tokens"),
+            workspace_path=Path(WORKSPACE_PATH), # WORKSPACE_PATH is already defined globally
+            temperature=config_data.get("temperature", llm_model_config.temperature), # Use model temp if global not set
+            max_tokens=config_data.get("max_tokens", llm_model_config.max_tokens), # Use model max_tokens if global not set
             diagnostics=diagnostics_config,
         )
 

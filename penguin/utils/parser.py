@@ -265,11 +265,11 @@ class ActionExecutor:
 
     # return self.tool_manager.execute_tool("lint_python", {"target": target, "is_file": is_file})
 
-    def _memory_search(self, params: str) -> str:
-        query, k = params.split(":", 1) if ":" in params else (params, "5")
-        return self.tool_manager.execute_tool(
-            "memory_search", {"query": query.strip(), "k": int(k.strip())}
-        )
+    # def _memory_search(self, params: str) -> str:
+    #     query, k = params.split(":", 1) if ":" in params else (params, "5")
+    #     return self.tool_manager.execute_tool(
+    #         "memory_search", {"query": query.strip(), "k": int(k.strip())}
+    #     )
 
     def _add_declarative_note(self, params: str) -> str:
         category, content = params.split(":", 1)
