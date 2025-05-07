@@ -24,6 +24,9 @@ from penguin.tools.core.workspace_search import CodeIndexer
 from penguin.tools.browser_tools import (
     browser_manager, BrowserNavigationTool, BrowserInteractionTool, BrowserScreenshotTool
 )
+from penguin.tools.pydoll_tools import (
+    pydoll_browser_manager, PyDollBrowserNavigationTool, PyDollBrowserInteractionTool, PyDollBrowserScreenshotTool
+)
 
 logger = logging.getLogger(__name__) # Add logger
 
@@ -400,13 +403,64 @@ class ToolManager:
                     "type": "object",
                     "properties": {}
                 }
-            }
+            },
+            {
+                "name": "pydoll_browser_navigate",
+                "description": "Navigate to a URL in the browser using PyDoll (no WebDriver required)",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "Full URL to navigate to"
+                        }
+                    },
+                    "required": ["url"]
+                }
+            },
+            {
+                "name": "pydoll_browser_interact",
+                "description": "Interact with page elements using PyDoll (no WebDriver required)",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["click", "input", "submit"]
+                        },
+                        "selector": {
+                            "type": "string"
+                        },
+                        "selector_type": {
+                            "type": "string",
+                            "enum": ["css", "xpath", "id", "class_name"],
+                            "default": "css"
+                        },
+                        "text": {
+                            "type": "string",
+                            "optional": True
+                        }
+                    },
+                    "required": ["action", "selector"]
+                }
+            },
+            {
+                "name": "pydoll_browser_screenshot",
+                "description": "Capture visible page content as image using PyDoll (no WebDriver required)",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
         ]
 
         # Don't initialize browser here
         self.browser_navigation_tool = BrowserNavigationTool()
         self.browser_interaction_tool = BrowserInteractionTool()
         self.browser_screenshot_tool = BrowserScreenshotTool()
+        self.pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
+        self.pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
+        self.pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
 
     def get_tools(self):
         return self.tools
@@ -469,6 +523,11 @@ class ToolManager:
                 tool_input["action"], tool_input["selector"], tool_input.get("text")
             )),
             "browser_screenshot": lambda: asyncio.run(self.execute_browser_screenshot()),
+            "pydoll_browser_navigate": lambda: asyncio.run(self.execute_pydoll_browser_navigate(tool_input["url"])),
+            "pydoll_browser_interact": lambda: asyncio.run(self.execute_pydoll_browser_interact(
+                tool_input["action"], tool_input["selector"], tool_input.get("selector_type", "css"), tool_input.get("text")
+            )),
+            "pydoll_browser_screenshot": lambda: asyncio.run(self.execute_pydoll_browser_screenshot()),
         }
 
         logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
@@ -787,3 +846,40 @@ class ToolManager:
                 logging.error(f"Failed to capture error screenshot: {str(screenshot_e)}")
             
             raise e
+
+    async def execute_pydoll_browser_navigate(self, url: str) -> str:
+        """Execute PyDoll browser navigation to a URL"""
+        try:
+            result = await self.pydoll_browser_navigation_tool.execute(url)
+            return result
+        except Exception as e:
+            error_message = f"Error navigating to URL with PyDoll: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return error_message
+    
+    async def execute_pydoll_browser_interact(self, action: str, selector: str, selector_type: str = "css", text: Optional[str] = None) -> str:
+        """Execute PyDoll browser interaction with page elements"""
+        try:
+            result = await self.pydoll_browser_interaction_tool.execute(action, selector, selector_type, text)
+            return result
+        except Exception as e:
+            error_message = f"Error interacting with browser using PyDoll: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return error_message
+    
+    async def execute_pydoll_browser_screenshot(self) -> Dict[str, Any]:
+        """Execute PyDoll browser screenshot capture"""
+        try:
+            result = await self.pydoll_browser_screenshot_tool.execute()
+            return result
+        except Exception as e:
+            error_message = f"Error capturing screenshot with PyDoll: {str(e)}"
+            logging.error(error_message)
+            self.log_error(e, error_message)
+            return {"error": error_message}
+
+    async def close_pydoll_browser(self):
+        """Close the PyDoll browser instance if it exists"""
+        return await pydoll_browser_manager.close()

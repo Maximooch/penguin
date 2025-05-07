@@ -18,6 +18,7 @@ from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
 from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
+import os
 logger = logging.getLogger(__name__)
 
 
@@ -77,6 +78,10 @@ class ActionType(Enum):
     BROWSER_NAVIGATE = "browser_navigate"
     BROWSER_INTERACT = "browser_interact"
     BROWSER_SCREENSHOT = "browser_screenshot"
+    # PyDoll browser actions
+    PYDOLL_BROWSER_NAVIGATE = "pydoll_browser_navigate"
+    PYDOLL_BROWSER_INTERACT = "pydoll_browser_interact"
+    PYDOLL_BROWSER_SCREENSHOT = "pydoll_browser_screenshot"
 
 
 class CodeActAction:
@@ -206,7 +211,11 @@ class ActionExecutor:
             # Browser actions
             ActionType.BROWSER_NAVIGATE: self._browser_navigate,
             ActionType.BROWSER_INTERACT: self._browser_interact,
-            ActionType.BROWSER_SCREENSHOT: self._browser_screenshot
+            ActionType.BROWSER_SCREENSHOT: self._browser_screenshot,
+            # PyDoll browser actions
+            ActionType.PYDOLL_BROWSER_NAVIGATE: self._pydoll_browser_navigate,
+            ActionType.PYDOLL_BROWSER_INTERACT: self._pydoll_browser_interact,
+            ActionType.PYDOLL_BROWSER_SCREENSHOT: self._pydoll_browser_screenshot
         }
 
         try:
@@ -695,3 +704,93 @@ class ActionExecutor:
         if not await browser_manager.initialize():
             return "Failed to initialize browser"
         return await browser_manager.navigate_to(params)
+
+    async def _pydoll_browser_navigate(self, params: str) -> str:
+        """Navigate to a URL using PyDoll browser."""
+        try:
+            from penguin.tools.pydoll_tools import pydoll_browser_manager
+            
+            if not await pydoll_browser_manager.initialize(headless=False):
+                return "Failed to initialize PyDoll browser"
+            
+            # Get a page and navigate to the URL
+            page = await pydoll_browser_manager.get_page()
+            await page.go_to(params.strip())
+            
+            return f"Successfully navigated to {params.strip()} using PyDoll browser"
+        except Exception as e:
+            error_message = f"Error navigating with PyDoll browser: {str(e)}"
+            logger.error(error_message)
+            return error_message
+
+    async def _pydoll_browser_interact(self, params: str) -> str:
+        """Interact with browser elements using PyDoll. Format: action:selector[:selector_type][:text]"""
+        try:
+            from penguin.tools.pydoll_tools import PyDollBrowserInteractionTool
+            
+            parts = params.split(':', 3)
+            if len(parts) < 2:
+                return "Error: Invalid format. Use action:selector[:selector_type][:text]"
+            
+            action = parts[0].strip()
+            selector = parts[1].strip()
+            selector_type = parts[2].strip() if len(parts) > 2 and parts[2].strip() else "css"
+            text = parts[3].strip() if len(parts) > 3 else None
+            
+            if action not in ["click", "input", "submit"]:
+                return f"Error: Invalid action '{action}'. Use click, input, or submit."
+            
+            # Create and execute the tool
+            tool = PyDollBrowserInteractionTool()
+            result = await tool.execute(action, selector, selector_type, text)
+            return result
+        except Exception as e:
+            error_message = f"Error interacting with PyDoll browser: {str(e)}"
+            logger.error(error_message)
+            return error_message
+
+    async def _pydoll_browser_screenshot(self, params: str) -> str:
+        """Take a screenshot using PyDoll browser."""
+        try:
+            from penguin.tools.pydoll_tools import PyDollBrowserScreenshotTool
+            
+            # Execute the screenshot tool
+            tool = PyDollBrowserScreenshotTool()
+            result = await tool.execute()
+            
+            # Debug the result
+            logger.info(f"PyDoll screenshot result: {result}")
+            
+            if "filepath" in result and os.path.exists(result["filepath"]):
+                # Extract description from params or use default
+                description = params.strip() if params else "What can you see in this PyDoll screenshot?"
+                
+                # If conversation system is available, add to it as multimodal content
+                if hasattr(self, 'conversation_system') and self.conversation_system:
+                    # Create multimodal content in the same format as the /image command result
+                    multimodal_content = [
+                        {"type": "text", "text": description},
+                        {"type": "image_url", "image_path": result["filepath"]}
+                    ]
+                    
+                    logger.info(f"Adding PyDoll screenshot to conversation: {multimodal_content}")
+                    
+                    # Add as a user message (matching how /image adds to conversation)
+                    self.conversation_system.add_message(
+                        role="user",
+                        content=multimodal_content,
+                        category=MessageCategory.DIALOG
+                    )
+                    
+                    return f"PyDoll screenshot saved to {result['filepath']} and added to conversation"
+                else:
+                    logger.warning("Conversation system not available, screenshot not added to conversation")
+                    return f"PyDoll screenshot saved to {result['filepath']} but not added to conversation (conversation system not available)"
+            else:
+                error_msg = result.get("error", "Failed to capture PyDoll screenshot or file not found")
+                logger.error(f"PyDoll screenshot error: {error_msg}")
+                return error_msg
+        except Exception as e:
+            error_message = f"Error taking PyDoll screenshot: {str(e)}"
+            logger.error(error_message, exc_info=True)
+            return error_message

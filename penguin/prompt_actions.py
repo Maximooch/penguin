@@ -159,6 +159,28 @@ Control a browser for web tasks.
     2.  **Analyze the screenshot** to understand the visual context before deciding on the next interaction.
     3.  After **every** `<browser_interact>` action (like click or input), your **immediate next step MUST be `<browser_screenshot>`** to verify the result of the interaction visually.
 -   Verify state with screenshots *before* proceeding.
+
+### PyDoll Browser Interaction (`pydoll_browser_*` tools)
+
+Enhanced browser control without WebDriver dependencies, better for sites with anti-bot measures.
+
+-   `<pydoll_browser_navigate>URL</pydoll_browser_navigate >`
+-   `<pydoll_browser_interact>action:selector[:selector_type][:text]</pydoll_browser_interact >` (actions: `click`, `input`, `submit`, selector_types: `css`, `xpath`, `id`, `class_name`)
+-   `<pydoll_browser_screenshot></pydoll_browser_screenshot >`
+
+**Advantages over standard browser tools:**
+-   **No WebDriver dependency** - eliminates compatibility issues
+-   **Native captcha bypass** - better handles Cloudflare Turnstile and reCAPTCHA v3
+-   **Human-like interactions** - reduces detection risk
+-   **More selector options** - supports CSS, XPath, ID, and class name selectors
+
+**Usage Notes:**
+-   Use for sites with sophisticated bot detection
+-   Follow the same workflow as standard browser tools (navigate → screenshot → interact → screenshot)
+-   Use selector_type parameter to specify how to locate elements (default is CSS)
+-   Example: `<pydoll_browser_interact>click:button.search:css</pydoll_browser_interact >`
+
+---
 """
 
 
@@ -209,14 +231,58 @@ Description: Run code in the terminal, using iPython or shell/bash (depending on
 <task_display>name</task_display> - Display a task
 
 
-
 # Web Search
 
 <perplexity_search>query</perplexity_search> - Search the web
 
-# Workflow Management
 
+# Browser Automation
 
+## Standard Browser Tools
+<browser_navigate>https://www.example.com</browser_navigate> - Navigate to a URL
+<browser_interact>click:.search-button</browser_interact> - Click on an element
+<browser_interact>input:#search-box:search term</browser_interact> - Input text into a field
+<browser_interact>submit:form#login</browser_interact> - Submit a form
+<browser_screenshot></browser_screenshot> - Take a screenshot of the current page
+
+## PyDoll Browser Tools (No WebDriver Required)
+<pydoll_browser_navigate>https://www.example.com</pydoll_browser_navigate> - Navigate to a URL using PyDoll
+<pydoll_browser_interact>click:.search-button:css</pydoll_browser_interact> - Click using CSS selector
+<pydoll_browser_interact>click://button[@id='submit']:xpath</pydoll_browser_interact> - Click using XPath selector
+<pydoll_browser_interact>input:#email:css:user@example.com</pydoll_browser_interact> - Input text using CSS
+<pydoll_browser_interact>submit:form:css</pydoll_browser_interact> - Submit a form
+<pydoll_browser_screenshot></pydoll_browser_screenshot> - Take a screenshot with PyDoll
+
+# Example: Web Scraping Workflow with PyDoll
+
+## Standard workflow:
+1. Navigate to website:
+   <pydoll_browser_navigate>https://quotes.toscrape.com</pydoll_browser_navigate>
+
+2. Take a screenshot to verify the page loaded:
+   <pydoll_browser_screenshot></pydoll_browser_screenshot>
+
+3. Interact with an element (click on "Login" link):
+   <pydoll_browser_interact>click:a[href="/login"]:css</pydoll_browser_interact>
+
+4. Take another screenshot to verify the action:
+   <pydoll_browser_screenshot></pydoll_browser_screenshot>
+
+5. Fill in login form:
+   <pydoll_browser_interact>input:#username:css:user123</pydoll_browser_interact>
+   <pydoll_browser_interact>input:#password:css:password123</pydoll_browser_interact>
+
+6. Submit the form:
+   <pydoll_browser_interact>submit:form.login_form:css</pydoll_browser_interact>
+
+7. Take a final screenshot:
+   <pydoll_browser_screenshot></pydoll_browser_screenshot>
+
+# When to use PyDoll over Standard Browser Tools:
+- For sites with sophisticated bot detection
+- When dealing with captchas (Cloudflare, reCAPTCHA)
+- For more realistic human-like browsing patterns
+- When needing multiple selector types (CSS, XPath, ID, class)
 
 ### Tools
 
