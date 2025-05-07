@@ -9,10 +9,11 @@ from typing import Optional, Dict, Any, List
 class PyDollBrowserManager:
     """Manages PyDoll browser instance and provides access to browser tools"""
     
-    def __init__(self):
+    def __init__(self, dev_mode: bool = False):
         self.browser = None
         self.page = None
         self.initialized = False
+        self.dev_mode = dev_mode
         
         # Detect pydoll version
         try:
@@ -27,8 +28,8 @@ class PyDollBrowserManager:
         if not self.browser:
             try:
                 # Import pydoll packages
-                from pydoll.browser.chrome import Chrome
-                from pydoll.browser.options import Options
+                from pydoll.browser.chrome import Chrome # type: ignore
+                from pydoll.browser.options import Options # type: ignore
                 
                 # Configure Chrome options
                 options = Options()
@@ -84,19 +85,29 @@ class PyDollBrowserManager:
                 # Get the page
                 self.page = await self.browser.get_page()
                 
-                # Debug: Print available browser methods
-                logging.debug(f"Browser methods: {[m for m in dir(self.browser) if not m.startswith('_')]}")
-                print(f"Browser methods: {[m for m in dir(self.browser) if not m.startswith('_')]}")
-                logging.debug(f"Page methods: {[m for m in dir(self.page) if not m.startswith('_')]}")
-                print(f"Page methods: {[m for m in dir(self.page) if not m.startswith('_')]}")
+                # Debug info only shown in dev mode
+                if self.dev_mode:
+                    logging.debug(f"Browser methods: {[m for m in dir(self.browser) if not m.startswith('_')]}")
+                    print(f"Browser methods: {[m for m in dir(self.browser) if not m.startswith('_')]}")
+                    logging.debug(f"Page methods: {[m for m in dir(self.page) if not m.startswith('_')]}")
+                    print(f"Page methods: {[m for m in dir(self.page) if not m.startswith('_')]}")
                 
                 self.initialized = True
                 return True
             except Exception as e:
                 logging.error(f"Failed to initialize PyDoll browser: {str(e)}")
+                if self.dev_mode:
+                    # Show more detailed error info in dev mode
+                    logging.error(f"Detailed error: {e}", exc_info=True)
                 return False
         return True
     
+    def set_dev_mode(self, enabled: bool):
+        """Enable or disable developer mode for debug output"""
+        self.dev_mode = enabled
+        logging.info(f"PyDoll developer mode {'enabled' if enabled else 'disabled'}")
+        return self.dev_mode
+
     async def get_page(self):
         """Get the current page - async version"""
         try:
@@ -108,6 +119,8 @@ class PyDollBrowserManager:
             return None
         except Exception as e:
             logging.error(f"Error getting page: {str(e)}")
+            if self.dev_mode:
+                logging.error(f"Detailed error: {e}", exc_info=True)
             return None
             
     async def close(self):
@@ -121,6 +134,8 @@ class PyDollBrowserManager:
                 return True
             except Exception as e:
                 logging.error(f"Error closing browser: {str(e)}")
+                if self.dev_mode:
+                    logging.error(f"Detailed error: {e}", exc_info=True)
                 return False
         return True
 
@@ -145,6 +160,8 @@ class PyDollBrowserManager:
             return True
         except Exception as e:
             logging.error(f"Error validating browser state: {str(e)}")
+            if self.dev_mode:
+                logging.error(f"Detailed error: {e}", exc_info=True)
             return False
 
     async def navigate_to(self, url: str) -> str:
@@ -156,8 +173,8 @@ class PyDollBrowserManager:
         await page.go_to(url)
         return f"Navigated to {url}"
 
-# Create a singleton instance
-pydoll_browser_manager = PyDollBrowserManager()
+# Create a singleton instance with dev mode disabled by default
+pydoll_browser_manager = PyDollBrowserManager(dev_mode=False)
 
 # Add an initialization function to be called at startup
 async def initialize_browser(headless=False):
@@ -183,10 +200,27 @@ class PyDollBrowserNavigationTool:
         try:
             # Navigate directly
             page = await pydoll_browser_manager.get_page()
+            if pydoll_browser_manager.dev_mode:
+                logging.info(f"[PyDoll Dev] Navigating to URL: {url}")
+                
             await page.go_to(url)
+            
+            if pydoll_browser_manager.dev_mode:
+                logging.info(f"[PyDoll Dev] Successfully navigated to: {url}")
+                # Add page information in dev mode
+                try:
+                    title = await page.get_title()
+                    current_url = await page.get_url()
+                    return f"Navigated to {url}\n[Dev Mode] Page Title: {title}\nFinal URL: {current_url}"
+                except Exception as e:
+                    logging.error(f"[PyDoll Dev] Error getting page info: {str(e)}")
+                    
             return f"Navigated to {url}"
         except Exception as e:
-            return f"Navigation failed: {str(e)}"
+            error_msg = f"Navigation failed: {str(e)}"
+            if pydoll_browser_manager.dev_mode:
+                logging.error(f"[PyDoll Dev] {error_msg}", exc_info=True)
+            return error_msg
 
 class PyDollBrowserInteractionTool:
     def __init__(self):
@@ -202,8 +236,7 @@ class PyDollBrowserInteractionTool:
         }
 
     async def execute(self, action: str, selector: str, selector_type: str = "css", text: Optional[str] = None) -> str:
-        from pydoll.constants import By
-        
+        from pydoll.constants import By # type: ignore
         if not await pydoll_browser_manager.initialize():
             return "Failed to initialize browser"
             
@@ -219,15 +252,27 @@ class PyDollBrowserInteractionTool:
             }
             by_selector = selector_map.get(selector_type, By.CSS_SELECTOR)
             
+            if pydoll_browser_manager.dev_mode:
+                logging.info(f"[PyDoll Dev] Executing {action} on {selector_type} selector: {selector}")
+                if text:
+                    logging.info(f"[PyDoll Dev] Text to input: {text}")
+            
             if action == "click":
                 element = await page.find_element(by_selector, selector)
                 await element.click()
+                if pydoll_browser_manager.dev_mode:
+                    logging.info(f"[PyDoll Dev] Successfully clicked on element")
+                    element_text = await element.get_text()
+                    return f"Successfully clicked on {selector}\n[Dev Mode] Element text: {element_text}"
                 return f"Successfully clicked on {selector}"
                 
             elif action == "input" and text:
                 element = await page.find_element(by_selector, selector)
                 await element.clear()
                 await element.input(text)
+                if pydoll_browser_manager.dev_mode:
+                    logging.info(f"[PyDoll Dev] Successfully input text into element")
+                    return f"Successfully input text into {selector}\n[Dev Mode] Text entered: {text}"
                 return f"Successfully input text into {selector}"
                 
             elif action == "submit":
@@ -239,11 +284,19 @@ class PyDollBrowserInteractionTool:
                     # If not a form selector, find the element and its parent form
                     element = await page.find_element(by_selector, selector)
                     await element.submit()
+                
+                if pydoll_browser_manager.dev_mode:
+                    logging.info(f"[PyDoll Dev] Successfully submitted form")
+                    current_url = await page.get_url()
+                    return f"Successfully submitted {selector}\n[Dev Mode] Current URL after submit: {current_url}"
                 return f"Successfully submitted {selector}"
                 
             return f"Successfully performed {action} on {selector}"
         except Exception as e:
-            return f"Interaction failed: {str(e)}"
+            error_msg = f"Interaction failed: {str(e)}"
+            if pydoll_browser_manager.dev_mode:
+                logging.error(f"[PyDoll Dev] {error_msg}", exc_info=True)
+            return error_msg
 
 class PyDollBrowserScreenshotTool:
     def __init__(self):
@@ -276,21 +329,72 @@ class PyDollBrowserScreenshotTool:
             # Debug logging
             logging.info(f"Taking screenshot with PyDoll, saving to: {filepath}")
             
+            if pydoll_browser_manager.dev_mode:
+                logging.info(f"[PyDoll Dev] Taking screenshot of current page")
+                try:
+                    url = await page.get_url()
+                    title = await page.get_title()
+                    logging.info(f"[PyDoll Dev] Current URL: {url}, Title: {title}")
+                except Exception as e:
+                    logging.error(f"[PyDoll Dev] Error getting page info: {str(e)}")
+            
             # Take the screenshot using the correct PyDoll API
             # PyDoll's page.get_screenshot() method directly saves to the specified path
             await page.get_screenshot(filepath)
             
             # Verify the file was created
             if not os.path.exists(filepath):
-                return {"error": "Screenshot was not saved properly"}
+                error_msg = "Screenshot was not saved properly"
+                if pydoll_browser_manager.dev_mode:
+                    logging.error(f"[PyDoll Dev] {error_msg} - File not found: {filepath}")
+                return {"error": error_msg}
             
             logging.info(f"Screenshot successfully saved to {filepath}")
             
-            return {
-                "result": "Screenshot captured",
-                "filepath": filepath,
-                "timestamp": timestamp
-            }
+            if pydoll_browser_manager.dev_mode:
+                # Add file size info in dev mode
+                file_size = os.path.getsize(filepath)
+                file_size_kb = file_size / 1024
+                return {
+                    "result": "Screenshot captured",
+                    "filepath": filepath,
+                    "timestamp": timestamp,
+                    "dev_info": {
+                        "file_size": f"{file_size_kb:.2f} KB",
+                        "directory": screenshots_dir,
+                        "absolute_path": os.path.abspath(filepath)
+                    }
+                }
+            else:
+                return {
+                    "result": "Screenshot captured",
+                    "filepath": filepath,
+                    "timestamp": timestamp
+                }
         except Exception as e:
+            error_msg = f"Screenshot failed: {str(e)}"
             logging.error(f"Error in PyDoll screenshot: {str(e)}", exc_info=True)
-            return {"error": f"Screenshot failed: {str(e)}"} 
+            if pydoll_browser_manager.dev_mode:
+                logging.error(f"[PyDoll Dev] {error_msg}", exc_info=True)
+            return {"error": error_msg} 
+
+async def pydoll_debug_toggle(enabled: Optional[bool] = None) -> bool:
+    """
+    Toggle PyDoll debug mode or set it to a specific state if enabled is provided.
+    
+    Args:
+        enabled: Optional boolean to explicitly set the debug mode state
+                If None, current state will be toggled
+                
+    Returns:
+        New debug mode state (True if enabled, False if disabled)
+    """
+    if enabled is None:
+        # Toggle the current state
+        new_state = not pydoll_browser_manager.dev_mode
+    else:
+        # Set to the specified state
+        new_state = enabled
+        
+    # Apply the new state
+    return pydoll_browser_manager.set_dev_mode(new_state) 
