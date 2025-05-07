@@ -167,18 +167,27 @@ Enhanced browser control without WebDriver dependencies, better for sites with a
 -   `<pydoll_browser_navigate>URL</pydoll_browser_navigate >`
 -   `<pydoll_browser_interact>action:selector[:selector_type][:text]</pydoll_browser_interact >` (actions: `click`, `input`, `submit`, selector_types: `css`, `xpath`, `id`, `class_name`)
 -   `<pydoll_browser_screenshot></pydoll_browser_screenshot >`
+-   `<pydoll_debug_toggle>[on|off]</pydoll_debug_toggle >` (Enable/disable detailed PyDoll logging and outputs)
 
 **Advantages over standard browser tools:**
 -   **No WebDriver dependency** - eliminates compatibility issues
 -   **Native captcha bypass** - better handles Cloudflare Turnstile and reCAPTCHA v3
 -   **Human-like interactions** - reduces detection risk
 -   **More selector options** - supports CSS, XPath, ID, and class name selectors
+-   **Developer mode** - toggle detailed debugging information when troubleshooting
 
 **Usage Notes:**
 -   Use for sites with sophisticated bot detection
 -   Follow the same workflow as standard browser tools (navigate → screenshot → interact → screenshot)
 -   Use selector_type parameter to specify how to locate elements (default is CSS)
+-   Enable debug mode when troubleshooting: `<pydoll_debug_toggle>on</pydoll_debug_toggle >`
 -   Example: `<pydoll_browser_interact>click:button.search:css</pydoll_browser_interact >`
+
+**Developer Mode:**
+-   When enabled, provides detailed logs about browser interactions
+-   Shows additional information in command outputs (page titles, element text, etc.)
+-   Helps diagnose issues with selectors or page navigation
+-   Toggle with: `<pydoll_debug_toggle>on</pydoll_debug_toggle >` or `<pydoll_debug_toggle>off</pydoll_debug_toggle >`
 
 ---
 """
@@ -252,6 +261,8 @@ Description: Run code in the terminal, using iPython or shell/bash (depending on
 <pydoll_browser_interact>input:#email:css:user@example.com</pydoll_browser_interact> - Input text using CSS
 <pydoll_browser_interact>submit:form:css</pydoll_browser_interact> - Submit a form
 <pydoll_browser_screenshot></pydoll_browser_screenshot> - Take a screenshot with PyDoll
+<pydoll_debug_toggle>on</pydoll_debug_toggle> - Enable PyDoll debug mode
+<pydoll_debug_toggle>off</pydoll_debug_toggle> - Disable PyDoll debug mode
 
 # Example: Web Scraping Workflow with PyDoll
 

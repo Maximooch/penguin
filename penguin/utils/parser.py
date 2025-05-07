@@ -82,6 +82,8 @@ class ActionType(Enum):
     PYDOLL_BROWSER_NAVIGATE = "pydoll_browser_navigate"
     PYDOLL_BROWSER_INTERACT = "pydoll_browser_interact"
     PYDOLL_BROWSER_SCREENSHOT = "pydoll_browser_screenshot"
+    # PyDoll debug toggle
+    PYDOLL_DEBUG_TOGGLE = "pydoll_debug_toggle"
 
 
 class CodeActAction:
@@ -215,7 +217,9 @@ class ActionExecutor:
             # PyDoll browser actions
             ActionType.PYDOLL_BROWSER_NAVIGATE: self._pydoll_browser_navigate,
             ActionType.PYDOLL_BROWSER_INTERACT: self._pydoll_browser_interact,
-            ActionType.PYDOLL_BROWSER_SCREENSHOT: self._pydoll_browser_screenshot
+            ActionType.PYDOLL_BROWSER_SCREENSHOT: self._pydoll_browser_screenshot,
+            # PyDoll debug toggle
+            ActionType.PYDOLL_DEBUG_TOGGLE: self._pydoll_debug_toggle
         }
 
         try:
@@ -793,4 +797,24 @@ class ActionExecutor:
         except Exception as e:
             error_message = f"Error taking PyDoll screenshot: {str(e)}"
             logger.error(error_message, exc_info=True)
+            return error_message
+
+    async def _pydoll_debug_toggle(self, params: str) -> str:
+        """Toggle PyDoll debug mode. Format: [on|off] or empty to toggle"""
+        try:
+            from penguin.tools.pydoll_tools import pydoll_debug_toggle
+            
+            if params.strip().lower() == "on":
+                enabled = True
+            elif params.strip().lower() == "off":
+                enabled = False
+            else:
+                # Toggle current state if no specific instruction
+                enabled = None
+                
+            new_state = await pydoll_debug_toggle(enabled)
+            return f"PyDoll debug mode is now {'enabled' if new_state else 'disabled'}"
+        except Exception as e:
+            error_message = f"Error toggling PyDoll debug mode: {str(e)}"
+            logger.error(error_message)
             return error_message
