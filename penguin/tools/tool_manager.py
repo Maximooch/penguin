@@ -34,43 +34,41 @@ class ToolManager:
     def __init__(self, log_error_func: Callable):
         # from utils.file_map import FileMap  # Import here to avoid circular import
         self.log_error = log_error_func
+        
+        # Initialize lightweight components immediately
         self.declarative_memory_tool = DeclarativeMemoryTool()
         self.grep_search = GrepSearch(root_dir=os.path.join(WORKSPACE_PATH, "logs"))
-        # self.memory_search = MemorySearch(os.path.join(WORKSPACE_PATH, "logs"))
         self.file_map = FileMap(WORKSPACE_PATH)  # Initialize with the workspace path
         self.project_root = WORKSPACE_PATH  # Set project root to workspace path
-        self.notebook_executor = NotebookExecutor()
         self.summary_notes_tool = SummaryNotes()
-        self.perplexity_provider = PerplexityProvider()
-        self.code_indexer = CodeIndexer(
-            persist_directory=os.path.join(WORKSPACE_PATH, "chroma_db")
-        )
-        self.code_indexer.wait_for_initialization()
-        self.memory_searcher = MemorySearcher()
-
-        # # --- Add Workspace Indexing ---
-        # try:
-        #     logger.info("Starting workspace indexing...")
-        #     # Index the project root directory defined in config
-        #     self.code_indexer.index_directory(self.project_root)
-        #     logger.info("Workspace indexing completed.")
-        # except Exception as e:
-        #     error_message = f"Error during initial workspace indexing: {str(e)}"
-        #     logger.error(error_message)
-        #     self.log_error(e, error_message)
-        #     # Decide if this should be fatal? For now, log and continue.
-        # # --- End Add Workspace Indexing ---
         
-        # # Log confirmation of indexer/searcher setup
-        # if self.code_indexer and hasattr(self.code_indexer, 'client'):
-        #      logger.debug("CodeIndexer initialized successfully.")
-        # else:
-        #      logger.warning("CodeIndexer might not have initialized correctly.")
-             
-        # if self.memory_searcher and hasattr(self.memory_searcher, 'client') and self.memory_searcher._initialized:
-        #      logger.debug("MemorySearcher initialized successfully.")
-        # else:
-        #      logger.warning("MemorySearcher might not have initialized correctly.")
+        # Lazily loaded components
+        self._lazy_initialized = {
+            'notebook_executor': False,
+            'perplexity_provider': False,
+            'code_indexer': False,
+            'memory_searcher': False,
+            'browser_tools': False,
+            'pydoll_tools': False,
+        }
+        
+        # Placeholder attributes for lazy loading
+        self._notebook_executor = None
+        self._perplexity_provider = None
+        self._code_indexer = None
+        self._memory_searcher = None
+        
+        # Browser tools placeholders
+        self._browser_navigation_tool = None
+        self._browser_interaction_tool = None
+        self._browser_screenshot_tool = None
+        
+        # PyDoll tools placeholders
+        self._pydoll_browser_navigation_tool = None
+        self._pydoll_browser_interaction_tool = None
+        self._pydoll_browser_screenshot_tool = None
+        
+        logger.info("ToolManager initialized with lazy loading for expensive components")
 
         self.tools = [
             {
@@ -454,13 +452,110 @@ class ToolManager:
             },
         ]
 
-        # Don't initialize browser here
-        self.browser_navigation_tool = BrowserNavigationTool()
-        self.browser_interaction_tool = BrowserInteractionTool()
-        self.browser_screenshot_tool = BrowserScreenshotTool()
-        self.pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
-        self.pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
-        self.pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
+    # Lazy loading properties
+    @property
+    def notebook_executor(self):
+        if not self._lazy_initialized['notebook_executor']:
+            logger.debug("Lazy-loading notebook executor")
+            self._notebook_executor = NotebookExecutor()
+            self._lazy_initialized['notebook_executor'] = True
+        return self._notebook_executor
+    
+    @property
+    def perplexity_provider(self):
+        if not self._lazy_initialized['perplexity_provider']:
+            logger.debug("Lazy-loading perplexity provider")
+            self._perplexity_provider = PerplexityProvider()
+            self._lazy_initialized['perplexity_provider'] = True
+        return self._perplexity_provider
+    
+    @property
+    def code_indexer(self):
+        if not self._lazy_initialized['code_indexer']:
+            logger.debug("Lazy-loading code indexer (may take some time)")
+            start_time = datetime.datetime.now()
+            self._code_indexer = CodeIndexer(
+                persist_directory=os.path.join(WORKSPACE_PATH, "chroma_db")
+            )
+            # Wait for initialization is still required, but now only when actually needed
+            self._code_indexer.wait_for_initialization()
+            self._lazy_initialized['code_indexer'] = True
+            elapsed = (datetime.datetime.now() - start_time).total_seconds()
+            logger.info(f"Code indexer initialized in {elapsed:.2f} seconds")
+        return self._code_indexer
+    
+    @property
+    def memory_searcher(self):
+        if not self._lazy_initialized['memory_searcher']:
+            logger.debug("Lazy-loading memory searcher")
+            start_time = datetime.datetime.now()
+            self._memory_searcher = MemorySearcher()
+            self._lazy_initialized['memory_searcher'] = True
+            elapsed = (datetime.datetime.now() - start_time).total_seconds()
+            logger.info(f"Memory searcher initialized in {elapsed:.2f} seconds")
+        return self._memory_searcher
+    
+    # Browser tools lazy loading
+    @property
+    def browser_navigation_tool(self):
+        if not self._lazy_initialized['browser_tools']:
+            logger.debug("Lazy-loading browser tools")
+            self._browser_navigation_tool = BrowserNavigationTool()
+            self._browser_interaction_tool = BrowserInteractionTool()  
+            self._browser_screenshot_tool = BrowserScreenshotTool()
+            self._lazy_initialized['browser_tools'] = True
+        return self._browser_navigation_tool
+    
+    @property
+    def browser_interaction_tool(self):
+        if not self._lazy_initialized['browser_tools']:
+            logger.debug("Lazy-loading browser tools")
+            self._browser_navigation_tool = BrowserNavigationTool()
+            self._browser_interaction_tool = BrowserInteractionTool()  
+            self._browser_screenshot_tool = BrowserScreenshotTool()
+            self._lazy_initialized['browser_tools'] = True
+        return self._browser_interaction_tool
+    
+    @property
+    def browser_screenshot_tool(self):
+        if not self._lazy_initialized['browser_tools']:
+            logger.debug("Lazy-loading browser tools")
+            self._browser_navigation_tool = BrowserNavigationTool()
+            self._browser_interaction_tool = BrowserInteractionTool()  
+            self._browser_screenshot_tool = BrowserScreenshotTool()
+            self._lazy_initialized['browser_tools'] = True
+        return self._browser_screenshot_tool
+    
+    # PyDoll tools lazy loading
+    @property
+    def pydoll_browser_navigation_tool(self):
+        if not self._lazy_initialized['pydoll_tools']:
+            logger.debug("Lazy-loading PyDoll browser tools")
+            self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
+            self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
+            self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
+            self._lazy_initialized['pydoll_tools'] = True
+        return self._pydoll_browser_navigation_tool
+    
+    @property
+    def pydoll_browser_interaction_tool(self):
+        if not self._lazy_initialized['pydoll_tools']:
+            logger.debug("Lazy-loading PyDoll browser tools")
+            self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
+            self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
+            self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
+            self._lazy_initialized['pydoll_tools'] = True
+        return self._pydoll_browser_interaction_tool
+    
+    @property
+    def pydoll_browser_screenshot_tool(self):
+        if not self._lazy_initialized['pydoll_tools']:
+            logger.debug("Lazy-loading PyDoll browser tools")
+            self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
+            self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
+            self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
+            self._lazy_initialized['pydoll_tools'] = True
+        return self._pydoll_browser_screenshot_tool
 
     def get_tools(self):
         return self.tools

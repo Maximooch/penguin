@@ -62,9 +62,16 @@ class NotebookExecutor:
                     else "Code executed successfully"
                 )
             else:
-                error_msg = (
-                    result.error_in_exec or error_output or "Unknown error occurred"
-                )
+                # Attempt to capture richer error information
+                error_parts = []
+                if result.error_in_exec:
+                    error_parts.append(str(result.error_in_exec))
+                if hasattr(result, "error_before_exec") and result.error_before_exec:
+                    error_parts.append(str(result.error_before_exec))
+                if error_output.strip():
+                    error_parts.append(error_output.strip())
+
+                error_msg = "\n".join(error_parts) if error_parts else "Unknown error occurred"
                 return f"Error: {error_msg}"
         except Exception as e:
             return f"Error executing code: {str(e)}"

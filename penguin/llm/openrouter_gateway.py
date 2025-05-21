@@ -7,7 +7,7 @@ from typing import List, Dict, Optional, Any, Union, Callable, AsyncIterator
 import base64
 import io
 import mimetypes
-from PIL import Image as PILImage # Use alias
+from PIL import Image as PILImage # Use alias for PIL Image # type: ignore
 # --- End Added Imports ---
 
 import openai # type: ignore
@@ -171,6 +171,8 @@ class OpenRouterGateway:
             The complete response text content.
             Returns an error string "[Error: ...]" if an API call fails.
         """
+        self.logger.info(f"[OpenRouterGateway] ENTERING get_response: stream_arg={stream}, stream_callback_arg={stream_callback}, model_config_streaming={self.model_config.streaming_enabled}")
+
         # Determine if streaming should be used *based on the passed flag first*
         # If stream is explicitly False, don't stream, even if config says yes.
         # If stream is explicitly True, try to stream.
@@ -217,16 +219,12 @@ class OpenRouterGateway:
             if use_streaming:
                 self.logger.info("[OpenRouterGateway] Starting stream processing loop.")
                 chunk_index = 0
+                # internal_accumulator for this specific call, to ensure clean deltas to the external callback
+                _gateway_accumulated_text = ""
                 async for chunk in completion:
                     content_delta = chunk.choices[0].delta.content
-                    tool_calls_delta = chunk.choices[0].delta.tool_calls # Added for tool support
+                    tool_calls_delta = chunk.choices[0].delta.tool_calls
 
-                    # <<< TEMPORARY DEBUGGING PRINT >>>
-                    # if content_delta:
-                    #     print(f"*** GATEWAY CHUNK RECEIVED: {content_delta} ***", flush=True)
-                    # <<< END TEMPORARY DEBUGGING PRINT >>>
-
-                    # Log the raw chunk details
                     try:
                         chunk_log = f"[OpenRouterGateway] Raw Chunk {chunk_index}: ID={chunk.id}, Model={chunk.model}, FinishReason={chunk.choices[0].finish_reason}, DeltaContent='{content_delta}', DeltaTools='{tool_calls_delta}'"
                     except Exception:
@@ -235,35 +233,40 @@ class OpenRouterGateway:
                     chunk_index += 1
 
                     if content_delta:
-                        self.logger.debug(f"[OpenRouterGateway] Found content_delta: '{content_delta}'. Accumulating and preparing to call callback.")
-                        full_response_content += content_delta
-                        if stream_callback:
-                            try:
-                                # Only send non-empty content to the callback
-                                if content_delta.strip():
-                                    self.logger.debug("[OpenRouterGateway] Awaiting stream_callback...")
-                                    await stream_callback(content_delta) # Call callback with the text chunk
-                                    self.logger.debug("[OpenRouterGateway] stream_callback awaited successfully.")
-                                else:
-                                    self.logger.debug("[OpenRouterGateway] Skipping empty content_delta in stream callback")
-                            except Exception as cb_err:
-                                self.logger.error(f"[OpenRouterGateway] Error occurred during stream_callback execution: {cb_err}", exc_info=True)
+                        # Determine the truly new part of the content_delta
+                        new_text_segment = ""
+                        if content_delta.startswith(_gateway_accumulated_text):
+                            new_text_segment = content_delta[len(_gateway_accumulated_text):]
                         else:
-                            self.logger.warning("[OpenRouterGateway] stream_callback is None, cannot send token.")
+                            # This case implies the chunking is not purely accumulative from the start,
+                            # or there was a disconnect. For robustness, treat current content_delta as new if unsure.
+                            # However, many SDKs send the full accumulated text. If this happens often, 
+                            # it might indicate the provider sends deltas, and this logic needs adjustment.
+                            # For OpenRouter with OpenAI SDK, it often sends accumulated text.
+                            # A simpler approach if all chunks are full accumulated: new_text_segment = content_delta if not _gateway_accumulated_text else content_delta[len(_gateway_accumulated_text):] (if len > prev)
+                            # Let's assume for now content_delta might be a pure new segment or fully accumulated.
+                            # If content_delta is a segment that should be appended:
+                            if not _gateway_accumulated_text.endswith(content_delta):
+                                new_text_segment = content_delta # Or more complex diff if needed
+                        
+                        if new_text_segment:
+                            _gateway_accumulated_text += new_text_segment
+                            if stream_callback: # Call the EXTERNAL callback with ONLY the new segment
+                                try:
+                                    if new_text_segment.strip(): # Avoid sending empty/whitespace-only updates
+                                        self.logger.debug(f"[OpenRouterGateway] Calling stream_callback with new segment: '{new_text_segment}'")
+                                        await stream_callback(new_text_segment)
+                                except Exception as cb_err:
+                                    self.logger.error(f"[OpenRouterGateway] Error in stream_callback: {cb_err}", exc_info=True)
+                        full_response_content = _gateway_accumulated_text # The overall full response
+
                     elif tool_calls_delta:
-                         self.logger.debug(f"[OpenRouterGateway] Received tool_calls delta: {tool_calls_delta}. Not calling text stream_callback.") # Handle tool calls delta if needed
+                         self.logger.debug(f"[OpenRouterGateway] Received tool_calls delta: {tool_calls_delta}.")
+                         # Tool call streaming logic would go here if needed for external callback
                     else:
-                        # Log if chunk has neither content nor tool calls delta (e.g., empty delta, finish reason chunk)
                         self.logger.debug(f"[OpenRouterGateway] Chunk {chunk_index-1} had no text/tool delta.")
 
-                    # TODO: How should streaming tool calls be handled by the callback?
-                    # For now, we just accumulate the text response.
-                    # The caller (api_client/core) might need the raw response or structured data if tools are used heavily with streaming.
-
-                self.logger.info(f"[OpenRouterGateway] Finished stream processing loop after {chunk_index} chunks. Total accumulated text length: {len(full_response_content)}")
-                # Note: In streaming, the 'completion' object after the loop is the last chunk,
-                # not the full response object. We return the accumulated text.
-                # Handling tool calls in streaming requires more complex logic, possibly yielding structured chunks.
+                self.logger.info(f"[OpenRouterGateway] Finished stream. Accumulated text length: {len(full_response_content)}")
                 return full_response_content
 
             else: # Not streaming

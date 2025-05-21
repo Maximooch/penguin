@@ -282,103 +282,117 @@ class ConversationManager:
     def get_token_usage(self) -> Dict[str, Any]:
         """
         Get token usage statistics for the current conversation across all sessions.
-        
+
         Returns:
-            Dictionary with token usage by category, session, and total
+            Dictionary with token usage by category, session, and total.  In
+            addition to the historical/legacy keys this now includes a
+            forward-compatible structure preferred by the CLI:
+
+            {
+                "current_total_tokens": <int>,   # tokens currently loaded in context window
+                "max_tokens": <int>,            # model context limit
+                "available_tokens": <int>,      # remaining budget
+                "percentage": <float>,          # current_total / max_tokens * 100
+                "categories": {
+                    "SYSTEM": <int>,
+                    "CONTEXT": <int>,
+                    ...
+                },
+                # --- legacy keys kept for backwards compatibility ---
+                "total": <int>,
+                "MessageCategory.SYSTEM": <int>,
+                ...
+            }
         """
+        # ---------------------------
+        # Always expose **current** window usage first so real-time UI can use
+        # it without digging through historic sessions.
+        # ---------------------------
+        cw_usage = self.context_window.get_token_usage()
+        categories_current = {
+            cat.name: self.context_window.get_usage(cat) for cat in MessageCategory
+        }
+
+        standardized_usage: Dict[str, Any] = {
+            "current_total_tokens": cw_usage.get("total", 0),
+            "max_tokens": cw_usage.get("max", self.context_window.max_tokens),
+            "available_tokens": cw_usage.get("available", self.context_window.available_tokens),
+            "percentage": cw_usage.get("usage_percentage", 0),
+            "categories": categories_current,
+        }
+
+        # ------------------------------------------------------------------
+        # Build legacy / historical data so existing callers do not break.
+        # ------------------------------------------------------------------
         if not self.conversation or not self.conversation.session:
-            return {"total": 0}
-        
-        # Get current session
+            # Even if there is no active session we still return the
+            # standardized structure (filled with zeros) so callers relying on
+            # the new keys continue to work.
+            return {
+                **standardized_usage,
+                "total": 0,
+            }
+
+        # The block below replicates the previous behaviour (session-chain
+        # aggregation) while re-using the *standardized_usage* dict so we
+        # avoid code duplication.
         current_session = self.conversation.session
         session_manager = self.session_manager
-        
-        # Initialize usage dictionary
-        usage = {
+
+        legacy_usage: Dict[str, Any] = {
             "total": 0,
-            "sessions": {}
+            "sessions": {},
         }
-        
-        # First, get tokens from current context window by category
+
+        # Per-category counts (legacy keys like "MessageCategory.SYSTEM")
         for category in MessageCategory:
-            category_tokens = self.context_window.get_usage(category)
-            usage[str(category)] = category_tokens
-            usage["total"] += category_tokens
-        
-        # Track visited sessions to avoid double-counting
+            token_count = categories_current.get(category.name, 0)
+            legacy_usage[str(category)] = token_count
+            legacy_usage["total"] += token_count
+
         visited_sessions = set()
-        
-        # Helper to add tokens from each session and track linkages
-        def add_session_tokens(session_id: str, is_current: bool = False):
+
+        def _add_session_tokens(session_id: str, is_current: bool = False):
             if session_id in visited_sessions:
                 return 0
-            
             visited_sessions.add(session_id)
-            
-            # Try to get token count from session object first
+
             session_tokens = 0
-            
-            # For current session, use window value instead of metadata
             if is_current:
-                session_tokens = usage["total"]
+                session_tokens = legacy_usage["total"]
             else:
-                # For non-current sessions, try to get from index first
-                index_data = session_manager.session_index.get(session_id, {})
-                if "token_count" in index_data:
-                    session_tokens = index_data["token_count"]
-                
-                # If not in index, try to get from session object
+                idx_data = session_manager.session_index.get(session_id, {})
+                if "token_count" in idx_data:
+                    session_tokens = idx_data["token_count"]
                 elif session_id in session_manager.sessions:
-                    session = session_manager.sessions[session_id][0]
-                    session_tokens = session.total_tokens
-            
-            # Add to sessions dict 
-            usage["sessions"][session_id] = {"total": session_tokens}
-            
-            # Check for continuation sessions
-            index_entry = session_manager.session_index.get(session_id, {})
-            
-            # Get continued_from sessions
-            if "continued_from" in index_entry and not is_current:
-                prev_session = index_entry["continued_from"]
-                add_session_tokens(prev_session)
-            
-            # Get continued_to sessions    
-            if "continued_to" in index_entry and not is_current:
-                next_session = index_entry["continued_to"]
-                add_session_tokens(next_session)
-            
+                    session_obj = session_manager.sessions[session_id][0]
+                    session_tokens = session_obj.total_tokens
+
+            legacy_usage["sessions"][session_id] = {"total": session_tokens}
+
+            idx_entry = session_manager.session_index.get(session_id, {})
+            if "continued_from" in idx_entry and not is_current:
+                _add_session_tokens(idx_entry["continued_from"])
+            if "continued_to" in idx_entry and not is_current:
+                _add_session_tokens(idx_entry["continued_to"])
+
             return session_tokens
-        
-        # Track tokens from current session
-        current_tokens = add_session_tokens(current_session.id, is_current=True)
-        
-        # Now add up the total across all sessions
-        chain_total = 0
-        for session_id, data in usage["sessions"].items():
-            # For continuation sessions, only count what's not in the current session
-            # ----
-            index_data = session_manager.session_index.get(session_id, {})
-            is_in_chain = (
-                index_data.get("continued_from") in visited_sessions or
-                index_data.get("continued_to") in visited_sessions
-            )
-            # ----
-            # Only add tokens for non-current sessions to avoid double counting
-            if session_id != current_session.id:
-                chain_total += data["total"]
-        
-        # Add chain total to usage dict
-        usage["chain_total"] = chain_total + current_tokens
-        
-        # Use chain_total as the master total if it's larger
-        if chain_total + current_tokens > usage["total"]:
-            usage["total"] = chain_total + current_tokens
-        
-        # Add a total across all sessions regardless of chain relationships
-        # usage["total_all_sessions"] = sum(data["total"] for data in usage["sessions"].values())
-        
-        return usage
+
+        # Seed with current session tokens
+        _ = _add_session_tokens(current_session.id, is_current=True)
+
+        # Chain total calculation (legacy)
+        chain_total = sum(v["total"] for k, v in legacy_usage["sessions"].items())
+        legacy_usage["chain_total"] = chain_total
+        # Keep legacy total as the larger of current window or chain
+        legacy_usage["total"] = max(legacy_usage["total"], chain_total)
+
+        # ------------------------------------------------------------------
+        # Merge legacy keys into the standardized structure (do not override
+        # the new ones).
+        # ------------------------------------------------------------------
+        merged_usage = {**legacy_usage, **standardized_usage}
+        return merged_usage
         
     def reset(self) -> None:
         """Reset conversation state."""

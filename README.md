@@ -1,4 +1,4 @@
-[![Penguin](https://img.shields.io/badge/🐧-Penguin_AI-00A7E1?style=for-the-badge&logoColor=white)](https://github.com/maximooch/penguin)
+[![Penguin](https://img.shields.io/badge/🐧-Penguin-00A7E1?style=for-the-badge&logoColor=white)](https://github.com/maximooch/penguin)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Documentation Status](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://penguin-rho.vercel.app)
@@ -39,8 +39,9 @@ penguin-web  # Web interface
 ## 🎯 Development Status
 - ✅ Core functionality
 - ✅ Basic CLI interface (penguin)
-- ✅ Model integration (LiteLLM, could be better)
+- ✅ Model integration (OpenRouter, Ollama and other open source inference engines soon))
 - 🚧 Advanced features (in progress)
+   - 
 - 📅 Web interface (penguin-web and Link, planned)
 - 📅 Plugin system (planned)
 

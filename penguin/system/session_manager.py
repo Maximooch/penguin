@@ -18,6 +18,7 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
+import builtins
 
 from penguin.config import CONVERSATIONS_PATH
 from penguin.system.state import Message, MessageCategory, Session, create_message
@@ -90,7 +91,7 @@ class SessionManager:
             return index
             
         try:
-            with open(self.index_path, 'r', encoding='utf-8') as f:
+            with builtins.open(self.index_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
             logger.error(f"Error loading session index: {str(e)}")
@@ -110,7 +111,7 @@ class SessionManager:
             session_id = path.stem
             try:
                 # Load minimal metadata without loading all messages
-                with open(path, 'r', encoding='utf-8') as f:
+                with builtins.open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     
                 # Extract key metadata
@@ -136,7 +137,7 @@ class SessionManager:
         try:
             # Write to temp file first - fix the suffix
             temp_path = Path(f"{self.index_path}.temp")  # Fix: Use explicit Path constructor
-            with open(temp_path, 'w', encoding='utf-8') as f:
+            with builtins.open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(index, f, indent=2)
                 
             # Atomic rename
@@ -283,7 +284,7 @@ class SessionManager:
         if not file_path.exists():
             return None
             
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with builtins.open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
         session = Session.from_dict(data)
@@ -374,7 +375,7 @@ class SessionManager:
             session.metadata["token_count"] = token_count
             
             # Write to temp file first
-            with open(temp_path, 'w', encoding='utf-8') as f:
+            with builtins.open(temp_path, 'w', encoding='utf-8') as f:
                 f.write(session.to_json())
                 
             # Create backup of current file if it exists
@@ -616,7 +617,7 @@ class SessionManager:
                             result.append(session_data)
                             continue
                             
-                        with open(session_path, 'r', encoding='utf-8') as f:
+                        with builtins.open(session_path, 'r', encoding='utf-8') as f:
                             try:
                                 # Load only part of the file to find first user message
                                 data = json.load(f)

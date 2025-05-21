@@ -157,6 +157,22 @@ class ContextWindowManager:
                 max_tokens=budget,
                 current_tokens=0
             )
+        
+        # ------------------------------------------------------------------
+        # Ensure **all** MessageCategory values have a budget entry.
+        # Some categories (e.g. ERROR, INTERNAL, UNKNOWN) were previously
+        # missing which caused AttributeError crashes when later code
+        # attempted to access attributes on a `None` budget.  Assign a small
+        # default budget so they are at least tracked safely.
+        # ------------------------------------------------------------------
+        default_max = int(total_budget * 0.05)  # 5 % fallback per uncategorised
+        for category in MessageCategory:
+            if category not in self._budgets:
+                self._budgets[category] = TokenBudget(
+                    min_tokens=0,
+                    max_tokens=default_max,
+                    current_tokens=0,
+                )
     
     @property
     def total_budget(self) -> int:
@@ -523,6 +539,9 @@ class ContextWindowManager:
                 continue
                 
             budget = self._budgets.get(category)
+            # Skip categories that do not have an explicit budget (safety)
+            if budget is None:
+                continue
             category_tokens = stats["per_category"].get(category, 0)
             if category_tokens > budget.max_tokens:
                 categories_over_budget.append(category)
