@@ -1,39 +1,11 @@
 """Tools module for Penguin system."""
 
-from .core.support import (
-    create_file,
-    create_folder,
-    encode_image_to_base64,
-    find_file,
-    list_files,
-    read_file,
-    write_to_file,
-)
+# Only import the essential ToolManager class directly
+# Other imports will be lazy-loaded when needed
 from .tool_manager import ToolManager
 
-# from .code_visualizer import CodeVisualizer
-# from .visualize import visualize
-
-# Import the new PyDoll browser tools
-from penguin.tools.pydoll_tools import (
-    pydoll_browser_manager, 
-    PyDollBrowserNavigationTool, 
-    PyDollBrowserInteractionTool, 
-    PyDollBrowserScreenshotTool,
-    initialize_browser as initialize_pydoll_browser
-)
-
-# Keep existing imports
-from penguin.tools.browser_tools import (
-    browser_manager,
-    initialize_browser,
-    BrowserNavigationTool,
-    BrowserInteractionTool,
-    BrowserScreenshotTool
-)
-
-from penguin.tools.registry import ToolRegistry
-
+# DO NOT directly import other modules or classes here - they should be lazy loaded
+# Keep the list of exports so the API remains the same
 __all__ = [
     "ToolManager",
     "ToolRegistry",
@@ -42,7 +14,7 @@ __all__ = [
     "BrowserNavigationTool",
     "BrowserInteractionTool",
     "BrowserScreenshotTool",
-    # Add PyDoll browser tools
+    # PyDoll browser tools
     "pydoll_browser_manager",
     "initialize_pydoll_browser",
     "PyDollBrowserNavigationTool",
@@ -56,3 +28,31 @@ __all__ = [
     "encode_image_to_base64",
     "find_file",
 ]
+
+# Lazy loading mechanism for tool imports
+def __getattr__(name):
+    """Lazily import tools when they're first accessed."""
+    if name in __all__:
+        if name == "ToolRegistry":
+            from .registry import ToolRegistry
+            return ToolRegistry
+        elif name in ["create_folder", "create_file", "write_to_file", "read_file", "list_files", "encode_image_to_base64", "find_file"]:
+            from .core.support import (
+                create_folder, create_file, write_to_file, read_file, 
+                list_files, encode_image_to_base64, find_file
+            )
+            return locals()[name]
+        elif name in ["browser_manager", "initialize_browser", "BrowserNavigationTool", "BrowserInteractionTool", "BrowserScreenshotTool"]:
+            from .browser_tools import (
+                browser_manager, initialize_browser, 
+                BrowserNavigationTool, BrowserInteractionTool, BrowserScreenshotTool
+            )
+            return locals()[name]
+        elif name in ["pydoll_browser_manager", "initialize_pydoll_browser", "PyDollBrowserNavigationTool", "PyDollBrowserInteractionTool", "PyDollBrowserScreenshotTool"]:
+            from .pydoll_tools import (
+                pydoll_browser_manager, initialize_pydoll_browser,
+                PyDollBrowserNavigationTool, PyDollBrowserInteractionTool, PyDollBrowserScreenshotTool
+            )
+            return locals()[name]
+    
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

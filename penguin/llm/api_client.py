@@ -287,6 +287,8 @@ class APIClient:
                  self.logger.debug(f"[APIClient:{request_id_api}] Callback object details: {effective_callback}")
             # <<< END LOGGING >>>
 
+            self.logger.info(f"[APIClient:{request_id_api}] PRE-CALL TO HANDLER: use_streaming={use_streaming}, effective_callback is {effective_callback}")
+
             response_text = await self.client_handler.get_response(
                 messages=prepared_messages,
                 max_tokens=max_tokens or self.model_config.max_tokens,

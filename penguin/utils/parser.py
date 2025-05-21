@@ -155,6 +155,7 @@ class ActionExecutor:
         self.process_manager = ProcessManager()
         self.current_process = None
         self.conversation_system = conversation_system
+        # No direct initialization of expensive tools, we'll use tool_manager's properties
 
     async def execute_action(self, action: CodeActAction) -> str:
         logger.debug(f"Attempting to execute action: {action.action_type.value}")
@@ -398,6 +399,7 @@ class ActionExecutor:
                 parts[5].strip() if len(parts) > 5 and parts[5].strip() else None
             )
 
+            # Use the tool_manager's memory_search method which will access the lazily loaded memory_searcher
             results = self.tool_manager.search_memory(
                 query=query,
                 max_results=max_results,

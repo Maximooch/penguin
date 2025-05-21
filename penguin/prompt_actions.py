@@ -144,20 +144,13 @@ Track high-level plan progress.
 
 ---
 
-### Web Browser Interaction (`browser_*` tools)
-
-Control a browser for web tasks.
-
--   `<browser_navigate>URL</browser_navigate >`
--   `<browser_interact>action:selector[:text]</browser_interact >` (`click`, `input`, `submit`)
--   `<browser_screenshot></browser_screenshot >`
 
 **Notes:**
 -   Navigate first. Use specific selectors.
 -   **MANDATORY WORKFLOW:**
-    1.  After **every** successful `<browser_navigate>` action, your **immediate next step MUST be `<browser_screenshot>`**.
+    1.  After **every** successful browser action, your **immediate next step MUST be `<pydoll_browser_screenshot>`**.
     2.  **Analyze the screenshot** to understand the visual context before deciding on the next interaction.
-    3.  After **every** `<browser_interact>` action (like click or input), your **immediate next step MUST be `<browser_screenshot>`** to verify the result of the interaction visually.
+    3.  After **every** `<pydoll_browser_interact>` action (like click or input), your **immediate next step MUST be `<pydoll_browser_screenshot>`** to verify the result of the interaction visually.
 -   Verify state with screenshots *before* proceeding.
 
 ### PyDoll Browser Interaction (`pydoll_browser_*` tools)
@@ -247,12 +240,7 @@ Description: Run code in the terminal, using iPython or shell/bash (depending on
 
 # Browser Automation
 
-## Standard Browser Tools
-<browser_navigate>https://www.example.com</browser_navigate> - Navigate to a URL
-<browser_interact>click:.search-button</browser_interact> - Click on an element
-<browser_interact>input:#search-box:search term</browser_interact> - Input text into a field
-<browser_interact>submit:form#login</browser_interact> - Submit a form
-<browser_screenshot></browser_screenshot> - Take a screenshot of the current page
+
 
 ## PyDoll Browser Tools (No WebDriver Required)
 <pydoll_browser_navigate>https://www.example.com</pydoll_browser_navigate> - Navigate to a URL using PyDoll

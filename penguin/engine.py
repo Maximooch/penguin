@@ -118,14 +118,14 @@ class Engine:
     # Public API
     # ------------------------------------------------------------------
 
-    async def run_single_turn(self, prompt: str, *, tools_enabled: bool = True, streaming: Optional[bool] = None):
+    async def run_single_turn(self, prompt: str, *, image_path: Optional[str] = None, tools_enabled: bool = True, streaming: Optional[bool] = None, stream_callback: Optional[Callable[[str], None]] = None):
         """Run a single reasoning → (optional) action → response cycle.
 
         Returns the same structured dict that ``_llm_step`` emits so callers
         may access both the assistant text **and** any action_results.
         """
-        self.conversation_manager.conversation.prepare_conversation(prompt)
-        response_data = await self._llm_step(tools_enabled=tools_enabled, streaming=streaming)
+        self.conversation_manager.conversation.prepare_conversation(prompt, image_path)
+        response_data = await self._llm_step(tools_enabled=tools_enabled, streaming=streaming, stream_callback=stream_callback)
         return response_data
 
     async def stream(self, prompt: str):
@@ -214,13 +214,28 @@ class Engine:
                 self.current_iteration += 1
                 logger.debug("Engine iteration %s", self.current_iteration)
 
-                # Get the next response via LLM
-                response_data = await self._llm_step()
-                last_response = response_data.get("assistant_response", "")
-                
-                # Call the message callback if provided
-                if message_callback and last_response:
+                # --- Streaming & LLM Call --- 
+                llm_step_actual_stream_cb = None
+                if message_callback: # message_callback is from Engine.run_task args
+                    async def _engine_internal_chunk_handler(chunk: str):
+                        # This calls the RunMode._engine_message_cb with type "assistant"
+                        await message_callback(chunk, "assistant") 
+                    llm_step_actual_stream_cb = _engine_internal_chunk_handler
+
+                response_data = await self._llm_step(
+                    tools_enabled=True, # Default for run_task
+                    streaming=self.settings.streaming_default, # Engine's default streaming preference
+                    stream_callback=llm_step_actual_stream_cb
+                )
+                last_response = response_data.get("assistant_response", "") # This is the full response
+
+                # If not streaming (or if stream callback wasn't effectively used by _llm_step),
+                # ensure the full response is passed to the message_callback for non-chunk handling.
+                # The RunMode._engine_message_cb will then add it to conversation if not streamed to CLI.
+                was_streamed_to_cb = self.settings.streaming_default and llm_step_actual_stream_cb is not None
+                if not was_streamed_to_cb and message_callback and last_response:
                     await message_callback(last_response, "assistant")
+                # --- End Streaming & LLM Call ---
                 
                 # Add any action results from this step
                 iteration_results = response_data.get("action_results", [])
@@ -229,15 +244,22 @@ class Engine:
                     
                     # Display action results via callback
                     if message_callback:
-                        for result in iteration_results:
-                            if isinstance(result, dict):
-                                result_type = "output" if result.get("status") == "completed" else "error"
-                                result_msg = f"{result.get('action', 'Unknown')}: {result.get('result', 'No output')}"
+                        for tool_result_info in iteration_results: # iteration_results are from self._llm_step
+                            if isinstance(tool_result_info, dict):
+                                action_name = tool_result_info.get("action_name", "UnknownAction")
+                                output_str = tool_result_info.get("output", "")
+                                status = tool_result_info.get("status", "completed")
+
+                                # Determine message_type for the callback
+                                callback_message_type = "tool_result" # Default for processed tool outputs
+                                if status != "completed":
+                                    callback_message_type = "tool_error" # If status indicates an error
+                                
+                                # Pass the action_name to message_callback
+                                await message_callback(output_str, callback_message_type, action_name=action_name)
                             else:
-                                # Handle string results
-                                result_type = "output"
-                                result_msg = str(result)
-                            await message_callback(result_msg, result_type)
+                                # Fallback for old format or direct string results (less ideal)
+                                await message_callback(str(tool_result_info), "system_output") # Generic type
 
                 # Publish progress event
                 if enable_events:
@@ -351,21 +373,49 @@ class Engine:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _llm_step(self, *, tools_enabled: bool = True, streaming: Optional[bool] = None):
+    async def _llm_step(self, *, tools_enabled: bool = True, streaming: Optional[bool] = None, stream_callback: Optional[Callable[[str], None]] = None):
         messages = self.conversation_manager.conversation.get_formatted_messages()
-        assistant_response = await self.api_client.get_response(messages, stream=streaming)
+        # First attempt – honour requested streaming setting
+        assistant_response = await self.api_client.get_response(
+            messages,
+            stream=streaming,
+            stream_callback=stream_callback,
+        )
 
-        # Add assistant message to conversation
-        self.conversation_manager.conversation.add_assistant_message(assistant_response)
+        # If we received **no content**, retry once with *stream=False* (some providers
+        # fail in streaming-mode but succeed with a normal completion request).
+        if not assistant_response or not assistant_response.strip():
+            logger.warning("_llm_step got empty response (stream=%s). Retrying once without streaming.", streaming)
+            assistant_response = await self.api_client.get_response(messages, stream=False)
+
+        # Still empty? Give up but do NOT pollute the history with blank messages.
+        if not assistant_response or not assistant_response.strip():
+            logger.error("_llm_step received empty response after fallback attempt. Skipping message persistence.")
+            assistant_response = ""  # Preserve empty for caller but avoid history entry.
+        else:
+            # Persist only non-empty assistant messages
+            self.conversation_manager.conversation.add_assistant_message(assistant_response)
 
         action_results = []
         if tools_enabled:
             actions: List[CodeActAction] = parse_action(assistant_response)
             for act in actions:
                 result = await self.action_executor.execute_action(act)
-                action_results.append(result)
-                # Persist result
-                self.conversation_manager.add_action_result(act.action_type.value, str(result))
+                # Format result for display
+                action_result = {
+                    "action_name": act.action_type.value if hasattr(act.action_type, 'value') else str(act.action_type),
+                    "output": str(result if result is not None else ""),
+                    "status": "completed" # Assuming direct call to action_executor implies success if no exception
+                }
+                action_results.append(action_result)
+                
+                # Persist result in conversation - CRITICAL FIX
+                self.conversation_manager.add_action_result(
+                    action_type=action_result["action_name"],
+                    result=action_result["output"],
+                    status=action_result["status"]
+                )
+                logger.debug(f"Added action result to conversation: {action_result['action_name']}")
 
         # Persist conversation state
         self.conversation_manager.save()

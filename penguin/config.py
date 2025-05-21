@@ -105,7 +105,8 @@ config['paths'] = {
     'logs': str(WORKSPACE_PATH / 'logs'),
 }
 
-print(f"Workspace path: {WORKSPACE_PATH}")  # This will help us confirm the correct path
+# Avoid noisy stdout during normal startup; log at DEBUG level instead.
+logger.debug(f"Workspace path: {WORKSPACE_PATH}")
 
 # Set up logging
 # logging.basicConfig(level=logging.DEBUG)
@@ -304,7 +305,7 @@ class Config:
             config_data = {}
 
         if not config_data:
-            print("Warning: Configuration file not found or empty. Using default settings.")
+            logging.getLogger(__name__).warning("Configuration file not found or empty. Using default settings.")
             # If config fails to load, create a default ModelConfig using environment variables
             default_llm_model_config = LLMModelConfig.from_env()
             return cls(model_config=default_llm_model_config)

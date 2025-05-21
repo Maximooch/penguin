@@ -1,0 +1,189 @@
+For some reason I can't add this to cursor, so this is the next best option:
+
+(base) maximusputnam@maximuss-air Penguin % penguin
+WARNING:penguin.tools.core.memory_search:SQLite Compatibility Warning – chromadb may require the pysqlite3 binary package.
+WARNING:penguin.tools.core.memory_search:Recommended fix: pip install pysqlite3-binary
+🐧  Penguin v0.1.0
+────────────────────────────────────
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 🔧  Creating tool manager ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╺━━━━━ 6/7 │ 86% 0:00:04                            │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯DEBUG:penguin.local_task.manager:Initializing ProjectManager with workspace: /Users/maximusputnam/Documents/code/Penguin/penguin_workspace
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 🐧  Creating core instance ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 7/7 │100% 0:00:04                           │
+✅  Initialization complete
+╭─────────────────────────────────────── Traceback (most recent call last) ───────────────────────────────────────╮
+│ /Users/maximusputnam/Documents/code/Penguin/penguin/penguin/chat/cli.py:440 in main_entry                       │
+│                                                                                                                 │
+│   437 │   │   │   asyncio.run(_run_penguin_direct_prompt(prompt))                                               │
+│   438 │   │   else:                                                                                             │
+│   439 │   │   │   # Default behavior: launch interactive chat                                                   │
+│ ❱ 440 │   │   │   asyncio.run(_run_interactive_chat())                                                          │
+│   441                                                                                                           │
+│   442 if __name__ == "__main__":                                                                                │
+│   443 │   app()                                                                                                 │
+│                                                                                                                 │
+│ ╭────────────────────── locals ───────────────────────╮                                                         │
+│ │    ctx = <click.core.Context object at 0x102bc5ee0> │                                                         │
+│ │ prompt = None                                       │                                                         │
+│ ╰─────────────────────────────────────────────────────╯                                                         │
+│                                                                                                                 │
+│ /Users/maximusputnam/miniconda3/lib/python3.12/asyncio/runners.py:194 in run                                    │
+│                                                                                                                 │
+│   191 │   │   │   "asyncio.run() cannot be called from a running event loop")                                   │
+│   192 │                                                                                                         │
+│   193 │   with Runner(debug=debug, loop_factory=loop_factory) as runner:                                        │
+│ ❱ 194 │   │   return runner.run(main)                                                                           │
+│   195                                                                                                           │
+│   196                                                                                                           │
+│   197 def _cancel_all_tasks(loop):                                                                              │
+│                                                                                                                 │
+│ ╭──────────────────────────────── locals ────────────────────────────────╮                                      │
+│ │        debug = None                                                    │                                      │
+│ │ loop_factory = None                                                    │                                      │
+│ │         main = <coroutine object _run_interactive_chat at 0x149135010> │                                      │
+│ │       runner = <asyncio.runners.Runner object at 0x149168e90>          │                                      │
+│ ╰────────────────────────────────────────────────────────────────────────╯                                      │
+│                                                                                                                 │
+│ /Users/maximusputnam/miniconda3/lib/python3.12/asyncio/runners.py:118 in run                                    │
+│                                                                                                                 │
+│   115 │   │                                                                                                     │
+│   116 │   │   self._interrupt_count = 0                                                                         │
+│   117 │   │   try:                                                                                              │
+│ ❱ 118 │   │   │   return self._loop.run_until_complete(task)                                                    │
+│   119 │   │   except exceptions.CancelledError:                                                                 │
+│   120 │   │   │   if self._interrupt_count > 0:                                                                 │
+│   121 │   │   │   │   uncancel = getattr(task, "uncancel", None)                                                │
+│                                                                                                                 │
+│ ╭────────────────────────────────────────────────── locals ───────────────────────────────────────────────────╮ │
+│ │        context = <_contextvars.Context object at 0x14883a700>                                               │ │
+│ │           coro = <coroutine object _run_interactive_chat at 0x149135010>                                    │ │
+│ │           self = <asyncio.runners.Runner object at 0x149168e90>                                             │ │
+│ │ sigint_handler = functools.partial(<bound method Runner._on_sigint of <asyncio.runners.Runner object at     │ │
+│ │                  0x149168e90>>, main_task=<Task finished name='Task-1' coro=<_run_interactive_chat() done,  │ │
+│ │                  defined at /Users/maximusputnam/Documents/code/Penguin/penguin/penguin/chat/cli.py:180>    │ │
+│ │                  exception=TypeError('a coroutine was expected, got None')>)                                │ │
+│ │           task = <Task finished name='Task-1' coro=<_run_interactive_chat() done, defined at                │ │
+│ │                  /Users/maximusputnam/Documents/code/Penguin/penguin/penguin/chat/cli.py:180>               │ │
+│ │                  exception=TypeError('a coroutine was expected, got None')>                                 │ │
+│ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│                                                                                                                 │
+│ /Users/maximusputnam/miniconda3/lib/python3.12/asyncio/base_events.py:686 in run_until_complete                 │
+│                                                                                                                 │
+│    683 │   │   if not future.done():                                                                            │
+│    684 │   │   │   raise RuntimeError('Event loop stopped before Future completed.')                            │
+│    685 │   │                                                                                                    │
+│ ❱  686 │   │   return future.result()                                                                           │
+│    687 │                                                                                                        │
+│    688 │   def stop(self):                                                                                      │
+│    689 │   │   """Stop running the event loop.                                                                  │
+│                                                                                                                 │
+│ ╭────────────────────────────────────────────────── locals ───────────────────────────────────────────────────╮ │
+│ │   future = <Task finished name='Task-1' coro=<_run_interactive_chat() done, defined at                      │ │
+│ │            /Users/maximusputnam/Documents/code/Penguin/penguin/penguin/chat/cli.py:180>                     │ │
+│ │            exception=TypeError('a coroutine was expected, got None')>                                       │ │
+│ │ new_task = False                                                                                            │ │
+│ │     self = <_UnixSelectorEventLoop running=False closed=True debug=False>                                   │ │
+│ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│                                                                                                                 │
+│ /Users/maximusputnam/Documents/code/Penguin/penguin/penguin/chat/cli.py:183 in _run_interactive_chat            │
+│                                                                                                                 │
+│   180 async def _run_interactive_chat():                                                                        │
+│   181 │   """Run the interactive chat interface, providing a REPL experience."""                                │
+│   182 │   logger.debug("Starting _run_interactive_chat")                                                        │
+│ ❱ 183 │   await ensure_core_components()                                                                        │
+│   184 │   logger.debug("Core components initialized")                                                           │
+│   185 │                                                                                                         │
+│   186 │   if not _core or not _renderer:                                                                        │
+│                                                                                                                 │
+│ /Users/maximusputnam/Documents/code/Penguin/penguin/penguin/chat/cli.py:129 in ensure_core_components           │
+│                                                                                                                 │
+│   126 │                                                                                                         │
+│   127 │   if _renderer is None and _core:                                                                       │
+│   128 │   │   # Create the renderer and pass the Core instance directly                                         │
+│ ❱ 129 │   │   _renderer = CLIRenderer(console, _core)                                                           │
+│   130 │                                                                                                         │
+│   131 │   if _renderer and _core and _core.model_config and _core.model_config.model:                           │
+│   132 │   │   _renderer.set_current_model(_core.model_config.model)                                             │
+│                                                                                                                 │
+│ ╭────────────────────────────────────────────────── locals ───────────────────────────────────────────────────╮ │
+│ │            _logging_mod = <module 'logging' from                                                            │ │
+│ │                           '/Users/maximusputnam/miniconda3/lib/python3.12/logging/__init__.py'>             │ │
+│ │              bar_column = <rich.progress.BarColumn object at 0x1491b53a0>                                   │ │
+│ │            count_column = <rich.progress.TextColumn object at 0x1491b5460>                                  │ │
+│ │            divider_text = <text '────────────────────────────────────' [] 'dim'>                            │ │
+│ │                   ICONS = {                                                                                 │ │
+│ │                           │   'Loading environment': '🔧',                                                  │ │
+│ │                           │   'Setting up logging': '🛠️',                                                    │ │
+│ │                           │   'Loading configuration': '⚙️',                                                 │ │
+│ │                           │   'Creating model config': '🧩',                                                │ │
+│ │                           │   'Initializing API client': '🔌',                                              │ │
+│ │                           │   'Creating tool manager': '🔧',                                                │ │
+│ │                           │   'Creating core instance': '🐧',                                               │ │
+│ │                           │   'Initializing CLI': '💬',                                                     │ │
+│ │                           │   'Initialization complete': '✅'                                               │ │
+│ │                           }                                                                                 │ │
+│ │         live_renderable = <rich.panel.Panel object at 0x149140aa0>                                          │ │
+│ │          percent_column = <rich.progress.TextColumn object at 0x1491b54c0>                                  │ │
+│ │              prev_level = 30                                                                                │ │
+│ │                progress = <rich.progress.Progress object at 0x1491b5580>                                    │ │
+│ │             root_logger = <RootLogger root (WARNING)>                                                       │ │
+│ │      show_init_progress = True                                                                              │ │
+│ │ step_description_column = <rich.progress.TextColumn object at 0x1491b5250>                                  │ │
+│ │                 task_id = 0                                                                                 │ │
+│ │             time_column = <rich.progress.TimeElapsedColumn object at 0x1491b5550>                           │ │
+│ │ total_steps_placeholder = 7                                                                                 │ │
+│ │             VERSION_STR = 'v0.1.0'                                                                          │ │
+│ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│                                                                                                                 │
+│ /Users/maximusputnam/Documents/code/Penguin/penguin/penguin/chat/ui.py:175 in __init__                          │
+│                                                                                                                 │
+│   172 │   │                                                                                                     │
+│   173 │   │   # Register with Core for events                                                                   │
+│   174 │   │   if self.core:                                                                                     │
+│ ❱ 175 │   │   │   asyncio.create_task(self.core.register_ui(self.handle_event))                                 │
+│   176 │   │   │   logger.debug("Registered with Core for UI events")                                            │
+│   177 │   │                                                                                                     │
+│   178 │   │   # Call update once to build initial state                                                         │
+│                                                                                                                 │
+│ ╭─────────────────────────── locals ────────────────────────────╮                                               │
+│ │ console = <console width=115 ColorSystem.TRUECOLOR>           │                                               │
+│ │    core = <penguin.core.PenguinCore object at 0x14a2244a0>    │                                               │
+│ │    self = <penguin.chat.ui.CLIRenderer object at 0x14aba9580> │                                               │
+│ ╰───────────────────────────────────────────────────────────────╯                                               │
+│                                                                                                                 │
+│ /Users/maximusputnam/miniconda3/lib/python3.12/asyncio/tasks.py:420 in create_task                              │
+│                                                                                                                 │
+│    417 │   loop = events.get_running_loop()                                                                     │
+│    418 │   if context is None:                                                                                  │
+│    419 │   │   # Use legacy API if context is not needed                                                        │
+│ ❱  420 │   │   task = loop.create_task(coro)                                                                    │
+│    421 │   else:                                                                                                │
+│    422 │   │   task = loop.create_task(coro, context=context)                                                   │
+│    423                                                                                                          │
+│                                                                                                                 │
+│ ╭───────────────────────────────── locals ─────────────────────────────────╮                                    │
+│ │ context = None                                                           │                                    │
+│ │    coro = None                                                           │                                    │
+│ │    loop = <_UnixSelectorEventLoop running=False closed=True debug=False> │                                    │
+│ │    name = None                                                           │                                    │
+│ ╰──────────────────────────────────────────────────────────────────────────╯                                    │
+│                                                                                                                 │
+│ /Users/maximusputnam/miniconda3/lib/python3.12/asyncio/base_events.py:457 in create_task                        │
+│                                                                                                                 │
+│    454 │   │   """                                                                                              │
+│    455 │   │   self._check_closed()                                                                             │
+│    456 │   │   if self._task_factory is None:                                                                   │
+│ ❱  457 │   │   │   task = tasks.Task(coro, loop=self, name=name, context=context)                               │
+│    458 │   │   │   if task._source_traceback:                                                                   │
+│    459 │   │   │   │   del task._source_traceback[-1]                                                           │
+│    460 │   │   else:                                                                                            │
+│                                                                                                                 │
+│ ╭───────────────────────────────── locals ─────────────────────────────────╮                                    │
+│ │ context = None                                                           │                                    │
+│ │    coro = None                                                           │                                    │
+│ │    name = None                                                           │                                    │
+│ │    self = <_UnixSelectorEventLoop running=False closed=True debug=False> │                                    │
+│ ╰──────────────────────────────────────────────────────────────────────────╯                                    │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+TypeError: a coroutine was expected, got None
+(base) maximusputnam@maximuss-air Penguin % 

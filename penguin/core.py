@@ -33,6 +33,8 @@ Core Methods:
         provider: Optional[str] = None,
         workspace_path: Optional[str] = None,
         enable_cli: bool = False,
+        show_progress: bool = True,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> Union["PenguinCore", Tuple["PenguinCore", "PenguinCLI"]]:
         Factory method for creating PenguinCore instance with optional CLI
 
@@ -80,6 +82,8 @@ Core Methods:
         continuous: bool = False,
         time_limit: Optional[int] = None,
         mode_type: str = "task",
+        stream_callback_for_cli: Optional[Callable[[str], Awaitable[None]]] = None,
+        ui_update_callback_for_cli: Optional[Callable[[], Awaitable[None]]] = None
     ) -> None:
         Start autonomous run mode for task execution
 
@@ -142,9 +146,10 @@ import time
 import traceback
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union, Callable
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union, Callable, Awaitable, Set
 import asyncio
 import json
+from datetime import datetime
 
 from dotenv import load_dotenv  # type: ignore
 from rich.console import Console  # type: ignore
@@ -190,6 +195,8 @@ from penguin.utils.diagnostics import diagnostics, enable_diagnostics, disable_d
 from penguin.utils.log_error import log_error
 from penguin.utils.parser import ActionExecutor, parse_action
 
+# Add the EventHandler type for type hinting
+EventHandler = Callable[[str, Dict[str, Any]], Union[Awaitable[None], None]]
 
 if TYPE_CHECKING:
     from penguin.chat.cli import PenguinCLI
@@ -219,6 +226,7 @@ class PenguinCore:
         api_client (APIClient): Handles API communication
         config (Config): System configuration
         model_config (ModelConfig): Model-specific configuration
+        ui_subscribers (List[EventHandler]): UI components that receive events
     """
     
     @classmethod
@@ -229,13 +237,31 @@ class PenguinCore:
         provider: Optional[str] = None,
         workspace_path: Optional[str] = None,
         enable_cli: bool = False,
+        show_progress: bool = True,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None
     ) -> Union["PenguinCore", Tuple["PenguinCore", "PenguinCLI"]]:
         """
         Factory method for creating PenguinCore instance.
         Returns either PenguinCore alone or with CLI if enable_cli=True
         """
+        pbar = None # Initialize pbar to None
+        # Track detailed timing for profiling
+        import time
+        from collections import defaultdict
+        timings = defaultdict(float)
+        step_start_time = time.time()
+        overall_start_time = step_start_time
+        
+        def log_step_time(step_name: str):
+            nonlocal step_start_time
+            step_end_time = time.time()
+            elapsed = step_end_time - step_start_time
+            timings[step_name] = elapsed
+            logger.info(f"PROFILING: {step_name} took {elapsed:.4f} seconds")
+            step_start_time = step_end_time
+        
         try:
-            # Initialize progress bar
+            # Initialize progress bar only if show_progress is True
             steps = [
                 "Loading environment",
                 "Setting up logging",
@@ -248,18 +274,29 @@ class PenguinCore:
             if enable_cli:
                 steps.append("Initializing CLI")
 
-            pbar = tqdm(steps, desc="Initializing Penguin", unit="step")
-
-            # Track start time
-            start_time = time.time()
+            total_steps = len(steps)
+            if show_progress and progress_callback is None:
+                # Fall back to tqdm console only if no external callback provided
+                pbar = tqdm(steps, desc="Initializing Penguin", unit="step")
+            # Internal helper to advance external progress callback if supplied
+            current_step_index = 0
 
             # Step 1: Load environment
-            pbar.set_description("Loading environment")
+            logger.info("STARTUP: Loading environment variables")
+            if pbar: pbar.set_description("Loading environment")
+            if progress_callback:
+                current_step_index += 1
+                progress_callback(current_step_index, total_steps, "Loading environment")
             load_dotenv()
-            pbar.update(1)
+            if pbar: pbar.update(1)
+            log_step_time("Load environment")
 
             # Step 2: Initialize logging
-            pbar.set_description("Setting up logging")
+            logger.info("STARTUP: Setting up logging configuration")
+            if pbar: pbar.set_description("Setting up logging")
+            if progress_callback:
+                current_step_index += 1
+                progress_callback(current_step_index, total_steps, "Setting up logging")
             logging.basicConfig(level=logging.WARNING)
             for logger_name in [
                 "httpx",
@@ -270,66 +307,114 @@ class PenguinCore:
             ]:
                 logging.getLogger(logger_name).setLevel(logging.WARNING)
             logging.getLogger("chat").setLevel(logging.DEBUG)
-            pbar.update(1)
+            if pbar: pbar.update(1)
+            log_step_time("Setup logging")
 
             # Load configuration
-            pbar.set_description("Loading configuration")
+            logger.info("STARTUP: Loading and parsing configuration")
+            if pbar: pbar.set_description("Loading configuration")
+            if progress_callback:
+                current_step_index += 1
+                progress_callback(current_step_index, total_steps, "Loading configuration")
+            start_config_time = time.time()
             config = config or Config.load_config()
-            pbar.update(1)
+            logger.info(f"STARTUP: Config loaded in {time.time() - start_config_time:.4f}s")
+            if pbar: pbar.update(1)
+            log_step_time("Load configuration")
 
             # Initialize model configuration
-            pbar.set_description("Creating model config")
+            logger.info("STARTUP: Creating model configuration")
+            if pbar: pbar.set_description("Creating model config")
+            if progress_callback:
+                current_step_index += 1
+                progress_callback(current_step_index, total_steps, "Creating model config")
             model_config = ModelConfig(
-                model=model or DEFAULT_MODEL,
-                provider=provider or DEFAULT_PROVIDER,
-                api_base=config.api.base_url,
+                model=model or config.model.get("default", DEFAULT_MODEL), # Use config.model.get
+                provider=provider or config.model.get("provider", DEFAULT_PROVIDER),
+                api_base=config.api.base_url if hasattr(config, 'api') and hasattr(config.api, 'base_url') else None, # Safe access
                 use_assistants_api=config.model.get("use_assistants_api", False),
                 client_preference=config.model.get("client_preference", "native"),
                 streaming_enabled=config.model.get("streaming_enabled", True)
             )
-            pbar.update(1)
+            logger.info(f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}")
+            if pbar: pbar.update(1)
+            log_step_time("Create model config")
 
             # Create API client
-            pbar.set_description("Initializing API client")
+            logger.info("STARTUP: Initializing API client")
+            if pbar: pbar.set_description("Initializing API client")
+            if progress_callback:
+                current_step_index += 1
+                progress_callback(current_step_index, total_steps, "Initializing API client")
+            api_client_start = time.time()
             api_client = APIClient(model_config=model_config)
             api_client.set_system_prompt(SYSTEM_PROMPT)
-            pbar.update(1)
+            logger.info(f"STARTUP: API client initialized in {time.time() - api_client_start:.4f}s")
+            if pbar: pbar.update(1)
+            log_step_time("Initialize API client")
 
             # Initialize tool manager
-            pbar.set_description("Creating tool manager")
+            logger.info("STARTUP: Creating tool manager and loading tools")
+            if pbar: pbar.set_description("Creating tool manager")
+            if progress_callback:
+                current_step_index += 1
+                progress_callback(current_step_index, total_steps, "Creating tool manager")
+            tool_manager_start = time.time()
             tool_manager = ToolManager(log_error)
-            pbar.update(1)
+            logger.info(f"STARTUP: Tool manager created in {time.time() - tool_manager_start:.4f}s with {len(tool_manager.tools) if hasattr(tool_manager, 'tools') else 'unknown'} tools")
+            if pbar: pbar.update(1)
+            log_step_time("Create tool manager")
 
             # Create core instance
-            pbar.set_description("Creating core instance")
+            logger.info("STARTUP: Creating core instance")
+            if pbar: pbar.set_description("Creating core instance")
+            if progress_callback:
+                current_step_index += 1
+                progress_callback(current_step_index, total_steps, "Creating core instance")
+            core_start = time.time()
             instance = cls(
                 config=config, 
                 api_client=api_client, 
                 tool_manager=tool_manager, 
                 model_config=model_config
             )
-            pbar.update(1)
+            logger.info(f"STARTUP: Core instance created in {time.time() - core_start:.4f}s")
+            if pbar: pbar.update(1)
+            log_step_time("Create core instance")
 
             if enable_cli:
-                # Import CLI only when needed
-                pbar.set_description("Initializing CLI")
+                logger.info("STARTUP: Initializing CLI")
+                if pbar: pbar.set_description("Initializing CLI")
+                if progress_callback:
+                    current_step_index += 1
+                    progress_callback(current_step_index, total_steps, "Initializing CLI")
+                cli_start = time.time()
                 from penguin.chat.cli import PenguinCLI
                 cli = PenguinCLI(instance)
-                pbar.update(1)
+                logger.info(f"STARTUP: CLI initialized in {time.time() - cli_start:.4f}s")
+                if pbar: pbar.update(1)
+                log_step_time("Initialize CLI")
 
-            # Close progress bar
-            pbar.close()
+            if pbar: pbar.close()
+            # Ensure external progress finishes
+            if progress_callback and current_step_index < total_steps:
+                progress_callback(total_steps, total_steps, "Initialization complete")
 
-            # Show total initialization time
-            init_time = time.time() - start_time
-            logger.info(f"Initialization completed in {init_time:.2f} seconds")
+            total_time = time.time() - overall_start_time
+            logger.info(f"STARTUP COMPLETE: Total initialization time: {total_time:.4f} seconds")
+            
+            # Log summary of all timing measurements
+            logger.info("STARTUP TIMING SUMMARY:")
+            for step, duration in timings.items():
+                percentage = (duration / total_time) * 100
+                logger.info(f"  - {step}: {duration:.4f}s ({percentage:.1f}%)")
 
             return instance if not enable_cli else (instance, cli)
 
         except Exception as e:
-            # Close progress bar on error
-            if "pbar" in locals():
-                pbar.close()
+            error_time = time.time() - overall_start_time
+            logger.error(f"STARTUP FAILED after {error_time:.4f}s: {str(e)}")
+            if pbar: pbar.close()
             error_msg = f"Failed to initialize PenguinCore: {str(e)}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
@@ -350,6 +435,10 @@ class PenguinCore:
         self.progress_callbacks = []
         self.token_callbacks = []
         self._active_contexts = set()  # Track active execution contexts
+        
+        # Add event system
+        self.ui_subscribers: List[EventHandler] = []
+        self.event_types: Set[str] = {"stream_chunk", "token_update", "message", "status", "error"}
 
         # Set system prompt from import
         self.system_prompt = SYSTEM_PROMPT
@@ -384,11 +473,27 @@ class PenguinCore:
             task_manager=self.project_manager,
             conversation_system=self.conversation_manager.conversation
         )
+        self.current_runmode_status_summary: str = "RunMode idle." # New attribute
 
         # ------------------- Engine Initialization -------------------
         try:
             from penguin.engine import Engine, EngineSettings, TokenBudgetStop, WallClockStop  # type: ignore
-            engine_settings = EngineSettings()
+            # Propagate the model's streaming preference into the Engine so that
+            # multi-step run modes (RunMode → Engine.run_task) inherit the same
+            # behaviour as interactive chat.  Without this, Engine defaults to
+            # non-streaming which for some providers (e.g. OpenRouter → Gemini)
+            # often returns an *empty* completion causing blank responses in
+            # RunMode even though regular chat works fine.
+
+            streaming_pref = True
+            try:
+                # ``model_config.streaming_enabled`` may be None; coerce to bool
+                streaming_pref = bool(self.model_config.streaming_enabled)
+            except Exception:
+                # Fall back to True which is the safer default for providers
+                streaming_pref = True
+
+            engine_settings = EngineSettings(streaming_default=streaming_pref)
             default_stops = [TokenBudgetStop()]
             self.engine = Engine(
                 engine_settings,
@@ -426,6 +531,20 @@ class PenguinCore:
         # Add these attributes
         self.current_stream = None
         self.stream_lock = asyncio.Lock()
+
+        # Initialize streaming state management
+        self._streaming_state = {
+            "active": False,
+            "content": "",
+            "message_type": None,
+            "role": None,
+            "metadata": {},
+            "started_at": None,
+            "last_update": None,
+            "empty_response_count": 0,
+            "error": None
+        }
+        self.current_runmode_status_summary: str = "RunMode idle."
 
     def validate_path(self, path: Path):
         """Validate and create a directory path if needed."""
@@ -476,8 +595,15 @@ class PenguinCore:
         """Get token usage via conversation manager"""
         try:
             usage = self.conversation_manager.get_token_usage()
+            
+            # Emit UI event for token update
+            token_event_data = usage.copy()
+            asyncio.create_task(self.emit_ui_event("token_update", token_event_data))
+            
+            # Backwards compatibility format
             return {"main_model": {"prompt": usage.get("total", 0), "completion": 0, "total": usage.get("total", 0)}}
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error getting token usage: {e}")
             return {"main_model": {"prompt": 0, "completion": 0, "total": 0}}
 
     def set_system_prompt(self, prompt: str) -> None:
@@ -827,10 +953,21 @@ class PenguinCore:
                 for file_path in context_files:
                     self.conversation_manager.load_context_file(file_path)
             
+            # Add user message to conversation explicitly
+            user_message_dict = {
+                "role": "user",
+                "content": message,
+                "category": MessageCategory.DIALOG
+            }
+            
+            # Emit user message event before processing
+            logger.debug(f"Emitting user message event: {message[:30]}...")
+            await self.emit_ui_event("message", user_message_dict)
+            
             # Use new Engine layer if available
             if self.engine:
-                # Note: Engine will call prepare_conversation internally
-                response = await self.engine.run_single_turn(message, streaming=streaming)
+                # Note: Engine will call prepare_conversation internally and handle images
+                response = await self.engine.run_single_turn(message, image_path=image_path, streaming=streaming, stream_callback=stream_callback)
             else:
                 # ---------- Legacy path (fallback) ----------
                 # Prepare conversation and call get_response directly
@@ -842,6 +979,23 @@ class PenguinCore:
 
             # Ensure conversation is saved after processing
             self.conversation_manager.save()
+            
+            # Emit assistant message event after processing (if not streamed)
+            # If streamed, this will be handled by finalize_streaming_message 
+            if response and "assistant_response" in response:
+                assistant_message = response["assistant_response"]
+                if assistant_message and not self._streaming_state["active"]:
+                    logger.debug(f"Emitting assistant message event: {assistant_message[:30]}...")
+                    await self.emit_ui_event("message", {
+                        "role": "assistant",
+                        "content": assistant_message,
+                        "category": MessageCategory.DIALOG,
+                        "metadata": {}
+                    })
+
+            # Ensure token usage is emitted after processing
+            token_data = self.conversation_manager.get_token_usage()
+            await self.emit_ui_event("token_update", token_data)
 
             return response
             
@@ -849,6 +1003,14 @@ class PenguinCore:
             error_msg = f"Error in process method: {str(e)}"
             logger.error(f"{error_msg}\n{traceback.format_exc()}")
             log_error(e, context={"method": "process", "input_data": input_data})
+            
+            # Emit error event
+            await self.emit_ui_event("error", {
+                "message": "Error processing your request",
+                "source": "core.process",
+                "details": str(e)
+            })
+            
             return {
                 "assistant_response": "I apologize, but an error occurred while processing your request.",
                 "action_results": [],
@@ -1057,6 +1219,8 @@ class PenguinCore:
         continuous: bool = False,
         time_limit: Optional[int] = None,
         mode_type: str = "task",
+        stream_callback_for_cli: Optional[Callable[[str], Awaitable[None]]] = None,
+        ui_update_callback_for_cli: Optional[Callable[[], Awaitable[None]]] = None
     ) -> None:
         """
         Start autonomous run mode for executing a task.
@@ -1068,20 +1232,25 @@ class PenguinCore:
             continuous: Whether to run in continuous mode
             time_limit: Optional time limit in minutes
             mode_type: Type of mode (task or project)
+            stream_callback_for_cli: Async callback for streaming LLM responses to UI.
+            ui_update_callback_for_cli: Async callback for UI updates based on RunMode events.
         """
+        # Store UI update callback for _handle_run_mode_event to use
+        self._ui_update_callback = ui_update_callback_for_cli
+        
+        # Initialize status
+        self.current_runmode_status_summary = "Starting RunMode..."
+        
         try:
-            run_mode = RunMode(self, time_limit=time_limit)
-            self._continuous_mode = continuous
-            run_mode.continuous_mode = continuous
-
-            # Add run mode start to conversation
-            self.conversation_manager.conversation.add_message(
-                "system",
-                f"Starting {'24/7' if continuous else 'task'} mode: {name if name else 'No specific task'}",
-                MessageCategory.SYSTEM
+            run_mode = RunMode(
+                self,  # core instance
+                time_limit=time_limit,
+                event_callback=self._handle_run_mode_event
             )
+            self._continuous_mode = continuous
 
             if continuous:
+                # RunMode's start_continuous will manage its internal continuous_mode flag
                 await run_mode.start_continuous(specified_task_name=name, task_description=description)
             else:
                 await run_mode.start(
@@ -1089,8 +1258,10 @@ class PenguinCore:
                 )
 
         except Exception as e:
-            # Reset continuous mode and cleanup
+            # Reset continuous mode flag if starting run_mode itself fails
             self._continuous_mode = False
+            
+            # Log the error
             log_error(
                 e,
                 context={
@@ -1098,15 +1269,458 @@ class PenguinCore:
                     "method": "start_run_mode",
                     "task_name": name,
                     "description": description,
-                    "context": context,
                 },
             )
-            raise
+            
+            # Update error status
+            self.current_runmode_status_summary = f"Error starting RunMode: {str(e)}"
+            
+            # Final UI update with error
+            if self._ui_update_callback:
+                try:
+                    await self._ui_update_callback()
+                except Exception as callback_err:
+                    logger.error(f"Error in UI update callback: {callback_err}")
+            
+            raise # Re-raise the exception so the caller knows starting run_mode failed
+        
         finally:
-            # Ensure state is cleaned up
-            if not continuous:
+            # Clear the UI update callback reference when finished
+            self._ui_update_callback = None
+            
+            # Ensure state is cleaned up if run mode was not continuous or if continuous mode exited
+            if hasattr(run_mode, 'continuous_mode') and not run_mode.continuous_mode:
                 self._continuous_mode = False
-        Path("errors_log").mkdir(exist_ok=True)
+            
+            logger.info(f"Exiting start_run_mode. Core _continuous_mode: {self._continuous_mode}")
 
-        self._continuous_mode = False
-        self.run_mode_messages = []
+    # ------------------------------------------------------------------
+    # Model management helpers
+    # ------------------------------------------------------------------
+
+    def _apply_new_model_config(self, new_model_config: ModelConfig) -> None:
+        """Internal helper that swaps the model configuration and re-wires dependent components.
+
+        This keeps the public ``load_model`` method concise and focused on
+        validation / construction of the ``ModelConfig``.  All mutation of
+        run-time state happens here so that we only need to test it in one
+        place.
+        """
+        # Swap the model_config reference first so that any downstream logic
+        # reads the up-to-date values.
+        self.model_config = new_model_config
+
+        # 1. Re-create API client with new settings so that every subsequent
+        #    call uses the correct base URL / API key / etc.
+        self.api_client = APIClient(model_config=new_model_config)
+        self.api_client.set_system_prompt(self.system_prompt)
+
+        # 2. Propagate to ConversationManager components so token budgeting and
+        #    streaming limits are accurate.
+        if self.conversation_manager:
+            self.conversation_manager.model_config = new_model_config
+            self.conversation_manager.api_client = self.api_client
+            # Update nested helpers if they expose the attributes we need.
+            try:
+                # ContextWindowManager lives under conversation_manager.context_window
+                if hasattr(self.conversation_manager, "context_window"):
+                    cw = self.conversation_manager.context_window
+                    cw.model_config = new_model_config  # type: ignore[attr-defined]
+                    cw.api_client = self.api_client     # type: ignore[attr-defined]
+            except Exception as e:
+                logger.warning(f"Failed to propagate new model config to ContextWindowManager: {e}")
+
+        # 3. Engine layer (optional – may not exist depending on install).
+        if getattr(self, "engine", None) is not None:
+            try:
+                self.engine.api_client = self.api_client  # type: ignore[attr-defined]
+            except Exception as e:
+                logger.warning(f"Failed to propagate new API client to Engine: {e}")
+
+    def load_model(self, model_id: str) -> bool:
+        """Replace the active model at runtime.
+
+        The *model_id* argument can be either:
+        1. A key present in ``config.yml -> model_configs``
+        2. A fully-qualified model string of the form ``<provider>/<model_name>``.
+
+        Returns ``True`` on success, ``False`` otherwise.
+        """
+        try:
+            # -----------------------------------------------------------------
+            # 1. Locate configuration for the requested model
+            # -----------------------------------------------------------------
+            model_conf: Optional[Dict[str, Any]] = None
+            if hasattr(self.config, "model_configs") and isinstance(self.config.model_configs, dict):
+                model_conf = self.config.model_configs.get(model_id)
+
+            # If not found in explicit configs attempt to infer from the id.
+            if model_conf is None:
+                if "/" not in model_id:
+                    logger.error(f"Model id '{model_id}' not found in model_configs and does not appear to be fully-qualified.")
+                    return False
+                provider_part = model_id.split("/", 1)[0]
+                # Decide on client preference – default to whatever the core is
+                # currently using so that we remain consistent with the user's
+                # environment (e.g. OpenRouter).
+                client_pref = self.model_config.client_preference if self.model_config else "native"
+
+                # If the current preference is OpenRouter we *override* the
+                # provider to "openrouter" because the upstream ID still has
+                # the real provider encoded in the model string (e.g.
+                # "openai/gpt-4o").
+                provider_for_config = "openrouter" if client_pref == "openrouter" else provider_part
+
+                model_conf = {
+                    "model": model_id,
+                    "provider": provider_for_config,
+                    "client_preference": client_pref,
+                    "streaming_enabled": True,
+                }
+
+            # Sanity-check we have the minimum required keys.
+            provider = model_conf.get("provider")
+            if provider is None:
+                logger.error(f"Invalid configuration for model '{model_id}': missing provider field.")
+                return False
+
+            # -----------------------------------------------------------------
+            # 2. Build a fresh ModelConfig object from the dict
+            # -----------------------------------------------------------------
+            new_mc_kwargs = {
+                "model": model_conf.get("model", model_id),
+                "provider": provider,
+                "client_preference": model_conf.get("client_preference", "native"),
+                "api_base": model_conf.get("api_base"),
+                "max_tokens": model_conf.get("max_tokens"),
+                "temperature": model_conf.get("temperature", 0.7),
+                "use_assistants_api": model_conf.get("use_assistants_api", False),
+                "streaming_enabled": model_conf.get("streaming_enabled", True),
+                "vision_enabled": model_conf.get("vision_enabled"),
+            }
+            new_model_config = ModelConfig(**new_mc_kwargs)  # type: ignore[arg-type]
+
+            # -----------------------------------------------------------------
+            # 3. Apply it to running components
+            # -----------------------------------------------------------------
+            self._apply_new_model_config(new_model_config)
+            logger.info(f"Successfully switched to model '{model_id}'.")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to switch to model '{model_id}': {e}")
+            return False
+
+    def list_available_models(self) -> List[Dict[str, Any]]:
+        """Return a list of model metadata derived from ``config.yml``.
+
+        This helper is intentionally lightweight so it can be called at any
+        time without additional network requests.  Richer model discovery (e.g.
+        OpenRouter catalogue) is handled in *PenguinInterface*.
+        """
+        models: List[Dict[str, Any]] = []
+        current_model_name = self.model_config.model if self.model_config else None
+
+        if not (hasattr(self.config, "model_configs") and isinstance(self.config.model_configs, dict)):
+            return models
+
+        for model_id, conf in self.config.model_configs.items():
+            if not isinstance(conf, dict):
+                continue
+            entry = {
+                "id": model_id,
+                "name": conf.get("model", model_id),
+                "provider": conf.get("provider", "unknown"),
+                "client_preference": conf.get("client_preference", "native"),
+                "vision_enabled": conf.get("vision_enabled", False),
+                "max_tokens": conf.get("max_tokens"),
+                "temperature": conf.get("temperature"),
+                "current": model_id == current_model_name or conf.get("model") == current_model_name,
+            }
+            models.append(entry)
+
+        # Bring the current model to the top for convenience.
+        models.sort(key=lambda m: (not m["current"], m["id"]))
+        return models
+
+    # Add new event system methods
+    def register_ui(self, handler: Callable[[str, Dict[str, Any]], Any]) -> None:
+        """
+        Register a UI component to receive events from the Core.
+        
+        Args:
+            handler: A function or coroutine that accepts event_type and data parameters
+        """
+        if handler not in self.ui_subscribers:
+            self.ui_subscribers.append(handler)
+            logger.debug(f"Registered UI event handler: {handler.__qualname__ if hasattr(handler, '__qualname__') else str(handler)}")
+    
+    def unregister_ui(self, handler: EventHandler) -> None:
+        """
+        Unregister a UI component from receiving events.
+        
+        Args:
+            handler: The handler function to remove
+        """
+        if handler in self.ui_subscribers:
+            self.ui_subscribers.remove(handler)
+            logger.debug(f"Unregistered UI event handler: {handler.__qualname__ if hasattr(handler, '__qualname__') else str(handler)}")
+    
+    async def emit_ui_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """
+        Emit an event to all registered UI subscribers.
+        
+        Args:
+            event_type: Type of event (e.g., "stream_chunk", "token_update", etc.)
+            data: Event data relevant to the event type
+        """
+        if event_type not in self.event_types:
+            logger.warning(f"Emitting event of unknown type: {event_type}")
+            
+        logger.debug(f"Emitting UI event: {event_type} with data keys: {list(data.keys())}")
+        
+        for handler in self.ui_subscribers:
+            try:
+                # Check if the handler is a coroutine function and call it appropriately
+                if asyncio.iscoroutinefunction(handler):
+                    await handler(event_type, data)
+                else:
+                    # Call synchronous handler directly
+                    handler(event_type, data)
+            except Exception as e:
+                logger.error(f"Error in UI event handler during {event_type} event: {e}", exc_info=True)
+
+    # Update stream_chunk to use the event system
+    async def _handle_stream_chunk(self, chunk: str, message_type: Optional[str] = None, role: str = "assistant") -> None:
+        """
+        Central handler for all streaming content chunks from any source.
+        Updates internal streaming state and notifies subscribers via events.
+        
+        Args:
+            chunk: The content chunk to add
+            message_type: Optional type of message (e.g., "text", "code", "tool_output")
+            role: The role of the message (default: "assistant")
+        """
+        if not chunk:
+            # Track empty chunks for error detection
+            self._streaming_state["empty_response_count"] += 1
+            if self._streaming_state["empty_response_count"] > 3:
+                # After several empty responses, consider it a potential issue
+                if not self._streaming_state["error"]:
+                    self._streaming_state["error"] = "Multiple empty responses received"
+                logger.warning(f"PenguinCore: Multiple empty responses ({self._streaming_state['empty_response_count']}) received during streaming")
+            return
+        
+        # Reset empty counter if we got actual content
+        self._streaming_state["empty_response_count"] = 0
+        
+        # Initialize streaming if this is the first chunk
+        now = datetime.now()
+        if not self._streaming_state["active"]:
+            self._streaming_state["active"] = True
+            self._streaming_state["content"] = chunk
+            self._streaming_state["message_type"] = message_type
+            self._streaming_state["role"] = role
+            self._streaming_state["started_at"] = now
+            self._streaming_state["metadata"] = {"is_streaming": True}
+        else:
+            # Append to existing content
+            self._streaming_state["content"] += chunk
+        
+        self._streaming_state["last_update"] = now
+        
+        # Emit event to UI subscribers instead of direct callbacks
+        await self.emit_ui_event("stream_chunk", {
+            "chunk": chunk,
+            "is_final": False,
+            "message_type": message_type,
+            "role": role,
+            "content_so_far": self._streaming_state["content"],
+            "metadata": self._streaming_state["metadata"],
+        })
+        
+        # Backward compatibility: Notify any registered stream callbacks
+        if hasattr(self, '_stream_callbacks') and self._stream_callbacks:
+            for callback in self._stream_callbacks:
+                if callback and callable(callback):
+                    try:
+                        if asyncio.iscoroutinefunction(callback):
+                            await callback(chunk)
+                        else:
+                            callback(chunk)
+                    except Exception as e:
+                        logger.error(f"PenguinCore: Error in stream callback: {e}")
+
+    def finalize_streaming_message(self) -> Optional[Dict[str, Any]]:
+        """
+        Finalizes the current streaming message, adds it to ConversationManager,
+        and resets the streaming state. Emits a final event with is_final=True.
+        
+        Returns:
+            The finalized message dict or None if no streaming was active
+        """
+        if not self._streaming_state["active"]:
+            return None
+            
+        final_message = {
+            "role": self._streaming_state["role"],
+            "content": self._streaming_state["content"],
+            "type": self._streaming_state["message_type"],
+            "metadata": self._streaming_state["metadata"]
+        }
+        
+        # Only add to conversation if we have actual content
+        if self._streaming_state["content"].strip():
+            # Add to conversation manager
+            if self._streaming_state["role"] == "assistant":
+                category = MessageCategory.DIALOG
+            elif self._streaming_state["role"] == "system":
+                category = MessageCategory.SYSTEM
+            else:
+                category = MessageCategory.DIALOG
+                
+            # Remove streaming flag from metadata for final version
+            if "is_streaming" in final_message["metadata"]:
+                del final_message["metadata"]["is_streaming"]
+                
+            if hasattr(self, "conversation_manager") and self.conversation_manager:
+                self.conversation_manager.conversation.add_message(
+                    role=final_message["role"],
+                    content=final_message["content"],
+                    category=category,
+                    metadata=final_message["metadata"]
+                )
+                
+                # Emit message event after adding to conversation
+                logger.debug(f"Emitting finalized message event: {final_message['content'][:30]}...")
+                asyncio.create_task(self.emit_ui_event("message", {
+                    "role": final_message["role"],
+                    "content": final_message["content"],
+                    "category": category,
+                    "metadata": final_message["metadata"]
+                }))
+        
+        # Emit final streaming event with is_final=True
+        asyncio.create_task(self.emit_ui_event("stream_chunk", {
+            "chunk": "",
+            "is_final": True,
+            "message_type": self._streaming_state["message_type"],
+            "role": self._streaming_state["role"],
+            "content": self._streaming_state["content"],
+            "metadata": final_message["metadata"],
+        }))
+        
+        # Reset streaming state
+        self._streaming_state = {
+            "active": False,
+            "content": "",
+            "message_type": None,
+            "role": None,
+            "metadata": {},
+            "started_at": None,
+            "last_update": None,
+            "empty_response_count": 0,
+            "error": None
+        }
+        
+        return final_message
+
+    # Update token usage notification to use events
+    def update_token_display(self) -> None:
+        """Emit token usage event to UI subscribers."""
+        token_data = self.get_token_usage()
+        asyncio.create_task(self.emit_ui_event("token_update", token_data))
+
+        # Legacy callback support
+        for callback in self.token_callbacks:
+            try:
+                callback(token_data)
+            except Exception as e:
+                logger.error(f"Error in token callback: {e}")
+
+    # Keep existing register_stream_callback for backward compatibility
+
+    async def _handle_run_mode_event(self, event: Dict[str, Any]) -> None:
+        """
+        Central handler for all events emitted by RunMode.
+        
+        This method is the bridge between RunMode's headless operation and the rest of the system.
+        It processes events from RunMode and updates ConversationManager appropriately.
+        
+        Args:
+            event: Dictionary containing event data with at least a 'type' key
+        """
+        try:
+            logger.debug(f"Core received RunMode event: {event}")
+            event_type = event.get("type")
+
+            # Handle message events
+            if event_type == "message":
+                # Extract message data
+                msg_data = {
+                    "role": event.get("role", "system"),
+                    "content": event.get("content", ""),
+                    "category": event.get("category", MessageCategory.SYSTEM),
+                    "metadata": event.get("metadata", {})
+                }
+                
+                # Ensure category is a MessageCategory enum if provided as string
+                if isinstance(msg_data["category"], str):
+                    try:
+                        msg_data["category"] = MessageCategory[msg_data["category"].upper()]
+                    except KeyError:
+                        logger.warning(f"Invalid message category string '{msg_data['category']}' from RunMode event. Defaulting to SYSTEM.")
+                        msg_data["category"] = MessageCategory.SYSTEM
+                
+                # Add to conversation
+                self.conversation_manager.conversation.add_message(**msg_data)
+                self.conversation_manager.save()
+                logger.debug(f"Core added message to ConversationManager from RunMode event: {msg_data['role']} - {msg_data['content'][:50]}...")
+            
+            # Handle status events
+            elif event_type == "status":
+                status_type = event.get("status_type", "unknown")
+                status_data = event.get("data", {})
+                logger.info(f"RunMode status update: {status_type} - Data: {status_data}")
+                
+                # Update status summary based on event type
+                if status_type == "task_started" or status_type == "task_started_legacy":
+                    task_name = status_data.get('task_name', status_data.get('task_prompt', 'Unknown task'))
+                    self.current_runmode_status_summary = f"Task: {task_name} - Running"
+                elif status_type == "task_progress":
+                    iteration = status_data.get('iteration', '?')
+                    max_iter = status_data.get('max_iterations', '?')
+                    progress = status_data.get('progress', 0)
+                    self.current_runmode_status_summary = f"Progress: {progress}% (Iter: {iteration}/{max_iter})"
+                elif status_type == "task_completed" or status_type == "task_completed_legacy" or status_type == "task_completed_eventbus":
+                    task_name = status_data.get('task_name', 'Last task')
+                    self.current_runmode_status_summary = f"Task: {task_name} - Completed"
+                elif status_type == "run_mode_ended" or status_type == "shutdown_completed":
+                    self.current_runmode_status_summary = "RunMode ended."
+                elif status_type == "clarification_needed" or status_type == "clarification_needed_eventbus":
+                    self.current_runmode_status_summary = "Awaiting user clarification."
+                elif status_type == "awaiting_user_input_after_task":
+                    self.current_runmode_status_summary = "Task complete. Awaiting input."
+            
+            # Handle error events
+            elif event_type == "error":
+                err_msg = event.get("message", "Unknown error from RunMode")
+                err_source = event.get("source", "runmode")
+                err_details = event.get("details", {})
+                logger.error(f"RunMode Error Event (Source: {err_source}): {err_msg} | Details: {err_details}")
+                
+                # Update status with error
+                self.current_runmode_status_summary = f"Error: {err_msg}"
+            
+            # Handle unknown event types
+            else:
+                logger.warning(f"Core received unknown RunMode event type: {event_type} | Event: {event}")
+
+            # After processing any event, signal the UI to update if callback is registered
+            if hasattr(self, '_ui_update_callback') and self._ui_update_callback:
+                try:
+                    await self._ui_update_callback()
+                except Exception as e:
+                    logger.error(f"Error in UI update callback: {e}", exc_info=True)
+        
+        except Exception as e:
+            logger.error(f"Error in PenguinCore._handle_run_mode_event: {str(e)}", exc_info=True)

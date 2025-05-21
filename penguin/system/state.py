@@ -53,6 +53,9 @@ class MessageCategory(Enum):
     CONTEXT = 2   # Important reference information. Declarative notes, context folders, etc.
     DIALOG = 3    # Main conversation between user and assistant
     SYSTEM_OUTPUT = 4   # Results from tool executions, system outputs, etc.
+    ERROR = 5           # Error messages from the system or tools
+    INTERNAL = "internal" # For core's internal thoughts/plans if exposed
+    UNKNOWN = "unknown" # Added to handle cases where category might not be set
     
     # TODO: Consider ERROR as a category? 
     

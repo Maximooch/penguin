@@ -8,27 +8,12 @@ from colorama import Fore, Style, init  # For colored output # type: ignore
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-# Add SQLite patch here
-try:
-    __import__('pysqlite3')
-    import sys
-    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-except ImportError:
-    # print(f"\n{Fore.YELLOW}⚠️ SQLite Compatibility Warning{Style.RESET_ALL}")
-    print(f"{Fore.WHITE}If you're experiencing chromadb issues related to pysqlite3:")
-    print(f"  {Fore.CYAN}Recommended fix:{Style.RESET_ALL} pip install pysqlite3-binary")
-    # print(f"{Fore.GREEN}✅ Successfully verified with pysqlite3-binary{Style.RESET_ALL}")
-    print(f"{Style.DIM}Note: This recommendation comes from user testing (Maximooch){Style.RESET_ALL}\n")
-    pass  # Fallback to system sqlite3
+# Set up logger - will be used for warnings later
+logger = logging.getLogger(__name__)
 
-# This seemed to fix the issue: pip install pysqlite3-binary
+# Move the rest of the imports inside the class to make them lazy
 
-import chromadb # type: ignore
-import ollama # type: ignore
-from chromadb.config import Settings # type: ignore
-from colorama import Fore, Style, init  # For colored output # type: ignore
-
-from penguin.config import WORKSPACE_PATH  # Import workspace path from config
+from penguin.config import WORKSPACE_PATH  # Import workspace path from config - this should be fast
 
 
 class MemorySearcher:
@@ -44,8 +29,29 @@ class MemorySearcher:
         if self._initialized:
             return
 
+        # Import colorama only when needed - moved from top level
+        from colorama import Fore, Style, init  # For colored output # type: ignore
         # Initialize colorama
         init()  # For colored output
+
+        # Only attempt to patch SQLite and import ChromaDB and Ollama when actually needed
+        try:
+            # SQLite patch - moved from top level
+            try:
+                __import__('pysqlite3')
+                import sys
+                sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+            except ImportError:
+                logger.warning("SQLite Compatibility Warning – chromadb may require the pysqlite3 binary package.")
+                logger.warning("Recommended fix: pip install pysqlite3-binary")
+                logger.debug("Note: This recommendation comes from user testing (Maximooch)")
+            
+            # Lazy import ChromaDB - moved from top level
+            import chromadb # type: ignore
+            from chromadb.config import Settings # type: ignore
+        except ImportError as e:
+            logger.error(f"Failed to import ChromaDB: {e}")
+            raise ImportError(f"ChromaDB is required for memory search functionality: {e}")
 
         # Set default persist directory to workspace/memory_db if none provided
         if persist_directory is None:
@@ -54,10 +60,10 @@ class MemorySearcher:
         # Ensure directory exists
         os.makedirs(persist_directory, exist_ok=True)
 
-        # Define memory paths relative to workspace (Updated: conversations instead of logs)
+        # Define memory paths relative to workspace
         self.memory_paths = {
             "notes": os.path.join(WORKSPACE_PATH, "notes"),
-            "conversations": os.path.join(WORKSPACE_PATH, "conversations"), # Added conversations path
+            "conversations": os.path.join(WORKSPACE_PATH, "conversations"), # Updated paths
         }
 
         # Initialize ChromaDB client with persistent storage
@@ -69,7 +75,7 @@ class MemorySearcher:
                 ),
             )
 
-            # Initialize collections (Updated: conversations instead of logs)
+            # Initialize collections
             self.notes_collection = self.client.get_or_create_collection(
                 name="notes",
                 metadata={"description": "Declarative notes and documentation"},
@@ -79,15 +85,14 @@ class MemorySearcher:
                 metadata={"description": "User conversation history"}
             )
 
-            # Set up logging
-            self.logger = logging.getLogger(__name__)
-
             # Try to initialize Ollama client, fall back to simple search if unavailable
             try:
+                # Lazy import Ollama - moved from top level
+                import ollama # type: ignore
                 self.ollama_client = ollama.Client()
                 self.use_embeddings = True
             except Exception as e:
-                self.logger.warning(
+                logger.warning(
                     f"Ollama not available, falling back to simple search: {str(e)}"
                 )
                 self.use_embeddings = False
@@ -98,7 +103,7 @@ class MemorySearcher:
             self._initialized = True
 
         except Exception as e:
-            self.logger.error(f"Error initializing ChromaDB: {str(e)}")
+            logger.error(f"Error initializing ChromaDB: {str(e)}")
             raise
 
     def parse_memory(self, content: str) -> Dict[str, Any]:
@@ -170,7 +175,7 @@ class MemorySearcher:
                     )
                     embeddings = [response["embedding"]]
                 except Exception as e:
-                    self.logger.warning(
+                    logger.warning(
                         f"Error getting embeddings, falling back to null embeddings: {str(e)}"
                     )
                     embeddings = None
@@ -191,7 +196,7 @@ class MemorySearcher:
             elif memory_type == "conversations":
                 collection = self.conversations_collection
             else:
-                self.logger.warning(f"Attempting to index memory with unhandled type '{memory_type}'. Skipping.")
+                logger.warning(f"Attempting to index memory with unhandled type '{memory_type}'. Skipping.")
                 return # Don't index if type isn't notes or conversations
 
             collection.add(
@@ -201,7 +206,7 @@ class MemorySearcher:
                 ids=[str(uuid.uuid4())],
             )
         except Exception as e:
-            self.logger.error(f"Error indexing memory: {str(e)}")
+            logger.error(f"Error indexing memory: {str(e)}")
 
     def index_memory_files(self) -> str:
         """Index all memory files from workspace"""
@@ -246,7 +251,7 @@ class MemorySearcher:
 
                         # Provide progress feedback occasionally
                         if indexed_count == 0:
-                            print("Memory indexing in progress…")
+                            logger.debug("Memory indexing in progress…")
 
                         # Index the file
                         with open(file_path, encoding="utf-8") as f:
@@ -270,7 +275,7 @@ class MemorySearcher:
                             if verbose := True:  # Future-proof: toggle this to False to silence
                                 if indexed_count % 50 == 0:
                                     rel_path = os.path.relpath(file_path, WORKSPACE_PATH)
-                                    print(f"  • Indexed {indexed_count} files so far (latest: {rel_path})")
+                                    logger.debug(f"Indexed {indexed_count} files so far (latest: {rel_path})")
 
             # Save updated metadata
             self._save_index_metadata(new_metadata)
@@ -278,7 +283,7 @@ class MemorySearcher:
             return f"Indexed {indexed_count} files, skipped {skipped_count} unchanged files"
 
         except Exception as e:
-            self.logger.error(f"Error during indexing: {str(e)}")
+            logger.error(f"Error during indexing: {str(e)}")
             return f"Indexing failed: {str(e)}"
 
     def format_preview(self, content: str, max_length: int = 300) -> str:
@@ -319,7 +324,7 @@ class MemorySearcher:
                     query_embedding = response["embedding"]
                 except Exception as e:
                     # If we fail to get embeddings for any reason, log and gracefully fall back
-                    self.logger.warning(
+                    logger.warning(
                         f"Falling back to text search due to embedding failure: {str(e)}"
                     )
                     query_embedding = None
@@ -375,7 +380,7 @@ class MemorySearcher:
             return all_results[:max_results]
 
         except Exception as e:
-            self.logger.error(f"Error searching memory: {str(e)}")
+            logger.error(f"Error searching memory: {str(e)}")
             return []
 
     def _build_where_clause(
@@ -578,7 +583,7 @@ class MemorySearcher:
                 with open(metadata_path) as f:
                     return json.load(f)
         except Exception as e:
-            self.logger.warning(f"Failed to load index metadata: {e}")
+            logger.warning(f"Failed to load index metadata: {e}")
         return {}
 
     def _save_index_metadata(self, metadata: Dict[str, Dict[str, Any]]):
@@ -589,7 +594,7 @@ class MemorySearcher:
             with open(metadata_path, "w") as f:
                 json.dump(metadata, f)
         except Exception as e:
-            self.logger.warning(f"Failed to save index metadata: {e}")
+            logger.warning(f"Failed to save index metadata: {e}")
 
 
 def print_results(results: List[Dict[str, Any]]):

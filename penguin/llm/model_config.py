@@ -36,7 +36,7 @@ class ModelConfig:
                 self.vision_enabled = True
             elif self.provider == "openai" and (("gpt-4" in model_lower and ("vision" in model_lower or "o" in model_lower))):
                 self.vision_enabled = True
-            elif self.provider == "google" and ("gemini" in model_lower and "pro-vision" in model_lower):
+            elif self.provider == "google" and "gemini" in model_lower and "nano" not in model_lower:
                 self.vision_enabled = True
             elif self.client_preference == 'litellm' and 'llava' in model_lower:
                 self.vision_enabled = True

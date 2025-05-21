@@ -71,7 +71,7 @@ Homepage = "https://github.com/Maximooch/penguin" # Updated URL
 Repository = "https://github.com/Maximooch/penguin" # Updated URL
 
 [project.scripts]
-penguin = "penguin.chat.cli:app"
+penguin = "penguin.penguin.chat.cli:app"
 penguin-web = "penguin.api.server:main"
 
 [tool.setuptools.packages.find]
