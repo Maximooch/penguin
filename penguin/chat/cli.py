@@ -1202,15 +1202,15 @@ class PenguinCLI:
             content_renderable = Markdown(result_text if result_text.strip() else "(No textual output)")
             title_for_panel = f"{status_icon} Result from {action_type}"
 
-        panel = Panel(
+            panel = Panel(
             content_renderable,
             title=title_for_panel,
-            title_align="left",
+                title_align="left",
             border_style=self.TOOL_COLOR if status != "error" else "red",
-            width=self.console.width - 8,
+                width=self.console.width - 8,
             padding=(1,1)
-        )
-        self.console.print(panel)
+            )
+            self.console.print(panel)
 
     def on_progress_update(
         self, iteration: int, max_iterations: int, message: Optional[str] = None
@@ -2010,17 +2010,17 @@ async def chat(): # Removed model, workspace, no_streaming options
         # If `penguin chat` is called directly, main_entry runs first.
         logger.warning("Chat command invoked, but core components appear uninitialized. main_entry should handle this.")
         # Attempting to initialize with defaults if somehow missed.
-        try:
+    try:
             await _initialize_core_components_globally()
-        except Exception as e:
+    except Exception as e:
             logger.error(f"Error re-initializing core for chat command: {e}", exc_info=True)
             console.print(f"[red]Error: Core components failed to initialize for chat: {e}[/red]")
             raise typer.Exit(code=1)
-        
-        if not _core: # Still not initialized after attempt
+
+    if not _core: # Still not initialized after attempt
             console.print("[red]Critical Error: Core components could not be initialized.[/red]")
             raise typer.Exit(code=1)
-            
+
     await _run_interactive_chat()
 
 # Profile command remains largely the same, ensure it uses `console` correctly
@@ -2047,7 +2047,7 @@ def profile(
     # Prepare the output file name
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     actual_output_file = output_file if output_file != "penguin_profile" else f"penguin_profile_{timestamp}"
-        
+    
     output_path = profile_dir / f"{actual_output_file}.prof"
     stats_path = profile_dir / f"{actual_output_file}.txt"
     
@@ -2081,32 +2081,32 @@ def profile(
         
     profiler.disable()
     console.print("[green]Profiling complete.[/green]")
-    
+        
     profiler.dump_stats(str(output_path))
     console.print(f"Profile data saved to: [cyan]{output_path}[/cyan]")
-    
+        
     s = io.StringIO()
     # Sort by cumulative time, then standard name for consistent ordering
     ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative', 'name')
     ps.print_stats(30)  # Print top 30 functions
     stats_content = s.getvalue()
-    
+        
     with open(stats_path, 'w') as f:
-        f.write(stats_content)
-    
+            f.write(stats_content)
+        
     console.print(f"Profile summary saved to: [cyan]{stats_path}[/cyan]")
     console.print("[bold]Top 30 functions by cumulative time:[/bold]")
     console.print(stats_content)
-    
+        
     if view:
         try:
-            subprocess.run(["snakeviz", str(output_path)], check=True)
+                subprocess.run(["snakeviz", str(output_path)], check=True)
         except FileNotFoundError:
             console.print(f"[yellow]snakeviz command not found. Please install snakeviz to view profiles.[/yellow]")
             console.print(f"[yellow]You can manually visualize the profile with: snakeviz {output_path}[/yellow]")
         except Exception as e:
-            console.print(f"[yellow]Could not open visualization: {str(e)}[/yellow]")
-            console.print(f"[yellow]You can manually visualize the profile with: snakeviz {output_path}[/yellow]")
+                console.print(f"[yellow]Could not open visualization: {str(e)}[/yellow]")
+                console.print(f"[yellow]You can manually visualize the profile with: snakeviz {output_path}[/yellow]")
 
     console.print("[bold green]Profiling session ended.[/bold green]")
     console.print(f"[dim]To visualize: snakeviz {output_path}[/dim]")
