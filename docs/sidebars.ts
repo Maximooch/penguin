@@ -41,9 +41,10 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Advanced Topics',
       items: [
-        'advanced/custom_tools', 
-        'advanced/error_handling', 
+        'advanced/custom_tools',
+        'advanced/error_handling',
         'advanced/diagnostics',
+        'advanced/pydoll_browser_tools',
         'advanced/future_considerations',
         'advanced/roadmap',
       ],

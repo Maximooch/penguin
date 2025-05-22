@@ -9,9 +9,11 @@ Welcome to the Penguin AI Assistant documentation. Penguin is a modular, extensi
 - Interactive conversations with AI
 - File manipulation and code generation
 - Web searches for up-to-date information
-- Automated task execution
+- Automated task execution with Run Mode
 - Project management
 - Custom tool integration
+- PyDoll browser automation
+- Memory search across conversations
 - Diagnostic logging and error handling
 
 ## Quick Start
@@ -20,7 +22,7 @@ Welcome to the Penguin AI Assistant documentation. Penguin is a modular, extensi
 2. Set up a virtual environment
 3. Install dependencies: `pip install -r requirements.txt`
 4. Configure your API keys in `.env`
-5. Run the assistant: `python main.py`
+5. Run the assistant: `penguin`
 
 For more detailed instructions, see the [Getting Started](getting_started.md) guide.
 

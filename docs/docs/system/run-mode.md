@@ -250,14 +250,14 @@ await run_mode.start_continuous()
 
 ## Command Line Usage
 
-RunMode can be triggered from the CLI:
+RunMode is activated through slash commands inside the Penguin CLI:
 
 ```bash
-# Run a specific task
-penguin task run build_data_parser
+penguin               # start the CLI
+/run task build_data_parser "Create a parser for CSV files"
 
-# Run in continuous mode for 2 hours
-penguin run --247 --time 120
+# Start continuous mode for 2 hours
+/run --247 --time 120
 ```
 
 ## Integration with Task Manager
