@@ -40,7 +40,7 @@ This guide will help you set up and run the Penguin AI Assistant on your local m
 To start the Penguin AI Assistant, run:
 
 ```bash
-python main.py
+penguin
 ```
 
 You'll be greeted with a welcome message and can start interacting with the AI.
