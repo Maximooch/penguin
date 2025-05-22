@@ -12,19 +12,13 @@ Penguin includes [PyDoll](https://github.com/pydoll) integration for browser aut
 
 ## Basic Usage
 
-The tools are available through the `ToolManager` once Penguin is running:
+Some examples of what Penguin would use. (these are from prompt_actions.py)
 
-```python
-from penguin.tools import ToolManager
-
-async def use_browser():
-    tm = ToolManager()
-    await tm.execute_tool("pydoll_browser_navigate", {"url": "https://example.com"})
-    await tm.execute_tool(
-        "pydoll_browser_interact",
-        {"action": "click", "selector": "#submit", "selector_type": "css"},
-    )
-    screenshot = await tm.execute_tool("pydoll_browser_screenshot", {})
+```XML
+-   `<pydoll_browser_navigate>URL</pydoll_browser_navigate >`
+-   `<pydoll_browser_interact>action:selector[:selector_type][:text]</pydoll_browser_interact >` (actions: `click`, `input`, `submit`, selector_types: `css`, `xpath`, `id`, `class_name`)
+-   `<pydoll_browser_screenshot></pydoll_browser_screenshot >`
+-   `<pydoll_debug_toggle>[on|off]</pydoll_debug_toggle >` (Enable/disable detailed PyDoll logging and outputs)
 ```
 
 Developer mode exposes a lower‑level Chrome debugger for advanced automation. See the source under `penguin/tools/notes/chrome_debugger` for examples.
