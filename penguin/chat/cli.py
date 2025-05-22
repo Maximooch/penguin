@@ -5,7 +5,10 @@ import signal
 import traceback
 import re
 from pathlib import Path
-from typing import List, Optional, Callable, Dict, Any, Set, Union
+from typing import List, Optional, Callable, Dict, Any, Set, Union, TypeVar, cast
+
+import json # For JSON output
+import sys # For stdin
 
 # Add import timing for profiling if enabled
 import time
@@ -24,8 +27,8 @@ if PROFILE_ENABLED:
         
     # Time major imports
     typer = time_import("typer")
-    rich = time_import("rich.console")
-    Console = rich.Console
+    rich_console_import = time_import("rich.console")
+    Console = rich_console_import.Console
     Markdown = time_import("rich.markdown").Markdown
     Panel = time_import("rich.panel").Panel 
     Progress = time_import("rich.progress").Progress
@@ -34,27 +37,43 @@ if PROFILE_ENABLED:
     Syntax = time_import("rich.syntax").Syntax
     Live = time_import("rich.live").Live
     
-    prompt_toolkit = time_import("prompt_toolkit")
+    prompt_toolkit_import = time_import("prompt_toolkit")
+    PromptSession = prompt_toolkit_import.PromptSession
     KeyBindings = time_import("prompt_toolkit.key_binding").KeyBindings
     Keys = time_import("prompt_toolkit.keys").Keys
     Style = time_import("prompt_toolkit.styles").Style
     HTML = time_import("prompt_toolkit.formatted_text").HTML
     
     # Time internal imports
-    config = time_import("penguin.config")
-    PenguinCore = time_import("penguin.core").PenguinCore
-    APIClient = time_import("penguin.llm.api_client").APIClient
-    ModelConfig = time_import("penguin.llm.model_config").ModelConfig
-    RunMode = time_import("penguin.run_mode").RunMode
-    MessageCategory = time_import("penguin.system.state").MessageCategory
-    parse_iso_datetime = time_import("penguin.system.state").parse_iso_datetime
-    ConversationMenu = time_import("penguin.system.conversation_menu").ConversationMenu
-    ConversationSummary = time_import("penguin.system.conversation_menu").ConversationSummary
-    SYSTEM_PROMPT = time_import("penguin.system_prompt").SYSTEM_PROMPT
-    ToolManager = time_import("penguin.tools").ToolManager
-    log_error = time_import("penguin.utils.log_error").log_error
-    setup_logger = time_import("penguin.utils.logs").setup_logger
-    PenguinInterface = time_import("penguin.chat.interface").PenguinInterface
+    config_module = time_import("penguin.config")
+    # Now access specific attributes after import
+    config = config_module.config
+    DEFAULT_MODEL = config_module.DEFAULT_MODEL
+    DEFAULT_PROVIDER = config_module.DEFAULT_PROVIDER
+    WORKSPACE_PATH = config_module.WORKSPACE_PATH
+
+    PenguinCore_module = time_import("penguin.core")
+    PenguinCore = PenguinCore_module.PenguinCore
+    APIClient_module = time_import("penguin.llm.api_client")
+    APIClient = APIClient_module.APIClient
+    ModelConfig_module = time_import("penguin.llm.model_config")
+    ModelConfig = ModelConfig_module.ModelConfig
+    # RunMode = time_import("penguin.run_mode").RunMode # Not directly used in this new structure's top level
+    MessageCategory_module = time_import("penguin.system.state")
+    MessageCategory = MessageCategory_module.MessageCategory
+    parse_iso_datetime = MessageCategory_module.parse_iso_datetime
+    # ConversationMenu = time_import("penguin.system.conversation_menu").ConversationMenu # Used by PenguinCLI class
+    # ConversationSummary = time_import("penguin.system.conversation_menu").ConversationSummary # Used by PenguinCLI class
+    SYSTEM_PROMPT_module = time_import("penguin.system_prompt")
+    SYSTEM_PROMPT = SYSTEM_PROMPT_module.SYSTEM_PROMPT
+    ToolManager_module = time_import("penguin.tools")
+    ToolManager = ToolManager_module.ToolManager
+    log_error_module = time_import("penguin.utils.log_error")
+    log_error = log_error_module.log_error
+    setup_logger_module = time_import("penguin.utils.logs")
+    setup_logger = setup_logger_module.setup_logger
+    PenguinInterface_module = time_import("penguin.chat.interface")
+    PenguinInterface = PenguinInterface_module.PenguinInterface
     
     total_end = time.time()
     total_import_time = (total_end - total_start) * 1000  # Convert to ms
@@ -70,7 +89,7 @@ if PROFILE_ENABLED:
 else:
     # Standard imports without timing
     import typer  # type: ignore
-    from rich.console import Console  # type: ignore
+    from rich.console import Console as RichConsole # Renamed to avoid conflict # type: ignore
     from rich.markdown import Markdown  # type: ignore
     from rich.panel import Panel  # type: ignore
     from rich.progress import Progress, SpinnerColumn, TextColumn  # type: ignore
@@ -83,32 +102,570 @@ else:
     from prompt_toolkit.styles import Style  # type: ignore
     from prompt_toolkit.formatted_text import HTML  # type: ignore
 
-# Most of these Penguin imports aside from the interface are not used in the CLI
-    from penguin.config import config
+    from penguin.config import config as penguin_config_global, DEFAULT_MODEL, DEFAULT_PROVIDER, WORKSPACE_PATH
     from penguin.core import PenguinCore
     from penguin.llm.api_client import APIClient
     from penguin.llm.model_config import ModelConfig
-    from penguin.run_mode import RunMode
+    # from penguin.run_mode import RunMode # Not directly used in this new structure's top level
     from penguin.system.state import parse_iso_datetime, MessageCategory
-    from penguin.system.conversation_menu import ConversationMenu, ConversationSummary
+    from penguin.system.conversation_menu import ConversationMenu, ConversationSummary # Used by PenguinCLI class
     from penguin.system_prompt import SYSTEM_PROMPT
     from penguin.tools import ToolManager
     from penguin.utils.log_error import log_error
     from penguin.utils.logs import setup_logger
-
-
     from penguin.chat.interface import PenguinInterface
+    from penguin.config import Config # Import Config type for type hinting
 
-app = typer.Typer(help="Penguin AI Assistant")
-console = Console()
+app = typer.Typer(help="Penguin AI Assistant - Your command-line AI companion.\nRun with -p/--prompt for non-interactive mode, or with a subcommand (e.g., 'chat').\nIf no prompt or subcommand is given, starts an interactive chat session.")
+console = RichConsole() # Use the renamed import
+logger = setup_logger("penguin_cli.log") # Setup a logger for the CLI module
 
-# Add a main command that calls the chat function when no subcommand is specified
+# Define a type variable for better typing
+T = TypeVar('T')
+
+# Global core components - initialized by _initialize_core_components_globally
+_core: Optional[PenguinCore] = None
+_interface: Optional[PenguinInterface] = None
+_model_config: Optional[ModelConfig] = None
+_api_client: Optional[APIClient] = None
+_tool_manager: Optional[ToolManager] = None
+_loaded_config: Optional[Union[Dict[str, Any], Config]] = None  # Global config can be dict or Config
+_interactive_session_manager: Optional[Any] = None # For PenguinCLI instance
+
+def _ensure_config_compatible(config_data: Any) -> Any:
+    """
+    Ensure the config is compatible with PenguinCore expectations.
+    If it's a dictionary, wrap it with attribute-like access.
+    """
+    if isinstance(config_data, dict):
+        # Create a simple object that wraps the dictionary with attribute access
+        class ConfigWrapper:
+            def __init__(self, data):
+                self._data = data
+                
+                # Add diagnostics attribute if not present
+                if "diagnostics" not in data:
+                    data["diagnostics"] = {"enabled": False}
+                
+            def __getattr__(self, name):
+                if name in self._data:
+                    value = self._data[name]
+                    if isinstance(value, dict):
+                        return ConfigWrapper(value)
+                    return value
+                raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
+                
+            # Support dictionary-like access too
+            def get(self, key, default=None):
+                return self._data.get(key, default)
+                
+            def __contains__(self, key):
+                return key in self._data
+                
+        return ConfigWrapper(config_data)
+    return config_data
+
+async def _initialize_core_components_globally(
+    model_override: Optional[str] = None,
+    workspace_override: Optional[Path] = None,
+    no_streaming_override: bool = False,
+):
+    global _core, _interface, _model_config, _api_client, _tool_manager, _loaded_config
+    
+    if _core is not None:
+        logger.debug("Core components already initialized globally.")
+        # Here you could add logic to update components if overrides change,
+        # e.g., if model_override is different from _model_config.model.
+        # For now, first initialization is sticky for simplicity.
+        return
+
+    logger.info("Initializing core components globally...")
+    init_start_time = time.time()
+
+    _loaded_config = penguin_config_global # Use the imported config
+
+    effective_workspace = workspace_override or WORKSPACE_PATH # WORKSPACE_PATH from penguin.config
+    logger.debug(f"Effective workspace path for global init: {effective_workspace}")
+    # Note: PenguinCore itself uses WORKSPACE_PATH from config for ProjectManager.
+    # A more direct way to override this in Core would be needed if ProjectManager path needs to change.
+
+    # Access _loaded_config as a dictionary or using property access
+    streaming_enabled = not no_streaming_override
+    
+    # Try both attribute-style and dict-style access to handle different Config implementations
+    if hasattr(_loaded_config, 'model') and callable(getattr(_loaded_config, 'model', None)):
+        # Config.model() returns a dict-like object 
+        model_dict = _loaded_config.model()
+        streaming_enabled = not no_streaming_override and model_dict.get("streaming_enabled", True)
+    elif hasattr(_loaded_config, 'model') and not callable(getattr(_loaded_config, 'model', None)):
+        # Config.model is a property that returns a dict-like object
+        model_dict = _loaded_config.model
+        streaming_enabled = not no_streaming_override and model_dict.get("streaming_enabled", True)
+    elif isinstance(_loaded_config, dict) and "model" in _loaded_config:
+        # _loaded_config is a dict with a model key
+        streaming_enabled = not no_streaming_override and _loaded_config["model"].get("streaming_enabled", True)
+        
+    # Create ModelConfig with safe access
+    if hasattr(_loaded_config, 'model') and callable(getattr(_loaded_config, 'model', None)):
+        # Model is a method that returns a dict-like object
+        model_dict = _loaded_config.model()
+        api_dict = getattr(_loaded_config, 'api', {})
+        if isinstance(api_dict, dict):
+            api_base = api_dict.get("base_url")
+        else:
+            api_base = getattr(api_dict, "base_url", None)
+    elif hasattr(_loaded_config, 'model') and not callable(getattr(_loaded_config, 'model', None)):
+        # Model is a property that returns a dict-like object
+        model_dict = _loaded_config.model
+        api_dict = getattr(_loaded_config, 'api', {})
+        if isinstance(api_dict, dict):
+            api_base = api_dict.get("base_url")
+        else:
+            api_base = getattr(api_dict, "base_url", None)
+    elif isinstance(_loaded_config, dict):
+        # Direct dictionary access
+        model_dict = _loaded_config.get("model", {})
+        api_dict = _loaded_config.get("api", {})
+        api_base = api_dict.get("base_url") if isinstance(api_dict, dict) else None
+    else:
+        # Fallback for unknown config type
+        model_dict = {}
+        api_base = None
+        
+    _model_config = ModelConfig(
+        model=model_override or model_dict.get("default", DEFAULT_MODEL),
+        provider=model_dict.get("provider", DEFAULT_PROVIDER),
+        api_base=api_base,  # Use the api_base we determined above
+        client_preference=model_dict.get("client_preference", "native"),
+        streaming_enabled=streaming_enabled,
+        vision_enabled=model_dict.get("vision_enabled", False),
+        max_tokens=model_dict.get("max_tokens", 8000),
+        temperature=model_dict.get("temperature", 0.7),
+    )
+    
+    _api_client = APIClient(model_config=_model_config)
+    _api_client.set_system_prompt(SYSTEM_PROMPT)
+    
+    _tool_manager = ToolManager(log_error)
+    
+    # Make sure our config is compatible with what PenguinCore expects
+    wrapped_config = _ensure_config_compatible(_loaded_config)
+    
+    # PenguinCore's __init__ will use its passed config to set up ProjectManager with WORKSPACE_PATH
+    _core = PenguinCore(
+        config=wrapped_config, 
+        api_client=_api_client,
+        tool_manager=_tool_manager,
+        model_config=_model_config
+    )
+    # If workspace_override needs to directly influence PenguinCore's ProjectManager path,
+    # PenguinCore would need to accept a workspace_path argument or have a setter.
+
+    _interface = PenguinInterface(_core)
+
+    logger.info(f"Core components initialized globally in {time.time() - init_start_time:.2f}s")
+
+async def _run_penguin_direct_prompt(prompt_text: str, output_format: str):
+    global _core
+    if not _core:
+        logger.error("Core not initialized for direct prompt execution.")
+        # Attempt to initialize if called directly without main_entry doing it
+        await _initialize_core_components_globally()
+        if not _core:
+            console.print("[red]Error: Core components failed to initialize.[/red]")
+            raise typer.Exit(code=1)
+
+    actual_prompt = ""
+    if prompt_text == "-":
+        if not sys.stdin.isatty():
+            actual_prompt = sys.stdin.read().strip()
+            logger.info("Reading prompt from stdin for direct execution.")
+        else:
+            logger.warning("Prompt specified as '-' but stdin is a TTY. No input read for direct prompt.")
+            if output_format == "text":
+                console.print("[yellow]Warning: Prompt was '-' but no data piped from stdin.[/yellow]")
+            elif output_format in ["json", "stream-json"]:
+                print(json.dumps({"error": "Prompt was '-' but no data piped from stdin.", "assistant_response": "", "action_results": []}))
+            return
+    else:
+        actual_prompt = prompt_text
+
+    if not actual_prompt:
+        logger.info("No prompt provided for direct execution.")
+        if output_format == "text":
+            console.print("[yellow]No prompt provided.[/yellow]")
+        elif output_format in ["json", "stream-json"]:
+            print(json.dumps({"error": "No prompt provided", "assistant_response": "", "action_results": []}))
+        return
+
+    logger.info(f"Processing direct prompt (output format: {output_format}): '{actual_prompt[:100]}...'")
+    
+    # Non-interactive implies not using the Rich-based streaming UI from PenguinCLI.
+    # `core.process` with `streaming=False` will get the full response.
+    # For `stream-json`, `core.process` would need to support yielding JSON chunks.
+    # For now, `stream-json` will output the full response as a single JSON object.
+    
+    # TODO: Implement actual streaming for "stream-json" output format.
+    # This might involve modifying `_core.process` or having a separate streaming method
+    # that yields structured event data (init, user_message, assistant_chunk, tool_call, etc.).
+    if output_format == "stream-json":
+        # Placeholder for future actual streaming implementation
+        # For now, it will behave like "json"
+        logger.info("stream-json output format selected; will output full JSON for now. True streaming TODO.")
+        # Example of initial messages for true stream-json:
+        # session_id_for_stream = _core.conversation_manager.get_current_session_id() # Needs method in ConversationManager
+        # print(json.dumps({"type": "system", "subtype": "init", "session_id": "placeholder_session_id"}))
+        # print(json.dumps({"type": "user", "message": {"content": actual_prompt}, "session_id": "placeholder_session_id"}))
+        pass
+
+    response = await _core.process(
+        {"text": actual_prompt}, 
+        streaming=False # For non-interactive, we process fully then format output.
+                        # If output_format is stream-json, core.process would need to handle that.
+    )
+
+    if output_format == "text":
+        assistant_response_text = response.get("assistant_response", "")
+        if assistant_response_text: # Only print if there's something
+             console.print(assistant_response_text)
+
+        action_results = response.get("action_results", [])
+        if action_results:
+            for i, res in enumerate(action_results):
+                if i == 0 and assistant_response_text: 
+                    console.print("") 
+                panel_content = (
+                    f"[bold cyan]Action:[/bold cyan] {res.get('action', res.get('action_name', 'Unknown'))}\n"
+                    f"[bold cyan]Status:[/bold cyan] {res.get('status', 'unknown')}\n"
+                    f"[bold cyan]Result:[/bold cyan]\n{res.get('result', res.get('output','N/A'))}"
+                )
+                console.print(Panel(panel_content,
+                                    title=f"Action Result {i+1}",
+                                    padding=1, border_style="yellow"))
+    elif output_format == "json" or output_format == "stream-json":
+        print(json.dumps(response, indent=2))
+    else:
+        console.print(f"[red]Error: Unknown output format '{output_format}'. Valid options are 'text', 'json', 'stream-json'.[/red]")
+        raise typer.Exit(code=1)
+
+async def _run_interactive_chat():
+    global _core, _interface, _interactive_session_manager
+    if not _core or not _interface:
+        logger.error("Core or Interface not initialized for interactive chat.")
+        # Attempt to initialize if called directly
+        await _initialize_core_components_globally()
+        if not _core or not _interface:
+            console.print("[red]Error: Core components failed to initialize for interactive chat.[/red]")
+            raise typer.Exit(code=1)
+
+    if _interactive_session_manager is None:
+        # PenguinCLI class is defined later in this file.
+        # It takes `core` and its __init__ creates `PenguinInterface(core)`.
+        _interactive_session_manager = PenguinCLI(_core) 
+    
+    # The chat_loop should handle its own Rich Live context if needed.
+    await _interactive_session_manager.chat_loop()
+
+# Store the original app.callback to restore if needed, or adjust for Typer's intended use.
+# Typer allows only one app.callback.
+_previous_main_callback = app.registered_callback
+
 @app.callback(invoke_without_command=True)
-def main(ctx: typer.Context): # TODO: variable not allowed in type expression
-    """Penguin AI Assistant - Main entry point"""
-    # If no subcommand was invoked, run the chat command
-    if ctx.invoked_subcommand is None:
-        typer.run(chat)
+def main_entry(
+    ctx: typer.Context,
+    prompt: Optional[str] = typer.Option(
+        None, "-p", "--prompt", 
+        help="Run in non-interactive mode. Use '-' to read prompt from stdin."
+    ),
+    output_format: str = typer.Option(
+        "text", "--output-format", 
+        help="Output format for -p mode (text, json, stream-json).",
+        case_sensitive=False
+        # autocompletion=lambda: ["text", "json", "stream-json"] # Requires Typer 0.9+
+    ),
+    continue_last: bool = typer.Option(
+        False, "--continue", "-c",
+        help="Continue the most recent conversation."
+    ),
+    resume_session: Optional[str] = typer.Option(
+        None, "--resume",
+        help="Resume a specific conversation by its session ID."
+    ),
+    run_task: Optional[str] = typer.Option(
+        None, "--run",
+        help="Run a specific task or project in autonomous mode."
+    ),
+    continuous: bool = typer.Option(
+        False, "--247", "--continuous",
+        help="Run in continuous mode until manually stopped."
+    ),
+    time_limit: Optional[int] = typer.Option(
+        None, "--time-limit",
+        help="Time limit in minutes for task/continuous execution."
+    ),
+    task_description: Optional[str] = typer.Option(
+        None, "--description",
+        help="Optional description for the task when using --run."
+    ),
+    model: Optional[str] = typer.Option(
+        None, "--model", "-m", 
+        help="Specify the model to use (e.g., 'anthropic/claude-3-5-sonnet-20240620'). Overrides config."
+    ),
+    workspace: Optional[Path] = typer.Option(
+        None, "--workspace", "-w", 
+        help="Set custom workspace path. Overrides config."
+    ),
+    no_streaming: bool = typer.Option(
+        False, "--no-streaming", 
+        help="Disable streaming mode for LLM responses (primarily for interactive mode)."
+    ),
+    # Add other global options from the plan here eventually
+    # e.g., continue_session, resume_session_id, system_prompt_override, etc.
+    version: Optional[bool] = typer.Option( # Example: adding a version flag
+        None, "--version", "-v", help="Show Penguin version and exit.", is_eager=True
+    )
+):
+    """
+    Penguin AI Assistant - Your command-line AI companion.
+    """
+    if version:
+        # TODO: Get version dynamically, e.g., from importlib.metadata or a __version__ string
+        console.print("Penguin AI Assistant v0.1.0 (Placeholder Version)") 
+        raise typer.Exit()
+
+    # Create a sync wrapper around our async code
+    async def _async_init_and_run():
+        # Initialize core components once, passing global CLI options as overrides
+        try:
+            await _initialize_core_components_globally(
+                model_override=model,
+                workspace_override=workspace,
+                no_streaming_override=no_streaming
+            )
+        except Exception as e:
+            logger.error(f"Fatal error during core component initialization: {e}", exc_info=True)
+            console.print(f"[bold red]Fatal Initialization Error:[/bold red] {e}")
+            console.print("Please check logs for more details.")
+            raise typer.Exit(code=1)
+
+        # Check for priority flags in order of precedence:
+        # 1. Task execution (--run)
+        if run_task is not None:
+            await _handle_run_mode(run_task, continuous, time_limit, task_description)
+        # 2. Session management (--continue/--resume)
+        elif continue_last or resume_session:
+            # We'll always go into interactive mode for session management
+            if prompt is not None:
+                # Combine -p with -c/--resume
+                await _handle_session_management(continue_last, resume_session, prompt, output_format)
+            else:
+                # Just go into interactive mode with loaded session
+                await _handle_session_management(continue_last, resume_session)
+        # 3. Direct prompt (-p/--prompt)
+        elif prompt is not None: 
+            # Standard non-interactive mode if -p or --prompt was used
+            await _run_penguin_direct_prompt(prompt, output_format)
+        # 4. Continuous mode without task (just --247)
+        elif continuous:
+            await _handle_run_mode(None, continuous, time_limit, task_description)
+        # 5. Default: interactive chat session
+        elif ctx.invoked_subcommand is None:
+            # No subcommand invoked, default to interactive chat
+            await _run_interactive_chat()
+        # Else: a subcommand was invoked (e.g., `penguin chat`, `penguin profile`).
+        # Typer will handle calling the subcommand.
+
+    # Run the async function in the current thread
+    asyncio.run(_async_init_and_run())
+
+async def _handle_run_mode(
+    task_name: Optional[str], 
+    continuous: bool, 
+    time_limit: Optional[int] = None,
+    description: Optional[str] = None
+) -> None:
+    """
+    Handle run mode execution with specified task and options.
+    
+    Args:
+        task_name: Name of the task to run
+        continuous: Whether to run in continuous mode
+        time_limit: Optional time limit in minutes
+        description: Optional description for the task
+    """
+    global _core
+    
+    if not _core:
+        logger.error("Core not initialized for run mode.")
+        console.print("[red]Error: Core components failed to initialize for run mode.[/red]")
+        raise typer.Exit(code=1)
+    
+    try:
+        logger.info(f"Starting run mode: task={task_name}, continuous={continuous}, time_limit={time_limit}")
+        
+        # Configure streaming callback to display in console
+        async def stream_callback(chunk: str) -> None:
+            """Handle streaming output during run mode"""
+            if console:
+                if isinstance(chunk, str) and chunk.strip():
+                    # Print directly to console with proper coloring
+                    console.print(chunk, end="", style="blue")
+                    
+        # Configure UI update callback (no-op for now)
+        async def ui_update_callback() -> None:
+            """Handle UI updates during run mode"""
+            pass
+            
+        # Use core.start_run_mode to execute the task
+        if continuous:
+            console.print(f"[bold blue]Starting continuous mode{' for task: ' + task_name if task_name else ''}[/bold blue]")
+            if time_limit:
+                console.print(f"[blue]Time limit: {time_limit} minutes[/blue]")
+            console.print("[blue]Press Ctrl+C to stop execution gracefully[/blue]")
+            
+            try:
+                # For continuous mode, we use the same method but with continuous=True
+                await _core.start_run_mode(
+                    name=task_name,
+                    description=description,
+                    continuous=True,
+                    time_limit=time_limit,
+                    stream_callback_for_cli=stream_callback,
+                    ui_update_callback_for_cli=ui_update_callback
+                )
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Keyboard interrupt received. Gracefully shutting down...[/yellow]")
+                # Core should handle the graceful shutdown internally
+        else:
+            # For single task execution
+            if not task_name:
+                console.print("[yellow]No task specified for run mode. Use --run <task_name> to specify a task.[/yellow]")
+                raise typer.Exit(code=1)
+                
+            console.print(f"[bold blue]Running task: {task_name}[/bold blue]")
+            if description:
+                console.print(f"[blue]Description: {description}[/blue]")
+            if time_limit:
+                console.print(f"[blue]Time limit: {time_limit} minutes[/blue]")
+                
+            await _core.start_run_mode(
+                name=task_name,
+                description=description,
+                continuous=False,
+                time_limit=time_limit,
+                stream_callback_for_cli=stream_callback,
+                ui_update_callback_for_cli=ui_update_callback
+            )
+            
+        console.print("[green]Run mode execution completed.[/green]")
+        
+    except Exception as e:
+        logger.error(f"Error in run mode execution: {e}", exc_info=True)
+        console.print(f"[red]Error running task: {str(e)}[/red]")
+        console.print(traceback.format_exc())
+
+async def _handle_session_management(continue_last: bool, resume_session: Optional[str], prompt: Optional[str] = None, output_format: str = "text") -> None:
+    """
+    Handle session management flags by loading the appropriate conversation.
+    
+    Args:
+        continue_last: Whether to continue the most recent conversation
+        resume_session: Optional session ID to resume
+        prompt: Optional prompt to process in non-interactive mode
+        output_format: Output format for non-interactive mode
+    """
+    global _core
+    
+    if not _core:
+        logger.error("Core not initialized for session management.")
+        console.print("[red]Error: Core components failed to initialize for session management.[/red]")
+        raise typer.Exit(code=1)
+    
+    try:
+        if continue_last:
+            # Get the most recent conversation ID
+            conversations = _core.list_conversations(limit=1)
+            if not conversations:
+                console.print("[yellow]No previous conversations found to continue.[/yellow]")
+                if prompt:
+                    # Fall back to standard processing if no conversation to continue
+                    await _run_penguin_direct_prompt(prompt, output_format)
+                else:
+                    # Fall back to new interactive session
+                    await _run_interactive_chat()
+                return
+                
+            # Load the most recent conversation
+            session_id = conversations[0]["id"]
+            logger.info(f"Continuing most recent conversation: {session_id}")
+            success = _core.conversation_manager.load(session_id)
+            
+            if not success:
+                console.print(f"[yellow]Failed to load most recent conversation. Starting new session.[/yellow]")
+                if prompt:
+                    await _run_penguin_direct_prompt(prompt, output_format)
+                else:
+                    await _run_interactive_chat()
+                return
+                
+            console.print(f"[green]Continuing conversation {session_id}[/green]")
+        
+        elif resume_session:
+            # Load the specified conversation
+            logger.info(f"Resuming conversation: {resume_session}")
+            success = _core.conversation_manager.load(resume_session)
+            
+            if not success:
+                console.print(f"[yellow]Failed to load conversation {resume_session}. Starting new session.[/yellow]")
+                if prompt:
+                    await _run_penguin_direct_prompt(prompt, output_format)
+                else:
+                    await _run_interactive_chat()
+                return
+                
+            console.print(f"[green]Resumed conversation {resume_session}[/green]")
+        
+        # Process prompt if provided, otherwise go into interactive mode
+        if prompt:
+            await _run_penguin_direct_prompt(prompt, output_format)
+        else:
+            await _run_interactive_chat()
+            
+    except Exception as e:
+        logger.error(f"Error in session management: {e}", exc_info=True)
+        console.print(f"[red]Error loading conversation: {str(e)}[/red]")
+        # Fall back to standard behavior
+        if prompt:
+            await _run_penguin_direct_prompt(prompt, output_format)
+        else:
+            await _run_interactive_chat()
+
+@app.command()
+async def chat(): # Removed model, workspace, no_streaming options
+    """Start an interactive chat session with Penguin."""
+    global _core # Ensure we're referring to the global
+    if not _core:
+        # This should ideally be caught by main_entry's initialization.
+        # If `penguin chat` is called directly, main_entry runs first.
+        logger.warning("Chat command invoked, but core components appear uninitialized. main_entry should handle this.")
+        # Attempting to initialize with defaults if somehow missed.
+        try:
+            await _initialize_core_components_globally()
+        except Exception as e:
+            logger.error(f"Error re-initializing core for chat command: {e}", exc_info=True)
+            console.print(f"[red]Error: Core components failed to initialize for chat: {e}[/red]")
+            raise typer.Exit(code=1)
+        
+        if not _core: # Still not initialized after attempt
+            console.print("[red]Critical Error: Core components could not be initialized.[/red]")
+            raise typer.Exit(code=1)
+            
+    await _run_interactive_chat()
+
+# --- PenguinCLI Class (Interactive Session Manager) ---
+# This class definition remains largely the same for now, but will use global components.
+# It's instantiated by _run_interactive_chat.
+# Small adjustments might be needed if it previously took many args in __init__.
 
 class PenguinCLI:
     USER_COLOR = "cyan"
@@ -218,7 +775,7 @@ class PenguinCLI:
         self.interface = PenguinInterface(core)
         self.in_247_mode = False
         self.message_count = 0
-        self.console = Console()
+        self.console = RichConsole()  # Use RichConsole instead of Console
         self.conversation_menu = ConversationMenu(self.console)
         self.core.register_progress_callback(self.on_progress_update)
 
@@ -499,16 +1056,7 @@ class PenguinCLI:
                         )
 
                         # Display output in a special panel
-                        output_panel = Panel(
-                            Syntax(
-                                code_output, language, theme="monokai", word_wrap=True
-                            ),
-                            title=f"📤 {lang_display} Output",
-                            title_align="left",
-                            border_style="green",
-                            padding=(1, 2),
-                        )
-                        self.console.print(output_panel)
+                        self._display_code_output_panel(code_output, language, "Output")
                         # Simplify the message to avoid duplication
                         processed_message = message.replace(
                             code_output, f"[{lang_display} output displayed above]"
@@ -607,51 +1155,62 @@ class PenguinCLI:
         # Default to text if no patterns matched
         return "text"
 
+    def _display_code_output_panel(self, code_output: str, language: str, title: str = "Output"):
+        lang_display = self.LANGUAGE_DISPLAY_NAMES.get(language, language.capitalize())
+        output_panel = Panel(
+            Syntax(code_output, language, theme="monokai", word_wrap=True),
+            title=f"📤 {lang_display} {title}",
+            title_align="left",
+            border_style="green", # Or self.RESULT_COLOR
+            padding=(1, 2),
+            width=self.console.width - 8 if self.console else None
+        )
+        if self.console:
+            self.console.print(output_panel)
+        else: # Fallback if console not available (e.g. direct prompt mode context)
+            print(f"--- {lang_display} {title} ---")
+            print(code_output)
+            print(f"--- End {lang_display} {title} ---")
+
     def display_action_result(self, result: Dict[str, Any]):
         """Display action results in a more readable format"""
-        # Print debug info to diagnose action result content
-        print(f"[DEBUG] Action result: {result}")
-        
-        action_type = result.get("action", "unknown")
-        result_text = result.get("result", "")
+        # This method is part of PenguinCLI, used in interactive mode.
+        # For direct prompt mode, _run_penguin_direct_prompt handles its own output.
+        if not self.console: # Should not happen in interactive mode
+            logger.warning("display_action_result called without a console.")
+            return
+
+        action_type = result.get("action", result.get("action_name", "unknown"))
+        result_text = str(result.get("result", result.get("output", ""))) # Ensure string
         status = result.get("status", "unknown")
         
-        status_icon = "✓" if status == "completed" else "❌"
+        status_icon = "✓" if status == "completed" else ("⏳" if status == "pending" else "❌")
         header = f"🔧 Action Result: {action_type}"
-        content = f"{status_icon} {action_type}\n\n{result_text}" if result_text else f"{status_icon} {action_type}\n\n(No output available)"
+        
+        # If result_text is code-like, use Syntax highlighting
+        is_code_output = False
+        detected_lang = "text"
+        if result_text.strip() and ('\n' in result_text or any(kw in result_text for kw in ["def ", "class ", "import ", "function ", "const ", "let "])):
+            is_code_output = True
+            detected_lang = self._detect_language(result_text)
 
-        # Special handling for code execution results
-        if action_type in ["execute", "execute_code"]:
-            # Auto-detect language from the code
-            language = self._detect_language(result_text)
-
-            # Get language display name
-            lang_display = self.LANGUAGE_DISPLAY_NAMES.get(
-                language, language.capitalize()
-            )
-
-            # Show the full action type and status first
-            self.console.print(f"[bold blue]{status_icon}[/bold blue] [bold green]Python code executed[/bold green]")
-            
-            # Display code output separately
-            output_panel = Panel(
-                Syntax(result_text, language, theme="monokai", word_wrap=True),
-                title=f"📤 Python Code Output",
-                title_align="left",
-                border_style=self.RESULT_COLOR,
-                width=self.console.width - 8,
-            )
-            self.console.print(output_panel)
+        if is_code_output:
+            lang_display = self.LANGUAGE_DISPLAY_NAMES.get(detected_lang, detected_lang.capitalize())
+            content_renderable = Syntax(result_text, detected_lang, theme="monokai", word_wrap=True, line_numbers=True)
+            title_for_panel = f"{status_icon} {lang_display} Output from {action_type}"
         else:
-            # Regular action result display
-            panel = Panel(
-                Markdown(content),
-                title=header,
-                title_align="left",
-                border_style=self.TOOL_COLOR,
-                width=self.console.width - 8,
-            )
-            self.console.print(panel)
+            content_renderable = Markdown(result_text if result_text.strip() else "(No textual output)")
+            title_for_panel = f"{status_icon} Result from {action_type}"
+
+        panel = Panel(
+            content_renderable,
+            title=title_for_panel,
+            title_align="left",
+            border_style=self.TOOL_COLOR if status != "error" else "red",
+            width=self.console.width - 8,
+            padding=(1,1)
+        )
+        self.console.print(panel)
 
     def on_progress_update(
         self, iteration: int, max_iterations: int, message: Optional[str] = None
@@ -1443,93 +2002,28 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
 
 
 @app.command()
-def chat(
-    model: str = typer.Option(None, "--model", "-m", help="Specify the model to use"),
-    workspace: Path = typer.Option(
-        None, "--workspace", "-w", help="Set custom workspace path"
-    ),
-    no_streaming: bool = typer.Option(
-        False, "--no-streaming", help="Disable streaming mode"
-    ),
-):
-    """Start an interactive chat session with Penguin"""
-
-    async def run():
-        # Add timing for CLI startup
-        import time
-        cli_start_time = time.time()
-        console.print("[bold blue]Starting Penguin...[/bold blue]")
+async def chat(): # Removed model, workspace, no_streaming options
+    """Start an interactive chat session with Penguin."""
+    global _core # Ensure we're referring to the global
+    if not _core:
+        # This should ideally be caught by main_entry's initialization.
+        # If `penguin chat` is called directly, main_entry runs first.
+        logger.warning("Chat command invoked, but core components appear uninitialized. main_entry should handle this.")
+        # Attempting to initialize with defaults if somehow missed.
+        try:
+            await _initialize_core_components_globally()
+        except Exception as e:
+            logger.error(f"Error re-initializing core for chat command: {e}", exc_info=True)
+            console.print(f"[red]Error: Core components failed to initialize for chat: {e}[/red]")
+            raise typer.Exit(code=1)
         
-        # Load configuration
-        loaded_config = config
-        config_time = time.time()
-        console.print(f"[dim]Config loaded in {(config_time - cli_start_time)*1000:.0f}ms[/dim]")
+        if not _core: # Still not initialized after attempt
+            console.print("[red]Critical Error: Core components could not be initialized.[/red]")
+            raise typer.Exit(code=1)
+            
+    await _run_interactive_chat()
 
-        # Initialize model configuration - respect config but allow CLI override
-        streaming_enabled = not no_streaming and loaded_config["model"].get(
-            "streaming_enabled", True
-        )
-
-        model_config = ModelConfig(
-            model=model or loaded_config["model"]["default"],
-            provider=loaded_config["model"]["provider"],
-            api_base=loaded_config["api"]["base_url"],
-            client_preference=loaded_config["model"].get("client_preference", "native"),
-            streaming_enabled=streaming_enabled,
-        )
-        model_time = time.time()
-        console.print(f"[dim]Model config created in {(model_time - config_time)*1000:.0f}ms[/dim]")
-
-        # Create API client
-        console.print("[dim]Initializing API client...[/dim]")
-        api_start_time = time.time()
-        api_client = APIClient(model_config=model_config)
-        api_client.set_system_prompt(SYSTEM_PROMPT)
-        api_time = time.time()
-        console.print(f"[dim]API client initialized in {(api_time - api_start_time)*1000:.0f}ms[/dim]")
-        
-        # Initialize tool manager
-        console.print("[dim]Loading tools...[/dim]")
-        tools_start_time = time.time()
-        tool_manager = ToolManager(log_error)
-        tools_time = time.time()
-        console.print(f"[dim]Tools loaded in {(tools_time - tools_start_time)*1000:.0f}ms[/dim]")
-
-        # Create core and interface
-        console.print("[dim]Initializing Penguin core...[/dim]")
-        core_start_time = time.time()
-        core = PenguinCore(api_client=api_client, tool_manager=tool_manager)
-        core.set_system_prompt(SYSTEM_PROMPT)
-        core_time = time.time()
-        console.print(f"[dim]Core initialized in {(core_time - core_start_time)*1000:.0f}ms[/dim]")
-        
-        # Initialize interface - now used as the adapter between CLI and Core
-        interface_start_time = time.time()
-        interface = PenguinInterface(core)
-        interface_time = time.time()
-        console.print(f"[dim]Interface initialized in {(interface_time - interface_start_time)*1000:.0f}ms[/dim]")
-        
-        # Initialize CLI with core reference
-        cli_init_start_time = time.time()
-        cli = PenguinCLI(core)
-        cli.interface = interface  # Make sure the interface is set
-        cli_init_time = time.time()
-        console.print(f"[dim]CLI components initialized in {(cli_init_time - cli_init_start_time)*1000:.0f}ms[/dim]")
-        
-        # Display total startup time
-        total_startup_time = time.time() - cli_start_time
-        console.print(f"[bold green]Penguin started in {total_startup_time:.2f} seconds[/bold green]")
-        
-        # Start chat loop
-        await cli.chat_loop()
-
-    try:
-        asyncio.run(run())
-    except Exception as e:
-        console.print(f"[red]Fatal error: {str(e)}[/red]")
-        raise typer.Exit(1)
-
-
+# Profile command remains largely the same, ensure it uses `console` correctly
 @app.command()
 def profile(
     output_file: str = typer.Option("penguin_profile", "--output", "-o", help="Output file name for profile data (without extension)"),
@@ -1542,80 +2036,88 @@ def profile(
     import cProfile
     import pstats
     import io
-    from pathlib import Path
+    # from pathlib import Path # Already imported
     import subprocess
-    import sys
+    # import sys # Already imported
     
     # Create a profile directory if it doesn't exist
     profile_dir = Path("profiles")
     profile_dir.mkdir(exist_ok=True)
     
     # Prepare the output file name
-    if not output_file:
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_file = f"penguin_profile_{timestamp}"
-    
-    output_path = profile_dir / f"{output_file}.prof"
-    stats_path = profile_dir / f"{output_file}.txt"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    actual_output_file = output_file if output_file != "penguin_profile" else f"penguin_profile_{timestamp}"
+        
+    output_path = profile_dir / f"{actual_output_file}.prof"
+    stats_path = profile_dir / f"{actual_output_file}.txt"
     
     console.print(f"[bold blue]Starting Penguin with profiling enabled...[/bold blue]")
     console.print(f"Profile data will be saved to: [cyan]{output_path}[/cyan]")
     
-    # Define a function that runs the "penguin" command without any subcommands
-    # This will trigger our main/callback function which runs chat
-    def run_profiled_penguin():
-        # Rather than calling typer.run(chat), we'll run a fresh penguin process
-        # with the exact same environment to get the most accurate profile of the entire startup
-        cmd = [sys.executable, "-m", "penguin.penguin"]
+    def run_profiled_penguin_interactive():
+        # This will now go through the main_entry, which initializes and runs interactive.
+        # We need to simulate running `penguin` command itself.
+        # For profiling, it's better to profile the actual `app()` call or a specific async function.
+        # Let's profile the `_run_interactive_chat` after components are initialized.
+        async def profiled_interactive_session():
+            await _initialize_core_components_globally() # Ensure init
+            await _run_interactive_chat()
+
         try:
-            subprocess.run(cmd, check=True)
-        except subprocess.CalledProcessError:
-            console.print("[yellow]Penguin process exited with an error.[/yellow]")
+            asyncio.run(profiled_interactive_session())
         except KeyboardInterrupt:
-            console.print("[yellow]Penguin process interrupted by user.[/yellow]")
-    
-    # Start profiler
+            console.print("[yellow]Penguin interactive session interrupted by user during profiling.[/yellow]")
+        except SystemExit: # Catch typer.Exit
+            console.print("[yellow]Penguin exited during profiling (SystemExit).[/yellow]")
+        except Exception as e:
+            console.print(f"[red]Error during profiled interactive run: {str(e)}[/red]")
+            logger.error(f"Profiling error: {e}", exc_info=True)
+
+
     profiler = cProfile.Profile()
     profiler.enable()
     
-    try:
-        # Run Penguin with profiling
-        run_profiled_penguin()
-    except Exception as e:
-        console.print(f"[red]Error during profiled run: {str(e)}[/red]")
-    finally:
-        # Stop profiler
-        profiler.disable()
-        console.print("[green]Profiling complete.[/green]")
+    run_profiled_penguin_interactive() # Call the modified function
         
-        # Save profile data
-        profiler.dump_stats(str(output_path))
-        console.print(f"Profile data saved to: [cyan]{output_path}[/cyan]")
-        
-        # Create readable stats
-        s = io.StringIO()
-        ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative')
-        ps.print_stats(20)  # Print top 20 functions by cumulative time
-        stats_content = s.getvalue()
-        
-        with open(stats_path, 'w') as f:
-            f.write(stats_content)
-        
-        console.print(f"Profile summary saved to: [cyan]{stats_path}[/cyan]")
-        console.print("[bold]Top 20 functions by cumulative time:[/bold]")
-        console.print(stats_content)
-        
-        # Open visualization if requested
-        if view:
-            try:
-                subprocess.run(["snakeviz", str(output_path)], check=True)
-            except Exception as e:
-                console.print(f"[yellow]Could not open visualization: {str(e)}[/yellow]")
-                console.print(f"[yellow]You can manually visualize the profile with: snakeviz {output_path}[/yellow]")
+    profiler.disable()
+    console.print("[green]Profiling complete.[/green]")
+    
+    profiler.dump_stats(str(output_path))
+    console.print(f"Profile data saved to: [cyan]{output_path}[/cyan]")
+    
+    s = io.StringIO()
+    # Sort by cumulative time, then standard name for consistent ordering
+    ps = pstats.Stats(profiler, stream=s).sort_stats('cumulative', 'name')
+    ps.print_stats(30)  # Print top 30 functions
+    stats_content = s.getvalue()
+    
+    with open(stats_path, 'w') as f:
+        f.write(stats_content)
+    
+    console.print(f"Profile summary saved to: [cyan]{stats_path}[/cyan]")
+    console.print("[bold]Top 30 functions by cumulative time:[/bold]")
+    console.print(stats_content)
+    
+    if view:
+        try:
+            subprocess.run(["snakeviz", str(output_path)], check=True)
+        except FileNotFoundError:
+            console.print(f"[yellow]snakeviz command not found. Please install snakeviz to view profiles.[/yellow]")
+            console.print(f"[yellow]You can manually visualize the profile with: snakeviz {output_path}[/yellow]")
+        except Exception as e:
+            console.print(f"[yellow]Could not open visualization: {str(e)}[/yellow]")
+            console.print(f"[yellow]You can manually visualize the profile with: snakeviz {output_path}[/yellow]")
 
-        console.print("[bold green]Profiling complete.[/bold green]")
-        console.print(f"[dim]You can visualize the profile using: snakeviz {output_path}[/dim]")
-        console.print("[dim]Or install other profile visualization tools.[/dim]")
+    console.print("[bold green]Profiling session ended.[/bold green]")
+    console.print(f"[dim]To visualize: snakeviz {output_path}[/dim]")
 
 if __name__ == "__main__":
-    app()
+    # This makes Typer process the CLI arguments and call the appropriate function.
+    # For async callbacks, we need to wrap app() with asyncio.run
+    try:
+        asyncio.run(app())
+    except Exception as e: # Catch any unhandled exceptions from Typer/asyncio layers
+        logger.critical(f"Unhandled exception at CLI entry point: {e}", exc_info=True)
+        console.print(f"[bold red]Unhandled Critical Error:[/bold red] {e}")
+        console.print("This is unexpected. Please check logs or report this issue.")
+        sys.exit(1)
