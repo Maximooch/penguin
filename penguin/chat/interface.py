@@ -386,7 +386,8 @@ class PenguinInterface:
             "context": self._handle_context_command,
             "debug": self._handle_debug_command,
             "stream": self._handle_stream_command,  # Added stream command handler
-            "model": self._handle_model_command, # Added model command handler
+            "model": self._handle_model_command, # For /model set only
+            "models": self._handle_models_command, # New simple interactive selector
         }
         
         handler = handlers.get(cmd, self._invalid_command)
@@ -703,32 +704,24 @@ class PenguinInterface:
         return {"error": f"Unknown context command: {action}"}
     
     async def _handle_model_command(self, args: List[str]) -> Dict[str, Any]:
-        """Handles model-related commands like list, set, etc."""
-        if not args:
-            return {"error": "Missing model subcommand. Try /model list or /model set <id>"}
+        """Handles /model set command for manual model setting"""
+        if not args or args[0].lower() != "set":
+            return {"error": "Usage: /model set <model_id>"}
 
-        subcmd = args[0].lower()
-        if subcmd == "list":
-            # This logic is similar to what's in cli.py model_list
-            # The interface should be responsible for fetching, not rendering directly.
-            # The CLI part will handle rendering.
-            models_data = await self.list_available_models() # Added await here
-            return {"models_list": models_data} # Return data for CLI to render
-        
-        elif subcmd == "set" and len(args) > 1:
-            model_id_to_set = args[1]
-            success = await asyncio.to_thread(self.load_model, model_id_to_set) # load_model is sync
-            if success:
-                new_model_name = "Unknown"
-                if self.core.model_config and self.core.model_config.model:
-                    new_model_name = self.core.model_config.model
-                # Update token display as max_tokens might change
-                self.update_token_display() 
-                return {"status": f"Successfully set model to: {new_model_name}", "new_model_name": new_model_name}
-            else:
-                return {"error": f"Failed to set model to: {model_id_to_set}"}
-        
-        return {"error": f"Unknown model subcommand: {subcmd}. Try /model list or /model set <id>"}
+        if len(args) < 2:
+            return {"error": "Missing model ID. Usage: /model set <model_id>"}
+            
+        model_id_to_set = args[1]
+        success = await self.core.load_model(model_id_to_set)
+        if success:
+            new_model_name = "Unknown"
+            if self.core.model_config and self.core.model_config.model:
+                new_model_name = self.core.model_config.model
+            # Update token display as max_tokens might change
+            self.update_token_display() 
+            return {"status": f"Successfully set model to: {new_model_name}", "new_model_name": new_model_name}
+        else:
+            return {"error": f"Failed to set model to: {model_id_to_set}"}
 
     async def _handle_stream_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle streaming mode toggles and status checks"""
@@ -848,7 +841,8 @@ class PenguinInterface:
             "/context [list|load FILE] - Manage context files",
             "/list - Show projects and tasks",
             "/debug [tokens] - Run debug functions",
-            "/model [list|set <id>] - Manage models"
+            "/models - Interactive model selection (autocomplete search)",
+            "/model set <id> - Manually set a specific model ID"
         ]
         
     def is_active(self) -> bool:
@@ -1007,7 +1001,7 @@ class PenguinInterface:
         hardcoded_models.sort(key=lambda m: (not m["current"], m["id"]))
         return hardcoded_models
 
-    def load_model(self, model_id_from_config: str) -> bool:
+    async def load_model(self, model_id_from_config: str) -> bool:
         """
         Load a model by name.
         Attempts to call load_model on core if available.
@@ -1020,8 +1014,8 @@ class PenguinInterface:
         """
         if hasattr(self.core, 'load_model') and callable(self.core.load_model):
             try:
-                # Assuming core.load_model takes the ID from model_configs
-                return self.core.load_model(model_id_from_config) 
+                # Now call the async core method
+                return await self.core.load_model(model_id_from_config) 
             except Exception as e:
                 print(f"[Interface] Error loading model via core.load_model: {e}\\n{traceback.format_exc()}")
                 return False
@@ -1064,3 +1058,37 @@ class PenguinInterface:
         except Exception as e:
             print(f"[Interface] Error in fallback model loading: {e}\\n{traceback.format_exc()}")
             return False
+
+    async def _handle_models_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle /models command - launches interactive model selector"""
+        try:
+            from penguin.chat.model_selector import interactive_model_selector
+            
+            # Get current model for display
+            current_model_name = None
+            if self.core.model_config and self.core.model_config.model:
+                current_model_name = self.core.model_config.model
+            
+            # Run the interactive selector
+            selected_model = await interactive_model_selector(current_model_name)
+            
+            if selected_model:
+                # Load the selected model
+                success = await self.core.load_model(selected_model)
+                if success:
+                    # Update token display as max_tokens might change
+                    self.update_token_display()
+                    return {
+                        "status": f"Successfully selected model: {selected_model}",
+                        "model_id": selected_model,
+                        "success": True
+                    }
+                else:
+                    return {"error": f"Failed to load selected model: {selected_model}"}
+            else:
+                return {"status": "Model selection cancelled"}
+                
+        except ImportError:
+            return {"error": "Model selector not available. Use '/model set <id>' instead."}
+        except Exception as e:
+            return {"error": f"Error in model selection: {str(e)}"}
