@@ -1337,7 +1337,7 @@ class PenguinCore:
             except Exception as e:
                 logger.warning(f"Failed to propagate new API client to Engine: {e}")
 
-    def load_model(self, model_id: str) -> bool:
+    async def load_model(self, model_id: str) -> bool:
         """Replace the active model at runtime.
 
         The *model_id* argument can be either:
@@ -1347,6 +1347,10 @@ class PenguinCore:
         Returns ``True`` on success, ``False`` otherwise.
         """
         try:
+            # Fetch model specifications first
+            model_specs = await self._fetch_model_specifications(model_id)
+            logger.info(f"Fetched specs for {model_id}: {model_specs}")
+            
             # -----------------------------------------------------------------
             # 1. Locate configuration for the requested model
             # -----------------------------------------------------------------
@@ -1376,12 +1380,22 @@ class PenguinCore:
                     "provider": provider_for_config,
                     "client_preference": client_pref,
                     "streaming_enabled": True,
+                    "max_tokens": model_specs.get("max_output_tokens"),  # Require real specs, no fallback
                 }
 
             # Sanity-check we have the minimum required keys.
             provider = model_conf.get("provider")
             if provider is None:
                 logger.error(f"Invalid configuration for model '{model_id}': missing provider field.")
+                return False
+
+            # Update max_tokens with fetched specs - require real specs, no fallbacks
+            if "max_output_tokens" in model_specs:
+                # Use max_output_tokens for the API output limit
+                model_conf["max_tokens"] = model_specs["max_output_tokens"]
+            else:
+                # If we don't have real specs, error instead of guessing
+                logger.error(f"Could not fetch max_output_tokens for model '{model_id}' from OpenRouter API")
                 return False
 
             # -----------------------------------------------------------------
@@ -1392,7 +1406,7 @@ class PenguinCore:
                 "provider": provider,
                 "client_preference": model_conf.get("client_preference", "native"),
                 "api_base": model_conf.get("api_base"),
-                "max_tokens": model_conf.get("max_tokens"),
+                "max_tokens": model_conf.get("max_tokens"),  # Should be set from real specs above
                 "temperature": model_conf.get("temperature", 0.7),
                 "use_assistants_api": model_conf.get("use_assistants_api", False),
                 "streaming_enabled": model_conf.get("streaming_enabled", True),
@@ -1404,7 +1418,13 @@ class PenguinCore:
             # 3. Apply it to running components
             # -----------------------------------------------------------------
             self._apply_new_model_config(new_model_config)
-            logger.info(f"Successfully switched to model '{model_id}'.")
+            
+            # -----------------------------------------------------------------
+            # 4. Update config.yml with new model specifications
+            # -----------------------------------------------------------------
+            self._update_config_file_with_model(model_id, model_specs)
+            
+            logger.info(f"Successfully switched to model '{model_id}' with context window {model_specs.get('context_length', 'unknown')} tokens.")
             return True
         except Exception as e:
             logger.error(f"Failed to switch to model '{model_id}': {e}")
@@ -1724,3 +1744,88 @@ class PenguinCore:
         
         except Exception as e:
             logger.error(f"Error in PenguinCore._handle_run_mode_event: {str(e)}", exc_info=True)
+
+    def _update_config_file_with_model(self, model_id: str, model_specs: Dict[str, Any]) -> None:
+        """Update config.yml with new model specifications."""
+        from pathlib import Path
+        import yaml
+        
+        config_path = Path(__file__).parent / "config.yml"
+        
+        try:
+            # Load current config
+            with open(config_path, 'r') as f:
+                config_data = yaml.safe_load(f)
+            
+            # Update model settings
+            config_data['model']['default'] = model_id
+            
+            # Update max_tokens with the actual max output limit
+            if 'max_output_tokens' in model_specs:
+                config_data['model']['max_tokens'] = model_specs['max_output_tokens']
+            else:
+                logger.error(f"No max_output_tokens available for model {model_id}")
+                return
+            
+            # Store context window info for reference
+            if 'context_length' in model_specs:
+                config_data['model']['context_window'] = model_specs['context_length']
+            
+            # Remove max_output_tokens if it exists (we only need max_tokens)
+            if 'max_output_tokens' in config_data['model']:
+                del config_data['model']['max_output_tokens']
+            
+            # Write back to file
+            with open(config_path, 'w') as f:
+                yaml.safe_dump(config_data, f, default_flow_style=False, sort_keys=False)
+                
+            logger.info(f"Updated config.yml with model {model_id}, max_tokens {config_data['model']['max_tokens']}, context_window {model_specs.get('context_length', 'unknown')}")
+            
+        except Exception as e:
+            logger.error(f"Failed to update config.yml: {e}")
+
+    async def _fetch_model_specifications(self, model_id: str) -> Dict[str, Any]:
+        """Fetch model specifications from OpenRouter API or use fallback data."""
+        import httpx
+        
+        # Try to fetch from OpenRouter API
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get("https://openrouter.ai/api/v1/models", timeout=5.0)
+                response.raise_for_status()
+                models = response.json().get("data", [])
+                
+                for model in models:
+                    if model.get("id") == model_id:
+                        return {
+                            "context_length": model.get("context_length", 200000),
+                            "max_output_tokens": model.get("max_output_tokens", model.get("context_length", 200000) // 4),  # Default to 1/4 of context if not specified
+                            "name": model.get("name", model_id),
+                            "provider": model_id.split('/')[0] if '/' in model_id else "unknown"
+                        }
+                        
+        except Exception as e:
+            logger.debug(f"Failed to fetch model specs from API: {e}")
+        
+        # Fallback specifications for common models
+        fallback_specs = {
+            "anthropic/claude-4-opus": {"context_length": 200000, "max_output_tokens": 64000, "name": "Claude 4 Opus"},
+            "anthropic/claude-4-sonnet": {"context_length": 200000, "max_output_tokens": 64000, "name": "Claude 4 Sonnet"},
+            "anthropic/claude-sonnet-4": {"context_length": 200000, "max_output_tokens": 64000, "name": "Claude Sonnet 4"},
+            "anthropic/claude-opus-4": {"context_length": 200000, "max_output_tokens": 64000, "name": "Claude Opus 4"},
+            "anthropic/claude-3-5-sonnet-20240620": {"context_length": 200000, "max_output_tokens": 64000, "name": "Claude 3.5 Sonnet"},
+            "google/gemini-2.5-pro-preview": {"context_length": 1048576, "max_output_tokens": 65536, "name": "Gemini 2.5 Pro"},
+            "google/gemini-2-5-pro-preview": {"context_length": 1048576, "max_output_tokens": 65536, "name": "Gemini 2.5 Pro"},
+            "openai/o3-mini": {"context_length": 128000, "max_output_tokens": 16384, "name": "O3 Mini"},
+            "openai/gpt-4o": {"context_length": 128000, "max_output_tokens": 16384, "name": "GPT-4o"},
+            "deepseek/deepseek-chat": {"context_length": 163840, "max_output_tokens": 32768, "name": "DeepSeek V3"},
+            "mistral/devstral": {"context_length": 32000, "max_output_tokens": 8192, "name": "Devstral"},
+        }
+        
+        fallback_data = fallback_specs.get(model_id)
+        if fallback_data:
+            return fallback_data
+        else:
+            # No fallback available - this should trigger an error in load_model
+            logger.warning(f"No specifications available for model {model_id}. Please add model configuration to config.yml manually.")
+            return {}

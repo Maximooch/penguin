@@ -103,18 +103,19 @@ else:
     from prompt_toolkit.formatted_text import HTML  # type: ignore
 
     from penguin.config import config as penguin_config_global, DEFAULT_MODEL, DEFAULT_PROVIDER, WORKSPACE_PATH
-    from penguin.core import PenguinCore
-    from penguin.llm.api_client import APIClient
-    from penguin.llm.model_config import ModelConfig
-    # from penguin.run_mode import RunMode # Not directly used in this new structure's top level
-    from penguin.system.state import parse_iso_datetime, MessageCategory
-    from penguin.system.conversation_menu import ConversationMenu, ConversationSummary # Used by PenguinCLI class
-    from penguin.system_prompt import SYSTEM_PROMPT
-    from penguin.tools import ToolManager
-    from penguin.utils.log_error import log_error
-    from penguin.utils.logs import setup_logger
-    from penguin.chat.interface import PenguinInterface
-    from penguin.config import Config # Import Config type for type hinting
+from penguin.core import PenguinCore
+from penguin.llm.api_client import APIClient
+from penguin.llm.model_config import ModelConfig
+# from penguin.run_mode import RunMode # Not directly used in this new structure's top level
+from penguin.system.state import parse_iso_datetime, MessageCategory
+from penguin.system.conversation_menu import ConversationMenu, ConversationSummary # Used by PenguinCLI class
+from penguin.system_prompt import SYSTEM_PROMPT
+from penguin.tools import ToolManager
+from penguin.utils.log_error import log_error
+from penguin.utils.logs import setup_logger
+from penguin.chat.interface import PenguinInterface
+from penguin.config import Config # Import Config type for type hinting
+from penguin.setup import check_first_run, run_setup_wizard_sync, check_config_completeness
 
 app = typer.Typer(help="Penguin AI Assistant - Your command-line AI companion.\nRun with -p/--prompt for non-interactive mode, or with a subcommand (e.g., 'chat').\nIf no prompt or subcommand is given, starts an interactive chat session.")
 console = RichConsole() # Use the renamed import
@@ -433,8 +434,33 @@ def main_entry(
         console.print("Penguin AI Assistant v0.1.0 (Placeholder Version)") 
         raise typer.Exit()
 
+    # Skip heavy initialization for config commands and certain lightweight commands
+    if ctx.invoked_subcommand in ["config"]:
+        return  # Let the subcommand handle its own logic without core initialization
+
     # Create a sync wrapper around our async code
     async def _async_init_and_run():
+        # Check if setup is needed before initializing core components
+        if check_first_run():
+            console.print("[bold yellow]🐧 Welcome to Penguin! First-time setup is required.[/bold yellow]")
+            console.print("Running setup wizard...\n")
+            
+            try:
+                config_result = run_setup_wizard_sync()
+                if config_result:
+                    console.print("[bold green]Setup completed successfully![/bold green]")
+                    console.print("Starting Penguin...\n")
+                else:
+                    console.print("[yellow]Setup was cancelled. Run 'penguin config setup' when ready.[/yellow]")
+                    raise typer.Exit(code=0)
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Setup interrupted. Run 'penguin config setup' when ready.[/yellow]")
+                raise typer.Exit(code=0)
+            except Exception as e:
+                console.print(f"[red]Setup failed: {e}[/red]")
+                console.print("You can try running 'penguin config setup' manually.")
+                raise typer.Exit(code=1)
+
         # Initialize core components once, passing global CLI options as overrides
         try:
             await _initialize_core_components_globally(
@@ -639,6 +665,56 @@ async def _handle_session_management(continue_last: bool, resume_session: Option
             await _run_penguin_direct_prompt(prompt, output_format)
         else:
             await _run_interactive_chat()
+
+# Create a sub-app for config management
+config_app = typer.Typer(name="config", help="Manage Penguin configuration")
+app.add_typer(config_app, name="config")
+
+@config_app.command("setup")
+def config_setup():
+    """Run the setup wizard to configure Penguin"""
+    console.print("[bold cyan]🐧 Penguin Setup Wizard[/bold cyan]")
+    console.print("Configuring your Penguin environment...\n")
+    
+    try:
+        config_result = run_setup_wizard_sync()
+        if config_result:
+            console.print("[bold green]Setup completed successfully![/bold green]")
+        else:
+            console.print("[yellow]Setup was cancelled.[/yellow]")
+            raise typer.Exit(code=0)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Setup interrupted.[/yellow]")
+        raise typer.Exit(code=0)
+    except Exception as e:
+        console.print(f"[red]Setup failed: {e}[/red]")
+        raise typer.Exit(code=1)
+
+@config_app.command("edit")
+def config_edit():
+    """Open the config file in your default editor"""
+    from penguin.setup.wizard import get_config_path, open_in_default_editor
+    
+    config_path = get_config_path()
+    if not config_path.exists():
+        console.print(f"[red]Config file not found at {config_path}[/red]")
+        console.print("Run 'penguin config setup' to create initial configuration.")
+        raise typer.Exit(code=1)
+    
+    if open_in_default_editor(config_path):
+        console.print(f"[green]✓ Opened config file:[/green] {config_path}")
+    else:
+        console.print(f"[yellow]Could not open editor. Config file is located at:[/yellow] {config_path}")
+
+@config_app.command("check")
+def config_check():
+    """Check if the current configuration is complete and valid"""
+    if check_config_completeness():
+        console.print("[green]✓ Configuration is complete and valid![/green]")
+    else:
+        console.print("[yellow]⚠️ Configuration is incomplete or invalid.[/yellow]")
+        console.print("Run 'penguin config setup' to fix configuration issues.")
+        raise typer.Exit(code=1)
 
 @app.command()
 async def chat(): # Removed model, workspace, no_streaming options
@@ -1285,6 +1361,9 @@ Available Commands:
    - create [name] [description]: Create a new project
    - run [name]: Run a project
    - status [name]: Check project status
+   
+ • /models: Interactive model selection (search with autocomplete)
+ • /model set <id>: Manually set a specific model ID
    
  • /exit or exit: End the conversation
 

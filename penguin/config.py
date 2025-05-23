@@ -45,8 +45,11 @@ def load_config():
                         disable_diagnostics()
                     else:
                         enable_diagnostics()
-                except ImportError:
-                    logger.warning("Could not import diagnostics module, skipping diagnostics setup")
+                except ImportError as e:
+                    # Only show warning if diagnostics is explicitly enabled
+                    if config["diagnostics"].get("enabled", False):
+                        logger.warning(f"Could not import diagnostics module: {e}")
+                    # Continue without diagnostics
 
             return config
     except FileNotFoundError:
@@ -73,9 +76,11 @@ def get_workspace_root() -> Path:
 # Base paths
 PROJECT_ROOT = get_project_root()
 
-# Get user's actual home directory
-USER_HOME = Path(os.path.expanduser("~"))
-WORKSPACE_PATH = USER_HOME / "Documents" / "code" / "Penguin" / "penguin_workspace"
+# Load config first to get workspace path
+config = load_config()
+
+# Use workspace path from config.yml (respecting environment variable and config file)
+WORKSPACE_PATH = get_workspace_root()
 
 # Add explicit creation with error handling
 try:
@@ -85,9 +90,6 @@ except PermissionError as e:
         f"Permission denied creating workspace at {WORKSPACE_PATH}. "
         "Try running as administrator or choose a different location."
     ) from e
-
-# Move config loading before its first use
-config = load_config()
 
 # Create configured subdirectories
 for subdir in config.get('workspace', {}).get('create_dirs', [

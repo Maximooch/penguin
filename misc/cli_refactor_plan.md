@@ -300,6 +300,15 @@ with Live(layout, refresh_per_second=4, screen=True) as live:
 - ✅ Non-interactive mode with `-p`/`--prompt` (tested with direct prompts)
 - ✅ Continue last conversation with `-c`/`--continue` (works both with and without additional prompts)
 - ✅ Continuous mode with `--247`/`--continuous` and `--description` (successfully activates RunMode)
+- ✅ Interactive setup wizard with questionary (integrated and working)
+- ✅ Configuration management commands (setup, edit, check)
+- ✅ Lightweight config commands (no longer require full core initialization)
+
+### Recently Fixed Issues:
+- ✅ **Workspace Path Configuration**: Fixed hardcoded paths in config.py to respect config.yml settings
+- ✅ **Context Window Options**: Updated to include 1M tokens, renamed from "context length" to "context window"
+- ✅ **Config Command Performance**: Config commands now bypass core initialization for faster execution
+- ✅ **Tool Permission Documentation**: Created roadmap document noting current limitations
 
 ### Pending Testing:
 - ⬜ Session resumption with `--resume SESSION_ID`
@@ -307,6 +316,23 @@ with Live(layout, refresh_per_second=4, screen=True) as live:
 - ⬜ Tool control flags
 - ⬜ Custom prompt flags
 - ⬜ Context management commands
+
+## Recent Improvements (January 2025)
+
+### Context Window & Model Selection
+1. **Enhanced Model Selection**: Updated setup wizard to include 1M token context windows
+2. **Improved Terminology**: Changed "context length" to "context window" throughout the interface
+3. **Better Defaults**: Set 32K tokens as the default instead of 16K for better project handling
+
+### Configuration System Fixes
+1. **Dynamic Workspace Paths**: Fixed hardcoded workspace paths in config.py to properly respect config.yml settings
+2. **Lightweight Commands**: Config commands (`penguin config edit/setup/check`) now run without initializing the full core
+3. **First-run Detection**: Improved setup completion tracking and config validation
+
+### Documentation & Planning
+1. **Roadmap Creation**: Added comprehensive penguin_roadmap.md with detailed feature planning
+2. **Tool Permission System**: Documented current limitations and future implementation plans
+3. **Technical Debt Tracking**: Identified and planned fixes for configuration system issues
 
 ## Takeaways from CLI Implementation
 
@@ -337,9 +363,12 @@ with Live(layout, refresh_per_second=4, screen=True) as live:
 9. ⬜ Implement remaining configuration management features.
 10. ⬜ Optimize rendering performance.
 11. ⬜ Document the new CLI architecture and usage.
-12. Extract and integrate setup wizard as described above.
-13. Implement `/model select` command with dropdown, including fallback paths.
-14. Update documentation (`README` & `docs/cli.md`) with new config & model management features.
+12. ✅ Extract and integrate setup wizard as described above.
+13. ⬜ Implement `/model select` command with dropdown, including fallback paths.
+14. ⬜ Update documentation (`README` & `docs/cli.md`) with new config & model management features.
+15. ⬜ **Automatic Model Spec Fetching**: Enhance setup wizard to automatically fetch model capabilities (context windows, vision support, etc.) and skip manual context window selection.
+16. ⬜ **Implement Tool Permission System**: Create the actual permission enforcement that the setup wizard currently only collects preferences for.
+17. ⬜ **Provider-specific Setup Flows**: Create tailored setup experiences for different providers (OpenRouter, Anthropic, OpenAI, etc.).
 
 ### Setup Wizard & Model Dropdown Integration (2025-05-22)
 
