@@ -152,14 +152,52 @@ You can override default behavior with these environment variables:
 
 ## API Keys
 
-Penguin supports multiple AI providers. Set the appropriate API key:
+Penguin supports multiple AI providers. **Important**: Currently, most models are accessed through OpenRouter for unified API management.
 
-- **OpenRouter**: `OPENROUTER_API_KEY`
+### OpenRouter (Recommended)
+OpenRouter provides unified access to models from multiple providers. When you select models like:
+- `google/gemini-2-5-pro-preview`
+- `openai/gpt-4o`
+- `anthropic/claude-3-5-sonnet-20240620`
+- `mistral/devstral`
+
+These will be routed through OpenRouter, so you need an **OpenRouter API key**:
+```bash
+export OPENROUTER_API_KEY="your-openrouter-api-key"
+```
+
+Get your OpenRouter API key at: https://openrouter.ai/keys
+
+### Direct Provider Access
+For direct access to providers (not currently the default setup), you can set:
+
 - **Anthropic**: `ANTHROPIC_API_KEY`
 - **OpenAI**: `OPENAI_API_KEY`
 - **Google**: `GOOGLE_API_KEY` or `GEMINI_API_KEY`
 - **Mistral**: `MISTRAL_API_KEY`
 - **DeepSeek**: `DEEPSEEK_API_KEY`
+
+### Model Selection Behavior
+When you select a model in the setup wizard:
+1. **If the model was fetched from OpenRouter's catalog**: It will automatically use OpenRouter, regardless of the provider prefix
+2. **If OpenRouter API wasn't available**: Falls back to a hardcoded list of known OpenRouter providers (`openai`, `anthropic`, `google`, `mistral`)
+3. **For models not in OpenRouter**: Uses the provider directly (e.g., `ollama/llama3` → Ollama)
+4. **For models without provider prefixes**: Uses the provider directly (e.g., `claude-3-sonnet` → Anthropic)
+
+This means models like:
+- `meta-llama/llama-3-70b-instruct` → **OpenRouter** ✓
+- `deepseek/deepseek-chat` → **OpenRouter** ✓  
+- `cohere/command-r-plus` → **OpenRouter** ✓
+- `perplexity/llama-3.1-sonar-large-128k-online` → **OpenRouter** ✓
+
+All correctly route through OpenRouter when they're available in OpenRouter's catalog.
+
+You can test the routing logic with:
+```bash
+penguin config test-routing
+```
+
+**Note**: If you see the setup asking for a provider-specific API key (like Google or Anthropic) when you selected a model that should use OpenRouter, this indicates the improved routing logic wasn't applied.
 
 ## Getting Help
 

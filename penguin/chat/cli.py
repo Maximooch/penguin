@@ -767,6 +767,22 @@ def config_check():
         console.print("Run 'penguin config setup' to fix configuration issues.")
         raise typer.Exit(code=1)
 
+@config_app.command("test-routing")
+def config_test_routing():
+    """Test the provider routing logic for model selection"""
+    if not setup_available:
+        console.print(f"[red]Setup wizard not available: {setup_import_error}[/red]")
+        console.print("[yellow]Install setup dependencies first: pip install questionary httpx[/yellow]")
+        raise typer.Exit(code=1)
+    
+    try:
+        from penguin.setup.wizard import test_provider_routing
+        test_provider_routing()
+    except Exception as e:
+        console.print(f"[red]Error running provider routing test: {e}[/red]")
+        console.print(f"[dim]Error details: {traceback.format_exc()}[/dim]")
+        raise typer.Exit(code=1)
+
 @config_app.command("debug")
 def config_debug():
     """Debug configuration and setup issues"""

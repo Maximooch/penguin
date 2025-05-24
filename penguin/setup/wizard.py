@@ -360,37 +360,65 @@ async def run_setup_wizard() -> Dict[str, Any]:
     # Show confirmation of selection
     console.print(f"[green]✓[/green] Selected model: [bold cyan]{model}[/bold cyan]")
     
-    # Provider selection based on model
-    provider = model.split('/')[0] if '/' in model else "anthropic"
+    # Determine the actual provider and client preference that will be used
+    # This logic should match what's used in the config generation
+    provider_from_model = model.split('/')[0] if '/' in model else "anthropic"
+    
+    # Check if this model will be routed through OpenRouter
+    # If models were fetched from OpenRouter API and this model was in that list,
+    # then it should use OpenRouter regardless of the provider prefix
+    will_use_openrouter = False
+    
+    if models and "/" in model:
+        # Check if this model was in the OpenRouter models list
+        model_in_openrouter_list = any(m.get("id") == model for m in models)
+        if model_in_openrouter_list:
+            will_use_openrouter = True
+            console.print(f"[dim]ℹ️ This model will be accessed through OpenRouter (found in OpenRouter catalog).[/dim]")
+    
+    # Fallback to hardcoded list for cases where OpenRouter API wasn't available
+    if not will_use_openrouter and provider_from_model in ["openai", "anthropic", "google", "mistral"] and "/" in model:
+        will_use_openrouter = True
+        console.print(f"[dim]ℹ️ This model will be accessed through OpenRouter for unified API access.[/dim]")
+    
+    if will_use_openrouter:
+        actual_provider = "openrouter"
+    else:
+        actual_provider = provider_from_model
+        if "/" in model:
+            console.print(f"[dim]ℹ️ This model will be accessed directly through the {actual_provider} provider.[/dim]")
     
     current_step += 1
     
     # ----- STEP 3: API CONFIGURATION -----
     show_progress()
     display_section_header("API Configuration")
-    console.print(f"Configure access to the {provider} API.")
+    console.print(f"Configure access to the {actual_provider} API.")
     
     need_api_key = await questionary.confirm(
-        f"Do you need to set up an API key for {provider}?",
+        f"Do you need to set up an API key for {actual_provider}?",
         default=True,
         style=STYLE
     ).ask_async()
     
     api_key = None
     if need_api_key:
-        # Show help text for API key
-        if provider == "anthropic":
-            console.print("\n[dim]ℹ️ Anthropic API keys can be obtained at: https://console.anthropic.com/[/dim]")
-        elif provider == "openai":
-            console.print("\n[dim]ℹ️ OpenAI API keys can be obtained at: https://platform.openai.com/api-keys[/dim]")
-        elif provider == "google":
-            console.print("\n[dim]ℹ️ Google AI API keys can be obtained through Google AI Studio[/dim]")
-        elif provider == "openrouter":
+        # Show help text for API key based on actual provider
+        if actual_provider == "openrouter":
             console.print("\n[dim]ℹ️ OpenRouter API keys can be obtained at: https://openrouter.ai/keys[/dim]")
+            console.print("[dim]   OpenRouter provides unified access to models from multiple providers.[/dim]")
+        elif actual_provider == "anthropic":
+            console.print("\n[dim]ℹ️ Anthropic API keys can be obtained at: https://console.anthropic.com/[/dim]")
+        elif actual_provider == "openai":
+            console.print("\n[dim]ℹ️ OpenAI API keys can be obtained at: https://platform.openai.com/api-keys[/dim]")
+        elif actual_provider == "google":
+            console.print("\n[dim]ℹ️ Google AI API keys can be obtained through Google AI Studio[/dim]")
+        else:
+            console.print(f"\n[dim]ℹ️ Please obtain an API key for {actual_provider}[/dim]")
         
         console.print("[dim](Input is hidden for security)[/dim]")
         api_key = await questionary.password(
-            f"Enter your {provider} API key:",
+            f"Enter your {actual_provider} API key:",
             validate=lambda val: len(val) > 10 or "API key seems too short",
             style=STYLE
         ).ask_async()
@@ -415,8 +443,8 @@ async def run_setup_wizard() -> Dict[str, Any]:
         },
         "model": {
             "default": model,
-            "provider": "openrouter" if provider in ["openai", "anthropic", "google", "mistral"] and "/" in model else provider,
-            "client_preference": "openrouter" if provider in ["openai", "anthropic", "google", "mistral"] and "/" in model else "litellm",
+            "provider": "openrouter" if will_use_openrouter else provider_from_model,
+            "client_preference": "openrouter" if will_use_openrouter else "litellm",
             "streaming_enabled": True,
             "temperature": 0.7,
             "max_tokens": 8000
@@ -438,7 +466,7 @@ async def run_setup_wizard() -> Dict[str, Any]:
     
     if api_key:
         # Store API key as environment variable suggestion
-        env_var_name = f"{provider.upper()}_API_KEY"
+        env_var_name = f"{actual_provider.upper()}_API_KEY"
         console.print(f"\n[dim]💡 Tip: You can set {env_var_name}={api_key[:8]}... as an environment variable[/dim]")
         console.print(f"[dim]   This is more secure than storing it in the config file.[/dim]")
     
@@ -569,7 +597,7 @@ async def run_setup_wizard() -> Dict[str, Any]:
             
             # Show API key setup reminder if needed
             if api_key:
-                env_var_name = f"{provider.upper()}_API_KEY"
+                env_var_name = f"{actual_provider.upper()}_API_KEY"
                 console.print(f"\n[bold yellow]📋 Next Steps:[/bold yellow]")
                 console.print(f"Set your API key as an environment variable:")
                 console.print(f"  [dim]export {env_var_name}=\"{api_key}\"[/dim]")
@@ -824,6 +852,81 @@ async def handle_models_command(args: List[str]) -> Dict[str, Any]:
         return {"status": f"Model set to: {model_id}", "model_id": model_id, "success": True}
     
     return {"error": f"Unknown models subcommand: {subcmd}"}
+
+def test_provider_routing() -> None:
+    """Test function to verify provider routing logic"""
+    
+    # Simulate OpenRouter models list (what would be fetched from their API)
+    mock_openrouter_models = [
+        {"id": "google/gemini-2-5-pro-preview"},
+        {"id": "openai/gpt-4o"},
+        {"id": "anthropic/claude-3-5-sonnet-20240620"},
+        {"id": "mistral/devstral"},
+        {"id": "meta-llama/llama-3-70b-instruct"},
+        {"id": "deepseek/deepseek-chat"},
+        {"id": "cohere/command-r-plus"},
+        {"id": "perplexity/llama-3.1-sonar-large-128k-online"},
+        {"id": "x-ai/grok-beta"},
+    ]
+    
+    test_cases = [
+        # (model_id, expected_actual_provider, expected_config_provider, expected_client_preference, in_openrouter_list)
+        ("google/gemini-2-5-pro-preview", "openrouter", "openrouter", "openrouter", True),
+        ("openai/gpt-4o", "openrouter", "openrouter", "openrouter", True),
+        ("anthropic/claude-3-5-sonnet-20240620", "openrouter", "openrouter", "openrouter", True),
+        ("mistral/devstral", "openrouter", "openrouter", "openrouter", True),
+        ("meta-llama/llama-3-70b-instruct", "openrouter", "openrouter", "openrouter", True),
+        ("deepseek/deepseek-chat", "openrouter", "openrouter", "openrouter", True),
+        ("cohere/command-r-plus", "openrouter", "openrouter", "openrouter", True),
+        ("perplexity/llama-3.1-sonar-large-128k-online", "openrouter", "openrouter", "openrouter", True),
+        ("x-ai/grok-beta", "openrouter", "openrouter", "openrouter", True),
+        ("ollama/llama3", "ollama", "ollama", "litellm", False),  # Not in OpenRouter
+        ("claude-3-sonnet", "anthropic", "anthropic", "litellm", False),  # No slash, direct provider
+        ("some-unknown/model", "some-unknown", "some-unknown", "litellm", False),  # Not in OpenRouter
+    ]
+    
+    console.print("[bold cyan]🧪 Testing Provider Routing Logic[/bold cyan]\n")
+    
+    for model, expected_actual, expected_config, expected_client, in_or_list in test_cases:
+        # Replicate the improved logic from the setup wizard
+        provider_from_model = model.split('/')[0] if '/' in model else "anthropic"
+        
+        # Check if this model will be routed through OpenRouter
+        will_use_openrouter = False
+        models = mock_openrouter_models if in_or_list else []
+        
+        if models and "/" in model:
+            # Check if this model was in the OpenRouter models list
+            model_in_openrouter_list = any(m.get("id") == model for m in models)
+            if model_in_openrouter_list:
+                will_use_openrouter = True
+        
+        # Fallback to hardcoded list for cases where OpenRouter API wasn't available
+        if not will_use_openrouter and provider_from_model in ["openai", "anthropic", "google", "mistral"] and "/" in model:
+            will_use_openrouter = True
+        
+        if will_use_openrouter:
+            actual_provider = "openrouter"
+        else:
+            actual_provider = provider_from_model
+            
+        # Generate config values
+        config_provider = "openrouter" if will_use_openrouter else provider_from_model
+        client_preference = "openrouter" if will_use_openrouter else "litellm"
+        
+        # Check results
+        status_actual = "✓" if actual_provider == expected_actual else "❌"
+        status_config = "✓" if config_provider == expected_config else "❌"
+        status_client = "✓" if client_preference == expected_client else "❌"
+        
+        openrouter_status = "📡" if in_or_list else "🔗"
+        console.print(f"{openrouter_status} Model: {model}")
+        console.print(f"  {status_actual} API Key Provider: {actual_provider} (expected: {expected_actual})")
+        console.print(f"  {status_config} Config Provider: {config_provider} (expected: {expected_config})")
+        console.print(f"  {status_client} Client Preference: {client_preference} (expected: {expected_client})")
+        console.print()
+    
+    console.print("[dim]Legend: 📡 = Found in OpenRouter catalog, 🔗 = Direct provider access[/dim]")
 
 # Create a sync wrapper for the wizard for standalone use
 def run_setup_wizard_sync() -> Dict[str, Any]:
