@@ -3,10 +3,10 @@
 # In penguin/utils/path_utils.py (create this file)
 import os
 
-from penguin.config import WORKSPACE_PATH
-
 
 def normalize_path(path):
+    from penguin.config import WORKSPACE_PATH
+    
     # Remove any leading slashes or backslashes
     path = path.lstrip("/\\")
     # Remove 'workspace/' prefix if present

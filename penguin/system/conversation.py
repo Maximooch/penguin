@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from penguin.config import CONVERSATION_CONFIG, WORKSPACE_PATH
+from penguin.config import CONVERSATION_CONFIG
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.utils.diagnostics import diagnostics
 
@@ -368,6 +368,7 @@ class ConversationSystem:
             True if successful, False otherwise
         """
         try:
+            from penguin.config import WORKSPACE_PATH
             full_path = os.path.join(WORKSPACE_PATH, file_path)
             if not os.path.exists(full_path):
                 logger.warning(f"Context file not found: {full_path}")
@@ -390,6 +391,7 @@ class ConversationSystem:
         Returns:
             List of file information dictionaries
         """
+        from penguin.config import WORKSPACE_PATH
         context_dir = os.path.join(WORKSPACE_PATH, "context")
         if not os.path.exists(context_dir):
             return []

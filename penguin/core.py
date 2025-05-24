@@ -166,7 +166,6 @@ from penguin.config import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
     TASK_COMPLETION_PHRASE,
-    WORKSPACE_PATH,
     Config,
 )
 
@@ -444,6 +443,7 @@ class PenguinCore:
         self.system_prompt = SYSTEM_PROMPT
 
         # Initialize project manager with workspace path from config
+        from penguin.config import WORKSPACE_PATH
         self.project_manager = ProjectManager(workspace_root=WORKSPACE_PATH)
 
         # Initialize diagnostics based on config
@@ -457,6 +457,7 @@ class PenguinCore:
             model_config.max_tokens = self.config.model.get("max_tokens", 8000)
 
         # Initialize conversation manager (replaces conversation system)
+        from penguin.config import WORKSPACE_PATH
         self.conversation_manager = ConversationManager(
             model_config=model_config,
             api_client=api_client,
@@ -512,6 +513,7 @@ class PenguinCore:
         logger.info("PenguinCore initialized successfully")
 
         # Ensure error log directory exists
+        from penguin.config import WORKSPACE_PATH
         self.validate_path(Path(WORKSPACE_PATH))
 
         # Add an accumulated token counter
