@@ -71,11 +71,17 @@ Homepage = "https://github.com/Maximooch/penguin" # Updated URL
 Repository = "https://github.com/Maximooch/penguin" # Updated URL
 
 [project.scripts]
-penguin = "penguin.penguin.chat.cli:app"
+penguin = "penguin.chat.cli:app"
 penguin-web = "penguin.api.server:main"
 
 [tool.setuptools.packages.find]
-where = ["penguin"]  # Look for packages inside the 'penguin' directory
+# where = ["penguin"]  # Look for packages inside the 'penguin' directory
+# Remove the where clause so setuptools looks in the root directory
+include = ["penguin*"]  # Include all packages starting with 'penguin'
 
 [tool.setuptools]
-include-package-data = true # Tells setuptools to respect MANIFEST.in or VCS-tracked files 
+include-package-data = true # Tells setuptools to respect MANIFEST.in or VCS-tracked files
+
+[tool.setuptools.package-dir]
+# Map the package to the correct directory structure
+"" = "." 
