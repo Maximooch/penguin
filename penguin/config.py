@@ -31,31 +31,30 @@ def load_config():
     try:
         with open(config_path) as f:
             config = yaml.safe_load(f)
-
-            # Initialize diagnostics based on config
-            if "diagnostics" in config:
-                # Move import inside the function to avoid circular imports
-                try:
-                    from penguin.utils.diagnostics import (
-                        disable_diagnostics,
-                        enable_diagnostics,
-                    )
-
-                    if not config["diagnostics"].get("enabled", False):
-                        disable_diagnostics()
-                    else:
-                        enable_diagnostics()
-                except ImportError as e:
-                    # Only show warning if diagnostics is explicitly enabled
-                    if config["diagnostics"].get("enabled", False):
-                        logger.warning(f"Could not import diagnostics module: {e}")
-                    # Continue without diagnostics
-
             return config
     except FileNotFoundError:
         return {}
     except yaml.YAMLError:
         return {}
+
+def init_diagnostics(config_data: dict):
+    """Initialize diagnostics based on configuration. Call this after config is loaded."""
+    if "diagnostics" in config_data:
+        try:
+            from penguin.utils.diagnostics import (
+                disable_diagnostics,
+                enable_diagnostics,
+            )
+
+            if not config_data["diagnostics"].get("enabled", False):
+                disable_diagnostics()
+            else:
+                enable_diagnostics()
+        except ImportError as e:
+            # Only show warning if diagnostics is explicitly enabled
+            if config_data["diagnostics"].get("enabled", False):
+                logger.warning(f"Could not import diagnostics module: {e}")
+            # Continue without diagnostics
 
 def get_workspace_root() -> Path:
     """Get the workspace root directory."""
@@ -79,17 +78,39 @@ PROJECT_ROOT = get_project_root()
 # Load config first to get workspace path
 config = load_config()
 
+# Initialize diagnostics after config is loaded
+init_diagnostics(config)
+
 # Use workspace path from config.yml (respecting environment variable and config file)
 WORKSPACE_PATH = get_workspace_root()
 
-# Add explicit creation with error handling
+# Add explicit creation with better error handling
 try:
     WORKSPACE_PATH.mkdir(parents=True, exist_ok=True)
 except PermissionError as e:
-    raise RuntimeError(
-        f"Permission denied creating workspace at {WORKSPACE_PATH}. "
-        "Try running as administrator or choose a different location."
-    ) from e
+    # Try to use a fallback workspace in user's home directory
+    fallback_path = Path.home() / "penguin_workspace"
+    logger.warning(f"Permission denied creating workspace at {WORKSPACE_PATH}. Using fallback: {fallback_path}")
+    try:
+        fallback_path.mkdir(parents=True, exist_ok=True)
+        WORKSPACE_PATH = fallback_path
+    except PermissionError:
+        raise RuntimeError(
+            f"Permission denied creating workspace at {WORKSPACE_PATH} and fallback {fallback_path}. "
+            "Try setting PENGUIN_WORKSPACE environment variable to a writable location."
+        ) from e
+except FileNotFoundError as e:
+    # This can happen if the parent directory doesn't exist and can't be created
+    fallback_path = Path.home() / "penguin_workspace" 
+    logger.warning(f"Cannot create workspace at {WORKSPACE_PATH} (path not found). Using fallback: {fallback_path}")
+    try:
+        fallback_path.mkdir(parents=True, exist_ok=True)
+        WORKSPACE_PATH = fallback_path
+    except Exception:
+        raise RuntimeError(
+            f"Cannot create workspace at {WORKSPACE_PATH} or fallback {fallback_path}. "
+            "Try setting PENGUIN_WORKSPACE environment variable to a valid location."
+        ) from e
 
 # Create configured subdirectories
 for subdir in config.get('workspace', {}).get('create_dirs', [
@@ -330,6 +351,9 @@ class Config:
                 log_kwargs["filemode"] = 'a'
             logging.basicConfig(**log_kwargs)
             logging.info("Diagnostics enabled via config.yml.")
+            
+        # Initialize diagnostics using the loaded config
+        init_diagnostics(config_data)
 
         # --- Determine Model Config --- #
         default_model_settings = config_data.get("model", {})

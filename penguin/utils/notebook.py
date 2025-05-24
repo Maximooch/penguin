@@ -4,13 +4,14 @@ import sys
 
 from IPython.core.interactiveshell import InteractiveShell # type: ignore
 
-from penguin.config import WORKSPACE_PATH
 from penguin.utils.process_manager import ProcessManager
 from penguin.utils import FileMap
 
 
 class NotebookExecutor:
     def __init__(self):
+        from penguin.config import WORKSPACE_PATH
+        
         self.shell = InteractiveShell.instance()
         self.original_dir = os.getcwd()  # Track original directory
         os.chdir(WORKSPACE_PATH)  # Set the working directory to the workspace
