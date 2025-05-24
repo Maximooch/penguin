@@ -26,6 +26,40 @@ STYLE = questionary.Style([
     ('disabled', 'fg:gray italic')       # Disabled options
 ])
 
+def check_setup_dependencies() -> Tuple[bool, List[str]]:
+    """
+    Check if all required dependencies for the setup wizard are available.
+    
+    Returns:
+        Tuple of (all_available: bool, missing_packages: List[str])
+    """
+    required_packages = {
+        'questionary': 'questionary',
+        'httpx': 'httpx',
+        'yaml': 'PyYAML',
+        'rich': 'rich',
+    }
+    
+    missing = []
+    
+    for module_name, package_name in required_packages.items():
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing.append(package_name)
+    
+    return len(missing) == 0, missing
+
+def display_dependency_install_instructions(missing_packages: List[str]) -> None:
+    """Display instructions for installing missing dependencies"""
+    console.print(f"[bold red]⚠️ Missing required dependencies for setup wizard:[/bold red]")
+    console.print(f"[yellow]Missing packages:[/yellow] {', '.join(missing_packages)}")
+    console.print("\n[bold cyan]To install missing dependencies:[/bold cyan]")
+    console.print(f"[white]pip install {' '.join(missing_packages)}[/white]")
+    console.print("\n[bold cyan]Or install all optional dependencies:[/bold cyan]")
+    console.print("[white]pip install penguin[setup][/white]")
+    console.print("\n[dim]After installing dependencies, run 'penguin config setup' to configure Penguin.[/dim]")
+
 def check_first_run() -> bool:
     """
     Check if this is the first run of Penguin by looking for setup completion indicators.
@@ -569,12 +603,36 @@ async def run_setup_wizard() -> Dict[str, Any]:
 
 def get_config_path() -> Path:
     """Return the path to the config file"""
+    # First check for explicit override
     if os.environ.get("PENGUIN_CONFIG_PATH"):
         return Path(os.environ.get("PENGUIN_CONFIG_PATH"))
     
-    # Use the same config location as the main penguin package
-    from penguin.config import PROJECT_ROOT
-    return PROJECT_ROOT / "penguin" / "config.yml"
+    # For user configuration, we want to use a user-specific location
+    # that's separate from the package's default config
+    
+    # Check if we're in development mode (running from source)
+    try:
+        from penguin.config import get_project_root
+        project_root = get_project_root()
+        
+        # If PROJECT_ROOT points to a development directory (not .penguin), 
+        # use it for config (development mode)
+        if not str(project_root).endswith('.penguin'):
+            dev_config_path = project_root / "penguin" / "config.yml"
+            return dev_config_path
+    except Exception:
+        pass
+    
+    # For installed/production use, store user config in user's config directory
+    # Following XDG Base Directory specification on Linux/macOS
+    if os.name == 'posix':  # Linux/macOS
+        config_base = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+        user_config_path = config_base / "penguin" / "config.yml"
+    else:  # Windows
+        config_base = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+        user_config_path = config_base / "penguin" / "config.yml"
+    
+    return user_config_path
 
 def save_config(config: Dict[str, Any]) -> bool:
     """
@@ -770,4 +828,19 @@ async def handle_models_command(args: List[str]) -> Dict[str, Any]:
 # Create a sync wrapper for the wizard for standalone use
 def run_setup_wizard_sync() -> Dict[str, Any]:
     """Synchronous wrapper for the setup wizard"""
-    return asyncio.run(run_setup_wizard()) 
+    
+    # Check dependencies first
+    deps_available, missing_deps = check_setup_dependencies()
+    if not deps_available:
+        console.print("[bold yellow]🐧 Penguin Setup Wizard[/bold yellow]")
+        display_dependency_install_instructions(missing_deps)
+        return {"error": f"Missing dependencies: {', '.join(missing_deps)}"}
+    
+    try:
+        return asyncio.run(run_setup_wizard())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Setup interrupted by user.[/yellow]")
+        return {"error": "Setup interrupted"}
+    except Exception as e:
+        console.print(f"[red]Setup wizard error: {e}[/red]")
+        return {"error": str(e)} 

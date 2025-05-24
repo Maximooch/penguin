@@ -1,0 +1,10 @@
+# Setup wizard dependencies
+# Install with: pip install -r requirements-setup.txt
+
+questionary>=1.10.0
+httpx>=0.24.0
+PyYAML>=6.0
+rich>=13.0.0
+
+# Optional but recommended for better experience
+aiofiles>=23.0.0  # For async file operations during setup 

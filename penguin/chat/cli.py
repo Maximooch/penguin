@@ -1,14 +1,15 @@
 import asyncio
 import datetime
 import os
+import platform
 import signal
+import sys
 import traceback
 import re
 from pathlib import Path
 from typing import List, Optional, Callable, Dict, Any, Set, Union, TypeVar, cast
 
 import json # For JSON output
-import sys # For stdin
 
 # Add import timing for profiling if enabled
 import time
@@ -115,7 +116,31 @@ from penguin.utils.log_error import log_error
 from penguin.utils.logs import setup_logger
 from penguin.chat.interface import PenguinInterface
 from penguin.config import Config # Import Config type for type hinting
-from penguin.setup import check_first_run, run_setup_wizard_sync, check_config_completeness
+
+# Add better import error handling for setup functions
+setup_available = True
+setup_import_error = None
+
+try:
+    from penguin.setup import check_first_run, run_setup_wizard_sync, check_config_completeness
+except ImportError as e:
+    setup_available = False
+    setup_import_error = str(e)
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Setup wizard not available due to missing dependencies: {e}")
+    
+    # Provide fallback functions
+    def check_first_run() -> bool:
+        """Fallback: always return False if setup is not available"""
+        return False
+    
+    def run_setup_wizard_sync() -> Dict[str, Any]:
+        """Fallback: return error message"""
+        return {"error": f"Setup wizard not available: {setup_import_error}"}
+    
+    def check_config_completeness() -> bool:
+        """Fallback: assume config is complete if setup unavailable"""
+        return True
 
 app = typer.Typer(help="Penguin AI Assistant - Your command-line AI companion.\nRun with -p/--prompt for non-interactive mode, or with a subcommand (e.g., 'chat').\nIf no prompt or subcommand is given, starts an interactive chat session.")
 console = RichConsole() # Use the renamed import
@@ -441,15 +466,25 @@ def main_entry(
     # Create a sync wrapper around our async code
     async def _async_init_and_run():
         # Check if setup is needed before initializing core components
-        if check_first_run():
+        if not setup_available:
+            console.print(f"[yellow]⚠️ Setup wizard not available: {setup_import_error}[/yellow]")
+            console.print("[yellow]You may need to install additional dependencies:[/yellow]")
+            console.print("[yellow]  pip install questionary httpx[/yellow]")
+            console.print("[yellow]Or manually create a config file.[/yellow]\n")
+        elif check_first_run():
             console.print("[bold yellow]🐧 Welcome to Penguin! First-time setup is required.[/bold yellow]")
             console.print("Running setup wizard...\n")
             
             try:
                 config_result = run_setup_wizard_sync()
                 if config_result:
-                    console.print("[bold green]Setup completed successfully![/bold green]")
-                    console.print("Starting Penguin...\n")
+                    if "error" in config_result:
+                        console.print(f"[red]Setup error: {config_result['error']}[/red]")
+                        console.print("Try running 'penguin config setup' manually or check dependencies.")
+                        raise typer.Exit(code=1)
+                    else:
+                        console.print("[bold green]Setup completed successfully![/bold green]")
+                        console.print("Starting Penguin...\n")
                 else:
                     console.print("[yellow]Setup was cancelled. Run 'penguin config setup' when ready.[/yellow]")
                     raise typer.Exit(code=0)
@@ -459,6 +494,7 @@ def main_entry(
             except Exception as e:
                 console.print(f"[red]Setup failed: {e}[/red]")
                 console.print("You can try running 'penguin config setup' manually.")
+                console.print(f"[dim]Error details: {traceback.format_exc()}[/dim]")
                 raise typer.Exit(code=1)
 
         # Initialize core components once, passing global CLI options as overrides
@@ -676,10 +712,24 @@ def config_setup():
     console.print("[bold cyan]🐧 Penguin Setup Wizard[/bold cyan]")
     console.print("Configuring your Penguin environment...\n")
     
+    if not setup_available:
+        console.print(f"[red]Setup wizard not available: {setup_import_error}[/red]")
+        console.print("[yellow]You may need to install additional dependencies:[/yellow]")
+        console.print("[yellow]  pip install questionary httpx[/yellow]")
+        console.print("[yellow]Or install with setup extras:[/yellow]")
+        console.print("[yellow]  pip install penguin[setup][/yellow]")
+        raise typer.Exit(code=1)
+    
     try:
         config_result = run_setup_wizard_sync()
         if config_result:
-            console.print("[bold green]Setup completed successfully![/bold green]")
+            if "error" in config_result:
+                console.print(f"[red]Setup error: {config_result['error']}[/red]")
+                if "Missing dependencies" in config_result['error']:
+                    console.print("[yellow]Please install the missing dependencies and try again.[/yellow]")
+                raise typer.Exit(code=1)
+            else:
+                console.print("[bold green]Setup completed successfully![/bold green]")
         else:
             console.print("[yellow]Setup was cancelled.[/yellow]")
             raise typer.Exit(code=0)
@@ -688,6 +738,7 @@ def config_setup():
         raise typer.Exit(code=0)
     except Exception as e:
         console.print(f"[red]Setup failed: {e}[/red]")
+        console.print(f"[dim]Error details: {traceback.format_exc()}[/dim]")
         raise typer.Exit(code=1)
 
 @config_app.command("edit")
@@ -715,6 +766,94 @@ def config_check():
         console.print("[yellow]⚠️ Configuration is incomplete or invalid.[/yellow]")
         console.print("Run 'penguin config setup' to fix configuration issues.")
         raise typer.Exit(code=1)
+
+@config_app.command("debug")
+def config_debug():
+    """Debug configuration and setup issues"""
+    console.print("[bold cyan]🔍 Penguin Configuration Debug[/bold cyan]\n")
+    
+    # Check setup availability
+    console.print("[bold]Setup Wizard Status:[/bold]")
+    if setup_available:
+        console.print("  ✓ Setup wizard available")
+        
+        # Check individual dependencies
+        try:
+            from penguin.setup.wizard import check_setup_dependencies
+            deps_ok, missing = check_setup_dependencies()
+            if deps_ok:
+                console.print("  ✓ All setup dependencies available")
+            else:
+                console.print(f"  ⚠️ Missing dependencies: {', '.join(missing)}")
+        except Exception as e:
+            console.print(f"  ⚠️ Error checking dependencies: {e}")
+    else:
+        console.print(f"  ❌ Setup wizard unavailable: {setup_import_error}")
+    
+    # Check config paths and files
+    console.print("\n[bold]Configuration Files:[/bold]")
+    
+    # Show where we're looking for config
+    if setup_available:
+        try:
+            from penguin.setup.wizard import get_config_path
+            setup_config_path = get_config_path()
+            console.print(f"  Setup wizard looks for config at: {setup_config_path}")
+            console.print(f"    Exists: {'✓' if setup_config_path.exists() else '❌'}")
+        except Exception as e:
+            console.print(f"  Error getting setup config path: {e}")
+    
+    # Show main app config loading
+    try:
+        from penguin.config import load_config
+        config_data = load_config()
+        if config_data:
+            console.print("  ✓ Main app found config data")
+            
+            # Check key config sections
+            required_sections = ['model', 'workspace']
+            for section in required_sections:
+                if section in config_data:
+                    console.print(f"    ✓ {section} section present")
+                else:
+                    console.print(f"    ❌ {section} section missing")
+        else:
+            console.print("  ⚠️ Main app using default config (no config file found)")
+    except Exception as e:
+        console.print(f"  ❌ Error loading main config: {e}")
+    
+    # Check first run status
+    console.print("\n[bold]First Run Detection:[/bold]")
+    try:
+        is_first_run = check_first_run()
+        console.print(f"  First run needed: {'Yes' if is_first_run else 'No'}")
+        
+        if setup_available:
+            from penguin.setup.wizard import check_config_completeness
+            is_complete = check_config_completeness()
+            console.print(f"  Config complete: {'Yes' if is_complete else 'No'}")
+    except Exception as e:
+        console.print(f"  Error checking first run status: {e}")
+    
+    # Environment variables
+    console.print("\n[bold]Environment Variables:[/bold]")
+    env_vars = [
+        'PENGUIN_CONFIG_PATH',
+        'PENGUIN_ROOT', 
+        'PENGUIN_WORKSPACE',
+        'XDG_CONFIG_HOME',
+        'APPDATA'
+    ]
+    
+    for var in env_vars:
+        value = os.environ.get(var)
+        if value:
+            console.print(f"  {var}: {value}")
+        else:
+            console.print(f"  {var}: [dim]not set[/dim]")
+    
+    console.print(f"\n[dim]Platform: {platform.system()} {platform.release()}[/dim]")
+    console.print(f"[dim]Python: {sys.version}[/dim]")
 
 @app.command()
 async def chat(): # Removed model, workspace, no_streaming options

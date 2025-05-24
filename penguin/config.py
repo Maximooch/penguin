@@ -26,16 +26,62 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent
 
 def load_config():
-    """Load configuration from config.yml in the same directory as this file."""
-    config_path = Path(__file__).parent / "config.yml"
+    """Load configuration from config.yml, checking multiple locations."""
+    
+    # Priority order for config file locations:
+    # 1. Explicit environment variable override
+    # 2. User config directory (cross-platform)
+    # 3. Development config (if running from source)
+    # 4. Package default config (fallback)
+    
+    config_paths = []
+    
+    # 1. Environment variable override
+    if os.getenv('PENGUIN_CONFIG_PATH'):
+        config_paths.append(Path(os.getenv('PENGUIN_CONFIG_PATH')))
+    
+    # 2. User config directory (same logic as setup wizard)
+    if os.name == 'posix':  # Linux/macOS
+        config_base = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+        user_config_path = config_base / "penguin" / "config.yml"
+    else:  # Windows
+        config_base = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+        user_config_path = config_base / "penguin" / "config.yml"
+    config_paths.append(user_config_path)
+    
+    # 3. Development config (if running from source and PROJECT_ROOT != .penguin)
     try:
-        with open(config_path) as f:
-            config = yaml.safe_load(f)
-            return config
-    except FileNotFoundError:
-        return {}
-    except yaml.YAMLError:
-        return {}
+        project_root = get_project_root()
+        if not str(project_root).endswith('.penguin'):
+            dev_config_path = project_root / "penguin" / "config.yml"
+            config_paths.append(dev_config_path)
+    except Exception:
+        pass
+    
+    # 4. Package default config (fallback)
+    package_config_path = Path(__file__).parent / "config.yml"
+    config_paths.append(package_config_path)
+    
+    # Try each path in order
+    for config_path in config_paths:
+        try:
+            if config_path.exists():
+                with open(config_path) as f:
+                    config = yaml.safe_load(f)
+                    logger.debug(f"Loaded config from: {config_path}")
+                    return config if config else {}
+        except FileNotFoundError:
+            continue
+        except yaml.YAMLError as e:
+            logger.warning(f"YAML error in config file {config_path}: {e}")
+            continue
+        except Exception as e:
+            logger.warning(f"Error loading config from {config_path}: {e}")
+            continue
+    
+    # If no config file found, return empty dict
+    logger.debug("No config file found, using defaults")
+    return {}
 
 def init_diagnostics(config_data: dict):
     """Initialize diagnostics based on configuration. Call this after config is loaded."""
