@@ -36,6 +36,7 @@ class ConversationSystem:
         context_window_manager=None,
         session_manager=None,
         system_prompt: str = "",
+        checkpoint_manager=None,
     ):
         """
         Initialize the conversation system.
@@ -44,9 +45,11 @@ class ConversationSystem:
             context_window_manager: Manager for token budgeting and context trimming
             session_manager: Manager for session persistence and boundaries
             system_prompt: Initial system prompt
+            checkpoint_manager: Manager for conversation checkpointing (optional)
         """
         self.context_window = context_window_manager
         self.session_manager = session_manager
+        self.checkpoint_manager = checkpoint_manager
         self.system_prompt = system_prompt
         self.system_prompt_sent = False
         
@@ -111,6 +114,32 @@ class ConversationSystem:
         # Add to current session
         self.session.messages.append(message)
         self._modified = True
+        
+        # NEW: Auto-checkpoint integration
+        if self.checkpoint_manager and self.checkpoint_manager.should_checkpoint(message):
+            # Create checkpoint asynchronously to avoid blocking
+            import asyncio
+            try:
+                # Try to get the current event loop
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # If we're in an async context, create a task
+                    asyncio.create_task(
+                        self.checkpoint_manager.create_checkpoint(self.session, message)
+                    )
+                else:
+                    # If no loop is running, run the checkpoint creation
+                    asyncio.run(
+                        self.checkpoint_manager.create_checkpoint(self.session, message)
+                    )
+            except RuntimeError:
+                # If we can't get a loop, try to run it
+                try:
+                    asyncio.run(
+                        self.checkpoint_manager.create_checkpoint(self.session, message)
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to create checkpoint: {e}")
         
         # Process session through context window manager if available
         if self.context_window:

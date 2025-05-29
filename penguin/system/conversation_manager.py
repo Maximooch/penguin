@@ -6,6 +6,7 @@ This module coordinates between:
 2. ContextWindowManager - Token budgeting
 3. SessionManager - Session persistence and boundaries
 4. ContextLoader - Context file management
+5. CheckpointManager - Conversation checkpointing (NEW)
 """
 
 import logging
@@ -20,6 +21,7 @@ from penguin.system.context_window import ContextWindowManager
 from penguin.system.conversation import ConversationSystem
 from penguin.system.session_manager import SessionManager
 from penguin.system.state import Message, MessageCategory, Session
+from penguin.system.checkpoint_manager import CheckpointManager, CheckpointConfig, CheckpointType
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,7 @@ class ConversationManager:
     High-level coordinator for conversation management.
     
     Provides a simplified interface for PenguinCore while managing the complexity
-    of token budgeting, session management, and context loading.
+    of token budgeting, session management, context loading, and checkpointing.
     """
     
     def __init__(
@@ -40,7 +42,8 @@ class ConversationManager:
         system_prompt: str = "",
         max_messages_per_session: int = 5000,
         max_sessions_in_memory: int = 20,
-        auto_save_interval: int = 60
+        auto_save_interval: int = 60,
+        checkpoint_config: Optional[CheckpointConfig] = None
     ):
         """
         Initialize the conversation manager.
@@ -53,6 +56,7 @@ class ConversationManager:
             max_messages_per_session: Maximum messages before creating a new session
             max_sessions_in_memory: Maximum sessions to keep in memory cache
             auto_save_interval: Seconds between auto-saves (0 to disable)
+            checkpoint_config: Configuration for checkpointing system
         """
         self.model_config = model_config
         self.api_client = api_client
@@ -85,11 +89,32 @@ class ConversationManager:
         )
         logger.info(f"Session manager initialized with {len(self.session_manager.session_index)} sessions")
         
+        # Initialize checkpoint manager
+        self.checkpoint_manager = None
+        if checkpoint_config is None:
+            checkpoint_config = CheckpointConfig()
+        
+        if checkpoint_config.enabled:
+            try:
+                self.checkpoint_manager = CheckpointManager(
+                    workspace_path=self.workspace_path,
+                    session_manager=self.session_manager,
+                    config=checkpoint_config
+                )
+                logger.info(f"Checkpoint manager initialized with {len(self.checkpoint_manager.checkpoint_index)} checkpoints")
+                
+                # Workers will start lazily when first checkpoint is created
+                    
+            except Exception as e:
+                logger.warning(f"Failed to initialize checkpoint manager: {e}")
+                self.checkpoint_manager = None
+        
         # Initialize conversation system
         self.conversation = ConversationSystem(
             context_window_manager=self.context_window,
             session_manager=self.session_manager,
-            system_prompt=system_prompt
+            system_prompt=system_prompt,
+            checkpoint_manager=self.checkpoint_manager
         )
         
         # Initialize context loader
@@ -645,3 +670,137 @@ class ConversationManager:
         except Exception as e:
             logger.error(f"Failed branching from snapshot {snapshot_id}: {e}")
             return None
+
+    # ------------------------------------------------------------------
+    # Checkpoint Management API (NEW)
+    # ------------------------------------------------------------------
+
+    async def create_manual_checkpoint(
+        self,
+        name: Optional[str] = None,
+        description: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Create a manual checkpoint with optional name and description.
+        
+        Args:
+            name: Optional name for the checkpoint
+            description: Optional description
+            
+        Returns:
+            Checkpoint ID if successful, None otherwise
+        """
+        if not self.checkpoint_manager:
+            logger.warning("Checkpoint manager not available")
+            return None
+            
+        current_session = self.conversation.session
+        if not current_session or not current_session.messages:
+            logger.warning("No active session or messages to checkpoint")
+            return None
+            
+        # Use the last message as the trigger
+        last_message = current_session.messages[-1]
+        
+        return await self.checkpoint_manager.create_checkpoint(
+            current_session,
+            last_message,
+            CheckpointType.MANUAL,
+            name=name,
+            description=description
+        )
+    
+    async def rollback_to_checkpoint(self, checkpoint_id: str) -> bool:
+        """
+        Rollback conversation to a specific checkpoint.
+        
+        Args:
+            checkpoint_id: ID of the checkpoint to rollback to
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.checkpoint_manager:
+            logger.warning("Checkpoint manager not available")
+            return False
+            
+        success = await self.checkpoint_manager.rollback_to_checkpoint(checkpoint_id)
+        
+        if success:
+            # Update conversation system with the restored session
+            self.conversation.session = self.session_manager.current_session
+            self.conversation._modified = True
+            
+        return success
+    
+    async def branch_from_checkpoint(
+        self,
+        checkpoint_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Create a new branch from a checkpoint.
+        
+        Args:
+            checkpoint_id: ID of the checkpoint to branch from
+            name: Optional name for the branch
+            description: Optional description
+            
+        Returns:
+            New branch checkpoint ID if successful, None otherwise
+        """
+        if not self.checkpoint_manager:
+            logger.warning("Checkpoint manager not available")
+            return None
+            
+        branch_id = await self.checkpoint_manager.branch_from_checkpoint(
+            checkpoint_id,
+            name=name,
+            description=description
+        )
+        
+        if branch_id:
+            # Update conversation system with the new branch session
+            self.conversation.session = self.session_manager.current_session
+            self.conversation._modified = True
+            
+        return branch_id
+    
+    def list_checkpoints(
+        self,
+        session_id: Optional[str] = None,
+        checkpoint_type: Optional[CheckpointType] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        List available checkpoints with optional filtering.
+        
+        Args:
+            session_id: Filter by session ID
+            checkpoint_type: Filter by checkpoint type
+            limit: Maximum number of checkpoints to return
+            
+        Returns:
+            List of checkpoint information
+        """
+        if not self.checkpoint_manager:
+            return []
+            
+        return self.checkpoint_manager.list_checkpoints(
+            session_id=session_id,
+            checkpoint_type=checkpoint_type,
+            limit=limit
+        )
+    
+    async def cleanup_old_checkpoints(self) -> int:
+        """
+        Clean up old checkpoints according to retention policy.
+        
+        Returns:
+            Number of checkpoints cleaned up
+        """
+        if not self.checkpoint_manager:
+            return 0
+            
+        return await self.checkpoint_manager.cleanup_old_checkpoints()

@@ -458,6 +458,17 @@ class PenguinCore:
 
         # Initialize conversation manager (replaces conversation system)
         from penguin.config import WORKSPACE_PATH
+        from penguin.system.checkpoint_manager import CheckpointConfig
+        
+        # Create checkpoint configuration
+        checkpoint_config = CheckpointConfig(
+            enabled=True,
+            frequency=1,  # Checkpoint every message
+            planes={"conversation": True, "tasks": False, "code": False},
+            retention={"keep_all_hours": 24, "keep_every_nth": 10, "max_age_days": 30},
+            max_auto_checkpoints=1000
+        )
+        
         self.conversation_manager = ConversationManager(
             model_config=model_config,
             api_client=api_client,
@@ -465,7 +476,8 @@ class PenguinCore:
             system_prompt=SYSTEM_PROMPT,
             max_messages_per_session=5000,
             max_sessions_in_memory=20,
-            auto_save_interval=60
+            auto_save_interval=60,
+            checkpoint_config=checkpoint_config
         )
 
         # Initialize action executor with project manager and conversation manager
@@ -891,6 +903,133 @@ class PenguinCore:
     def branch_from_snapshot(self, snapshot_id: str, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Fork a snapshot into a new branch and load it."""
         return self.conversation_manager.branch_from_snapshot(snapshot_id, meta=meta)
+
+    # ------------------------------------------------------------------
+    # Checkpoint Management API (NEW - V2.1 Conversation Plane)
+    # ------------------------------------------------------------------
+
+    async def create_checkpoint(
+        self,
+        name: Optional[str] = None,
+        description: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Create a manual checkpoint of the current conversation state.
+        
+        Args:
+            name: Optional name for the checkpoint
+            description: Optional description
+            
+        Returns:
+            Checkpoint ID if successful, None otherwise
+        """
+        return await self.conversation_manager.create_manual_checkpoint(
+            name=name,
+            description=description
+        )
+
+    async def rollback_to_checkpoint(self, checkpoint_id: str) -> bool:
+        """
+        Rollback conversation to a specific checkpoint.
+        
+        Args:
+            checkpoint_id: ID of the checkpoint to rollback to
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        return await self.conversation_manager.rollback_to_checkpoint(checkpoint_id)
+
+    async def branch_from_checkpoint(
+        self,
+        checkpoint_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Create a new conversation branch from a checkpoint.
+        
+        Args:
+            checkpoint_id: ID of the checkpoint to branch from
+            name: Optional name for the branch
+            description: Optional description
+            
+        Returns:
+            New branch checkpoint ID if successful, None otherwise
+        """
+        return await self.conversation_manager.branch_from_checkpoint(
+            checkpoint_id,
+            name=name,
+            description=description
+        )
+
+    def list_checkpoints(
+        self,
+        session_id: Optional[str] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        List available checkpoints with optional filtering.
+        
+        Args:
+            session_id: Filter by session ID (None for current session)
+            limit: Maximum number of checkpoints to return
+            
+        Returns:
+            List of checkpoint information
+        """
+        # If no session_id specified, use current session
+        if session_id is None:
+            current_session = self.conversation_manager.get_current_session()
+            if current_session:
+                session_id = current_session.id
+                
+        return self.conversation_manager.list_checkpoints(
+            session_id=session_id,
+            limit=limit
+        )
+
+    async def cleanup_old_checkpoints(self) -> int:
+        """
+        Clean up old checkpoints according to retention policy.
+        
+        Returns:
+            Number of checkpoints cleaned up
+        """
+        return await self.conversation_manager.cleanup_old_checkpoints()
+
+    def get_checkpoint_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about the checkpointing system.
+        
+        Returns:
+            Dictionary with checkpoint statistics
+        """
+        if not self.conversation_manager.checkpoint_manager:
+            return {
+                "enabled": False,
+                "total_checkpoints": 0,
+                "auto_checkpoints": 0,
+                "manual_checkpoints": 0,
+                "branch_checkpoints": 0
+            }
+            
+        checkpoints = self.conversation_manager.list_checkpoints(limit=1000)
+        
+        stats = {
+            "enabled": True,
+            "total_checkpoints": len(checkpoints),
+            "auto_checkpoints": len([cp for cp in checkpoints if cp.get("auto", False)]),
+            "manual_checkpoints": len([cp for cp in checkpoints if cp.get("type") == "manual"]),
+            "branch_checkpoints": len([cp for cp in checkpoints if cp.get("type") == "branch"]),
+            "config": {
+                "frequency": self.conversation_manager.checkpoint_manager.config.frequency,
+                "retention_hours": self.conversation_manager.checkpoint_manager.config.retention["keep_all_hours"],
+                "max_age_days": self.conversation_manager.checkpoint_manager.config.retention["max_age_days"]
+            }
+        }
+        
+        return stats
 
     @retry(
         stop=stop_after_attempt(3),
