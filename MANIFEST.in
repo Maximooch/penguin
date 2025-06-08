@@ -1,0 +1,34 @@
+include README.md
+include LICENSE
+include penguin/config.yml
+include penguin/requirements.txt
+recursive-include penguin *.yml *.yaml *.json *.txt *.md
+recursive-include penguin/workspace *.gitkeep
+recursive-exclude penguin/workspace/conversations *
+recursive-exclude penguin/workspace/memory_db *
+recursive-exclude penguin/workspace/logs *
+recursive-exclude penguin *.pyc
+recursive-exclude penguin __pycache__
+recursive-exclude penguin .DS_Store
+recursive-exclude penguin *.log
+recursive-exclude penguin/logs *
+recursive-exclude penguin/errors_log *
+recursive-exclude penguin/notes *
+exclude penguin/.env*
+exclude penguin/.penguin_setup_complete
+exclude penguin/IMG.jpg
+exclude penguin/speedtest.py
+exclude penguin/setup_venv.py
+# Exclude test files
+recursive-exclude penguin test_*.py
+recursive-exclude penguin *_test.py
+recursive-exclude penguin/tests *
+recursive-exclude penguin/llm test_*.py
+recursive-exclude penguin/llm streaming_smoke_test.py
+recursive-exclude penguin/local_task test_*.py
+recursive-exclude penguin/utils test_*.py
+recursive-exclude penguin/tools/notes *
+# Exclude development files
+exclude penguin/run_web.py
+exclude penguin/main.py
+exclude penguin/possible_prompt.py 
