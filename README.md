@@ -4,6 +4,8 @@
 [![Documentation Status](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://penguin-rho.vercel.app)
 [![Version](https://img.shields.io/badge/version-0.1.0-orange)](https://github.com/maximooch/penguin)
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Maximooch/penguin)
+
 ## 📋 Table of Contents
 - [Overview](#overview)
 - [Features](#key-features)
