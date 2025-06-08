@@ -1,25 +1,29 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0,<70.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-ai"
-version = "0.1.0"
+version = "0.1.1"
 description = "Penguin: A modular, extensible AI coding agent and software engineer with its own execution environment."
 readme = "README.md"
 requires-python = ">=3.8"
-license = "AGPL-3.0"
-license-files = ["LICENSE"]
 authors = [
+  { name="Maximus Putnam", email="MaximusPutnam@gmail.com" },
+]
+maintainers = [
   { name="Maximus Putnam", email="MaximusPutnam@gmail.com" },
 ]
 keywords = ["ai", "agent", "ai-agent", "llm", "llm-agent", "assistant", "cognitive-architecture", "code-generation", "developer-tool"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Operating System :: OS Independent",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
@@ -51,37 +55,102 @@ dependencies = [
     "plotext",
     "matplotlib",
     "networkx",
-    "IPython", # Kept as runtime, review if only needed for dev/notebooks
-    "ipykernel", # Kept as runtime, review if only needed for dev/notebooks
-    "ipywidgets", # Kept as runtime, review if only needed for dev/notebooks
+    "IPython",
+    "ipykernel",
+    "ipywidgets",
+    # Additional dependencies for packaging
+    "pyyaml>=5.4.0",
+    "httpx>=0.24.0",
+    "questionary>=1.10.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=6.0.0",
+    "pytest-asyncio>=0.21.0",
     "black>=21.0.0",
     "isort>=5.0.0",
     "ruff>=0.1.0",
     "build",
     "twine",
+    "pre-commit",
+]
+test = [
+    "pytest>=6.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
 ]
 
 [project.urls]
-Homepage = "https://github.com/Maximooch/penguin" # Updated URL
-Repository = "https://github.com/Maximooch/penguin" # Updated URL
+Homepage = "https://github.com/Maximooch/penguin"
+Repository = "https://github.com/Maximooch/penguin"
+Documentation = "https://penguin-rho.vercel.app"
+"Bug Tracker" = "https://github.com/Maximooch/penguin/issues"
 
 [project.scripts]
 penguin = "penguin.chat.cli:app"
 penguin-web = "penguin.api.server:main"
 
 [tool.setuptools.packages.find]
-# where = ["penguin"]  # Look for packages inside the 'penguin' directory
-# Remove the where clause so setuptools looks in the root directory
-include = ["penguin*"]  # Include all packages starting with 'penguin'
+include = ["penguin*"]
+exclude = [
+    "tests*", 
+    "penguin.tests*", 
+    "penguin.*.tests*",
+    "penguin.*.test_*",
+    "penguin.*.*test*",
+]
 
 [tool.setuptools]
-include-package-data = true # Tells setuptools to respect MANIFEST.in or VCS-tracked files
+include-package-data = true
 
-[tool.setuptools.package-dir]
-# Map the package to the correct directory structure
-"" = "." 
+[tool.setuptools.package-data]
+penguin = ["config.yml", "requirements.txt", "*.yml", "*.yaml"]
+
+# Exclude specific files and patterns
+[tool.setuptools.exclude-package-data]
+"*" = [
+    "test_*.py",
+    "*_test.py", 
+    "tests/*",
+    "speedtest.py",
+    "main.py",
+    "possible_prompt.py",
+    "run_web.py",
+    "setup_venv.py",
+    "IMG.jpg",
+    ".env*",
+    ".penguin_setup_complete",
+    "*.log",
+    ".pytest_cache/*",
+    "notes/*",
+    "tools/notes/*",
+]
+
+# Development tools configuration
+[tool.black]
+line-length = 88
+target-version = ['py38']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+
+[tool.ruff]
+line-length = 88
+target-version = "py38" 

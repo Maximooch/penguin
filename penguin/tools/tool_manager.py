@@ -18,9 +18,9 @@ from penguin.utils.notebook import NotebookExecutor
 from penguin.tools.core.declarative_memory_tool import DeclarativeMemoryTool
 from penguin.tools.core.grep_search import GrepSearch
 from penguin.tools.core.lint_python import lint_python
-from penguin.tools.core.memory_search import MemorySearcher  # Import the new memory searcher
+# from penguin.tools.core.memory_search import MemorySearcher  # Import the new memory searcher
 from penguin.tools.core.perplexity_tool import PerplexityProvider
-from penguin.tools.core.workspace_search import CodeIndexer
+# from penguin.tools.core.workspace_search import CodeIndexer
 from penguin.tools.browser_tools import (
     browser_manager, BrowserNavigationTool, BrowserInteractionTool, BrowserScreenshotTool
 )
@@ -46,8 +46,8 @@ class ToolManager:
         self._lazy_initialized = {
             'notebook_executor': False,
             'perplexity_provider': False,
-            'code_indexer': False,
-            'memory_searcher': False,
+            # 'code_indexer': False,
+            # 'memory_searcher': False,
             'browser_tools': False,
             'pydoll_tools': False,
         }
@@ -55,8 +55,8 @@ class ToolManager:
         # Placeholder attributes for lazy loading
         self._notebook_executor = None
         self._perplexity_provider = None
-        self._code_indexer = None
-        self._memory_searcher = None
+        # self._code_indexer = None
+        # self._memory_searcher = None
         
         # Browser tools placeholders
         self._browser_navigation_tool = None
@@ -317,46 +317,46 @@ class ToolManager:
                     "required": ["query"],
                 },
             },
-            {
-                "name": "workspace_search",
-                "description": "Search through workspace code files using semantic search and AST parsing for accurate code lookups.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "The search query - can be function name, class name, or general code concept",
-                        },
-                        "max_results": {
-                            "type": "integer",
-                            "description": "Maximum number of results to return (default: 5)",
-                        },
-                    },
-                    "required": ["query"],
-                },
-            },
-            {
-                "name": "memory_search",
-                "description": "Search through memory logs and notes",
-                "parameters": {
-                    "query": {"type": "string", "description": "The search query"},
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return",
-                        "default": 5,
-                    },
-                    "memory_type": {
-                        "type": "string",
-                        "description": "Type of memory to search (logs/notes)",
-                        "optional": True,
-                    },
-                    "categories": {
-                        "type": "array",
-                        "description": "Categories to filter by",
-                        "optional": True,
-                    },
-                },
-            },
+            # {
+            #     "name": "workspace_search",
+            #     "description": "Search through workspace code files using semantic search and AST parsing for accurate code lookups.",
+            #     "input_schema": {
+            #         "type": "object",
+            #         "properties": {
+            #             "query": {
+            #                 "type": "string",
+            #                 "description": "The search query - can be function name, class name, or general code concept",
+            #             },
+            #             "max_results": {
+            #                 "type": "integer",
+            #                 "description": "Maximum number of results to return (default: 5)",
+            #             },
+            #         },
+            #         "required": ["query"],
+            #     },
+            # },
+            # {
+            #     "name": "memory_search",
+            #     "description": "Search through memory logs and notes",
+            #     "parameters": {
+            #         "query": {"type": "string", "description": "The search query"},
+            #         "max_results": {
+            #             "type": "integer",
+            #             "description": "Maximum number of results to return",
+            #             "default": 5,
+            #         },
+            #         "memory_type": {
+            #             "type": "string",
+            #             "description": "Type of memory to search (logs/notes)",
+            #             "optional": True,
+            #         },
+            #         "categories": {
+            #             "type": "array",
+            #             "description": "Categories to filter by",
+            #             "optional": True,
+            #         },
+            #     },
+            # },
             {
                 "name": "browser_navigate",
                 "description": "Navigate to a URL in the browser. Use this to open websites and web applications.",
@@ -471,29 +471,31 @@ class ToolManager:
     
     @property
     def code_indexer(self):
-        if not self._lazy_initialized['code_indexer']:
-            logger.debug("Lazy-loading code indexer (may take some time)")
-            start_time = datetime.datetime.now()
-            self._code_indexer = CodeIndexer(
-                persist_directory=os.path.join(WORKSPACE_PATH, "chroma_db")
-            )
-            # Wait for initialization is still required, but now only when actually needed
-            self._code_indexer.wait_for_initialization()
-            self._lazy_initialized['code_indexer'] = True
-            elapsed = (datetime.datetime.now() - start_time).total_seconds()
-            logger.info(f"Code indexer initialized in {elapsed:.2f} seconds")
-        return self._code_indexer
+        # if not self._lazy_initialized['code_indexer']:
+        #     logger.debug("Lazy-loading code indexer (may take some time)")
+        #     start_time = datetime.datetime.now()
+        #     self._code_indexer = CodeIndexer(
+        #         persist_directory=os.path.join(WORKSPACE_PATH, "chroma_db")
+        #     )
+        #     # Wait for initialization is still required, but now only when actually needed
+        #     self._code_indexer.wait_for_initialization()
+        #     self._lazy_initialized['code_indexer'] = True
+        #     elapsed = (datetime.datetime.now() - start_time).total_seconds()
+        #     logger.info(f"Code indexer initialized in {elapsed:.2f} seconds")
+        # return self._code_indexer
+        raise NotImplementedError("Code indexer is currently disabled.")
     
     @property
     def memory_searcher(self):
-        if not self._lazy_initialized['memory_searcher']:
-            logger.debug("Lazy-loading memory searcher")
-            start_time = datetime.datetime.now()
-            self._memory_searcher = MemorySearcher()
-            self._lazy_initialized['memory_searcher'] = True
-            elapsed = (datetime.datetime.now() - start_time).total_seconds()
-            logger.info(f"Memory searcher initialized in {elapsed:.2f} seconds")
-        return self._memory_searcher
+        # if not self._lazy_initialized['memory_searcher']:
+        #     logger.debug("Lazy-loading memory searcher")
+        #     start_time = datetime.datetime.now()
+        #     self._memory_searcher = MemorySearcher()
+        #     self._lazy_initialized['memory_searcher'] = True
+        #     elapsed = (datetime.datetime.now() - start_time).total_seconds()
+        #     logger.info(f"Memory searcher initialized in {elapsed:.2f} seconds")
+        # return self._memory_searcher
+        raise NotImplementedError("Memory searcher is currently disabled.")
     
     # Browser tools lazy loading
     @property
@@ -597,17 +599,17 @@ class ToolManager:
                     tool_input["query"], tool_input.get("max_results", 5)
                 )
             ),
-            "workspace_search": lambda: self.search_workspace(
-                tool_input["query"], tool_input.get("max_results", 5)
-            ),
-            "memory_search": lambda: self.search_memory(
-                tool_input["query"],
-                tool_input.get("max_results", 5),
-                tool_input.get("memory_type", None),
-                tool_input.get("categories", None),
-                tool_input.get("date_after", None),
-                tool_input.get("date_before", None),
-            ),
+            # "workspace_search": lambda: self.search_workspace(
+            #     tool_input["query"], tool_input.get("max_results", 5)
+            # ),
+            # "memory_search": lambda: self.search_memory(
+            #     tool_input["query"],
+            #     tool_input.get("max_results", 5),
+            #     tool_input.get("memory_type", None),
+            #     tool_input.get("categories", None),
+            #     tool_input.get("date_after", None),
+            #     tool_input.get("date_before", None),
+            # ),
             # "tavily_search": lambda: self.tavily_search(
             #     tool_input["query"],
             #     tool_input.get("max_results", 5),
@@ -786,93 +788,93 @@ class ToolManager:
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode("utf-8")
 
-    def search_workspace(self, query: str, max_results: int = 5) -> str:
-        try:
-            results = self.code_indexer.search_code(query, max_results)
-            if not results:
-                return "No matching code found in workspace."
+    # def search_workspace(self, query: str, max_results: int = 5) -> str:
+    #     try:
+    #         results = self.code_indexer.search_code(query, max_results)
+    #         if not results:
+    #             return "No matching code found in workspace."
 
-            formatted_results = []
-            for result in results:
-                file_path = result["metadata"]["file_path"]
-                distance = result.get("distance", 0)
+    #         formatted_results = []
+    #         for result in results:
+    #             file_path = result["metadata"]["file_path"]
+    #             distance = result.get("distance", 0)
 
-                # Format the code snippet
-                code_snippet = result["content"]
-                if len(code_snippet.split("\n")) > 10:
-                    code_lines = code_snippet.split("\n")[:10]
-                    code_snippet = "\n".join(code_lines) + "\n..."
+    #             # Format the code snippet
+    #             code_snippet = result["content"]
+    #             if len(code_snippet.split("\n")) > 10:
+    #                 code_lines = code_snippet.split("\n")[:10]
+    #                 code_snippet = "\n".join(code_lines) + "\n..."
 
-                # Build the formatted result
-                formatted_result = f"File: {file_path}\n"
-                if "match_type" in result:
-                    formatted_result += f"Match Type: {result['match_type']}\n"
-                    if result["match_type"] == "method":
-                        formatted_result += f"In Class: {result['class']}\n"
-                if "line_range" in result and result["line_range"]:
-                    formatted_result += f"Lines: {result['line_range']}\n"
-                formatted_result += f"Relevance Score: {1 - distance:.4f}\n"
-                formatted_result += "Code Snippet:\n```python\n"
-                formatted_result += code_snippet
-                formatted_result += "\n```\n"
+    #             # Build the formatted result
+    #             formatted_result = f"File: {file_path}\n"
+    #             if "match_type" in result:
+    #                 formatted_result += f"Match Type: {result['match_type']}\n"
+    #                 if result["match_type"] == "method":
+    #                     formatted_result += f"In Class: {result['class']}\n"
+    #             if "line_range" in result and result["line_range"]:
+    #                 formatted_result += f"Lines: {result['line_range']}\n"
+    #             formatted_result += f"Relevance Score: {1 - distance:.4f}\n"
+    #             formatted_result += "Code Snippet:\n```python\n"
+    #             formatted_result += code_snippet
+    #             formatted_result += "\n```\n"
 
-                formatted_results.append(formatted_result)
+    #             formatted_results.append(formatted_result)
 
-            return "\n\n".join(formatted_results)
-        except Exception as e:
-            error_message = f"Error searching workspace: {str(e)}"
-            logging.error(error_message)
-            self.log_error(e, error_message)
-            return error_message
+    #         return "\n\n".join(formatted_results)
+    #     except Exception as e:
+    #         error_message = f"Error searching workspace: {str(e)}"
+    #         logging.error(error_message)
+    #         self.log_error(e, error_message)
+    #         return error_message
 
-    def index_workspace(self, directory: str = None) -> str:
-        try:
-            if directory is None:
-                directory = self.project_root
-            self.code_indexer.index_directory(directory)
-            return "Workspace indexing completed successfully."
-        except Exception as e:
-            error_message = f"Error indexing workspace: {str(e)}"
-            logging.error(error_message)
-            self.log_error(e, error_message)
-            return error_message
+    # def index_workspace(self, directory: str = None) -> str:
+    #     try:
+    #         if directory is None:
+    #             directory = self.project_root
+    #         self.code_indexer.index_directory(directory)
+    #         return "Workspace indexing completed successfully."
+    #     except Exception as e:
+    #         error_message = f"Error indexing workspace: {str(e)}"
+    #         logging.error(error_message)
+    #         self.log_error(e, error_message)
+    #         return error_message
 
-    def search_memory(
-        self,
-        query: str,
-        max_results: int = 5,
-        memory_type: str = None,
-        categories: List[str] = None,
-        date_after: Optional[str] = None,
-        date_before: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """Search through memory using the new memory searcher"""
-        try:
-            results = self.memory_searcher.search_memory(
-                query=query,
-                max_results=max_results,
-                memory_type=memory_type,
-                categories=categories,
-                date_after=date_after,
-                date_before=date_before,
-            )
-            return results
-        except Exception as e:
-            error_message = f"Error searching memory: {str(e)}"
-            logging.error(error_message)
-            self.log_error(e, error_message)
-            return []
+    # def search_memory(
+    #     self,
+    #     query: str,
+    #     max_results: int = 5,
+    #     memory_type: str = None,
+    #     categories: List[str] = None,
+    #     date_after: Optional[str] = None,
+    #     date_before: Optional[str] = None,
+    # ) -> List[Dict[str, Any]]:
+    #     """Search through memory using the new memory searcher"""
+    #     try:
+    #         results = self.memory_searcher.search_memory(
+    #             query=query,
+    #             max_results=max_results,
+    #             memory_type=memory_type,
+    #             categories=categories,
+    #             date_after=date_after,
+    #             date_before=date_before,
+    #         )
+    #         return results
+    #     except Exception as e:
+    #         error_message = f"Error searching memory: {str(e)}"
+    #         logging.error(error_message)
+    #         self.log_error(e, error_message)
+    #         return []
 
-    def index_memory(self) -> str:
-        """Index all memory files"""
-        try:
-            self.memory_searcher.index_memory_files()
-            return "Memory indexing completed successfully."
-        except Exception as e:
-            error_message = f"Error indexing memory: {str(e)}"
-            logging.error(error_message)
-            self.log_error(e, error_message)
-            return error_message
+    # def index_memory(self) -> str:
+    #     """Index all memory files"""
+    #     try:
+    #         self.memory_searcher.index_memory_files()
+    #         return "Memory indexing completed successfully."
+    #     except Exception as e:
+    #         error_message = f"Error indexing memory: {str(e)}"
+    #         logging.error(error_message)
+    #         self.log_error(e, error_message)
+    #         return error_message
 
     async def execute_browser_navigate(self, url: str) -> str:
         """Execute browser navigation to a URL"""
