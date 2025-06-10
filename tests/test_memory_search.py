@@ -11,7 +11,7 @@ sys.modules['chromadb'] = MagicMock()
 sys.modules['ollama'] = MagicMock()
 
 # Import after mocking dependencies
-from penguin.tools.core.memory_search import MemorySearcher
+from penguin.penguin.tools.core.old_memory_search import MemorySearcher
 from penguin.config import WORKSPACE_PATH
 
 

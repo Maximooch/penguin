@@ -395,6 +395,18 @@ async def run_setup_wizard() -> Dict[str, Any]:
     display_section_header("API Configuration")
     console.print(f"Configure access to the {actual_provider} API.")
     
+    # Auto-detect context length and max output tokens for the chosen model
+    context_window_auto = None
+    max_tokens_auto = None
+    if models:
+        for _m in models:
+            if _m.get("id") == model:
+                context_window_auto = _m.get("context_length")
+                # Use official max_output_tokens field when provided, no fallback.
+                if _m.get("max_output_tokens") is not None:
+                    max_tokens_auto = _m.get("max_output_tokens")
+                break
+    
     need_api_key = await questionary.confirm(
         f"Do you need to set up an API key for {actual_provider}?",
         default=True,
@@ -447,7 +459,8 @@ async def run_setup_wizard() -> Dict[str, Any]:
             "client_preference": "openrouter" if will_use_openrouter else "litellm",
             "streaming_enabled": True,
             "temperature": 0.7,
-            "max_tokens": 8000
+            "context_window": context_window_auto,
+            "max_tokens": max_tokens_auto,
         },
         "api": {
             "base_url": None,  # Will be determined based on provider
@@ -489,31 +502,43 @@ async def run_setup_wizard() -> Dict[str, Any]:
         ).ask_async()
         config["model"]["temperature"] = float(temperature)
         
-        # Max tokens with better descriptions
-        console.print("\n[dim]💡 Tip: Larger context windows use more API tokens but can handle more complex tasks.[/dim]")
-        max_tokens = await questionary.select(
-            "Maximum context window:",
-            choices=[
-                "8K tokens (Basic tasks, lower cost)",
-                "16K tokens (Standard projects)",
-                "32K tokens (Complex projects)",
-                "128K tokens (Large codebases)",
-                "200K tokens (Extended capability)",
-                "1M tokens (Maximum capability)"
-            ],
-            default="32K tokens (Complex projects)",
-            style=STYLE
-        ).ask_async()
-        
-        token_map = {
-            "8K tokens (Basic tasks, lower cost)": 8000,
-            "16K tokens (Standard projects)": 16000,
-            "32K tokens (Complex projects)": 32000,
-            "128K tokens (Large codebases)": 128000,
-            "200K tokens (Extended capability)": 200000,
-            "1M tokens (Maximum capability)": 1000000
-        }
-        config["model"]["max_tokens"] = token_map[max_tokens]
+        # In the advanced section, only ask for context window if we couldn't auto-detect it
+        if context_window_auto is None:
+            console.print("\n[dim]💡 Tip: Larger context windows use more API tokens but can handle more complex tasks.[/dim]")
+            max_tokens_choice = await questionary.select(
+                "Maximum context window:",
+                choices=[
+                    "8K tokens (Basic tasks, lower cost)",
+                    "16K tokens (Standard projects)",
+                    "32K tokens (Complex projects)",
+                    "128K tokens (Large codebases)",
+                    "200K tokens (Extended capability)",
+                    "1M tokens (Maximum capability)"
+                ],
+                default="32K tokens (Complex projects)",
+                style=STYLE
+            ).ask_async()
+
+            token_map = {
+                "8K tokens (Basic tasks, lower cost)": 8000,
+                "16K tokens (Standard projects)": 16000,
+                "32K tokens (Complex projects)": 32000,
+                "128K tokens (Large codebases)": 128000,
+                "200K tokens (Extended capability)": 200000,
+                "1M tokens (Maximum capability)": 1000000
+            }
+            config["model"]["context_window"] = token_map[max_tokens_choice]
+            
+            # If we couldn't auto-detect, prompt for max_tokens as well.
+            if max_tokens_auto is None:
+                console.print("\n[dim]💡 Tip: This is the maximum number of tokens the model can generate in a single response. Check the what's the max_tokens (or max_output_tokens) in the model spec of the model you selected.[/dim]")
+                max_output_tokens_str = await questionary.text(
+                    "Maximum output tokens (max_tokens):",
+                    default="8192",
+                    validate=lambda val: val.isdigit() or "Please enter a number.",
+                    style=STYLE
+                ).ask_async()
+                config["model"]["max_tokens"] = int(max_output_tokens_str)
         
         # Tool permissions with better organization
         console.print("\n[bold]Security & Permissions[/bold]")
@@ -560,9 +585,10 @@ async def run_setup_wizard() -> Dict[str, Any]:
     console.print(f"  • Model: [cyan]{config['model']['default']}[/cyan]")
     console.print(f"  • Provider: [cyan]{config['model']['provider']}[/cyan]")
     console.print(f"  • Temperature: [cyan]{config['model']['temperature']}[/cyan]")
-    console.print(f"  • Context Window: [cyan]{config['model']['max_tokens']} tokens[/cyan]")
-    console.print(f"  • Web Access: [cyan]{'Enabled' if config['tools']['allow_web_access'] else 'Disabled'}[/cyan]")
-    console.print(f"  • Code Execution: [cyan]{'Enabled' if config['tools']['allow_code_execution'] else 'Disabled'}[/cyan]")
+    console.print(f"  • Context Window: [cyan]{config['model'].get('context_window', 'unknown')} tokens[/cyan]")
+    console.print(f"  • Max Output: [cyan]{config['model'].get('max_tokens', 'unknown')} tokens[/cyan]")
+    console.print(f"  • Web Access: {'Enabled' if config['tools']['allow_web_access'] else 'Disabled'}")
+    console.print(f"  • Code Execution: {'Enabled' if config['tools']['allow_code_execution'] else 'Disabled'}")
     console.print(f"  • Diagnostics: [cyan]{'Enabled' if config['diagnostics']['enabled'] else 'Disabled'}[/cyan]")
     
     # Ask to save the final configuration

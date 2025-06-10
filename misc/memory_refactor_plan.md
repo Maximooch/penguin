@@ -41,9 +41,11 @@ penguin/memory/
 - Establish robust provider architecture
 - Implement lightweight fallback options
 
-### Timeline: 1-2 weeks
+### Timeline: 5 hours
 
 ### Implementation Plan
+
+(note: maybe content should be any, given we want to support multimodal stuff. I guess I'll add that to future considerations)
 
 #### 1.1 Enhanced Provider Interface
 ```python
@@ -84,7 +86,7 @@ class SQLiteMemoryProvider(MemoryProvider):
     
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+        self.embedding_model = "sentence-transformers/all-MiniLM-L6-v2" # should be parameterized by config
         self._init_db()
     
     def _init_db(self):
@@ -92,6 +94,8 @@ class SQLiteMemoryProvider(MemoryProvider):
         # Create tables with FTS5 virtual table for text search
         # Store embeddings as JSON for semantic search
 ```
+
+> Question: What's the rationale for a File Provider? Wouldn't some sort of grep/glob/fuzzy be better?
 
 **File Provider (Fallback)**
 ```python
@@ -117,6 +121,21 @@ class FAISSMemoryProvider(MemoryProvider):
         self.index = self._load_or_create_index()
 ```
 
+**LanceDB Provider (Scalable & Columnar)**
+```python
+# penguin/memory/providers/lance_provider.py
+class LanceMemoryProvider(MemoryProvider):
+    """Scalable, columnar vector store powered by LanceDB."""
+
+    def __init__(self, storage_dir: str, embedding_dim: int, distance: str = "cosine"):
+        self.storage_dir = Path(storage_dir)
+        self.embedding_dim = embedding_dim
+        self.distance = distance
+        # LanceDB is synchronous; wrap heavy I/O in threads when called from async code
+        self.db = lancedb.connect(self.storage_dir)
+        self.table = self._init_table()
+```
+
 #### 1.3 Provider Factory and Auto-Detection
 ```python
 # penguin/memory/factory.py
@@ -133,7 +152,9 @@ class MemoryProviderFactory:
             "sqlite": SQLiteMemoryProvider,
             "file": FileMemoryProvider,
             "faiss": FAISSMemoryProvider,
+            "lance": LanceMemoryProvider,
             "chroma": ChromaMemoryProvider,  # When working
+            # generic transformer support?
         }
         
         return providers[provider_type](config)
@@ -142,7 +163,12 @@ class MemoryProviderFactory:
     def _detect_best_provider() -> str:
         """Detect best available provider based on dependencies"""
         try:
-            import faiss
+            import lancedb  # noqa: F401
+            return "lance"
+        except ImportError:
+            pass
+        try:
+            import faiss  # noqa: F401
             return "faiss"
         except ImportError:
             pass
@@ -155,7 +181,7 @@ class MemoryProviderFactory:
 ```yaml
 # config.yml updates
 memory:
-  provider: "auto"  # auto, sqlite, file, faiss, chroma
+  provider: "auto"  # auto, sqlite, file, faiss, lance, chroma
   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
   storage_path: "./memory_db"
   
@@ -172,19 +198,84 @@ memory:
       index_type: "IndexFlatIP"
       storage_dir: "faiss_memory"
     
+    lance:
+      storage_dir: "lance_memory"
+      distance: "cosine"  # cosine | l2
+    
     chroma:
       persist_directory: "chroma_db"
       collection_name: "memory"
 ```
 
-### Deliverables
-- [ ] Enhanced `MemoryProvider` interface
-- [ ] SQLite provider implementation
-- [ ] File provider implementation
-- [ ] Provider factory with auto-detection
-- [ ] Updated configuration system
-- [ ] Migration utility for existing data
-- [ ] Unit tests for all providers
+#### 1.5 LLM Provider Layer (Transformers default, Ollama optional)
+
+The memory refactor touches embeddings, but Penguin also needs a *runtime* LLM provider for conversation, code-gen, etc.  The design mirrors the memory-provider pattern:
+
+```python
+# penguin/llm/providers/base.py
+class LLMProvider(ABC):
+    @abstractmethod
+    async def generate(self, prompt: str, **kw) -> str: ...
+
+    @abstractmethod
+    async def chat(self, messages: list[dict[str, str]], **kw) -> str: ...
+
+    @abstractmethod
+    async def get_token_count(self, text: str) -> int: ...
+
+    @abstractmethod
+    async def health_check(self) -> dict[str, Any]: ...
+```
+
+**TransformersLLMProvider (default)**
+```python
+class TransformersLLMProvider(LLMProvider):
+    """Loads a local HuggingFace model via `AutoModelForCausalLM` & `AutoTokenizer`."""
+    def __init__(self, model_name: str, device: str = "auto", quant: bool | int = None):
+        # If `quant` is set → load in 4/8-bit with bits-and-bytes
+```
+
+**OllamaLLMProvider (optional)**
+```python
+class OllamaLLMProvider(LLMProvider):
+    """Thin REST wrapper around the local Ollama daemon (http://localhost:11434)."""
+    async def generate(self, prompt: str, **kw):
+        async with httpx.AsyncClient() as client:
+            r = await client.post("/api/generate", json={"model": self.model, "prompt": prompt, **kw})
+            return r.json()["response"]
+```
+
+**Factory & Config**
+```yaml
+llm:
+  provider: "auto"  # auto, transformers, ollama
+  model: "mistralai/Mistral-7B-Instruct-v0.3"
+  providers:
+    transformers:
+      device: "auto"
+      quant: 8  # 4 or 8-bit; null = full fp16/bf16
+    ollama:
+      model: "mistral:latest"
+      endpoint: "http://127.0.0.1:11434"
+```
+
+Auto-detection order: `Ollama` if the daemon is running **and** the requested model is present, else `Transformers`.
+
+**Packaging extras** (in `pyproject.toml`)
+```toml
+[project.optional-dependencies]
+llm_transformers = ["transformers>=4.40", "torch>=2.1", "accelerate>=0.25", "bitsandbytes>=0.43 ; platform_machine=='x86_64'"]
+llm_ollama      = ["ollama>=0.1.6", "httpx>=0.27"]
+```
+
+---
+
+### Updated Stage-1 Deliverables (additions)
+- [ ] **TransformersLLMProvider** (default)
+- [ ] **OllamaLLMProvider** (optional) + health-check
+- [ ] LLMProvider factory & config schema
+- [ ] `pyproject.toml` optional-extras for `llm_transformers` & `llm_ollama`
+- [ ] CI matrix: `TRANSFORMERS=1`, `OLLAMA_ONLY=1`
 
 ---
 
@@ -876,6 +967,9 @@ memory:
 - **Performance Degradation**: Monitoring and automatic optimization
 - **Data Corruption**: Regular backups and integrity checks
 - **Dependency Conflicts**: Isolated provider implementations
+- **Concurrent Write Conflicts**: SQLite and file-based providers are single-writer; mitigate with WAL mode or funnel writes through a worker queue.
+- **Embedding Model Drift**: Persist `embedding_model` in metadata; reject cross-model queries until vectors are regenerated.
+- **Embedding Leakage / Security**: Embeddings may leak proprietary logic; offer encryption-at-rest and document the risk.
 
 ### Business Risks
 - **Migration Downtime**: Seamless migration strategies
@@ -899,3 +993,66 @@ Key success factors:
 5. **User-Centric**: Focus on developer experience and practical utility
 
 This plan positions Penguin's memory system as a best-in-class knowledge management platform that can scale from individual developers to large organizations. 
+
+### Phase 3 Enhancements (12+ days)
+
+Drawing from the deep-dive report on memory systems, once Stage 1-5 are stable we can explore a **next wave** of capabilities that combine multiple paradigms for richer, more human-like recall and reasoning.
+
+1. **Memory-Augmented RAG (Personalised Retrieval)**
+   * Dual retriever: `(a)` static knowledge index, `(b)` dynamic user‐specific memory index.
+   * Merge step ranks candidates from both and filters by relevance/recency.
+   * Implementation: lightweight orchestration class that queries both providers in parallel and uses a learned re-ranker (e.g. Cohere re-rank or ColBERT).  
+   * Benefit: factual accuracy + personalised continuity.
+
+2. **Graph + Vector Hybrid (GraphRAG)**
+   * Introduce Neo4j or Memgraph with built-in vector properties.  
+   * Store entities/relations as graph nodes/edges; attach text + embedding to nodes for semantic entry points.
+   * Retrieval flow: vector search → seed node → Cypher traversal → collect connected facts → summarise → inject into prompt.
+   * Use cases: multi-hop reasoning, project state tracking, cross-user knowledge in Link.
+
+3. **Hierarchical / Episodic Memory**
+   * Three tiers:  
+     – **STM**: last N dialogue turns (context window)  
+     – **MTM**: rolling summaries of recent sessions (update every K turns)  
+     – **LTM**: distilled "episodes" in vector/graph store, optionally time-decayed.
+   * Scheduler daemon periodically summarises & migrates memories down the hierarchy; LLM receives only STM + top-k recalls.
+
+4. **MemGPT-style Memory OS**
+   * Give the agent tool functions: `save_chunk`, `recall_chunk`, `forget_chunk` with cost heuristics (token count, recency, importance).
+   * Use interrupt tokens or function-calling to let the LLM decide when to swap memory in/out.
+   * Prototype with `AgentController` that enforces max-context and handles external storage.
+
+5. **Fine-Tune → Quantise → Ollama Pipeline**
+   * Provide CLI: `penguin llm finetune --data ./corpus …` → produces HF checkpoint.  
+   * Command `penguin llm export --format gguf --dest ~/.ollama/models` converts & registers with local Ollama daemon.
+   * Ensures users can keep training workflow in Transformers while benefitting from Ollama runtime.
+
+6. **Extended Metrics & Instrumentation**
+   * Memory hit-rate by tier (STM/MTM/LTM).
+   * Accuracy of merged retrieval (precision@k, answer faithfulness via LLM-judge).
+   * Latency budget split (retrieval vs generation vs merge).
+
+7. **Security & Governance**
+   * Field-level encryption for sensitive graph nodes.  
+   * Differential privacy options when sharing anonymised memory snippets across Link tenants.
+
+8. **Indexer Pipeline Upgrade (event-driven & pluggable)**
+   * Replace single `IncrementalIndexer` with a five-stage async pipeline: `ChangeDetector → WorkQueue → ProcessorPool → Embedder → ProviderWriter`, each with back-pressure.
+   * Dynamic plugin registry (`penguin_index_processors`) enables multimodal processors to be added without core edits.
+   * SHA-256 (fast-path) hashing + idempotent metadata rows ensures exact-once indexing after crashes.
+   * Batch / transactional writes prevent sqlite-locking and minimise FAISS/Lance sync cost.
+   * Hierarchical queues and concurrency settings exposed in `config.yml` for easy tuning.
+   * Adds groundwork for distributed indexing (swap WorkQueue for Redis or NATS) in a later phase.
+
+These initiatives should be managed under feature flags and rolled out gradually, starting with Memory-Augmented RAG (least intrusive) and iterating toward more complex hybrids as infrastructure maturity allows. 
+
+---
+
+## Open Implementation Checklist
+
+1. **CI Test Matrix** – Add jobs for `memory-sqlite`, `memory-faiss`, `memory-lance` to catch provider regressions.
+2. **Cross-Platform FS Events** – Ensure `ChangeDetector` falls back to periodic scan on platforms lacking inotify/FSEvents.
+3. **Resource Limits** – Expose `max_concurrency` and `batch_size` in config to prevent RAM spikes during huge re-index.
+4. **Embedding Model Download UX** – Provide `penguin embedder warmup --model <name>` CLI to pre-pull HF weights; document in README.
+5. **Back-compat Migration** – One-time script that backfills `content_hash` in existing `index_metadata` rows.
+6. **Encryption at Rest** – Design optional AES-GCM field-level encryption for File / Lance providers before users store sensitive code. 

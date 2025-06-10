@@ -4,6 +4,7 @@ Unit tests for memory providers.
 
 import asyncio
 import pytest
+import pytest_asyncio
 import tempfile
 import shutil
 from pathlib import Path
@@ -50,7 +51,7 @@ class TestMemoryProviderFactory:
 class TestSQLiteProvider:
     """Test SQLite memory provider."""
     
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def temp_provider(self):
         """Create a temporary SQLite provider for testing."""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -179,7 +180,7 @@ class TestSQLiteProvider:
 class TestFileProvider:
     """Test file memory provider."""
     
-    @pytest.fixture
+    @pytest_asyncio.fixture
     async def temp_provider(self):
         """Create a temporary file provider for testing."""
         with tempfile.TemporaryDirectory() as temp_dir:

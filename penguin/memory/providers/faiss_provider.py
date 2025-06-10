@@ -105,8 +105,11 @@ class FAISSMemoryProvider(MemoryProvider):
         categories: Optional[List[str]] = None
     ) -> str:
         """Add a new memory entry with vector embedding."""
+        if not self._initialized:
+            await self.initialize()
+
         if not self._index or not self._embedding_model:
-            raise MemoryProviderError("Provider not initialized")
+            raise MemoryProviderError("Provider components are missing after initialization.")
         
         try:
             memory_id = str(uuid.uuid4())
@@ -143,8 +146,11 @@ class FAISSMemoryProvider(MemoryProvider):
         filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """Search memories using vector similarity."""
+        if not self._initialized:
+            await self.initialize()
+
         if not self._index or not self._embedding_model:
-            raise MemoryProviderError("Provider not initialized")
+            raise MemoryProviderError("Provider components are missing after initialization.")
         
         try:
             if not query.strip():
@@ -153,6 +159,11 @@ class FAISSMemoryProvider(MemoryProvider):
             
             # Generate query embedding
             query_embedding = self._embedding_model.encode([query])
+            
+            # Prevent searching on an empty index
+            if self._index.ntotal == 0:
+                logger.warning("Attempted to search an empty FAISS index. Returning no results.")
+                return []
             
             # Search FAISS index
             distances, indices = self._index.search(query_embedding, min(max_results, self._index.ntotal))

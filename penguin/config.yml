@@ -1,5 +1,5 @@
 workspace:
-  path: ~/penguin_workspace
+  path: /Users/maximusputnam/penguin_workspace
   create_dirs:
   - conversations
   - memory_db
@@ -8,21 +8,43 @@ workspace:
   - projects
   - context
 model:
-  default: anthropic/claude-sonnet-4
+  default: google/gemini-2.5-pro-preview
   provider: openrouter
   client_preference: openrouter
   streaming_enabled: true
-  temperature: 0.6
-  max_tokens: 50000
-  context_window: 200000
-  max_output_tokens: 50000
+  temperature: 0.7
+  context_window: 1048576
+  max_tokens: 63967
 api:
   base_url: null
+
+memory:
+  provider: faiss
+  embedding_model: sentence-transformers/all-MiniLM-L6-v2
+  storage_path: "${paths.memory_db}"
+  providers:
+    sqlite:
+      database_file: penguin_memory.db
+      enable_fts: true
+    file:
+      storage_dir: file_memory
+      enable_embeddings: true
+    faiss:
+      index_type: IndexFlatIP
+      storage_dir: faiss_memory
+    lance:
+      storage_dir: lance_memory
+      distance: cosine
+    chroma:
+      persist_directory: chroma_db
+      collection_name: memory
+
 tools:
   enabled: true
   allow_web_access: true
   allow_file_operations: true
   allow_code_execution: true
+  allow_memory_tools: true
 diagnostics:
-  enabled: true
+  enabled: false
   verbose_logging: false

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 import json
 import re
+import uuid
 
 try:
     import lancedb
@@ -47,7 +48,8 @@ except ImportError:
         pd = None
         pa = None
 
-from penguin.memory.providers.base import MemoryProvider
+from penguin.memory.providers.base import MemoryProvider, MemoryProviderError
+from penguin.memory.embedding import get_embedder
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +97,7 @@ class LanceMemoryProvider(MemoryProvider):
         """
         if not LANCEDB_AVAILABLE:
             raise ImportError(
-                "LanceDB is not available. Install with: pip install lancedb"
+                "LanceDB is not available. Install with: pip install lancedb pyarrow"
             )
         
         super().__init__(config)
@@ -103,7 +105,7 @@ class LanceMemoryProvider(MemoryProvider):
         self.storage_path = Path(config.get('storage_path', './memory_db'))
         self.storage_path.mkdir(parents=True, exist_ok=True)
         
-        self.table_name = config.get('table_name', 'memory_records')
+        self.table_name = config.get('table_name', 'penguin_memory')
         
         # Define memory paths
         from penguin.config import WORKSPACE_PATH
@@ -113,10 +115,14 @@ class LanceMemoryProvider(MemoryProvider):
         }
         
         # Initialize connection and embedding function
-        self._db = None
+        self._db = lancedb.connect(str(self.storage_path))
         self._table = None
-        self._embedding_function = None
         self._schema = None
+        
+        # Get the embedder function from our central helper
+        self._embedder = get_embedder(self.embedding_model)
+        # We need the dimensions for the schema
+        self._embedding_dim = len(self._embedder(['test'])[0])
         
         # Performance tracking
         self._stats = {
@@ -128,99 +134,48 @@ class LanceMemoryProvider(MemoryProvider):
         
         logger.info(f"Initialized LanceDB provider at {self.storage_path}")
     
-    def _get_connection(self):
-        """Get or create database connection"""
-        if self._db is None:
-            self._db = lancedb.connect(str(self.storage_path))
-            logger.debug(f"Connected to LanceDB at {self.storage_path}")
-        return self._db
-    
-    def _get_embedding_function(self):
-        """Get or create embedding function"""
-        if self._embedding_function is None:
-            try:
-                # Try to get the embedding function from registry
-                registry = get_registry()
-                
-                if "sentence-transformers" in self.embedding_model:
-                    func = registry.get("sentence-transformers").create(
-                        name=self.embedding_model
-                    )
-                elif "openai" in self.embedding_model:
-                    func = registry.get("openai").create(
-                        name=self.embedding_model
-                    )
-                else:
-                    # Default to sentence transformers
-                    func = registry.get("sentence-transformers").create(
-                        name="sentence-transformers/all-MiniLM-L6-v2"
-                    )
-                
-                self._embedding_function = func
-                logger.debug(f"Created embedding function: {self.embedding_model}")
-                
-            except Exception as e:
-                logger.warning(f"Failed to create embedding function: {e}")
-                # Fallback to manual embedding if needed
-                self._embedding_function = None
-        
-        return self._embedding_function
-    
     def _get_schema(self):
-        """Get or create table schema with embedding function"""
+        """Define the Pydantic schema for LanceDB table."""
         if self._schema is None:
-            if not LANCEDB_AVAILABLE:
-                raise ImportError("LanceDB is not available")
-                
-            embedding_func = self._get_embedding_function()
             
-            if embedding_func:
-                # Create schema with embedding function
-                class MemoryRecordWithEmbedding(LanceModel):
-                    memory_id: str
-                    content: str = embedding_func.SourceField()
-                    timestamp: str
-                    memory_type: str
-                    categories: List[str]
-                    file_path: Optional[str] = None
-                    source: Optional[str] = None
-                    metadata_json: str = "{}"
-                    vector: Vector(embedding_func.ndims()) = embedding_func.VectorField()
-                
-                self._schema = MemoryRecordWithEmbedding
-            else:
-                # Fallback schema without embedding function
-                self._schema = MemoryRecord
-        
+            class MemoryRecord(LanceModel):
+                id: str
+                content: str
+                metadata: str  # Storing metadata as a JSON string
+                categories: List[str]
+                vector: Vector(self._embedding_dim)
+
+            self._schema = MemoryRecord
         return self._schema
     
     async def _initialize_provider(self) -> None:
         """Provider-specific initialization logic."""
         # Initialize connection and table
-        await self._get_table()
-        # Asynchronously index memory files on startup
-        asyncio.create_task(self.index_memory_files())
-        logger.debug("LanceDB provider initialized and indexing started")
+        await self._get_or_create_table()
+        logger.debug("LanceDB provider initialized.")
+
+        # ---------- NEW: bootstrap initial file indexing ---------- #
+        try:
+            # Index memory files only once at startup; skip if already done.
+            if not self._stats.get("last_indexed"):
+                logger.info("No previous index detected – performing initial memory file ingest …")
+                await self.index_memory_files()
+        except Exception as e:
+            # Do not fail provider init if indexing fails; just log.
+            logger.warning(f"Initial file indexing failed: {e}")
     
-    async def _get_table(self):
-        """Get or create table"""
-        if self._table is None:
-            db = self._get_connection()
+    async def _get_or_create_table(self):
+        """Get or create the LanceDB table."""
+        if self._table:
+            return self._table
+
+        try:
+            self._table = self._db.open_table(self.table_name)
+        except Exception:
             schema = self._get_schema()
-            
-            try:
-                # Try to open existing table
-                self._table = db.open_table(self.table_name)
-                logger.debug(f"Opened existing table: {self.table_name}")
-            except Exception:
-                # Create new table
-                self._table = db.create_table(
-                    self.table_name,
-                    schema=schema,
-                    mode="create"
-                )
-                logger.info(f"Created new table: {self.table_name}")
+            self._table = self._db.create_table(self.table_name, schema=schema, mode="create")
         
+        logger.info(f"LanceDB table '{self.table_name}' is ready.")
         return self._table
     
     async def add_memory(
@@ -241,41 +196,28 @@ class LanceMemoryProvider(MemoryProvider):
             The unique ID of the added memory
         """
         try:
-            table = await self._get_table()
+            table = await self._get_or_create_table()
             
             # Generate unique memory ID
-            memory_id = f"mem_{int(time.time() * 1000000)}"
+            memory_id = str(uuid.uuid4())
             
             # Prepare record data
             metadata = metadata or {}
             categories = categories or []
             
-            import json
-            
-            # Clean metadata to remove non-serializable items
-            clean_metadata = {}
-            for k, v in metadata.items():
-                if k != "categories":  # Categories are handled separately
-                    try:
-                        json.dumps(v)  # Test if serializable
-                        clean_metadata[k] = v
-                    except (TypeError, ValueError):
-                        # Skip non-serializable values
-                        continue
+            # Generate embedding
+            vector = self._embedder([content])[0]
             
             record_data = {
-                "memory_id": memory_id,
+                "id": memory_id,
                 "content": content,
-                "timestamp": datetime.now().isoformat(),
-                "memory_type": clean_metadata.get("memory_type", "general"),
+                "metadata": json.dumps(metadata),
                 "categories": categories,
-                "file_path": clean_metadata.get("file_path"),
-                "source": clean_metadata.get("source"),
-                "metadata_json": json.dumps(clean_metadata)
+                "vector": vector,
             }
             
             # Add to table (embedding will be computed automatically if function is available)
-            table.add([record_data])
+            await asyncio.to_thread(table.add, [record_data])
             
             # Update stats
             self._stats["total_memories"] += 1
@@ -291,7 +233,7 @@ class LanceMemoryProvider(MemoryProvider):
             
         except Exception as e:
             logger.error(f"Error adding memory: {e}")
-            raise
+            raise MemoryProviderError(f"LanceDB add failed: {e}")
     
     async def search_memory(
         self,
@@ -311,10 +253,11 @@ class LanceMemoryProvider(MemoryProvider):
             List of matching memory records with scores
         """
         try:
-            table = await self._get_table()
+            table = await self._get_or_create_table()
             
             # Build search query
-            search_query = table.search(query).limit(max_results)
+            query_vector = self._embedder([query])[0]
+            search_query = table.search(query_vector).limit(max_results)
             
             # Apply filters if provided
             if filters:
@@ -344,29 +287,21 @@ class LanceMemoryProvider(MemoryProvider):
                     search_query = search_query.where(filter_sql)
             
             # Execute search
-            results = search_query.to_pandas()
+            results_df = await asyncio.to_thread(search_query.to_df)
             
             # Format results
-            import json
             formatted_results = []
-            for _, row in results.iterrows():
+            for _, row in results_df.iterrows():
                 # Deserialize metadata JSON
                 try:
-                    metadata_dict = json.loads(row.get("metadata_json", "{}"))
+                    metadata_dict = json.loads(row.get("metadata", "{}"))
                 except (json.JSONDecodeError, TypeError):
                     metadata_dict = {}
                 
                 result = {
-                    "id": row["memory_id"],
+                    "id": row["id"],
                     "content": row["content"],
-                    "metadata": {
-                        "timestamp": row["timestamp"],
-                        "memory_type": row["memory_type"],
-                        "categories": row["categories"],
-                        "file_path": row.get("file_path"),
-                        "source": row.get("source"),
-                        **metadata_dict
-                    },
+                    "metadata": metadata_dict,
                     "score": row.get("_distance", 0.0),
                     "relevance": max(0, 100 - (row.get("_distance", 1.0) * 100))
                 }
@@ -393,34 +328,25 @@ class LanceMemoryProvider(MemoryProvider):
             Dictionary containing memory data or None if not found
         """
         try:
-            table = await self._get_table()
+            table = await self._get_or_create_table()
             
             # Query for specific memory ID
-            results = table.search("").where(f"memory_id = '{memory_id}'").limit(1).to_pandas()
+            results_df = await asyncio.to_thread(
+                table.search().where(f"id = '{memory_id}'").limit(1).to_df
+            )
             
-            if len(results) == 0:
+            if results_df.empty:
                 return None
             
-            row = results.iloc[0]
+            row = results_df.iloc[0]
             
             # Deserialize metadata JSON
-            import json
-            try:
-                metadata_dict = json.loads(row.get("metadata_json", "{}"))
-            except (json.JSONDecodeError, TypeError):
-                metadata_dict = {}
+            metadata_dict = json.loads(row.get("metadata", "{}"))
             
             return {
-                "id": row["memory_id"],
+                "id": row["id"],
                 "content": row["content"],
-                "metadata": {
-                    "timestamp": row["timestamp"],
-                    "memory_type": row["memory_type"],
-                    "categories": row["categories"],
-                    "file_path": row.get("file_path"),
-                    "source": row.get("source"),
-                    **metadata_dict
-                }
+                "metadata": metadata_dict,
             }
             
         except Exception as e:
@@ -438,10 +364,10 @@ class LanceMemoryProvider(MemoryProvider):
             True if deletion was successful
         """
         try:
-            table = await self._get_table()
+            table = await self._get_or_create_table()
             
             # Delete the record
-            table.delete(f"memory_id = '{memory_id}'")
+            await asyncio.to_thread(table.delete, f"id = '{memory_id}'")
             
             # Update stats
             self._stats["total_memories"] = max(0, self._stats["total_memories"] - 1)
@@ -486,34 +412,8 @@ class LanceMemoryProvider(MemoryProvider):
             await self.delete_memory(memory_id)
             
             # Re-add with updated content using the same memory ID
-            import json
-            
-            # Clean metadata to remove non-serializable items
-            clean_metadata = {}
-            for k, v in new_metadata.items():
-                if k != "categories":  # Categories are handled separately
-                    try:
-                        json.dumps(v)  # Test if serializable
-                        clean_metadata[k] = v
-                    except (TypeError, ValueError):
-                        # Skip non-serializable values
-                        continue
-            
-            record_data = {
-                "memory_id": memory_id,  # Use the same ID
-                "content": new_content,
-                "timestamp": datetime.now().isoformat(),
-                "memory_type": clean_metadata.get("memory_type", "general"),
-                "categories": new_metadata.get("categories", []),
-                "file_path": clean_metadata.get("file_path"),
-                "source": clean_metadata.get("source"),
-                "metadata_json": json.dumps(clean_metadata)
-            }
-            
-            table = await self._get_table()
-            table.add([record_data])
-            
-            logger.debug(f"Updated memory record: {memory_id}")
+            new_id = await self.add_memory(new_content, new_metadata)
+            logger.info(f"Updated memory {memory_id}. New ID is {new_id}.")
             return True
             
         except Exception as e:
@@ -528,11 +428,11 @@ class LanceMemoryProvider(MemoryProvider):
             Dictionary containing database statistics
         """
         try:
-            table = await self._get_table()
+            table = await self._get_or_create_table()
             
             # Get basic table info (stats() method doesn't exist in this version)
             try:
-                table_count = len(table)
+                table_count = await asyncio.to_thread(table.count_rows)
             except:
                 table_count = self._stats["total_memories"]
             
@@ -563,22 +463,8 @@ class LanceMemoryProvider(MemoryProvider):
         Returns:
             True if backup was successful
         """
-        try:
-            table = await self._get_table()
-            
-            # Export to pandas and save as parquet
-            df = table.to_pandas()
-            backup_file = Path(backup_path)
-            backup_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            df.to_parquet(backup_file)
-            
-            logger.info(f"Backed up {len(df)} memories to {backup_path}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error backing up memories: {e}")
-            return False
+        logger.warning("LanceDB backup should be done by copying the database directory.")
+        return False
     
     async def restore_memories(self, backup_path: str) -> bool:
         """
@@ -590,31 +476,8 @@ class LanceMemoryProvider(MemoryProvider):
         Returns:
             True if restore was successful
         """
-        try:
-            backup_file = Path(backup_path)
-            if not backup_file.exists():
-                logger.error(f"Backup file not found: {backup_path}")
-                return False
-            
-            # Load backup data
-            df = pd.read_parquet(backup_file)
-            
-            # Get or create table
-            table = await self._get_table()
-            
-            # Add data to table
-            table.add(df)
-            
-            # Update stats
-            self._stats["total_memories"] += len(df)
-            self._stats["last_indexed"] = datetime.now().isoformat()
-            
-            logger.info(f"Restored {len(df)} memories from {backup_path}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error restoring memories: {e}")
-            return False
+        logger.warning("LanceDB restore should be done by replacing the database directory.")
+        return False
     
     async def health_check(self) -> Dict[str, Any]:
         """
@@ -632,15 +495,13 @@ class LanceMemoryProvider(MemoryProvider):
         
         try:
             # Check database connection
-            db = self._get_connection()
             health_status["checks"]["database_connection"] = "ok"
             
             # Check table access
-            table = await self._get_table()
             health_status["checks"]["table_access"] = "ok"
             
             # Check embedding function
-            embedding_func = self._get_embedding_function()
+            embedding_func = self._embedder
             if embedding_func:
                 health_status["checks"]["embedding_function"] = "ok"
             else:
@@ -668,7 +529,7 @@ class LanceMemoryProvider(MemoryProvider):
     async def _create_index(self):
         """Create vector index for better search performance"""
         try:
-            table = await self._get_table()
+            table = await self._get_or_create_table()
             
             # Create vector index if we have a vector column
             if "vector" in table.schema.names:
@@ -701,10 +562,11 @@ class LanceMemoryProvider(MemoryProvider):
             List of matching memory records with combined scores
         """
         try:
-            table = await self._get_table()
+            table = await self._get_or_create_table()
             
             # Perform hybrid search if supported
-            search_query = table.search(query, query_type="hybrid").limit(max_results)
+            query_vector = self._embedder([query])[0]
+            search_query = table.search(query_vector, query_type="hybrid").limit(max_results)
             
             # Apply filters if provided
             if filters:
@@ -723,29 +585,21 @@ class LanceMemoryProvider(MemoryProvider):
                     search_query = search_query.where(filter_sql)
             
             # Execute search
-            results = search_query.to_pandas()
+            results_df = await asyncio.to_thread(search_query.to_df)
             
             # Format results
-            import json
             formatted_results = []
-            for _, row in results.iterrows():
+            for _, row in results_df.iterrows():
                 # Deserialize metadata JSON
                 try:
-                    metadata_dict = json.loads(row.get("metadata_json", "{}"))
+                    metadata_dict = json.loads(row.get("metadata", "{}"))
                 except (json.JSONDecodeError, TypeError):
                     metadata_dict = {}
                 
                 result = {
-                    "id": row["memory_id"],
+                    "id": row["id"],
                     "content": row["content"],
-                    "metadata": {
-                        "timestamp": row["timestamp"],
-                        "memory_type": row["memory_type"],
-                        "categories": row["categories"],
-                        "file_path": row.get("file_path"),
-                        "source": row.get("source"),
-                        **metadata_dict
-                    },
+                    "metadata": metadata_dict,
                     "score": row.get("_distance", 0.0),
                     "relevance": max(0, 100 - (row.get("_distance", 1.0) * 100))
                 }
@@ -759,13 +613,11 @@ class LanceMemoryProvider(MemoryProvider):
             # Fallback to regular vector search
             return await self.search_memory(query, max_results, filters)
     
-    def close(self):
-        """Close the database connection"""
-        if self._db:
-            # LanceDB connections are automatically managed
-            self._db = None
-            self._table = None
-            logger.debug("Closed LanceDB connection")
+    async def close(self):
+        """LanceDB connection doesn't need explicit closing in this version."""
+        logger.info("LanceDB provider closed.")
+        # No async operation needed, but keep async def for interface consistency
+        await asyncio.sleep(0)
 
     # Helper methods for file indexing (adapted from ChromaDB implementation)
     def parse_memory(self, content: str) -> Dict[str, Any]:
@@ -850,13 +702,22 @@ class LanceMemoryProvider(MemoryProvider):
                             **parsed_meta
                         }
                         
-                        # Use add_memory to add to LanceDB
-                        await self.add_memory(
-                            content=content,
-                            metadata=metadata,
-                            categories=categories
-                        )
-                        indexed_count += 1
+                        # If the file is very large, split into smaller chunks (~8k chars)
+                        MAX_CHUNK_SIZE = 8000
+                        if len(content) > MAX_CHUNK_SIZE:
+                            chunk = ""
+                            for line in content.split("\n"):
+                                if len(chunk) + len(line) + 1 > MAX_CHUNK_SIZE:
+                                    await self.add_memory(chunk, metadata, categories)
+                                    indexed_count += 1
+                                    chunk = ""
+                                chunk += line + "\n"
+                            if chunk.strip():
+                                await self.add_memory(chunk, metadata, categories)
+                                indexed_count += 1
+                        else:
+                            await self.add_memory(content, metadata, categories)
+                            indexed_count += 1
                     
                     except Exception as e:
                         logger.error(f"Failed to index file {file_path}: {e}")

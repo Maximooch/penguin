@@ -243,6 +243,9 @@ class PenguinCore:
         Factory method for creating PenguinCore instance.
         Returns either PenguinCore alone or with CLI if enable_cli=True
         """
+        # Fix HuggingFace tokenizers parallelism warning early, before any model loading
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+        
         pbar = None # Initialize pbar to None
         # Track detailed timing for profiling
         import time
@@ -359,7 +362,12 @@ class PenguinCore:
                 current_step_index += 1
                 progress_callback(current_step_index, total_steps, "Creating tool manager")
             tool_manager_start = time.time()
-            tool_manager = ToolManager(log_error)
+            print("DEBUG: Creating ToolManager in PenguinCore...")
+            print(f"DEBUG: Passing config of type {type(config)} to ToolManager.")
+            print(f"DEBUG: Passing log_error of type {type(log_error)} to ToolManager.")
+            # Convert config to dict format for ToolManager
+            config_dict = config.__dict__ if hasattr(config, '__dict__') else config
+            tool_manager = ToolManager(config_dict, log_error)
             logger.info(f"STARTUP: Tool manager created in {time.time() - tool_manager_start:.4f}s with {len(tool_manager.tools) if hasattr(tool_manager, 'tools') else 'unknown'} tools")
             if pbar: pbar.update(1)
             log_step_time("Create tool manager")
@@ -481,10 +489,12 @@ class PenguinCore:
         )
 
         # Initialize action executor with project manager and conversation manager
+        print("DEBUG: Initializing ActionExecutor...")
+        print(f"DEBUG: ToolManager type: {type(self.tool_manager)}")
+        print(f"DEBUG: ProjectManager type: {type(self.project_manager)}")
+        print(f"DEBUG: ConversationManager type: {type(self.conversation_manager)}")
         self.action_executor = ActionExecutor(
-            tool_manager=self.tool_manager, 
-            task_manager=self.project_manager,
-            conversation_system=self.conversation_manager.conversation
+            self.tool_manager, self.project_manager, self.conversation_manager
         )
         self.current_runmode_status_summary: str = "RunMode idle." # New attribute
 

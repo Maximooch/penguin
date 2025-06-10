@@ -14,7 +14,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from penguin.memory.embedding import get_embedder
 from .base import MemoryProvider, MemoryProviderError
+
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +61,14 @@ class SQLiteMemoryProvider(MemoryProvider):
         
         # Create storage directory
         self.storage_path.mkdir(parents=True, exist_ok=True)
+
+        if self.enable_embeddings and not NUMPY_AVAILABLE:
+            logger.warning("Numpy is not installed. Disabling embedding support for SQLite.")
+            self.enable_embeddings = False
+
+        self._embedder = None
+        if self.enable_embeddings:
+            self._embedder = get_embedder(self.embedding_model)
     
     async def _initialize_provider(self) -> None:
         """Initialize SQLite database and tables."""
@@ -74,7 +89,7 @@ class SQLiteMemoryProvider(MemoryProvider):
                     content_hash TEXT NOT NULL,
                     metadata TEXT,  -- JSON
                     categories TEXT,  -- JSON array
-                    embeddings TEXT,  -- JSON array (for future embedding support)
+                    embedding TEXT,  -- JSON-serialized vector
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -149,16 +164,23 @@ class SQLiteMemoryProvider(MemoryProvider):
             metadata_json = json.dumps(metadata or {})
             categories_json = json.dumps(categories or [])
             
+            embedding_json = None
+            if self.enable_embeddings and self._embedder:
+                vector = self._embedder([content])[0]
+                # Ensure vector is a plain list for JSON serialization
+                embedding_json = json.dumps(vector.tolist() if hasattr(vector, 'tolist') else list(vector))
+
             # Insert into database
             self._connection.execute("""
-                INSERT INTO memories (id, content, content_hash, metadata, categories, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO memories (id, content, content_hash, metadata, categories, embedding, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 memory_id,
                 content,
                 content_hash,
                 metadata_json,
                 categories_json,
+                embedding_json,
                 datetime.now().isoformat(),
                 datetime.now().isoformat()
             ))
@@ -187,7 +209,12 @@ class SQLiteMemoryProvider(MemoryProvider):
             results = []
             search_mode = filters.get('search_mode', 'auto') if filters else 'auto'
             
-            if query.strip() and self.enable_fts:
+            # Vector search has priority if enabled and query is suitable
+            if query.strip() and self.enable_embeddings and search_mode in ['auto', 'vector']:
+                vector_results = await self._vector_search(query, max_results)
+                results.extend(vector_results)
+
+            if query.strip() and self.enable_fts and len(results) < max_results:
                 if search_mode in ['auto', 'fts']:
                     # Use FTS5 for better search
                     sql = """
@@ -199,7 +226,7 @@ class SQLiteMemoryProvider(MemoryProvider):
                         ORDER BY f.rank
                         LIMIT ?
                     """
-                    cursor = self._connection.execute(sql, (query, max_results))
+                    cursor = self._connection.execute(sql, (query, max_results - len(results)))
                     results.extend(self._process_search_results(cursor))
                 
                 # Add fuzzy search for partial matches
@@ -264,6 +291,49 @@ class SQLiteMemoryProvider(MemoryProvider):
             }
             results.append(result)
         return results
+    
+    async def _vector_search(self, query: str, max_results: int) -> List[Dict[str, Any]]:
+        """Perform in-memory vector search."""
+        if not self.enable_embeddings or not self._embedder:
+            return []
+
+        query_vector = np.array(self._embedder([query])[0])
+
+        # Fetch all records with embeddings
+        cursor = self._connection.execute("SELECT id, content, metadata, categories, embedding, created_at FROM memories WHERE embedding IS NOT NULL")
+        all_memories = cursor.fetchall()
+
+        if not all_memories:
+            return []
+
+        # Calculate cosine similarity in-memory
+        ids = [row['id'] for row in all_memories]
+        contents = [row['content'] for row in all_memories]
+        metadatas = [json.loads(row['metadata']) for row in all_memories]
+        categories_list = [json.loads(row['categories']) for row in all_memories]
+        created_ats = [row['created_at'] for row in all_memories]
+        
+        db_vectors = np.array([json.loads(row['embedding']) for row in all_memories])
+        
+        # Normalize vectors
+        query_norm = query_vector / np.linalg.norm(query_vector)
+        db_norms = np.linalg.norm(db_vectors, axis=1)
+        db_vectors_normalized = db_vectors / db_norms[:, np.newaxis]
+        
+        # Cosine similarity
+        scores = np.dot(db_vectors_normalized, query_norm)
+
+        # Get top N results
+        top_indices = np.argsort(scores)[::-1][:max_results]
+
+        return [{
+            'id': ids[i],
+            'content': contents[i],
+            'metadata': metadatas[i],
+            'categories': categories_list[i],
+            'created_at': created_ats[i],
+            'score': scores[i]
+        } for i in top_indices if scores[i] > 0] # Return only if score is positive
     
     async def _fuzzy_search(self, query: str, max_results: int) -> List[Dict[str, Any]]:
         """Implement fuzzy search using edit distance."""
@@ -381,6 +451,11 @@ class SQLiteMemoryProvider(MemoryProvider):
                 params.append(content)
                 updates.append("content_hash = ?")
                 params.append(self._generate_content_hash(content))
+                if self.enable_embeddings and self._embedder:
+                    vector = self._embedder([content])[0]
+                    updates.append("embedding = ?")
+                    # Ensure vector is a plain list for JSON serialization
+                    params.append(json.dumps(vector.tolist() if hasattr(vector, 'tolist') else list(vector)))
             
             if metadata is not None:
                 updates.append("metadata = ?")
@@ -447,6 +522,7 @@ class SQLiteMemoryProvider(MemoryProvider):
                 'oldest_memory': row['oldest'],
                 'newest_memory': row['newest'],
                 'fts_enabled': self.enable_fts,
+                'embeddings_enabled': self.enable_embeddings,
                 'searches_performed': self._stats['searches_performed'],
                 'last_updated': self._stats['last_updated']
             }
