@@ -74,6 +74,8 @@ class ActionType(Enum):
     PROJECT_LIST = "project_list"
     PROJECT_DISPLAY = "project_display"
     DEPENDENCY_DISPLAY = "dependency_display"
+    ANALYZE_CODEBASE = "analyze_codebase"
+    REINDEX_WORKSPACE = "reindex_workspace"
     # Browser actions
     BROWSER_NAVIGATE = "browser_navigate"
     BROWSER_INTERACT = "browser_interact"
@@ -211,6 +213,8 @@ class ActionExecutor:
             ActionType.TASK_LIST: self._task_list,
             ActionType.TASK_DISPLAY: self._task_display,
             ActionType.DEPENDENCY_DISPLAY: self._dependency_display,
+            ActionType.ANALYZE_CODEBASE: self._analyze_codebase,
+            ActionType.REINDEX_WORKSPACE: self._reindex_workspace,
             # Browser actions
             ActionType.BROWSER_NAVIGATE: self._browser_navigate,
             ActionType.BROWSER_INTERACT: self._browser_interact,
@@ -392,22 +396,36 @@ class ActionExecutor:
                 if len(parts) > 3 and parts[3].strip()
                 else None
             )
-            date_after = (
-                parts[4].strip() if len(parts) > 4 and parts[4].strip() else None
-            )
-            date_before = (
-                parts[5].strip() if len(parts) > 5 and parts[5].strip() else None
-            )
 
             # Use the tool_manager's memory_search method which will access the lazily loaded memory_searcher
-            results = self.tool_manager.search_memory(
+            json_results = await self.tool_manager.perform_memory_search(
                 query=query,
-                max_results=max_results,
+                k=max_results,
                 memory_type=memory_type,
                 categories=categories,
-                date_after=date_after,
-                date_before=date_before,
             )
+
+            # Parse the JSON string returned by perform_memory_search
+            try:
+                import json
+                parsed_results = json.loads(json_results)
+                
+                # Handle error responses
+                if isinstance(parsed_results, dict) and "error" in parsed_results:
+                    return f"Memory search error: {parsed_results['error']}"
+                
+                # Handle "no results" response
+                if isinstance(parsed_results, dict) and "result" in parsed_results:
+                    return parsed_results["result"]
+                
+                # Handle actual search results
+                if isinstance(parsed_results, list):
+                    results = parsed_results
+                else:
+                    return "Unexpected response format from memory search."
+                    
+            except json.JSONDecodeError:
+                return f"Error parsing memory search results: {json_results}"
 
             # Format results for display
             if not results:
@@ -415,18 +433,49 @@ class ActionExecutor:
 
             formatted_results = []
             for i, result in enumerate(results, 1):
+                # Fix metadata field names to match actual result structure
+                metadata = result.get('metadata', {})
+                file_path = metadata.get('path', metadata.get('file_path', 'Unknown'))
+                file_type = metadata.get('file_type', metadata.get('memory_type', 'Unknown'))
+                categories = result.get('categories', metadata.get('categories', 'None'))
+                
                 formatted_results.append(
-                    f"\n{i}. From: {result['metadata']['file_path']}"
+                    f"\n{i}. From: {file_path}"
                 )
                 formatted_results.append(
-                    f"   Type: {result['metadata']['memory_type']}"
+                    f"   Type: {file_type}"
                 )
                 formatted_results.append(
-                    f"   Categories: {result['metadata']['categories']}"
+                    f"   Categories: {categories}"
                 )
-                formatted_results.append(f"   Relevance: {result['relevance']:.2f}/100")
-                formatted_results.append("   Preview:")
-                formatted_results.append(f"   {result['preview']}")
+                formatted_results.append(f"   Score: {result.get('score', result.get('relevance', 0)):.2f}")
+                
+                # Enhanced preview for conversation messages
+                if file_type == 'conversation_message':
+                    role = metadata.get('message_role', 'unknown')
+                    timestamp = metadata.get('timestamp', '')
+                    session_id = metadata.get('session_id', 'unknown')
+                    
+                    formatted_results.append(f"   Role: {role}")
+                    if timestamp:
+                        formatted_results.append(f"   Time: {timestamp[:19]}")  # YYYY-MM-DDTHH:MM:SS
+                    formatted_results.append(f"   Session: {session_id}")
+                    formatted_results.append("   Message:")
+                    
+                    # Get content preview with conversation context
+                    content = result.get('content', result.get('preview', 'No preview available'))
+                    # For conversation messages, show more content (up to 300 characters)
+                    preview = content[:300] + "..." if len(content) > 300 else content
+                    # Indent the content for better readability
+                    indented_preview = "\n".join(f"   > {line}" for line in preview.split('\n'))
+                    formatted_results.append(indented_preview)
+                else:
+                    formatted_results.append("   Preview:")
+                    # Get content preview, limiting to 200 characters
+                    content = result.get('content', result.get('preview', 'No preview available'))
+                    preview = content[:200] + "..." if len(content) > 200 else content
+                    formatted_results.append(f"   {preview}")
+                
                 formatted_results.append("")
 
             return "\n".join(formatted_results)
@@ -820,3 +869,31 @@ class ActionExecutor:
             error_message = f"Error toggling PyDoll debug mode: {str(e)}"
             logger.error(error_message)
             return error_message
+
+    async def _analyze_codebase(self, params: str) -> str:
+        """Invoke analyze_codebase tool. Format: directory:analysis_type:include_external"""
+        parts = params.split(":")
+        directory = parts[0].strip() if parts and parts[0].strip() else ""
+        analysis_type = parts[1].strip() if len(parts) > 1 and parts[1].strip() else "all"
+        include_external = parts[2].strip().lower() == "true" if len(parts) > 2 else False
+        return self.tool_manager.execute_tool(
+            "analyze_codebase",
+            {
+                "directory": directory,
+                "analysis_type": analysis_type,
+                "include_external": include_external,
+            },
+        )
+
+    async def _reindex_workspace(self, params: str) -> str:
+        """Invoke reindex_workspace tool. Format: directory:force_full"""
+        parts = params.split(":")
+        directory = parts[0].strip() if parts and parts[0].strip() else ""
+        force_full = parts[1].strip().lower() == "true" if len(parts) > 1 else False
+        return self.tool_manager.execute_tool(
+            "reindex_workspace",
+            {
+                "directory": directory,
+                "force_full": force_full,
+            },
+        )

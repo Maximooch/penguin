@@ -174,6 +174,22 @@ config['paths'] = {
     'logs': str(WORKSPACE_PATH / 'logs'),
 }
 
+def substitute_path_variables(obj, paths):
+    """Simple template substitution for ${paths.*} variables"""
+    if isinstance(obj, str):
+        for key, value in paths.items():
+            obj = obj.replace(f"${{paths.{key}}}", value)
+        return obj
+    elif isinstance(obj, dict):
+        return {k: substitute_path_variables(v, paths) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [substitute_path_variables(item, paths) for item in obj]
+    else:
+        return obj
+
+# Substitute path variables in the entire config
+config = substitute_path_variables(config, config['paths'])
+
 # Avoid noisy stdout during normal startup; log at DEBUG level instead.
 logger.debug(f"Workspace path: {WORKSPACE_PATH}")
 

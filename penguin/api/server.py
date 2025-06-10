@@ -43,7 +43,7 @@ def init_core():
 
         api_client = APIClient(model_config=model_config)
         api_client.set_system_prompt(SYSTEM_PROMPT)
-        tool_manager = ToolManager(log_error)
+        tool_manager = ToolManager(config, log_error)
 
         # Pass the proper Config object, not the raw dictionary
         core = PenguinCore(

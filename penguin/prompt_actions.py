@@ -95,13 +95,27 @@ Use for information retrieval. Acknowledge results before acting.
     -   Example: `<workspace_search>class UserSchema:5</workspace_search >`
 
 3.  **Memory Search (`<memory_search>`):**
-    -   Search conversation history/notes. Check before re-asking.
-    -   Example: `<memory_search>database connection string discussion:3</memory_search >`
+    `<memory_search>query:k:memory_type:categories</memory_search >`
+    -   Search conversation history, indexed files, and notes.
+    -   `k`, `memory_type`, `categories` (comma-separated) are optional.
+    -   Example: `<memory_search>database connection string discussion:5:all:database,config</memory_search >`
+    -   Example: `<memory_search>user preferences</memory_search >`
 
 4.  **File Content Search (via `<execute>`):**
     -   For specific pattern/regex matching when `workspace_search` isn't suitable.
     -   Use Python's file reading (`Path.read_text()`) and `re` module. Keep scripts simple and focused.
     -   Verify results. (See example in previous `prompt_workflow.py` section or `system_prompt.py` draft)
+
+---
+
+### Workspace & Memory Management
+
+-   `<analyze_codebase>directory:type</analyze_codebase>`
+    -   Analyze codebase structure. `type` can be `dependencies`, `complexity`, etc.
+    -   Example: `<analyze_codebase>src:dependencies</analyze_codebase>`
+-   `<reindex_workspace>directory:force_full</reindex_workspace>`
+    -   Trigger a manual re-index of the workspace to update the memory.
+    -   Example: `<reindex_workspace>src:true</reindex_workspace>`
 
 ---
 

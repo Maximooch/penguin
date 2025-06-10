@@ -139,13 +139,18 @@ class MemoryProviderFactory:
         elif provider_name == 'sqlite':
             try:
                 import sqlite3  # noqa: F401
+                # Numpy is an optional dependency for vector search
                 return {'available': True, 'reason': 'SQLite available (built-in)'}
             except ImportError as e:
                 return {'available': False, 'reason': f'SQLite not available: {str(e)}'}
         
         elif provider_name == 'file':
-            # File provider has no external dependencies
-            return {'available': True, 'reason': 'No external dependencies required'}
+            try:
+                # Numpy is an optional dependency for vector search
+                import numpy # noqa: F401
+                return {'available': True, 'reason': 'File provider available'}
+            except ImportError as e:
+                return {'available': False, 'reason': f'Numpy not installed, which is required for vector search.'}
         
         else:
             return {'available': False, 'reason': f'Unknown provider: {provider_name}'}
