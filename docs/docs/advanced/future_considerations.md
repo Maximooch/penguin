@@ -64,6 +64,8 @@ flowchart TD
 - Implement hierarchical session structures (project→task→subtask)
 - Allow multiple active sessions with context switching
 - Add branching/forking of conversations
+- Automatic checkpoint creation with rollback support
+- Conversation tree UI for managing branches
 - Implement proper version control for sessions
 
 ## Performance and Storage

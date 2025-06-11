@@ -31,9 +31,10 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Usage Guide',
       items: [
-        'usage/basic_usage', 
-        'usage/automode', 
-        'usage/task_management', 
+        'usage/basic_usage',
+        'usage/automode',
+        'usage/task_management',
+        'usage/checkpointing',
         'usage/project_management',
         'usage/api_usage',
       ],
