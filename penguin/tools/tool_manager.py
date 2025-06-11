@@ -7,6 +7,9 @@ from typing import Any, Callable, Dict, List, Optional, Union
 import datetime
 import json
 from pathlib import Path
+import time
+import re
+from collections import defaultdict
 
 # from utils.log_error import log_error
 # from .core.support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
@@ -1109,24 +1112,207 @@ class ToolManager:
     def analyze_codebase(
         self, directory: Optional[str] = None, analysis_type: str = "all", include_external: bool = False
     ) -> str:
-        """Placeholder for code analysis. Integrates with the DependencyMapper tool."""
+        """Analyze codebase structure and dependencies using AST analysis."""
         if not self.config.get("tools", {}).get("allow_memory_tools", False):
             return json.dumps({"error": "Code analysis tools are disabled in config.yml."})
         
         try:
-            from penguin.tools.core.dependency_mapper import DependencyMapper
+            import ast
+            from pathlib import Path
+            from collections import defaultdict
             
             # Default to project root if no directory is specified
-            target_dir = directory or self.project_root
-            mapper = DependencyMapper(str(target_dir))
+            target_dir = Path(directory or self.project_root)
             
-            # This is a synchronous placeholder. In a real scenario, this would
-            # be an async call and properly formatted.
-            # analysis_result = asyncio.run(mapper.analyze_workspace())
+            if not target_dir.exists():
+                return json.dumps({"error": f"Directory '{target_dir}' does not exist."})
             
-            return json.dumps({"result": f"Code analysis for '{analysis_type}' on '{target_dir}' is not fully implemented yet."})
+            analysis_results = {
+                "directory": str(target_dir),
+                "analysis_type": analysis_type,
+                "summary": {},
+                "files_analyzed": 0,
+                "errors": []
+            }
+            
+            # Containers for analysis data
+            all_functions = []
+            all_classes = []
+            all_imports = defaultdict(list)
+            dependency_graph = defaultdict(set)
+            complexity_metrics = {"total_lines": 0, "total_functions": 0, "total_classes": 0}
+            
+            # Find all Python files
+            python_files = list(target_dir.rglob("*.py"))
+            
+            for file_path in python_files:
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    
+                    # Parse the AST
+                    tree = ast.parse(content)
+                    relative_path = str(file_path.relative_to(target_dir))
+                    
+                    # Count lines
+                    lines = len(content.splitlines())
+                    complexity_metrics["total_lines"] += lines
+                    
+                    # Extract functions
+                    functions = []
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.FunctionDef):
+                            func_info = {
+                                "name": node.name,
+                                "line": node.lineno,
+                                "args": len(node.args.args),
+                                "is_async": isinstance(node, ast.AsyncFunctionDef),
+                                "docstring": ast.get_docstring(node) is not None
+                            }
+                            functions.append(func_info)
+                            all_functions.append({**func_info, "file": relative_path})
+                    
+                    complexity_metrics["total_functions"] += len(functions)
+                    
+                    # Extract classes
+                    classes = []
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.ClassDef):
+                            methods = [n.name for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                            class_info = {
+                                "name": node.name,
+                                "line": node.lineno,
+                                "methods": methods,
+                                "method_count": len(methods),
+                                "docstring": ast.get_docstring(node) is not None
+                            }
+                            classes.append(class_info)
+                            all_classes.append({**class_info, "file": relative_path})
+                    
+                    complexity_metrics["total_classes"] += len(classes)
+                    
+                    # Extract imports
+                    imports = []
+                    for node in ast.walk(tree):
+                        if isinstance(node, ast.Import):
+                            for alias in node.names:
+                                import_name = alias.name
+                                imports.append(import_name)
+                                all_imports[relative_path].append(import_name)
+                                
+                                # Track dependencies (only local imports if not include_external)
+                                if include_external or not self._is_external_import(import_name):
+                                    dependency_graph[relative_path].add(import_name)
+                                    
+                        elif isinstance(node, ast.ImportFrom):
+                            if node.module:
+                                for alias in node.names:
+                                    import_name = f"{node.module}.{alias.name}"
+                                    imports.append(import_name)
+                                    all_imports[relative_path].append(import_name)
+                                    
+                                    if include_external or not self._is_external_import(node.module):
+                                        dependency_graph[relative_path].add(node.module)
+                    
+                    analysis_results["files_analyzed"] += 1
+                    
+                except Exception as e:
+                    analysis_results["errors"].append(f"Failed to analyze {file_path}: {str(e)}")
+            
+            # Build summary based on analysis_type
+            if analysis_type in ["all", "dependencies"]:
+                analysis_results["dependencies"] = {
+                    "import_count": sum(len(imports) for imports in all_imports.values()),
+                    "dependency_graph": {k: list(v) for k, v in dependency_graph.items()},
+                    "most_imported": self._get_most_common_imports(all_imports),
+                    "circular_dependencies": self._detect_circular_dependencies(dependency_graph)
+                }
+            
+            if analysis_type in ["all", "complexity"]:
+                analysis_results["complexity"] = {
+                    **complexity_metrics,
+                    "avg_functions_per_file": complexity_metrics["total_functions"] / max(analysis_results["files_analyzed"], 1),
+                    "avg_classes_per_file": complexity_metrics["total_classes"] / max(analysis_results["files_analyzed"], 1),
+                    "avg_lines_per_file": complexity_metrics["total_lines"] / max(analysis_results["files_analyzed"], 1)
+                }
+            
+            if analysis_type in ["all", "patterns"]:
+                analysis_results["patterns"] = {
+                    "async_functions": len([f for f in all_functions if f["is_async"]]),
+                    "documented_functions": len([f for f in all_functions if f["docstring"]]),
+                    "documented_classes": len([c for c in all_classes if c["docstring"]]),
+                    "largest_classes": sorted(all_classes, key=lambda x: x["method_count"], reverse=True)[:5],
+                    "function_complexity": self._analyze_function_complexity(all_functions)
+                }
+            
+            # Generate summary
+            analysis_results["summary"] = {
+                "files": analysis_results["files_analyzed"],
+                "total_lines": complexity_metrics["total_lines"],
+                "functions": complexity_metrics["total_functions"],
+                "classes": complexity_metrics["total_classes"],
+                "imports": sum(len(imports) for imports in all_imports.values()) if all_imports else 0
+            }
+            
+            return json.dumps(analysis_results, indent=2)
+            
         except Exception as e:
-            return json.dumps({"error": f"Failed to analyze codebase: {e}"})
+            return json.dumps({"error": f"Failed to analyze codebase: {str(e)}"})
+
+    def _is_external_import(self, import_name: str) -> bool:
+        """Check if an import is external (not local to the project)."""
+        external_patterns = [
+            'os', 'sys', 'json', 'asyncio', 'logging', 'pathlib', 'datetime', 'time',
+            'typing', 'collections', 'itertools', 'functools', 'operator',
+            'requests', 'httpx', 'flask', 'django', 'fastapi', 'numpy', 'pandas',
+            'torch', 'tensorflow', 'sklearn', 'matplotlib', 'seaborn',
+            'pytest', 'unittest', 'mock'
+        ]
+        return any(import_name.startswith(pattern) for pattern in external_patterns)
+    
+    def _get_most_common_imports(self, all_imports: dict) -> list:
+        """Get the most commonly imported modules."""
+        from collections import Counter
+        all_import_list = []
+        for imports in all_imports.values():
+            all_import_list.extend(imports)
+        
+        counter = Counter(all_import_list)
+        return [{"module": module, "count": count} for module, count in counter.most_common(10)]
+    
+    def _detect_circular_dependencies(self, dependency_graph: dict) -> list:
+        """Detect circular dependencies in the codebase."""
+        circular = []
+        
+        def has_path(start, end, visited=None):
+            if visited is None:
+                visited = set()
+            if start == end:
+                return True
+            if start in visited:
+                return False
+            visited.add(start)
+            for dep in dependency_graph.get(start, set()):
+                if has_path(dep, end, visited.copy()):
+                    return True
+            return False
+        
+        for file1 in dependency_graph:
+            for dep in dependency_graph[file1]:
+                if dep in dependency_graph and has_path(dep, file1):
+                    circular.append({"file1": file1, "file2": dep})
+        
+        return circular
+    
+    def _analyze_function_complexity(self, all_functions: list) -> dict:
+        """Analyze function complexity patterns."""
+        arg_counts = [f["args"] for f in all_functions]
+        return {
+            "avg_args": sum(arg_counts) / len(arg_counts) if arg_counts else 0,
+            "max_args": max(arg_counts) if arg_counts else 0,
+            "functions_with_many_args": len([f for f in all_functions if f["args"] > 5]),
+            "async_percentage": (len([f for f in all_functions if f["is_async"]]) / len(all_functions) * 100) if all_functions else 0
+        }
 
     async def reindex_workspace(
         self, directory: Optional[str] = None, force_full: bool = False, file_types: Optional[List[str]] = None
@@ -1142,14 +1328,219 @@ class ToolManager:
                 self._memory_provider = MemoryProviderFactory.create_provider(self.config.get("memory"))
                 await self._memory_provider.initialize()
 
-            # Call provider's own indexing routine if available
-            if hasattr(self._memory_provider, "index_memory_files"):
-                result_msg = await self._memory_provider.index_memory_files()
-                return json.dumps({"result": result_msg})
-            else:
-                return json.dumps({"error": "Active MemoryProvider does not support file indexing."})
+            start_time = time.time()
+            workspace_path = Path(self.config.get("workspace", {}).get("path", "."))
+            target_dir = Path(directory) if directory else workspace_path
+            
+            if not target_dir.exists():
+                return json.dumps({"error": f"Directory '{target_dir}' does not exist."})
+
+            # Default file types if not specified
+            if file_types is None:
+                file_types = [".py", ".md", ".txt", ".json", ".yml", ".yaml", ".toml", ".cfg", ".ini"]
+
+            # Statistics tracking
+            stats = {
+                "files_processed": 0,
+                "files_skipped": 0,
+                "files_failed": 0,
+                "conversations_indexed": 0,
+                "notes_indexed": 0,
+                "code_files_indexed": 0,
+                "total_size_bytes": 0,
+                "directories_scanned": set(),
+                "errors": []
+            }
+
+            # Build file list
+            all_files = []
+            for file_type in file_types:
+                pattern = f"*{file_type}" if not file_type.startswith("*") else file_type
+                found_files = list(target_dir.rglob(pattern))
+                all_files.extend(found_files)
+
+            # Remove duplicates and filter
+            unique_files = list(set(all_files))
+            indexable_files = [
+                f for f in unique_files 
+                if f.is_file() and not any(ignore in str(f) for ignore in [".git", "__pycache__", ".DS_Store", "node_modules"])
+            ]
+
+            logger.info(f"Reindexing {len(indexable_files)} files (force_full={force_full})")
+
+            # Process files in batches for better performance
+            batch_size = 50
+            for i in range(0, len(indexable_files), batch_size):
+                batch = indexable_files[i:i + batch_size]
+                
+                # Process batch concurrently
+                batch_tasks = []
+                for file_path in batch:
+                    stats["directories_scanned"].add(str(file_path.parent))
+                    
+                    # Skip if already indexed (unless force_full)
+                    if not force_full and hasattr(self, '_indexed_files'):
+                        file_hash = self._calculate_file_hash(file_path)
+                        if file_hash in self._indexed_files:
+                            stats["files_skipped"] += 1
+                            continue
+                    
+                    batch_tasks.append(self._index_single_file(file_path, stats))
+                
+                # Execute batch
+                if batch_tasks:
+                    await asyncio.gather(*batch_tasks, return_exceptions=True)
+
+            # Final statistics
+            elapsed = time.time() - start_time
+            stats["directories_scanned"] = len(stats["directories_scanned"])
+            
+            result = {
+                "status": "completed",
+                "duration_seconds": round(elapsed, 2),
+                "target_directory": str(target_dir),
+                "force_full": force_full,
+                "file_types": file_types,
+                "statistics": stats,
+                "provider": type(self._memory_provider).__name__,
+                "provider_stats": await self._memory_provider.get_memory_stats() if hasattr(self._memory_provider, 'get_memory_stats') else {}
+            }
+
+            logger.info(f"Workspace reindexing completed in {elapsed:.2f}s. Files: {stats['files_processed']} processed, {stats['files_skipped']} skipped, {stats['files_failed']} failed")
+            
+            return json.dumps(result, indent=2)
+
         except Exception as e:
-            return json.dumps({"error": f"Re-index failed: {e}"})
+            error_msg = f"Failed to reindex workspace: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return json.dumps({"error": error_msg, "details": str(e)})
+
+    async def _index_single_file(self, file_path: Path, stats: dict) -> None:
+        """Index a single file and update statistics."""
+        try:
+            file_size = file_path.stat().st_size
+            stats["total_size_bytes"] += file_size
+            
+            # Handle different file types
+            if file_path.suffix == ".json" and "conversations" in str(file_path):
+                await self._index_conversation_file(file_path)
+                stats["conversations_indexed"] += 1
+            elif file_path.suffix in [".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".cpp", ".c", ".h"]:
+                await self._index_code_file(file_path)
+                stats["code_files_indexed"] += 1
+            elif file_path.suffix in [".md", ".txt", ".rst"]:
+                await self._index_text_file(file_path)
+                stats["notes_indexed"] += 1
+            else:
+                # Generic text file indexing
+                await self._index_generic_file(file_path)
+            
+            stats["files_processed"] += 1
+            
+        except Exception as e:
+            stats["files_failed"] += 1
+            stats["errors"].append(f"Failed to index {file_path}: {str(e)}")
+            logger.warning(f"Failed to index {file_path}: {str(e)}")
+
+    async def _index_code_file(self, file_path: Path) -> None:
+        """Index a code file with AST analysis if Python."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            metadata = {
+                "file_type": "code",
+                "path": str(file_path),
+                "language": file_path.suffix[1:],  # Remove the dot
+                "size_bytes": len(content.encode('utf-8')),
+                "indexed_at": datetime.now().isoformat()
+            }
+            
+            # Add AST analysis for Python files
+            if file_path.suffix == ".py":
+                try:
+                    import ast
+                    tree = ast.parse(content)
+                    
+                    functions = [node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+                    classes = [node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]
+                    
+                    metadata.update({
+                        "functions": functions,
+                        "classes": classes,
+                        "function_count": len(functions),
+                        "class_count": len(classes)
+                    })
+                except SyntaxError:
+                    metadata["parse_error"] = "Syntax error in Python file"
+            
+            await self._memory_provider.add_memory(
+                content=content,
+                metadata=metadata,
+                categories=["code", metadata["language"]]
+            )
+            
+        except Exception as e:
+            raise Exception(f"Code file indexing failed: {str(e)}")
+
+    async def _index_text_file(self, file_path: Path) -> None:
+        """Index a text/markdown file."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            metadata = {
+                "file_type": "text",
+                "path": str(file_path),
+                "format": file_path.suffix[1:],
+                "size_bytes": len(content.encode('utf-8')),
+                "indexed_at": datetime.now().isoformat()
+            }
+            
+            # Extract markdown headers if it's a markdown file
+            if file_path.suffix == ".md":
+                import re
+                headers = re.findall(r'^#+\s+(.+)$', content, re.MULTILINE)
+                metadata["headers"] = headers[:10]  # Limit to first 10 headers
+            
+            await self._memory_provider.add_memory(
+                content=content,
+                metadata=metadata,
+                categories=["text", metadata["format"], "notes"]
+            )
+            
+        except Exception as e:
+            raise Exception(f"Text file indexing failed: {str(e)}")
+
+    async def _index_generic_file(self, file_path: Path) -> None:
+        """Index a generic file."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            metadata = {
+                "file_type": "generic",
+                "path": str(file_path),
+                "extension": file_path.suffix[1:] if file_path.suffix else "no_extension",
+                "size_bytes": len(content.encode('utf-8')),
+                "indexed_at": datetime.now().isoformat()
+            }
+            
+            await self._memory_provider.add_memory(
+                content=content,
+                metadata=metadata,
+                categories=["files", metadata["extension"]]
+            )
+            
+        except Exception as e:
+            raise Exception(f"Generic file indexing failed: {str(e)}")
+
+    def _calculate_file_hash(self, file_path: Path) -> str:
+        """Calculate a simple hash for file change detection."""
+        import hashlib
+        stat = file_path.stat()
+        # Use modification time and size as a simple hash
+        return hashlib.md5(f"{stat.st_mtime}:{stat.st_size}".encode()).hexdigest()
 
     def _is_in_async_context(self) -> bool:
         """Check if we're currently running in an async event loop."""
