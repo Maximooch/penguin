@@ -14,6 +14,7 @@ Welcome to the Penguin AI Assistant documentation. Penguin is a modular, extensi
 - Custom tool integration
 - PyDoll browser automation
 - Memory search across conversations
+- Pluggable memory providers with vector search
 - Diagnostic logging and error handling
 
 ## Quick Start
