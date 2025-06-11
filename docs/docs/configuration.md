@@ -30,6 +30,29 @@ OPENAI_API_KEY=insert_your_key_here
    - Modify the `model`, `provider`, and `model_configs` sections as needed
    - For detailed configuration options, consult the LiteLLM documentation
 
+## Memory System
+
+The memory system stores information for later retrieval. Choose a provider and
+options in the `memory` section of `config.yml`:
+
+```yaml
+memory:
+  provider: auto  # sqlite, file, faiss, lance, chroma
+  storage_path: "${paths.memory_db}"
+  embedding_model: sentence-transformers/all-MiniLM-L6-v2
+  providers:
+    sqlite:
+      database_file: penguin_memory.db
+      enable_fts: true
+    file:
+      storage_dir: file_memory
+      enable_embeddings: true
+```
+
+Set `provider: auto` to let Penguin pick the best available backend. Each
+provider exposes `backup_memories()` and `restore_memories()` methods for
+managing persistent storage.
+
 
 
 # todo: add configuration for ollama!
