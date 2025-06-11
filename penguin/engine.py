@@ -365,7 +365,10 @@ class Engine:
             workspace_path=self.conversation_manager.workspace_path,
             system_prompt=self.conversation_manager.conversation.system_prompt,
         )
-        tm = self.tool_manager if inherit_tools else ToolManager(self.tool_manager.error_handler)
+        tm = self.tool_manager if inherit_tools else ToolManager(
+            config=self.tool_manager.config if hasattr(self.tool_manager, 'config') else {},
+            log_error_func=self.tool_manager.error_handler
+        )
         ae = ActionExecutor(tm, self.action_executor.task_manager, cm.conversation)
         return Engine(self.settings, cm, self.api_client, tm, ae, stop_conditions=self.stop_conditions)
 
