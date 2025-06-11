@@ -22,6 +22,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'system/context-window',
         'system/conversation-manager',
+        'system/memory-system',
         'system/run-mode',
         'system/state-management',
       ],
