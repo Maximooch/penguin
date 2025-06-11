@@ -46,6 +46,22 @@ class ContextFileRequest(BaseModel):
     file_path: str
 
 
+# New models for checkpoint management
+class CheckpointCreateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class CheckpointBranchRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+# New models for model management
+class ModelLoadRequest(BaseModel):
+    model_id: str
+
+
 router = APIRouter()
 
 
@@ -317,6 +333,68 @@ async def execute_task(
     )
     return {"status": "started"}
 
+# Enhanced task execution with Engine support
+@router.post("/api/v1/tasks/execute-sync")
+async def execute_task_sync(
+    request: TaskRequest,
+    core: PenguinCore = Depends(get_core)
+):
+    """Execute a task synchronously using the Engine layer."""
+    try:
+        # Check if Engine is available
+        if not hasattr(core, 'engine') or not core.engine:
+            # Fallback to RunMode
+            return await execute_task_via_runmode(request, core)
+        
+        # Use Engine for task execution
+        task_prompt = f"Task: {request.name}"
+        if request.description:
+            task_prompt += f"\nDescription: {request.description}"
+        
+        # Execute task using Engine
+        result = await core.engine.run_task(
+            task_prompt=task_prompt,
+            max_iterations=10,  # Default to 10 iterations
+            task_name=request.name,
+            task_context={
+                "continuous": request.continuous,
+                "time_limit": request.time_limit
+            },
+            enable_events=True
+        )
+        
+        return {
+            "status": result.get("status", "completed"),
+            "response": result.get("assistant_response", ""),
+            "iterations": result.get("iterations", 0),
+            "execution_time": result.get("execution_time", 0),
+            "action_results": result.get("action_results", []),
+            "task_metadata": result.get("task", {})
+        }
+        
+    except Exception as e:
+        logger.error(f"Error executing task synchronously: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error executing task: {str(e)}"
+        )
+
+async def execute_task_via_runmode(request: TaskRequest, core: PenguinCore) -> Dict[str, Any]:
+    """Fallback method using RunMode when Engine is not available."""
+    try:
+        # This would need to be modified to return result instead of running in background
+        # For now, return an error indicating Engine is required
+        raise HTTPException(
+            status_code=503,
+            detail="Engine layer not available. Use /api/v1/tasks/execute for background execution via RunMode."
+        )
+    except Exception as e:
+        logger.error(f"Error in RunMode fallback: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error in fallback execution: {str(e)}"
+        )
+
 
 @router.get("/api/v1/token-usage")
 async def get_token_usage(core: PenguinCore = Depends(get_core)):
@@ -568,3 +646,301 @@ async def stream_task(
              await websocket.close()
 
 # --- End New WebSocket Endpoint ---
+
+# --- Checkpoint Management Endpoints ---
+
+@router.post("/api/v1/checkpoints/create")
+async def create_checkpoint(
+    request: CheckpointCreateRequest,
+    core: PenguinCore = Depends(get_core)
+):
+    """Create a manual checkpoint of the current conversation state."""
+    try:
+        checkpoint_id = await core.create_checkpoint(
+            name=request.name,
+            description=request.description
+        )
+        
+        if checkpoint_id:
+            return {
+                "checkpoint_id": checkpoint_id,
+                "status": "created",
+                "name": request.name,
+                "description": request.description
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to create checkpoint"
+            )
+    except Exception as e:
+        logger.error(f"Error creating checkpoint: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating checkpoint: {str(e)}"
+        )
+
+@router.get("/api/v1/checkpoints")
+async def list_checkpoints(
+    session_id: Optional[str] = None,
+    limit: int = 50,
+    core: PenguinCore = Depends(get_core)
+):
+    """List available checkpoints with optional filtering."""
+    try:
+        checkpoints = core.list_checkpoints(
+            session_id=session_id,
+            limit=limit
+        )
+        return {"checkpoints": checkpoints}
+    except Exception as e:
+        logger.error(f"Error listing checkpoints: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error listing checkpoints: {str(e)}"
+        )
+
+@router.post("/api/v1/checkpoints/{checkpoint_id}/rollback")
+async def rollback_to_checkpoint(
+    checkpoint_id: str,
+    core: PenguinCore = Depends(get_core)
+):
+    """Rollback conversation to a specific checkpoint."""
+    try:
+        success = await core.rollback_to_checkpoint(checkpoint_id)
+        
+        if success:
+            return {
+                "status": "success",
+                "checkpoint_id": checkpoint_id,
+                "message": f"Successfully rolled back to checkpoint {checkpoint_id}"
+            }
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Checkpoint {checkpoint_id} not found or rollback failed"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error rolling back to checkpoint {checkpoint_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error rolling back to checkpoint: {str(e)}"
+        )
+
+@router.post("/api/v1/checkpoints/{checkpoint_id}/branch")
+async def branch_from_checkpoint(
+    checkpoint_id: str,
+    request: CheckpointBranchRequest,
+    core: PenguinCore = Depends(get_core)
+):
+    """Create a new conversation branch from a checkpoint."""
+    try:
+        branch_id = await core.branch_from_checkpoint(
+            checkpoint_id,
+            name=request.name,
+            description=request.description
+        )
+        
+        if branch_id:
+            return {
+                "branch_id": branch_id,
+                "source_checkpoint_id": checkpoint_id,
+                "status": "created",
+                "name": request.name,
+                "description": request.description
+            }
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Checkpoint {checkpoint_id} not found or branch creation failed"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating branch from checkpoint {checkpoint_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating branch from checkpoint: {str(e)}"
+        )
+
+@router.get("/api/v1/checkpoints/stats")
+async def get_checkpoint_stats(core: PenguinCore = Depends(get_core)):
+    """Get statistics about the checkpointing system."""
+    try:
+        stats = core.get_checkpoint_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"Error getting checkpoint stats: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting checkpoint stats: {str(e)}"
+        )
+
+@router.post("/api/v1/checkpoints/cleanup")
+async def cleanup_old_checkpoints(core: PenguinCore = Depends(get_core)):
+    """Clean up old checkpoints according to retention policy."""
+    try:
+        cleaned_count = await core.cleanup_old_checkpoints()
+        return {
+            "status": "completed",
+            "cleaned_count": cleaned_count,
+            "message": f"Cleaned up {cleaned_count} old checkpoints"
+        }
+    except Exception as e:
+        logger.error(f"Error cleaning up checkpoints: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error cleaning up checkpoints: {str(e)}"
+        )
+
+# --- Model Management Endpoints ---
+
+@router.get("/api/v1/models")
+async def list_models(core: PenguinCore = Depends(get_core)):
+    """List all available models."""
+    try:
+        models = core.list_available_models()
+        return {"models": models}
+    except Exception as e:
+        logger.error(f"Error listing models: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error listing models: {str(e)}"
+        )
+
+@router.post("/api/v1/models/load")
+async def load_model(
+    request: ModelLoadRequest,
+    core: PenguinCore = Depends(get_core)
+):
+    """Switch to a different model."""
+    try:
+        success = await core.load_model(request.model_id)
+        
+        if success:
+            current_model = None
+            if core.model_config and core.model_config.model:
+                current_model = core.model_config.model
+                
+            return {
+                "status": "success",
+                "model_id": request.model_id,
+                "current_model": current_model,
+                "message": f"Successfully loaded model: {request.model_id}"
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to load model: {request.model_id}"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading model {request.model_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error loading model: {str(e)}"
+        )
+
+@router.get("/api/v1/models/current")
+async def get_current_model(core: PenguinCore = Depends(get_core)):
+    """Get information about the currently loaded model."""
+    try:
+        if not core.model_config:
+            raise HTTPException(
+                status_code=404,
+                detail="No model configuration found"
+            )
+            
+        return {
+            "model": core.model_config.model,
+            "provider": core.model_config.provider,
+            "client_preference": core.model_config.client_preference,
+            "max_tokens": core.model_config.max_tokens,
+            "temperature": core.model_config.temperature,
+            "streaming_enabled": core.model_config.streaming_enabled,
+            "vision_enabled": core.model_config.vision_enabled
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting current model: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting current model: {str(e)}"
+        )
+
+# --- System Information and Diagnostics ---
+
+@router.get("/api/v1/system/info")
+async def get_system_info(core: PenguinCore = Depends(get_core)):
+    """Get comprehensive system information."""
+    try:
+        info = {
+            "penguin_version": "0.1.0",  # Could be extracted from package info
+            "engine_available": hasattr(core, 'engine') and core.engine is not None,
+            "checkpoints_enabled": core.get_checkpoint_stats().get('enabled', False),
+            "current_model": None,
+            "conversation_manager": {
+                "active": hasattr(core, 'conversation_manager') and core.conversation_manager is not None,
+                "current_session_id": None,
+                "total_messages": 0
+            },
+            "tool_manager": {
+                "active": hasattr(core, 'tool_manager') and core.tool_manager is not None,
+                "total_tools": 0
+            }
+        }
+        
+        # Add current model info
+        if core.model_config:
+            info["current_model"] = {
+                "model": core.model_config.model,
+                "provider": core.model_config.provider,
+                "streaming_enabled": core.model_config.streaming_enabled,
+                "vision_enabled": core.model_config.vision_enabled
+            }
+        
+        # Add conversation manager details
+        if hasattr(core, 'conversation_manager') and core.conversation_manager:
+            current_session = core.conversation_manager.get_current_session()
+            if current_session:
+                info["conversation_manager"]["current_session_id"] = current_session.id
+                info["conversation_manager"]["total_messages"] = len(current_session.messages)
+        
+        # Add tool manager details
+        if hasattr(core, 'tool_manager') and core.tool_manager:
+            info["tool_manager"]["total_tools"] = len(getattr(core.tool_manager, 'tools', {}))
+        
+        return info
+        
+    except Exception as e:
+        logger.error(f"Error getting system info: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting system info: {str(e)}"
+        )
+
+@router.get("/api/v1/system/status")
+async def get_system_status(core: PenguinCore = Depends(get_core)):
+    """Get current system status including RunMode state."""
+    try:
+        status = {
+            "status": "active",
+            "runmode_status": getattr(core, 'current_runmode_status_summary', 'RunMode idle.'),
+            "continuous_mode": getattr(core, '_continuous_mode', False),
+            "streaming_active": getattr(core, '_streaming_state', {}).get('active', False),
+            "token_usage": core.get_token_usage(),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        return status
+        
+    except Exception as e:
+        logger.error(f"Error getting system status: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting system status: {str(e)}"
+        )
