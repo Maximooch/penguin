@@ -76,6 +76,7 @@ Penguin is a modular, extensible AI coding assistant powered by LLMs, enabling s
   - Interactive CLI with slash commands
   - PyDoll browser tools and Chrome debugger
   - Memory search across conversations
+  - Automatic checkpoints with branching and rollback
 
 ## Prerequisites
 
