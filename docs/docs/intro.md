@@ -44,6 +44,7 @@ For more detailed instructions, see the [Getting Started](getting_started.md) gu
   - [PenguinCore](api_reference/core.md)
   - [ChatManager](api_reference/chat_manager.md)
   - [ToolManager](api_reference/tool_manager.md)
+  - [Parser System](api_reference/parser.md)
   - [APIClient](api_reference/api_client.md)
 
 ## Contributing
