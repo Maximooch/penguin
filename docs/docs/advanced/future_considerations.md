@@ -210,3 +210,10 @@ flowchart TD
 - Integrity validation on session load
 - Partial content recovery for corrupted sessions
 - Transaction safety for all file operations 
+## Tool and Parser Improvements
+
+- Consolidated tool discovery mechanism for third-party plugins
+- Formal schema validation for `parse_action` outputs
+- Richer error reporting from the `ActionExecutor`
+- Option to preload heavy tools in background threads
+
