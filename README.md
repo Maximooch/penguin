@@ -62,6 +62,7 @@ Penguin is a modular, extensible AI coding assistant powered by LLMs, enabling s
 - **Cognitive Architecture**:
   - Reasoning and response generation system
   - Persistent memory and context management
+  - Pluggable memory providers with semantic search
   - Tool and action processing capabilities
   - Task coordination and project management
   - Performance monitoring and diagnostics
@@ -174,6 +175,8 @@ Penguin uses a modular architecture with these key systems:
    - Short-term conversation memory
    - Long-term knowledge persistence
    - Embeddings and vector storage
+   - Pluggable providers (SQLite, file, FAISS, LanceDB, Chroma)
+   - Backup and restore utilities
 
 3. **Processor System**
    - ToolManager: Central registry and executor for available tools
