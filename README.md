@@ -135,10 +135,12 @@ Then Edit `penguin/.env` with your API key(s)
 Penguin supports multiple memory backends. Install the extras for your preferred provider:
 
 ```bash
-pip install 'penguin-ai[memory_faiss]'   # FAISS
+pip install 'penguin-ai[memory_faiss]'   # FAISS + sentence-transformers
 pip install 'penguin-ai[memory_lance]'   # LanceDB
 pip install 'penguin-ai[memory_chroma]'  # ChromaDB
 ```
+The `memory_faiss` extra installs `faiss-cpu` (or `faiss-gpu`) and
+`sentence-transformers` automatically.
 
 ## Usage
 
