@@ -4,6 +4,11 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
+# If running under pytest, skip this module – it's a manual demo script, *not* an automated test.
+if "pytest" in sys.modules:
+    import pytest  # type: ignore
+    pytest.skip("test_error_handling.py is a manual demo, skipping in pytest collection", allow_module_level=True)
+
 print("Script started")  # Debug output
 print(f"Python version: {sys.version}")  # Debug output
 print(f"Current directory: {Path.cwd()}")  # Debug output

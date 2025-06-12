@@ -873,27 +873,11 @@ def config_debug():
     console.print(f"\n[dim]Platform: {platform.system()} {platform.release()}[/dim]")
     console.print(f"[dim]Python: {sys.version}[/dim]")
 
-@app.command()
-async def chat(): # Removed model, workspace, no_streaming options
-    """Start an interactive chat session with Penguin."""
-    global _core # Ensure we're referring to the global
-    if not _core:
-        # This should ideally be caught by main_entry's initialization.
-        # If `penguin chat` is called directly, main_entry runs first.
-        logger.warning("Chat command invoked, but core components appear uninitialized. main_entry should handle this.")
-        # Attempting to initialize with defaults if somehow missed.
-        try:
-            await _initialize_core_components_globally()
-        except Exception as e:
-            logger.error(f"Error re-initializing core for chat command: {e}", exc_info=True)
-            console.print(f"[red]Error: Core components failed to initialize for chat: {e}[/red]")
-            raise typer.Exit(code=1)
-        
-        if not _core: # Still not initialized after attempt
-            console.print("[red]Critical Error: Core components could not be initialized.[/red]")
-            raise typer.Exit(code=1)
-            
-    await _run_interactive_chat()
+# Duplicate chat command was deprecated; keeping stub commented out to avoid Typer double-registration
+# @app.command()
+# async def chat(): # Removed model, workspace, no_streaming options
+#     """(Deprecated duplicate)"""
+#     return
 
 # --- PenguinCLI Class (Interactive Session Manager) ---
 # This class definition remains largely the same for now, but will use global components.
@@ -2247,17 +2231,17 @@ async def chat(): # Removed model, workspace, no_streaming options
         # If `penguin chat` is called directly, main_entry runs first.
         logger.warning("Chat command invoked, but core components appear uninitialized. main_entry should handle this.")
         # Attempting to initialize with defaults if somehow missed.
-    try:
+        try:
             await _initialize_core_components_globally()
-    except Exception as e:
+        except Exception as e:
             logger.error(f"Error re-initializing core for chat command: {e}", exc_info=True)
             console.print(f"[red]Error: Core components failed to initialize for chat: {e}[/red]")
             raise typer.Exit(code=1)
-
-    if not _core: # Still not initialized after attempt
+        
+        if not _core: # Still not initialized after attempt
             console.print("[red]Critical Error: Core components could not be initialized.[/red]")
             raise typer.Exit(code=1)
-
+            
     await _run_interactive_chat()
 
 # Profile command remains largely the same, ensure it uses `console` correctly
@@ -2347,6 +2331,10 @@ def profile(
 
     console.print("[bold green]Profiling session ended.[/bold green]")
     console.print(f"[dim]To visualize: snakeviz {output_path}[/dim]")
+
+# Duplicate chat command disabled
+# @app.command()
+# async def chat_duplicate_disabled():  # deprecated duplicate chat, kept for reference but unused
 
 if __name__ == "__main__":
     # This makes Typer process the CLI arguments and call the appropriate function.

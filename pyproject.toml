@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0,<70.0", "wheel"]
+requires = ["setuptools>=76.1,<77", "wheel>=0.40.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-ai"
-version = "0.1.1"
+version = "0.1.2"
 description = "Penguin: A modular, extensible AI coding agent and software engineer with its own execution environment."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -14,6 +14,9 @@ authors = [
 maintainers = [
   { name="Maximus Putnam", email="MaximusPutnam@gmail.com" },
 ]
+# PEP 621-style license declaration ensures setuptools emits the proper
+# 'License-File' metadata header accepted by Twine/PyPI.
+license = { text = "AGPL-3.0-or-later" }
 keywords = ["ai", "agent", "ai-agent", "llm", "llm-agent", "assistant", "cognitive-architecture", "code-generation", "developer-tool"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -32,7 +35,7 @@ classifiers = [
 ]
 dependencies = [
     # Web Framework
-    "fastapi>=0.68.0",
+    "fastapi>=0.68.0,<1.0",
     "uvicorn>=0.15.0",
     "websockets>=10.0",
     "jinja2>=3.0.0",
@@ -88,7 +91,9 @@ dev = [
     "isort>=5.0.0",
     "ruff>=0.1.0",
     "build",
-    "twine",
+    "twine>=5.0.0",
+    "wheel>=0.40.0",
+    "setuptools>=76.1,<77",
     "pre-commit",
 ]
 test = [
@@ -119,6 +124,7 @@ exclude = [
 
 [tool.setuptools]
 include-package-data = true
+# (No license-files to stop setuptools from generating lowercase 'license-file')
 
 [tool.setuptools.package-data]
 penguin = ["config.yml", "requirements.txt", "*.yml", "*.yaml"]
