@@ -27,6 +27,20 @@ Welcome to the Penguin AI Assistant documentation. Penguin is a modular, extensi
 
 For more detailed instructions, see the [Getting Started](getting_started.md) guide.
 
+## Usage
+
+Run the CLI directly:
+
+```bash
+penguin "Write a hello world script"
+```
+
+Or start the web interface:
+
+```bash
+penguin-web
+```
+
 ## Table of Contents
 
 - [Getting Started](getting_started.md)

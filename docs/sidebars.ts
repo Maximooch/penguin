@@ -65,6 +65,7 @@ const sidebars: SidebarsConfig = {
         'api_reference/provider_adapters',
         'api_reference/api_server',
         'api_reference/webui',
+        'api_reference/example_requests',
       ],
     },
   ],

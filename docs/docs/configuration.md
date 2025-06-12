@@ -14,6 +14,7 @@ Create a `.env` file in the root directory of the project and set the following 
 - `ANTHROPIC_API_KEY`: Your Anthropic API key (required for Claude models)
 - `DEFAULT_MODEL`: The default language model to use (e.g., `gpt-3.5-turbo`, `gpt-4`, `claude-v1`)
 - `DEFAULT_PROVIDER`: The default provider for the language model (e.g., `openai`, `anthropic`)
+- `TASK_COMPLETION_PHRASE`: Phrase the assistant uses to signal task completion (default `TASK_COMPLETED`)
 
 Example `.env` file:
 
