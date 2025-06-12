@@ -66,6 +66,7 @@ dependencies = [
     "httpx>=0.24.0",
     "questionary>=1.10.0",
     "watchdog>=2.3.0",
+    "browser_use"
 ]
 
 [project.optional-dependencies]
