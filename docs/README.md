@@ -38,4 +38,13 @@ Not using SSH:
 $ GIT_USER=<Your GitHub username> yarn deploy
 ```
 
+### Environment Variables
+
+The deployment scripts use a few optional environment variables:
+
+- `USE_SSH` &ndash; deploy via SSH instead of HTTPS.
+- `GIT_USER` &ndash; GitHub username for pushing to `gh-pages` when SSH is not used.
+
+Set them in your shell before running `yarn deploy`.
+
 If you are using GitHub pages for hosting, this command is a convenient way to build the website and push to the `gh-pages` branch.

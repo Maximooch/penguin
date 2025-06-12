@@ -41,7 +41,9 @@ VISION_ENABLED = True
 # Optional: Provide a path to a local image file for vision testing
 # Make sure the file exists! Example:
 # TEST_IMAGE_PATH = "/path/to/your/local/image.jpg"
-TEST_IMAGE_PATH: Optional[str] = "penguin.png"
+TEST_IMAGE_PATH: Optional[str] = str(
+    Path(__file__).resolve().parents[2] / "docs" / "static" / "img" / "penguin.png"
+)
 
 # Optional: Provide a URL to an image for vision testing
 # Use the RAW image URL, not a webpage displaying the image. Example:

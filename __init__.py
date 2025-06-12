@@ -1,5 +1,5 @@
-from importlib.metadata import PackageNotFoundError, version
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -14,20 +14,21 @@ if _subpkg_path.exists() and str(_subpkg_path) not in sys.path:
 # Re-export public convenience classes (imports below rely on path tweak above)
 # ---------------------------------------------------------------------------
 
-from penguin.agent import PenguinAgent, PenguinAgentAsync  # noqa: F401
+from penguin.agent import PenguinAgent, PenguinAgentAsync  # noqa: E402
+
 # Handle Core import for both mono-package and nested package layouts
 try:
-    from penguin.core import PenguinCore  # type: ignore  # noqa: F401
+    from penguin.core import PenguinCore  # type: ignore
 except ImportError:  # fallback for repo layout with nested penguin/core.py
-    from penguin.penguin.core import PenguinCore  # type: ignore  # noqa: F401
+    from penguin.penguin.core import PenguinCore  # type: ignore
 
 # Handle Engine import for both mono-package and nested package layouts
 try:
-    from penguin.engine import Engine  # type: ignore  # noqa: F401
+    from penguin.engine import Engine  # type: ignore
 except ImportError:  # fallback for repo layout with nested penguin/engine.py
-    from penguin.penguin.engine import Engine  # type: ignore  # noqa: F401
+    from penguin.penguin.engine import Engine  # type: ignore
 
-from penguin.tools import ToolManager  # noqa: F401
+from penguin.tools import ToolManager  # noqa: E402
 
 # Version helper
 try:
@@ -36,10 +37,10 @@ except PackageNotFoundError:  # Local dev mode (editable install)
     __version__ = "0.1.2-dev"
 
 __all__ = [
+    "Engine",
     "PenguinAgent",
     "PenguinAgentAsync",
     "PenguinCore",
-    "Engine",
     "ToolManager",
     "__version__",
-] 
+]

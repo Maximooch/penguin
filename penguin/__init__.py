@@ -1,5 +1,7 @@
-"""
-Penguin AI Assistant
+"""Penguin AI Assistant package initialisation.
+
+Exposes the :class:`~penguin.core.PenguinCore` class and package configuration
+through :mod:`penguin.config` for convenience when importing ``penguin``.
 """
 import os
 import sys
