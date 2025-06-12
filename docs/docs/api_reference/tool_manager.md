@@ -24,3 +24,7 @@ print(result)
 ```
 
 The ToolManager is used throughout the core systems and by the `ActionExecutor` to run tools requested by the language model.
+
+## Lazy Loading Design
+
+`ToolManager` avoids importing heavy dependencies until they are actually needed. Properties such as `notebook_executor`, `perplexity_provider`, or the browser tools are initialized on first access. Each property checks an internal flag and constructs the component only once, keeping startup time and memory usage low.
