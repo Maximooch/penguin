@@ -310,3 +310,17 @@ class PenguinAgentAsync:
     # ------------------------------------------------------------------
     async def token_usage(self):
         return self._core.get_token_usage() 
+
+__all__ = [
+     "PenguinAgent",
+     "PenguinAgentAsync",
+     "AgentConfig",
+     "BaseAgent",
+     "AgentLauncher",
+     # Core re-exports added at top-level package, not here.
+ ]
+
+# Re-export advanced agent runtime symbols for convenience
+from penguin.agent.schema import AgentConfig  # noqa: E402  (after sys.path tweaks)
+from penguin.agent.base import BaseAgent  # noqa: E402
+from penguin.agent.launcher import AgentLauncher  # noqa: E402 
