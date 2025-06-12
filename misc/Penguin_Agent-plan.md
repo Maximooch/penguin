@@ -61,12 +61,16 @@ __all__.extend(["AgentConfig", "BaseAgent", "AgentLauncher"])
 
 | Requirement (from core_refactor) | Agent implication |
 |---------------------------------|-------------------|
-| **Engine** is the single runtime loop | BaseAgent must expose `plan / act / observe` coroutines the Engine can call. |
+| **Engine** is the single runtime loop | BaseAgent exposes a **single** async `run(prompt, context)` entry-point the Engine (or future Cognition layer) can call. |
 | Stop-conditions & snapshots | BaseAgent receives `ResourceSnapshot` updates & can `await engine.snapshot()` on demand. |
 | Multi-process support | `AgentLauncher` gets a `sandbox_type` switch – `inprocess` (default) → `docker` → `firecracker`. |
 
+<!-- | **Engine** is the single runtime loop | BaseAgent must expose `plan / act / observe` coroutines the 
+Engine can call. | (For now ignore the plan/act/observe thing, that needs careful handling, but 
+everything else in this phase 3 can proceed) -->
+
 Tasks:
-1. Add an abstract `async run_cycle(prompt, context)` helper in `BaseAgent` that calls `plan→act→observe` until `done`.
+1. Add an abstract `async run(prompt, context)` method to `BaseAgent` that returns the agent's response.  (Cognition will layer richer loops later.)
 2. Expose `Engine.spawn_child()` in `AgentLauncher` for container mode.
 3. Write adapter so `PenguinAgent.run_task()` simply wraps `AgentLauncher.invoke()`.
 
@@ -80,7 +84,7 @@ Tasks:
 * Remove empty directory & add wheel-exclusion guard in `pyproject.toml`.
 
 ### Phase B – Engine Hooks  (1 day)
-* Implement `BaseAgent.run_cycle` + default loop.
+* Implement minimal `BaseAgent.run()` (raises `NotImplementedError`).
 * Pass `engine` instance into agents via `AgentLauncher`.
 * Unit test with stub Engine that records calls.
 
