@@ -21,21 +21,19 @@
 
 ## 🚀 Quick Start
 ```bash
-# Clone and install Penguin
-git clone https://github.com/maximooch/penguin.git
-cd penguin
+pip install penguin-ai
 
-# Install Penguin (recommended with UV)
-pip install -e .
+# save your api key, OpenRouter recommended
 
-# Set your API key
-cp .env.example .env
-# Edit .env with your API key
+export OPENROUTER_API_KEY="your_api_key" # If Windows use `set` instead
+
+# Then go through the wizard to set your workspace, model, and additional settings
+penguin config setup
 
 # Run Penguin
 penguin  # CLI interface
 # OR
-penguin-web  # Web interface 
+penguin-web  # Web interface (do note it's very clunky, will be improved more soon)
 ```
 
 ## 🎯 Development Status
