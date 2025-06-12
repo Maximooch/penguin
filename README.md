@@ -142,7 +142,11 @@ Play around with Penguin! It's recommended to check out the User Manual, and the
 
 To change models, go to the `config.yml` file and change the `model` field to the model you want to use.
 
-For more information on how to use Penguin, check out the [documentation](https://penguin-rho.vercel.app)! 
+For more information on how to use Penguin, check out the [documentation](https://penguin-rho.vercel.app)!
+
+### Engine Settings
+
+`EngineSettings.wall_clock_stop_seconds` can be used to stop autonomous runs after a set amount of real time. Configure this value in the Engine settings to enforce a wall‑clock timeout during long running tasks.
 
 
 ## Architecture

@@ -137,6 +137,8 @@ async def create(
 
 Creates a new PenguinCore instance with optional CLI. This method handles the initialization of all subsystems, **including attempting to initialize the `Engine`**.
 
+`create` reads standard environment variables to load API keys and defaults. Common variables include `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and optional overrides such as `PENGUIN_MODEL`, `PENGUIN_PROVIDER`, `PENGUIN_CLIENT_PREFERENCE`, and `PENGUIN_API_BASE`.
+
 ## Core Methods
 
 ### `__init__`
@@ -210,10 +212,23 @@ async def start_run_mode(
     continuous: bool = False,
     time_limit: Optional[int] = None,
     mode_type: str = "task", # Added mode_type
+    stream_callback_for_cli: Optional[Callable[[str], Awaitable[None]]] = None,
+    ui_update_callback_for_cli: Optional[Callable[[], Awaitable[None]]] = None
 ) -> None
 ```
 
 Starts autonomous run mode by creating and running a `RunMode` instance. The `RunMode` instance will internally use `self.engine` if available.
+
+**Parameters**
+
+- `name` – Name of the task to run.
+- `description` – Optional description when creating a new task.
+- `context` – Extra context passed to the task.
+- `continuous` – Run continuously rather than a single task.
+- `time_limit` – Optional time limit in minutes.
+- `mode_type` – Either `"task"` or `"project"`.
+- `stream_callback_for_cli` – Async callback for streaming output in the CLI.
+- `ui_update_callback_for_cli` – Async callback to refresh CLI UI elements.
 
 ## Conversation Management
 
@@ -285,6 +300,11 @@ def get_token_usage(self) -> Dict[str, Dict[str, int]]
 ```
 
 Gets detailed token usage statistics.
+
+```python
+stats = core.get_token_usage()
+print(stats["session"]["prompt_tokens"], stats["session"]["completion_tokens"])
+```
 
 ## Action Handling
 
