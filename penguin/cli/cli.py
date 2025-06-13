@@ -146,6 +146,10 @@ app = typer.Typer(help="Penguin AI Assistant - Your command-line AI companion.\n
 console = RichConsole() # Use the renamed import
 logger = setup_logger("penguin_cli.log") # Setup a logger for the CLI module
 
+# Project management sub-application
+project_app = typer.Typer(help="Project and task management commands")
+app.add_typer(project_app, name="project")
+
 # Define a type variable for better typing
 T = TypeVar('T')
 
@@ -195,6 +199,7 @@ async def _initialize_core_components_globally(
     model_override: Optional[str] = None,
     workspace_override: Optional[Path] = None,
     no_streaming_override: bool = False,
+    fast_startup_override: bool = False,
 ):
     global _core, _interface, _model_config, _api_client, _tool_manager, _loaded_config
     
@@ -272,9 +277,21 @@ async def _initialize_core_components_globally(
     _api_client = APIClient(model_config=_model_config)
     _api_client.set_system_prompt(SYSTEM_PROMPT)
     
+    # Determine fast startup setting from config or override
+    config_fast_startup = False
+    try:
+        if hasattr(_loaded_config, 'fast_startup'):
+            config_fast_startup = _loaded_config.fast_startup
+        elif isinstance(_loaded_config, dict):
+            config_fast_startup = _loaded_config.get("performance", {}).get("fast_startup", False)
+    except Exception:
+        pass
+    
+    effective_fast_startup = fast_startup_override or config_fast_startup
+    
     # Convert config to dict format for ToolManager
     config_dict = _loaded_config.__dict__ if hasattr(_loaded_config, '__dict__') else _loaded_config
-    _tool_manager = ToolManager(config_dict, log_error)
+    _tool_manager = ToolManager(config_dict, log_error, fast_startup=effective_fast_startup)
     
     # Make sure our config is compatible with what PenguinCore expects
     wrapped_config = _ensure_config_compatible(_loaded_config)
@@ -447,6 +464,10 @@ def main_entry(
         False, "--no-streaming", 
         help="Disable streaming mode for LLM responses (primarily for interactive mode)."
     ),
+    fast_startup: bool = typer.Option(
+        False, "--fast-startup", 
+        help="Enable fast startup mode (defer memory indexing until first use)."
+    ),
     # Add other global options from the plan here eventually
     # e.g., continue_session, resume_session_id, system_prompt_override, etc.
     version: Optional[bool] = typer.Option( # Example: adding a version flag
@@ -504,7 +525,8 @@ def main_entry(
             await _initialize_core_components_globally(
                 model_override=model,
                 workspace_override=workspace,
-                no_streaming_override=no_streaming
+                no_streaming_override=no_streaming,
+                fast_startup_override=fast_startup
             )
         except Exception as e:
             logger.error(f"Fatal error during core component initialization: {e}", exc_info=True)
@@ -872,6 +894,365 @@ def config_debug():
     
     console.print(f"\n[dim]Platform: {platform.system()} {platform.release()}[/dim]")
     console.print(f"[dim]Python: {sys.version}[/dim]")
+
+# Project Management Commands
+@project_app.command("create")
+def project_create(
+    name: str = typer.Argument(..., help="Project name"),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Project description"),
+    workspace_path: Optional[str] = typer.Option(None, "--workspace", "-w", help="Project workspace path")
+):
+    """Create a new project"""
+    async def _async_project_create():
+        console.print(f"[bold cyan]🐧 Creating project:[/bold cyan] {name}")
+        
+        # Initialize core components to access project manager
+        await _initialize_core_components_globally()
+        
+        if not _core or not _core.project_manager:
+            console.print("[red]Error: Project manager not available[/red]")
+            raise typer.Exit(code=1)
+        
+        try:
+            # Note: workspace_path is managed internally by ProjectManager
+            project = await _core.project_manager.create_project_async(
+                name=name,
+                description=description or f"Project: {name}"
+            )
+            
+            console.print(f"[green]✓ Project created successfully![/green]")
+            console.print(f"  ID: {project.id}")
+            console.print(f"  Name: {project.name}")
+            console.print(f"  Description: {project.description}")
+            if project.workspace_path:
+                console.print(f"  Workspace: {project.workspace_path}")
+                
+        except Exception as e:
+            console.print(f"[red]Error creating project: {e}[/red]")
+            raise typer.Exit(code=1)
+    
+    asyncio.run(_async_project_create())
+
+@project_app.command("list")
+def project_list():
+    """List all projects"""
+    async def _async_project_list():
+        console.print("[bold cyan]🐧 Projects:[/bold cyan]")
+        
+        await _initialize_core_components_globally()
+        
+        if not _core or not _core.project_manager:
+            console.print("[red]Error: Project manager not available[/red]")
+            raise typer.Exit(code=1)
+        
+        try:
+            projects = await _core.project_manager.list_projects_async()
+            
+            if not projects:
+                console.print("[yellow]No projects found. Create one with 'penguin project create <name>'[/yellow]")
+                return
+                
+            from rich.table import Table
+            
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("ID", style="dim", width=8)
+            table.add_column("Name", style="cyan")
+            table.add_column("Status", style="green")
+            table.add_column("Tasks", style="yellow")
+            table.add_column("Created", style="dim")
+            
+            for project in projects:
+                # Get task count for this project
+                project_tasks = await _core.project_manager.list_tasks_async(project_id=project.id)
+                task_count = len(project_tasks)
+                
+                table.add_row(
+                    project.id[:8],
+                    project.name,
+                    project.status,  # Project status is a string, not an enum
+                    str(task_count),
+                    project.created_at[:16] if project.created_at else "Unknown"  # created_at is ISO string, take first 16 chars (YYYY-MM-DD HH:MM)
+                )
+            
+            console.print(table)
+            
+        except Exception as e:
+            console.print(f"[red]Error listing projects: {e}[/red]")
+            raise typer.Exit(code=1)
+    
+    asyncio.run(_async_project_list())
+
+@project_app.command("delete")
+def project_delete(
+    project_id: str = typer.Argument(..., help="Project ID to delete"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force delete without confirmation")
+):
+    """Delete a project"""
+    async def _async_project_delete():
+        await _initialize_core_components_globally()
+        
+        if not _core or not _core.project_manager:
+            console.print("[red]Error: Project manager not available[/red]")
+            raise typer.Exit(code=1)
+        
+        try:
+            # Get project details first
+            project = await _core.project_manager.get_project_async(project_id)
+            if not project:
+                console.print(f"[red]Error: Project with ID '{project_id}' not found[/red]")
+                raise typer.Exit(code=1)
+            
+            if not force:
+                import typer
+                confirm = typer.confirm(f"Are you sure you want to delete project '{project.name}' ({project_id[:8]})?")
+                if not confirm:
+                    console.print("[yellow]Operation cancelled[/yellow]")
+                    return
+            
+            # Note: Need to add delete_project_async method to ProjectManager
+            success = _core.project_manager.storage.delete_project(project_id)
+            if not success:
+                console.print(f"[red]Failed to delete project[/red]")
+                raise typer.Exit(code=1)
+            console.print(f"[green]✓ Project '{project.name}' deleted successfully[/green]")
+            
+        except Exception as e:
+            console.print(f"[red]Error deleting project: {e}[/red]")
+            raise typer.Exit(code=1)
+    
+    asyncio.run(_async_project_delete())
+
+# Task Management Commands
+task_app = typer.Typer(help="Task management commands")
+project_app.add_typer(task_app, name="task")
+
+@task_app.command("create")
+def task_create(
+    project_id: str = typer.Argument(..., help="Project ID"),
+    title: str = typer.Argument(..., help="Task title"),
+    description: Optional[str] = typer.Option(None, "--description", "-d", help="Task description"),
+    parent_task_id: Optional[str] = typer.Option(None, "--parent", "-p", help="Parent task ID"),
+    priority: int = typer.Option(1, "--priority", help="Task priority (1-5)")
+):
+    """Create a new task in a project"""
+    async def _async_task_create():
+        console.print(f"[bold cyan]🐧 Creating task:[/bold cyan] {title}")
+        
+        await _initialize_core_components_globally()
+        
+        if not _core or not _core.project_manager:
+            console.print("[red]Error: Project manager not available[/red]")
+            raise typer.Exit(code=1)
+        
+        try:
+            task = await _core.project_manager.create_task_async(
+                title=title,
+                description=description or title,
+                project_id=project_id,
+                parent_task_id=parent_task_id,
+                priority=priority
+            )
+            
+            console.print(f"[green]✓ Task created successfully![/green]")
+            console.print(f"  ID: {task.id}")
+            console.print(f"  Title: {task.title}")
+            console.print(f"  Status: {task.status.value}")
+            console.print(f"  Priority: {task.priority}")
+            
+        except Exception as e:
+            console.print(f"[red]Error creating task: {e}[/red]")
+            raise typer.Exit(code=1)
+    
+    asyncio.run(_async_task_create())
+
+@task_app.command("list")
+def task_list(
+    project_id: Optional[str] = typer.Argument(None, help="Project ID to filter tasks"),
+    status: Optional[str] = typer.Option(None, "--status", "-s", help="Filter by status (pending, running, completed, failed)")
+):
+    """List tasks, optionally filtered by project or status"""
+    async def _async_task_list():
+        console.print("[bold cyan]🐧 Tasks:[/bold cyan]")
+        
+        await _initialize_core_components_globally()
+        
+        if not _core or not _core.project_manager:
+            console.print("[red]Error: Project manager not available[/red]")
+            raise typer.Exit(code=1)
+        
+        try:
+            # Parse status filter
+            status_filter = None
+            if status:
+                from penguin.project.models import TaskStatus
+                try:
+                    status_filter = TaskStatus(status.upper())
+                except ValueError:
+                    console.print(f"[red]Invalid status: {status}. Valid options: pending, running, completed, failed[/red]")
+                    raise typer.Exit(code=1)
+            
+            tasks = await _core.project_manager.list_tasks_async(
+                project_id=project_id,
+                status=status_filter
+            )
+            
+            if not tasks:
+                filter_desc = ""
+                if project_id:
+                    filter_desc += f" in project {project_id[:8]}"
+                if status:
+                    filter_desc += f" with status {status}"
+                console.print(f"[yellow]No tasks found{filter_desc}[/yellow]")
+                return
+                
+            from rich.table import Table
+            
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("ID", style="dim", width=8)
+            table.add_column("Project", style="cyan", width=8)
+            table.add_column("Title", style="white")
+            table.add_column("Status", style="green")
+            table.add_column("Priority", style="yellow", width=8)
+            table.add_column("Created", style="dim")
+            
+            for task in tasks:
+                table.add_row(
+                    task.id[:8],
+                    task.project_id[:8],
+                    task.title,
+                    task.status.value,
+                    str(task.priority),
+                    task.created_at[:16] if task.created_at else "Unknown"  # created_at is ISO string, take first 16 chars
+                )
+            
+            console.print(table)
+            
+        except Exception as e:
+            console.print(f"[red]Error listing tasks: {e}[/red]")
+            raise typer.Exit(code=1)
+    
+    asyncio.run(_async_task_list())
+
+@task_app.command("start")
+def task_start(
+    task_id: str = typer.Argument(..., help="Task ID to start")
+):
+    """Start a task (set status to running)"""
+    async def _async_task_start():
+        await _initialize_core_components_globally()
+        
+        if not _core or not _core.project_manager:
+            console.print("[red]Error: Project manager not available[/red]")
+            raise typer.Exit(code=1)
+        
+        try:
+            from penguin.project.models import TaskStatus
+            
+            task = await _core.project_manager.get_task_async(task_id)
+            if not task:
+                console.print(f"[red]Error: Task with ID '{task_id}' not found[/red]")
+                raise typer.Exit(code=1)
+            
+            # Use update_task_status method for status changes
+            success = _core.project_manager.update_task_status(
+                task_id, 
+                TaskStatus.ACTIVE  # ProjectManager uses ACTIVE instead of RUNNING
+            )
+            if not success:
+                console.print(f"[red]Failed to start task[/red]")
+                raise typer.Exit(code=1)
+            
+            # Get updated task
+            updated_task = await _core.project_manager.get_task_async(task_id)
+            
+            console.print(f"[green]✓ Task '{task.title}' started[/green]")
+            console.print(f"  Status: {updated_task.status.value}")
+            
+        except Exception as e:
+            console.print(f"[red]Error starting task: {e}[/red]")
+            raise typer.Exit(code=1)
+    
+    asyncio.run(_async_task_start())
+
+@task_app.command("complete")
+def task_complete(
+    task_id: str = typer.Argument(..., help="Task ID to complete")
+):
+    """Complete a task (set status to completed)"""
+    async def _async_task_complete():
+        await _initialize_core_components_globally()
+        
+        if not _core or not _core.project_manager:
+            console.print("[red]Error: Project manager not available[/red]")
+            raise typer.Exit(code=1)
+        
+        try:
+            from penguin.project.models import TaskStatus
+            
+            task = await _core.project_manager.get_task_async(task_id)
+            if not task:
+                console.print(f"[red]Error: Task with ID '{task_id}' not found[/red]")
+                raise typer.Exit(code=1)
+            
+            # Use update_task_status method for status changes
+            success = _core.project_manager.update_task_status(
+                task_id, 
+                TaskStatus.COMPLETED
+            )
+            if not success:
+                console.print(f"[red]Failed to complete task[/red]")
+                raise typer.Exit(code=1)
+            
+            # Get updated task
+            updated_task = await _core.project_manager.get_task_async(task_id)
+            
+            console.print(f"[green]✓ Task '{task.title}' completed[/green]")
+            console.print(f"  Status: {updated_task.status.value}")
+            
+        except Exception as e:
+            console.print(f"[red]Error completing task: {e}[/red]")
+            raise typer.Exit(code=1)
+    
+    asyncio.run(_async_task_complete())
+
+@task_app.command("delete")
+def task_delete(
+    task_id: str = typer.Argument(..., help="Task ID to delete"),
+    force: bool = typer.Option(False, "--force", "-f", help="Force delete without confirmation")
+):
+    """Delete a task"""
+    async def _async_task_delete():
+        await _initialize_core_components_globally()
+        
+        if not _core or not _core.project_manager:
+            console.print("[red]Error: Project manager not available[/red]")
+            raise typer.Exit(code=1)
+        
+        try:
+            task = await _core.project_manager.get_task_async(task_id)
+            if not task:
+                console.print(f"[red]Error: Task with ID '{task_id}' not found[/red]")
+                raise typer.Exit(code=1)
+            
+            if not force:
+                import typer
+                confirm = typer.confirm(f"Are you sure you want to delete task '{task.title}' ({task_id[:8]})?")
+                if not confirm:
+                    console.print("[yellow]Operation cancelled[/yellow]")
+                    return
+            
+            # Note: Need to add delete_task_async method to ProjectManager
+            success = _core.project_manager.storage.delete_task(task_id)
+            if not success:
+                console.print(f"[red]Failed to delete task[/red]")
+                raise typer.Exit(code=1)
+            console.print(f"[green]✓ Task '{task.title}' deleted successfully[/green]")
+            
+        except Exception as e:
+            console.print(f"[red]Error deleting task: {e}[/red]")
+            raise typer.Exit(code=1)
+    
+    asyncio.run(_async_task_delete())
 
 # Duplicate chat command was deprecated; keeping stub commented out to avoid Typer double-registration
 # @app.command()
@@ -2245,6 +2626,104 @@ async def chat(): # Removed model, workspace, no_streaming options
     await _run_interactive_chat()
 
 # Profile command remains largely the same, ensure it uses `console` correctly
+@app.command()
+def perf_test(
+    iterations: int = typer.Option(3, "--iterations", "-i", help="Number of test iterations to run"),
+    show_report: bool = typer.Option(True, "--show-report/--no-report", help="Show detailed performance report"),
+):
+    """
+    Run startup performance benchmarks to compare normal vs fast startup modes.
+    """
+    async def _async_perf_test():
+        from penguin.utils.profiling import enable_profiling, reset_profiling, print_startup_report
+        import time
+        
+        console.print("[bold blue]🚀 Penguin Startup Performance Test[/bold blue]")
+        console.print("="*60)
+        
+        enable_profiling()
+        
+        normal_times = []
+        fast_times = []
+        
+        for iteration in range(iterations):
+            console.print(f"\n[yellow]Iteration {iteration + 1}/{iterations}[/yellow]")
+            
+            # Test normal startup
+            console.print("  Testing normal startup...")
+            reset_profiling()
+            start_time = time.perf_counter()
+            
+            try:
+                from penguin.core import PenguinCore
+                core_normal = await PenguinCore.create(fast_startup=False, show_progress=False)
+                normal_time = time.perf_counter() - start_time
+                normal_times.append(normal_time)
+                console.print(f"    ✓ Normal startup: {normal_time:.4f}s")
+                
+                # Clean up
+                if hasattr(core_normal, 'reset_state'):
+                    await core_normal.reset_state()
+                del core_normal
+                
+            except Exception as e:
+                console.print(f"    ✗ Normal startup failed: {e}")
+                normal_times.append(float('inf'))
+            
+            # Test fast startup
+            console.print("  Testing fast startup...")
+            reset_profiling()
+            start_time = time.perf_counter()
+            
+            try:
+                from penguin.core import PenguinCore
+                core_fast = await PenguinCore.create(fast_startup=True, show_progress=False)
+                fast_time = time.perf_counter() - start_time
+                fast_times.append(fast_time)
+                console.print(f"    ✓ Fast startup: {fast_time:.4f}s")
+                
+                # Clean up
+                if hasattr(core_fast, 'reset_state'):
+                    await core_fast.reset_state()
+                del core_fast
+                
+            except Exception as e:
+                console.print(f"    ✗ Fast startup failed: {e}")
+                fast_times.append(float('inf'))
+        
+        # Calculate statistics
+        valid_normal = [t for t in normal_times if t != float('inf')]
+        valid_fast = [t for t in fast_times if t != float('inf')]
+        
+        console.print(f"\n[bold blue]📊 Performance Results ({iterations} iterations)[/bold blue]")
+        console.print("="*60)
+        
+        if valid_normal and valid_fast:
+            avg_normal = sum(valid_normal) / len(valid_normal)
+            avg_fast = sum(valid_fast) / len(valid_fast)
+            
+            improvement = ((avg_normal - avg_fast) / avg_normal) * 100
+            speedup = avg_normal / avg_fast if avg_fast > 0 else float('inf')
+            
+            console.print(f"Normal startup:  {avg_normal:.4f}s avg (range: {min(valid_normal):.4f}s - {max(valid_normal):.4f}s)")
+            console.print(f"Fast startup:    {avg_fast:.4f}s avg (range: {min(valid_fast):.4f}s - {max(valid_fast):.4f}s)")
+            console.print(f"")
+            console.print(f"Performance improvement: [bold green]{improvement:.1f}% faster[/bold green]")
+            console.print(f"Speedup factor: [bold green]{speedup:.2f}x[/bold green]")
+            
+            if improvement > 0:
+                console.print("\n[bold green]🎉 Fast startup mode is working![/bold green]")
+            else:
+                console.print("\n[bold yellow]⚠️ Fast startup mode might not be working as expected[/bold yellow]")
+        else:
+            console.print("[red]Could not complete performance tests due to errors[/red]")
+        
+        if show_report:
+            console.print(f"\n[bold blue]📈 Detailed Performance Report[/bold blue]")
+            print_startup_report()
+    
+    asyncio.run(_async_perf_test())
+
 @app.command()
 def profile(
     output_file: str = typer.Option("penguin_profile", "--output", "-o", help="Output file name for profile data (without extension)"),

@@ -306,13 +306,439 @@ async def stream_chat(
                 logger.error(f"Error during final sender task cancellation: {final_cancel_err}")
 
 
-@router.post("/api/v1/projects/create")
+# Enhanced Project Management API
+class ProjectCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    workspace_path: Optional[str] = None
+
+class ProjectUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+
+class TaskCreateRequest(BaseModel):
+    project_id: str
+    title: str
+    description: Optional[str] = None
+    parent_task_id: Optional[str] = None
+    priority: Optional[int] = 1
+
+class TaskUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[int] = None
+
+# Project Management Endpoints
+@router.post("/api/v1/projects")
 async def create_project(
-    request: ProjectRequest, core: PenguinCore = Depends(get_core)
+    request: ProjectCreateRequest, core: PenguinCore = Depends(get_core)
 ):
     """Create a new project."""
-    response = core.project_manager.create_project(request.name, request.description)
-    return response
+    try:
+        project = await core.project_manager.create_project(
+            name=request.name,
+            description=request.description or f"Project: {request.name}",
+            workspace_path=request.workspace_path
+        )
+        return {
+            "id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "status": project.status.value,
+            "workspace_path": project.workspace_path,
+            "created_at": project.created_at.isoformat() if project.created_at else None
+        }
+    except Exception as e:
+        logger.error(f"Error creating project: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/api/v1/projects")
+async def list_projects(core: PenguinCore = Depends(get_core)):
+    """List all projects."""
+    try:
+        projects = await core.project_manager.list_projects()
+        return {
+            "projects": [
+                {
+                    "id": project.id,
+                    "name": project.name,
+                    "description": project.description,
+                    "status": project.status.value,
+                    "workspace_path": project.workspace_path,
+                    "created_at": project.created_at.isoformat() if project.created_at else None,
+                    "updated_at": project.updated_at.isoformat() if project.updated_at else None
+                }
+                for project in projects
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error listing projects: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/api/v1/projects/{project_id}")
+async def get_project(project_id: str, core: PenguinCore = Depends(get_core)):
+    """Get a specific project by ID."""
+    try:
+        project = await core.project_manager.get_project(project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+        
+        # Get tasks for this project
+        tasks = await core.project_manager.list_tasks(project_id=project_id)
+        
+        return {
+            "id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "status": project.status.value,
+            "workspace_path": project.workspace_path,
+            "created_at": project.created_at.isoformat() if project.created_at else None,
+            "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+            "tasks": [
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "status": task.status.value,
+                    "priority": task.priority,
+                    "created_at": task.created_at.isoformat() if task.created_at else None
+                }
+                for task in tasks
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting project: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/api/v1/projects/{project_id}")
+async def update_project(
+    project_id: str, 
+    request: ProjectUpdateRequest, 
+    core: PenguinCore = Depends(get_core)
+):
+    """Update a project."""
+    try:
+        # Parse status if provided
+        status = None
+        if request.status:
+            from penguin.project.models import ProjectStatus
+            try:
+                status = ProjectStatus(request.status.upper())
+            except ValueError:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Invalid status: {request.status}"
+                )
+        
+        project = await core.project_manager.update_project(
+            project_id=project_id,
+            name=request.name,
+            description=request.description,
+            status=status
+        )
+        
+        if not project:
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+        
+        return {
+            "id": project.id,
+            "name": project.name,
+            "description": project.description,
+            "status": project.status.value,
+            "workspace_path": project.workspace_path,
+            "updated_at": project.updated_at.isoformat() if project.updated_at else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating project: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/api/v1/projects/{project_id}")
+async def delete_project(project_id: str, core: PenguinCore = Depends(get_core)):
+    """Delete a project."""
+    try:
+        success = await core.project_manager.delete_project(project_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
+        return {"message": "Project deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting project: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Task Management Endpoints
+@router.post("/api/v1/tasks")
+async def create_task(
+    request: TaskCreateRequest, core: PenguinCore = Depends(get_core)
+):
+    """Create a new task in a project."""
+    try:
+        task = await core.project_manager.create_task(
+            project_id=request.project_id,
+            title=request.title,
+            description=request.description or request.title,
+            parent_task_id=request.parent_task_id,
+            priority=request.priority or 1
+        )
+        return {
+            "id": task.id,
+            "project_id": task.project_id,
+            "title": task.title,
+            "description": task.description,
+            "status": task.status.value,
+            "priority": task.priority,
+            "parent_task_id": task.parent_task_id,
+            "created_at": task.created_at.isoformat() if task.created_at else None
+        }
+    except Exception as e:
+        logger.error(f"Error creating task: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/api/v1/tasks")
+async def list_tasks(
+    project_id: Optional[str] = None,
+    status: Optional[str] = None,
+    core: PenguinCore = Depends(get_core)
+):
+    """List tasks, optionally filtered by project or status."""
+    try:
+        # Parse status filter
+        status_filter = None
+        if status:
+            from penguin.project.models import TaskStatus
+            try:
+                status_filter = TaskStatus(status.upper())
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid status: {status}. Valid options: pending, running, completed, failed"
+                )
+        
+        tasks = await core.project_manager.list_tasks(
+            project_id=project_id,
+            status=status_filter
+        )
+        
+        return {
+            "tasks": [
+                {
+                    "id": task.id,
+                    "project_id": task.project_id,
+                    "title": task.title,
+                    "description": task.description,
+                    "status": task.status.value,
+                    "priority": task.priority,
+                    "parent_task_id": task.parent_task_id,
+                    "created_at": task.created_at.isoformat() if task.created_at else None,
+                    "updated_at": task.updated_at.isoformat() if task.updated_at else None
+                }
+                for task in tasks
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing tasks: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/api/v1/tasks/{task_id}")
+async def get_task(task_id: str, core: PenguinCore = Depends(get_core)):
+    """Get a specific task by ID."""
+    try:
+        task = await core.project_manager.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        
+        return {
+            "id": task.id,
+            "project_id": task.project_id,
+            "title": task.title,
+            "description": task.description,
+            "status": task.status.value,
+            "priority": task.priority,
+            "parent_task_id": task.parent_task_id,
+            "created_at": task.created_at.isoformat() if task.created_at else None,
+            "updated_at": task.updated_at.isoformat() if task.updated_at else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting task: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.put("/api/v1/tasks/{task_id}")
+async def update_task(
+    task_id: str, 
+    request: TaskUpdateRequest, 
+    core: PenguinCore = Depends(get_core)
+):
+    """Update a task."""
+    try:
+        # Parse status if provided
+        status = None
+        if request.status:
+            from penguin.project.models import TaskStatus
+            try:
+                status = TaskStatus(request.status.upper())
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid status: {request.status}"
+                )
+        
+        task = await core.project_manager.update_task(
+            task_id=task_id,
+            title=request.title,
+            description=request.description,
+            status=status,
+            priority=request.priority
+        )
+        
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        
+        return {
+            "id": task.id,
+            "project_id": task.project_id,
+            "title": task.title,
+            "description": task.description,
+            "status": task.status.value,
+            "priority": task.priority,
+            "parent_task_id": task.parent_task_id,
+            "updated_at": task.updated_at.isoformat() if task.updated_at else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating task: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/api/v1/tasks/{task_id}")
+async def delete_task(task_id: str, core: PenguinCore = Depends(get_core)):
+    """Delete a task."""
+    try:
+        success = await core.project_manager.delete_task(task_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        return {"message": "Task deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting task: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Task Status Management
+@router.post("/api/v1/tasks/{task_id}/start")
+async def start_task(task_id: str, core: PenguinCore = Depends(get_core)):
+    """Start a task (set status to running)."""
+    try:
+        from penguin.project.models import TaskStatus
+        task = await core.project_manager.update_task(task_id, status=TaskStatus.RUNNING)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        return {
+            "id": task.id,
+            "title": task.title,
+            "status": task.status.value,
+            "message": "Task started successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting task: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/api/v1/tasks/{task_id}/complete")
+async def complete_task(task_id: str, core: PenguinCore = Depends(get_core)):
+    """Complete a task (set status to completed)."""
+    try:
+        from penguin.project.models import TaskStatus
+        task = await core.project_manager.update_task(task_id, status=TaskStatus.COMPLETED)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        return {
+            "id": task.id,
+            "title": task.title,
+            "status": task.status.value,
+            "message": "Task completed successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error completing task: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/api/v1/tasks/{task_id}/execute")
+async def execute_task_from_project(
+    task_id: str, 
+    core: PenguinCore = Depends(get_core)
+):
+    """Execute a task using the Engine with project context."""
+    try:
+        # Get the task details
+        task = await core.project_manager.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        
+        # Check if Engine is available
+        if not hasattr(core, 'engine') or not core.engine:
+            raise HTTPException(
+                status_code=503,
+                detail="Engine layer not available for task execution"
+            )
+        
+        # Set task to running status
+        from penguin.project.models import TaskStatus
+        await core.project_manager.update_task(task_id, status=TaskStatus.RUNNING)
+        
+        # Create task prompt
+        task_prompt = f"Task: {task.title}"
+        if task.description:
+            task_prompt += f"\nDescription: {task.description}"
+        
+        # Execute task using Engine
+        result = await core.engine.run_task(
+            task_prompt=task_prompt,
+            max_iterations=10,
+            task_name=task.title,
+            task_context={
+                "task_id": task_id,
+                "project_id": task.project_id,
+                "priority": task.priority
+            },
+            enable_events=True
+        )
+        
+        # Update task status based on result
+        final_status = TaskStatus.COMPLETED if result.get("status") == "completed" else TaskStatus.FAILED
+        await core.project_manager.update_task(task_id, status=final_status)
+        
+        return {
+            "task_id": task_id,
+            "status": result.get("status", "completed"),
+            "response": result.get("assistant_response", ""),
+            "iterations": result.get("iterations", 0),
+            "execution_time": result.get("execution_time", 0),
+            "action_results": result.get("action_results", []),
+            "final_task_status": final_status.value
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error executing task: {str(e)}")
+        # Set task to failed status
+        try:
+            from penguin.project.models import TaskStatus
+            await core.project_manager.update_task(task_id, status=TaskStatus.FAILED)
+        except:
+            pass  # Don't fail the response if status update fails
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/api/v1/tasks/execute")

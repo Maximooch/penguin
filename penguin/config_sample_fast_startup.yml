@@ -1,0 +1,49 @@
+# Penguin Configuration with Fast Startup Enabled
+# Copy this to config.yml to enable performance optimizations
+
+# Model configuration
+model:
+  default: "anthropic/claude-3-5-sonnet-20240620"
+  provider: "anthropic"
+  client_preference: "litellm"
+  streaming_enabled: true
+  max_tokens: 8192
+  temperature: 0.7
+  use_assistants_api: false
+
+# API configuration
+api:
+  base_url: null  # Use default for provider
+
+# Performance optimizations
+performance:
+  fast_startup: true  # Enable fast startup mode (defers memory indexing)
+
+# Memory system configuration
+memory:
+  enabled: true
+  provider: "lance"  # or "chroma"
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  storage_path: "${paths.memory_db}"
+
+# Tools configuration
+tools:
+  allow_memory_tools: true
+  enable_browser_tools: true
+
+# Diagnostics (enable for debugging performance issues)
+diagnostics:
+  enabled: false  # Set to true for detailed performance tracking
+  max_context_tokens: 200000
+  log_to_file: false
+  log_path: "${paths.logs}/diagnostics.log"
+
+# Workspace configuration
+workspace:
+  path: "~/penguin_workspace"
+  create_dirs:
+    - "conversations"
+    - "memory_db" 
+    - "logs"
+    - "notes"
+    - "projects" 

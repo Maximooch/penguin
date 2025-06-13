@@ -34,7 +34,8 @@ Core Methods:
         workspace_path: Optional[str] = None,
         enable_cli: bool = False,
         show_progress: bool = True,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        fast_startup: bool = False
     ) -> Union["PenguinCore", Tuple["PenguinCore", "PenguinCLI"]]:
         Factory method for creating PenguinCore instance with optional CLI
 
@@ -173,8 +174,8 @@ from penguin.config import (
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig
 
-# Local task manager
-from penguin.local_task.manager import ProjectManager
+# Project manager
+from penguin.project.manager import ProjectManager
 
 # RunMode
 from penguin.run_mode import RunMode
@@ -193,6 +194,7 @@ from penguin.tools import ToolManager
 from penguin.utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnostics
 from penguin.utils.log_error import log_error
 from penguin.utils.parser import ActionExecutor, parse_action
+from penguin.utils.profiling import profile_startup_phase, profile_operation, profiler, print_startup_report
 
 # Add the EventHandler type for type hinting
 EventHandler = Callable[[str, Dict[str, Any]], Union[Awaitable[None], None]]
@@ -240,11 +242,15 @@ class PenguinCore:
         workspace_path: Optional[str] = None,
         enable_cli: bool = False,
         show_progress: bool = True,
-        progress_callback: Optional[Callable[[int, int, str], None]] = None
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        fast_startup: bool = False
     ) -> Union["PenguinCore", Tuple["PenguinCore", "PenguinCLI"]]:
         """
         Factory method for creating PenguinCore instance.
         Returns either PenguinCore alone or with CLI if enable_cli=True
+        
+        Args:
+            fast_startup: If True, defer heavy operations like memory indexing until first use
         """
         # Fix HuggingFace tokenizers parallelism warning early, before any model loading
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -266,160 +272,183 @@ class PenguinCore:
             step_start_time = step_end_time
         
         try:
-            # Initialize progress bar only if show_progress is True
-            steps = [
-                "Loading environment",
-                "Setting up logging",
-                "Loading configuration",
-                "Creating model config",
-                "Initializing API client",
-                "Creating tool manager",
-                "Creating core instance",
-            ]
-            if enable_cli:
-                steps.append("Initializing CLI")
+            with profile_startup_phase("PenguinCore.create_total"):
+                # Initialize progress bar only if show_progress is True
+                steps = [
+                    "Loading environment",
+                    "Setting up logging",
+                    "Loading configuration",
+                    "Creating model config",
+                    "Initializing API client",
+                    "Creating tool manager",
+                    "Creating core instance",
+                ]
+                if enable_cli:
+                    steps.append("Initializing CLI")
 
-            total_steps = len(steps)
-            if show_progress and progress_callback is None:
-                # Fall back to tqdm console only if no external callback provided
-                pbar = tqdm(steps, desc="Initializing Penguin", unit="step")
-            # Internal helper to advance external progress callback if supplied
-            current_step_index = 0
+                total_steps = len(steps)
+                if show_progress and progress_callback is None:
+                    # Fall back to tqdm console only if no external callback provided
+                    pbar = tqdm(steps, desc="Initializing Penguin", unit="step")
+                # Internal helper to advance external progress callback if supplied
+                current_step_index = 0
 
-            # Step 1: Load environment
-            logger.info("STARTUP: Loading environment variables")
-            if pbar: pbar.set_description("Loading environment")
-            if progress_callback:
-                current_step_index += 1
-                progress_callback(current_step_index, total_steps, "Loading environment")
-            load_dotenv()
-            if pbar: pbar.update(1)
-            log_step_time("Load environment")
+                # Step 1: Load environment
+                with profile_startup_phase("Load environment"):
+                    logger.info("STARTUP: Loading environment variables")
+                    if pbar: pbar.set_description("Loading environment")
+                    if progress_callback:
+                        current_step_index += 1
+                        progress_callback(current_step_index, total_steps, "Loading environment")
+                    load_dotenv()
+                    if pbar: pbar.update(1)
+                    log_step_time("Load environment")
 
-            # Step 2: Initialize logging
-            logger.info("STARTUP: Setting up logging configuration")
-            if pbar: pbar.set_description("Setting up logging")
-            if progress_callback:
-                current_step_index += 1
-                progress_callback(current_step_index, total_steps, "Setting up logging")
-            logging.basicConfig(level=logging.WARNING)
-            for logger_name in [
-                "httpx",
-                "sentence_transformers",
-                "LiteLLM",
-                "tools",
-                "llm",
-            ]:
-                logging.getLogger(logger_name).setLevel(logging.WARNING)
-            logging.getLogger("chat").setLevel(logging.DEBUG)
-            if pbar: pbar.update(1)
-            log_step_time("Setup logging")
+                # Step 2: Initialize logging
+                with profile_startup_phase("Setup logging"):
+                    logger.info("STARTUP: Setting up logging configuration")
+                    if pbar: pbar.set_description("Setting up logging")
+                    if progress_callback:
+                        current_step_index += 1
+                        progress_callback(current_step_index, total_steps, "Setting up logging")
+                    logging.basicConfig(level=logging.WARNING)
+                    for logger_name in [
+                        "httpx",
+                        "sentence_transformers",
+                        "LiteLLM",
+                        "tools",
+                        "llm",
+                    ]:
+                        logging.getLogger(logger_name).setLevel(logging.WARNING)
+                    logging.getLogger("chat").setLevel(logging.DEBUG)
+                    if pbar: pbar.update(1)
+                    log_step_time("Setup logging")
 
-            # Load configuration
-            logger.info("STARTUP: Loading and parsing configuration")
-            if pbar: pbar.set_description("Loading configuration")
-            if progress_callback:
-                current_step_index += 1
-                progress_callback(current_step_index, total_steps, "Loading configuration")
-            start_config_time = time.time()
-            config = config or Config.load_config()
-            logger.info(f"STARTUP: Config loaded in {time.time() - start_config_time:.4f}s")
-            if pbar: pbar.update(1)
-            log_step_time("Load configuration")
+                # Load configuration
+                with profile_startup_phase("Load configuration"):
+                    logger.info("STARTUP: Loading and parsing configuration")
+                    if pbar: pbar.set_description("Loading configuration")
+                    if progress_callback:
+                        current_step_index += 1
+                        progress_callback(current_step_index, total_steps, "Loading configuration")
+                    start_config_time = time.time()
+                    config = config or Config.load_config()
+                    
+                    # Use fast_startup from config if not explicitly set
+                    if fast_startup is False and hasattr(config, 'fast_startup'):
+                        fast_startup = config.fast_startup
+                        
+                    logger.info(f"STARTUP: Config loaded in {time.time() - start_config_time:.4f}s")
+                    if pbar: pbar.update(1)
+                    log_step_time("Load configuration")
 
-            # Initialize model configuration
-            logger.info("STARTUP: Creating model configuration")
-            if pbar: pbar.set_description("Creating model config")
-            if progress_callback:
-                current_step_index += 1
-                progress_callback(current_step_index, total_steps, "Creating model config")
-            model_config = ModelConfig(
-                model=model or config.model.get("default", DEFAULT_MODEL), # Use config.model.get
-                provider=provider or config.model.get("provider", DEFAULT_PROVIDER),
-                api_base=config.api.base_url if hasattr(config, 'api') and hasattr(config.api, 'base_url') else None, # Safe access
-                use_assistants_api=config.model.get("use_assistants_api", False),
-                client_preference=config.model.get("client_preference", "native"),
-                streaming_enabled=config.model.get("streaming_enabled", True)
-            )
-            logger.info(f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}")
-            if pbar: pbar.update(1)
-            log_step_time("Create model config")
+                # Initialize model configuration
+                with profile_startup_phase("Create model config"):
+                    logger.info("STARTUP: Creating model configuration")
+                    if pbar: pbar.set_description("Creating model config")
+                    if progress_callback:
+                        current_step_index += 1
+                        progress_callback(current_step_index, total_steps, "Creating model config")
+                    model_config = ModelConfig(
+                        model=model or config.model.get("default", DEFAULT_MODEL), # Use config.model.get
+                        provider=provider or config.model.get("provider", DEFAULT_PROVIDER),
+                        api_base=config.api.base_url if hasattr(config, 'api') and hasattr(config.api, 'base_url') else None, # Safe access
+                        use_assistants_api=config.model.get("use_assistants_api", False),
+                        client_preference=config.model.get("client_preference", "native"),
+                        streaming_enabled=config.model.get("streaming_enabled", True)
+                    )
+                    logger.info(f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}")
+                    if pbar: pbar.update(1)
+                    log_step_time("Create model config")
 
-            # Create API client
-            logger.info("STARTUP: Initializing API client")
-            if pbar: pbar.set_description("Initializing API client")
-            if progress_callback:
-                current_step_index += 1
-                progress_callback(current_step_index, total_steps, "Initializing API client")
-            api_client_start = time.time()
-            api_client = APIClient(model_config=model_config)
-            api_client.set_system_prompt(SYSTEM_PROMPT)
-            logger.info(f"STARTUP: API client initialized in {time.time() - api_client_start:.4f}s")
-            if pbar: pbar.update(1)
-            log_step_time("Initialize API client")
+                # Create API client
+                with profile_startup_phase("Initialize API client"):
+                    logger.info("STARTUP: Initializing API client")
+                    if pbar: pbar.set_description("Initializing API client")
+                    if progress_callback:
+                        current_step_index += 1
+                        progress_callback(current_step_index, total_steps, "Initializing API client")
+                    api_client_start = time.time()
+                    api_client = APIClient(model_config=model_config)
+                    api_client.set_system_prompt(SYSTEM_PROMPT)
+                    logger.info(f"STARTUP: API client initialized in {time.time() - api_client_start:.4f}s")
+                    if pbar: pbar.update(1)
+                    log_step_time("Initialize API client")
 
-            # Initialize tool manager
-            logger.info("STARTUP: Creating tool manager and loading tools")
-            if pbar: pbar.set_description("Creating tool manager")
-            if progress_callback:
-                current_step_index += 1
-                progress_callback(current_step_index, total_steps, "Creating tool manager")
-            tool_manager_start = time.time()
-            print("DEBUG: Creating ToolManager in PenguinCore...")
-            print(f"DEBUG: Passing config of type {type(config)} to ToolManager.")
-            print(f"DEBUG: Passing log_error of type {type(log_error)} to ToolManager.")
-            # Convert config to dict format for ToolManager
-            config_dict = config.__dict__ if hasattr(config, '__dict__') else config
-            tool_manager = ToolManager(config_dict, log_error)
-            logger.info(f"STARTUP: Tool manager created in {time.time() - tool_manager_start:.4f}s with {len(tool_manager.tools) if hasattr(tool_manager, 'tools') else 'unknown'} tools")
-            if pbar: pbar.update(1)
-            log_step_time("Create tool manager")
+                # Initialize tool manager
+                with profile_startup_phase("Create tool manager"):
+                    logger.info(f"STARTUP: Creating tool manager (fast_startup={fast_startup})")
+                    if pbar: pbar.set_description("Creating tool manager")
+                    if progress_callback:
+                        current_step_index += 1
+                        progress_callback(current_step_index, total_steps, "Creating tool manager")
+                    tool_manager_start = time.time()
+                    print("DEBUG: Creating ToolManager in PenguinCore...")
+                    print(f"DEBUG: Passing config of type {type(config)} to ToolManager.")
+                    print(f"DEBUG: Passing log_error of type {type(log_error)} to ToolManager.")
+                    print(f"DEBUG: Fast startup mode: {fast_startup}")
+                    # Convert config to dict format for ToolManager
+                    config_dict = config.__dict__ if hasattr(config, '__dict__') else config
+                    tool_manager = ToolManager(config_dict, log_error, fast_startup=fast_startup)
+                    logger.info(f"STARTUP: Tool manager created in {time.time() - tool_manager_start:.4f}s with {len(tool_manager.tools) if hasattr(tool_manager, 'tools') else 'unknown'} tools")
+                    if pbar: pbar.update(1)
+                    log_step_time("Create tool manager")
 
-            # Create core instance
-            logger.info("STARTUP: Creating core instance")
-            if pbar: pbar.set_description("Creating core instance")
-            if progress_callback:
-                current_step_index += 1
-                progress_callback(current_step_index, total_steps, "Creating core instance")
-            core_start = time.time()
-            instance = cls(
-                config=config, 
-                api_client=api_client, 
-                tool_manager=tool_manager, 
-                model_config=model_config
-            )
-            logger.info(f"STARTUP: Core instance created in {time.time() - core_start:.4f}s")
-            if pbar: pbar.update(1)
-            log_step_time("Create core instance")
+                # Create core instance
+                with profile_startup_phase("Create core instance"):
+                    logger.info("STARTUP: Creating core instance")
+                    if pbar: pbar.set_description("Creating core instance")
+                    if progress_callback:
+                        current_step_index += 1
+                        progress_callback(current_step_index, total_steps, "Creating core instance")
+                    core_start = time.time()
+                    instance = cls(
+                        config=config, 
+                        api_client=api_client, 
+                        tool_manager=tool_manager, 
+                        model_config=model_config
+                    )
+                    logger.info(f"STARTUP: Core instance created in {core_start:.4f}s")
+                    if pbar: pbar.update(1)
+                    log_step_time("Create core instance")
 
-            if enable_cli:
-                logger.info("STARTUP: Initializing CLI")
-                if pbar: pbar.set_description("Initializing CLI")
-                if progress_callback:
-                    current_step_index += 1
-                    progress_callback(current_step_index, total_steps, "Initializing CLI")
-                cli_start = time.time()
-                from penguin.chat.cli import PenguinCLI
-                cli = PenguinCLI(instance)
-                logger.info(f"STARTUP: CLI initialized in {time.time() - cli_start:.4f}s")
-                if pbar: pbar.update(1)
-                log_step_time("Initialize CLI")
+                if enable_cli:
+                    with profile_startup_phase("Initialize CLI"):
+                        logger.info("STARTUP: Initializing CLI")
+                        if pbar: pbar.set_description("Initializing CLI")
+                        if progress_callback:
+                            current_step_index += 1
+                            progress_callback(current_step_index, total_steps, "Initializing CLI")
+                        cli_start = time.time()
+                        from penguin.chat.cli import PenguinCLI
+                        cli = PenguinCLI(instance)
+                        logger.info(f"STARTUP: CLI initialized in {time.time() - cli_start:.4f}s")
+                        if pbar: pbar.update(1)
+                        log_step_time("Initialize CLI")
 
-            if pbar: pbar.close()
-            # Ensure external progress finishes
-            if progress_callback and current_step_index < total_steps:
-                progress_callback(total_steps, total_steps, "Initialization complete")
+                if pbar: pbar.close()
+                # Ensure external progress finishes
+                if progress_callback and current_step_index < total_steps:
+                    progress_callback(total_steps, total_steps, "Initialization complete")
 
-            total_time = time.time() - overall_start_time
-            logger.info(f"STARTUP COMPLETE: Total initialization time: {total_time:.4f} seconds")
-            
-            # Log summary of all timing measurements
-            logger.info("STARTUP TIMING SUMMARY:")
-            for step, duration in timings.items():
-                percentage = (duration / total_time) * 100
-                logger.info(f"  - {step}: {duration:.4f}s ({percentage:.1f}%)")
+                total_time = time.time() - overall_start_time
+                logger.info(f"STARTUP COMPLETE: Total initialization time: {total_time:.4f} seconds")
+                
+                # Log summary of all timing measurements
+                logger.info("STARTUP TIMING SUMMARY:")
+                for step, duration in timings.items():
+                    percentage = (duration / total_time) * 100
+                    logger.info(f"  - {step}: {duration:.4f}s ({percentage:.1f}%)")
 
-            return instance if not enable_cli else (instance, cli)
+                # Print comprehensive profiling report if enabled
+                if fast_startup:
+                    logger.info("FAST STARTUP enabled - memory indexing deferred to first use")
+                
+                # Log tool manager stats
+                tool_stats = tool_manager.get_startup_stats()
+                logger.info(f"ToolManager startup stats: {tool_stats}")
+
+                return instance if not enable_cli else (instance, cli)
 
         except Exception as e:
             error_time = time.time() - overall_start_time
@@ -455,7 +484,7 @@ class PenguinCore:
 
         # Initialize project manager with workspace path from config
         from penguin.config import WORKSPACE_PATH
-        self.project_manager = ProjectManager(workspace_root=WORKSPACE_PATH)
+        self.project_manager = ProjectManager(workspace_path=WORKSPACE_PATH)
 
         # Initialize diagnostics based on config
         if not self.config.diagnostics.enabled:
@@ -1983,3 +2012,74 @@ class PenguinCore:
             # No fallback available - this should trigger an error in load_model
             logger.warning(f"No specifications available for model {model_id}. Please add model configuration to config.yml manually.")
             return {}
+
+    def get_startup_stats(self) -> Dict[str, Any]:
+        """Get comprehensive startup performance statistics."""
+        stats = {
+            "profiling_summary": profiler.get_summary(),
+            "tool_manager_stats": self.tool_manager.get_startup_stats() if hasattr(self.tool_manager, 'get_startup_stats') else {},
+            "memory_provider_initialized": hasattr(self.tool_manager, '_memory_provider') and self.tool_manager._memory_provider is not None,
+            "core_initialized": self.initialized,
+        }
+        return stats
+
+    def print_startup_report(self) -> None:
+        """Print a comprehensive startup performance report."""
+        print("\n" + "="*60)
+        print("PENGUIN STARTUP PERFORMANCE REPORT")
+        print("="*60)
+        
+        # Get tool manager stats
+        if hasattr(self.tool_manager, 'get_startup_stats'):
+            tool_stats = self.tool_manager.get_startup_stats()
+            print(f"\nTool Manager Configuration:")
+            print(f"  Fast startup mode: {tool_stats.get('fast_startup', 'Unknown')}")
+            print(f"  Memory provider initialized: {tool_stats.get('memory_provider_exists', 'Unknown')}")
+            print(f"  Indexing completed: {tool_stats.get('indexing_completed', 'Unknown')}")
+            
+            lazy_init = tool_stats.get('lazy_initialized', {})
+            print(f"\nLazy-loaded components:")
+            for component, initialized in lazy_init.items():
+                status = "✓ Loaded" if initialized else "○ Deferred"
+                print(f"  {component}: {status}")
+        
+        # Print profiling report
+        print(f"\nDetailed Performance Breakdown:")
+        profiler_report = profiler.get_startup_report()
+        print(profiler_report)
+        
+        print("="*60)
+
+    def enable_fast_startup_globally(self) -> None:
+        """Enable fast startup mode for future operations."""
+        if hasattr(self.tool_manager, 'fast_startup'):
+            self.tool_manager.fast_startup = True
+            logger.info("Fast startup mode enabled globally")
+
+    def get_memory_provider_status(self) -> Dict[str, Any]:
+        """Get current status of memory provider and indexing."""
+        if not hasattr(self.tool_manager, '_memory_provider'):
+            return {"status": "not_initialized", "provider": None}
+        
+        provider = self.tool_manager._memory_provider
+        if provider is None:
+            return {"status": "disabled", "provider": None}
+        
+        status = {
+            "status": "initialized" if provider else "not_initialized",
+            "provider": type(provider).__name__ if provider else None,
+            "indexing_completed": getattr(self.tool_manager, '_indexing_completed', False),
+            "indexing_task_running": False,
+        }
+        
+        # Check indexing task status
+        if hasattr(self.tool_manager, '_indexing_task') and self.tool_manager._indexing_task:
+            task = self.tool_manager._indexing_task
+            status["indexing_task_running"] = not task.done()
+            status["indexing_task_status"] = {
+                "done": task.done(),
+                "cancelled": task.cancelled(),
+                "exception": str(task.exception()) if task.done() and task.exception() else None
+            }
+        
+        return status

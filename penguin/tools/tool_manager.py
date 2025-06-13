@@ -16,6 +16,7 @@ from collections import defaultdict
 from penguin.config import config, WORKSPACE_PATH
 from penguin.memory.summary_notes import SummaryNotes
 from penguin.utils import FileMap
+from penguin.utils.profiling import profile_operation, profile_startup_phase, profiler
 
 # from .old2_memory_search import MemorySearch
 from penguin.utils.notebook import NotebookExecutor
@@ -38,50 +39,116 @@ from penguin.memory.provider import MemoryProvider
 logger = logging.getLogger(__name__) # Add logger
 
 class ToolManager:
-    def __init__(self, config: Dict[str, Any], log_error_func: Callable):
+    def __init__(self, config: Dict[str, Any], log_error_func: Callable, fast_startup: bool = False):
+        """
+        Initialize ToolManager with configurable startup behavior.
+        
+        Args:
+            config: Configuration dictionary
+            log_error_func: Error logging function
+            fast_startup: If True, defer all heavy operations until first use
+        """
         # Fix HuggingFace tokenizers parallelism warning early, before any model loading
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         
-        print("DEBUG: Initializing ToolManager...")
-        self.config = config
-        self.log_error = log_error_func
-        
-        # Initialize lightweight components immediately
-        self.declarative_memory_tool = DeclarativeMemoryTool()
-        self.grep_search = GrepSearch(root_dir=os.path.join(WORKSPACE_PATH, "logs"))
-        self.file_map = FileMap(WORKSPACE_PATH)  # Initialize with the workspace path
-        self.project_root = WORKSPACE_PATH  # Set project root to workspace path
-        self.summary_notes_tool = SummaryNotes()
-        
-        # Lazily loaded components
-        self._lazy_initialized = {
-            'notebook_executor': False,
-            'perplexity_provider': False,
-            # 'code_indexer': False,
-            # 'memory_searcher': False,
-            'browser_tools': False,
-            'pydoll_tools': False,
-        }
-        
-        # Placeholder attributes for lazy loading
-        self._notebook_executor = None
-        self._perplexity_provider = None
-        # self._code_indexer = None
-        # self._memory_searcher = None
-        
-        # Browser tools placeholders
-        self._browser_navigation_tool = None
-        self._browser_interaction_tool = None
-        self._browser_screenshot_tool = None
-        
-        # PyDoll tools placeholders
-        self._pydoll_browser_navigation_tool = None
-        self._pydoll_browser_interaction_tool = None
-        self._pydoll_browser_screenshot_tool = None
-        
-        logger.info("ToolManager initialized with lazy loading for expensive components")
+        with profile_startup_phase("ToolManager.__init__"):
+            logger.info("Initializing ToolManager...")
+            self.config = config
+            self.log_error = log_error_func
+            self.fast_startup = fast_startup
+            
+            # Initialize lightweight components immediately
+            with profile_operation("ToolManager.lightweight_init"):
+                self.declarative_memory_tool = DeclarativeMemoryTool()
+                self.grep_search = GrepSearch(root_dir=os.path.join(WORKSPACE_PATH, "logs"))
+                self.file_map = FileMap(WORKSPACE_PATH)  # Initialize with the workspace path
+                self.project_root = WORKSPACE_PATH  # Set project root to workspace path
+                self.summary_notes_tool = SummaryNotes()
+            
+            # Lazily loaded components - track what's been initialized
+            self._lazy_initialized = {
+                'notebook_executor': False,
+                'perplexity_provider': False,
+                'memory_provider': False,
+                'memory_indexing': False,
+                'browser_tools': False,
+                'pydoll_tools': False,
+            }
+            
+            # Placeholder attributes for lazy loading
+            self._notebook_executor = None
+            self._perplexity_provider = None
+            self._memory_provider = None
+            self._indexing_task = None
+            self._indexing_completed = False
+            
+            # Browser tools placeholders
+            self._browser_navigation_tool = None
+            self._browser_interaction_tool = None
+            self._browser_screenshot_tool = None
+            
+            # PyDoll tools placeholders
+            self._pydoll_browser_navigation_tool = None
+            self._pydoll_browser_interaction_tool = None
+            self._pydoll_browser_screenshot_tool = None
+            
+            # Tool definitions (lightweight)
+            with profile_operation("ToolManager.define_tools"):
+                self.tools = self._define_tools()
 
-        self.tools = [
+            # Handle both dict-style and dataclass-style config access
+            try:
+                if hasattr(config, 'diagnostics') and hasattr(config.diagnostics, 'enabled'):
+                    # Dataclass-style config
+                    self.diagnostics_enabled = config.diagnostics.enabled
+                elif hasattr(config, 'get'):
+                    # Dict-style config
+                    self.diagnostics_enabled = config.get("diagnostics", {}).get("enabled", False)
+                else:
+                    # Fallback
+                    self.diagnostics_enabled = False
+            except Exception:
+                self.diagnostics_enabled = False
+            
+            # Memory provider initialization strategy
+            if fast_startup:
+                logger.info("ToolManager initialized with FAST STARTUP - memory tools will be loaded on first use")
+                # Don't initialize memory provider at all
+                self._memory_provider = None
+            else:
+                logger.info("ToolManager initializing memory provider...")
+                with profile_operation("ToolManager.memory_provider_init"):
+                    # Initialize Memory Provider but don't start indexing yet
+                    memory_config = {}
+                    try:
+                        if hasattr(config, 'get'):
+                            memory_config = config.get("memory", {})
+                        elif hasattr(config, '__dict__'):
+                            config_dict = config.__dict__
+                            memory_config = config_dict.get("memory", {})
+                        else:
+                            memory_config = {}
+                    except Exception:
+                        memory_config = {}
+                        
+                    self._memory_provider = self._initialize_memory_provider(memory_config)
+                    
+                    # Start background indexing if provider exists
+                    if self._memory_provider:
+                        # Create but don't await the indexing task
+                        try:
+                            loop = asyncio.get_event_loop()
+                            self._indexing_task = loop.create_task(self._background_initialize_async_components())
+                            logger.info("Started background memory indexing task")
+                        except RuntimeError:
+                            # No event loop - will index on first use
+                            logger.info("No event loop available - memory indexing deferred to first use")
+                
+            logger.info(f"ToolManager initialized successfully. Fast startup: {fast_startup}")
+
+    def _define_tools(self) -> List[Dict[str, Any]]:
+        """Define tool schemas without heavy initialization."""
+        return [
             {
                 "name": "create_folder",
                 "description": "Create a new folder at the specified path. Use this when you need to create a new directory in the project structure.",
@@ -330,46 +397,6 @@ class ToolManager:
                     "required": ["query"],
                 },
             },
-            # {
-            #     "name": "workspace_search",
-            #     "description": "Search through workspace code files using semantic search and AST parsing for accurate code lookups.",
-            #     "input_schema": {
-            #         "type": "object",
-            #         "properties": {
-            #             "query": {
-            #                 "type": "string",
-            #                 "description": "The search query - can be function name, class name, or general code concept",
-            #             },
-            #             "max_results": {
-            #                 "type": "integer",
-            #                 "description": "Maximum number of results to return (default: 5)",
-            #             },
-            #         },
-            #         "required": ["query"],
-            #     },
-            # },
-            # {
-            #     "name": "memory_search",
-            #     "description": "Search through memory logs and notes",
-            #     "parameters": {
-            #         "query": {"type": "string", "description": "The search query"},
-            #         "max_results": {
-            #             "type": "integer",
-            #             "description": "Maximum number of results to return",
-            #             "default": 5,
-            #         },
-            #         "memory_type": {
-            #             "type": "string",
-            #             "description": "Type of memory to search (logs/notes)",
-            #             "optional": True,
-            #         },
-            #         "categories": {
-            #             "type": "array",
-            #             "description": "Categories to filter by",
-            #             "optional": True,
-            #         },
-            #     },
-            # },
             {
                 "name": "browser_navigate",
                 "description": "Navigate to a URL in the browser. Use this to open websites and web applications.",
@@ -489,161 +516,80 @@ class ToolManager:
             },
         ]
 
-        self.diagnostics_enabled = config.get("diagnostics", {}).get("enabled", False)
-        
-        # Initialize Memory Provider
-        self._memory_provider = self._initialize_memory_provider(config.get("memory", {}))
-        
-        # Run one-time indexing
-        if self._memory_provider:
-            loop = asyncio.get_event_loop()
-            loop.create_task(self.initialize_async_components())
+    async def _background_initialize_async_components(self):
+        """Background task to initialize async components and perform indexing."""
+        try:
+            with profile_operation("ToolManager.background_memory_init"):
+                logger.info("Background: Initializing memory provider and starting indexing...")
+                await self._ensure_memory_provider_and_index()
+                self._indexing_completed = True
+                logger.info("Background: Memory provider initialization and indexing completed")
+        except Exception as e:
+            logger.error(f"Background memory initialization failed: {e}", exc_info=True)
 
-    async def initialize_async_components(self):
-        """Initializes async components like the memory provider and then indexes files."""
+    async def _ensure_memory_provider_and_index(self):
+        """Ensure memory provider is initialized and perform initial indexing."""
+        if not self._memory_provider:
+            with profile_operation("ToolManager.memory_provider_creation"):
+                memory_config = {}
+                try:
+                    if hasattr(self.config, 'get'):
+                        memory_config = self.config.get("memory", {})
+                    elif hasattr(self.config, '__dict__'):
+                        config_dict = self.config.__dict__
+                        memory_config = config_dict.get("memory", {})
+                    else:
+                        memory_config = {}
+                except Exception:
+                    memory_config = {}
+                self._memory_provider = self._initialize_memory_provider(memory_config)
+        
         if not self._memory_provider:
             return
-        logger.info("Initializing asynchronous components...")
-        await self._memory_provider.initialize()
+            
+        with profile_operation("ToolManager.memory_provider_initialize"):
+            await self._memory_provider.initialize()
 
         # Use generic IncrementalIndexer for initial scan
         try:
-            from penguin.memory.indexing.incremental import IncrementalIndexer
+            with profile_operation("ToolManager.incremental_indexing"):
+                from penguin.memory.indexing.incremental import IncrementalIndexer
 
-            workspace_path = Path(self.config.get("workspace", {}).get("path", "."))
-            notes_dir = workspace_path / "notes"
-            conv_dir = workspace_path / "conversations"
+                # Get workspace path with safe config access
+                try:
+                    if hasattr(self.config, 'get'):
+                        workspace_path = Path(self.config.get("workspace", {}).get("path", "."))
+                    elif hasattr(self.config, 'workspace_path'):
+                        workspace_path = Path(self.config.workspace_path)
+                    elif hasattr(self.config, '__dict__'):
+                        config_dict = self.config.__dict__
+                        workspace_path = Path(config_dict.get("workspace", {}).get("path", "."))
+                    else:
+                        workspace_path = Path(".")
+                except Exception:
+                    workspace_path = Path(".")
+                notes_dir = workspace_path / "notes"
+                conv_dir = workspace_path / "conversations"
 
-            indexer_config = {
-                "workspace_path": str(workspace_path),
-            }
-            indexer = IncrementalIndexer(self._memory_provider, indexer_config)
+                indexer_config = {
+                    "workspace_path": str(workspace_path),
+                }
+                indexer = IncrementalIndexer(self._memory_provider, indexer_config)
 
-            await indexer.start_workers(num_workers=2)
+                await indexer.start_workers(num_workers=2)
 
-            # Only index the focused sub-directories to keep startup responsive
-            if notes_dir.exists():
-                await indexer.sync_directory(str(notes_dir), force_full=False)
-            if conv_dir.exists():
-                await indexer.sync_directory(str(conv_dir), force_full=False)
+                # Only index the focused sub-directories to keep startup responsive
+                if notes_dir.exists():
+                    await indexer.sync_directory(str(notes_dir), force_full=False)
+                if conv_dir.exists():
+                    await indexer.sync_directory(str(conv_dir), force_full=False)
 
-            await indexer.stop_workers()
-            logger.info("Focused indexing of notes & conversations complete.")
+                await indexer.stop_workers()
+                logger.info("Focused indexing of notes & conversations complete.")
         except Exception as e:
             logger.error(f"IncrementalIndexer failed: {e}. Falling back to simple indexing.")
-            await self._initial_indexing()
-
-        logger.info("Asynchronous components initialized.")
-
-    async def _initial_indexing(self):
-        """Perform initial indexing of workspace files."""
-        # This is a temporary solution for Stage 1 to ensure memories are indexed.
-        # In Stage 2, this will be replaced by the IncrementalIndexer and FileSystemWatcher.
-        logger.info("Starting initial workspace indexing...")
-        
-        workspace_path = Path(self.config.get("workspace", {}).get("path", "."))
-        notes_dir = workspace_path / "notes"
-        conversations_dir = workspace_path / "conversations"
-        
-        files_indexed = 0
-        
-        async def index_directory(directory: Path, category: str):
-            nonlocal files_indexed
-            if not directory.exists():
-                return
-            
-            for file_path in directory.rglob('*'):
-                if not file_path.is_file():
-                    continue
-                
-                try:
-                    if category == "conversations" and file_path.suffix.lower() == '.json':
-                        # Special handling for conversation JSON files
-                        await self._index_conversation_file(file_path)
-                        files_indexed += 1
-                    elif file_path.suffix.lower() in {'.md', '.markdown', '.txt'}:
-                        # Regular file indexing for notes and other text files
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        
-                        metadata = {"source": str(file_path), "file_type": "text", "path": str(file_path)}
-                        await self._memory_provider.add_memory(
-                            content=content,
-                            metadata=metadata,
-                            categories=[category]
-                        )
-                        files_indexed += 1
-                except Exception as e:
-                    logger.error(f"Failed to index file {file_path}: {e}")
-
-        await index_directory(notes_dir, "notes")
-        await index_directory(conversations_dir, "conversations")
-        
-        if files_indexed > 0:
-            logger.info(f"Initial indexing complete. Indexed {files_indexed} files.")
-        else:
-            logger.info("Initial indexing complete. No new files to index.")
-
-    async def _index_conversation_file(self, file_path: Path):
-        """Index individual messages from a conversation JSON file."""
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                conversation_data = json.load(f)
-            
-            # Extract conversation metadata
-            session_id = conversation_data.get('id', 'unknown')
-            created_at = conversation_data.get('created_at', '')
-            
-            # Index each message individually
-            messages = conversation_data.get('messages', [])
-            for i, message in enumerate(messages):
-                # Skip system messages (they're usually very long prompts)
-                if message.get('role') == 'system':
-                    continue
-                
-                content = message.get('content', '')
-                
-                # Handle content that might be a list or dict (some conversation formats)
-                if isinstance(content, list):
-                    content = ' '.join(str(item) for item in content)
-                elif isinstance(content, dict):
-                    content = str(content)
-                elif not isinstance(content, str):
-                    content = str(content)
-                
-                if not content.strip():
-                    continue
-                
-                # Create rich metadata for each message
-                metadata = {
-                    "source": str(file_path),
-                    "file_type": "conversation_message", 
-                    "path": str(file_path),
-                    "session_id": session_id,
-                    "message_role": message.get('role', 'unknown'),
-                    "message_id": message.get('id', f'msg_{i}'),
-                    "timestamp": message.get('timestamp', created_at),
-                    "message_index": i
-                }
-                
-                # Add individual message to memory
-                await self._memory_provider.add_memory(
-                    content=content,
-                    metadata=metadata,
-                    categories=["conversations", "text", message.get('role', 'unknown')]
-                )
-                
-        except Exception as e:
-            logger.error(f"Failed to index conversation file {file_path}: {e}")
-            # Fallback to indexing the raw JSON if parsing fails
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            metadata = {"source": str(file_path), "file_type": "text", "path": str(file_path)}
-            await self._memory_provider.add_memory(
-                content=content,
-                metadata=metadata,
-                categories=["conversations"]
-            )
+            with profile_operation("ToolManager.fallback_indexing"):
+                await self._initial_indexing()
 
     def _initialize_memory_provider(self, memory_config: Dict[str, Any]) -> Optional[MemoryProvider]:
         """Initialize the memory provider based on configuration."""
@@ -653,223 +599,241 @@ class ToolManager:
         from penguin.memory.providers.factory import MemoryProviderFactory
         return MemoryProviderFactory.create_provider(memory_config)
 
-    # Lazy loading properties
+    # Lazy loading properties with profiling
     @property
     def notebook_executor(self):
         if not self._lazy_initialized['notebook_executor']:
-            logger.debug("Lazy-loading notebook executor")
-            self._notebook_executor = NotebookExecutor()
-            self._lazy_initialized['notebook_executor'] = True
+            with profile_operation("ToolManager.lazy_load_notebook_executor"):
+                logger.debug("Lazy-loading notebook executor")
+                self._notebook_executor = NotebookExecutor()
+                self._lazy_initialized['notebook_executor'] = True
         return self._notebook_executor
     
     @property
     def perplexity_provider(self):
         if not self._lazy_initialized['perplexity_provider']:
-            logger.debug("Lazy-loading perplexity provider")
-            self._perplexity_provider = PerplexityProvider()
-            self._lazy_initialized['perplexity_provider'] = True
+            with profile_operation("ToolManager.lazy_load_perplexity_provider"):
+                logger.debug("Lazy-loading perplexity provider")
+                self._perplexity_provider = PerplexityProvider()
+                self._lazy_initialized['perplexity_provider'] = True
         return self._perplexity_provider
+    
+    async def ensure_memory_provider(self) -> Optional[MemoryProvider]:
+        """Ensure memory provider is initialized. Used for lazy loading."""
+        if not self._lazy_initialized['memory_provider']:
+            with profile_operation("ToolManager.lazy_load_memory_provider"):
+                logger.debug("Lazy-loading memory provider")
+                if not self._memory_provider:
+                    self._memory_provider = self._initialize_memory_provider(self.config.get("memory", {}))
+                
+                if self._memory_provider:
+                    await self._memory_provider.initialize()
+                    
+                    # Start background indexing if not already done
+                    if not self._indexing_completed and not self._indexing_task:
+                        try:
+                            loop = asyncio.get_event_loop()
+                            self._indexing_task = loop.create_task(self._background_initialize_async_components())
+                            logger.info("Started background indexing task (lazy loaded)")
+                        except RuntimeError:
+                            # No event loop - do synchronous initialization
+                            logger.info("No event loop - performing immediate indexing")
+                            await self._ensure_memory_provider_and_index()
+                            self._indexing_completed = True
+                
+                self._lazy_initialized['memory_provider'] = True
+        
+        return self._memory_provider
     
     @property
     def code_indexer(self):
-        # if not self._lazy_initialized['code_indexer']:
-        #     logger.debug("Lazy-loading code indexer (may take some time)")
-        #     start_time = datetime.datetime.now()
-        #     self._code_indexer = CodeIndexer(
-        #         persist_directory=os.path.join(WORKSPACE_PATH, "chroma_db")
-        #     )
-        #     # Wait for initialization is still required, but now only when actually needed
-        #     self._code_indexer.wait_for_initialization()
-        #     self._lazy_initialized['code_indexer'] = True
-        #     elapsed = (datetime.datetime.now() - start_time).total_seconds()
-        #     logger.info(f"Code indexer initialized in {elapsed:.2f} seconds")
-        # return self._code_indexer
-        raise NotImplementedError("Code indexer is currently disabled.")
+        # Code indexer is currently disabled - raise helpful error
+        raise NotImplementedError("Code indexer is currently disabled for performance reasons.")
     
     @property
     def memory_searcher(self):
-        # if not self._lazy_initialized['memory_searcher']:
-        #     logger.debug("Lazy-loading memory searcher")
-        #     start_time = datetime.datetime.now()
-        #     self._memory_searcher = MemorySearcher()
-        #     self._lazy_initialized['memory_searcher'] = True
-        #     elapsed = (datetime.datetime.now() - start_time).total_seconds()
-        #     logger.info(f"Memory searcher initialized in {elapsed:.2f} seconds")
-        # return self._memory_searcher
-        raise NotImplementedError("Memory searcher is currently disabled.")
+        # Memory searcher is currently disabled - raise helpful error
+        raise NotImplementedError("Memory searcher is currently disabled. Use memory_search via ToolManager instead.")
     
     # Browser tools lazy loading
     @property
     def browser_navigation_tool(self):
         if not self._lazy_initialized['browser_tools']:
-            logger.debug("Lazy-loading browser tools")
-            self._browser_navigation_tool = BrowserNavigationTool()
-            self._browser_interaction_tool = BrowserInteractionTool()  
-            self._browser_screenshot_tool = BrowserScreenshotTool()
-            self._lazy_initialized['browser_tools'] = True
+            with profile_operation("ToolManager.lazy_load_browser_tools"):
+                logger.debug("Lazy-loading browser tools")
+                self._browser_navigation_tool = BrowserNavigationTool()
+                self._browser_interaction_tool = BrowserInteractionTool()  
+                self._browser_screenshot_tool = BrowserScreenshotTool()
+                self._lazy_initialized['browser_tools'] = True
         return self._browser_navigation_tool
     
     @property
     def browser_interaction_tool(self):
         if not self._lazy_initialized['browser_tools']:
-            logger.debug("Lazy-loading browser tools")
-            self._browser_navigation_tool = BrowserNavigationTool()
-            self._browser_interaction_tool = BrowserInteractionTool()  
-            self._browser_screenshot_tool = BrowserScreenshotTool()
-            self._lazy_initialized['browser_tools'] = True
+            with profile_operation("ToolManager.lazy_load_browser_tools"):
+                logger.debug("Lazy-loading browser tools")
+                self._browser_navigation_tool = BrowserNavigationTool()
+                self._browser_interaction_tool = BrowserInteractionTool()  
+                self._browser_screenshot_tool = BrowserScreenshotTool()
+                self._lazy_initialized['browser_tools'] = True
         return self._browser_interaction_tool
     
     @property
     def browser_screenshot_tool(self):
         if not self._lazy_initialized['browser_tools']:
-            logger.debug("Lazy-loading browser tools")
-            self._browser_navigation_tool = BrowserNavigationTool()
-            self._browser_interaction_tool = BrowserInteractionTool()  
-            self._browser_screenshot_tool = BrowserScreenshotTool()
-            self._lazy_initialized['browser_tools'] = True
+            with profile_operation("ToolManager.lazy_load_browser_tools"):
+                logger.debug("Lazy-loading browser tools")
+                self._browser_navigation_tool = BrowserNavigationTool()
+                self._browser_interaction_tool = BrowserInteractionTool()  
+                self._browser_screenshot_tool = BrowserScreenshotTool()
+                self._lazy_initialized['browser_tools'] = True
         return self._browser_screenshot_tool
     
     # PyDoll tools lazy loading
     @property
     def pydoll_browser_navigation_tool(self):
         if not self._lazy_initialized['pydoll_tools']:
-            logger.debug("Lazy-loading PyDoll browser tools")
-            self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
-            self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
-            self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
-            self._lazy_initialized['pydoll_tools'] = True
+            with profile_operation("ToolManager.lazy_load_pydoll_tools"):
+                logger.debug("Lazy-loading PyDoll browser tools")
+                self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
+                self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
+                self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
+                self._lazy_initialized['pydoll_tools'] = True
         return self._pydoll_browser_navigation_tool
     
     @property
     def pydoll_browser_interaction_tool(self):
         if not self._lazy_initialized['pydoll_tools']:
-            logger.debug("Lazy-loading PyDoll browser tools")
-            self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
-            self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
-            self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
-            self._lazy_initialized['pydoll_tools'] = True
+            with profile_operation("ToolManager.lazy_load_pydoll_tools"):
+                logger.debug("Lazy-loading PyDoll browser tools")
+                self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
+                self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
+                self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
+                self._lazy_initialized['pydoll_tools'] = True
         return self._pydoll_browser_interaction_tool
     
     @property
     def pydoll_browser_screenshot_tool(self):
         if not self._lazy_initialized['pydoll_tools']:
-            logger.debug("Lazy-loading PyDoll browser tools")
-            self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
-            self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
-            self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
-            self._lazy_initialized['pydoll_tools'] = True
+            with profile_operation("ToolManager.lazy_load_pydoll_tools"):
+                logger.debug("Lazy-loading PyDoll browser tools")
+                self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
+                self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
+                self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
+                self._lazy_initialized['pydoll_tools'] = True
         return self._pydoll_browser_screenshot_tool
 
     def get_tools(self):
         return self.tools
 
     def execute_tool(self, tool_name: str, tool_input: dict) -> Union[str, dict]:
-        tool_map = {
-            # "create_folder": lambda: create_folder(os.path.join(WORKSPACE_PATH, tool_input["path"])),
-            # "create_file": lambda: create_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input.get("content", "")),
-            # "write_to_file": lambda: write_to_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input["content"]),
-            # "read_file": lambda: read_file(os.path.join(WORKSPACE_PATH, tool_input["path"])),
-            # "list_files": lambda: list_files(os.path.join(WORKSPACE_PATH, tool_input.get("path", "."))),
-            "add_declarative_note": lambda: self.add_declarative_note(
-                tool_input["category"], tool_input["content"]
-            ),
-            "grep_search": lambda: self.perform_grep_search(
-                tool_input["pattern"],
-                tool_input.get("k", 5),
-                tool_input.get("case_sensitive", False),
-                tool_input.get("search_files", True),
-            ),
-            "memory_search": lambda: self._execute_async_tool(self.perform_memory_search(
-                tool_input["query"],
-                tool_input.get("k", 5),
-                tool_input.get("memory_type"),
-                tool_input.get("categories"),
-            )),
-            "code_execution": lambda: self.execute_code(tool_input["code"]),
-            "get_file_map": lambda: self.get_file_map(tool_input.get("directory", "")),
-            # "find_file": lambda: find_file(tool_input["filename"], tool_input.get("search_path", ".")),
-            "lint_python": lambda: lint_python(
-                tool_input["target"], tool_input["is_file"]
-            ),
-            "execute_command": lambda: self.execute_command(tool_input["command"]),
-            "add_summary_note": lambda: self.add_summary_note(
-                tool_input["category"], tool_input["content"]
-            ),
-            # "tavily_search": lambda: self.tavily_search(tool_input["query"]),
-            "perplexity_search": lambda: self.perplexity_provider.format_results(
-                self.perplexity_provider.search(
-                    tool_input["query"], tool_input.get("max_results", 5)
-                )
-            ),
-            # "workspace_search": lambda: self.search_workspace(
-            #     tool_input["query"], tool_input.get("max_results", 5)
-            # ),
-            # "memory_search": lambda: self.search_memory(
-            #     tool_input["query"],
-            #     tool_input.get("max_results", 5),
-            #     tool_input.get("memory_type", None),
-            #     tool_input.get("categories", None),
-            #     tool_input.get("date_after", None),
-            #     tool_input.get("date_before", None),
-            # ),
-            # "tavily_search": lambda: self.tavily_search(
-            #     tool_input["query"],
-            #     tool_input.get("max_results", 5),
-            #     tool_input.get("search_depth", "advanced")
-            # ),
-            "browser_navigate": lambda: asyncio.run(self.execute_browser_navigate(tool_input["url"])),
-            "browser_interact": lambda: asyncio.run(self.execute_browser_interact(
-                tool_input["action"], tool_input["selector"], tool_input.get("text")
-            )),
-            "browser_screenshot": lambda: asyncio.run(self.execute_browser_screenshot()),
-            "pydoll_browser_navigate": lambda: asyncio.run(self.execute_pydoll_browser_navigate(tool_input["url"])),
-            "pydoll_browser_interact": lambda: asyncio.run(self.execute_pydoll_browser_interact(
-                tool_input["action"], tool_input["selector"], tool_input.get("selector_type", "css"), tool_input.get("text")
-            )),
-            "pydoll_browser_screenshot": lambda: asyncio.run(self.execute_pydoll_browser_screenshot()),
-            "analyze_codebase": lambda: self.analyze_codebase(
-                tool_input.get("directory"),
-                tool_input.get("analysis_type", "all"),
-                tool_input.get("include_external", False),
-            ),
-            "reindex_workspace": lambda: asyncio.run(
-                self.reindex_workspace(
+        with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
+            tool_map = {
+                # "create_folder": lambda: create_folder(os.path.join(WORKSPACE_PATH, tool_input["path"])),
+                # "create_file": lambda: create_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input.get("content", "")),
+                # "write_to_file": lambda: write_to_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input["content"]),
+                # "read_file": lambda: read_file(os.path.join(WORKSPACE_PATH, tool_input["path"])),
+                # "list_files": lambda: list_files(os.path.join(WORKSPACE_PATH, tool_input.get("path", "."))),
+                "add_declarative_note": lambda: self.add_declarative_note(
+                    tool_input["category"], tool_input["content"]
+                ),
+                "grep_search": lambda: self.perform_grep_search(
+                    tool_input["pattern"],
+                    tool_input.get("k", 5),
+                    tool_input.get("case_sensitive", False),
+                    tool_input.get("search_files", True),
+                ),
+                "memory_search": lambda: self._execute_async_tool(self.perform_memory_search(
+                    tool_input["query"],
+                    tool_input.get("k", 5),
+                    tool_input.get("memory_type"),
+                    tool_input.get("categories"),
+                )),
+                "code_execution": lambda: self.execute_code(tool_input["code"]),
+                "get_file_map": lambda: self.get_file_map(tool_input.get("directory", "")),
+                # "find_file": lambda: find_file(tool_input["filename"], tool_input.get("search_path", ".")),
+                "lint_python": lambda: lint_python(
+                    tool_input["target"], tool_input["is_file"]
+                ),
+                "execute_command": lambda: self.execute_command(tool_input["command"]),
+                "add_summary_note": lambda: self.add_summary_note(
+                    tool_input["category"], tool_input["content"]
+                ),
+                # "tavily_search": lambda: self.tavily_search(tool_input["query"]),
+                "perplexity_search": lambda: self.perplexity_provider.format_results(
+                    self.perplexity_provider.search(
+                        tool_input["query"], tool_input.get("max_results", 5)
+                    )
+                ),
+                # "workspace_search": lambda: self.search_workspace(
+                #     tool_input["query"], tool_input.get("max_results", 5)
+                # ),
+                # "memory_search": lambda: self.search_memory(
+                #     tool_input["query"],
+                #     tool_input.get("max_results", 5),
+                #     tool_input.get("memory_type", None),
+                #     tool_input.get("categories", None),
+                #     tool_input.get("date_after", None),
+                #     tool_input.get("date_before", None),
+                # ),
+                # "tavily_search": lambda: self.tavily_search(
+                #     tool_input["query"],
+                #     tool_input.get("max_results", 5),
+                #     tool_input.get("search_depth", "advanced")
+                # ),
+                "browser_navigate": lambda: asyncio.run(self.execute_browser_navigate(tool_input["url"])),
+                "browser_interact": lambda: asyncio.run(self.execute_browser_interact(
+                    tool_input["action"], tool_input["selector"], tool_input.get("text")
+                )),
+                "browser_screenshot": lambda: asyncio.run(self.execute_browser_screenshot()),
+                "pydoll_browser_navigate": lambda: asyncio.run(self.execute_pydoll_browser_navigate(tool_input["url"])),
+                "pydoll_browser_interact": lambda: asyncio.run(self.execute_pydoll_browser_interact(
+                    tool_input["action"], tool_input["selector"], tool_input.get("selector_type", "css"), tool_input.get("text")
+                )),
+                "pydoll_browser_screenshot": lambda: asyncio.run(self.execute_pydoll_browser_screenshot()),
+                "analyze_codebase": lambda: self.analyze_codebase(
                     tool_input.get("directory"),
-                    tool_input.get("force_full", False),
-                    tool_input.get("file_types"),
+                    tool_input.get("analysis_type", "all"),
+                    tool_input.get("include_external", False),
+                ),
+                "reindex_workspace": lambda: asyncio.run(
+                    self.reindex_workspace(
+                        tool_input.get("directory"),
+                        tool_input.get("force_full", False),
+                        tool_input.get("file_types"),
+                    )
+                ),
+            }
+
+            logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
+            if tool_name not in tool_map:
+                error_message = f"Unknown tool: {tool_name}"
+                logging.error(error_message)
+                self.log_error(
+                    Exception(error_message), f"Attempted to use unknown tool: {tool_name}"
                 )
-            ),
-        }
+                return {"error": error_message}
 
-        logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
-        if tool_name not in tool_map:
-            error_message = f"Unknown tool: {tool_name}"
-            logging.error(error_message)
-            self.log_error(
-                Exception(error_message), f"Attempted to use unknown tool: {tool_name}"
-            )
-            return {"error": error_message}
+            try:
+                result = tool_map[tool_name]()
+                if result is None or (isinstance(result, list) and len(result) == 0):
+                    result = {"result": "No results found or empty directory."}
+                self.add_message_to_search(
+                    {"role": "assistant", "content": f"Tool use: {tool_name}"}
+                )
+                self.add_message_to_search(
+                    {"role": "user", "content": f"Tool result: {result}"}
+                )
+                logging.info(
+                    f"Tool {tool_name} executed successfully with result: {result}"
+                )
 
-        try:
-            result = tool_map[tool_name]()
-            if result is None or (isinstance(result, list) and len(result) == 0):
-                result = {"result": "No results found or empty directory."}
-            self.add_message_to_search(
-                {"role": "assistant", "content": f"Tool use: {tool_name}"}
-            )
-            self.add_message_to_search(
-                {"role": "user", "content": f"Tool result: {result}"}
-            )
-            logging.info(
-                f"Tool {tool_name} executed successfully with result: {result}"
-            )
-
-            return result
-        except Exception as e:
-            error_message = f"Error executing tool {tool_name}: {str(e)}"
-            logging.error(error_message)
-            self.log_error(e, f"Error occurred while executing tool: {tool_name}")
-            return {"error": error_message}
+                return result
+            except Exception as e:
+                error_message = f"Error executing tool {tool_name}: {str(e)}"
+                logging.error(error_message)
+                self.log_error(e, f"Error occurred while executing tool: {tool_name}")
+                return {"error": error_message}
 
     def add_declarative_note(self, category, content):
         return self.declarative_memory_tool.add_note(category, content)
@@ -1071,13 +1035,26 @@ class ToolManager:
     ) -> str:
         """Perform a search using the configured MemoryProvider."""
         try:
-            # Check if memory tools are enabled
-            tools_config = self.config.get("tools", {})
+            # Check if memory tools are enabled with safe config access
+            try:
+                if hasattr(self.config, 'get'):
+                    tools_config = self.config.get("tools", {})
+                    allow_memory_tools = tools_config.get("allow_memory_tools", False)
+                    memory_config = self.config.get("memory")
+                elif hasattr(self.config, '__dict__'):
+                    config_dict = self.config.__dict__
+                    tools_config = config_dict.get("tools", {})
+                    allow_memory_tools = tools_config.get("allow_memory_tools", False) if isinstance(tools_config, dict) else False
+                    memory_config = config_dict.get("memory")
+                else:
+                    allow_memory_tools = True  # Default to allowing memory tools
+                    memory_config = {}
+            except Exception:
+                allow_memory_tools = True
+                memory_config = {}
             
-            if not tools_config.get("allow_memory_tools", False):
+            if not allow_memory_tools:
                 return json.dumps({"error": "Memory tools are disabled in config.yml."})
-
-            memory_config = self.config.get("memory")
             
             if not memory_config:
                 return json.dumps({"error": "Memory system is not configured in config.yml."})
@@ -1113,7 +1090,20 @@ class ToolManager:
         self, directory: Optional[str] = None, analysis_type: str = "all", include_external: bool = False
     ) -> str:
         """Analyze codebase structure and dependencies using AST analysis."""
-        if not self.config.get("tools", {}).get("allow_memory_tools", False):
+        # Check if memory tools are enabled with safe config access
+        try:
+            if hasattr(self.config, 'get'):
+                allow_memory_tools = self.config.get("tools", {}).get("allow_memory_tools", False)
+            elif hasattr(self.config, '__dict__'):
+                config_dict = self.config.__dict__
+                tools_config = config_dict.get("tools", {})
+                allow_memory_tools = tools_config.get("allow_memory_tools", False) if isinstance(tools_config, dict) else False
+            else:
+                allow_memory_tools = True  # Default to allowing
+        except Exception:
+            allow_memory_tools = True
+            
+        if not allow_memory_tools:
             return json.dumps({"error": "Code analysis tools are disabled in config.yml."})
         
         try:
@@ -1318,7 +1308,20 @@ class ToolManager:
         self, directory: Optional[str] = None, force_full: bool = False, file_types: Optional[List[str]] = None
     ) -> str:
         """Re-index workspace files into the active MemoryProvider."""
-        if not self.config.get("tools", {}).get("allow_memory_tools", False):
+        # Check if memory tools are enabled with safe config access
+        try:
+            if hasattr(self.config, 'get'):
+                allow_memory_tools = self.config.get("tools", {}).get("allow_memory_tools", False)
+            elif hasattr(self.config, '__dict__'):
+                config_dict = self.config.__dict__
+                tools_config = config_dict.get("tools", {})
+                allow_memory_tools = tools_config.get("allow_memory_tools", False) if isinstance(tools_config, dict) else False
+            else:
+                allow_memory_tools = True  # Default to allowing
+        except Exception:
+            allow_memory_tools = True
+            
+        if not allow_memory_tools:
             return json.dumps({"error": "Indexing tools are disabled in config.yml."})
 
         try:
@@ -1585,3 +1588,131 @@ class ToolManager:
         except RuntimeError:
             # No event loop running, we can use asyncio.run()
             return asyncio.run(coro)
+
+    async def _initial_indexing(self):
+        """Perform initial indexing of workspace files."""
+        # This is a temporary solution for Stage 1 to ensure memories are indexed.
+        # In Stage 2, this will be replaced by the IncrementalIndexer and FileSystemWatcher.
+        logger.info("Starting initial workspace indexing...")
+        
+        workspace_path = Path(self.config.get("workspace", {}).get("path", "."))
+        notes_dir = workspace_path / "notes"
+        conversations_dir = workspace_path / "conversations"
+        
+        files_indexed = 0
+        
+        async def index_directory(directory: Path, category: str):
+            nonlocal files_indexed
+            if not directory.exists():
+                return
+            
+            for file_path in directory.rglob('*'):
+                if not file_path.is_file():
+                    continue
+                
+                try:
+                    if category == "conversations" and file_path.suffix.lower() == '.json':
+                        # Special handling for conversation JSON files
+                        await self._index_conversation_file(file_path)
+                        files_indexed += 1
+                    elif file_path.suffix.lower() in {'.md', '.markdown', '.txt'}:
+                        # Regular file indexing for notes and other text files
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        metadata = {"source": str(file_path), "file_type": "text", "path": str(file_path)}
+                        await self._memory_provider.add_memory(
+                            content=content,
+                            metadata=metadata,
+                            categories=[category]
+                        )
+                        files_indexed += 1
+                except Exception as e:
+                    logger.error(f"Failed to index file {file_path}: {e}")
+
+        await index_directory(notes_dir, "notes")
+        await index_directory(conversations_dir, "conversations")
+        
+        if files_indexed > 0:
+            logger.info(f"Initial indexing complete. Indexed {files_indexed} files.")
+        else:
+            logger.info("Initial indexing complete. No new files to index.")
+
+    async def _index_conversation_file(self, file_path: Path):
+        """Index individual messages from a conversation JSON file."""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                conversation_data = json.load(f)
+            
+            # Extract conversation metadata
+            session_id = conversation_data.get('id', 'unknown')
+            created_at = conversation_data.get('created_at', '')
+            
+            # Index each message individually
+            messages = conversation_data.get('messages', [])
+            for i, message in enumerate(messages):
+                # Skip system messages (they're usually very long prompts)
+                if message.get('role') == 'system':
+                    continue
+                
+                content = message.get('content', '')
+                
+                # Handle content that might be a list or dict (some conversation formats)
+                if isinstance(content, list):
+                    content = ' '.join(str(item) for item in content)
+                elif isinstance(content, dict):
+                    content = str(content)
+                elif not isinstance(content, str):
+                    content = str(content)
+                
+                if not content.strip():
+                    continue
+                
+                # Create rich metadata for each message
+                metadata = {
+                    "source": str(file_path),
+                    "file_type": "conversation_message", 
+                    "path": str(file_path),
+                    "session_id": session_id,
+                    "message_role": message.get('role', 'unknown'),
+                    "message_id": message.get('id', f'msg_{i}'),
+                    "timestamp": message.get('timestamp', created_at),
+                    "message_index": i
+                }
+                
+                # Add individual message to memory
+                await self._memory_provider.add_memory(
+                    content=content,
+                    metadata=metadata,
+                    categories=["conversations", "text", message.get('role', 'unknown')]
+                )
+                
+        except Exception as e:
+            logger.error(f"Failed to index conversation file {file_path}: {e}")
+            # Fallback to indexing the raw JSON if parsing fails
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            metadata = {"source": str(file_path), "file_type": "text", "path": str(file_path)}
+            await self._memory_provider.add_memory(
+                content=content,
+                metadata=metadata,
+                categories=["conversations"]
+            )
+
+    # ------------------------------------------------------------------
+    # Startup diagnostics helper
+    # ------------------------------------------------------------------
+    def get_startup_stats(self) -> Dict[str, Any]:
+        """Return key statistics about ToolManager's startup state.
+
+        This is used by PenguinCore and performance tests to inspect whether
+        heavy components like the MemoryProvider were loaded eagerly, whether
+        background indexing has finished, and which lazy-load flags have been
+        triggered.
+        """
+        return {
+            "fast_startup": getattr(self, "fast_startup", False),
+            "memory_provider_exists": self._memory_provider is not None,
+            "indexing_completed": getattr(self, "_indexing_completed", False),
+            "lazy_initialized": self._lazy_initialized.copy(),
+        }

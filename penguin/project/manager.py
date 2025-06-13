@@ -142,9 +142,16 @@ class ProjectManager:
         **metadata
     ) -> Project:
         """Async version of create_project."""
-        return await asyncio.get_event_loop().run_in_executor(
-            None, self.create_project, name, description, tags, budget_tokens, budget_minutes, metadata
-        )
+        def _create_project():
+            return self.create_project(
+                name=name,
+                description=description,
+                tags=tags,
+                budget_tokens=budget_tokens,
+                budget_minutes=budget_minutes,
+                **metadata
+            )
+        return await asyncio.get_event_loop().run_in_executor(None, _create_project)
     
     def get_project(self, project_id: str) -> Optional[Project]:
         """Get a project by ID."""
@@ -286,9 +293,14 @@ class ProjectManager:
         **kwargs
     ) -> Task:
         """Async version of create_task."""
-        return await asyncio.get_event_loop().run_in_executor(
-            None, self.create_task, title, description, project_id, **kwargs
-        )
+        def _create_task():
+            return self.create_task(
+                title=title,
+                description=description,
+                project_id=project_id,
+                **kwargs
+            )
+        return await asyncio.get_event_loop().run_in_executor(None, _create_task)
     
     def get_task(self, task_id: str) -> Optional[Task]:
         """Get a task by ID with full execution history."""

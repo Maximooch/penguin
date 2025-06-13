@@ -2,62 +2,98 @@
 sidebar_position: 2
 ---
 
-# Getting Started with Penguin AI Assistant
+# Getting Started (v0.1.x)
 
-This guide will help you set up and run the Penguin AI Assistant on your local machine.
+Welcome! This short guide will get you up and running with the current Penguin CLI and Python library.  A richer web UI and advanced project features are on the roadmap – see the [future considerations](../advanced/future_considerations.md).
 
-## Prerequisites
+---
 
-- Python 3.9 or higher
-- pip (Python package manager)
-- Git
-
-## Installation
-
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/Maximooch/penguin.git
-   cd penguin
-   ```
-
-2. Create a virtual environment:
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
-   ```
-
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. Set up your API keys:
-   - Copy the `.env.example` file to `.env`
-   - Edit `.env` and add your API keys for the language models you want to use
-
-## Running Penguin AI
-
-To start the Penguin AI Assistant, run:
-
+## 1. Install
 ```bash
-penguin
+pip install penguin-ai            # CLI + Python API
+```
+Optional extras:
+* `pip install "penguin-ai[web]"` – adds FastAPI server (`penguin-web`) **without** graphical UI yet.
+
+This gives you:
+- Complete CLI interface (`penguin` command)
+- Python API for programmatic use
+- SQLite-backed project management
+- All core tools and memory features
+
+## 2. Verify
+```bash
+penguin --version     # prints version string
+penguin --help        # shows CLI options
 ```
 
-You'll be greeted with a welcome message and can start interacting with the AI.
+---
 
-## Basic Usage
+## 3. First steps
 
-- Type your questions or commands and press Enter to send them to the AI.
-- Use special commands like `task`, `project`, or `image` for specific functionalities.
-- Type `exit` to end the session.
+### Interactive chat
+```bash
+penguin               # opens REPL-style chat
+```
 
-For more detailed usage instructions, see the [Basic Usage](usage/basic_usage.md) guide.
+### One-shot prompt
+```bash
+echo "Explain asyncio" | penguin -p -
+```
+
+### Simple project & task (CLI)
+```bash
+penguin project create "Demo" -d "Example project"
+PROJECT_ID=$(penguin project list --json | jq -r '.[0].ID')
+
+penguin project task create "$PROJECT_ID" "Initial research"
+```
+
+### REST API server (optional)
+```bash
+pip install "penguin-ai[web]"
+penguin-web   # Swagger UI at http://localhost:8000/docs
+```
+
+### Python API
+```python
+from penguin.agent import PenguinAgent
+
+agent = PenguinAgent()
+print(agent.chat("Hello!"))
+```
+
+---
+
+## 4. Configuration basics
+Create a `.env` file or set environment variables:
+```bash
+OPENAI_API_KEY=your_key_here        # or ANTHROPIC_API_KEY, OPENROUTER_API_KEY
+DEFAULT_MODEL=gpt-4
+```
 
 ## Next Steps
 
-- Explore the [Configuration](configuration.md) options to customize Penguin AI.
-- Learn about [Automode](usage/automode.md) for automated task execution.
-- Discover how to manage [Tasks](usage/task_management.md) and [Projects](usage/project_management.md).
+### Essential Guides
+- [CLI Commands Reference](usage/cli_commands.md) - Complete command documentation
+- [Project Management](usage/project_management.md) - Working with projects and tasks
+- [Web Interface Guide](usage/web_interface.md) - Using the web UI effectively
+
+### Advanced Topics
+- [Configuration Options](configuration.md) - Detailed configuration reference
+- [Custom Tools](advanced/custom_tools.md) - Extending Penguin with custom functionality
+- [API Reference](api_reference/python_api_reference.md) - Complete Python API documentation
+
+### Troubleshooting
+
+**Common Issues:**
+
+1. **Command not found**: Ensure you installed with the default option, not minimal
+2. **Web interface not starting**: Install with `pip install penguin-ai[web]`
+3. **API errors**: Check your `.env` file has valid API keys
+4. **Permission errors**: Use virtual environments to avoid system-wide installation conflicts
+
+For more help, see our [GitHub Issues](https://github.com/Maximooch/penguin/issues) or [Discord community](#).
 
 
 

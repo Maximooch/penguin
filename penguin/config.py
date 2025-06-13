@@ -339,6 +339,8 @@ class Config:
             os.getenv("PENGUIN_CACHE_DIR", "~/.cache/penguin")
         ).expanduser()
     )
+    # Fast startup configuration
+    fast_startup: bool = field(default=False)
     
     # Dictionary-like access to model settings
     @property
@@ -451,6 +453,7 @@ class Config:
             temperature=config_data.get("temperature", llm_model_config.temperature), # Use model temp if global not set
             max_tokens=config_data.get("max_tokens", llm_model_config.max_tokens), # Use model max_tokens if global not set
             diagnostics=diagnostics_config,
+            fast_startup=config_data.get("performance", {}).get("fast_startup", False),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -492,3 +495,5 @@ CONVERSATION_CONFIG = {
 # class BrowserConfig:
 #     preferred_browser: str = 'chromium'  # 'chrome' or 'chromium'
 #     suppress_popups: bool = True
+
+
