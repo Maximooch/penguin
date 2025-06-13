@@ -39,15 +39,14 @@ penguin-web  # Web interface (do note it's very clunky, will be improved more so
 ## 🎯 Development Status
 - ✅ Core functionality
 - ✅ Basic CLI interface (penguin)
-- ✅ Model integration (OpenRouter, Ollama and other open source inference engines soon))
+- ✅ Model integration (OpenRouter, Ollama and other open source inference engines soon)
 - 🚧 Advanced features (in progress)
-   - 
 - 📅 Web interface (penguin-web and Link, planned)
 - 📅 Plugin system (planned)
 
 [View Roadmap →](https://github.com/maximooch/penguin/projects)
 
-⚠️ **Note**: Penguin is under active development. While I  strive for stability, you may encounter occasional issues. Your feedback and contributions are valuable in improving the project.
+⚠️ **Note**: Penguin is under active development. While I strive for stability, you may encounter occasional issues. Your feedback and contributions are valuable in improving the project.
 
 # Penguin AI Assistant
 
@@ -128,7 +127,20 @@ pip install -r requirements.txt
 
 4. Rename `.env.example` to `.env` and configure your environment:
 
-    Then Edit `penguin/.env` with your API key(s)
+
+Then Edit `penguin/.env` with your API key(s)
+
+### Optional Memory Providers
+
+Penguin supports multiple memory backends. Install the extras for your preferred provider:
+
+```bash
+pip install 'penguin-ai[memory_faiss]'   # FAISS + sentence-transformers
+pip install 'penguin-ai[memory_lance]'   # LanceDB
+pip install 'penguin-ai[memory_chroma]'  # ChromaDB
+```
+The `memory_faiss` extra installs `faiss-cpu` (or `faiss-gpu`) and
+`sentence-transformers` automatically.
 
 ## Usage
 
