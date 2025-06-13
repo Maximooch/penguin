@@ -73,7 +73,7 @@ if PROFILE_ENABLED:
     log_error = log_error_module.log_error
     setup_logger_module = time_import("penguin.utils.logs")
     setup_logger = setup_logger_module.setup_logger
-    PenguinInterface_module = time_import("penguin.chat.interface")
+    PenguinInterface_module = time_import("penguin.cli.interface")
     PenguinInterface = PenguinInterface_module.PenguinInterface
     
     total_end = time.time()
@@ -114,7 +114,7 @@ from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
 from penguin.utils.logs import setup_logger
-from penguin.chat.interface import PenguinInterface
+from penguin.cli.interface import PenguinInterface
 from penguin.config import Config # Import Config type for type hinting
 
 # Add better import error handling for setup functions
