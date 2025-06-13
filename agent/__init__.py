@@ -81,32 +81,28 @@ class PenguinAgent:  # pylint: disable=too-few-public-methods
 
     def chat(self, message: str, *, streaming: bool = False) -> str:
         """Single-turn chat – returns full assistant response."""
-        return _run_sync(self._core.process_message(message, streaming=streaming))
+        async def _chat_async() -> str:
+            # NOTE: `streaming` flag passed to run_single_turn for provider hints
+            # but the full response is awaited and returned. For a streaming
+            # response, use the `.stream()` method.
+            response_data = await self._core.engine.run_single_turn(
+                prompt=message,
+                streaming=streaming,
+            )
+            return response_data.get("assistant_response", "")
+
+        return _run_sync(_chat_async())
 
     def stream(self, message: str) -> Generator[str, None, None]:
         """Yield chunks **synchronously** for immediate printing."""
+        agen = self._core.engine.stream(prompt=message)
 
-        async def _inner() -> AsyncGenerator[str, None]:
-            queue: asyncio.Queue[str] = asyncio.Queue()
-
-            async def _cb(chunk: str):
-                await queue.put(chunk)
-
-            await self._core.process_message(message, streaming=True, stream_callback=_cb)
-            await queue.put(None)  # sentinel
-
-            while True:
-                chunk = await queue.get()
-                if chunk is None:
-                    break
-                yield chunk
-
-        agen = _inner()
         while True:
-            chunk = _run_sync(agen.__anext__())  # type: ignore[arg-type]
-            if chunk is None:
+            try:
+                chunk = _run_sync(agen.__anext__())
+                yield chunk
+            except StopAsyncIteration:
                 break
-            yield chunk
 
     def run_task(self, prompt: str, *, max_iterations: int = 5) -> Dict[str, Any]:
         """Multi-step reasoning using Engine.run_task (blocking)."""
@@ -226,10 +222,18 @@ class PenguinAgentAsync:
     # ------------------------------------------------------------------
 
     async def chat(self, message: str, *, streaming: bool = False) -> str:
-        return await self._core.process_message(message, streaming=streaming)
+        """Single-turn chat – returns full assistant response."""
+        # NOTE: `streaming` flag passed for provider hints, but the full
+        # response is awaited and returned. For a streaming response,
+        # use the `.stream()` method.
+        response_data = await self._core.engine.run_single_turn(
+            prompt=message,
+            streaming=streaming,
+        )
+        return response_data.get("assistant_response", "")
 
     async def stream(self, message: str):  # -> AsyncGenerator[str, None]
-        async for chunk in self._core.engine.stream(message):
+        async for chunk in self._core.engine.stream(prompt=message):
             yield chunk
 
     async def run_task(self, prompt: str, *, max_iterations: int = 5):
