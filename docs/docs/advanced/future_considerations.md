@@ -219,3 +219,70 @@ flowchart TD
 - Richer error reporting from the `ActionExecutor`
 - Option to preload heavy tools in background threads
 
+## Command-Line Interface (CLI) Roadmap
+
+The current `penguin` CLI intentionally exposes only a minimal, rock-solid surface area (chat plus basic project/task CRUD and config helpers).  Everything else documented in older drafts lives here as **future work**.
+
+Planned features (subject to change):
+
+| Area | Proposed Commands | Status |
+|------|-------------------|--------|
+| Project inspection | `penguin project show`, `penguin project stats`, `penguin project archive/restore`, `--verbose` views | ⚪ Planned |
+| Project export/import | `penguin project export`, `penguin project import` | ⚪ Planned |
+| Extended task ops | `task update`, `task show`, dependency graph actions, bulk operations | ⚪ Planned |
+| Memory tooling | `penguin memory *` sub-app (search, list, export) | ⚪ Planned |
+| Database ops | `penguin db *` maintenance suite | ⚪ Planned |
+| Workspace ops | `penguin workspace *` housekeeping commands | ⚪ Planned |
+| Model management | `penguin models *` richer catalogue & switcher | ⚪ Planned |
+| Web server | `penguin-web` launch & control wrappers | ⚪ Planned |
+| Continuous/agent modes | First-class `run` sub-app with presets, schedules | ⚪ Planned |
+
+Legend: 🟢 Implemented 🟡 In progress ⚪ Planned / not started
+
+> These items are tracked in GitHub issues and the product roadmap.  Keep this table in sync when functionality lands!
+
+## Web Interface Roadmap
+
+The current release ships only the **backend HTTP API server** (FastAPI).  Everything described below is **planned** for a future graphical web interface.
+
+| Area | Planned Feature | Status |
+|------|-----------------|--------|
+| Dashboard | Project cards, activity feed, resource charts | ⚪ Planned |
+| Project views | Kanban board, Gantt chart, template picker | ⚪ Planned |
+| Task panel | Live logs, dependency graph, execution history | ⚪ Planned |
+| Chat UI | Rich Markdown, file attachments, code execution | ⚪ Planned |
+| Real-time updates | WebSocket streaming for tasks, notifications | ⚪ Planned |
+| Workflow automation | Triggers, action chains, approval gates | ⚪ Planned |
+| Integrations | GitHub, Slack/Discord, Jira/Trello, CI/CD | ⚪ Planned |
+| Mobile / PWA | Responsive design, push notifications | ⚪ Planned |
+| Security layer | Auth, RBAC, OAuth providers | ⚪ Planned |
+
+Legend: 🟢 Implemented 🟡 In progress ⚪ Planned / not started
+
+Keep this table updated when features land in `penguin.web`.
+
+## Python API Roadmap
+
+| Area | Planned Classes / Helpers | Status |
+|------|---------------------------|--------|
+| Memory subsystem | Pluggable `MemoryProvider`, embeddings, vector search | ⚪ Planned |
+| Batch processing | `BatchProcessor` for parallel task execution | ⚪ Planned |
+| Monitoring | `PerformanceMonitor`, Prometheus export helpers | ⚪ Planned |
+| Error handling | Fine-grained `ErrorRecovery` strategies | ⚪ Planned |
+| Plugin system | `Plugin`, `plugin_hook` decorators, dynamic discovery | ⚪ Planned |
+| Builder API | `AgentBuilder` fluent builder for complex configs | ⚪ Planned |
+
+Keep this table synced with actual releases.
+
+## Project Management API Roadmap
+
+| Feature | Status |
+|---------|--------|
+| Subtasks & hierarchy browsing | ⚪ Planned |
+| Task dependency graphs & validation | ⚪ Planned |
+| Bulk operations (create/update/delete) | ⚪ Planned |
+| EventBus real-time project/task events | ⚪ Planned |
+| Resource constraints & execution records | ⚪ Planned |
+| Checkpointing & rollback | ⚪ Planned |
+| Advanced search & filtering DSL | ⚪ Planned |
+

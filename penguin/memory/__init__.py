@@ -64,6 +64,18 @@ except ImportError:
     LegacyMemoryProvider = None
     LegacyMemoryTool = None
 
+# AFTER the existing imports at the top of the file but before other code runs - inject workspace-aware default path
+from pathlib import Path
+from penguin.config import WORKSPACE_PATH  # Provides the resolved workspace directory
+
+# Workspace-aware default location for all memory provider data. This keeps the project
+# repository clean and ensures memory data lives alongside the rest of the runtime
+# workspace artefacts (conversations/, logs/, etc.)
+DEFAULT_STORAGE_PATH = Path(WORKSPACE_PATH) / "memory_db"
+# Ensure the directory exists early to avoid surprises later. This is a no-op if it is
+# already present.
+DEFAULT_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
+
 __all__ = [
     # New provider system
     'MemoryProvider',
@@ -121,10 +133,15 @@ async def create_memory_system(config=None):
         Initialized MemoryTool instance ready for use
     """
     if config is None:
+        # Fall back to a workspace-relative storage path instead of a path inside the
+        # repository. Users may still override this by passing an explicit config.
         config = {
             'provider': 'auto',
-            'storage_path': './memory_db'
+            'storage_path': str(DEFAULT_STORAGE_PATH)
         }
+    else:
+        # Ensure a storage_path key exists; if not, provide the workspace default.
+        config.setdefault('storage_path', str(DEFAULT_STORAGE_PATH))
     
     provider = create_memory_provider(config)
     await provider.initialize()

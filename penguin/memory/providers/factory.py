@@ -7,6 +7,8 @@ configuration and dependency availability.
 
 import logging
 from typing import Any, Dict, Optional, Type, List
+from pathlib import Path
+from penguin.config import WORKSPACE_PATH  # Ensures consistent workspace reference
 
 from .base import MemoryProvider, MemoryProviderError
 
@@ -171,7 +173,10 @@ class MemoryProviderFactory:
         provider_config = {
             'provider_type': provider_type,
             'embedding_model': global_config.get('embedding_model', 'sentence-transformers/all-MiniLM-L6-v2'),
-            'storage_path': global_config.get('storage_path', './memory_db')
+            # Resolve storage path; prefer explicit config, else default to workspace
+            # directory. This prevents accidental creation of 'memory_db' inside the
+            # repository when users forget to specify a path.
+            'storage_path': global_config.get('storage_path', str(Path(WORKSPACE_PATH) / 'memory_db'))
         }
         
         # Add provider-specific settings

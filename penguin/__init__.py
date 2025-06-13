@@ -35,32 +35,47 @@ from .core import PenguinCore
 from .config import config
 from .engine import Engine, EngineSettings
 
-# Agent exports - simplified interface
+# ---------------------------------------------------------------------------
+# Agent exports – simplified high-level wrapper
+# ---------------------------------------------------------------------------
+
+import warnings
+
+# The canonical package layout places ``penguin.agent`` as a *sibling* package
+# of this sub-package (``penguin.penguin``).  A simple relative import is all
+# that is required – tinkering with ``sys.path`` is both fragile and can mask
+# genuine packaging errors.
+
 try:
-    # Agent is in the parent directory at same level as main penguin package
-    import sys
-    from pathlib import Path
-    agent_path = Path(__file__).parent.parent / "agent"
-    if str(agent_path) not in sys.path:
-        sys.path.insert(0, str(agent_path))
-    from penguin.agent import PenguinAgent
-except ImportError:
-    try:
-        # Alternative: try importing directly without path manipulation
-        sys.path.insert(0, str(Path(__file__).parent.parent))
-        from agent import PenguinAgent
-    except ImportError:
-        # Final fallback: create a placeholder
-        class PenguinAgent:
-            def __init__(self):
-                raise ImportError("PenguinAgent not available - agent module not found")
-        print("Warning: PenguinAgent not available - agent module not found")
+    # NOTE: ``from ..agent`` resolves to the top-level ``penguin.agent`` because
+    # ``penguin.penguin`` lives one level below the root package.
+    from ..agent import PenguinAgent  # type: ignore
+except ImportError as exc:  # pragma: no cover – only trips in broken installs
+    # Emit a *single* runtime warning instead of writing directly to stderr so
+    # that callers retain full control over visibility (e.g. ``-W error``).
+    warnings.warn(
+        "PenguinAgent could not be imported – the agent module is missing. "
+        "Most high-level conveniences will be unavailable.\n"
+        f"Underlying error: {exc}",
+        category=ImportWarning,
+        stacklevel=2,
+    )
+
+    class PenguinAgent:  # pylint: disable=too-few-public-methods
+        """Placeholder that raises a helpful error when instantiated."""
+
+        def __init__(self, *_, **__):
+            raise ImportError(
+                "PenguinAgent is unavailable – the 'penguin.agent' sub-package "
+                "could not be imported. Please check your installation or "
+                "ensure optional dependencies are installed."
+            )
 
 # Project management exports
 from .project import ProjectManager, Project, Task
 
 # Version info
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __author__ = "Maximus Putnam"
 __email__ = "MaximusPutnam@gmail.com"
 __license__ = "AGPL-3.0-or-later"
