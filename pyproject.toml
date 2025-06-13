@@ -62,8 +62,7 @@ dependencies = [
     "plotext",
     "matplotlib",
     "networkx",
-    "watchdog>=2.3.0",
-    "browser_use"
+    "watchdog>=2.3.0"
 ]
 
 [project.optional-dependencies]
@@ -107,6 +106,13 @@ llm_transformers = [
 ]
 llm_ollama = ["ollama>=0.1.7"]
 
+# Browser automation (currently using PyDoll, browser_use temporarily disabled)
+browser = [
+    "browser_use>=0.1.0; python_version>='3.11'",  # Requires Python 3.11+
+    "playwright>=1.40.0",
+    "pillow>=8.3.0"
+]
+
 # Development tools
 dev = [
     "pytest>=6.0.0",
@@ -130,7 +136,7 @@ test = [
 
 # Full installation (everything)
 all = [
-    "penguin-ai[web,memory_lance,memory_faiss,memory_chroma,llm_transformers,llm_ollama]"
+    "penguin-ai[web,memory_lance,memory_faiss,memory_chroma,llm_transformers,llm_ollama,browser]"
 ]
 
 [project.urls]
