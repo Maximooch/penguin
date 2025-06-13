@@ -1,52 +1,94 @@
 [![Penguin](https://img.shields.io/badge/🐧-Penguin-00A7E1?style=for-the-badge&logoColor=white)](https://github.com/maximooch/penguin)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![PyPI version](https://img.shields.io/pypi/v/penguin-ai.svg)](https://pypi.org/project/penguin-ai/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+[![GitHub Actions](https://img.shields.io/github/actions/workflow/status/Maximooch/penguin/publish.yml?branch=main)](https://github.com/Maximooch/penguin/actions)
 [![Documentation Status](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://penguin-rho.vercel.app)
-[![Version](https://img.shields.io/badge/version-0.1.0-orange)](https://github.com/maximooch/penguin)
+[![Downloads](https://img.shields.io/pypi/dm/penguin-ai.svg)](https://pypi.org/project/penguin-ai/)
+[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Maximooch/penguin)
 
-## 📋 Table of Contents
+
+
+## Table of Contents
 - [Overview](#overview)
-- [Features](#key-features)
 - [Quick Start](#quick-start)
-- [Prerequisites](#prerequisites)
+- [Development Status](#development-status)  
+- [Key Features](#key-features)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Architecture](#architecture)
 - [Contributing](#contributing)
+- [Support & Help](#support--help)
 - [License](#license)
 - [Acknowledgments](#acknowledgments)
 
+## Overview
 
-## 🚀 Quick Start
+Penguin is an autonomous software engineering agent that goes beyond code completion—it manages entire projects from planning to execution. Unlike other AI coding assistants that require constant supervision, Penguin features built-in project management, autonomous task execution, and a modular architecture that handles everything from writing code to coordinating complex development workflows. Think of it as your AI software engineer that can take a project spec and deliver working software, not just code snippets.
+
+## Quick Start
 ```bash
+# Install with CLI tools (recommended for most users)
 pip install penguin-ai
 
-# save your api key, OpenRouter recommended
+# Optional: Install with web interface 
+pip install penguin-ai[web]
 
-export OPENROUTER_API_KEY="your_api_key" # If Windows use `set` instead
+# Set up your API key (OpenRouter recommended)
+export OPENROUTER_API_KEY="your_api_key"  # On Windows: set OPENROUTER_API_KEY=...
 
-# Then go through the wizard to set your workspace, model, and additional settings
+# Run the setup wizard
 penguin config setup
 
-# Run Penguin
-penguin  # CLI interface
-# OR
-penguin-web  # Web interface (do note it's very clunky, will be improved more soon)
+# Start using Penguin
+penguin              # Interactive CLI chat
+penguin-web          # Web API server (if [web] installed)
 ```
 
-## 🎯 Development Status
-- ✅ Core functionality
-- ✅ Basic CLI interface (penguin)
-- ✅ Model integration (OpenRouter, Ollama and other open source inference engines soon)
-- 🚧 Advanced features (in progress)
-- 📅 Web interface (penguin-web and Link, planned)
-- 📅 Plugin system (planned)
+## Development Status
 
-[View Roadmap →](https://github.com/maximooch/penguin/projects)
+### ✅ **Phase 2 Complete: Developer Preview (v0.2.x)**
+- **Core Architecture**: Modular namespaces (`penguin.cli`, `penguin.web`, `penguin.project`)
+- **CLI Interface**: Full project/task management with 20+ commands
+- **Multi-Model Support**: OpenRouter, Anthropic, OpenAI via LiteLLM  
+- **Project Management**: SQLite ACID transactions with dependency tracking
+- **Hybrid Dependencies**: Smart defaults + optional extras ([web], [memory_*], [browser])
+- **Web API**: Production FastAPI/WebSocket backend with OpenAPI docs
+- **Automated Publishing**: GitHub Actions with trusted PyPI publishing
 
-⚠️ **Note**: Penguin is under active development. While I strive for stability, you may encounter occasional issues. Your feedback and contributions are valuable in improving the project.
+### 🚧 **Phase 3 Active: Performance & Benchmarking (v0.3.x)**
+
+**Current Performance Work:**
+- **Fast Startup Mode**: Deferred memory indexing reducing cold start by 60-80%
+- **Lazy Loading**: Memory providers and tools loaded on-demand vs upfront
+- **Background Processing**: Memory indexing moved to separate threads
+- **Profiling Integration**: Built-in performance monitoring with detailed reports
+- **Resource Optimization**: Memory usage tracking and garbage collection tuning
+
+**Benchmarking Pipeline (In Progress):**
+- **SWE-bench Integration**: Automated coding task evaluation
+- **HumanEval Testing**: Code generation accuracy benchmarks  
+- **Startup Performance**: Sub-250ms P95 target for CLI initialization
+- **Memory Footprint**: <200MB baseline memory usage optimization
+- **Token Efficiency**: Cost optimization with intelligent model routing
+
+**Technical Debt & Architecture:**
+- **Background Memory Daemon**: Separate process for indexing and search
+- **Connection Pooling**: Database and API connection optimization
+- **Async Optimization**: Converting blocking I/O to async patterns
+- **Error Recovery**: Graceful degradation and circuit breaker patterns
+
+### 📅 **Planned: Advanced Features (v0.4.x+)**
+- **Rich Web UI**: React-based interface with real-time updates
+- **Advanced Memory**: Vector search, knowledge graphs, cross-session learning
+- **Multi-Agent Systems**: Coordinated AI agents for complex projects  
+- **Plugin Ecosystem**: Third-party tool integration and marketplace
+
+[View Full Roadmap →](https://penguin-rho.vercel.app/docs/advanced/roadmap) • [Performance Tracking →](https://github.com/maximooch/penguin/blob/main/test_startup_performance.py)
+
+<!-- For now link roadmap to future considerations, or the Penguin super roadmap file. Then later on have a github projects roadmap? -->
 
 # Penguin AI Assistant
 
@@ -54,112 +96,156 @@ Penguin is a modular, extensible AI coding assistant powered by LLMs, enabling s
 
 ## Key Features
 
-- **Multi-Model Support**: Compatible with various AI models through LiteLLM integration
+### **Cognitive Architecture**
+Penguin implements a sophisticated multi-system cognitive architecture:
 
-- **Cognitive Architecture**:
-  - Reasoning and response generation system
-  - Persistent memory and context management
-  - Pluggable memory providers with semantic search
-  - Tool and action processing capabilities
-  - Task coordination and project management
-  - Performance monitoring and diagnostics
-- **Development Capabilities**:
-  - Automated task execution and project scaffolding
-  - Code generation with documentation
-  - Debugging and problem analysis
-  - Architectural design recommendations
-  - File system operations and management
-  - Web search integration for up-to-date information
-  - Interactive CLI with slash commands
-  - PyDoll browser tools and Chrome debugger
-  - Memory search across conversations
-  - Automatic checkpoints with branching and rollback
+- **Reasoning & Response Generation**: Advanced prompt engineering with context-aware decision making
+- **Persistent Memory Management**: Conversation history with cross-session knowledge retention  
+- **Pluggable Memory Providers**: Support for SQLite, FAISS, LanceDB, and ChromaDB backends
+- **Tool & Action Processing**: Modular system with 15+ built-in tools and extensible action handlers
+- **Task Coordination**: SQLite-backed project management with dependency tracking
+- **Performance Monitoring**: Built-in diagnostics, error tracking, and execution metrics
+
+### **Development Capabilities**
+Comprehensive coding assistance and automation:
+
+- **Code Execution**: IPython notebook integration for running, testing, and debugging code
+- **Project Scaffolding**: Automated project structure generation with best practices
+- **Code Generation**: Documentation, unit tests, and architectural recommendations
+- **File System Operations**: Complete file management (create, read, write, search, organize)
+- **Web Search Integration**: Real-time information retrieval during conversations
+- **Browser Use**: PyDoll integration for web interaction and Chrome debugging
+- **Debugging & Analysis**: Intelligent error detection and resolution suggestions
+
+### **Project Management**
+Enterprise-grade project coordination:
+
+- **SQLite-backed Storage**: ACID transactions for reliable project and task data
+- **Task Dependencies**: Complex workflow management with dependency graphs
+- **Progress Tracking**: Real-time status updates and detailed execution history
+- **Resource Management**: Token budgets, time limits, and tool constraints per task
+- **Workspace Organization**: Structured file and project management
+- **Memory Search**: Semantic search across conversations and project history
+
+### **Multi-Interface Support**
+Flexible interaction methods:
+
+- **Interactive CLI**: Full-featured command-line with project/task management commands
+- **Web API**: Production-ready REST/WebSocket backend (FastAPI-powered)
+- **Python Library**: Rich programmatic API for integration and automation
+- **Multi-Model Support**: OpenAI, Anthropic, OpenRouter, and local models via LiteLLM
+
+### **Advanced Features**
+- **Automatic Checkpoints**: Conversation branching and rollback capabilities *(planned)*
+- **Plugin Architecture**: Extensible tool system for third-party integrations *(in development)*
+- **Team Collaboration**: Multi-user workspaces and shared projects *(planned)*
+- **Rich Web UI**: Complete browser interface with real-time updates *(in development)*
 
 ## Prerequisites
 
-- [Python 3.10 (recommended) or Python 3.8+](https://www.python.org/downloads/)
+- [Python 3.9+](https://www.python.org/downloads/) (3.10+ recommended for best performance)
 - Valid API key(s) for your chosen AI model provider(s)
-- [UV package manager](https://docs.astral.sh/uv/getting-started/installation/) (recommended)
+- [UV package manager](https://docs.astral.sh/uv/getting-started/installation/) (optional, for development)
 
 ## Installation
 
-### Option 1: Recommended Setup (using UV)
+### Recommended: PyPI Installation
 
-1. Install UV package manager (if not already installed):
 ```bash
-pip install uv
+# Core installation (includes CLI tools)
+pip install penguin-ai
+
+# With web interface
+pip install penguin-ai[web]
+
+# With memory providers
+pip install penguin-ai[memory_faiss]    # FAISS + sentence-transformers  
+pip install penguin-ai[memory_lance]    # LanceDB
+pip install penguin-ai[memory_chroma]   # ChromaDB
+
+# Full installation (all features)
+pip install penguin-ai[all]
 ```
 
-2. Clone the repository:
-```bash
-git clone https://github.com/maximooch/penguin.git
-cd penguin
-```
+### Development Installation
 
-3. Run the UV setup script:
-```bash
-python uv_setup.py
-```
-This will:
-- Create a Python 3.10 virtual environment
-- Install all dependencies using UV
-- Offer to launch Penguin
+For contributing or using latest features:
 
-### Option 2: Standard Setup
-
-1. Clone the repository:
 ```bash
 git clone https://github.com/maximooch/penguin.git
-cd penguin
+cd penguin/penguin
+pip install -e .                        # Editable install
+# OR with UV (faster)
+pip install uv && python uv_setup.py    # Automated UV setup
 ```
 
-2. Create and activate a virtual environment:
-```bash
-python -m venv venv
-source venv/bin/activate  
-# On Windows: venv\Scripts\activate
-```
+### Available Extras
 
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-4. Rename `.env.example` to `.env` and configure your environment:
-
-
-Then Edit `penguin/.env` with your API key(s)
-
-### Optional Memory Providers
-
-Penguin supports multiple memory backends. Install the extras for your preferred provider:
-
-```bash
-pip install 'penguin-ai[memory_faiss]'   # FAISS + sentence-transformers
-pip install 'penguin-ai[memory_lance]'   # LanceDB
-pip install 'penguin-ai[memory_chroma]'  # ChromaDB
-```
-The `memory_faiss` extra installs `faiss-cpu` (or `faiss-gpu`) and
-`sentence-transformers` automatically.
+| Extra | Description | 
+|-------|-------------|
+| `[web]` | FastAPI server + WebSocket support |
+| `[memory_faiss]` | FAISS vector search + embeddings |
+| `[memory_lance]` | LanceDB vector database |
+| `[memory_chroma]` | ChromaDB integration |
+| `[browser]` | Browser automation (Python 3.11+ only) |
+| `[all]` | Everything above |
 
 ## Usage
 
-Start the Penguin AI assistant:
 ```bash
-penguin  # Start CLI interface
-penguin-web  # Start Web interface
+# Interactive chat
+penguin
+
+# Run setup wizard
+penguin config setup
+
+# Project management
+penguin project create "My Project"
+penguin project task create PROJECT_ID "Task description"
+
+# Web API server (requires [web] extra)
+penguin-web
 ```
 
-Play around with Penguin! It's recommended to check out the User Manual, and the Docs for more in depth information to get the most out of Penguin!
+For detailed usage, see the [documentation](https://penguin-rho.vercel.app).
 
-To change models, go to the `config.yml` file and change the `model` field to the model you want to use.
+<!-- ## 🎬 Demo & Screenshots
 
-For more information on how to use Penguin, check out the [documentation](https://penguin-rho.vercel.app)!
+### CLI Interface
+```bash
+# Interactive chat with project context
+$ penguin
+🐧 Penguin AI Assistant v0.2.2
+📁 Workspace: /path/to/your/project
+💭 Type your message or use /help for commands
 
-### Engine Settings
+You: Create a FastAPI app with user authentication
+🤖 I'll help you create a FastAPI application with user authentication...
+```
 
-`EngineSettings.wall_clock_stop_seconds` can be used to stop autonomous runs after a set amount of real time. Configure this value in the Engine settings to enforce a wall‑clock timeout during long running tasks.
+### Project Management
+```bash
+# Create and manage projects
+$ penguin project create "E-commerce API" -d "REST API for online store"
+✓ Created project: E-commerce API (ID: abc123)
 
+$ penguin project task create abc123 "Setup FastAPI project structure"
+✓ Created task: Setup FastAPI project structure (ID: task456)
+
+$ penguin project task start task456
+🚀 Starting task: Setup FastAPI project structure
+```
+
+### Web API Interface
+```bash
+# Start the web server
+$ penguin-web
+🌐 Starting Penguin Web API...
+📡 Server running at http://localhost:8000
+📚 API docs: http://localhost:8000/docs
+```
+
+> 📸 **Coming Soon**: Screenshots and GIFs demonstrating the full interface -->
 
 ## Architecture
 
@@ -219,9 +305,76 @@ For detailed technical documentation, visit our [docs](https://penguin-rho.verce
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss proposed changes.
+We welcome contributions! Penguin is open source and benefits from community involvement.
+
+### Quick Start for Contributors
+
+```bash
+# 1. Fork and clone the repository
+git clone https://github.com/YOUR_USERNAME/penguin.git
+cd penguin/penguin
+
+# 2. Set up development environment  
+pip install -e .[dev,test]        # Install in development mode
+pip install pre-commit && pre-commit install  # Set up code formatting
+
+# 3. Run tests to ensure everything works
+pytest tests/
+
+# 4. Make your changes and test
+# 5. Submit a pull request
+```
+
+### How to Contribute
+
+- **🐛 Bug Reports**: [Open an issue](https://github.com/Maximooch/penguin/issues) with details and reproduction steps
+- **💡 Feature Requests**: [Discuss ideas](https://github.com/Maximooch/penguin/discussions) before implementing
+- **📖 Documentation**: Help improve docs, examples, and guides
+- **🧪 Testing**: Add test coverage for new features and edge cases
+- **🎨 UI/UX**: Design improvements for CLI and web interfaces
+
+### Development Guidelines
+
+- Follow [PEP 8](https://pep8.org/) style guidelines (enforced by `black` and `ruff`)
+- Add docstrings for public functions and classes
+- Include tests for new functionality
+- Update documentation for user-facing changes
+- Use semantic commit messages
+
+### Community
+
+- [GitHub Discussions](https://github.com/Maximooch/penguin/discussions) - Questions and ideas
+- [Issues](https://github.com/Maximooch/penguin/issues) - Bug reports and feature requests  
+- [Roadmap](https://github.com/Maximooch/penguin/projects) - Development progress
+
+For major changes, please open an issue first to discuss your approach.
+
+## Support & Help
+
+### Documentation & Resources
+- **[Official Documentation](https://penguin-rho.vercel.app)** - Complete user guide and API reference
+- **[GitHub Discussions](https://github.com/Maximooch/penguin/discussions)** - Community Q&A and ideas
+- **[Examples & Tutorials](https://penguin-rho.vercel.app/docs/usage/)** - Step-by-step guides
+- **[Roadmap](https://github.com/Maximooch/penguin/projects)** - Development progress and planned features
+
+### Issues & Bug Reports
+- **[Report a Bug](https://github.com/Maximooch/penguin/issues/new?template=bug_report.md)** - Something not working?
+- **[Request a Feature](https://github.com/Maximooch/penguin/issues/new?template=feature_request.md)** - Ideas for improvements
+- **[Performance Issues](https://github.com/Maximooch/penguin/blob/main/test_startup_performance.py)** - Use our performance test script
+
+### Project Status
+- **Current Version**: v0.2.2 (Phase 2 Complete)  
+- **Active Development**: Phase 3 - Performance & Benchmarking
+- **Stability**: Core features stable, performance optimization in progress
+- **Python Support**: 3.9+ (3.10+ recommended for best performance)
+
+### Changelog & Releases
+- **[Release Notes](https://github.com/Maximooch/penguin/releases)** - What's new in each version
+- **[Development Blog](https://penguin-rho.vercel.app/blog)** - Technical deep-dives and progress updates
 
 ## License
+
+### Open Source License
 
 Penguin is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
@@ -236,6 +389,16 @@ Key points:
 For the complete license text, see:
 - [LICENSE](LICENSE) file in this repository
 - [GNU AGPL v3](https://www.gnu.org/licenses/agpl-3.0.en.html) official text
+
+### Enterprise License
+
+An enterprise license without the copyleft requirements is under consideration for organizations that need different licensing terms. This would allow:
+- Proprietary modifications and integrations
+- No obligation to share source code changes
+- Commercial redistribution rights
+- Priority support and consulting services
+
+**Interested in enterprise licensing?** Please contact the maintainer to discuss your requirements and explore available options.
 
 
 

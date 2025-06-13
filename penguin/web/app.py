@@ -87,7 +87,7 @@ def create_app() -> "FastAPI":
     app = FastAPI(
         title="Penguin AI",
         description="AI Assistant with reasoning, memory, and tool use capabilities",
-        version="0.2.1",
+        version="0.2.2",
         docs_url="/api/docs", 
         redoc_url="/api/redoc"
     )
@@ -126,7 +126,7 @@ def create_app() -> "FastAPI":
             """API root endpoint with service information."""
             return {
                 "name": "Penguin AI API",
-                "version": "0.2.1",
+                "version": "0.2.2",
                 "status": "running",
                 "description": "AI Assistant with reasoning, memory, and tool use capabilities",
                 "endpoints": {
