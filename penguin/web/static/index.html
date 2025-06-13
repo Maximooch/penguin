@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Penguin Chat</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --background: 224 71% 4%;
+            --foreground: 213 31% 91%;
+            --primary: 210 40% 98%;
+            --primary-foreground: 222.2 47.4% 1.2%;
+            --muted: 223 47% 11%;
+            --muted-foreground: 215.4 16.3% 56.9%;
+            --border: 216 34% 17%;
+            --radius: 0.5rem;
+        }
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: hsl(var(--background));
+            color: hsl(var(--foreground));
+        }
+
+        .message {
+            position: relative;
+            max-width: 85%;
+            margin: 1rem 0;
+            padding: 1rem;
+            border-radius: var(--radius);
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+            line-height: 1.5;
+        }
+
+        .message-user {
+            background-color: hsl(var(--primary));
+            color: hsl(var(--primary-foreground));
+            margin-left: auto;
+            border-top-right-radius: 0;
+        }
+
+        .message-assistant {
+            background-color: hsl(var(--muted));
+            color: hsl(var(--foreground));
+            margin-right: auto;
+            border-top-left-radius: 0;
+        }
+
+        .message-system {
+            background-color: hsl(var(--muted));
+            border: 1px solid hsl(var(--border));
+            color: hsl(var(--muted-foreground));
+            font-size: 0.875rem;
+            width: 100%;
+            text-align: center;
+        }
+        
+        .message-progress {
+            background-color: rgba(var(--muted), 0.5);
+            color: hsl(var(--foreground));
+            font-size: 0.875rem;
+            width: 100%;
+            text-align: center;
+            padding: 0.5rem;
+            margin: 0.5rem 0;
+            border-radius: var(--radius);
+        }
+
+        .sidebar {
+            background-color: hsl(var(--muted));
+            border-right: 1px solid hsl(var(--border));
+        }
+
+        .input-container {
+            background-color: hsl(var(--muted));
+            border-top: 1px solid hsl(var(--border));
+        }
+
+        .textarea {
+            background-color: hsl(var(--background));
+            border: 1px solid hsl(var(--border));
+            color: hsl(var(--foreground));
+            border-radius: var(--radius);
+            padding: 0.75rem 1rem;
+            width: 100%;
+            transition: border-color 0.2s;
+            resize: none;
+            min-height: 2.5rem;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .textarea:focus {
+            outline: none;
+            border-color: hsl(var(--primary));
+            box-shadow: 0 0 0 1px hsl(var(--primary));
+        }
+
+        .button {
+            background-color: hsl(var(--primary));
+            color: hsl(var(--primary-foreground));
+            border-radius: var(--radius);
+            padding: 0.75rem 1.5rem;
+            font-weight: 500;
+            transition: opacity 0.2s;
+        }
+
+        .button:hover:not(:disabled) {
+            opacity: 0.9;
+        }
+
+        .button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .conversation-item {
+            padding: 0.75rem;
+            border-radius: var(--radius);
+            transition: background-color 0.2s;
+            cursor: pointer;
+        }
+
+        .conversation-item:hover {
+            background-color: hsl(var(--muted));
+        }
+
+        .conversation-item.active {
+            background-color: hsl(var(--primary));
+            color: hsl(var(--primary-foreground));
+        }
+
+        .markdown-content pre {
+            background: hsl(var(--muted));
+            padding: 1rem;
+            border-radius: var(--radius);
+            overflow-x: auto;
+        }
+        
+        .markdown-content code {
+            font-family: ui-monospace, monospace;
+            font-size: 0.9em;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .loading {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        
+        @keyframes progress {
+            0% { width: 0; }
+            100% { width: 100%; }
+        }
+        
+        .progress-bar {
+            height: 4px;
+            background-color: hsl(var(--primary));
+            border-radius: 2px;
+            transition: width 0.3s ease;
+        }
+
+        .toast {
+            position: fixed;
+            bottom: 1rem;
+            right: 1rem;
+            padding: 1rem;
+            border-radius: var(--radius);
+            background: hsl(var(--muted));
+            color: hsl(var(--foreground));
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            z-index: 50;
+            transition: transform 0.2s;
+        }
+        
+        .file-upload {
+            position: relative;
+            display: inline-block;
+            margin-right: 0.5rem;
+        }
+        
+        .file-upload input[type="file"] {
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+        
+        .file-upload-button {
+            background-color: hsl(var(--muted));
+            color: hsl(var(--foreground));
+            border: 1px solid hsl(var(--border));
+            border-radius: var(--radius);
+            padding: 0.5rem;
+            font-size: 1.25rem;
+            cursor: pointer;
+        }
+        
+        .file-preview {
+            max-width: 200px;
+            max-height: 200px;
+            object-fit: contain;
+            margin-top: 0.5rem;
+            border-radius: var(--radius);
+        }
+    </style>
+</head>
+<body>
+    <div id="app" class="h-screen flex" v-cloak>
+        <!-- Sidebar -->
+        <div class="w-80 sidebar flex flex-col">
+            <div class="p-4 border-b border-border">
+                <h1 class="text-xl font-semibold tracking-tight">Penguin AI</h1>
+            </div>
+            <div class="flex-1 overflow-y-auto p-4 space-y-2">
+                <button @click="startNewConversation" 
+                        class="button w-full">
+                    New Chat
+                </button>
+                <div v-for="conv in conversations" 
+                     :key="conv.session_id || conv.id"
+                     @click="selectConversation(conv.session_id || conv.id)"
+                     :class="['conversation-item',
+                             selectedConversationId === (conv.session_id || conv.id) && 'active']">
+                    <div class="font-medium">{{ conv.title || 'New Conversation' }}</div>
+                    <div class="text-sm text-muted-foreground">{{ conv.message_count }} messages</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Chat Area -->
+        <div class="flex-1 flex flex-col">
+            <!-- Chat Messages -->
+            <div class="flex-1 overflow-y-auto p-4" ref="chatContainer">
+                <div class="max-w-3xl mx-auto space-y-4">
+                    <template v-for="message in messages" :key="message.id">
+                        <div :class="['message',
+                                    message.role === 'user' 
+                                    ? 'message-user' 
+                                    : message.role === 'system'
+                                    ? 'message-system'
+                                    : 'message-assistant']">
+                            <div class="text-xs text-muted-foreground mb-1">
+                                {{ formatTime(message.timestamp) }}
+                            </div>
+                            <div class="whitespace-pre-wrap markdown-content" 
+                                 v-html="renderMarkdown(message.content)">
+                            </div>
+                            <div v-if="message.status" 
+                                 class="text-xs text-muted-foreground mt-1">
+                                {{ message.status }}
+                            </div>
+                        </div>
+                    </template>
+                    <div v-if="isTyping" class="message message-assistant loading">
+                        <div v-if="streamProgress">
+                            <div>Penguin is thinking... (Step {{ streamProgress.iteration }}/{{ streamProgress.max_iterations }})</div>
+                            <div class="mt-1 bg-gray-700 rounded-full h-1 w-full">
+                                <div class="progress-bar" :style="{width: `${(streamProgress.iteration / streamProgress.max_iterations) * 100}%`}"></div>
+                            </div>
+                            <div v-if="streamProgress.message" class="mt-1 text-sm">{{ streamProgress.message }}</div>
+                        </div>
+                        <div v-else>
+                            Penguin is thinking...
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="input-container p-4">
+                <div class="max-w-3xl mx-auto">
+                    <div class="flex gap-4 items-start">
+                        <div class="flex-1">
+                            <div class="flex items-center mb-2">
+                                <div class="file-upload" v-if="supportsImages">
+                                    <input type="file" @change="handleFileUpload" accept="image/*" :disabled="isTyping" />
+                                    <button class="file-upload-button" title="Upload image">
+                                        📷
+                                    </button>
+                                </div>
+                                <span v-if="uploadedImage" class="text-xs ml-2">Image attached</span>
+                            </div>
+                            <img v-if="uploadedImage" :src="uploadedImage" class="file-preview" />
+                            <textarea 
+                                ref="messageInput"
+                                v-model="newMessage" 
+                                @keydown="handleKeyDown"
+                                @input="autoResize"
+                                placeholder="Type your message... (Shift+Enter for new line, Enter to send)"
+                                :disabled="isTyping"
+                                class="textarea"
+                                rows="1"
+                            ></textarea>
+                        </div>
+                        <button @click="sendMessage"
+                                :disabled="(!newMessage.trim() && !uploadedImage) || isTyping"
+                                class="button mt-8">
+                            {{ isTyping ? 'Sending...' : 'Send' }}
+                        </button>
+                    </div>
+                    <div class="text-xs text-muted-foreground mt-2">
+                        Shift+Enter for new line, Enter to send, Esc to clear
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast Notifications -->
+        <div v-if="error" class="toast" @click="error = null">
+            {{ error }}
+            <span class="text-xs">(Click to dismiss)</span>
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted, nextTick, watch } = Vue
+
+        createApp({
+            setup() {
+                const conversations = ref([])
+                const messages = ref([])
+                const newMessage = ref('')
+                const selectedConversationId = ref(null)
+                const chatContainer = ref(null)
+                const isTyping = ref(false)
+                const error = ref(null)
+                const ws = ref(null)
+                const messageInput = ref(null)
+                const currentStreamedResponse = ref('')
+                const streamProgress = ref(null)
+                const uploadedImage = ref(null)
+                const imagePath = ref(null)
+                const supportsImages = ref(false)
+
+                const scrollToBottom = async () => {
+                    await nextTick()
+                    if (chatContainer.value) {
+                        chatContainer.value.scrollTop = chatContainer.value.scrollHeight
+                    }
+                }
+
+                const refreshConversations = async () => {
+                    try {
+                        const response = await fetch('/api/v1/conversations')
+                        const data = await response.json()
+                        conversations.value = data.conversations
+                    } catch (error) {
+                        console.error('Error fetching conversations:', error)
+                    }
+                }
+
+                const selectConversation = async (id) => {
+                    selectedConversationId.value = id
+                    try {
+                        const response = await fetch(`/api/v1/conversations/${id}`)
+                        const data = await response.json()
+                        
+                        // Check if data has messages directly or nested under 'messages'
+                        const messageList = data.messages || (data.messages && Array.isArray(data.messages)) 
+                            ? data.messages 
+                            : [];
+                            
+                        // Process messages to handle both string and array content
+                        messages.value = messageList.map(msg => ({
+                            ...msg,
+                            content: Array.isArray(msg.content) 
+                                    ? msg.content.map(c => c.text).join(' ')
+                                    : msg.content,
+                            timestamp: msg.timestamp || new Date().toISOString()
+                        }))
+                        
+                        await scrollToBottom()
+                    } catch (error) {
+                        console.error('Error loading conversation:', error)
+                    }
+                }
+
+                const startNewConversation = async () => {
+                    try {
+                        const response = await fetch('/api/v1/conversations/create', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            }
+                        });
+                        const data = await response.json();
+                        selectedConversationId.value = data.conversation_id;
+                        
+                        // Clear existing messages
+                        messages.value = [];
+                        
+                        // Add welcome message
+                        messages.value.push({
+                            role: 'system',
+                            content: 'Welcome to Penguin AI! How can I help you today?',
+                            timestamp: new Date().toISOString()
+                        });
+                        
+                        await refreshConversations();
+                        
+                        // Reset image
+                        uploadedImage.value = null;
+                        imagePath.value = null;
+                    } catch (error) {
+                        console.error('Error creating new conversation:', error);
+                        showError('Failed to create new conversation');
+                    }
+                }
+
+                const renderMarkdown = (content) => {
+                    try {
+                        if (!content) return '';
+                        const html = marked.parse(content)
+                        nextTick(() => {
+                            document.querySelectorAll('pre code').forEach((block) => {
+                                hljs.highlightElement(block)
+                            })
+                        })
+                        return html
+                    } catch (e) {
+                        console.error('Markdown rendering error:', e);
+                        return content || '';
+                    }
+                }
+
+                const formatTime = (timestamp) => {
+                    if (!timestamp) return ''
+                    return new Date(timestamp).toLocaleTimeString()
+                }
+
+                const connectWebSocket = () => {
+                    if (ws.value && ws.value.readyState === WebSocket.OPEN) {
+                        ws.value.close();
+                    }
+                    
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${protocol}//${window.location.host}/api/v1/chat/stream`;
+                    ws.value = new WebSocket(wsUrl);
+                    
+                    ws.value.onopen = () => {
+                        console.log('WebSocket connected');
+                    };
+                    
+                    ws.value.onmessage = (event) => {
+                        const data = JSON.parse(event.data);
+                        
+                        if (data.event === 'token') {
+                            // Append token to current response
+                            currentStreamedResponse.value += data.data.token;
+                            
+                            // Find the last assistant message and update it
+                            const lastAssistantMsgIndex = messages.value
+                                .map((msg, idx) => ({ ...msg, idx }))
+                                .filter(msg => msg.role === 'assistant')
+                                .pop();
+                                
+                            if (lastAssistantMsgIndex) {
+                                messages.value[lastAssistantMsgIndex.idx].content = currentStreamedResponse.value;
+                            } else {
+                                // If no assistant message exists yet, create one
+                                messages.value.push({
+                                    role: 'assistant',
+                                    content: currentStreamedResponse.value,
+                                    timestamp: new Date().toISOString()
+                                });
+                            }
+                            
+                            scrollToBottom();
+                        } 
+                        else if (data.event === 'progress') {
+                            // Update progress info
+                            streamProgress.value = data.data;
+                        }
+                        else if (data.event === 'start') {
+                            // Reset current response and progress
+                            currentStreamedResponse.value = '';
+                            streamProgress.value = { iteration: 1, max_iterations: 5 };
+                        }
+                        else if (data.event === 'complete') {
+                            // Finalize with complete response
+                            isTyping.value = false;
+                            
+                            // If response is empty but we have action results, show them
+                            if (!data.data.response && data.data.action_results && data.data.action_results.length > 0) {
+                                messages.value.push({
+                                    role: 'system',
+                                    content: 'Actions completed: ' + data.data.action_results.map(a => a.action).join(', '),
+                                    timestamp: new Date().toISOString()
+                                });
+                            }
+                            
+                            streamProgress.value = null;
+                            refreshConversations();
+                        }
+                        else if (data.event === 'error') {
+                            isTyping.value = false;
+                            streamProgress.value = null;
+                            showError(data.data.message);
+                        }
+                    };
+                    
+                    ws.value.onerror = (error) => {
+                        console.error('WebSocket error:', error);
+                        showError('Connection error');
+                        isTyping.value = false;
+                    };
+                    
+                    ws.value.onclose = () => {
+                        console.log('WebSocket closed');
+                    };
+                };
+                
+                const showError = (message) => {
+                    error.value = message;
+                    setTimeout(() => {
+                        error.value = null;
+                    }, 5000);
+                };
+
+                const sendMessage = async () => {
+                    const message = newMessage.value.trim();
+                    if ((!message && !uploadedImage.value) || isTyping.value) return;
+
+                    try {
+                        isTyping.value = true;
+                        
+                        // Add user message to conversation
+                        messages.value.push({ 
+                            role: 'user', 
+                            content: message || (uploadedImage.value ? "[Image]" : ""),
+                            timestamp: new Date().toISOString(),
+                            status: 'sending'
+                        });
+                        
+                        newMessage.value = '';
+                        await scrollToBottom();
+                        
+                        // Use WebSocket for streaming
+                        if (!ws.value || ws.value.readyState !== WebSocket.OPEN) {
+                            connectWebSocket();
+                            // Wait for connection
+                            await new Promise(resolve => {
+                                const checkOpen = () => {
+                                    if (ws.value && ws.value.readyState === WebSocket.OPEN) {
+                                        resolve();
+                                    } else {
+                                        setTimeout(checkOpen, 100);
+                                    }
+                                };
+                                checkOpen();
+                            });
+                        }
+                        
+                        // Send via WebSocket
+                        ws.value.send(JSON.stringify({
+                            text: message,
+                            conversation_id: selectedConversationId.value,
+                            image_path: imagePath.value
+                        }));
+                        
+                        // Clear image after sending
+                        uploadedImage.value = null;
+                        imagePath.value = null;
+                        
+                        autoResize();
+                        
+                    } catch (err) {
+                        isTyping.value = false;
+                        error.value = `Error: ${err.message}`;
+                        setTimeout(() => error.value = null, 5000);
+                    }
+                }
+
+                // Handle keyboard shortcuts
+                const handleKeyDown = (e) => {
+                    if (e.key === 'Enter') {
+                        if (!e.shiftKey) {
+                            e.preventDefault()
+                            sendMessage()
+                        }
+                    } else if (e.key === 'Escape') {
+                        newMessage.value = ''
+                        autoResize()
+                    }
+                }
+
+                // Auto-resize textarea
+                const autoResize = () => {
+                    const textarea = messageInput.value
+                    if (!textarea) return
+
+                    // Reset height to get the correct scrollHeight
+                    textarea.style.height = 'auto'
+                    
+                    // Calculate new height
+                    const newHeight = Math.min(textarea.scrollHeight, 200)
+                    textarea.style.height = newHeight + 'px'
+                }
+                
+                // Handle file upload
+                const handleFileUpload = async (event) => {
+                    const file = event.target.files[0];
+                    if (!file) return;
+                    
+                    if (!file.type.startsWith('image/')) {
+                        showError('Only image files are supported');
+                        return;
+                    }
+                    
+                    try {
+                        // Create a temporary URL for the image
+                        uploadedImage.value = URL.createObjectURL(file);
+                        
+                        // Upload the file
+                        const formData = new FormData();
+                        formData.append('file', file);
+                        
+                        const response = await fetch('/api/v1/upload', {
+                            method: 'POST',
+                            body: formData
+                        });
+                        
+                        if (response.ok) {
+                            const data = await response.json();
+                            imagePath.value = data.path;
+                        } else {
+                            throw new Error('Failed to upload image');
+                        }
+                    } catch (err) {
+                        showError(`Error uploading image: ${err.message}`);
+                        uploadedImage.value = null;
+                    }
+                }
+
+                // Watch for message changes to trigger resize
+                watch(newMessage, () => {
+                    nextTick(autoResize)
+                })
+                
+                // Check if model supports images
+                const checkImageSupport = async () => {
+                    try {
+                        const response = await fetch('/api/v1/capabilities');
+                        if (response.ok) {
+                            const data = await response.json();
+                            supportsImages.value = data.vision_enabled || false;
+                        }
+                    } catch (error) {
+                        console.error('Error checking image support:', error);
+                        // Assume no support on error
+                        supportsImages.value = false;
+                    }
+                };
+
+                // Initialize
+                onMounted(async () => {
+                    await checkImageSupport();
+                    connectWebSocket();
+                    await refreshConversations();
+                    await startNewConversation();
+                    autoResize();
+                });
+
+                return {
+                    conversations,
+                    messages,
+                    newMessage,
+                    selectedConversationId,
+                    chatContainer,
+                    refreshConversations,
+                    selectConversation,
+                    startNewConversation,
+                    sendMessage,
+                    isTyping,
+                    error,
+                    renderMarkdown,
+                    formatTime,
+                    messageInput,
+                    handleKeyDown,
+                    autoResize,
+                    streamProgress,
+                    uploadedImage,
+                    handleFileUpload,
+                    supportsImages
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+</html> 
