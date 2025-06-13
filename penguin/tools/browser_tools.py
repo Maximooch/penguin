@@ -1,12 +1,14 @@
 import os
+# TEMPORARILY DISABLED: browser-use causing Python 3.8-3.10 compatibility issues
 # Disable browser-use telemetry
-os.environ["ANONYMIZED_TELEMETRY"] = "false"
+# os.environ["ANONYMIZED_TELEMETRY"] = "false"
 # The fact I need to do this is a bit of a pain. And pretty concerning. I might need to look into alternatives. 
 
 
 from typing import Optional, Dict, Any
-from browser_use import Browser, BrowserConfig # type: ignore
-from PIL import Image # type: ignore
+# TEMPORARILY DISABLED: Using PyDoll instead of browser_use for now
+# from browser_use import Browser, BrowserConfig # type: ignore
+# from PIL import Image # type: ignore
 import io
 import base64
 import asyncio
@@ -23,18 +25,26 @@ class BrowserManager:
         self.browser = None
         self.initialized = False
         
+        # TEMPORARILY DISABLED: browser-use compatibility issues
         # Detect browser-use version
-        try:
-            self.browser_use_version = importlib.metadata.version("browser-use")
-            logging.info(f"Detected browser-use version: {self.browser_use_version}")
-        except:
-            self.browser_use_version = "unknown"
-            logging.warning("Could not detect browser-use version")
+        # try:
+        #     self.browser_use_version = importlib.metadata.version("browser-use")
+        #     logging.info(f"Detected browser-use version: {self.browser_use_version}")
+        # except:
+        #     self.browser_use_version = "unknown"
+        #     logging.warning("Could not detect browser-use version")
+        
+        self.browser_use_version = "disabled"
+        logging.warning("browser-use temporarily disabled for Python 3.8-3.10 compatibility. Use PyDoll instead.")
         
         # logging.info(f"browser-use version: {browser_use.__version__}") # Doesn't work, fix later.
         
     async def initialize(self, headless: bool = True):
         """Initialize the browser with OS-specific Chrome path"""
+        # TEMPORARILY DISABLED: Return early when browser-use is disabled
+        logging.warning("Browser tools temporarily disabled. Please use PyDoll for browser automation.")
+        return False
+        
         if not self.browser:
             try:
                 # Prioritize Chromium paths
