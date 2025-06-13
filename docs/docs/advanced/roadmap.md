@@ -1,190 +1,143 @@
 # Development Roadmap
 
-This document outlines the planned development trajectory for Penguin AI Assistant.
+This document outlines the planned development trajectory for Penguin agent, organized into sequential phases that build upon each other to ensure critical foundations are in place before advancing to more sophisticated features.
 
 ## Current Status
 
-```mermaid
-%%{init: {'theme': 'neutral', 'gantt': {'useMaxWidth': false, 'barHeight': 25, 'barGap': 10, 'topPadding': 40}}}%%
-gantt
-    title Penguin Development Progress
-    dateFormat  YYYY-MM-DD
-    axisFormat %b %Y
-    todayMarker off
-    
-    section Core Architecture
-    State System Redesign           :done, state, 2024-03-01, 2024-03-28
-    Conversation Manager            :done, conv, 2024-03-15, 2024-03-28
-    Context Window Management       :done, context, 2024-03-10, 2024-03-25
-    Session Management              :done, session, 2024-03-15, 2024-03-28
-    
-    section Provider Support
-    Anthropic Native Adapter        :done, anth_adapt, 2024-03-01, 2024-03-20
-    LiteLLM Integration             :done, litellm, 2024-02-15, 2024-03-10
-    Provider Adapter Architecture   :done, prov_arch, 2024-03-01, 2024-03-25
-    
-    section Features
-    Basic Tools                     :done, tools, 2024-02-01, 2024-03-10
-    Code Execution                  :done, code_exec, 2024-02-15, 2024-03-15
-    Multi-modal Support             :done, multimodal, 2024-03-10, 2024-03-28
-    Run Mode                        :done, run_mode, 2024-03-15, 2024-03-28
-    
-    section Testing & Documentation
-    Core Documentation              :active, doc_core, 2024-03-20, 2024-04-10
-    API Documentation               :active, doc_api, 2024-03-25, 2024-04-10
-    Integration Testing             :active, test_int, 2024-03-25, 2024-04-15
-```
+**Phase 2 Complete (v0.2.x): Developer Preview**
+- ✅ Public API freeze with comprehensive exports
+- ✅ Package reorganization into logical namespaces  
+- ✅ SQLite-backed project/task management system
+- ✅ Hybrid dependency structure with smart defaults
+- ✅ CI/CD automation with GitHub Actions
+- ✅ Multi-model support via LiteLLM integration
 
-## Short-term Roadmap (Next 3 Months)
+**Phase 3 Active (v0.3.x): Performance & Benchmarking**
+- 🚧 Core Engine integration across all APIs
+- 🚧 Performance optimization (startup time, memory usage)
+- 🚧 Benchmarking pipeline (SWE-bench, HumanEval)
+- 🚧 Observability and monitoring implementation
 
-```mermaid
-%%{init: {'theme': 'neutral', 'gantt': {'useMaxWidth': false, 'barHeight': 25, 'barGap': 10, 'topPadding': 40}}}%%
-gantt
-    title Short-term Development Goals
-    dateFormat  YYYY-MM-DD
-    axisFormat %b %Y
-    todayMarker off
-    
-    section Architecture
-    Conversation System Refinement   :active, conv_ref, 2024-04-01, 2024-04-30
-    OpenAI Native Adapter            :active, openai, 2024-04-01, 2024-05-15
-    Context Window Optimization      :ctx_opt, after conv_ref, 30d
-    
-    section Features
-    Advanced Session Management      :sess_adv, 2024-04-15, 2024-05-30
-    Memory System Implementation     :memory, 2024-05-01, 2024-06-30
-    Code Analysis Tools              :code_tools, 2024-05-15, 2024-06-30
-    
-    section UX/UI
-    CLI Improvements                 :cli_imp, 2024-04-01, 2024-05-15
-    Web Interface Prototype          :web_proto, 2024-05-01, 2024-06-30
-    
-    section Testing & Reliability
-    Test Coverage Expansion          :test_cov, 2024-04-01, 2024-05-30
-    Error Recovery Improvements      :err_rec, 2024-05-01, 2024-06-15
-    Security Auditing                :security, 2024-06-01, 2024-06-30
-```
+## Phased Development Plan
 
-## Implementation Priorities
+### Phase 1: Core Stabilization ✅ COMPLETE
+**Objective**: Consolidate and harden the agent runtime into a reliable component
+- ✅ Unified agent codebase under `penguin.agent` namespace
+- ✅ Integration with core Engine architecture
+- ✅ Containerized execution capabilities for sandboxing
+- ✅ Comprehensive unit test suite for agent lifecycle
 
-### Phase 1: Core Stability (Current)
+### Phase 2: Developer Preview ✅ COMPLETE (v0.2.x)
+**Objective**: Package Penguin as a clean, consumable library and SDK
+- ✅ **Public API Freeze**: Defined `__all__` exports and v0.2.0 release
+- ✅ **Package Reorganization**: Clean namespaces (`penguin.web`, `penguin.cli`, `penguin.project`)
+- ✅ **CI/CD Automation**: GitHub Actions with automated PyPI publishing
+- ✅ **Documentation**: Developer guides and API reference
+- ✅ **Local Project Management**: SQLite-backed system with dual sync/async APIs
 
-- ✅ Complete state system refactoring
-- ✅ Implement conversation management
-- ✅ Integrate LiteLLM for multi-provider support
-- ✅ Add Anthropic native adapter
-- 🔄 Improve token counting across providers
-- 🔄 Complete documentation
-- 🔄 Expand test coverage
+### Phase 3: Performance & Benchmarking 🚧 IN PROGRESS (v0.3.x)
+**Objective**: Optimize runtime and validate performance against industry benchmarks
+- 🚧 **Core Engine Integration**: Unified API endpoints and streaming
+- 🚧 **Performance Optimization**: 60-80% startup improvement target
+- 🚧 **Benchmarking Pipeline**: SWE-bench and HumanEval integration
+- 🚧 **Observability**: Prometheus metrics, structured logging
+- 📅 **Target Metrics**: P95 < 250ms latency, <200MB baseline memory
 
-### Phase 2: Enhanced Capabilities (Q2 2024)
+### Phase 4: Hardening & Security 📅 PLANNED (v0.4.x)
+**Objective**: Production-grade security and reliability
+- 📅 **API Contract Freeze**: v1 backward compatibility guarantee
+- 📅 **Security Audit**: Pydantic validation, auth framework
+- 📅 **Checkpoint System**: Full session management lifecycle
+- 📅 **Test Coverage**: >80% integration test coverage
+- 📅 **Production Deployment**: Optimized Docker images, Helm charts
 
-- Add OpenAI native adapter
-- Implement advanced session management
-- Develop memory and knowledge systems
-- Create semantic search across sessions
-- Improve real-time collaborative features
-- Add web interface for broader access
+### Phase 5: GA Launch & Expansion 📅 PLANNED (v1.0.x)
+**Objective**: Public launch with community ecosystem
+- 📅 **Rollout Strategy**: Beta → RC → GA phased launch
+- 📅 **Community Building**: Discord/Slack, use-case gallery
+- 📅 **Plugin Ecosystem**: Developer templates and autodiscovery
+- 📅 **Rich Web UI**: React-based interface with real-time updates
+- 📅 **Enterprise Features**: Team collaboration, advanced security
 
-### Phase 3: Production Readiness (Q3 2024)
+## Key Technical Focus Areas
 
-- Optimize performance for large histories
-- Implement enterprise security features
-- Add team collaboration capabilities
-- Develop fine-tuning support for custom behaviors
-- Create CI/CD pipeline for plugin development
-- Build documentation generation tools
+### Performance & Optimization (Phase 3)
+- **Startup Time**: Lazy loading architecture with deferred memory indexing
+- **Memory Usage**: Background processing for embeddings and search indexing  
+- **API Performance**: Sub-250ms P95 latency targets across all endpoints
+- **Resource Management**: Intelligent caching and connection pooling
+- **Profiling Integration**: Built-in performance monitoring and bottleneck detection
 
-### Phase 4: Extended Platform (Q4 2024)
+### Project Management Evolution
+- **Natural Language Planning**: Convert project specs into structured work breakdowns
+- **Agent-Driven Execution**: Autonomous task coordination and progress tracking
+- **Hierarchical Task Systems**: Complex dependency graphs with resource constraints
+- **Real-time Collaboration**: Multi-user workspaces with live status updates
+- **Integration APIs**: GitHub, Jira, and other project management tool connectors
 
-- Create ecosystem for third-party plugins
-- Develop hosted version for non-technical users
-- Implement team knowledge management
-- Add advanced code analysis tools
-- Create cross-project insights
-- Develop integration with project management tools
+### Advanced AI Capabilities (Future)
+- **Multi-Agent Coordination**: Supervisor-worker hierarchies for complex projects
+- **Specialized Agent Roles**: Domain-specific agents (Coder, Tester, Planner)
+- **Learning Systems**: Cross-session knowledge retention and improvement
+- **Context Optimization**: Advanced memory hierarchies and intelligent context selection
 
-## Focus Areas
+## Strategic Architecture Pillars
 
-### Development Experience
+### Core Engine & Infrastructure
+The Engine serves as the central orchestrator for all agent reasoning and tool use. By funneling all actions through one async loop, we achieve determinism, simplified debugging, and reproducible results—the foundation of both reliability and performance.
 
-```mermaid
-%%{init: {'theme': 'neutral', 'flowchart': {'useMaxWidth': false, 'htmlLabels': true, 'diagramPadding': 20}}}%%
-flowchart TD
-    style DevExp fill:#f9f,stroke:#333,stroke-width:2px
-    style CodeTools fill:#bbf,stroke:#333,stroke-width:1px
-    style AdvancedLLM fill:#bfb,stroke:#333,stroke-width:1px
-    style TemplateSystem fill:#fdb,stroke:#333,stroke-width:1px
-    style SemanticSearch fill:#ddf,stroke:#333,stroke-width:1px
-    
-    DevExp[Developer Experience] --> CodeTools[Code Tools]
-    DevExp --> AdvancedLLM[Advanced LLM Integration]
-    DevExp --> TemplateSystem[Template System]
-    DevExp --> SemanticSearch[Semantic Code Search]
-    DevExp --> LocalAPI[Robust Local API]
-    
-    CodeTools --> SmartRefactoring[Smart Refactoring]
-    CodeTools --> AugmentedLinting[Augmented Linting]
-    CodeTools --> ArchitectureViz[Architecture Visualization]
-    
-    AdvancedLLM --> MultimodalProgramming[Multimodal Programming]
-    AdvancedLLM --> CustomAgents[Custom Agent Creation]
-    
-    TemplateSystem --> ProjectScaffolding[Project Scaffolding]
-    TemplateSystem --> CodeGeneration[Code Generation]
-    
-    SemanticSearch --> RepoUnderstanding[Repository Understanding]
-    SemanticSearch --> IntentSearch[Intent-based Search]
-    
-    LocalAPI --> IDEIntegration[IDE Integration]
-    LocalAPI --> DevToolsEcosystem[Developer Tools Ecosystem]
-```
+### Agent Runtime Module  
+All agent functionality is consolidated under `penguin.agent`, providing a clear public interface. The `PenguinAgent` class makes simple use cases trivial while allowing advanced users to compose functionality without deep inheritance.
 
-### Team Collaboration
+### API & Backend Services
+The HTTP/WebSocket API provides a hardened gateway for external integrations with a frozen v1 contract. All handlers use the unified Engine, ensuring consistent behavior between API and core library.
 
-```mermaid
-%%{init: {'theme': 'neutral', 'flowchart': {'useMaxWidth': false, 'htmlLabels': true, 'diagramPadding': 20}}}%%
-flowchart TD
-    style TeamCollab fill:#f9f,stroke:#333,stroke-width:2px
-    style KnowledgeMgmt fill:#bbf,stroke:#333,stroke-width:1px
-    style ProjectTracking fill:#bfb,stroke:#333,stroke-width:1px
-    style SharedContext fill:#fdb,stroke:#333,stroke-width:1px
-    
-    TeamCollab[Team Collaboration] --> KnowledgeMgmt[Knowledge Management]
-    TeamCollab --> ProjectTracking[Project Tracking]
-    TeamCollab --> SharedContext[Shared Context]
-    TeamCollab --> WorkflowOpt[Workflow Optimization]
-    
-    KnowledgeMgmt --> CodebaseDocumentation[Codebase Documentation]
-    KnowledgeMgmt --> DecisionCatalog[Decision Catalog]
-    
-    ProjectTracking --> AIAssisted[AI-assisted Planning]
-    ProjectTracking --> ResourceEstimation[Resource Estimation]
-    
-    SharedContext --> TeamMemory[Team Memory]
-    SharedContext --> CrossProjectInsights[Cross-project Insights]
-    
-    WorkflowOpt --> ProcessAnalysis[Process Analysis]
-    WorkflowOpt --> Suggestions[Optimization Suggestions]
-```
+### Python Library & SDK
+The `penguin-ai` library emphasizes ease of use with lean defaults and optional extras. Auto-generated client SDKs and stable APIs lower the barrier to entry for developer integration.
 
-## Success Metrics
+### Local Project & Task Management
+Promoted to `penguin.project` with disk-backed SQLite storage, ACID transactions, and dual sync/async APIs. Features event-driven updates, hierarchical task dependencies, and resource budgeting.
 
-- **State Refactoring**: 50% code complexity reduction
-- **Provider Support**: Seamless experience across Anthropic, OpenAI, and local models
-- **Token Efficiency**: 30% reduction in context window utilization
-- **Documentation**: 100% API coverage with diagrams
-- **UX Improvements**: 50% reduction in user input for common tasks
-- **Performance**: Support 10,000+ session history
+## Success Metrics & Targets
+
+### Performance Benchmarks (Phase 3)
+- **Startup Time**: <250ms P95 for CLI initialization (currently 400-600ms)
+- **Memory Usage**: <200MB baseline footprint (currently 300-450MB)  
+- **API Latency**: Sub-250ms P95 for all endpoints
+- **SWE-bench Score**: Target top 25% performance on coding tasks
+- **HumanEval Accuracy**: >80% code generation correctness
+
+### Quality & Reliability
+- **Test Coverage**: >80% for integration paths, 90%+ for core modules
+- **Documentation**: 100% API coverage with working examples
+- **Error Recovery**: Graceful degradation for all failure modes
+- **Security**: Clean vulnerability scans, input validation everywhere
+
+### Developer Experience
+- **Onboarding Time**: <5 minutes from install to first successful task
+- **API Complexity**: 50% reduction in required steps for common workflows
+- **Error Messages**: Clear, actionable feedback for all failure cases
+- **Plugin Development**: Community-driven tool ecosystem growth
+
+## Key Risks & Mitigations
+
+### Technical Risks
+- **Architectural Coupling**: Mitigated by clear module boundaries and interfaces
+- **Performance Bottlenecks**: Addressed through systematic profiling and optimization
+- **Tool Permissions**: Balanced security model without excessive friction
+
+### Strategic Risks  
+- **Product-Market Fit**: Focus on specific high-value use cases first
+- **Competitive Differentiation**: Emphasis on autonomous project management capabilities
+- **Resource Constraints**: Phased approach allows validation before major investments
 
 ## Get Involved
 
-We welcome contributions in these areas:
+Priority contribution areas:
+- **Performance Optimization**: Profiling, lazy loading, caching strategies
+- **Benchmarking**: SWE-bench integration, evaluation frameworks
+- **Documentation**: API examples, integration guides, best practices
+- **Testing**: Edge cases, error scenarios, performance testing
+- **Security**: Input validation, permission models, audit trails
 
-- Provider adapters for additional LLM services
-- Tool development for specialized domains
-- Testing across different environments and workflows
-- Documentation improvements and examples
-- UX feedback and suggestions
-
-Visit our [GitHub repository](https://github.com/maximooch/penguin) to contribute or report issues. 
+Visit our [GitHub repository](https://github.com/maximooch/penguin) to contribute or [join discussions](https://github.com/maximooch/penguin/discussions) about the roadmap. 
