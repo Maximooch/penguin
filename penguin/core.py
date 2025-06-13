@@ -204,6 +204,9 @@ logger = logging.getLogger(__name__)
 console = Console()
 
 
+# ---------------------------------------------------------------------------
+# PenguinCore
+# ---------------------------------------------------------------------------
 class PenguinCore:
     """
     Central coordinator for the Penguin AI assistant.
