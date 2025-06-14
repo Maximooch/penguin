@@ -114,7 +114,7 @@ Promoted to `penguin.project` with disk-backed SQLite storage, ACID transactions
 - **Security**: Clean vulnerability scans, input validation everywhere
 
 ### Developer Experience
-- **Onboarding Time**: <5 minutes from install to first successful task
+- **Onboarding Time**: &lt;5 minutes from install to first successful task
 - **API Complexity**: 50% reduction in required steps for common workflows
 - **Error Messages**: Clear, actionable feedback for all failure cases
 - **Plugin Development**: Community-driven tool ecosystem growth
