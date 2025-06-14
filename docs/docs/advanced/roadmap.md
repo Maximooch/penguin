@@ -41,7 +41,7 @@ This document outlines the planned development trajectory for Penguin agent, org
 - 🚧 **Performance Optimization**: 60-80% startup improvement target
 - 🚧 **Benchmarking Pipeline**: SWE-bench and HumanEval integration
 - 🚧 **Observability**: Prometheus metrics, structured logging
-- 📅 **Target Metrics**: P95 < 250ms latency, <200MB baseline memory
+- 📅 **Target Metrics**: P95 &lt; 250ms latency, &lt;200MB baseline memory
 
 ### Phase 4: Hardening & Security 📅 PLANNED (v0.4.x)
 **Objective**: Production-grade security and reliability
@@ -101,8 +101,8 @@ Promoted to `penguin.project` with disk-backed SQLite storage, ACID transactions
 ## Success Metrics & Targets
 
 ### Performance Benchmarks (Phase 3)
-- **Startup Time**: <250ms P95 for CLI initialization (currently 400-600ms)
-- **Memory Usage**: <200MB baseline footprint (currently 300-450MB)  
+- **Startup Time**: &lt;250ms P95 for CLI initialization (currently 400-600ms)
+- **Memory Usage**: &lt;200MB baseline footprint (currently 300-450MB)  
 - **API Latency**: Sub-250ms P95 for all endpoints
 - **SWE-bench Score**: Target top 25% performance on coding tasks
 - **HumanEval Accuracy**: >80% code generation correctness
