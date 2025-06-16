@@ -1769,6 +1769,77 @@ class PenguinCLI:
             print(f"--- {lang_display} {title} ---")
             print(code_output)
             print(f"--- End {lang_display} {title} ---")
+    
+    def _display_list_response(self, response: Dict[str, Any]):
+        """Display the /list command response in a nicely formatted way"""
+        try:
+            from rich.table import Table
+            
+            projects = response.get("projects", [])
+            tasks = response.get("tasks", [])
+            summary = response.get("summary", {})
+            
+            # Display summary
+            summary_text = f"**Summary**: {summary.get('total_projects', 0)} projects, "
+            summary_text += f"{summary.get('total_tasks', 0)} tasks "
+            summary_text += f"({summary.get('active_tasks', 0)} active)"
+            self.display_message(summary_text, "system")
+            
+            # Display projects table if any exist
+            if projects:
+                self.display_message("## Projects", "system")
+                table = Table(show_header=True, header_style="bold magenta")
+                table.add_column("ID", style="dim", width=8)
+                table.add_column("Name", style="cyan")
+                table.add_column("Status", style="green")
+                table.add_column("Tasks", style="yellow", width=6)
+                table.add_column("Created", style="dim")
+                
+                for project in projects:
+                    table.add_row(
+                        project.get("id", "")[:8],
+                        project.get("name", ""),
+                        project.get("status", ""),
+                        str(project.get("task_count", 0)),
+                        project.get("created_at", "")[:16] if project.get("created_at") else ""
+                    )
+                
+                self.console.print(table)
+            
+            # Display tasks table if any exist
+            if tasks:
+                self.display_message("## Tasks", "system")
+                table = Table(show_header=True, header_style="bold magenta")
+                table.add_column("ID", style="dim", width=8)
+                table.add_column("Title", style="white")
+                table.add_column("Status", style="green")
+                table.add_column("Priority", style="yellow", width=8)
+                table.add_column("Project", style="cyan", width=8)
+                table.add_column("Created", style="dim")
+                
+                for task in tasks:
+                    project_id = task.get("project_id", "")
+                    project_display = project_id[:8] if project_id else "Independent"
+                    
+                    table.add_row(
+                        task.get("id", "")[:8],
+                        task.get("title", ""),
+                        task.get("status", ""),
+                        str(task.get("priority", 0)),
+                        project_display,
+                        task.get("created_at", "")[:16] if task.get("created_at") else ""
+                    )
+                
+                self.console.print(table)
+            
+            # If no projects or tasks
+            if not projects and not tasks:
+                self.display_message("No projects or tasks found. Create some with `/project create` or `/task create`.", "system")
+                
+        except Exception as e:
+            # Fallback to simple text display
+            logger.error(f"Error displaying list response: {e}")
+            self.display_message(f"Projects and Tasks:\n{json.dumps(response, indent=2)}", "system")
 
     def display_action_result(self, result: Dict[str, Any]):
         """Display action results in a more readable format"""
@@ -2064,6 +2135,10 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                                     current_marker = "→ " if model.get("current", False) else "  "
                                     models_msg += f"{current_marker}{model.get('name')} ({model.get('provider')})\n"
                                 self.display_message(models_msg, "system")
+                                
+                            # Handle list command response
+                            elif "projects" in response and "tasks" in response:
+                                self._display_list_response(response)
                     except Exception as e:
                         self.display_message(f"Error executing command: {str(e)}", "error")
                         self.display_message(traceback.format_exc(), "error")

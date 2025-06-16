@@ -75,7 +75,7 @@ except ImportError as exc:  # pragma: no cover – only trips in broken installs
 from .project import ProjectManager, Project, Task
 
 # Version info
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 __author__ = "Maximus Putnam"
 __email__ = "MaximusPutnam@gmail.com"
 __license__ = "AGPL-3.0-or-later"

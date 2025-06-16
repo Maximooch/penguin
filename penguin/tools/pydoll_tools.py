@@ -14,6 +14,8 @@ class PyDollBrowserManager:
         self.page = None
         self.initialized = False
         self.dev_mode = dev_mode
+        self._last_activity = None
+        self._cleanup_task = None
         
         # Detect pydoll version
         try:
@@ -100,6 +102,10 @@ class PyDollBrowserManager:
                     # Show more detailed error info in dev mode
                     logging.error(f"Detailed error: {e}", exc_info=True)
                 return False
+        
+        # Start cleanup timer for inactive browser instances
+        self._update_activity()
+        await self._start_cleanup_timer()
         return True
     
     def set_dev_mode(self, enabled: bool):
@@ -108,9 +114,31 @@ class PyDollBrowserManager:
         logging.info(f"PyDoll developer mode {'enabled' if enabled else 'disabled'}")
         return self.dev_mode
 
+    def _update_activity(self):
+        """Update the last activity timestamp"""
+        import time
+        self._last_activity = time.time()
+    
+    async def _start_cleanup_timer(self):
+        """Start a background task to cleanup inactive browser instances"""
+        if self._cleanup_task:
+            return
+            
+        async def cleanup_worker():
+            import time
+            while self.browser and self.initialized:
+                await asyncio.sleep(30)  # Check every 30 seconds
+                if self._last_activity and (time.time() - self._last_activity) > 300:  # 5 minutes
+                    logging.info("PyDoll browser inactive for 5 minutes, closing automatically")
+                    await self.close()
+                    break
+                    
+        self._cleanup_task = asyncio.create_task(cleanup_worker())
+
     async def get_page(self):
         """Get the current page - async version"""
         try:
+            self._update_activity()
             if self.page:
                 return self.page
             elif self.browser:
@@ -125,12 +153,22 @@ class PyDollBrowserManager:
             
     async def close(self):
         """Close the browser instance"""
+        # Cancel cleanup task first
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
+            self._cleanup_task = None
+            
         if self.browser:
             try:
                 await self.browser.stop()
                 self.browser = None
                 self.page = None
                 self.initialized = False
+                self._last_activity = None
                 return True
             except Exception as e:
                 logging.error(f"Error closing browser: {str(e)}")
@@ -193,29 +231,39 @@ class PyDollBrowserNavigationTool:
         }
 
     async def execute(self, url: str) -> str:
-        # Initialize with headless=False to see the browser window
-        if not await pydoll_browser_manager.initialize(headless=False):
+        # Initialize with headless=True by default to prevent blocking
+        # Only use headless=False if explicitly needed for debugging
+        headless_mode = not pydoll_browser_manager.dev_mode
+        
+        if not await pydoll_browser_manager.initialize(headless=headless_mode):
             return "Failed to initialize browser"
             
         try:
-            # Navigate directly
+            # Navigate directly with timeout to prevent hanging
             page = await pydoll_browser_manager.get_page()
             if pydoll_browser_manager.dev_mode:
                 logging.info(f"[PyDoll Dev] Navigating to URL: {url}")
                 
-            await page.go_to(url)
+            # Add timeout to prevent blocking
+            await asyncio.wait_for(page.go_to(url), timeout=60.0)
             
             if pydoll_browser_manager.dev_mode:
                 logging.info(f"[PyDoll Dev] Successfully navigated to: {url}")
                 # Add page information in dev mode
                 try:
-                    title = await page.get_title()
-                    current_url = await page.get_url()
+                    title = await asyncio.wait_for(page.get_title(), timeout=5.0)
+                    current_url = await asyncio.wait_for(page.get_url(), timeout=5.0)
                     return f"Navigated to {url}\n[Dev Mode] Page Title: {title}\nFinal URL: {current_url}"
+                except asyncio.TimeoutError:
+                    logging.warning("[PyDoll Dev] Timeout getting page info")
                 except Exception as e:
                     logging.error(f"[PyDoll Dev] Error getting page info: {str(e)}")
                     
             return f"Navigated to {url}"
+        except asyncio.TimeoutError:
+            error_msg = f"Navigation timeout: {url} took longer than 60 seconds"
+            logging.error(error_msg)
+            return error_msg
         except Exception as e:
             error_msg = f"Navigation failed: {str(e)}"
             if pydoll_browser_manager.dev_mode:
@@ -237,7 +285,10 @@ class PyDollBrowserInteractionTool:
 
     async def execute(self, action: str, selector: str, selector_type: str = "css", text: Optional[str] = None) -> str:
         from pydoll.constants import By # type: ignore
-        if not await pydoll_browser_manager.initialize():
+        
+        # Initialize with headless mode by default
+        headless_mode = not pydoll_browser_manager.dev_mode
+        if not await pydoll_browser_manager.initialize(headless=headless_mode):
             return "Failed to initialize browser"
             
         try:
@@ -258,18 +309,21 @@ class PyDollBrowserInteractionTool:
                     logging.info(f"[PyDoll Dev] Text to input: {text}")
             
             if action == "click":
-                element = await page.find_element(by_selector, selector)
-                await element.click()
+                element = await asyncio.wait_for(page.find_element(by_selector, selector), timeout=10.0)
+                await asyncio.wait_for(element.click(), timeout=5.0)
                 if pydoll_browser_manager.dev_mode:
                     logging.info(f"[PyDoll Dev] Successfully clicked on element")
-                    element_text = await element.get_text()
-                    return f"Successfully clicked on {selector}\n[Dev Mode] Element text: {element_text}"
+                    try:
+                        element_text = await asyncio.wait_for(element.get_text(), timeout=3.0)
+                        return f"Successfully clicked on {selector}\n[Dev Mode] Element text: {element_text}"
+                    except asyncio.TimeoutError:
+                        logging.warning("[PyDoll Dev] Timeout getting element text")
                 return f"Successfully clicked on {selector}"
                 
             elif action == "input" and text:
-                element = await page.find_element(by_selector, selector)
-                await element.clear()
-                await element.input(text)
+                element = await asyncio.wait_for(page.find_element(by_selector, selector), timeout=10.0)
+                await asyncio.wait_for(element.clear(), timeout=5.0)
+                await asyncio.wait_for(element.input(text), timeout=5.0)
                 if pydoll_browser_manager.dev_mode:
                     logging.info(f"[PyDoll Dev] Successfully input text into element")
                     return f"Successfully input text into {selector}\n[Dev Mode] Text entered: {text}"
@@ -278,20 +332,27 @@ class PyDollBrowserInteractionTool:
             elif action == "submit":
                 if selector_type == "css" and selector.lower().startswith("form"):
                     # If selector is a form, find it and submit
-                    form = await page.find_element(by_selector, selector)
-                    await form.submit()
+                    form = await asyncio.wait_for(page.find_element(by_selector, selector), timeout=10.0)
+                    await asyncio.wait_for(form.submit(), timeout=10.0)
                 else:
                     # If not a form selector, find the element and its parent form
-                    element = await page.find_element(by_selector, selector)
-                    await element.submit()
+                    element = await asyncio.wait_for(page.find_element(by_selector, selector), timeout=10.0)
+                    await asyncio.wait_for(element.submit(), timeout=10.0)
                 
                 if pydoll_browser_manager.dev_mode:
                     logging.info(f"[PyDoll Dev] Successfully submitted form")
-                    current_url = await page.get_url()
-                    return f"Successfully submitted {selector}\n[Dev Mode] Current URL after submit: {current_url}"
+                    try:
+                        current_url = await asyncio.wait_for(page.get_url(), timeout=5.0)
+                        return f"Successfully submitted {selector}\n[Dev Mode] Current URL after submit: {current_url}"
+                    except asyncio.TimeoutError:
+                        logging.warning("[PyDoll Dev] Timeout getting URL after submit")
                 return f"Successfully submitted {selector}"
                 
             return f"Successfully performed {action} on {selector}"
+        except asyncio.TimeoutError:
+            error_msg = f"Interaction timeout: {action} on {selector} took too long"
+            logging.error(error_msg)
+            return error_msg
         except Exception as e:
             error_msg = f"Interaction failed: {str(e)}"
             if pydoll_browser_manager.dev_mode:
@@ -309,8 +370,9 @@ class PyDollBrowserScreenshotTool:
     async def execute(self) -> Dict[str, Any]:
         """Take a screenshot of the current browser page."""
         try:
-            # First ensure browser is initialized
-            if not await pydoll_browser_manager.initialize(headless=False):
+            # First ensure browser is initialized with headless mode by default
+            headless_mode = not pydoll_browser_manager.dev_mode
+            if not await pydoll_browser_manager.initialize(headless=headless_mode):
                 return {"error": "Browser not initialized"}
             
             page = await pydoll_browser_manager.get_page()
@@ -332,15 +394,17 @@ class PyDollBrowserScreenshotTool:
             if pydoll_browser_manager.dev_mode:
                 logging.info(f"[PyDoll Dev] Taking screenshot of current page")
                 try:
-                    url = await page.get_url()
-                    title = await page.get_title()
+                    url = await asyncio.wait_for(page.get_url(), timeout=5.0)
+                    title = await asyncio.wait_for(page.get_title(), timeout=5.0)
                     logging.info(f"[PyDoll Dev] Current URL: {url}, Title: {title}")
+                except asyncio.TimeoutError:
+                    logging.warning("[PyDoll Dev] Timeout getting page info for screenshot")
                 except Exception as e:
                     logging.error(f"[PyDoll Dev] Error getting page info: {str(e)}")
             
-            # Take the screenshot using the correct PyDoll API
+            # Take the screenshot using the correct PyDoll API with timeout
             # PyDoll's page.get_screenshot() method directly saves to the specified path
-            await page.get_screenshot(filepath)
+            await asyncio.wait_for(page.get_screenshot(filepath), timeout=15.0)
             
             # Verify the file was created
             if not os.path.exists(filepath):
@@ -371,12 +435,16 @@ class PyDollBrowserScreenshotTool:
                     "filepath": filepath,
                     "timestamp": timestamp
                 }
+        except asyncio.TimeoutError:
+            error_msg = "Screenshot timeout: operation took longer than 15 seconds"
+            logging.error(error_msg)
+            return {"error": error_msg}
         except Exception as e:
             error_msg = f"Screenshot failed: {str(e)}"
             logging.error(f"Error in PyDoll screenshot: {str(e)}", exc_info=True)
             if pydoll_browser_manager.dev_mode:
                 logging.error(f"[PyDoll Dev] {error_msg}", exc_info=True)
-            return {"error": error_msg} 
+            return {"error": error_msg}
 
 async def pydoll_debug_toggle(enabled: Optional[bool] = None) -> bool:
     """

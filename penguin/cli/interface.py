@@ -491,11 +491,40 @@ class PenguinInterface:
             if not name:
                 return {"error": "Task name missing for /task create"}
 
-            return self.core.project_manager.create_task(name, description)
+            try:
+                task = await self.core.project_manager.create_task_async(
+                    title=name,
+                    description=description,
+                    priority=1  # Default priority
+                )
+                return {
+                    "status": f"Created task: {task.title}",
+                    "task_id": task.id,
+                    "task_title": task.title
+                }
+            except Exception as e:
+                return {"error": f"Failed to create task: {str(e)}"}
         elif action == "run" and len(args) > 1:
             return await self.core.start_run_mode(args[1], " ".join(args[2:]))
         elif action == "status" and len(args) > 1:
-            return self.core.project_manager.get_task_status(args[1])
+            try:
+                task = await self.core.project_manager.get_task_async(args[1])
+                if task:
+                    return {
+                        "status": f"Task '{task.title}' status: {task.status.value}",
+                        "task": {
+                            "id": task.id,
+                            "title": task.title,
+                            "status": task.status.value,
+                            "description": task.description,
+                            "priority": task.priority,
+                            "created_at": task.created_at
+                        }
+                    }
+                else:
+                    return {"error": f"Task not found: {args[1]}"}
+            except Exception as e:
+                return {"error": f"Failed to get task status: {str(e)}"}
         return {"error": f"Unknown task command: {action}"}
 
     async def _handle_project_command(self, args: List[str]) -> Dict[str, Any]:
@@ -520,11 +549,48 @@ class PenguinInterface:
             if not name:
                 return {"error": "Project name missing for /project create"}
 
-            return self.core.project_manager.create_project(name, description)
+            try:
+                project = await self.core.project_manager.create_project_async(
+                    name=name,
+                    description=description
+                )
+                return {
+                    "status": f"Created project: {project.name}",
+                    "project_id": project.id,
+                    "project_name": project.name
+                }
+            except Exception as e:
+                return {"error": f"Failed to create project: {str(e)}"}
         elif action == "run" and len(args) > 1:
             return await self.core.start_run_mode(args[1], " ".join(args[2:]), mode_type="project")
         elif action == "status" and len(args) > 1:
-            return self.core.project_manager.get_project_status(args[1])
+            try:
+                project = await self.core.project_manager.get_project_async(args[1])
+                if project:
+                    # Get task summary for this project
+                    project_tasks = await self.core.project_manager.list_tasks_async(project_id=project.id)
+                    task_summary = {
+                        "total": len(project_tasks),
+                        "active": len([t for t in project_tasks if t.status.value == "ACTIVE"]),
+                        "completed": len([t for t in project_tasks if t.status.value == "COMPLETED"]),
+                        "failed": len([t for t in project_tasks if t.status.value == "FAILED"])
+                    }
+                    
+                    return {
+                        "status": f"Project '{project.name}' status: {project.status}",
+                        "project": {
+                            "id": project.id,
+                            "name": project.name,
+                            "status": project.status,
+                            "description": project.description,
+                            "created_at": project.created_at,
+                            "task_summary": task_summary
+                        }
+                    }
+                else:
+                    return {"error": f"Project not found: {args[1]}"}
+            except Exception as e:
+                return {"error": f"Failed to get project status: {str(e)}"}
         return {"error": f"Unknown project command: {action}"}
 
     async def _handle_run_command(self, args: List[str], 
@@ -622,8 +688,51 @@ class PenguinInterface:
             return self._format_error(e)
 
     async def _handle_list_command(self, args: List[str]) -> Dict[str, Any]:
-        """Handle list command"""
-        return self.core.project_manager.process_list_command()
+        """Handle list command - show projects and tasks"""
+        try:
+            projects = await self.core.project_manager.list_projects_async()
+            all_tasks = await self.core.project_manager.list_tasks_async()
+            
+            # Format output similar to the old process_list_command
+            result = {
+                "projects": [],
+                "tasks": [],
+                "summary": {
+                    "total_projects": len(projects),
+                    "total_tasks": len(all_tasks),
+                    "active_tasks": len([t for t in all_tasks if t.status.value == "ACTIVE"])
+                }
+            }
+            
+            # Format projects
+            for project in projects:
+                project_tasks = [t for t in all_tasks if t.project_id == project.id]
+                result["projects"].append({
+                    "id": project.id,
+                    "name": project.name,
+                    "description": project.description,
+                    "status": project.status,
+                    "task_count": len(project_tasks),
+                    "created_at": project.created_at
+                })
+            
+            # Format tasks
+            for task in all_tasks:
+                result["tasks"].append({
+                    "id": task.id,
+                    "title": task.title,
+                    "description": task.description,
+                    "status": task.status.value,
+                    "project_id": task.project_id,
+                    "priority": task.priority,
+                    "created_at": task.created_at
+                })
+            
+            return result
+            
+        except Exception as e:
+            logger.exception(f"Error in list command: {e}")
+            return self._format_error(e)
 
     async def _load_conversation(self, session_id: str) -> Dict[str, Any]:
         """Load conversation by ID"""
