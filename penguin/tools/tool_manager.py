@@ -781,22 +781,22 @@ class ToolManager:
                 #     tool_input.get("max_results", 5),
                 #     tool_input.get("search_depth", "advanced")
                 # ),
-                "browser_navigate": lambda: asyncio.run(self.execute_browser_navigate(tool_input["url"])),
-                "browser_interact": lambda: asyncio.run(self.execute_browser_interact(
+                "browser_navigate": lambda: self._execute_async_tool(self.execute_browser_navigate(tool_input["url"])),
+                "browser_interact": lambda: self._execute_async_tool(self.execute_browser_interact(
                     tool_input["action"], tool_input["selector"], tool_input.get("text")
                 )),
-                "browser_screenshot": lambda: asyncio.run(self.execute_browser_screenshot()),
-                "pydoll_browser_navigate": lambda: asyncio.run(self.execute_pydoll_browser_navigate(tool_input["url"])),
-                "pydoll_browser_interact": lambda: asyncio.run(self.execute_pydoll_browser_interact(
+                "browser_screenshot": lambda: self._execute_async_tool(self.execute_browser_screenshot()),
+                "pydoll_browser_navigate": lambda: self._execute_async_tool(self.execute_pydoll_browser_navigate(tool_input["url"])),
+                "pydoll_browser_interact": lambda: self._execute_async_tool(self.execute_pydoll_browser_interact(
                     tool_input["action"], tool_input["selector"], tool_input.get("selector_type", "css"), tool_input.get("text")
                 )),
-                "pydoll_browser_screenshot": lambda: asyncio.run(self.execute_pydoll_browser_screenshot()),
+                "pydoll_browser_screenshot": lambda: self._execute_async_tool(self.execute_pydoll_browser_screenshot()),
                 "analyze_codebase": lambda: self.analyze_codebase(
                     tool_input.get("directory"),
                     tool_input.get("analysis_type", "all"),
                     tool_input.get("include_external", False),
                 ),
-                "reindex_workspace": lambda: asyncio.run(
+                "reindex_workspace": lambda: self._execute_async_tool(
                     self.reindex_workspace(
                         tool_input.get("directory"),
                         tool_input.get("force_full", False),

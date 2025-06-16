@@ -261,21 +261,16 @@ class RunMode:
             task = None
             project_manager = self.core.project_manager
 
-            # Search in independent tasks first
-            for t in project_manager.independent_tasks.values():
-                if t.title.lower() == name.lower():
-                    task = t
-                    break
-
-            # If not found, search in all projects
-            if not task:
-                for project in project_manager.projects.values():
-                    for t in project.tasks.values():
-                        if t.title.lower() == name.lower():
-                            task = t
-                            break
-                    if task:
+            # Search for task by title using the new API
+            try:
+                # First, try to find task by title across all projects and independent tasks
+                all_tasks = await project_manager.list_tasks_async()
+                for t in all_tasks:
+                    if t.title.lower() == name.lower():
+                        task = t
                         break
+            except Exception as e:
+                logger.error(f"Error searching for task '{name}': {e}")
 
             if not task and not description:
                 error_msg = f"Task '{name}' not found and no description provided."
@@ -315,10 +310,17 @@ class RunMode:
             # If task completed successfully, check if it should be marked as complete
             if task_result.get("status") == "completed":
                 # Handle task completion based on type
-                if task_result.get("completion_type") != "user_specified":
-                    result = self.core.project_manager.complete_task(name)
-                    if result.get("status") != "completed":
-                        logger.warning(f"Failed to mark task '{name}' as complete in project manager: {result.get('result')}")
+                if task_result.get("completion_type") != "user_specified" and task:
+                    try:
+                        from penguin.project.models import TaskStatus
+                        success = self.core.project_manager.update_task_status(
+                            task.id, 
+                            TaskStatus.COMPLETED
+                        )
+                        if not success:
+                            logger.warning(f"Failed to mark task '{name}' as complete in project manager")
+                    except Exception as e:
+                        logger.error(f"Error marking task '{name}' as complete: {e}")
                 
                 # Emit completion event
                 await self._emit_event({
@@ -420,9 +422,12 @@ class RunMode:
             
             # If user specified a task name but no specific description, try to find its description
             if specified_task_name and not task_description:
-                task = self.core.project_manager._find_task_by_name(specified_task_name)
-                if task:
-                    task_description = task.description
+                try:
+                    task = await self.core.project_manager.get_task_by_title(specified_task_name)
+                    if task:
+                        task_description = task.description
+                except Exception as e:
+                    logger.debug(f"Could not find task '{specified_task_name}': {e}")
             
             # If user specified a description but no task name, create a temporary task
             if task_description and not specified_task_name:
@@ -545,22 +550,25 @@ class RunMode:
         """
         if specified_task_name:
             # Check if it's an existing task
-            task = self.core.project_manager._find_task_by_name(specified_task_name)
-            if task:
-                # Return data from existing task
-                return {
-                    "name": task.title,
-                    "description": task.description if task_description is None else task_description,
-                    "context": {
-                        "id": task.id,
-                        "project_id": task.project_id,
-                        "priority": task.priority,
-                        "metadata": task.metadata if hasattr(task, "metadata") else {},
-                        "status": task.status,
-                        "progress": task.progress if hasattr(task, "progress") else 0,
-                        "due_date": task.due_date if hasattr(task, "due_date") else None,
+            try:
+                task = self.core.project_manager.get_task_by_title(specified_task_name)
+                if task:
+                    # Return data from existing task
+                    return {
+                        "name": task.title,
+                        "description": task.description if task_description is None else task_description,
+                        "context": {
+                            "id": task.id,
+                            "project_id": task.project_id,
+                            "priority": task.priority,
+                            "metadata": task.metadata if hasattr(task, "metadata") else {},
+                            "status": task.status.value,
+                            "progress": getattr(task, "progress", 0),
+                            "due_date": task.due_date,
+                        }
                     }
-                }
+            except Exception as e:
+                logger.debug(f"Could not find task '{specified_task_name}': {e}")
             else:
                 # Return data for user-specified task
                 return {
@@ -578,21 +586,24 @@ class RunMode:
                 }
         
         # Get next task from project manager
-        next_task = await self.core.project_manager.get_next_task()
-        if next_task:
-            return {
-                "name": next_task["title"],
-                "description": next_task["description"],
-                "context": {
-                    "id": next_task["id"],
-                    "project_id": next_task.get("project_id"),
-                    "priority": next_task.get("priority"),
-                    "metadata": next_task.get("metadata", {}),
-                    "status": next_task.get("status"),
-                    "progress": next_task.get("progress"),
-                    "due_date": next_task.get("due_date"),
+        try:
+            next_task = await self.core.project_manager.get_next_task_async()
+            if next_task:
+                return {
+                    "name": next_task.title,
+                    "description": next_task.description,
+                    "context": {
+                        "id": next_task.id,
+                        "project_id": next_task.project_id,
+                        "priority": next_task.priority,
+                        "metadata": getattr(next_task, "metadata", {}),
+                        "status": next_task.status.value,
+                        "progress": getattr(next_task, "progress", 0),
+                        "due_date": next_task.due_date,
+                    }
                 }
-            }
+        except Exception as e:
+            logger.debug(f"Error getting next task: {e}")
             
         return None
 

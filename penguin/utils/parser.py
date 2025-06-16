@@ -820,27 +820,30 @@ class ActionExecutor:
                 # Extract description from params or use default
                 description = params.strip() if params else "What can you see in this PyDoll screenshot?"
                 
-                # If conversation system is available, add to it as multimodal content
-                if hasattr(self, 'conversation_system') and self.conversation_system:
-                    # Create multimodal content in the same format as the /image command result
-                    multimodal_content = [
-                        {"type": "text", "text": description},
-                        {"type": "image_url", "image_path": result["filepath"]}
-                    ]
-                    
-                    logger.info(f"Adding PyDoll screenshot to conversation: {multimodal_content}")
-                    
-                    # Add as a user message (matching how /image adds to conversation)
-                    self.conversation_system.add_message(
+                # Determine target 'add_message' method
+                add_message_fn = None
+                if callable(getattr(self.conversation_system, 'add_message', None)):
+                    add_message_fn = self.conversation_system.add_message
+                elif hasattr(self.conversation_system, 'conversation') and callable(getattr(self.conversation_system.conversation, 'add_message', None)):
+                    add_message_fn = self.conversation_system.conversation.add_message
+                
+                # Create multimodal content
+                multimodal_content = [
+                    {"type": "text", "text": description},
+                    {"type": "image_url", "image_path": result["filepath"]}
+                ]
+                
+                if add_message_fn:
+                    logger.info(f"Adding PyDoll screenshot to conversation via {add_message_fn}: {multimodal_content}")
+                    add_message_fn(
                         role="user",
                         content=multimodal_content,
                         category=MessageCategory.DIALOG
                     )
-                    
                     return f"PyDoll screenshot saved to {result['filepath']} and added to conversation"
                 else:
-                    logger.warning("Conversation system not available, screenshot not added to conversation")
-                    return f"PyDoll screenshot saved to {result['filepath']} but not added to conversation (conversation system not available)"
+                    logger.warning("No suitable add_message method found; conversation update skipped")
+                    return f"PyDoll screenshot saved to {result['filepath']} (conversation update skipped)"
             else:
                 error_msg = result.get("error", "Failed to capture PyDoll screenshot or file not found")
                 logger.error(f"PyDoll screenshot error: {error_msg}")
