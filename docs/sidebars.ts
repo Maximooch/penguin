@@ -38,6 +38,7 @@ const sidebars: SidebarsConfig = {
         'usage/cli_commands',
         'usage/project_management',
         'usage/api_usage',
+        'usage/python_api_reference'
       ],
     },
     {

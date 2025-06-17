@@ -151,6 +151,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union, Calla
 import asyncio
 import json
 from datetime import datetime
+import uuid  # For unique stream IDs
 
 from dotenv import load_dotenv  # type: ignore
 from rich.console import Console  # type: ignore
@@ -388,7 +389,10 @@ class PenguinCore:
                     print(f"DEBUG: Passing log_error of type {type(log_error)} to ToolManager.")
                     print(f"DEBUG: Fast startup mode: {fast_startup}")
                     # Convert config to dict format for ToolManager
-                    config_dict = config.__dict__ if hasattr(config, '__dict__') else config
+                    # Use the global processed config dict instead of the dataclass __dict__
+                    # to ensure all configurations (especially memory) are properly passed
+                    from penguin.config import config as global_config_dict
+                    config_dict = global_config_dict if isinstance(global_config_dict, dict) else (config.__dict__ if hasattr(config, '__dict__') else config)
                     tool_manager = ToolManager(config_dict, log_error, fast_startup=fast_startup)
                     logger.info(f"STARTUP: Tool manager created in {time.time() - tool_manager_start:.4f}s with {len(tool_manager.tools) if hasattr(tool_manager, 'tools') else 'unknown'} tools")
                     if pbar: pbar.update(1)
@@ -1719,12 +1723,15 @@ class PenguinCore:
         # Initialize streaming if this is the first chunk
         now = datetime.now()
         if not self._streaming_state["active"]:
+            # --- Begin new streaming message ---
             self._streaming_state["active"] = True
             self._streaming_state["content"] = chunk
             self._streaming_state["message_type"] = message_type
             self._streaming_state["role"] = role
             self._streaming_state["started_at"] = now
             self._streaming_state["metadata"] = {"is_streaming": True}
+            # Generate a unique stream_id to tag all subsequent chunks.
+            self._streaming_state["id"] = uuid.uuid4().hex
         else:
             # Append to existing content
             self._streaming_state["content"] += chunk
@@ -1733,6 +1740,7 @@ class PenguinCore:
         
         # Emit event to UI subscribers instead of direct callbacks
         await self.emit_ui_event("stream_chunk", {
+            "stream_id": self._streaming_state.get("id"),
             "chunk": chunk,
             "is_final": False,
             "message_type": message_type,
@@ -1752,6 +1760,9 @@ class PenguinCore:
                             callback(chunk)
                     except Exception as e:
                         logger.error(f"PenguinCore: Error in stream callback: {e}")
+
+        if chunk and self._streaming_state["content"].endswith(chunk):
+            return          # suppress prefix-repeat
 
     def finalize_streaming_message(self) -> Optional[Dict[str, Any]]:
         """
@@ -1804,6 +1815,7 @@ class PenguinCore:
         
         # Emit final streaming event with is_final=True
         asyncio.create_task(self.emit_ui_event("stream_chunk", {
+            "stream_id": self._streaming_state.get("id"),
             "chunk": "",
             "is_final": True,
             "message_type": self._streaming_state["message_type"],

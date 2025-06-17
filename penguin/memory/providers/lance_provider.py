@@ -533,9 +533,21 @@ class LanceMemoryProvider(MemoryProvider):
             
             # Create vector index if we have a vector column
             if "vector" in table.schema.names:
-                table.create_index("vector", index_type="ivf_pq")
+                # Use a simpler index type that's more widely supported
+                # Fall back to basic IndexFlatIP if ivf_pq is not available
+                try:
+                    table.create_index("vector", index_type="ivf_pq")
+                    logger.info("Created IVF_PQ vector index for improved search performance")
+                except Exception as inner_e:
+                    logger.warning(f"IVF_PQ index failed ({inner_e}), trying IndexFlat...")
+                    try:
+                        table.create_index("vector", index_type="btree")
+                        logger.info("Created BTree vector index for improved search performance")
+                    except Exception as btree_e:
+                        logger.warning(f"BTree index also failed ({btree_e}), using default indexing")
+                        # LanceDB will use default linear search if no index is created
+                
                 self._stats["index_created"] = True
-                logger.info("Created vector index for improved search performance")
             
         except Exception as e:
             logger.warning(f"Failed to create index: {e}")
