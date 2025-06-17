@@ -1409,6 +1409,11 @@ class PenguinCLI:
         # Add signal handler for clean interrupts
         signal.signal(signal.SIGINT, self._handle_interrupt)
 
+        self._streaming_lock = asyncio.Lock()
+        self._streaming_session_id = None  # legacy session id (will be removed)
+        self._active_stream_id = None      # NEW – authoritative stream identifier from Core
+        self._last_processed_turn = None
+
     def _create_prompt_session(self):
         """Create and configure a prompt_toolkit session with multi-line support"""
         # Define key bindings
@@ -2346,131 +2351,68 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
 
     # Improved stream_callback that uses Rich Live display
     def stream_callback(self, content: str):
-        """Handle streaming content from LLM using Rich Live display"""
-        # Handle non-string content
-        if not isinstance(content, str):
-            try:
-                content = str(content)
-            except:
-                return  # Skip content that can't be converted to string
+        """Render streaming chunks in a single Live panel.
 
-        # Extract content from ModelResponse objects if needed
-        if "ModelResponse" in content or "Message(content=" in content:
-            content_patterns = [
-                r'Message\(content="([^"]+)"',  # Match Message(content="text")
-                r"Message\(content='([^']+)'",  # Match Message(content='text')
-                r'content="([^"]+)"',  # Match content="text"
-                r"content='([^']+)'",  # Match content='text'
-                r"content=([^,\)]+)",  # Match content=text
-            ]
+        – If we're inside the event-based path the CLI will already have
+          ``_active_stream_id`` set.  If no active stream is set we assume
+          this is a *direct* stream (interactive chat) and create a
+          temporary id "direct".
+        – Subsequent chunks simply append to ``self.streaming_buffer`` and
+          update the existing Live panel.
+        """
 
-            for pattern in content_patterns:
-                match = re.search(pattern, content)
-                if match:
-                    content = match.group(1)
-                    break
-            else:
-                return  # Skip if no pattern matched
-
-        # Skip empty or whitespace-only content
-        if not content.strip():
+        if not isinstance(content, str) or not content.strip():
             return
 
-        # Ensure progress indicators are cleared
-        if self.progress:
-            self._safely_stop_progress()
+        # Treat interactive-chat direct callback as a dedicated stream id.
+        if self._active_stream_id is None:
+            self._active_stream_id = "direct"
 
-        # Filter out initial chunks that only repeat what we already displayed
-        if (
-            (not hasattr(self, "_streaming_started") or not self._streaming_started)
-            and self.last_completed_message
-            and content.startswith(self.last_completed_message)
-        ):
-            # Compute the delta (new part after the previous completed message)
-            delta = content[len(self.last_completed_message):]
-            if not delta.strip():
-                # Nothing new – skip to avoid creating a second Live panel
-                return
-            content = delta  # Show only the new part
+        # First chunk for this stream ➜ initialise panel
+        if not getattr(self, "_streaming_started", False):
+            self._streaming_started = True
+            self.streaming_buffer = content
 
-        # Initialize streaming if this is the first chunk (after duplication check)
-        if not hasattr(self, "_streaming_started") or not self._streaming_started:
-            # Cancel any pending messages
-            print("\033[2K\r", end="")  # Clear current line
-            
-            # Start with a fresh line if not inside a Live display
-            if not self.streaming_live:
-                self._streaming_started = True
-                self._streamed_content = []
-                self.streaming_buffer = content
-                
-                # Create a simple markdown panel for ongoing streaming
-                panel = Panel(
-                    Markdown(content),
-                    title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
-                    title_align="left",
-                    border_style=self.PENGUIN_COLOR,
-                    width=self.console.width - 8,
-                )
-                
-                # Start a new Live display for the streaming content (without screen mode)
-                # Setting vertical_overflow="visible" ensures that the Live
-                # renderer *appends* new lines instead of re-painting only the
-                # visible viewport.  This preserves the scroll-back buffer so
-                # you can scroll and inspect the full history during long
-                # RunMode sessions.
-                self.streaming_live = Live(
-                    panel,
-                    refresh_per_second=10,
-                    console=self.console,
-                    vertical_overflow="visible",  # keep full scrollback
-                )
-                self.streaming_live.start()
-            else:
-                # Append to existing content
-                self.streaming_buffer += content
-                self._streamed_content.append(content)
-                
-                # Update the live display
-                panel = Panel(
-                    Markdown(self.streaming_buffer),
-                    title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
-                    title_align="left",
-                    border_style=self.PENGUIN_COLOR,
-                    width=self.console.width - 8,
-                )
-                self.streaming_live.update(panel)
+            # Clean up any previous Live panel
+            if getattr(self, "streaming_live", None):
+                try:
+                    self.streaming_live.stop()
+                except Exception:
+                    pass
+                self.streaming_live = None
+
+            panel = Panel(
+                Markdown(content),
+                title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
+                title_align="left",
+                border_style=self.PENGUIN_COLOR,
+                width=self.console.width - 8,
+            )
+            self.streaming_live = Live(
+                panel,
+                refresh_per_second=10,
+                console=self.console,
+                vertical_overflow="visible",
+            )
+            self.streaming_live.start()
         else:
-            # Drop exact-duplicate chunks we have already processed in this
-            # streaming session (some providers re-emit the same buffer).
-            if content in self._streamed_content:
-                return
-
-            # Append to existing content
+            # Append and update
             self.streaming_buffer += content
-            self._streamed_content.append(content)
-
-            # Update the live display if it exists
-            if self.streaming_live:
-                panel = Panel(
-                    Markdown(self.streaming_buffer),
-                    title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
-                    title_align="left",
-                    border_style=self.PENGUIN_COLOR,
-                    width=self.console.width - 8,
-                )
-                self.streaming_live.update(panel)
+            if getattr(self, "streaming_live", None):
+                try:
+                    panel = Panel(
+                        Markdown(self.streaming_buffer),
+                        title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
+                        title_align="left",
+                        border_style=self.PENGUIN_COLOR,
+                        width=self.console.width - 8,
+                    )
+                    self.streaming_live.update(panel)
+                except Exception:
+                    # fallback
+                    print(content, end="", flush=True)
             else:
-                # Fallback to print if no live display
                 print(content, end="", flush=True)
-
-        # Store for deduplication
-        self.last_completed_message = self.streaming_buffer
-        
-        # Mark this message as processed to avoid duplication
-        msg_key = f"assistant:{self.streaming_buffer[:50]}"
-        self.processed_messages.add(msg_key)
-        self.message_turn_map[msg_key] = self.current_conversation_turn
 
     def _finalize_streaming(self):
         """Finalize streaming and clean up the Live display"""
@@ -2483,6 +2425,8 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
 
         self._streaming_started = False
         self.is_streaming = False
+        self._streaming_session_id = None
+        self._active_stream_id = None
 
     def handle_event(self, event_type: str, data: Dict[str, Any]) -> None:
         """
@@ -2495,53 +2439,57 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
         """
         try:
             if event_type == "stream_chunk":
-                # Handle streaming chunks
+                # ------------------------------------------------------------------
+                # Unified streaming handler using stream_id from Core
+                # ------------------------------------------------------------------
+                stream_id = data.get("stream_id")
                 chunk = data.get("chunk", "")
                 is_final = data.get("is_final", False)
                 self.streaming_role = data.get("role", "assistant")
+
+                # Ignore chunks with no stream_id (should not happen after refactor)
+                if stream_id is None:
+                    return
+
+                # First chunk of a new streaming message -> initialise panel
+                if self._active_stream_id is None:
+                    self._active_stream_id = stream_id
+                
+                # Ignore chunks that belong to an old or foreign stream
+                if stream_id != self._active_stream_id:
+                    return
+
+                # Skip empty non-final chunks
+                if not chunk and not is_final:
+                    return
+
+                # Forward chunk to the UI renderer
+                if chunk:
+                    self.stream_callback(chunk)
 
                 if is_final:
                     # Final chunk received
                     self.is_streaming = False
 
-                    # If complete content is provided, use it
-                    if data.get("content"):
+                    # If complete content is provided, use it for final display (if not already streamed)
+                    if data.get("content") and (not hasattr(self, "_streaming_started") or not self._streaming_started):
                         self.streaming_buffer = data["content"]
+                        if self.streaming_buffer.strip():
+                            self.display_message(self.streaming_buffer, self.streaming_role)
 
-                    # Store this message as completed to avoid duplication
-                    self.last_completed_message = self.streaming_buffer
+                    # Clean up
+                    self._finalize_streaming()
+                    self._active_stream_id = None
 
-                    # Generate a message key for this completed message
-                    completed_msg_key = (
-                        f"{self.streaming_role}:{self.streaming_buffer[:50]}"
-                    )
-                    self.processed_messages.add(completed_msg_key)
+                    # Store completed message for deduplication
+                    if self.streaming_buffer.strip():
+                        completed_msg_key = f"{self.streaming_role}:{self.streaming_buffer[:50]}"
+                        self.processed_messages.add(completed_msg_key)
+                        self.message_turn_map[completed_msg_key] = self.current_conversation_turn
 
-                    # Associate this message with the current conversation turn
-                    self.message_turn_map[completed_msg_key] = (
-                        self.current_conversation_turn
-                    )
-
-                    # Display the final message if not already displayed via streaming
-                    if (
-                        not hasattr(self, "_streaming_started")
-                        or not self._streaming_started
-                    ):
-                        self.display_message(self.streaming_buffer, self.streaming_role)
-
-                    # Reset streaming buffer
+                    # Reset buffer
                     self.streaming_buffer = ""
-                    if hasattr(self, "_streaming_started"):
-                        self._streaming_started = False
-                    if hasattr(self, "_streamed_content"):
-                        self._streamed_content = []
-                else:
-                    # Accumulate chunks
-                    self.is_streaming = True
-                    self.streaming_buffer += chunk
-
-                    # Use existing stream_callback to maintain consistent UI
-                    self.stream_callback(chunk)
+                    return
 
             elif event_type == "token_update":
                 # Could update a token display here if we add one

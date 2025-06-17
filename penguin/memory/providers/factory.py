@@ -57,9 +57,15 @@ class MemoryProviderFactory:
         
         provider_type = config.get("provider", "auto")
         
+        # Debug logging to track provider selection
+        logger.info(f"Memory provider config: {config}")
+        logger.info(f"Requested provider type: {provider_type}")
+        
         if provider_type == "auto":
             provider_type = cls._detect_best_provider()
             logger.info(f"Auto-detected best provider: {provider_type}")
+        else:
+            logger.info(f"Using configured provider: {provider_type}")
         
         if provider_type not in cls._providers:
             available = ', '.join(cls._providers.keys())
