@@ -363,7 +363,7 @@ For major changes, please open an issue first to discuss your approach.
 - **[Performance Issues](https://github.com/Maximooch/penguin/blob/main/test_startup_performance.py)** - Use our performance test script
 
 ### Project Status
-- **Current Version**: v0.2.3 (Phase 2 Complete)  
+- **Current Version**: v0.2.4 (Phase 2 Complete)  
 - **Active Development**: Phase 3 - Performance & Benchmarking
 - **Stability**: Core features stable, performance optimization in progress
 - **Python Support**: 3.9+ (3.10+ recommended for best performance)

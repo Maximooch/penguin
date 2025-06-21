@@ -46,28 +46,61 @@ class BaseAgent(ABC):
         """Optional hook; agents may implement self-throttling."""
 
     # ------------------------------------------------------------------
-    # Cognitive cycle – plan ▸ act ▸ observe
+    # Core agent execution interface
+    # ------------------------------------------------------------------
+    @abstractmethod
+    async def run(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Execute the agent with a prompt and optional context.
+        
+        This is the main entry point called by the Engine. Agent implementations
+        must provide this method.
+        
+        Args:
+            prompt: The input prompt/task for the agent
+            context: Optional context data for the execution
+            
+        Returns:
+            Dictionary containing the agent's response and any results
+        """
+        pass
+
+    # ------------------------------------------------------------------
+    # Cognitive cycle – plan ▸ act ▸ observe (DEPRECATED)
     # ------------------------------------------------------------------
     async def before_plan(self, resources: ResourceSnapshot):  # noqa: D401
         """Hook invoked before each **plan** call."""
 
     @abstractmethod
-    async def plan(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> Any:
-        """Produce a plan or immediate answer given *prompt*."""
+    async def plan(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        DEPRECATED: Use run() instead. This method will be removed in v0.3.0.
+        
+        Generate a plan to address the given prompt within the provided context.
+        """
+        # For backward compatibility, delegate to run() if not overridden
+        return await self.run(prompt, context)
 
-    async def before_act(self, action: Any, resources: ResourceSnapshot):  # noqa: D401
-        """Hook invoked before **act**."""
+    async def before_act(self, resources: ResourceSnapshot):  # noqa: D401
+        """Hook invoked before each **act** call."""
+
+    @abstractmethod  
+    async def act(self, action_data: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Execute actions based on the plan.
+        
+        DEPRECATED: This method will be removed in v0.3.0.
+        """
+        pass
+
+    async def before_observe(self, resources: ResourceSnapshot):  # noqa: D401
+        """Hook invoked before each **observe** call."""
 
     @abstractmethod
-    async def act(self, plan_or_action: Any, context: Optional[Dict[str, Any]] = None) -> Any:
-        """Execute the plan / action produced by :py:meth:`plan`."""
-
-    async def before_observe(self, result: Any, resources: ResourceSnapshot):  # noqa: D401
-        """Hook invoked before **observe**."""
-
-    @abstractmethod
-    async def observe(self, result: Any, context: Optional[Dict[str, Any]] = None) -> Any:
-        """Process outcome of **act** step."""
+    async def observe(self, results: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Observe and process the results of actions.
+        
+        DEPRECATED: This method will be removed in v0.3.0.
+        """
+        pass
 
     # ------------------------------------------------------------------
     # Convenience helpers

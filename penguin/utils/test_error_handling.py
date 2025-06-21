@@ -1,13 +1,32 @@
+"""Manual error-handling demo script
+
+This module is **not** intended to be collected or executed by the automated
+test-runner.  Unfortunately its filename (``test_*.py``) means `pytest` picks
+it up during discovery which causes internal errors in CI/workflow validation.
+
+We therefore unconditionally tell *pytest* to skip the module as soon as it is
+imported.  When the file is executed directly (``python test_error_handling.py``)
+the import of *pytest* will fail and the original demo logic below can still
+run unchanged.
+"""
+
+# ---------------------------------------------------------------------------
+# Skip on **any** pytest import – this happens right at import time so that no
+# further code in this file is evaluated when the automated test-suite runs.
+# ---------------------------------------------------------------------------
+
+try:
+    import pytest  # type: ignore
+    pytest.skip("manual demo – skip during pytest collection", allow_module_level=True)
+except ModuleNotFoundError:
+    # Running outside pytest – proceed with the original demo script
+    pass
+
 import asyncio
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict
-
-# If running under pytest, skip this module – it's a manual demo script, *not* an automated test.
-if "pytest" in sys.modules:
-    import pytest  # type: ignore
-    pytest.skip("test_error_handling.py is a manual demo, skipping in pytest collection", allow_module_level=True)
 
 print("Script started")  # Debug output
 print(f"Python version: {sys.version}")  # Debug output

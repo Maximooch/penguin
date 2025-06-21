@@ -260,33 +260,43 @@ class RunMode:
             # Get task from project manager
             task = None
             project_manager = self.core.project_manager
+            task_id = context.get("task_id") if context else None
 
-            # Search for task by title using the new API
-            try:
-                # First, try to find task by title across all projects and independent tasks
+            if task_id:
+                task = await project_manager.get_task_async(task_id)
+
+            if not task:
+                logger.warning(
+                    f"RunMode could not get task by ID '{task_id}'. "
+                    f"Falling back to global search by title: '{name}'"
+                )
+                # This is the legacy behavior and can be ambiguous across projects
+                # Note: get_task_by_title is also ambiguous and may not be scoped.
+                # A better fallback would be ideal in the future.
                 all_tasks = await project_manager.list_tasks_async()
                 for t in all_tasks:
                     if t.title.lower() == name.lower():
                         task = t
                         break
-            except Exception as e:
-                logger.error(f"Error searching for task '{name}': {e}")
 
+            # If task still not found and no description given, it's an error
             if not task and not description:
-                error_msg = f"Task '{name}' not found and no description provided."
-                await self._emit_event({
-                    "type": "error",
-                    "source": "runmode_task_setup",
-                    "message": error_msg
-                })
+                error_msg = f"Task '{name}' could not be resolved to a specific record and no fallback description was provided."
+                await self._emit_event(
+                    {
+                        "type": "error",
+                        "source": "runmode_task_setup",
+                        "message": error_msg,
+                    }
+                )
                 return {
                     "status": "error",
                     "message": error_msg,
-                    "completion_type": "error"
+                    "completion_type": "error",
                 }
 
-            # Use task description if found
-            if task:
+            # Use task description if found and none was provided
+            if task and not description:
                 description = task.description
 
             # Emit task started event

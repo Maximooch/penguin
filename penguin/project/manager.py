@@ -354,16 +354,37 @@ class ProjectManager:
         # Update in storage
         self.storage.update_task(task)
         
+        # Get old status for event publishing
+        old_status = None
+        if task.transition_history:
+            # Get the most recent transition's from_state
+            old_status = task.transition_history[-1].from_state.value
+        else:
+            # If no transition history, this is the first transition
+            old_status = "unknown"
+        
         # Publish event
         self._publish_event("task_status_changed", {
             "task_id": task.id,
-            "old_status": task.transition_history[-1].from_state.value,
+            "old_status": old_status,
             "new_status": new_status.value,
             "reason": reason
         })
         
         logger.info(f"Task {task_id} status changed to {new_status.value}")
         return True
+    
+    async def update_task_status_async(
+        self, 
+        task_id: str, 
+        new_status: TaskStatus, 
+        reason: Optional[str] = None,
+        user_id: Optional[str] = None
+    ) -> bool:
+        """Async version of update_task_status."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.update_task_status, task_id, new_status, reason, user_id
+        )
     
     def list_tasks(
         self,
@@ -395,29 +416,36 @@ class ProjectManager:
             None, self.get_active_tasks
         )
     
-    def get_next_task(self) -> Optional[Task]:
-        """Get the next task that should be executed based on priority and dependencies."""
+    def get_next_task(self, project_id: Optional[str] = None) -> Optional[Task]:
+        """Return the next executable task.
+
+        Args:
+            project_id: If provided, limit the search to tasks within this
+                project.  When *None* (default) the search spans **all** active
+                tasks (legacy behaviour).
+        """
         active_tasks = self.get_active_tasks()
+
+        # Optional project-scoped filtering
+        if project_id is not None:
+            active_tasks = [t for t in active_tasks if t.project_id == project_id]
+
         if not active_tasks:
             return None
-        
-        # Filter out blocked tasks
-        unblocked_tasks = []
-        for task in active_tasks:
-            if not self._is_task_blocked(task):
-                unblocked_tasks.append(task)
-        
+
+        # Filter out tasks that are blocked by dependencies
+        unblocked_tasks: list[Task] = [t for t in active_tasks if not self._is_task_blocked(t)]
         if not unblocked_tasks:
             return None
-        
-        # Sort by priority (lower number = higher priority)
+
+        # Choose the highest-priority task (lower number = higher priority)
         unblocked_tasks.sort(key=lambda t: (t.priority, t.created_at))
         return unblocked_tasks[0]
     
-    async def get_next_task_async(self) -> Optional[Task]:
-        """Async version of get_next_task."""
+    async def get_next_task_async(self, project_id: Optional[str] = None) -> Optional[Task]:
+        """Async wrapper for ``get_next_task`` with optional project filter."""
         return await asyncio.get_event_loop().run_in_executor(
-            None, self.get_next_task
+            None, self.get_next_task, project_id
         )
     
     # ==================== Advanced Features ====================
@@ -522,16 +550,22 @@ class ProjectManager:
         """Publish an event if EventBus is available."""
         if self._event_bus:
             try:
-                # Use asyncio to handle the async publish method
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If we're in an async context, schedule the coroutine
+                # Check if we're in an async context
+                try:
+                    loop = asyncio.get_running_loop()
+                    # We're in an async context, schedule the coroutine as a task
                     asyncio.create_task(self._event_bus.publish(event_type, data))
-                else:
-                    # If we're in a sync context, run the coroutine
-                    loop.run_until_complete(self._event_bus.publish(event_type, data))
+                except RuntimeError:
+                    # No running event loop, try to create one
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(self._event_bus.publish(event_type, data))
+                        loop.close()
+                    except Exception as e:
+                        logger.debug(f"Could not publish event {event_type}: {e}")
             except Exception as e:
-                logger.error(f"Failed to publish event {event_type}: {e}")
+                logger.debug(f"Failed to publish event {event_type}: {e}")
         else:
             logger.debug(f"Event {event_type} not published (EventBus not available)")
     

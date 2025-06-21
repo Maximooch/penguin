@@ -1,3 +1,7 @@
+
+project:
+  github_repository: "maximooch/penguin-test-repo"
+
 workspace:
   path: /Users/maximusputnam/penguin_workspace
   create_dirs:
@@ -8,11 +12,11 @@ workspace:
   - projects
   - context
 model:
-  default: google/gemini-2.5-pro-preview
+  default: google/gemini-2.5-pro
   provider: openrouter
   client_preference: openrouter
   streaming_enabled: true
-  temperature: 0.7
+  temperature: 0.5
   context_window: 1048576
   max_tokens: 63967
 api:
