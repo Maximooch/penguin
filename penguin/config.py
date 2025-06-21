@@ -197,13 +197,15 @@ logger.debug(f"Workspace path: {WORKSPACE_PATH}")
 # logging.basicConfig(level=logging.DEBUG)
 # logger = logging.getLogger(__name__)
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from .env file, overriding existing system variables
+# This allows project-specific tokens (e.g., in a .env file) to take precedence.
+load_dotenv(override=True)
 
 # API Keys
 # MODEL_API_KEY = os.environ.get("MODEL_API_KEY")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 
 # Constants
 # CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
@@ -220,6 +222,9 @@ DEFAULT_MODEL = os.getenv("PENGUIN_DEFAULT_MODEL", config["model"]["default"])
 DEFAULT_PROVIDER = os.getenv("PENGUIN_DEFAULT_PROVIDER", config["model"]["provider"])
 DEFAULT_API_BASE = os.getenv("PENGUIN_DEFAULT_API_BASE", config["api"]["base_url"])
 USE_ASSISTANTS_API = config["model"].get("use_assistants_api", True)
+
+# Project Management Configuration
+GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", config.get("project", {}).get("github_repository"))
 
 # Add assistant-specific configuration
 ASSISTANT_CONFIG = {

@@ -27,6 +27,10 @@ from typing import Any, AsyncGenerator, Dict, Generator, List, Optional
 
 from penguin.core import PenguinCore
 
+# Concrete agent implementations
+from .basic_agent import BasicPenguinAgent
+from .container_executor import ContainerExecutor
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -316,6 +320,8 @@ class PenguinAgentAsync:
         return self._core.get_token_usage() 
 
 __all__ = [
+     "BasicPenguinAgent",
+     "ContainerExecutor",
      "PenguinAgent",
      "PenguinAgentAsync",
      "AgentConfig",

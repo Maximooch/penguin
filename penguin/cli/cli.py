@@ -8,8 +8,22 @@ import traceback
 import re
 from pathlib import Path
 from typing import List, Optional, Callable, Dict, Any, Set, Union, TypeVar, cast
+# Removed mock imports - using real RunMode implementation now
 
 import json # For JSON output
+import io
+
+# Ensure UTF-8 encoding for stdout/stderr to prevent emoji encoding issues
+# This is especially important on Windows and some terminal environments
+try:
+    # Only wrap if not already wrapped and if buffer is available
+    if hasattr(sys.stdout, 'buffer') and not isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    if hasattr(sys.stderr, 'buffer') and not isinstance(sys.stderr, io.TextIOWrapper):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+except (AttributeError, OSError):
+    # If wrapping fails, continue with existing streams
+    pass
 
 # Add import timing for profiling if enabled
 import time
@@ -103,11 +117,11 @@ else:
     from prompt_toolkit.styles import Style  # type: ignore
     from prompt_toolkit.formatted_text import HTML  # type: ignore
 
-    from penguin.config import config as penguin_config_global, DEFAULT_MODEL, DEFAULT_PROVIDER, WORKSPACE_PATH
+    from penguin.config import config as penguin_config_global, DEFAULT_MODEL, DEFAULT_PROVIDER, WORKSPACE_PATH, GITHUB_REPOSITORY
 from penguin.core import PenguinCore
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig
-# from penguin.run_mode import RunMode # Not directly used in this new structure's top level
+from penguin.run_mode import RunMode # We will mock this but need the type for spec
 from penguin.system.state import parse_iso_datetime, MessageCategory
 from penguin.system.conversation_menu import ConversationMenu, ConversationSummary # Used by PenguinCLI class
 from penguin.system_prompt import SYSTEM_PROMPT
@@ -116,6 +130,12 @@ from penguin.utils.log_error import log_error
 from penguin.utils.logs import setup_logger
 from penguin.cli.interface import PenguinInterface
 from penguin.config import Config # Import Config type for type hinting
+from penguin.project.manager import ProjectManager
+from penguin.project.spec_parser import parse_project_specification_from_markdown
+from penguin.project.workflow_orchestrator import WorkflowOrchestrator
+from penguin.project.task_executor import ProjectTaskExecutor
+from penguin.project.validation_manager import ValidationManager
+from penguin.project.git_manager import GitManager
 
 # Add better import error handling for setup functions
 setup_available = True
@@ -1021,6 +1041,98 @@ def project_delete(
             raise typer.Exit(code=1)
     
     asyncio.run(_async_project_delete())
+
+@project_app.command("run")
+def project_run(
+    spec_file: Path = typer.Argument(..., help="Path to the project specification Markdown file.", exists=True),
+):
+    """
+    Run a complete project workflow from a specification file.
+
+    This command will:
+    1. Parse the spec file to create a project and tasks.
+    2. Sequentially execute each task using the real agent system.
+    3. Validate each task by running tests.
+    4. Create a pull request for each validated task.
+    """
+    async def _async_run_workflow():
+        console.print(f"[bold blue]🐧 Starting project workflow from:[/bold blue] {spec_file}")
+
+        # --- Setup ---
+        # Initialize core components to get the ProjectManager
+        await _initialize_core_components_globally()
+        project_manager = _core.project_manager
+        
+        # Use the real RunMode from the core instead of mocking
+        from penguin.run_mode import RunMode
+        run_mode = RunMode(_core)  # Pass the core instance
+
+        # Initialize the rest of the managers
+        if not GITHUB_REPOSITORY:
+            console.print("[red]Error: GITHUB_REPOSITORY is not configured in your .env or config.yml.[/red]")
+            raise typer.Exit(code=1)
+
+        git_manager = GitManager(
+            workspace_path=WORKSPACE_PATH,
+            project_manager=project_manager,
+            repo_owner_and_name=GITHUB_REPOSITORY
+        )
+        validation_manager = ValidationManager(workspace_path=WORKSPACE_PATH)
+        task_executor = ProjectTaskExecutor(
+            run_mode=run_mode, project_manager=project_manager
+        )
+        orchestrator = WorkflowOrchestrator(
+            project_manager=project_manager,
+            task_executor=task_executor,
+            validation_manager=validation_manager,
+            git_manager=git_manager,
+        )
+
+        # --- Act ---
+        console.print("\n[bold]1. Parsing project specification...[/bold]")
+        try:
+            spec_content = spec_file.read_text()
+            parse_result = await parse_project_specification_from_markdown(
+                markdown_content=spec_content,
+                project_manager=project_manager
+            )
+            if parse_result["status"] != "success":
+                console.print(f"[red]Error parsing spec file: {parse_result['message']}[/red]")
+                raise typer.Exit(code=1)
+            
+            project_id = parse_result["creation_result"]["project"]["id"]
+            num_tasks = parse_result["creation_result"]["tasks_created"]
+            console.print(f"[green]✓ Project '{parse_result['creation_result']['project']['name']}' created with {num_tasks} task(s).[/green]")
+        except Exception as e:
+            console.print(f"[red]Failed to read or parse spec file: {e}[/red]")
+            raise typer.Exit(code=1)
+
+        console.print("\n[bold]2. Executing project tasks...[/bold]")
+        task_number = 0
+        while True:
+            task_number += 1
+            console.print(f"\n--- Running Task {task_number}/{num_tasks} ---")
+            workflow_result = await orchestrator.run_next_task(project_id=project_id)
+            
+            if workflow_result is None:
+                console.print("[bold green]✓ No more tasks to run.[/bold green]")
+                break
+
+            console.print(f"   Task: '{workflow_result['task_title']}'")
+            if workflow_result.get("status") == "COMPLETED":
+                pr_url = workflow_result.get("pull_request", {}).get("pr_url", "N/A")
+                console.print(f"   [green]✓ Status: {workflow_result['status']}[/green]")
+                console.print(f"   [green]✓ Pull Request: {pr_url}[/green]")
+            else:
+                error_msg = workflow_result.get("error", "An unknown error occurred.")
+                console.print(f"   [red]✗ Status: {workflow_result['status']}[/red]")
+                console.print(f"   [red]✗ Reason: {error_msg}[/red]")
+                console.print("[bold red]Workflow stopped due to failure.[/bold red]")
+                break
+        
+        console.print("\n[bold blue]🐧 Project workflow finished.[/bold blue]")
+
+    asyncio.run(_async_run_workflow())
 
 # Task Management Commands
 task_app = typer.Typer(help="Task management commands")

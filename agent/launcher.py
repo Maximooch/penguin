@@ -122,13 +122,20 @@ class AgentLauncher:
         sandbox_type = agent_config.security.sandbox_type
 
         if sandbox_type in {"docker", "shared_docker", "firecracker"}:
-            logger.warning("Sandbox execution not yet implemented for '%s'; falling back to in-process", agent_name)
-            # Future: spawn Engine child / container here
+            # Use container execution for sandboxed agents
+            from penguin.agent.container_executor import ContainerExecutor
+            
+            container_executor = ContainerExecutor()
+            return await container_executor.execute_agent(
+                agent_config.dict(), 
+                prompt, 
+                context
+            )
 
         agent_instance = self._instantiate_agent(agent_config)
 
         try:
-            result = await agent_instance.plan(prompt, context)
+            result = await agent_instance.run(prompt, context)
             logger.info("Agent '%s' invoked by '%s' completed", agent_name, caller)
             return result
         except Exception as exc:  # pylint: disable=broad-except

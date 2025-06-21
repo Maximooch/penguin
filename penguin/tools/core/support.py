@@ -57,7 +57,7 @@ def generate_and_apply_diff(original_content, new_content, full_path, encoding):
 
 def write_to_file(path, content):
     full_path = path
-    encodings = ["utf-8", "latin-1", "ascii", "utf-16"]
+    encodings = ["utf-8", "latin-1", "utf-16"]
 
     for encoding in encodings:
         try:
@@ -83,7 +83,7 @@ def write_to_file(path, content):
 
 def read_file(path):
     full_path = path
-    encodings = ["utf-8", "latin-1", "ascii", "utf-16"]
+    encodings = ["utf-8", "latin-1", "utf-16"]
     for encoding in encodings:
         try:
             with open(full_path, encoding=encoding) as f:

@@ -18,7 +18,24 @@ from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
-import builtins
+
+# ------------------------------------------------------------------
+# Ensure builtins.open is always available (some libraries may delete
+# or monkey-patch it which breaks file operations).
+# ------------------------------------------------------------------
+import builtins  # noqa: E402
+import io  # noqa: E402
+if not hasattr(builtins, "open") or builtins.open is None:  # type: ignore[attr-defined]
+    builtins.open = io.open  # type: ignore[attr-defined]
+
+# ------------------------------------------------------------------
+# Capture a stable reference to the open function to avoid issues if
+# third-party libraries later delete or monkey-patch builtins.open.
+# ------------------------------------------------------------------
+_safe_open = builtins.open  # type: ignore[assignment]
+# Ensure the builtins namespace retains a valid open function even if
+# external libraries attempt to remove or overwrite it later.
+builtins.open = _safe_open  # type: ignore[attr-defined]
 
 from penguin.config import CONVERSATIONS_PATH
 from penguin.system.state import Message, MessageCategory, Session, create_message
@@ -91,7 +108,7 @@ class SessionManager:
             return index
             
         try:
-            with builtins.open(self.index_path, 'r', encoding='utf-8') as f:
+            with _safe_open(self.index_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
             logger.error(f"Error loading session index: {str(e)}")
@@ -111,7 +128,7 @@ class SessionManager:
             session_id = path.stem
             try:
                 # Load minimal metadata without loading all messages
-                with builtins.open(path, 'r', encoding='utf-8') as f:
+                with _safe_open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     
                 # Extract key metadata
@@ -137,7 +154,7 @@ class SessionManager:
         try:
             # Write to temp file first - fix the suffix
             temp_path = Path(f"{self.index_path}.temp")  # Fix: Use explicit Path constructor
-            with builtins.open(temp_path, 'w', encoding='utf-8') as f:
+            with _safe_open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(index, f, indent=2)
                 
             # Atomic rename
@@ -284,7 +301,7 @@ class SessionManager:
         if not file_path.exists():
             return None
             
-        with builtins.open(file_path, 'r', encoding='utf-8') as f:
+        with _safe_open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
 
         session = Session.from_dict(data)
@@ -356,6 +373,10 @@ class SessionManager:
         Returns:
             True if saved successfully, False otherwise
         """
+        # Guard against external tampering with the built-in open during runtime.
+        import builtins as _blt
+        if getattr(_blt, "open", None) is not _safe_open:
+            _blt.open = _safe_open  # type: ignore[attr-defined]
         session = session or self.current_session
         if not session:
             logger.error("No session to save")
@@ -375,7 +396,7 @@ class SessionManager:
             session.metadata["token_count"] = token_count
             
             # Write to temp file first
-            with builtins.open(temp_path, 'w', encoding='utf-8') as f:
+            with _safe_open(temp_path, 'w', encoding='utf-8') as f:
                 f.write(session.to_json())
                 
             # Create backup of current file if it exists
@@ -617,7 +638,7 @@ class SessionManager:
                             result.append(session_data)
                             continue
                             
-                        with builtins.open(session_path, 'r', encoding='utf-8') as f:
+                        with _safe_open(session_path, 'r', encoding='utf-8') as f:
                             try:
                                 # Load only part of the file to find first user message
                                 data = json.load(f)

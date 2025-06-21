@@ -203,28 +203,68 @@ class ConversationSystem:
         return self.add_message("assistant", content)
         
     def add_action_result(
-        self, 
-        action_type: str, 
-        result: str, 
+        self,
+        action_type: str,
+        result: str,
         status: str = "completed"
     ) -> Message:
         """
-        Add an action result message.
-        
+        Add an action result message using the 'tool' role for better
+        compatibility with modern LLMs.
+
+        This method finds the last assistant message (which should contain the
+        tool call), assigns it a unique tool_call_id if it doesn't have one,
+        and then adds a new message with the 'tool' role containing the result,
+        linked by the same ID.
+
         Args:
-            action_type: Type of action executed
-            result: Result of the action
-            status: Status of execution (completed, error, etc.)
-            
+            action_type: Type of action executed (used in metadata).
+            result: Result of the action (becomes the message content).
+            status: Status of execution (completed, error, etc.).
+
         Returns:
-            The created Message object
+            The created Message object for the tool result.
         """
-        content = f"Action executed: {action_type}\nResult: {result}\nStatus: {status}"
+        # Find the last assistant message to attach the tool call ID to
+        last_assistant_message = None
+        for msg in reversed(self.session.messages):
+            if msg.role == 'assistant':
+                last_assistant_message = msg
+                break
+
+        # Generate a unique ID for this tool interaction
+        tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
+
+        if last_assistant_message:
+            # Ensure the assistant message's metadata is a dict
+            if not isinstance(last_assistant_message.metadata, dict):
+                last_assistant_message.metadata = {}
+            
+            # Add tool_calls information to the assistant's message
+            if 'tool_calls' not in last_assistant_message.metadata:
+                last_assistant_message.metadata['tool_calls'] = []
+            
+            # This part is a simplification. A real implementation would parse
+            # the tool call from the assistant's content. Here, we just log it.
+            last_assistant_message.metadata['tool_calls'].append({
+                "id": tool_call_id,
+                "type": "function",
+                "function": {
+                    "name": action_type,
+                    "arguments": "..." # Placeholder for arguments
+                }
+            })
+
+        # Add the tool result message
         return self.add_message(
-            "system", 
-            content, 
-            MessageCategory.SYSTEM_OUTPUT,
-            {"action_type": action_type, "status": status}
+            role="tool",
+            content=str(result),  # Content is just the result string
+            category=MessageCategory.SYSTEM_OUTPUT,
+            metadata={
+                "tool_call_id": tool_call_id,
+                "action_type": action_type,
+                "status": status
+            }
         )
 
     def add_context(
@@ -324,8 +364,23 @@ class ConversationSystem:
         dialog_and_output.sort(key=lambda msg: msg.timestamp)
         
         # Add merged messages
-        messages.extend([{"role": msg.role, "content": msg.content} 
-                        for msg in dialog_and_output])
+        for msg in dialog_and_output:
+            # --- START MODIFICATION: Handle 'tool' role ---
+            if msg.role == 'tool':
+                # For 'tool' role, the API expects 'tool_call_id' and 'content'
+                api_msg = {
+                    "role": "tool",
+                    "tool_call_id": msg.metadata.get("tool_call_id", ""),
+                    "content": msg.content
+                }
+                # Optionally add 'name' if the action_type is available
+                if 'action_type' in msg.metadata:
+                    api_msg['name'] = msg.metadata['action_type']
+                messages.append(api_msg)
+            else:
+                # Standard message format
+                messages.append({"role": msg.role, "content": msg.content})
+            # --- END MODIFICATION ---
         
         # If no messages, add a default user message to prevent API errors
         if not messages:

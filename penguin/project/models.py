@@ -21,6 +21,7 @@ from penguin.utils.serialization import to_dict, from_dict  ## type: ignore
 class TaskStatus(Enum):
     """Task status enumeration with clear state transitions."""
     ACTIVE = "active"
+    RUNNING = "running"
     PENDING_REVIEW = "pending_review" 
     COMPLETED = "completed"
     CANCELLED = "cancelled"
@@ -31,8 +32,9 @@ class TaskStatus(Enum):
     def valid_transitions(cls) -> Dict[TaskStatus, List[TaskStatus]]:
         """Return valid state transitions for task status."""
         return {
-            cls.ACTIVE: [cls.COMPLETED, cls.CANCELLED, cls.FAILED, cls.PENDING_REVIEW, cls.ARCHIVED],
-            cls.PENDING_REVIEW: [cls.ACTIVE, cls.COMPLETED, cls.CANCELLED, cls.FAILED],
+            cls.ACTIVE: [cls.RUNNING, cls.COMPLETED, cls.CANCELLED, cls.ARCHIVED],
+            cls.RUNNING: [cls.ACTIVE, cls.COMPLETED, cls.FAILED, cls.PENDING_REVIEW, cls.CANCELLED],
+            cls.PENDING_REVIEW: [cls.ACTIVE, cls.RUNNING, cls.COMPLETED, cls.CANCELLED, cls.FAILED],
             cls.COMPLETED: [cls.ACTIVE, cls.ARCHIVED],  # Allow reopening
             cls.CANCELLED: [cls.ACTIVE, cls.ARCHIVED],
             cls.FAILED: [cls.ACTIVE, cls.ARCHIVED], 
@@ -227,9 +229,12 @@ class Task:
     
     def start_execution(self, executor_id: str = "system", task_prompt: str = "", context: Dict[str, Any] = None) -> ExecutionRecord:
         """Start a new execution attempt."""
-        # Ensure task is active
-        if self.status != TaskStatus.ACTIVE:
-            self.transition_to(TaskStatus.ACTIVE, reason="Starting execution")
+        # Ensure task is running or active
+        if self.status not in [TaskStatus.RUNNING, TaskStatus.ACTIVE]:
+            self.transition_to(TaskStatus.ACTIVE, reason="Resetting to active to start execution")
+
+        if self.status == TaskStatus.ACTIVE:
+            self.transition_to(TaskStatus.RUNNING, reason="Starting execution")
         
         # Create execution record
         record = ExecutionRecord(
@@ -270,10 +275,10 @@ class Task:
         
         # Update task status based on result
         if result == ExecutionResult.SUCCESS:
-            if self.status == TaskStatus.ACTIVE:
+            if self.status == TaskStatus.RUNNING:
                 self.transition_to(TaskStatus.COMPLETED, reason="Execution successful")
         elif result == ExecutionResult.FAILURE:
-            if self.status == TaskStatus.ACTIVE:
+            if self.status == TaskStatus.RUNNING:
                 self.transition_to(TaskStatus.FAILED, reason="Execution failed")
     
     def mark_pending_review(self, notes: str, reviewer: Optional[str] = None) -> None:
