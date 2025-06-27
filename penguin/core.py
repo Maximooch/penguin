@@ -63,7 +63,8 @@ Core Methods:
         max_iterations: int = 5,
         context_files: Optional[List[str]] = None,
         streaming: Optional[bool] = None,
-        stream_callback: Optional[Callable[[str], None]] = None
+        stream_callback: Optional[Callable[[str], None]] = None,
+        multi_step: bool = False,
     ) -> Dict[str, Any]:
         Process input with multi-step reasoning and action execution
 
@@ -1094,7 +1095,8 @@ class PenguinCore:
         max_iterations: int = 5,
         context_files: Optional[List[str]] = None,
         streaming: Optional[bool] = None,
-        stream_callback: Optional[Callable[[str], None]] = None
+        stream_callback: Optional[Callable[[str], None]] = None,
+        multi_step: bool = True,
     ) -> Dict[str, Any]:
         """
         Process a message with Penguin.
@@ -1114,6 +1116,7 @@ class PenguinCore:
             context_files: Optional list of context files to load
             streaming: Whether to use streaming mode for responses.
             stream_callback: Optional callback function for handling streaming output chunks.
+            multi_step: If True, use the multi-step `run_task` engine. Defaults to True.
             
         Returns:
             Dict containing assistant response and action results
@@ -1153,8 +1156,36 @@ class PenguinCore:
             
             # Use new Engine layer if available
             if self.engine:
-                # Note: Engine will call prepare_conversation internally and handle images
-                response = await self.engine.run_single_turn(message, image_path=image_path, streaming=streaming, stream_callback=stream_callback)
+                if multi_step:
+                    # Bridge the simple stream_callback to the Engine's richer message_callback
+                    engine_message_callback = None
+                    if stream_callback:
+                        # The engine expects an async callback that takes (message, type, **kwargs)
+                        async def bridged_callback(message: str, msg_type: str, **kwargs):
+                            # We only care about streaming assistant thoughts for this callback
+                            if msg_type == 'assistant':
+                                # Create a task to run the potentially non-async callback
+                                # This ensures we don't block the engine's event loop.
+                                asyncio.create_task(asyncio.to_thread(stream_callback, message))
+
+                        engine_message_callback = bridged_callback
+                        
+                    # Use the multi-step task-oriented engine
+                    response = await self.engine.run_task(
+                        task_prompt=message,
+                        image_path=image_path,
+                        max_iterations=max_iterations,
+                        task_context=context,
+                        message_callback=engine_message_callback,
+                    )
+                else:
+                    # Use the single-turn conversational engine
+                    response = await self.engine.run_single_turn(
+                        message, 
+                        image_path=image_path, 
+                        streaming=streaming, 
+                        stream_callback=stream_callback
+                    )
             else:
                 # ---------- Legacy path (fallback) ----------
                 # Prepare conversation and call get_response directly
@@ -1215,114 +1246,31 @@ class PenguinCore:
     ) -> Dict[str, Any]:
         """
         Process a message with multi-step reasoning and action execution.
+
+        DEPRECATED: This logic has moved to `Engine.run_task`. This method
+        is now a compatibility wrapper. Please use `core.process(..., multi_step=True)`
+        or call the engine directly.
         """
-        try:
-            # Process context if provided
-            if context:
-                for key, value in context.items():
-                    self.conversation_manager.add_context(f"{key}: {value}")
-            
-            final_response = None
-            iterations = 0
-            action_results_all = []
-            last_assistant_response = "" # Keep track of the last actual response text
-            
-            # Prepare conversation with initial user input (only done once)
-            self.conversation_manager.conversation.prepare_conversation(message, image_path)
-            
-            # Multi-step processing loop
-            while iterations < max_iterations:
-                iterations += 1
-                
-                # Notify progress callbacks
-                self.notify_progress(iterations, max_iterations, f"Processing step {iterations}/{max_iterations}...")
-                
-                # Get the next response (which may contain actions)
-                response_data, exit_continuation = await self.get_response(
-                    current_iteration=iterations,
-                    max_iterations=max_iterations,
-                    streaming=streaming,
-                    stream_callback=stream_callback
-                )
-                
-                # Extract assistant response and action results
-                assistant_response = response_data.get("assistant_response", "")
-                current_action_results = response_data.get("action_results", [])
-                
-                # Store the actual assistant text, filtering out our specific message
-                if not assistant_response.startswith("[Model finished"):
-                    last_assistant_response = assistant_response
-                
-                # Add successfully executed action results to overall collection
-                # and add a structured message to the conversation history
-                # if current_action_results:
-                #     action_summary_parts = []
-                #     for result in current_action_results:
-                #          action_results_all.append(result) # Keep track for final return
-                #          if result.get("status") == "completed":
-                #              action_summary_parts.append(
-                #                  f"- Action '{result.get('action', 'unknown')}' completed. Result:\n```\n{result.get('result', 'No output')}\n```"
-                #              )
-                #          elif result.get("status") == "error":
-                #              action_summary_parts.append(
-                #                  f"- Action '{result.get('action', 'unknown')}' failed. Error:\n```\n{result.get('result', 'Unknown error')}\n```"
-                #              )
-                #          # Add other statuses like 'interrupted' if needed
-                #          
-                #     if action_summary_parts:
-                #          action_summary_message = "Action Results:\n" + "\n".join(action_summary_parts)
-                #          # Add this summary as a system message for the *next* LLM call
-                #          self.conversation_manager.conversation.add_message(
-                #              role="system", # Or maybe a new 'tool_result' role? System seems ok for now.
-                #              content=action_summary_message,
-                #              category=MessageCategory.SYSTEM_OUTPUT, # Use existing category
-                #              metadata={"type": "action_summary"}
-                #          )
-                #          logger.debug(f"Added action summary message to conversation history.")
-
-                if current_action_results:
-                    for result in current_action_results:
-                        action_results_all.append(result)
-
-                # Check if we should break the loop:
-                # 1. If the assistant response contains the task completion phrase.
-                # 2. If there were no actions parsed in the *last actual* assistant response.
-                # 3. If the loop limit is reached.
-                # 4. If the exit_continuation flag is set by get_response (e.g., TASK_COMPLETED).
-                
-                # Check for actions in the *actual* assistant response, not the placeholder
-                actions_in_last_response = parse_action(last_assistant_response) 
-                
-                # Also check if the current response IS the placeholder
-                is_placeholder_response = assistant_response.startswith("[Model finished")
-
-                if exit_continuation or iterations >= max_iterations or (not actions_in_last_response and not is_placeholder_response):
-                     # If the last response was the placeholder, we use the one before it
-                    final_response = last_assistant_response if not is_placeholder_response else assistant_response
-                    logger.info(f"Breaking multi-step loop. Reason: exit_continuation={exit_continuation}, iterations={iterations}>={max_iterations}, no_actions={not actions_in_last_response}, is_placeholder={is_placeholder_response}")
-                    break
-                    
-                # If continuing, notify of next iteration
-                self.notify_progress(iterations, max_iterations, "Proceeding to next iteration...")
-            
-            # Save the final conversation state
-            self.conversation_manager.save()
-            
-            # Return the *last meaningful* assistant response and all action results
+        logger.warning(
+            "`PenguinCore.multi_step_process` is deprecated and will be removed. "
+            "Use `core.process(..., multi_step=True)` instead."
+        )
+        if not self.engine:
             return {
-                "assistant_response": final_response if final_response is not None else last_assistant_response, # Fallback to last known good response
-                "action_results": action_results_all
-            }
-            
-        except Exception as e:
-            error_msg = f"Error in multi_step_process method: {str(e)}"
-            logger.error(f"{error_msg}\n{traceback.format_exc()}")
-            log_error(e, context={"method": "multi_step_process", "message": message})
-            return {
-                "assistant_response": "I apologize, but an error occurred during multi-step processing.",
+                "assistant_response": "Multi-step processing requires the Engine, which is not available.",
                 "action_results": [],
-                "error": str(e)
+                "error": "Engine not initialized"
             }
+        
+        # This is now a simple wrapper around the new `process` method with the flag enabled.
+        return await self.process(
+            input_data={"text": message, "image_path": image_path},
+            context=context,
+            max_iterations=max_iterations,
+            streaming=streaming,
+            stream_callback=stream_callback,
+            multi_step=True,
+        )
 
     def list_conversations(self, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
         """

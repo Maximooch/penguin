@@ -136,6 +136,7 @@ class Engine:
     async def run_task(
         self, 
         task_prompt: str, 
+        image_path: Optional[str] = None,
         max_iterations: Optional[int] = None,
         task_context: Optional[Dict[str, Any]] = None,
         task_id: Optional[str] = None,
@@ -150,6 +151,7 @@ class Engine:
         
         Args:
             task_prompt: The prompt for the task
+            image_path: Optional image path for multi-modal inputs
             max_iterations: Maximum number of iterations (overrides settings default)
             task_context: Additional context for the task (metadata, environment, etc.)
             task_id: Optional task ID for tracking and events
@@ -169,7 +171,7 @@ class Engine:
         max_iters = max_iterations or self.settings.max_iterations_default
         self.current_iteration = 0
         self.start_time = datetime.utcnow()
-        self.conversation_manager.conversation.prepare_conversation(task_prompt)
+        self.conversation_manager.conversation.prepare_conversation(task_prompt, image_path=image_path)
         
         # Prepare task metadata
         task_metadata = {
@@ -277,19 +279,29 @@ class Engine:
                     except (ImportError, AttributeError):
                         pass
 
-                # Check for any stop conditions
+                # --- Completion and Stop Checks ---
+                should_stop = False
+                
+                # 1. Check for external stop conditions (interrupts, timeouts, etc.)
                 if await self._check_stop():
                     completion_status = "stopped"
-                    break
+                    should_stop = True
                 
-                # Check for completion phrases
-                completed = any(phrase in last_response for phrase in all_completion_phrases)
-                if completed:
+                # 2. Primary completion: No more actions from the assistant.
+                if not should_stop and not iteration_results:
+                    completion_status = "completed"
+                    logger.debug("Task completion detected: No actions in the last response.")
+                    should_stop = True
+
+                # 3. Secondary completion: LLM uses a completion phrase.
+                if not should_stop and any(phrase in last_response for phrase in all_completion_phrases):
                     completion_status = "completed"
                     logger.debug(f"Task completion detected. Found one of these phrases: {all_completion_phrases}")
-                    
-                    # Publish completion event
-                    if enable_events:
+                    should_stop = True
+
+                if should_stop:
+                    # Publish completion event if status is 'completed'
+                    if completion_status == "completed" and enable_events:
                         try:
                             from penguin.utils.events import EventBus, TaskEvent
                             event_bus = EventBus.get_instance()
@@ -303,8 +315,7 @@ class Engine:
                             })
                         except (ImportError, AttributeError):
                             pass
-                            
-                    break
+                    break # Exit the loop
         
         except Exception as e:
             # Handle any execution errors
