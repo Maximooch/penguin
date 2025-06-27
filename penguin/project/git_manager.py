@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-import requests
+import requests # type: ignore
 from penguin.config import GITHUB_REPOSITORY, GITHUB_TOKEN
 
 from .git_integration import GitIntegration
