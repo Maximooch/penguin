@@ -1,0 +1,77 @@
+Screen {
+    layout: vertical;
+    background: #0c141f;
+    color: #dadada;
+}
+
+Header {
+    dock: top;
+    height: 1;
+    background: #1a2a3f;
+    color: #89cff0;
+    text-align: center;
+}
+
+Footer {
+    dock: bottom;
+    height: 1;
+    background: #1a2a3f;
+}
+
+Footer .footer--key {
+    background: #334e68;
+    color: #89cff0;
+}
+
+Footer .footer--highlight-key {
+    background: #89cff0;
+    color: #0c141f;
+}
+
+#main-container {
+    layout: vertical;
+    padding: 1;
+    height: 1fr;
+}
+
+#log {
+    border: round #334e68;
+    background: #101c2c;
+    height: 1fr;
+    margin-bottom: 1;
+    padding: 1;
+    scrollbar-background: #1a2a3f;
+    scrollbar-color: #89cff0;
+}
+
+#input-box {
+    border: round #89cff0;
+    height: 3;
+    background: #1a2a3f;
+    color: #dadada;
+}
+
+#input-box:focus {
+    border: round #89cff0;
+    background: #2a3a4f;
+}
+
+#status-bar {
+    dock: bottom;
+    height: 1;
+    background: #1a2a3f;
+    color: #a0a0a0;
+    padding: 0 1;
+    text-align: center;
+}
+
+#streaming-output {
+    padding: 1;
+    margin: 1 0;
+    background: #0f1a2a;
+    border: round #334e68;
+}
+
+.hidden {
+    display: none;
+} 

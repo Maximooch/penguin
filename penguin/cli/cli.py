@@ -2168,15 +2168,11 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                                 if not description.strip():
                                     description = input("Description (optional): ").strip()
 
-                                # Prepare streaming callback so the usual live render is used
-                                async def async_stream_callback(chunk: str):
-                                    self.stream_callback(chunk)
-
                                 # Send the message through the standard interface path so all
                                 # normal streaming / action-result handling is reused
                                 response = await self.interface.process_input(
                                     {"text": description, "image_path": image_path},
-                                    stream_callback=async_stream_callback,
+                                    stream_callback=self.stream_callback,
                                 )
 
                                 # Finalise any streaming still active
@@ -2264,14 +2260,10 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
 
                 # Process normal message input through interface
                 try:
-                    # Create streaming callback that updates our UI
-                    async def stream_callback(chunk: str):
-                        self.stream_callback(chunk)
-                        
                     # Process user message through interface
                     response = await self.interface.process_input(
                         {"text": user_input},
-                        stream_callback=stream_callback
+                        stream_callback=self.stream_callback
                     )
                     
                     # Assistant responses (streaming or not) are now delivered via Core events.
