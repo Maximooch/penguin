@@ -133,6 +133,107 @@ class Engine:
         async for chunk in self._llm_stream(prompt):
             yield chunk
 
+    async def run_response(
+        self,
+        prompt: str,
+        *,
+        image_path: Optional[str] = None,
+        max_iterations: Optional[int] = None,
+        streaming: Optional[bool] = None,
+        stream_callback: Optional[Callable[[str], None]] = None
+    ) -> Dict[str, Any]:
+        """
+        Multi-step conversational loop that continues until no actions are taken.
+        
+        This method provides natural conversational flow by continuing to process
+        until the assistant stops taking actions, similar to how modern AI assistants
+        behave. Each iteration creates separate messages in the conversation.
+        
+        Args:
+            prompt: The initial prompt to process
+            image_path: Optional image path for multi-modal inputs
+            max_iterations: Maximum number of iterations (default: 10)
+            streaming: Whether to use streaming for responses
+            stream_callback: Optional callback for streaming chunks
+            
+        Returns:
+            Dictionary with final response and execution metadata
+        """
+        max_iters = max_iterations or 10
+        self.current_iteration = 0
+        self.start_time = datetime.utcnow()
+        
+        # Prepare conversation with initial prompt
+        self.conversation_manager.conversation.prepare_conversation(prompt, image_path=image_path)
+        
+        last_response = ""
+        all_action_results = []
+        
+        try:
+            while self.current_iteration < max_iters:
+                self.current_iteration += 1
+                logger.debug("Engine iteration %s (run_response)", self.current_iteration)
+                
+                # Check for external stop conditions
+                if await self._check_stop():
+                    break
+                
+                # Reset streaming state before each iteration to ensure separate UI panels
+                if hasattr(self.conversation_manager, 'core') and self.conversation_manager.core:
+                    # Force finalize any previous streaming before starting new iteration
+                    self.conversation_manager.core.finalize_streaming_message()
+                
+                # Determine effective streaming flag
+                streaming_flag = streaming if streaming is not None else self.settings.streaming_default
+
+                # Execute LLM step with streaming support
+                response_data = await self._llm_step(
+                    tools_enabled=True,
+                    streaming=streaming_flag,
+                    stream_callback=stream_callback
+                )
+                
+                last_response = response_data.get("assistant_response", "")
+                iteration_results = response_data.get("action_results", [])
+                
+                # CRITICAL: Finalize streaming message after each iteration to force separate UI panels
+                if hasattr(self.conversation_manager, 'core') and self.conversation_manager.core:
+                    # Force finalize any active streaming to break message boundaries
+                    self.conversation_manager.core.finalize_streaming_message()
+                    
+                    # Small delay to allow UI to process the message boundary
+                    await asyncio.sleep(0.05)
+                
+                # Save conversation state after each iteration to persist separate messages
+                self.conversation_manager.save()
+                
+                # Collect all action results
+                if iteration_results:
+                    all_action_results.extend(iteration_results)
+                
+                # Stop if no actions were taken - natural conversation end
+                if not iteration_results:
+                    logger.debug("Conversation completion: No actions in response")
+                    break
+            
+            return {
+                "assistant_response": last_response,
+                "iterations": self.current_iteration,
+                "action_results": all_action_results,
+                "status": "completed" if self.current_iteration < max_iters else "max_iterations",
+                "execution_time": (datetime.utcnow() - self.start_time).total_seconds()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in run_response: {str(e)}")
+            return {
+                "assistant_response": f"Error occurred: {str(e)}",
+                "iterations": self.current_iteration,
+                "action_results": all_action_results,
+                "status": "error",
+                "execution_time": (datetime.utcnow() - self.start_time).total_seconds()
+            }
+
     async def run_task(
         self, 
         task_prompt: str, 
@@ -214,54 +315,39 @@ class Engine:
             # Main execution loop
             while self.current_iteration < max_iters:
                 self.current_iteration += 1
-                logger.debug("Engine iteration %s", self.current_iteration)
+                logger.debug("Engine iteration %s (run_task)", self.current_iteration)
 
-                # --- Streaming & LLM Call --- 
-                llm_step_actual_stream_cb = None
-                if message_callback: # message_callback is from Engine.run_task args
-                    async def _engine_internal_chunk_handler(chunk: str):
-                        # This calls the RunMode._engine_message_cb with type "assistant"
-                        await message_callback(chunk, "assistant") 
-                    llm_step_actual_stream_cb = _engine_internal_chunk_handler
+                # Check for external stop conditions
+                if await self._check_stop():
+                    completion_status = "stopped"
+                    break
 
+                # Execute LLM step with streaming support
                 response_data = await self._llm_step(
-                    tools_enabled=True, # Default for run_task
-                    streaming=self.settings.streaming_default, # Engine's default streaming preference
-                    stream_callback=llm_step_actual_stream_cb
+                    tools_enabled=True,
+                    streaming=self.settings.streaming_default,
+                    stream_callback=message_callback if message_callback else None
                 )
-                last_response = response_data.get("assistant_response", "") # This is the full response
-
-                # If not streaming (or if stream callback wasn't effectively used by _llm_step),
-                # ensure the full response is passed to the message_callback for non-chunk handling.
-                # The RunMode._engine_message_cb will then add it to conversation if not streamed to CLI.
-                was_streamed_to_cb = self.settings.streaming_default and llm_step_actual_stream_cb is not None
-                if not was_streamed_to_cb and message_callback and last_response:
-                    await message_callback(last_response, "assistant")
-                # --- End Streaming & LLM Call ---
                 
-                # Add any action results from this step
+                last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
+                
+                # Collect action results
                 if iteration_results:
                     all_action_results.extend(iteration_results)
                     
                     # Display action results via callback
                     if message_callback:
-                        for tool_result_info in iteration_results: # iteration_results are from self._llm_step
+                        for tool_result_info in iteration_results:
                             if isinstance(tool_result_info, dict):
                                 action_name = tool_result_info.get("action_name", "UnknownAction")
                                 output_str = tool_result_info.get("output", "")
                                 status = tool_result_info.get("status", "completed")
-
-                                # Determine message_type for the callback
-                                callback_message_type = "tool_result" # Default for processed tool outputs
-                                if status != "completed":
-                                    callback_message_type = "tool_error" # If status indicates an error
                                 
-                                # Pass the action_name to message_callback
+                                callback_message_type = "tool_result" if status == "completed" else "tool_error"
                                 await message_callback(output_str, callback_message_type, action_name=action_name)
                             else:
-                                # Fallback for old format or direct string results (less ideal)
-                                await message_callback(str(tool_result_info), "system_output") # Generic type
+                                await message_callback(str(tool_result_info), "system_output")
 
                 # Publish progress event
                 if enable_events:
@@ -279,29 +365,13 @@ class Engine:
                     except (ImportError, AttributeError):
                         pass
 
-                # --- Completion and Stop Checks ---
-                should_stop = False
-                
-                # 1. Check for external stop conditions (interrupts, timeouts, etc.)
-                if await self._check_stop():
-                    completion_status = "stopped"
-                    should_stop = True
-                
-                # 2. Primary completion: No more actions from the assistant.
-                if not should_stop and not iteration_results:
+                # Check for task completion via completion phrases only
+                if any(phrase in last_response for phrase in all_completion_phrases):
                     completion_status = "completed"
-                    logger.debug("Task completion detected: No actions in the last response.")
-                    should_stop = True
-
-                # 3. Secondary completion: LLM uses a completion phrase.
-                if not should_stop and any(phrase in last_response for phrase in all_completion_phrases):
-                    completion_status = "completed"
-                    logger.debug(f"Task completion detected. Found one of these phrases: {all_completion_phrases}")
-                    should_stop = True
-
-                if should_stop:
-                    # Publish completion event if status is 'completed'
-                    if completion_status == "completed" and enable_events:
+                    logger.debug(f"Task completion detected. Found completion phrase: {all_completion_phrases}")
+                    
+                    # Publish completion event
+                    if enable_events:
                         try:
                             from penguin.utils.events import EventBus, TaskEvent
                             event_bus = EventBus.get_instance()
@@ -315,7 +385,7 @@ class Engine:
                             })
                         except (ImportError, AttributeError):
                             pass
-                    break # Exit the loop
+                    break
         
         except Exception as e:
             # Handle any execution errors
@@ -407,8 +477,25 @@ class Engine:
             logger.error("_llm_step received empty response after fallback attempt. Skipping message persistence.")
             assistant_response = ""  # Preserve empty for caller but avoid history entry.
         else:
-            # Persist only non-empty assistant messages
-            self.conversation_manager.conversation.add_assistant_message(assistant_response)
+            # Persist assistant message only if we were NOT in streaming mode.
+            # In streaming mode the buffered content will be flushed into the
+            # conversation by `finalize_streaming_message` which we call just
+            # below, so adding it here would create a duplicate and break
+            # chronological ordering.
+            if not streaming:
+                self.conversation_manager.conversation.add_assistant_message(assistant_response)
+
+        # ------------------------------------------------------------------
+        # Ensure any streaming content is finalised **before** we process and
+        # append tool-result messages.  This guarantees the natural order:
+        #   assistant → tool-output, matching real conversational flow.
+        # ------------------------------------------------------------------
+        if streaming and hasattr(self.conversation_manager, "core") and self.conversation_manager.core:
+            # This is a no-op when streaming was disabled or already finalised.
+            try:
+                self.conversation_manager.core.finalize_streaming_message()
+            except Exception as _fin_err:
+                logger.warning("Failed to finalise streaming message early: %s", _fin_err)
 
         action_results = []
         if tools_enabled:
@@ -430,6 +517,19 @@ class Engine:
                     status=action_result["status"]
                 )
                 logger.debug(f"Added action result to conversation: {action_result['action_name']}")
+
+                # Emit UI event immediately for real-time display
+                if hasattr(self.conversation_manager, 'core') and self.conversation_manager.core:
+                    try:
+                        await self.conversation_manager.core.emit_ui_event("message", {
+                            "role": "system", 
+                            "content": f"Tool Result ({action_result['action_name']}):\n{action_result['output']}",
+                            "category": MessageCategory.SYSTEM_OUTPUT.name,  # Convert enum to string
+                            "metadata": {"action_name": action_result['action_name']}
+                        })
+                        await asyncio.sleep(0.01)  # Yield control to allow UI to render
+                    except Exception as e:
+                        logger.warning(f"Failed to emit tool result UI event: {e}")
 
         # Persist conversation state
         self.conversation_manager.save()

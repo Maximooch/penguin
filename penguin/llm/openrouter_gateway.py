@@ -255,7 +255,7 @@ class OpenRouterGateway:
                                 try:
                                     if new_text_segment.strip(): # Avoid sending empty/whitespace-only updates
                                         self.logger.debug(f"[OpenRouterGateway] Calling stream_callback with new segment: '{new_text_segment}'")
-                                        await stream_callback(new_text_segment)
+                                        await stream_callback(new_text_segment, "assistant")
                                 except Exception as cb_err:
                                     self.logger.error(f"[OpenRouterGateway] Error in stream_callback: {cb_err}", exc_info=True)
                         full_response_content = _gateway_accumulated_text # The overall full response

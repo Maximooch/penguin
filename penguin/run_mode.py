@@ -842,9 +842,11 @@ class RunMode:
             
             # Ensure any active streaming message is finalised so UI gets a single completed panel
             try:
-                self.core.finalize_streaming_message()
-            except Exception:
-                pass
+                finalized_msg = self.core.finalize_streaming_message()
+                if finalized_msg:
+                    logger.debug(f"Finalized streaming message: {finalized_msg.get('content', '')[:50]}...")
+            except Exception as e:
+                logger.warning(f"Error finalizing streaming message: {e}")  # Log the error instead of silently passing
             
             # Log completion
             logger.info(f"Task '{name}' finished with Engine - status: {result.get('status')}")

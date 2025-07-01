@@ -609,13 +609,7 @@ async def _handle_run_mode(
     try:
         logger.info(f"Starting run mode: task={task_name}, continuous={continuous}, time_limit={time_limit}")
         
-        # Configure streaming callback to display in console
-        async def stream_callback(chunk: str) -> None:
-            """Handle streaming output during run mode"""
-            if console:
-                if isinstance(chunk, str) and chunk.strip():
-                    # Print directly to console with proper coloring
-                    console.print(chunk, end="", style="blue")
+        # Stream callbacks removed - using event system only
                     
         # Configure UI update callback (no-op for now)
         async def ui_update_callback() -> None:
@@ -636,7 +630,7 @@ async def _handle_run_mode(
                     description=description,
                     continuous=True,
                     time_limit=time_limit,
-                    stream_callback_for_cli=stream_callback,
+                    stream_callback_for_cli=None,
                     ui_update_callback_for_cli=ui_update_callback
                 )
             except KeyboardInterrupt:
@@ -659,7 +653,7 @@ async def _handle_run_mode(
                 description=description,
                 continuous=False,
                 time_limit=time_limit,
-                stream_callback_for_cli=stream_callback,
+                stream_callback_for_cli=None,
                 ui_update_callback_for_cli=ui_update_callback
             )
             
@@ -2132,9 +2126,7 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                         # For /run command, we need special handling for callbacks
                         if command == "run":
                             # Create callbacks for RunMode
-                            async def async_stream_callback(chunk: str):
-                                self.stream_callback(chunk)
-                                
+                                                        # Stream callbacks removed - using event system only
                             async def ui_update_callback():
                                 # Can be expanded with UI refresh logic if needed
                                 pass
@@ -2142,7 +2134,7 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                             # Handle through interface
                             response = await self.interface.handle_command(
                                 user_input[1:],  # Remove the leading slash
-                                runmode_stream_cb=async_stream_callback,
+                                runmode_stream_cb=None,
                                 runmode_ui_update_cb=ui_update_callback
                             )
                         elif command == "image":
@@ -2263,7 +2255,7 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     # Process user message through interface
                     response = await self.interface.process_input(
                         {"text": user_input},
-                        stream_callback=self.stream_callback
+                        stream_callback=None  # Events handle streaming display
                     )
                     
                     # Assistant responses (streaming or not) are now delivered via Core events.
@@ -2453,70 +2445,7 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
         else:
             self.display_message(f"Unknown conversation action: {action}", "error")
 
-    # Improved stream_callback that uses Rich Live display
-    def stream_callback(self, content: str):
-        """Render streaming chunks in a single Live panel.
-
-        – If we're inside the event-based path the CLI will already have
-          ``_active_stream_id`` set.  If no active stream is set we assume
-          this is a *direct* stream (interactive chat) and create a
-          temporary id "direct".
-        – Subsequent chunks simply append to ``self.streaming_buffer`` and
-          update the existing Live panel.
-        """
-
-        if not isinstance(content, str) or not content.strip():
-            return
-
-        # Treat interactive-chat direct callback as a dedicated stream id.
-        if self._active_stream_id is None:
-            self._active_stream_id = "direct"
-
-        # First chunk for this stream ➜ initialise panel
-        if not getattr(self, "_streaming_started", False):
-            self._streaming_started = True
-            self.streaming_buffer = content
-
-            # Clean up any previous Live panel
-            if getattr(self, "streaming_live", None):
-                try:
-                    self.streaming_live.stop()
-                except Exception:
-                    pass
-                self.streaming_live = None
-
-            panel = Panel(
-                Markdown(content),
-                title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
-                title_align="left",
-                border_style=self.PENGUIN_COLOR,
-                width=self.console.width - 8,
-            )
-            self.streaming_live = Live(
-                panel,
-                refresh_per_second=10,
-                console=self.console,
-                vertical_overflow="visible",
-            )
-            self.streaming_live.start()
-        else:
-            # Append and update
-            self.streaming_buffer += content
-            if getattr(self, "streaming_live", None):
-                try:
-                    panel = Panel(
-                        Markdown(self.streaming_buffer),
-                        title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
-                        title_align="left",
-                        border_style=self.PENGUIN_COLOR,
-                        width=self.console.width - 8,
-                    )
-                    self.streaming_live.update(panel)
-                except Exception:
-                    # fallback
-                    print(content, end="", flush=True)
-            else:
-                print(content, end="", flush=True)
+    # Legacy stream_callback method removed - now using event system only
 
     def _finalize_streaming(self):
         """Finalize streaming and clean up the Live display"""
@@ -2558,6 +2487,17 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                 # First chunk of a new streaming message -> initialise panel
                 if self._active_stream_id is None:
                     self._active_stream_id = stream_id
+                    self._streaming_started = True
+                    self.is_streaming = True  # Set streaming flag
+                    self.streaming_buffer = ""
+                    
+                    # Clean up any previous Live panel
+                    if getattr(self, "streaming_live", None):
+                        try:
+                            self.streaming_live.stop()
+                        except Exception:
+                            pass
+                        self.streaming_live = None
                 
                 # Ignore chunks that belong to an old or foreign stream
                 if stream_id != self._active_stream_id:
@@ -2567,21 +2507,51 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                 if not chunk and not is_final:
                     return
 
-                # Forward chunk to the UI renderer
+                # Process chunk for display
                 if chunk:
-                    self.stream_callback(chunk)
+                    self.streaming_buffer += chunk
+                    
+                    # Update or create streaming panel
+                    if not getattr(self, "streaming_live", None):
+                        panel = Panel(
+                            Markdown(self.streaming_buffer),
+                            title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
+                            title_align="left",
+                            border_style=self.PENGUIN_COLOR,
+                            width=self.console.width - 8,
+                        )
+                        self.streaming_live = Live(
+                            panel,
+                            refresh_per_second=10,
+                            console=self.console,
+                            vertical_overflow="visible",
+                        )
+                        self.streaming_live.start()
+                    else:
+                        try:
+                            panel = Panel(
+                                Markdown(self.streaming_buffer),
+                                title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
+                                title_align="left",
+                                border_style=self.PENGUIN_COLOR,
+                                width=self.console.width - 8,
+                            )
+                            self.streaming_live.update(panel)
+                        except Exception:
+                            # fallback
+                            print(chunk, end="", flush=True)
 
                 if is_final:
-                    # Final chunk received
+                    # Final chunk received - display final message and clean up
                     self.is_streaming = False
+                    
+                    # Display the final message as a regular panel (not streaming)
+                    if self.streaming_buffer.strip():
+                        self.display_message(self.streaming_buffer, self.streaming_role)
+                        # Store for deduplication
+                        self.last_completed_message = self.streaming_buffer
 
-                    # If complete content is provided, use it for final display (if not already streamed)
-                    if data.get("content") and (not hasattr(self, "_streaming_started") or not self._streaming_started):
-                        self.streaming_buffer = data["content"]
-                        if self.streaming_buffer.strip():
-                            self.display_message(self.streaming_buffer, self.streaming_role)
-
-                    # Clean up
+                    # Clean up streaming panel
                     self._finalize_streaming()
                     self._active_stream_id = None
 
@@ -2605,7 +2575,13 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                 content = data.get("content", "")
                 category = data.get("category", MessageCategory.DIALOG)
 
-                # Skip system messages by default (continue existing behavior)
+                # Allow system output messages (tool results) to be displayed
+                if category == MessageCategory.SYSTEM_OUTPUT or category == "SYSTEM_OUTPUT":
+                    # Display tool results immediately
+                    self.display_message(content, "system")
+                    return
+                    
+                # Skip other internal system messages
                 if category == MessageCategory.SYSTEM or category == "SYSTEM":
                     return
 
@@ -2624,15 +2600,21 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     self.streaming_buffer = ""
                     self.last_completed_message = ""
 
+                # For assistant messages, check if this was already displayed via streaming
+                if role == "assistant":
+                    # Skip if this message was already displayed via streaming
+                    if content == self.last_completed_message:
+                        # Add to processed messages to avoid future duplicates
+                        self.processed_messages.add(msg_key)
+                        self.message_turn_map[msg_key] = self.current_conversation_turn
+                        return
+
                 # Add to processed messages and map to current turn
                 self.processed_messages.add(msg_key)
                 self.message_turn_map[msg_key] = self.current_conversation_turn
 
-                # Display the message if it's not currently being streamed
-                if not self.is_streaming or role != "assistant":
-                    # Don't display if it matches the last completed message which may have been shown via streaming
-                    if content != self.last_completed_message or role != "assistant":
-                        self.display_message(content, role)
+                # Display the message
+                self.display_message(content, role)
 
             elif event_type == "status":
                 # Handle status events like RunMode updates

@@ -257,28 +257,17 @@ class PenguinInterface:
             input_data_dict = input_data
             logger.debug(f"Input data dict prepared: {input_data_dict}")
             
-            # Determine streaming mode based on settings and callback
-            streaming_override = None
-            if stream_callback is not None:
-                streaming_override = True
-                logger.debug("Streaming enabled based on callback")
-                
-                # Register the stream callback with Core if provided
-                if hasattr(self.core, 'register_stream_callback'):
-                    logger.debug("Registering stream callback with Core")
-                    try:
-                        # Make sure Core has direct access to the callback
-                        self.core.register_stream_callback(stream_callback)
-                    except Exception as e:
-                        logger.error(f"Error registering stream callback: {str(e)}", exc_info=True)
+            # Always enable streaming for better UX, but rely on event system for display
+            # The stream_callback is only for legacy compatibility
+            streaming_enabled = True
             
             # Process the input using Core
-            logger.debug(f"Calling core.process with streaming={streaming_override}")
+            logger.debug(f"Calling core.process with streaming={streaming_enabled}")
             try:
                 response = await self.core.process(
                     input_data_dict, 
-                    streaming=streaming_override, 
-                    stream_callback=stream_callback
+                    streaming=streaming_enabled, 
+                    stream_callback=None  # Let event system handle display
                 )
                 logger.debug(f"Core.process completed with response keys: {response.keys() if isinstance(response, dict) else 'not a dict'}")
             except Exception as e:
@@ -289,14 +278,7 @@ class PenguinInterface:
                     "error": str(e)
                 }
             
-            # Finalize streaming message if needed
-            if streaming_override and hasattr(self.core, 'finalize_streaming_message'):
-                logger.debug("Finalizing streaming message")
-                try:
-                    # Let Core finalize the streaming message
-                    self.core.finalize_streaming_message()
-                except Exception as e:
-                    logger.error(f"Error finalizing streaming message: {str(e)}", exc_info=True)
+            # Note: No need to manually finalize streaming - Core handles this via events
             
             # Update token display to show latest stats
             logger.debug("Updating token display")

@@ -127,8 +127,7 @@ class CLIRenderer:
         self.console = console
         self.core = core
         
-        # Stream buffer for accumulating stream chunks
-        self.streaming_buffer = ""
+        # Streaming state - simplified
         self.streaming_message_data = {}
         self.is_streaming = False
         
@@ -241,33 +240,28 @@ class CLIRenderer:
 
     async def _handle_stream_event(self, data: Dict[str, Any]) -> None:
         """Handle streaming chunks from Core."""
-        chunk = data.get("chunk", "")
         is_final = data.get("is_final", False)
         
         if is_final:
-            # Final message - clear streaming state
+            # Stream is over. The temporary panel will be removed on the next render.
             self.is_streaming = False
-            if data.get("content"):  # If full content provided in final event
-                self.streaming_buffer = data["content"]
+            self.streaming_message_data = {}  # Clear the data
+            # Force update to show final state
+            self._update_live_display()
         else:
-            # Accumulate chunks
+            # Stream is active. Update the data for the temporary panel.
             self.is_streaming = True
-            self.streaming_buffer += chunk
-            
-        # Store message metadata for rendering
-        self.streaming_message_data = {
-            "role": data.get("role", "assistant"),
-            "content": self.streaming_buffer,
-            "category": MessageCategory.DIALOG,
-            "timestamp": datetime.now().isoformat(),
-            "metadata": data.get("metadata", {"is_streaming": True})
-        }
+            self.streaming_message_data = {
+                "role": data.get("role", "assistant"),
+                "content": data.get("content_so_far", ""),  # Use the full content from Core
+                "category": MessageCategory.DIALOG,
+                "timestamp": datetime.now().isoformat(),
+                "metadata": data.get("metadata", {"is_streaming": True})
+            }
+            # Force update to show streaming content immediately
+            self._update_live_display()
         
-        # Refresh message cache if we're not streaming
-        # (streaming messages are rendered directly from buffer)
-        if is_final and self.core and hasattr(self.core, 'conversation_manager'):
-            # Get fresh message list after final message is added to conversation
-            self._refresh_message_cache()
+        # No need to refresh cache here. The "message" event after finalization will handle it.
 
     def _handle_token_event(self, data: Dict[str, Any]) -> None:
         """Handle token usage updates."""
@@ -362,16 +356,16 @@ class CLIRenderer:
         """Create the initial layout structure."""
         layout = Layout(name="root")
         
-        # Split into main content and footer
+        # Split into main content and footer with better proportions
         layout.split(
-            Layout(name="main", ratio=1),
-            Layout(name="footer", size=7)
+            Layout(name="main", ratio=1, minimum_size=10),
+            Layout(name="footer", size=6)  # Slightly smaller footer
         )
         
         # Set up for run mode vs regular chat
         layout["main"].split(
             Layout(name="status", size=3, visible=False),  # Hidden by default
-            Layout(name="content", ratio=1)
+            Layout(name="content", ratio=1, minimum_size=8)  # Ensure minimum space for content
         )
         
         return layout
@@ -453,6 +447,7 @@ class CLIRenderer:
         rendered_panels = []
         
         # Filter system/context messages if needed
+        # IMPORTANT: System output (tool results) should always be shown!
         filtered_messages = self.conversation_messages
         if not self.show_context_messages:
             filtered_messages = [
@@ -460,7 +455,12 @@ class CLIRenderer:
                 if (isinstance(msg.get("category"), MessageCategory) and 
                     msg.get("category") not in [MessageCategory.SYSTEM, MessageCategory.CONTEXT]) or
                    (isinstance(msg.get("category"), str) and 
-                    msg.get("category") not in ["SYSTEM", "CONTEXT"])
+                    msg.get("category") not in ["SYSTEM", "CONTEXT"]) or
+                   # Always show system output messages (tool results)
+                   (isinstance(msg.get("category"), MessageCategory) and 
+                    msg.get("category") == MessageCategory.SYSTEM_OUTPUT) or
+                   (isinstance(msg.get("category"), str) and 
+                    msg.get("category") == "SYSTEM_OUTPUT")
             ]
         
         # Render each message as a panel
@@ -470,24 +470,24 @@ class CLIRenderer:
         # Add streaming message if active
         if self.is_streaming and self.streaming_message_data:
             # Add the Penguin cursor to streaming content
-            streaming_content = self.streaming_buffer
+            streaming_content = self.streaming_message_data.get("content", "")
             if streaming_content.strip():
                 streaming_content += " 🐧"
             else:
-                streaming_content = "Waiting for response... 🐧"
+                streaming_content = "Thinking... 🐧"
                 
-            self.streaming_message_data["content"] = streaming_content
-            rendered_panels.append(self.render_message_panel(self.streaming_message_data))
+            # Create a copy of streaming message data with updated content
+            streaming_display_data = self.streaming_message_data.copy()
+            streaming_display_data["content"] = streaming_content
+            streaming_display_data["metadata"] = {"is_streaming": True}
+            
+            rendered_panels.append(self.render_message_panel(streaming_display_data))
         
-        # Display a welcome message if no panels yet
+        # Display a compact welcome message if no panels yet
         if not rendered_panels:
             logger.debug("No messages to display, showing welcome message")
-            rendered_panels.append(Panel(
-                Text("Welcome to Penguin! Type your message below to chat with the AI assistant.", style="dim"),
-                title="Welcome",
-                border_style="dim",
-                expand=True
-            ))
+            welcome_text = Text("🐧 Welcome to Penguin! Type a message to start chatting.", style="dim")
+            rendered_panels = [welcome_text]  # Just text, no panel
         
         logger.debug(f"Rendered {len(rendered_panels)} message panels")
         return Group(*rendered_panels)
@@ -581,18 +581,23 @@ class CLIRenderer:
 
     def get_layout_renderable(self) -> Layout:
         """
-        Create a structured layout for the CLI UI.
-        This provides a consistent layout regardless of mode (chat, RunMode).
+        Create a simple layout with just conversation content.
+        Input is handled separately via input() calls.
         
         Returns:
-            A Rich Layout object with all UI components
+            A Rich Layout object with conversation content only
         """
         logger.debug(f"Building layout renderable (RunMode: {self.is_runmode_live})")
         
-        # Update layout based on RunMode status
+        # Simple layout - just conversation content
+        layout = Layout(name="root")
+        
         if self.is_runmode_live:
-            # Show status section when in RunMode
-            self.layout["main"]["status"].visible = True
+            # RunMode: status + conversation
+            layout.split(
+                Layout(name="status", size=3),
+                Layout(name="conversation", ratio=1)
+            )
             
             # Get the RunMode status from Core
             runmode_status = "RunMode inactive"
@@ -606,20 +611,14 @@ class CLIRenderer:
                 expand=True
             )
             
-            # Update status panel
-            self.layout["main"]["status"].update(status_panel)
+            layout["status"].update(status_panel)
+            layout["conversation"].update(self._build_conversation_area_content())
         else:
-            # Hide status section in regular chat mode
-            self.layout["main"]["status"].visible = False
-        
-        # Update content area with conversation
-        self.layout["main"]["content"].update(self._build_conversation_area_content())
-        
-        # Update footer with token stats
-        self.layout["footer"].update(self._build_token_stats_panel())
+            # Regular chat: just conversation content
+            layout.update(self._build_conversation_area_content())
         
         logger.debug("Layout renderable built successfully")
-        return self.layout
+        return layout
 
     def get_display_renderable(self) -> Any:
         """Returns the main renderable for the Live display."""
@@ -753,7 +752,6 @@ class CLIRenderer:
 
     def reset_response_area(self) -> None:
         """Reset streaming state and other UI state."""
-        self.streaming_buffer = ""
         self.streaming_message_data = {}
         self.is_streaming = False
         logger.debug("Response area reset completed")
