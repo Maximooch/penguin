@@ -524,6 +524,11 @@ class PenguinCore:
             auto_save_interval=60,
             checkpoint_config=checkpoint_config
         )
+        # Attach a back-reference so Engine (and other helpers) can emit UI events
+        # and finalize streaming messages via the Core.  Without this the Engine
+        # silently skips those steps which caused tool results to be lost and
+        # streaming panels to merge into a single message in the CLI.
+        self.conversation_manager.core = self  # type: ignore[attr-defined]
 
         # Initialize action executor with project manager and conversation manager
         print("DEBUG: Initializing ActionExecutor...")
@@ -1156,35 +1161,52 @@ class PenguinCore:
             
             # Use new Engine layer if available
             if self.engine:
-                if multi_step:
-                    # Bridge the simple stream_callback to the Engine's richer message_callback
-                    engine_message_callback = None
-                    if stream_callback:
-                        # The engine expects an async callback that takes (message, type, **kwargs)
-                        async def bridged_callback(message: str, msg_type: str, **kwargs):
-                            # We only care about streaming assistant thoughts for this callback
-                            if msg_type == 'assistant':
-                                # Create a task to run the potentially non-async callback
-                                # This ensures we don't block the engine's event loop.
-                                asyncio.create_task(asyncio.to_thread(stream_callback, message))
+                # The core's own chunk handler is the source of truth for managing
+                # streaming state and emitting events. We use it whenever streaming.
+                engine_stream_callback = self._handle_stream_chunk if streaming else None
 
-                        engine_message_callback = bridged_callback
-                        
-                    # Use the multi-step task-oriented engine
-                    response = await self.engine.run_task(
-                        task_prompt=message,
-                        image_path=image_path,
-                        max_iterations=max_iterations,
-                        task_context=context,
-                        message_callback=engine_message_callback,
-                    )
+                if multi_step:
+                    # Check if this is a formal task (RunMode) or conversational multi-step
+                    is_formal_task = context and context.get('task_mode', False)
+                    
+                    if is_formal_task:
+                        # Bridge the simple stream_callback to the Engine's richer message_callback
+                        engine_message_callback = None
+                        if stream_callback:
+                            # The engine expects an async callback that takes (message, type, **kwargs)
+                            async def bridged_callback(message: str, msg_type: str, action_name: Optional[str] = None, **kwargs):
+                                # We only care about streaming assistant thoughts for this callback
+                                if msg_type == 'assistant':
+                                    # Create a task to run the potentially non-async callback
+                                    # This ensures we don't block the engine's event loop.
+                                    asyncio.create_task(asyncio.to_thread(stream_callback, message))
+
+                            engine_message_callback = bridged_callback
+                            
+                        # Use the task-oriented engine for formal tasks
+                        response = await self.engine.run_task(
+                            task_prompt=message,
+                            image_path=image_path,
+                            max_iterations=max_iterations,
+                            task_context=context,
+                            message_callback=engine_message_callback,
+                        )
+                    else:
+                        # Use the new conversational multi-step engine
+                        response = await self.engine.run_response(
+                            prompt=message,
+                            image_path=image_path,
+                            max_iterations=max_iterations,
+                            streaming=streaming,
+                            stream_callback=engine_stream_callback
+                        )
                 else:
                     # Use the single-turn conversational engine
                     response = await self.engine.run_single_turn(
                         message, 
                         image_path=image_path, 
                         streaming=streaming, 
-                        stream_callback=stream_callback
+                        stream_callback=engine_stream_callback
                     )
             else:
                 # ---------- Legacy path (fallback) ----------
@@ -1655,14 +1677,15 @@ class PenguinCore:
             message_type: Optional type of message (e.g., "text", "code", "tool_output")
             role: The role of the message (default: "assistant")
         """
-        if not chunk:
-            # Track empty chunks for error detection
-            self._streaming_state["empty_response_count"] += 1
-            if self._streaming_state["empty_response_count"] > 3:
-                # After several empty responses, consider it a potential issue
-                if not self._streaming_state["error"]:
-                    self._streaming_state["error"] = "Multiple empty responses received"
-                logger.warning(f"PenguinCore: Multiple empty responses ({self._streaming_state['empty_response_count']}) received during streaming")
+        if not chunk or not chunk.strip():
+            # Don't initialize streaming or emit events for empty chunks
+            # Only track empty chunks if streaming is already active
+            if self._streaming_state["active"]:
+                self._streaming_state["empty_response_count"] += 1
+                if self._streaming_state["empty_response_count"] > 3:
+                    if not self._streaming_state["error"]:
+                        self._streaming_state["error"] = "Multiple empty responses received"
+                    logger.warning(f"PenguinCore: Multiple empty responses ({self._streaming_state['empty_response_count']}) received during streaming")
             return
         
         # Reset empty counter if we got actual content
@@ -1686,7 +1709,7 @@ class PenguinCore:
         
         self._streaming_state["last_update"] = now
         
-        # Emit event to UI subscribers instead of direct callbacks
+        # Emit event to UI subscribers - this is the ONLY way chunks are distributed
         await self.emit_ui_event("stream_chunk", {
             "stream_id": self._streaming_state.get("id"),
             "chunk": chunk,
@@ -1696,18 +1719,6 @@ class PenguinCore:
             "content_so_far": self._streaming_state["content"],
             "metadata": self._streaming_state["metadata"],
         })
-        
-        # Backward compatibility: Notify any registered stream callbacks
-        if hasattr(self, '_stream_callbacks') and self._stream_callbacks:
-            for callback in self._stream_callbacks:
-                if callback and callable(callback):
-                    try:
-                        if asyncio.iscoroutinefunction(callback):
-                            await callback(chunk)
-                        else:
-                            callback(chunk)
-                    except Exception as e:
-                        logger.error(f"PenguinCore: Error in stream callback: {e}")
 
         if chunk and self._streaming_state["content"].endswith(chunk):
             return          # suppress prefix-repeat

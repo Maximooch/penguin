@@ -47,6 +47,8 @@ class PenguinTextualApp(App):
         self.is_streaming = False
         self.current_assistant_message = ""  # Track current assistant message for streaming
         self.last_final_content = "" # Prevent duplicate final message rendering
+        self.last_stream_id = None  # Track the last stream ID to prevent duplicates
+        self.dedup_clear_task = None  # Task to clear deduplication content
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
@@ -144,17 +146,32 @@ class PenguinTextualApp(App):
                                 Markdown(content, style="green")
                             )
                         )
-                    self.last_final_content = "" # Reset after use
+                        # Only reset if we actually displayed the message
+                        self.last_final_content = ""
+                    else:
+                        # Debug: message was deduplicated
+                        self.debug_messages.append(f"Deduplicated assistant message: {content[:50]}...")
+                elif role == "system":
+                    # Render system messages in a distinct style for visibility
+                    self.log_widget.write(
+                        Panel(
+                            Markdown(content, style="bright_white"),
+                            title="System",
+                            border_style="bright_white"
+                        )
+                    )
             
             elif event_type == "stream_chunk":
                 chunk = data.get("chunk", "")
                 is_final = data.get("is_final", False)
+                stream_id = data.get("stream_id")
                 streaming_widget = self.query_one("#streaming-output", Static)
 
                 if not self.is_streaming and chunk:
                     # First chunk of a new stream
                     self.is_streaming = True
                     self.current_assistant_message = chunk
+                    self.last_stream_id = stream_id
                     streaming_widget.remove_class("hidden")
                 elif self.is_streaming and not is_final:
                     # Subsequent chunk
@@ -176,19 +193,23 @@ class PenguinTextualApp(App):
                         streaming_widget.update("")
                         
                         final_content = data.get("content", self.current_assistant_message)
-                        # Store the content to prevent the subsequent `message` event from re-rendering it
-                        self.last_final_content = final_content 
-                        
-                        self.log_widget.write(
-                             Group(
-                                Text("🐧 Penguin:", style="bold green"),
-                                Markdown(final_content, style="green")
-                            )
-                        )
+                        # Store the content so that the *second* message event (emitted
+                        # by Core after processing completes) can be de-duplicated.
+                        self.last_final_content = final_content
 
-                    # Reset state
-                    self.is_streaming = False
-                    self.current_assistant_message = ""
+                        # Do NOT render the final content here – Core has already
+                        # emitted a separate "message" event with the same text just
+                        # before this stream_chunk(is_final) event.  Rendering here
+                        # would create a visible duplicate.
+
+                        # Reset streaming state but keep last_final_content for deduplication
+                        self.is_streaming = False
+                        self.current_assistant_message = ""
+                        
+                        # Schedule clearing of deduplication content after a short delay
+                        if self.dedup_clear_task:
+                            self.dedup_clear_task.cancel()
+                        self.dedup_clear_task = asyncio.create_task(self._clear_dedup_content())
             
             elif event_type == "tool_call":
                 tool_name = data.get("name", "unknown")
@@ -327,8 +348,34 @@ class PenguinTextualApp(App):
             try:
                 # The interface expects a dictionary with 'text' key
                 # Pass the dummy stream callback to enable streaming
-                await self.interface.process_input({'text': user_input}, stream_callback=dummy_stream_callback)
+                response = await self.interface.process_input({'text': user_input}, stream_callback=dummy_stream_callback)
                 
+                # Display any action/tool results returned directly (fallback path when core doesn't emit events)
+                if isinstance(response, dict) and response.get("action_results"):
+                    for res in response["action_results"]:
+                        action_name = res.get("action") or res.get("action_name", "unknown")
+                        result_text = res.get("result", "")
+                        status = res.get("status", "completed")
+
+                        # Simple readability improvements
+                        if status == "error":
+                            self.log_widget.write(
+                                Panel(f"❌ {action_name} failed:\n{result_text[:800]}", border_style="red")
+                            )
+                        else:
+                            # Truncate long results for readability
+                            preview = (result_text[:1000] + "…") if len(result_text) > 1000 else result_text
+                            # Use Syntax highlight for code blocks if it looks like code
+                            if "\n" in preview or len(preview) > 120:
+                                self.log_widget.write(
+                                    Group(
+                                        Text(f"🔧 {action_name}", style="bold yellow"),
+                                        Syntax(preview, "text", theme="monokai", line_numbers=False)
+                                    )
+                                )
+                            else:
+                                self.log_widget.write(f"🔧 {action_name}: {preview}")
+
                 self.debug_messages.append("Input processing completed")
             finally:
                 # Restore original signal handler
@@ -396,6 +443,12 @@ class PenguinTextualApp(App):
             # Fallback for old format or error
             self.log_widget.write(Panel("Could not retrieve help information.", border_style="red"))
 
+    async def _clear_dedup_content(self) -> None:
+        """Clear deduplication content after a delay to prevent interference with future messages."""
+        await asyncio.sleep(1.0)  # Wait 1 second before clearing
+        self.last_final_content = ""
+        self.last_stream_id = None
+
     def action_quit(self) -> None:
         """Quit the application and show debug info if available."""
         if self.debug_messages:
@@ -447,4 +500,19 @@ class TUI:
                 print("="*60)
                 for i, msg in enumerate(app.debug_messages, 1):
                     print(f"{i:3d}. {msg}")
-                print("="*60) 
+                print("="*60)
+
+# ------------------------------------------------------------
+# Command-line entrypoint
+# ------------------------------------------------------------
+# When the file is executed directly (e.g. `python penguin/cli/tui.py`)
+# run the TUI automatically so that users don't have to import the
+# `TUI` class manually.
+
+if __name__ == "__main__":
+    # Basic logging setup — feel free to adjust the level to DEBUG for
+    # more verbose information while diagnosing start-up issues.
+    logging.basicConfig(level=logging.INFO)
+
+    print("🐧  Starting Penguin TUI … (press Ctrl-C to quit)")
+    TUI.run() 
