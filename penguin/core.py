@@ -1212,26 +1212,60 @@ class PenguinCore:
                 # ---------- Legacy path (fallback) ----------
                 # Prepare conversation and call get_response directly
                 self.conversation_manager.conversation.prepare_conversation(message, image_path)
+
+                # FIX: Set the callback for event-based streaming, even in legacy mode
+                internal_stream_callback = self._handle_stream_chunk if streaming else None
+                
                 response, _ = await self.get_response(
-                    stream_callback=stream_callback,
+                    stream_callback=internal_stream_callback, # Pass the correct callback
                     streaming=streaming
                 )
+
+            # TODO: Should be at least 3 attempts. 
+            # with exponential backoff?
+
+            # ------------------------------------------------------------------
+            # Empty-response fallback – if the assistant returned no content we
+            # immediately retry once with *streaming disabled*.  This addresses
+            # rare provider quirks where streaming yields an empty string.
+            # ------------------------------------------------------------------
+            if isinstance(response, dict) and not response.get("assistant_response", "").strip():
+                try:
+                    logger.warning("Assistant response was empty – retrying once without streaming…")
+                    retry_data, _ = await self.get_response(streaming=False)
+                    if retry_data and retry_data.get("assistant_response", "").strip():
+                        response["assistant_response"] = retry_data["assistant_response"]
+                        # Propagate any action results gathered during retry
+                        response["action_results"] = retry_data.get("action_results", [])
+                        logger.info("Non-streaming retry succeeded and produced a response.")
+                except Exception as retry_err:
+                    logger.warning(f"Non-streaming retry after empty response failed: {retry_err}")
 
             # Ensure conversation is saved after processing
             self.conversation_manager.save()
             
             # Emit assistant message event after processing (if not streamed)
-            # If streamed, this will be handled by finalize_streaming_message 
-            if response and "assistant_response" in response:
+            # When *streaming* was active we streamed the full message live and
+            # `finalize_streaming_message` already handled persistence / UI
+            # events.  Emitting another `message` here would duplicate the
+            # assistant reply.  Therefore we only emit when streaming is **not**
+            # enabled for this call.
+            if not streaming and response and "assistant_response" in response:
                 assistant_message = response["assistant_response"]
-                if assistant_message and not self._streaming_state["active"]:
-                    logger.debug(f"Emitting assistant message event: {assistant_message[:30]}...")
-                    await self.emit_ui_event("message", {
-                        "role": "assistant",
-                        "content": assistant_message,
-                        "category": MessageCategory.DIALOG,
-                        "metadata": {}
-                    })
+                if assistant_message:
+                    logger.debug(
+                        "Emitting assistant message event (non-streaming): %s…",
+                        assistant_message[:30],
+                    )
+                    await self.emit_ui_event(
+                        "message",
+                        {
+                            "role": "assistant",
+                            "content": assistant_message,
+                            "category": MessageCategory.DIALOG,
+                            "metadata": {},
+                        },
+                    )
 
             # Ensure token usage is emitted after processing
             token_data = self.conversation_manager.get_token_usage()
@@ -1674,9 +1708,13 @@ class PenguinCore:
         
         Args:
             chunk: The content chunk to add
-            message_type: Optional type of message (e.g., "text", "code", "tool_output")
+            message_type: Type of message - "assistant", "reasoning", "tool_output", etc.
             role: The role of the message (default: "assistant")
         """
+        # If message_type is not provided, default to "assistant"
+        if message_type is None:
+            message_type = "assistant"
+            
         if not chunk or not chunk.strip():
             # Don't initialize streaming or emit events for empty chunks
             # Only track empty chunks if streaming is already active
@@ -1696,15 +1734,21 @@ class PenguinCore:
         if not self._streaming_state["active"]:
             # --- Begin new streaming message ---
             self._streaming_state["active"] = True
-            self._streaming_state["content"] = chunk
+            self._streaming_state["content"] = ""
+            self._streaming_state["reasoning_content"] = ""
             self._streaming_state["message_type"] = message_type
             self._streaming_state["role"] = role
             self._streaming_state["started_at"] = now
             self._streaming_state["metadata"] = {"is_streaming": True}
             # Generate a unique stream_id to tag all subsequent chunks.
             self._streaming_state["id"] = uuid.uuid4().hex
+        
+        # Handle different message types
+        if message_type == "reasoning":
+            # Track reasoning separately
+            self._streaming_state["reasoning_content"] += chunk
         else:
-            # Append to existing content
+            # Regular content
             self._streaming_state["content"] += chunk
         
         self._streaming_state["last_update"] = now
@@ -1717,7 +1761,9 @@ class PenguinCore:
             "message_type": message_type,
             "role": role,
             "content_so_far": self._streaming_state["content"],
+            "reasoning_so_far": self._streaming_state.get("reasoning_content", ""),
             "metadata": self._streaming_state["metadata"],
+            "is_reasoning": message_type == "reasoning",
         })
 
         if chunk and self._streaming_state["content"].endswith(chunk):
@@ -1734,15 +1780,48 @@ class PenguinCore:
         if not self._streaming_state["active"]:
             return None
             
+        reasoning_content = self._streaming_state.get("reasoning_content", "")
+        
+        # --- Build final assistant content ---------------------------------
+        # We embed internal reasoning as a <details> block so the UI can render
+        # a collapsible section **without** duplicating the content in the
+        # visible answer.  This is safe because Markdown renders <details>
+        # natively in modern terminals with our Expander / fallback widget.
+
+        assistant_visible = self._streaming_state["content"]
+
+        if reasoning_content:
+            details_block = (
+                "<details>\n"
+                "<summary>🧠  Click to show / hide internal reasoning</summary>\n\n"
+                + reasoning_content.strip("\n")
+                + "\n\n</details>\n\n"
+            )
+            merged_content = details_block + assistant_visible
+        else:
+            merged_content = assistant_visible
+
+        # Construct the assistant message for storage (collapsed reasoning)
         final_message = {
             "role": self._streaming_state["role"],
-            "content": self._streaming_state["content"],
-            "type": self._streaming_state["message_type"],
-            "metadata": self._streaming_state["metadata"]
+            "content": merged_content,
+            "type": self._streaming_state["message_type"],  # keep original for storage
+            "metadata": {
+                **self._streaming_state["metadata"],
+                "has_reasoning": bool(reasoning_content),
+                "reasoning_length": len(reasoning_content),
+            }
         }
         
-        # Only add to conversation if we have actual content
-        if self._streaming_state["content"].strip():
+        # Content to add to the conversation is *only* the assistant visible text.
+        # The TUI has already streamed reasoning tokens live; re-injecting would duplicate them.
+        content_to_add = merged_content
+        if reasoning_content and not self.model_config.reasoning_exclude:
+            # Do NOT merge reasoning back into the assistant text; UI already rendered
+            # it live during streaming and adding it again leads to duplication.
+            pass
+        
+        if content_to_add.strip():
             # Add to conversation manager
             if self._streaming_state["role"] == "assistant":
                 category = MessageCategory.DIALOG
@@ -1752,34 +1831,38 @@ class PenguinCore:
                 category = MessageCategory.DIALOG
                 
             # Remove streaming flag from metadata for final version
-            if "is_streaming" in final_message["metadata"]:
-                del final_message["metadata"]["is_streaming"]
+            final_metadata = final_message["metadata"].copy()
+            if "is_streaming" in final_metadata:
+                del final_metadata["is_streaming"]
+            
+            # Add reasoning metadata if present
+            if reasoning_content:
+                final_metadata["has_reasoning"] = True
+                final_metadata["reasoning_length"] = len(reasoning_content)
                 
             if hasattr(self, "conversation_manager") and self.conversation_manager:
                 self.conversation_manager.conversation.add_message(
                     role=final_message["role"],
-                    content=final_message["content"],
+                    content=content_to_add,
                     category=category,
-                    metadata=final_message["metadata"]
+                    metadata=final_metadata
                 )
                 
-                # Emit message event after adding to conversation
-                logger.debug(f"Emitting finalized message event: {final_message['content'][:30]}...")
-                asyncio.create_task(self.emit_ui_event("message", {
-                    "role": final_message["role"],
-                    "content": final_message["content"],
-                    "category": category,
-                    "metadata": final_message["metadata"]
-                }))
-        
+                # Skip emitting a separate 'message' event – the UI has been
+                # streaming content live. Emitting again causes a duplicated
+                # assistant block.  Conversation persistence is already
+                # handled above; UI just needs the final `stream_chunk` with
+                # `is_final=True` which we emit later.
+
         # Emit final streaming event with is_final=True
         asyncio.create_task(self.emit_ui_event("stream_chunk", {
             "stream_id": self._streaming_state.get("id"),
             "chunk": "",
             "is_final": True,
-            "message_type": self._streaming_state["message_type"],
+            "message_type": "assistant",  # mark final chunk as assistant content
             "role": self._streaming_state["role"],
             "content": self._streaming_state["content"],
+            "reasoning": reasoning_content,
             "metadata": final_message["metadata"],
         }))
         
@@ -1787,6 +1870,7 @@ class PenguinCore:
         self._streaming_state = {
             "active": False,
             "content": "",
+            "reasoning_content": "",
             "message_type": None,
             "role": None,
             "metadata": {},

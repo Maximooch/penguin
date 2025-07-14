@@ -1,5 +1,5 @@
 import os
-from typing import Any, Dict, Optional, Literal
+from typing import Any, Dict, Optional, Literal, Union
 from dataclasses import dataclass, field
 
 
@@ -19,6 +19,13 @@ class ModelConfig:
     streaming_enabled: bool = False
     enable_token_counting: bool = True
     vision_enabled: Optional[bool] = None
+    
+    # Reasoning tokens support
+    reasoning_enabled: bool = False
+    reasoning_effort: Optional[Literal['low', 'medium', 'high']] = None
+    reasoning_max_tokens: Optional[int] = None
+    reasoning_exclude: bool = False
+    supports_reasoning: Optional[bool] = None
 
     def __post_init__(self):
         if self.api_key is None and self.provider:
@@ -30,6 +37,8 @@ class ModelConfig:
 
         self.max_history_tokens = self.max_history_tokens or 200000
         
+        # TODO: move this to the gateway. 
+        # Auto-detect vision support 
         if self.vision_enabled is None:
             model_lower = self.model.lower()
             if self.provider == "anthropic" and "claude-3" in model_lower:
@@ -43,9 +52,84 @@ class ModelConfig:
             else:
                 self.vision_enabled = False
 
-        self.supports_vision = self.vision_enabled
+        # Auto-detect reasoning support
+        if self.supports_reasoning is None:
+            self.supports_reasoning = self._detect_reasoning_support()
         
+        # Set default reasoning configuration for reasoning-capable models
+        if self.supports_reasoning and not self.reasoning_enabled:
+            # Only auto-enable if user hasn't explicitly configured reasoning
+            if (self.reasoning_effort is None and 
+                self.reasoning_max_tokens is None and 
+                not self.reasoning_exclude):
+                self.reasoning_enabled = True
+                # Set default reasoning effort based on model type
+                if self._uses_effort_style():
+                    self.reasoning_effort = "medium"
+                elif self._uses_max_tokens_style():
+                    self.reasoning_max_tokens = 2000
+
+        self.supports_vision = self.vision_enabled
         self.streaming_enabled = self.streaming_enabled
+
+    # TODO: move this to the gateway. 
+    def _detect_reasoning_support(self) -> bool:
+        """Auto-detect if the model supports reasoning tokens."""
+        model_lower = self.model.lower()
+        
+        # DeepSeek R1 models
+        if "deepseek" in model_lower and ("r1" in model_lower or "reasoning" in model_lower):
+            return True
+            
+        # OpenAI o-series models (though they don't return reasoning tokens)
+        if any(pattern in model_lower for pattern in ["o1", "o3", "openai/o"]):
+            return True
+            
+        # Gemini thinking models and Gemini 2.5 Pro
+        if "gemini" in model_lower and ("thinking" in model_lower or "2.5" in model_lower or "2-5" in model_lower):
+            return True
+            
+        # Anthropic models with reasoning (Claude 3.7+ with reasoning support)
+        if "anthropic" in model_lower and "claude" in model_lower:
+            # Newer Claude models support reasoning
+            if any(version in model_lower for version in ["3.7", "4.", "sonnet-4", "opus-4"]):
+                return True
+                
+        # Grok models
+        if "grok" in model_lower:
+            return True
+            
+        return False
+    
+    def _uses_effort_style(self) -> bool:
+        """Check if model uses effort-style reasoning configuration."""
+        model_lower = self.model.lower()
+        return any(pattern in model_lower for pattern in ["o1", "o3", "grok", "openai/o"])
+    
+    def _uses_max_tokens_style(self) -> bool:
+        """Check if model uses max_tokens-style reasoning configuration."""
+        model_lower = self.model.lower()
+        return any(pattern in model_lower for pattern in ["gemini", "anthropic", "claude", "thinking"])
+
+    def get_reasoning_config(self) -> Optional[Dict[str, Any]]:
+        """Get the reasoning configuration for API requests."""
+        if not self.reasoning_enabled or not self.supports_reasoning:
+            return None
+            
+        config = {}
+        
+        if self.reasoning_effort:
+            config["effort"] = self.reasoning_effort
+        elif self.reasoning_max_tokens:
+            config["max_tokens"] = self.reasoning_max_tokens
+        else:
+            # Default configuration
+            config["enabled"] = True
+            
+        if self.reasoning_exclude:
+            config["exclude"] = True
+            
+        return config
 
     def get_config(self) -> Dict[str, Any]:
         config = {
@@ -55,6 +139,8 @@ class ModelConfig:
             "supports_vision": self.supports_vision,
             "vision_enabled": self.vision_enabled,
             "streaming_enabled": self.streaming_enabled,
+            "supports_reasoning": self.supports_reasoning,
+            "reasoning_enabled": self.reasoning_enabled,
         }
         if self.api_base:
             config["api_base"] = self.api_base
@@ -64,6 +150,12 @@ class ModelConfig:
             config["temperature"] = self.temperature
         if self.max_history_tokens is not None:
             config["max_history_tokens"] = self.max_history_tokens
+        
+        # Add reasoning config if enabled
+        reasoning_config = self.get_reasoning_config()
+        if reasoning_config:
+            config["reasoning_config"] = reasoning_config
+            
         return config
 
     @classmethod
@@ -79,6 +171,12 @@ class ModelConfig:
             default_model = os.getenv("PENGUIN_MODEL", "openai/gpt-4o")
         else:
             default_model = os.getenv("PENGUIN_MODEL", "claude-3-5-sonnet-20240620")
+
+        # Parse reasoning configuration from environment
+        reasoning_enabled = os.getenv("PENGUIN_REASONING_ENABLED", "").lower() == "true"
+        reasoning_effort = os.getenv("PENGUIN_REASONING_EFFORT")
+        reasoning_max_tokens = os.getenv("PENGUIN_REASONING_MAX_TOKENS")
+        reasoning_exclude = os.getenv("PENGUIN_REASONING_EXCLUDE", "").lower() == "true"
 
         return cls(
             model=default_model,
@@ -98,4 +196,8 @@ class ModelConfig:
             if os.getenv("PENGUIN_VISION_ENABLED") != "" else None,
             streaming_enabled=os.getenv("PENGUIN_STREAMING_ENABLED", "true").lower()
             == "true",
+            reasoning_enabled=reasoning_enabled,
+            reasoning_effort=reasoning_effort if reasoning_effort in ['low', 'medium', 'high'] else None,
+            reasoning_max_tokens=int(reasoning_max_tokens) if reasoning_max_tokens else None,
+            reasoning_exclude=reasoning_exclude,
         )

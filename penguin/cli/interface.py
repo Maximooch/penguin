@@ -953,13 +953,52 @@ class PenguinInterface:
                 return {"status": "Debug: Notified token usage based on conversation system data."}
             return {"status": "Debug: Token notification function not available"}
         elif subcmd == "stream":
-            # Stream related debugging
+            # Stream related debugging – always set default first to avoid UnboundLocalError.
+            stream_status = "inactive"
             if hasattr(self.core, 'current_stream') and self.core.current_stream is not None:
                 if hasattr(self.core.current_stream, 'done') and callable(self.core.current_stream.done):
                     stream_status = "active" if not self.core.current_stream.done() else "completed"
                 else:
                     stream_status = "unknown (current_stream has no 'done' method)"
             return {"status": f"Debug: Stream status is {stream_status}"}
+        elif subcmd == "sample":
+            demo_content = (
+                "<details>\n"
+                "<summary>🧠  Click to show / hide internal reasoning</summary>\n\n"
+                "### Internal reasoning (collapsible)\n\n"
+                "1. Parse the user's request\n"
+                "2. Decide on tone → friendly but direct\n"
+                "3. Build a short factual statement\n"
+                "4. Offer next actionable step\n\n"
+                "> _Note: this section is hidden by default – press ENTER to expand / collapse in the TUI._\n\n"
+                "</details>\n\n"
+                "---\n\n"
+                "### Final answer (always visible)\n\n"
+                "This is a demo assistant reply rendered by `/debug sample`.\n"
+                "Use it to verify that collapsible reasoning works correctly in the UI."
+            )
+
+            try:
+                # Add to conversation history
+                if hasattr(self.core, 'conversation_manager'):
+                    self.core.conversation_manager.conversation.add_message(
+                        role="assistant",
+                        content=demo_content,
+                        category=MessageCategory.DIALOG,
+                        metadata={"demo": True}
+                    )
+
+                # Emit UI event so it shows up immediately
+                await self.core.emit_ui_event("message", {
+                    "role": "assistant",
+                    "content": demo_content,
+                    "category": MessageCategory.DIALOG,
+                    "metadata": {"demo": True}
+                })
+
+                return {"status": "Injected demo collapsible message."}
+            except Exception as e:
+                return {"error": f"Failed to inject demo message: {e}"}
         return {"error": f"Unknown debug command: {subcmd}"}
 
     def _initialize_streaming_settings(self) -> None:

@@ -9,9 +9,9 @@ from typing import Any, Dict, List, Optional, Callable, Union
 import yaml  # type: ignore
 import tiktoken  # type: ignore
 
-# TODO: decouple litellm from api_client.
+# TODO: decouple litellm from api_client. # Been done for quite a while. 
 # TODO: greatly simplify api_client while maintaining full functionality
-# TODO: add streaming support
+# TODO: add streaming support # Done for quite a while. 
 # TODO: add support for images, files, audio, and video
 from litellm import acompletion, completion, token_counter, cost_per_token, completion_cost # Keep litellm imports for now? maybe remove acompletion/completion direct use # type: ignore
 from PIL import Image  # type: ignore
@@ -207,7 +207,8 @@ class APIClient:
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: Optional[bool] = None,
-        stream_callback: Optional[Callable[[str], None]] = None
+        stream_callback: Optional[Callable[[str, str], None]] = None,
+        **kwargs: Any
     ) -> str:
         """
         Get a response from the configured AI model, using the chosen client handler.
@@ -217,7 +218,8 @@ class APIClient:
             max_tokens: Optional max tokens to generate.
             temperature: Optional temperature parameter.
             stream: Optional override for streaming preference.
-            stream_callback: Callback for handling streaming chunks.
+            stream_callback: Callback for handling streaming chunks. Should accept (chunk: str, message_type: str).
+            **kwargs: Additional parameters to pass to the handler (e.g., reasoning config).
 
         Returns:
             The complete response text from the model.
@@ -268,20 +270,61 @@ class APIClient:
             effective_callback = stream_callback if use_streaming else None
             self.logger.debug(f"[APIClient:{request_id_api}] Calling {type(self.client_handler).__name__}.get_response. Streaming: {use_streaming}. Callback Provided: {effective_callback is not None}")
             
-            # Ensure the callback is async if provided
+            # Ensure the callback is async and handles the new signature if provided
             if effective_callback and not asyncio.iscoroutinefunction(effective_callback):
                 # Convert to async function if it's not already
                 original_callback = effective_callback
                 self.logger.debug(f"[APIClient:{request_id_api}] Converting non-async callback to async")
                 
-                async def async_callback_wrapper(chunk: str):
+                async def async_callback_wrapper(chunk: str, message_type: str = "assistant"):
                     # Call the original callback in an asyncio-friendly way
                     try:
-                        original_callback(chunk)
+                        # Check if the original callback accepts message_type parameter
+                        import inspect
+                        sig = inspect.signature(original_callback)
+                        params = list(sig.parameters.keys())
+                        
+                        if len(params) >= 2:
+                            # Callback accepts message_type
+                            if asyncio.iscoroutinefunction(original_callback):
+                                await original_callback(chunk, message_type)
+                            else:
+                                # Run sync callback in thread pool to avoid blocking
+                                await asyncio.get_event_loop().run_in_executor(
+                                    None, original_callback, chunk, message_type
+                                )
+                        else:
+                            # Legacy callback that only accepts chunk
+                            if asyncio.iscoroutinefunction(original_callback):
+                                await original_callback(chunk)
+                            else:
+                                await asyncio.get_event_loop().run_in_executor(
+                                    None, original_callback, chunk
+                                )
                     except Exception as e:
                         self.logger.error(f"[APIClient:{request_id_api}] Error in callback: {e}")
                 
                 effective_callback = async_callback_wrapper
+            elif effective_callback and asyncio.iscoroutinefunction(effective_callback):
+                # Already async, but we need to ensure it handles the signature properly
+                original_async_callback = effective_callback
+                
+                async def async_signature_wrapper(chunk: str, message_type: str = "assistant"):
+                    try:
+                        # Check if the async callback accepts message_type parameter
+                        import inspect
+                        sig = inspect.signature(original_async_callback)
+                        params = list(sig.parameters.keys())
+                        
+                        if len(params) >= 2:
+                            await original_async_callback(chunk, message_type)
+                        else:
+                            # Legacy async callback
+                            await original_async_callback(chunk)
+                    except Exception as e:
+                        self.logger.error(f"[APIClient:{request_id_api}] Error in async callback: {e}")
+                
+                effective_callback = async_signature_wrapper
             
             if effective_callback:
                  self.logger.debug(f"[APIClient:{request_id_api}] Callback object details: {effective_callback}")
@@ -295,6 +338,7 @@ class APIClient:
                 temperature=temperature if temperature is not None else self.model_config.temperature,
                 stream=use_streaming,
                 stream_callback=effective_callback, # Pass the potentially wrapped async callback
+                **kwargs  # Pass through additional parameters like reasoning config
             )
 
             # If streaming, the callback handled output. Return minimal response.
