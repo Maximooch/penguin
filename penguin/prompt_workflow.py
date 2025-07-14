@@ -260,3 +260,93 @@ If you try to use any other text or markdown formatting, the system will not rec
 ### General Guidelines
 - Your reasoning must justify the phrase. Explain *why* the task/session is complete or why clarification is needed *before* using the phrase.
 '''
+
+
+LARGE_CODEBASE_GUIDE = '''
+## Large Codebase Navigation
+
+### Discovery First
+- Start with high-level structure: `find . -type f -name "*.py" | head -20`
+- Use `workspace_search` for semantic understanding
+- Build mental map using README files and documentation
+
+### Chunked Reading Strategy
+- Check file size before reading: `wc -l filename`
+- For files >500 lines, read in strategic chunks:
+  1. First 50 lines (imports, class definitions)
+  2. Search for specific functions/classes
+  3. Read around specific line numbers
+- Document findings in context notes for future reference
+
+### Handling Large Codebases (Dynamic Mapping & Ingestion)
+  For repos >1K lines, avoid full loads—use mapping/locating first [1]:
+  - Map dynamically: Via <execute> with stdlib (e.g., import os, glob, pathlib; use os.walk(dir) for tree, glob.glob('**/*.py') for patterns).
+  - Build overviews: Create file maps/summaries in notes (<add_summary_note>); e.g., "Scan src/ for .py files, list with one-line summaries."
+  - Targeted ingest: Semantic search (<workspace_search>) on map, then chunk reads (750 lines max via read_file); parse with AST per chunk.
+  - Agent flow: Locate (stdlib), summarize hierarchy, ingest relevant parts incrementally; store maps to combat amnesia [4].
+  - Example: <execute>import glob; py_files = glob.glob('**/*.py', recursive=True); print([f + ': ' + open(f).readline().strip() for f in py_files])</execute> for quick map.
+
+### Mapping/Locating Tools (Stdlib Integration)
+  For discovery in large codebases:
+  - Use os/glob/pathlib safely: Verify paths (os.path.exists), avoid destructive ops.
+  - Patterns: glob.glob('src/**/*.ts') for files; os.walk('.') for traversal.
+  - Combine with AST: Locate files, then ast.parse() chunks for analysis.
+  - Security: Never map sensitive dirs (e.g., ignore .env via patterns) [1].
+
+### Progressive Understanding
+- Create `context/codebase_map.md` to track discoveries
+- Note key files, their purposes, and relationships
+- Update map as understanding deepens
+'''
+
+TOOL_LEARNING_GUIDE = '''
+## Tool Learning & Memory Integration
+
+### Tool Discovery Process
+1. List available tools when starting new task type
+2. Read tool documentation before first use
+3. Start with simple test cases to understand behavior
+4. Document successful patterns in memory
+
+### Memory Usage Patterns
+- **Before starting tasks**: Search memory for similar past work
+- **During exploration**: Add findings to declarative memory
+- **After completion**: Summarize approach and lessons learned
+- **On errors**: Document what didn't work and why
+
+### Conservative vs Creative Balance (70/30 Rule)
+- 70% Conservative: Use proven tools and patterns from memory/docs
+- 30% Creative: When stuck, try alternative approaches with:
+  - Clear hypothesis about why it might work
+  - Rollback plan ready
+  - Documentation of the experiment
+'''
+
+CODE_ANALYSIS_GUIDE = '''
+## Code Analysis & AST Usage
+
+### When to Use AST Analysis
+- Refactoring across multiple files
+- Understanding complex inheritance hierarchies  
+- Finding all usages of a function/class
+- Analyzing code patterns and anti-patterns
+
+### AST Tools Available
+- Python: `ast` module for parsing and analysis
+- General: `grep` with regex for simple pattern matching
+
+### Progressive Analysis Strategy
+1. Start with grep/workspace_search for quick findings
+2. Use AST when you need structural understanding
+3. Combine both for comprehensive analysis
+4. Cache AST results in memory for repeated queries
+'''
+
+PROJECT_PATTERNS_GUIDE = '''
+
+### Task Breakdown Strategies
+- Identify dependencies first (can't test without working code)
+- Break into 15-30 minute chunks
+- Create verification steps for each chunk
+- Plan rollback points between major changes
+'''

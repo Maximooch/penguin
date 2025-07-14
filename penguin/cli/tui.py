@@ -2,32 +2,391 @@ from __future__ import annotations
 import asyncio
 import logging
 import traceback
-from typing import Any, Dict
-from textual.app import App, ComposeResult
-from textual.containers import Container
-from textual.widgets import Header, Footer, Input, RichLog, Static
-from textual.reactive import reactive
-from rich.panel import Panel
-from rich.text import Text
-from rich.console import Group
-from rich.markdown import Markdown
-from rich.syntax import Syntax
+from typing import Any, Dict, Optional
+
+# Textual imports
+from textual.app import App, ComposeResult # type: ignore
+from textual.containers import Container, VerticalScroll # type: ignore
+from textual.reactive import reactive # type: ignore
+
+# Header / Footer / Input etc. are always present. Expander was introduced in
+# Textual 0.8x – older installs may not export it which raises an ImportError
+# during dynamic attribute lookup. We therefore attempt the import lazily and
+# fall back to a sentinel so the rest of the code can degrade gracefully.
+
+# Standard Textual widgets always present
+from textual.widgets import Header, Footer, Input, Static, Markdown as TextualMarkdown # type: ignore
+
+try:
+    # Available from Textual ≥ 0.53 (approx). If the current version doesn't
+    # have it the except block sets a stub which signals "feature unsupported".
+    from textual.widgets import Expander  # type: ignore
+except ImportError:  # pragma: no cover – depends on external library version
+    Expander = None  # type: ignore[misc, assignment]
+
+# ------------------------------------------------------------------
+# Expander fallback for older Textual versions
+# ------------------------------------------------------------------
+# Textual's built-in `Expander` arrived around 0.81.  On older installs we
+# provide a *very* small shim that gives the essentials: a clickable /
+# focusable summary line that toggles the visibility of the body Markdown.
+
+# If the above import failed on older Textual versions we expose a
+# *minimal* fallback that provides interactive collapse / expand.
+except ImportError:  # pragma: no cover – depends on external library version
+    Expander = None  # type: ignore[misc, assignment]
+
+# ------------------------------------------------------------------
+# Fallback implementation (always defined when Expander is None)
+# ------------------------------------------------------------------
+
+if Expander is None:
+    class SimpleExpander(Static, can_focus=True):  # type: ignore[misc]
+        """Minimal expander for Textual <0.8x.
+
+        • Arrow marker (▶ / ▼) indicates collapsed vs expanded state.
+        • `Enter` key or mouse click toggles the body visibility.
+        """
+
+        open_state = reactive(False)
+
+        BINDINGS = [("enter", "toggle", "Toggle"), ("space", "toggle", "Toggle"), ("ctrl+r", "toggle", "Toggle")]
+
+        def __init__(self, summary: str, body_md: str, *, open: bool = False):  # noqa: A002 – param name mandated by API
+            super().__init__()
+            self._summary_text = summary.strip() or "Details"
+            self._body_md = body_md
+            self.open_state = open
+
+        # --------------------------- Compose ---------------------------
+        def compose(self) -> ComposeResult:  # noqa: D401 – framework signature
+            # Header line with arrow indicator
+            arrow = "▼" if self.open_state else "▶"
+            yield Static(f"{arrow} {self._summary_text}", classes="expander-summary")
+
+            # Body (conditionally mounted)
+            if self.open_state:
+                yield TextualMarkdown(self._body_md, classes="expander-body")
+
+        # ---------------------------- Events ---------------------------
+        def on_click(self) -> None:  # Textual will provide the event arg implicitly
+            self.action_toggle()
+
+        def action_toggle(self) -> None:  # noqa: D401 – Textual naming
+            """Toggle the collapsed / expanded state."""
+            self.open_state = not self.open_state
+
+        # ------------------------ Reactive watch -----------------------
+        def watch_open_state(self, new_state: bool) -> None:  # noqa: D401
+            # Update arrow on summary
+            try:
+                summary_widget = self.query_one(".expander-summary", Static)
+                arrow = "▼" if new_state else "▶"
+                summary_widget.update(f"{arrow} {self._summary_text}")
+            except Exception:
+                pass  # Summary might not exist during early init
+
+            # Mount or remove body widget
+            if new_state:
+                # If body already present – nothing to do
+                if not self.query(".expander-body"):
+                    self.mount(TextualMarkdown(self._body_md, classes="expander-body"))
+            else:
+                for body in self.query(".expander-body"):
+                    body.remove()
+
+# Rich imports
+from rich.panel import Panel # type: ignore
+from rich.text import Text # type: ignore
+from rich.console import Group # type: ignore
+from rich.markdown import Markdown as RichMarkdown # type: ignore
+from rich.syntax import Syntax # type: ignore
+
+# Standard library imports
 import os
 import signal
 import shlex
+import re
 
+# Project imports
 from penguin.core import PenguinCore
 from penguin.cli.interface import PenguinInterface
 
 # Set up logging for debug purposes
 logger = logging.getLogger(__name__)
 
+# --- Custom Widgets ---
+
+class ChatMessage(Static, can_focus=True):
+    """A widget to display a single chat message.
+
+    • Focusable so user can select with keyboard (Tab / ↑ ↓).
+    • Press **c** to copy full plain-text content to clipboard.
+    """
+
+    # Enhanced regex – captures optional language identifier (can include hyphens / digits) on the same line
+    # and tolerates both LF and CRLF newlines.  Example matches:
+    #   ```python\nprint("hi")\n```
+    #   ```\r\ncode\r\n```
+    CODE_FENCE = re.compile(r"```([^\n`]*)\r?\n(.*?)```", re.S)
+    BINDINGS = [("c", "copy", "Copy to clipboard"), ("ctrl+r", "toggle_expander", "Toggle reasoning")]  # visible in footer
+
+    def __init__(self, content: str, role: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.content = content
+        self.role = role
+
+    def compose(self) -> ComposeResult:
+        """Render the message with code fences highlighted."""
+
+        # Pre-process bespoke tags (<execute>, <execute_command>, etc.) → fenced code
+        processed_content = self.content
+        processed_content = re.sub(r"<execute(?:_command|_code)?>(.*?)</execute(?:_command|_code)?>", r"```python\n\1```", processed_content, flags=re.S)
+
+        # --- Reasoning / Thinking tokens support -----------------------
+        # Convert <thinking>...</thinking> blocks into nice markdown block-quotes
+        # so they render in a dim grey style. We prefix each line with '> ' so
+        # Rich / Textual Markdown renders it as a quoted block.
+        def _convert_thinking(match: re.Match) -> str:
+            raw = match.group(1).strip("\n")
+            if not raw:
+                return ""
+            # Prefix each line with '> '
+            quoted_lines = ["> " + ln for ln in raw.splitlines()]
+            return "\n" + "\n".join(quoted_lines) + "\n"
+
+        processed_content = re.sub(r"<thinking>(.*?)</thinking>", _convert_thinking, processed_content, flags=re.S)
+        # ----------------------------------------------------------------
+
+        # --- Convert HTML <details>/<summary> blocks into Textual Expanders ---
+        DETAILS_RE = re.compile(r"<details>\s*(<summary>(.*?)</summary>)?(.*?)</details>", re.S)
+
+        pos = 0
+        for m in DETAILS_RE.finditer(processed_content):
+            before = processed_content[pos:m.start()]
+            if before.strip():
+                yield TextualMarkdown(before)
+
+            summary_text = m.group(2) or "Details"
+            body_md = m.group(3).strip()
+
+            if Expander is not None:
+                # Preferred rich interactive widget when available.
+                expander = Expander(summary_text, open=False)  # type: ignore[call-arg]
+                expander.mount(TextualMarkdown(body_md))
+                yield expander
+            else:
+                # Older Textual – use our minimal interactive fallback.
+                yield SimpleExpander(summary_text, body_md, open=False)
+
+            pos = m.end()
+
+        # Remainder after last details block
+        remainder = processed_content[pos:]
+        if remainder.strip():
+            processed_content = remainder
+        else:
+            processed_content = ""
+
+        # If we already yielded widgets for details, and no remainder, return early
+        if pos > 0:
+            if processed_content:
+                # There was some trailing text outside details block(s)
+                yield TextualMarkdown(processed_content)
+            return
+
+        # Role label
+        if self.role == "user":
+            label_text = Text("You", style="bold cyan")
+        elif self.role == "assistant":
+            label_text = Text("Penguin", style="bold green")
+        else:
+            label_text = Text(self.role.capitalize(), style="bold yellow")
+
+        yield Static(label_text, classes="message-label")
+
+        parts = self.CODE_FENCE.split(processed_content)
+        # parts = [before, lang1, code1, after1, lang2, code2, ...]
+        if len(parts) == 1:
+            # No fenced code detected – heuristic: treat whole block as code if it *looks* like code
+            if self._looks_like_code(processed_content):
+                syntax_obj = Syntax(processed_content.strip(), "python", theme="monokai", line_numbers=False)
+                yield Static(syntax_obj, classes="code-block")
+            else:
+                yield TextualMarkdown(processed_content, classes=f"message-content {self.role}")
+            return
+
+        for idx, chunk in enumerate(parts):
+            mod = idx % 3
+            if mod == 0:
+                # narrative segment
+                if chunk.strip():
+                    yield TextualMarkdown(chunk)
+            elif mod == 1:
+                # language identifier (may be empty)
+                lang = chunk or "text"
+                code = parts[idx + 1]
+                syntax_obj = Syntax(code, lang, theme="monokai", line_numbers=False)
+                yield Static(syntax_obj, classes="code-block")
+            else:
+                # code segment handled by mod==1
+                continue
+
+    def stream_in(self, chunk: str) -> None:
+        """Append a chunk of text to the message content."""
+        self.content += chunk
+        # Query the Markdown widget and update it
+        try:
+            markdown_widget = self.query_one(TextualMarkdown)
+            markdown_widget.update(self.content)
+        except Exception as e:
+            logger.error(f"Error updating markdown widget: {e}")
+
+    def end_stream(self) -> None:
+        """Finalize the stream, perhaps by adding a specific style."""
+        self.remove_class("streaming")
+
+        # ---------------------------------------------
+        # Post-processing: wrap reasoning in <details>
+        # ---------------------------------------------
+        try:
+            if "<details>" in self.content:
+                return  # already wrapped by Core or previous pass
+
+            lines = self.content.splitlines()
+            # Extract leading reasoning lines (those beginning with '> ')
+            reasoning_lines: list[str] = []
+            body_lines: list[str] = []
+            collecting_reasoning = True
+            for ln in lines:
+                if collecting_reasoning and ln.startswith("> "):
+                    reasoning_lines.append(ln[2:])  # strip block-quote marker
+                else:
+                    collecting_reasoning = False
+                    body_lines.append(ln)
+
+            if reasoning_lines:
+                # Build collapsible markdown block
+                details_md = (
+                    "<details>\n"
+                    "<summary>🧠  Click to show / hide internal reasoning</summary>\n\n"
+                    + "\n".join(reasoning_lines)
+                    + "\n\n</details>\n\n"
+                )
+                self.content = details_md + "\n".join(body_lines)
+
+                # Update rendered Markdown widget
+                markdown_widget = self.query_one(TextualMarkdown)
+                markdown_widget.update(self.content)
+        except Exception as e:  # pragma: no cover – defensive
+            logger.debug(f"Post-stream reasoning wrap failed: {e}")
+
+        # ------------------------------------------------------------------
+        # Heuristic fallback – some providers do NOT tag reasoning chunks.
+        # If no '> ' lines were found above, attempt to treat consecutive
+        # bold-heading paragraphs (lines starting with '**') at the start of
+        # the message as reasoning.
+        # ------------------------------------------------------------------
+        # DISABLED: This heuristic doesn't work well with Gemini's output format
+        # which uses bold headings throughout the response, not just for reasoning
+        """
+        try:
+            if '<details>' not in self.content:
+                lines = self.content.splitlines()
+                reasoning_lines: list[str] = []
+                body_start_index = 0
+
+                # Collect leading bold-heading blocks and any interstitial
+                # blank lines until we hit the first non-bold content.
+                for idx, ln in enumerate(lines):
+                    if ln.startswith("**") or (ln.strip() == "" and reasoning_lines):
+                        reasoning_lines.append(ln)
+                    elif not reasoning_lines and ln.strip() == "":
+                        # Skip leading empty lines before first heading
+                        continue
+                    else:
+                        body_start_index = idx
+                        break
+
+                if reasoning_lines:
+                    body_lines = lines[body_start_index:]
+                    details_md = (
+                        "<details>\n"
+                        "<summary>🧠  Click to show / hide internal reasoning</summary>\n\n"
+                        + "\n".join(reasoning_lines)
+                        + "\n\n</details>\n\n"
+                    )
+                    self.content = details_md + "\n".join(body_lines)
+                    markdown_widget = self.query_one(TextualMarkdown)
+                    markdown_widget.update(self.content)
+        except Exception as e:
+            logger.debug(f"Fallback reasoning wrap failed: {e}")
+        """
+
+    # --------------------------
+    # Copy-to-clipboard support
+    # --------------------------
+    async def action_copy(self) -> None:  # noqa: D401 – Textual naming convention
+        """Copy this message's raw text to the system clipboard (if available)."""
+        copied = False
+        try:
+            import pyperclip  # type: ignore
+
+            pyperclip.copy(self.content)
+            copied = True
+        except Exception:
+            copied = False
+
+        # Notify the main app so status-bar can show feedback
+        try:
+            self.post_message(StatusMessage("Copied ✅" if copied else "📋 Clipboard unavailable"))
+        except Exception:
+            pass
+
+    def _looks_like_code(self, text: str) -> bool:
+        """Simple heuristic to guess if *text* is code when no fences are present."""
+        code_keywords = ["def ", "class ", "import ", "return ", "from ", "for ", "while "]
+        if any(kw in text for kw in code_keywords):
+            # If more than 40% of lines are indented or end with ':' assume code block
+            lines = text.splitlines()
+            if not lines:
+                return False
+            indented = sum(1 for ln in lines if ln.startswith(" ") or ln.startswith("\t"))
+            return indented / len(lines) > 0.4 or len(lines) < 4  # small snippets often code
+        return False
+
+    # ------------------------------
+    # Ctrl+R → toggle first expander
+    # ------------------------------
+    def action_toggle_expander(self) -> None:  # noqa: D401 – keybinding handler
+        """Toggle the first collapsible reasoning block (if any)."""
+        try:
+            # Prefer built-in Expander where available, else our SimpleExpander
+            if Expander is not None:
+                exp = self.query_one(Expander)  # type: ignore[arg-type]
+                exp.open = not exp.open  # type: ignore[attr-defined]
+            else:
+                exp = self.query_one(SimpleExpander)
+                exp.action_toggle()
+        except Exception:
+            # No expander present – silently ignore
+            pass
+
+# Simple status message to bubble up to PenguinTextualApp
+from textual.message import Message  # after other imports # type: ignore
+
+
+class StatusMessage(Message):
+    def __init__(self, text: str) -> None:
+        self.text = text
+        super().__init__()
+
+
 class PenguinTextualApp(App):
     """A Textual-based chat interface for Penguin AI."""
     
     CSS_PATH = "tui.css"
     
-    # Add key bindings
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+q", "quit", "Quit"),
@@ -39,77 +398,94 @@ class PenguinTextualApp(App):
     
     def __init__(self):
         super().__init__()
-        self.core = None
-        self.interface = None
-        self.log_widget = None
-        self.debug_messages = []  # Store debug messages for later viewing
-        self.streaming_content = ""  # Accumulate streaming content
-        self.is_streaming = False
-        self.current_assistant_message = ""  # Track current assistant message for streaming
-        self.last_final_content = "" # Prevent duplicate final message rendering
-        self.last_stream_id = None  # Track the last stream ID to prevent duplicates
-        self.dedup_clear_task = None  # Task to clear deduplication content
+        self.core: Optional[PenguinCore] = None
+        self.interface: Optional[PenguinInterface] = None
+        self.debug_messages: list[str] = []
+        self.current_streaming_widget: Optional[ChatMessage] = None
+        self.last_finalized_content: Optional[str] = None # For deduplication
+        self.dedup_clear_task: Optional[asyncio.Task] = None
+        self._runmode_message: Optional[ChatMessage] = None  # For RunMode output
+        self._stream_timeout_task: Optional[asyncio.Task] = None  # Stream timeout monitor
+        self._stream_start_time: float = 0
+        self._stream_chunk_count: int = 0
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
         yield Header()
         with Container(id="main-container"):
-            yield RichLog(id="log", markup=True, highlight=True, wrap=True)
-            yield Static(id="streaming-output", classes="hidden")  # For streaming
-            yield Input(placeholder="Type your message... (Ctrl+L=clear, Ctrl+D=debug, Ctrl+C=quit)", id="input-box")
-        yield Static(id="status-bar")  # Create widget without initial text
+            yield VerticalScroll(id="message-area")
+            yield Input(placeholder="Type your message... (/help for commands)", id="input-box")
+        yield Static(id="status-bar")
         yield Footer()
 
     async def on_mount(self) -> None:
         """Called when the app is mounted."""
-        self.log_widget = self.query_one(RichLog)
-
-        # Now that widgets are mounted, set the initial status text
         self.query_one("#status-bar", Static).update(self.status_text)
-        
         self.query_one(Input).focus()
         asyncio.create_task(self.initialize_core())
+
+    def add_message(self, content: str, role: str) -> ChatMessage:
+        """Helper to add a new message widget to the display."""
+        message_area = self.query_one("#message-area", VerticalScroll)
+        new_message = ChatMessage(content, role)
+        message_area.mount(new_message)
+        # Immediately jump to bottom to avoid animation jitter
+        self._scroll_to_bottom()
+        return new_message
+
+    def _scroll_to_bottom(self) -> None:
+        """Scroll the message area to the bottom without animation."""
+        try:
+            message_area = self.query_one("#message-area", VerticalScroll)
+            message_area.scroll_end(animate=False)  # immediate jump
+        except Exception:
+            pass
+    
+    def _format_system_output(self, action_name: str, result_str: str, max_lines: int = 20) -> str:
+        """Format system output with expand/collapse for long content."""
+        lines = result_str.splitlines()
+        
+        if len(lines) <= max_lines:
+            # Short output, display normally
+            return f"✅ Tool `{action_name}` output:\n```text\n{result_str}\n```"
+        
+        # Long output, use collapsible format
+        preview_lines = lines[:max_lines]
+        remaining_lines = lines[max_lines:]
+        
+        preview_text = "\n".join(preview_lines)
+        full_text = "\n".join(remaining_lines)
+        
+        # Create collapsible content
+        content = f"✅ Tool `{action_name}` output (showing {max_lines}/{len(lines)} lines):\n"
+        content += f"```text\n{preview_text}\n```\n\n"
+        content += "<details>\n"
+        content += f"<summary>Show {len(remaining_lines)} more lines...</summary>\n\n"
+        content += f"```text\n{full_text}\n```\n\n"
+        content += "</details>"
+        
+        return content
 
     async def initialize_core(self) -> None:
         """Initialize the PenguinCore and interface."""
         try:
             self.status_text = "Initializing Penguin Core..."
-            
-            # Use fast startup and disable progress bars to speed up initialization
-            self.core = await PenguinCore.create(
-                fast_startup=True,
-                show_progress=False  # Disable progress bars in TUI mode
-            )
+            self.core = await PenguinCore.create(fast_startup=True, show_progress=False)
             
             self.status_text = "Setting up interface..."
-            
-            # Register our event handler with the core FIRST
             self.core.register_ui(self.handle_core_event)
             self.debug_messages.append("Registered UI event handler with core")
             
-            # Then create the interface
             self.interface = PenguinInterface(self.core)
             
             self.status_text = "Ready"
-            self.log_widget.write(Panel("🐧 [bold cyan]Penguin AI[/bold cyan] is ready!", title="Welcome", border_style="cyan"))
-            
-            # Add helpful information about browser tools
-            browser_info = Group(
-                Text("💡 Browser Tools Info:", style="bold yellow"),
-                Text("• Regular browser tools are temporarily disabled", style="dim"),
-                Text("• Use PyDoll browser tools instead:", style="dim"),
-                Text("  - Ask me to navigate: 'Go to https://example.com'", style="green"),
-                Text("  - Ask for screenshots: 'Take a screenshot of the page'", style="green"),
-                Text("  - Ask to interact: 'Click the login button'", style="green"),
-                Text("• Type /help for more commands", style="dim")
-            )
-            self.log_widget.write(browser_info)
-            self.log_widget.write("")  # Add spacing
-            
+            welcome_panel = Panel("🐧 [bold cyan]Penguin AI[/bold cyan] is ready! Type a message or /help.", title="Welcome", border_style="cyan")
+            self.query_one("#message-area").mount(Static(welcome_panel))
+
         except Exception as e:
             self.status_text = f"Error initializing core: {e}"
-            self.log_widget.write(Panel(f"[bold red]Fatal Error[/bold red]\n{e}", title="Initialization Failed", border_style="red"))
-            # Log the full traceback for debugging
+            error_panel = Panel(f"[bold red]Fatal Error[/bold red]\n{e}", title="Initialization Failed", border_style="red")
+            self.query_one("#message-area").mount(Static(error_panel))
             error_details = traceback.format_exc()
             logger.error(f"TUI initialization error: {error_details}")
             self.debug_messages.append(f"Initialization Error: {error_details}")
@@ -117,348 +493,508 @@ class PenguinTextualApp(App):
     def watch_status_text(self, status: str) -> None:
         """Update the status bar when status_text changes."""
         try:
-            # Only update if the app is fully mounted
-            if hasattr(self, '_mounted') and self._mounted:
+            if self.is_mounted:
                 status_bar = self.query_one("#status-bar", Static)
                 status_bar.update(f"[dim]{status}[/dim]")
         except Exception:
-            # Ignore errors during app initialization
             pass
 
     async def handle_core_event(self, event_type: str, data: Any) -> None:
         """Handle events from PenguinCore."""
         try:
-            self.debug_messages.append(f"Received event: {event_type} with data keys: {list(data.keys()) if isinstance(data, dict) else 'not dict'}")
+            self.debug_messages.append(f"Received event: {event_type} with data: {str(data)[:200]}")
             
             if event_type == "message":
                 role = data.get("role", "unknown")
                 content = data.get("content", "")
+                category = data.get("category", "DIALOG")
                 
+                # Skip user messages that we already displayed
                 if role == "user":
-                    self.log_widget.write(f"[bold cyan]You:[/bold cyan]\n{content}")
-                elif role == "assistant":
-                    # Don't render a non-streaming message if it's identical to the one
-                    # we just finalized from a stream.
-                    if content != self.last_final_content:
-                        self.log_widget.write(
-                            Group(
-                                Text("🐧 Penguin:", style="bold green"),
-                                Markdown(content, style="green")
-                            )
-                        )
-                        # Only reset if we actually displayed the message
-                        self.last_final_content = ""
-                    else:
-                        # Debug: message was deduplicated
-                        self.debug_messages.append(f"Deduplicated assistant message: {content[:50]}...")
-                elif role == "system":
-                    # Render system messages in a distinct style for visibility
-                    self.log_widget.write(
-                        Panel(
-                            Markdown(content, style="bright_white"),
-                            title="System",
-                            border_style="bright_white"
-                        )
-                    )
-            
+                    self.debug_messages.append(f"Skipping user message (already displayed): {content[:50]}...")
+                    return
+                
+                # Check for and prevent rendering of duplicate assistant message post-stream
+                if role == "assistant" and content.strip() == (self.last_finalized_content or "").strip():
+                    self.last_finalized_content = None # Consume the dedupe key
+                    self.debug_messages.append(f"Deduplicated assistant message: {content[:50]}...")
+                    return
+                
+                # Handle system messages with appropriate formatting
+                if role == "system" or category == "SYSTEM":
+                    # Format system messages to be less intrusive
+                    if len(content) > 500:
+                        content = self._format_system_output("System", content)
+                    self.add_message(content, "system")
+                else:
+                    self.add_message(content, role)
+
             elif event_type == "stream_chunk":
                 chunk = data.get("chunk", "")
                 is_final = data.get("is_final", False)
-                stream_id = data.get("stream_id")
-                streaming_widget = self.query_one("#streaming-output", Static)
+                stream_id = data.get("stream_id", "default")
 
-                if not self.is_streaming and chunk:
-                    # First chunk of a new stream
-                    self.is_streaming = True
-                    self.current_assistant_message = chunk
-                    self.last_stream_id = stream_id
-                    streaming_widget.remove_class("hidden")
-                elif self.is_streaming and not is_final:
-                    # Subsequent chunk
-                    self.current_assistant_message += chunk
+                if not self.current_streaming_widget and chunk:
+                    # First chunk of a new stream, create the widget
+                    self.current_streaming_widget = self.add_message("", "assistant")
+                    self.current_streaming_widget.add_class("streaming")
+                    self._stream_start_time = asyncio.get_event_loop().time()
+                    self._stream_chunk_count = 0
+                    
+                    # Start stream timeout monitor
+                    self._stream_timeout_task = asyncio.create_task(self._monitor_stream_timeout())
+
+                if self.current_streaming_widget and chunk:
+                    self._stream_chunk_count += 1
+                    
+                    # Check for potential streaming issues
+                    current_time = asyncio.get_event_loop().time()
+                    if hasattr(self, '_stream_start_time'):
+                        stream_duration = current_time - self._stream_start_time
+                        
+                        # Detect potential hang (no final chunk after reasonable time)
+                        if stream_duration > 30 and not is_final:
+                            self.debug_messages.append(f"Long stream detected: {stream_duration:.1f}s, {self._stream_chunk_count} chunks")
+                    
+                    if not is_final:
+                        # Subsequent chunk – prefix reasoning chunks for styling
+                        is_reasoning = data.get("is_reasoning", False)
+                        if is_reasoning:
+                            chunk = "> " + chunk  # block-quote styling
+                        self.current_streaming_widget.stream_in(chunk)
+                        # Keep the latest buffer for deduplication against upcoming message event
+                        self.last_finalized_content = self.current_streaming_widget.content
+                        self._scroll_to_bottom()
                 
-                if self.is_streaming and not is_final:
-                    # Update the streaming widget with accumulated content
-                    try:
-                        markdown_content = Markdown(self.current_assistant_message)
-                        group = Group(Text("🐧 Penguin (streaming):", style="bold green"), markdown_content)
-                        streaming_widget.update(group)
-                    except Exception as e:
-                        streaming_widget.update(f"[bold green]🐧 Penguin (streaming):[/bold green] {self.current_assistant_message}\nError: {e}")
-
-                elif is_final:
+                if is_final and self.current_streaming_widget:
+                    # Cancel timeout monitor
+                    if self._stream_timeout_task:
+                        self._stream_timeout_task.cancel()
+                        self._stream_timeout_task = None
+                    
                     # Finalize the message
-                    if self.is_streaming:
-                        streaming_widget.add_class("hidden")
-                        streaming_widget.update("")
-                        
-                        final_content = data.get("content", self.current_assistant_message)
-                        # Store the content so that the *second* message event (emitted
-                        # by Core after processing completes) can be de-duplicated.
-                        self.last_final_content = final_content
+                    stream_duration = asyncio.get_event_loop().time() - getattr(self, '_stream_start_time', 0)
+                    self.debug_messages.append(f"Stream completed: {stream_duration:.1f}s, {self._stream_chunk_count} chunks")
+                    
+                    # Validate final content
+                    final_content = self.current_streaming_widget.content.strip()
+                    if not final_content:
+                        self.debug_messages.append("Warning: Stream completed with empty content")
+                        self.current_streaming_widget.stream_in("[Stream completed with no content]")
+                    elif self._detect_incomplete_response(final_content):
+                        self.debug_messages.append("Warning: Stream appears to be incomplete")
+                        self.current_streaming_widget.stream_in("\n\n[Response may be incomplete - check logs]")
+                    
+                    self.current_streaming_widget.end_stream()
+                    # Buffer already up to date; ensure dedup key is set
+                    self.last_finalized_content = self.current_streaming_widget.content
+                    
+                    self.current_streaming_widget = None
+                    # Schedule the dedupe key to be cleared after a short delay
+                    self.dedup_clear_task = asyncio.create_task(self._clear_dedup_content())
+                    self._scroll_to_bottom()
 
-                        # Do NOT render the final content here – Core has already
-                        # emitted a separate "message" event with the same text just
-                        # before this stream_chunk(is_final) event.  Rendering here
-                        # would create a visible duplicate.
-
-                        # Reset streaming state but keep last_final_content for deduplication
-                        self.is_streaming = False
-                        self.current_assistant_message = ""
-                        
-                        # Schedule clearing of deduplication content after a short delay
-                        if self.dedup_clear_task:
-                            self.dedup_clear_task.cancel()
-                        self.dedup_clear_task = asyncio.create_task(self._clear_dedup_content())
-            
             elif event_type == "tool_call":
                 tool_name = data.get("name", "unknown")
-                self.log_widget.write(f"[yellow]🔧 Using tool: {tool_name}[/yellow]")
+                tool_args = data.get("arguments", {})
+                
+                # Create a more informative tool call message
+                if tool_args and len(str(tool_args)) < 200:
+                    content = f"🔧 Using tool: `{tool_name}` with args: {tool_args}"
+                else:
+                    content = f"🔧 Using tool: `{tool_name}`"
+                
+                self.add_message(content, "system")
             
             elif event_type == "tool_result":
-                result = data.get("result", "")
+                result_str = data.get("result", "")
                 action_name = data.get("action_name", "unknown")
                 status = data.get("status", "completed")
                 
-                # Handle different types of tool results
                 if status == "error":
-                    self.log_widget.write(f"[red]❌ Tool '{action_name}' failed:[/red]\n[red]{result[:500]}{'...' if len(result) > 500 else ''}[/red]\n")
-                elif action_name in ["execute_code", "run_code", "python_exec"]:
-                    # Special handling for code execution
-                    if result.strip():
-                        self.log_widget.write(Group(
-                            Text(f"📋 Code output:", style="bold blue"),
-                            Syntax(result[:1000] + ("..." if len(result) > 1000 else ""), "text", theme="monokai", line_numbers=False)
-                        ))
-                        self.log_widget.write("")  # Add spacing
-                    else:
-                        self.log_widget.write(f"[blue]✅ Code executed successfully (no output)[/blue]\n")
-                elif action_name in ["execute_command", "shell_command"]:
-                    # Special handling for shell commands
-                    if result.strip():
-                        self.log_widget.write(Group(
-                            Text(f"🖥️  Command output:", style="bold magenta"),
-                            Syntax(result[:1000] + ("..." if len(result) > 1000 else ""), "bash", theme="monokai", line_numbers=False)
-                        ))
-                        self.log_widget.write("")  # Add spacing
-                    else:
-                        self.log_widget.write(f"[magenta]✅ Command executed successfully (no output)[/magenta]\n")
-                elif action_name in ["browser_navigate", "pydoll_browser_navigate"]:
-                    # Browser navigation
-                    self.log_widget.write(f"[cyan]🌐 {result}[/cyan]\n")
-                elif action_name in ["browser_screenshot", "pydoll_browser_screenshot"]:
-                    # Screenshot results
-                    self.log_widget.write(f"[green]📸 {result}[/green]\n")
-                elif action_name in ["memory_search", "workspace_search"]:
-                    # Search results with better formatting
-                    if result.strip():
-                        self.log_widget.write(Group(
-                            Text(f"🔍 Search results:", style="bold yellow"),
-                            Text(result[:800] + ("..." if len(result) > 800 else ""), style="dim white")
-                        ))
-                        self.log_widget.write("")  # Add spacing
-                    else:
-                        self.log_widget.write(f"[yellow]🔍 No search results found[/yellow]\n")
+                    content = f"❌ Tool `{action_name}` failed:\n```\n{result_str}\n```"
+                    self.add_message(content, "error")
                 else:
-                    # Regular tool result with improved formatting
-                    if len(result) > 300:
-                        preview = result[:300] + "..."
-                    else:
-                        preview = result
-                    
-                    if preview.strip():
-                        self.log_widget.write(f"[dim]🔧 {action_name}:[/dim]\n[white]{preview}[/white]\n")
-                    else:
-                        self.log_widget.write(f"[dim]🔧 {action_name}: ✅ completed[/dim]\n")
-            
+                    # Limit system output with expand/collapse
+                    content = self._format_system_output(action_name, result_str)
+                    self.add_message(content, "system")
+
             elif event_type == "error":
                 error_msg = data.get("message", "Unknown error")
-                self.log_widget.write(Panel(f"[bold red]Error:[/bold red] {error_msg}", border_style="red"))
-                self.debug_messages.append(f"Core Event Error: {error_msg}")
-                
+                self.add_message(f"An error occurred: {error_msg}", "error")
+
         except Exception as e:
             error_msg = f"Error handling core event {event_type}: {e}"
             logger.error(error_msg, exc_info=True)
             self.debug_messages.append(f"Event Handler Error ({event_type}): {e}")
-            # Don't let event handling errors crash the UI
+            
+            # If streaming was interrupted, clean up
+            if event_type == "stream_chunk" and self.current_streaming_widget:
+                try:
+                    # Cancel timeout monitor
+                    if self._stream_timeout_task:
+                        self._stream_timeout_task.cancel()
+                        self._stream_timeout_task = None
+                    
+                    self.current_streaming_widget.stream_in(f"\n\n[Stream error: {str(e)}]")
+                    self.current_streaming_widget.end_stream()
+                    self.current_streaming_widget = None
+                except:
+                    pass
+            
             try:
-                self.log_widget.write(f"[red]Event handling error: {error_msg}[/red]")
+                self.add_message(error_msg, "error")
             except:
-                pass  # If even logging fails, just continue
+                pass
+                
+    def _detect_incomplete_response(self, content: str) -> bool:
+        """Detect if a response appears to be incomplete."""
+        if not content:
+            return True
+        
+        # Check for truncated tool calls - specific patterns from the error
+        truncated_tool_patterns = [
+            "<pydol",  # Specific truncation seen in logs
+            "<execute", "<tool_", "<action_", "<browse",
+            "<pydoll_browser_nav", "<pydoll_browser_scr",
+            "<pydoll_"
+        ]
+        
+        # Check if content ends with any truncated pattern
+        content_lower = content.lower()
+        for pattern in truncated_tool_patterns:
+            if content_lower.endswith(pattern.lower()):
+                return True
+            # Also check last 50 characters for mid-response truncation
+            if pattern.lower() in content_lower[-50:] and not content_lower.endswith(">"):
+                return True
+        
+        # Check for unmatched angle brackets (tool calls)
+        open_brackets = content.count("<")
+        close_brackets = content.count(">")
+        if open_brackets > close_brackets:
+            return True
+        
+        # Check for incomplete tool call syntax
+        incomplete_patterns = [
+            "```\n\n<", "```\n<", "</", 
+            "*<", ".*<", ") <", ". <"
+        ]
+        for pattern in incomplete_patterns:
+            if pattern in content[-50:]:
+                return True
+        
+        # Check for abrupt endings in the middle of a sentence or tool call
+        if content and not content[-1] in '.!?>`\n':
+            # If it ends mid-word or with incomplete syntax
+            last_chars = content[-20:]
+            if any(char in last_chars for char in ['<']) and '>' not in last_chars:
+                return True
+        
+        # Check for common incomplete endings from the logs
+        incomplete_endings = [
+            "*<pydol", ".*<pydol", ") <pydol", ". <pydol",
+            "<pydoll_browser_navigat", "<pydoll_browser_screenshot"
+        ]
+        for ending in incomplete_endings:
+            if content.endswith(ending):
+                return True
+        
+        return False
+    
+    async def _monitor_stream_timeout(self) -> None:
+        """Monitor stream for timeout and handle recovery."""
+        try:
+            # Wait for reasonable timeout (60 seconds)
+            await asyncio.sleep(60)
+            
+            # If we get here, stream timed out
+            if self.current_streaming_widget:
+                self.debug_messages.append("Stream timeout detected - forcing completion")
+                
+                current_content = self.current_streaming_widget.content.strip()
+                if self._detect_incomplete_response(current_content):
+                    self.current_streaming_widget.stream_in("\n\n[Stream timed out - response may be incomplete]")
+                else:
+                    self.current_streaming_widget.stream_in("\n\n[Stream completed due to timeout]")
+                
+                self.current_streaming_widget.end_stream()
+                self.last_finalized_content = self.current_streaming_widget.content
+                self.current_streaming_widget = None
+                self._scroll_to_bottom()
+                
+        except asyncio.CancelledError:
+            # Normal cancellation when stream completes
+            pass
+        except Exception as e:
+            self.debug_messages.append(f"Stream timeout monitor error: {e}")
+    
+    async def _force_stream_recovery(self) -> None:
+        """Manually force recovery of a stuck stream."""
+        if self.current_streaming_widget:
+            self.debug_messages.append("Manual stream recovery triggered")
+            
+            # Cancel timeout task if running
+            if self._stream_timeout_task:
+                self._stream_timeout_task.cancel()
+                self._stream_timeout_task = None
+            
+            # Check if content looks incomplete
+            current_content = self.current_streaming_widget.content.strip()
+            if self._detect_incomplete_response(current_content):
+                self.current_streaming_widget.stream_in("\n\n[Stream manually recovered - response may be incomplete]")
+            else:
+                self.current_streaming_widget.stream_in("\n\n[Stream manually recovered]")
+            
+            self.current_streaming_widget.end_stream()
+            self.last_finalized_content = self.current_streaming_widget.content
+            self.current_streaming_widget = None
+            self._scroll_to_bottom()
+            
+            self.add_message("Stream recovery completed. You can continue the conversation.", "system")
+        else:
+            self.add_message("No active stream to recover.", "system")
+    
+    async def _clear_dedup_content(self) -> None:
+        """Clear the deduplication key after a delay."""
+        await asyncio.sleep(0.5)
+        self.last_finalized_content = None
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle user input submission."""
         if not self.interface:
-            self.log_widget.write("[red]Core not initialized yet. Please wait.[/red]")
+            self.add_message("Core not initialized yet. Please wait.", "error")
             return
         
         user_input = event.value.strip()
         if not user_input:
             return
         
-        # Clear the input
         event.input.value = ""
         
-        # Handle commands
+        # Display user message immediately for better UX
+        self.add_message(user_input, "user")
+
         if user_input.startswith("/"):
-            command_str = user_input[1:]
-            # Use shlex to handle quoted arguments in commands
-            try:
-                parts = shlex.split(command_str)
-                command, args = parts[0], parts[1:]
-            except ValueError:
-                # Fallback for simple splitting if shlex fails (e.g., unmatched quotes)
-                parts = command_str.split(" ", 1)
-                command, args = parts[0], parts[1:] if len(parts) > 1 else []
+            # Handle commands with enhanced support
+            await self._handle_command(user_input[1:])
+            return
 
-            if command == "clear":
-                self.action_clear_log()
-                return
-            elif command in ["quit", "exit"]:
-                self.action_quit()
-                return
-            elif command == "debug":
-                self.action_show_debug()
-                return
-            elif command == "help":
-                # Explicitly handle help here to show the new formatted output
-                await self.show_help()
-                return
-        
-        # Process the input with a dummy stream callback to enable streaming
-        # We rely on the core's event system for actual display, but we need
-        # to pass a callback to trigger streaming mode in the core
         try:
-            self.debug_messages.append(f"Processing input: {user_input[:50]}...")
-            
-            # Dummy stream callback - it's synchronous, as the interface expects.
-            def dummy_stream_callback(chunk: str) -> None:
-                """Dummy callback to enable streaming - events handle the actual display."""
-                pass
-            
-            # Set up signal handling for subprocess isolation
-            original_sigint_handler = None
-            try:
-                # Temporarily ignore SIGINT during processing to prevent subprocess interference
-                original_sigint_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
-            except (ValueError, OSError):
-                # Signal handling might not be available in all contexts
-                pass
-            
-            try:
-                # The interface expects a dictionary with 'text' key
-                # Pass the dummy stream callback to enable streaming
-                response = await self.interface.process_input({'text': user_input}, stream_callback=dummy_stream_callback)
-                
-                # Display any action/tool results returned directly (fallback path when core doesn't emit events)
-                if isinstance(response, dict) and response.get("action_results"):
-                    for res in response["action_results"]:
-                        action_name = res.get("action") or res.get("action_name", "unknown")
-                        result_text = res.get("result", "")
-                        status = res.get("status", "completed")
-
-                        # Simple readability improvements
-                        if status == "error":
-                            self.log_widget.write(
-                                Panel(f"❌ {action_name} failed:\n{result_text[:800]}", border_style="red")
-                            )
-                        else:
-                            # Truncate long results for readability
-                            preview = (result_text[:1000] + "…") if len(result_text) > 1000 else result_text
-                            # Use Syntax highlight for code blocks if it looks like code
-                            if "\n" in preview or len(preview) > 120:
-                                self.log_widget.write(
-                                    Group(
-                                        Text(f"🔧 {action_name}", style="bold yellow"),
-                                        Syntax(preview, "text", theme="monokai", line_numbers=False)
-                                    )
-                                )
-                            else:
-                                self.log_widget.write(f"🔧 {action_name}: {preview}")
-
-                self.debug_messages.append("Input processing completed")
-            finally:
-                # Restore original signal handler
-                if original_sigint_handler is not None:
-                    try:
-                        signal.signal(signal.SIGINT, original_sigint_handler)
-                    except (ValueError, OSError):
-                        pass
-                
-        except KeyboardInterrupt:
-            # Handle user interruption gracefully
-            self.log_widget.write("[yellow]⚠️ Processing interrupted by user[/yellow]")
-            self.debug_messages.append("Input processing interrupted by user")
-        except OSError as e:
-            # Handle file descriptor and system-level errors
-            error_msg = f"System error during processing: {e}"
-            logger.error(error_msg, exc_info=True)
-            self.debug_messages.append(error_msg)
-            self.log_widget.write(f"[red]⚠️ System error: {e}[/red]")
-            
-            # If it's a file descriptor error, suggest restart
-            if "Bad file descriptor" in str(e):
-                self.log_widget.write("[yellow]💡 This is likely from code execution. Try restarting the TUI if issues persist.[/yellow]")
+            self.status_text = "Penguin is thinking..."
+            # Core processing is now event-driven, we just kick it off
+            await self.interface.process_input({'text': user_input})
+            self.status_text = "Ready"
         except Exception as e:
+            self.status_text = "Error"
             error_msg = f"Error processing input: {e}"
             logger.error(error_msg, exc_info=True)
-            self.debug_messages.append(error_msg)
-            self.log_widget.write(Panel(f"[bold red]Error processing input:[/bold red] {e}", border_style="red"))
+            self.add_message(error_msg, "error")
 
     def action_clear_log(self) -> None:
         """Clear the chat log."""
-        self.log_widget.clear()
-        self.log_widget.write(Panel("🐧 [bold cyan]Chat cleared[/bold cyan]", border_style="cyan"))
+        message_area = self.query_one("#message-area", VerticalScroll)
+        message_area.remove_children()
+        self.add_message("Chat cleared.", "system")
 
     def action_show_debug(self) -> None:
         """Show debug information."""
         if not self.debug_messages:
-            self.log_widget.write(Panel("[green]No debug messages to show[/green]", title="Debug", border_style="green"))
+            content = "No debug messages."
         else:
-            debug_content = "\n".join(self.debug_messages[-20:])  # Show last 20 debug messages
-            self.log_widget.write(Panel(debug_content, title="Debug Messages (Last 20)", border_style="yellow"))
+            content = "## Debug Log (last 20)\n\n" + "\n".join(f"- {msg}" for msg in self.debug_messages[-20:])
+        self.add_message(content, "debug")
+
+    async def _handle_command(self, command: str) -> None:
+        """Handle slash commands with enhanced support."""
+        try:
+            # Parse command and arguments
+            parts = command.split(" ", 1)
+            cmd = parts[0].lower()
+            args = parts[1] if len(parts) > 1 else ""
+            
+            # Handle built-in TUI commands first
+            if cmd == "help":
+                await self._show_enhanced_help()
+                return
+            elif cmd == "clear":
+                self.action_clear_log()
+                return
+            elif cmd == "quit" or cmd == "exit":
+                self.action_quit()
+                return
+            elif cmd == "debug":
+                if args:
+                    # Handle debug subcommands
+                    response = await self.interface.handle_command(command)
+                    await self._display_command_response(response)
+                else:
+                    self.action_show_debug()
+                return
+            elif cmd == "recover":
+                # Manual recovery for stuck streams
+                await self._force_stream_recovery()
+                return
+            
+            # For other commands, use the interface with enhanced callbacks
+            if cmd == "run":
+                # Enhanced run command with UI callbacks
+                response = await self.interface.handle_command(
+                    command, 
+                    runmode_stream_cb=self._handle_runmode_stream,
+                    runmode_ui_update_cb=self._handle_runmode_ui_update
+                )
+            else:
+                # Regular command handling
+                response = await self.interface.handle_command(command)
+            
+            # Display response
+            await self._display_command_response(response)
+            
+        except Exception as e:
+            error_msg = f"Error handling command /{command}: {e}"
+            logger.error(error_msg, exc_info=True)
+            self.add_message(error_msg, "error")
+    
+    async def _handle_runmode_stream(self, content: str) -> None:
+        """Handle streaming content from RunMode."""
+        try:
+            # Add streaming content to a dedicated RunMode message
+            if not hasattr(self, '_runmode_message') or self._runmode_message is None:
+                self._runmode_message = self.add_message("", "system")
+                self._runmode_message.add_class("runmode-output")
+            
+            self._runmode_message.stream_in(content)
+            self._scroll_to_bottom()
+        except Exception as e:
+            logger.error(f"Error handling RunMode stream: {e}")
+    
+    async def _handle_runmode_ui_update(self) -> None:
+        """Handle UI updates for RunMode status."""
+        try:
+            if self.interface:
+                runmode_status = self.interface.get_runmode_status()
+                self.status_text = runmode_status.get("summary", "RunMode active")
+        except Exception as e:
+            logger.error(f"Error updating RunMode UI: {e}")
+    
+    async def _display_command_response(self, response: Dict[str, Any]) -> None:
+        """Display the response from a command."""
+        if response.get("status"):
+            self.add_message(response["status"], "system")
+        
+        if response.get("error"):
+            self.add_message(response["error"], "error")
+        
+        # Handle structured responses (like /list, /tokens, etc.)
+        if "conversations" in response:
+            await self._display_conversations(response["conversations"])
+        
+        if "projects" in response or "tasks" in response:
+            await self._display_projects_and_tasks(response)
+        
+        if "token_usage" in response:
+            await self._display_token_usage(response["token_usage"])
+    
+    async def _display_conversations(self, conversations):
+        """Display conversation list in a formatted way."""
+        if not conversations:
+            self.add_message("No conversations found.", "system")
+            return
+        
+        content = "**Available Conversations:**\n\n"
+        for conv in conversations:
+            content += f"- **{conv.title}** ({conv.session_id[:8]}...)\n"
+            content += f"  {conv.message_count} messages, last active: {conv.last_active}\n\n"
+        
+        self.add_message(content, "system")
+    
+    async def _display_projects_and_tasks(self, data):
+        """Display projects and tasks in a formatted way."""
+        content = "**Projects & Tasks:**\n\n"
+        
+        if "summary" in data:
+            summary = data["summary"]
+            content += f"**Summary:** {summary['total_projects']} projects, {summary['total_tasks']} tasks ({summary['active_tasks']} active)\n\n"
+        
+        if "projects" in data:
+            content += "**Projects:**\n"
+            for project in data["projects"]:
+                content += f"- **{project['name']}** ({project['status']}) - {project['task_count']} tasks\n"
+            content += "\n"
+        
+        if "tasks" in data:
+            content += "**Tasks:**\n"
+            for task in data["tasks"]:
+                content += f"- **{task['title']}** ({task['status']}) - Priority {task['priority']}\n"
+        
+        self.add_message(content, "system")
+    
+    async def _display_token_usage(self, usage):
+        """Display token usage in a formatted way."""
+        current = usage.get("current_total_tokens", 0)
+        max_tokens = usage.get("max_tokens", 0)
+        percentage = usage.get("percentage", 0)
+        
+        content = f"**Token Usage:** {current:,} / {max_tokens:,} ({percentage:.1f}%)\n\n"
+        
+        if "categories" in usage:
+            content += "**By Category:**\n"
+            for category, count in usage["categories"].items():
+                if count > 0:
+                    content += f"- {category}: {count:,}\n"
+        
+        self.add_message(content, "system")
+    
+    async def _show_enhanced_help(self) -> None:
+        """Display enhanced help message with all available commands."""
+        help_text = """
+**Available Commands:**
+
+**Chat & Navigation:**
+- `/help` - Show this help message
+- `/clear` - Clear the chat history  
+- `/quit` or `/exit` - Exit the application
+
+**RunMode & Tasks:**
+- `/run continuous [task]` - Start continuous RunMode
+- `/run task [name] [description]` - Run a specific task
+- `/run stop` - Stop current RunMode execution
+- `/task create "name" "description"` - Create a new task
+- `/project create "name" "description"` - Create a new project
+- `/list` - Show all projects and tasks
+
+**Model & Configuration:**
+- `/models` - Interactive model selection
+- `/model set <id>` - Set specific model
+- `/stream [on|off]` - Toggle streaming mode
+- `/tokens [reset|detail]` - Show or manage token usage
+
+**Conversations & Context:**
+- `/chat list` - List available conversations
+- `/chat load <id>` - Load a conversation
+- `/context list` - List context files
+- `/context load <file>` - Load context file
+
+**Debug & Development:**
+- `/debug [tokens|stream|sample]` - Debug functions
+- `/recover` - Force recovery of stuck streams
+        """
+        self.add_message(help_text, "system")
 
     async def show_help(self) -> None:
         """Display the structured help message."""
-        help_data = await self.interface._handle_help_command([])
-        
-        if "commands" in help_data:
-            help_content = []
-            title = help_data.get("help_title", "Available Commands")
-            
-            for category, commands in help_data["commands"].items():
-                help_content.append(f"\n[bold yellow]{category}[/bold yellow]")
-                for command, description in commands.items():
-                    help_content.append(f"  [cyan]{command:<25}[/cyan] [white]{description}[/white]")
-            
-            self.log_widget.write(
-                Panel(
-                    "\n".join(help_content),
-                    title=f"🐧 {title}",
-                    border_style="blue",
-                    padding=(1, 2)
-                )
-            )
-        else:
-            # Fallback for old format or error
-            self.log_widget.write(Panel("Could not retrieve help information.", border_style="red"))
-
-    async def _clear_dedup_content(self) -> None:
-        """Clear deduplication content after a delay to prevent interference with future messages."""
-        await asyncio.sleep(1.0)  # Wait 1 second before clearing
-        self.last_final_content = ""
-        self.last_stream_id = None
+        await self._show_enhanced_help()
 
     def action_quit(self) -> None:
-        """Quit the application and show debug info if available."""
-        if self.debug_messages:
-            print("\n" + "="*60)
-            print("PENGUIN TUI DEBUG LOG")
-            print("="*60)
-            for i, msg in enumerate(self.debug_messages, 1):
-                print(f"{i:3d}. {msg}")
-            print("="*60)
+        """Quit the application."""
         self.exit()
+
+    async def on_status_message(self, event: StatusMessage) -> None:  # Textual auto dispatch
+        bar = self.query_one("#status-bar", Static)
+        bar.update(event.text)
+        await asyncio.sleep(1.5)
+        bar.update("")
 
 class TUI:
     """Entry point for the Textual UI."""
@@ -466,53 +1002,21 @@ class TUI:
     @staticmethod
     def run():
         """Run the Textual application."""
-        # Set environment variable to indicate TUI mode
         os.environ['PENGUIN_TUI_MODE'] = '1'
-        
         app = PenguinTextualApp()
         try:
             app.run()
-        except OSError as e:
-            if "Bad file descriptor" in str(e):
-                logger.warning(f"TUI encountered file descriptor issue (likely from subprocess): {e}")
-                print(f"\n⚠️  TUI encountered a file descriptor issue, likely from code execution.")
-                print(f"This is usually harmless and the application can be restarted.")
-                print(f"Error details: {e}")
-            else:
-                logger.error(f"TUI crashed with OSError: {e}")
-                print(f"\nTUI crashed with system error: {e}")
-                print(f"Full traceback:\n{traceback.format_exc()}")
-        except KeyboardInterrupt:
-            logger.info("TUI interrupted by user")
-            print("\n👋 Goodbye!")
-        except Exception as e:
-            logger.error(f"TUI crashed: {e}")
-            print(f"\nTUI crashed with error: {e}")
-            print(f"Full traceback:\n{traceback.format_exc()}")
         finally:
-            # Clean up environment variable
             os.environ.pop('PENGUIN_TUI_MODE', None)
-            
-            # Always show debug info on exit if available
+            # Dump debug messages for post-session troubleshooting
             if hasattr(app, 'debug_messages') and app.debug_messages:
                 print("\n" + "="*60)
                 print("PENGUIN TUI DEBUG LOG")
                 print("="*60)
                 for i, msg in enumerate(app.debug_messages, 1):
-                    print(f"{i:3d}. {msg}")
+                    print(f"{i:4d}. {msg}")
                 print("="*60)
 
-# ------------------------------------------------------------
-# Command-line entrypoint
-# ------------------------------------------------------------
-# When the file is executed directly (e.g. `python penguin/cli/tui.py`)
-# run the TUI automatically so that users don't have to import the
-# `TUI` class manually.
-
 if __name__ == "__main__":
-    # Basic logging setup — feel free to adjust the level to DEBUG for
-    # more verbose information while diagnosing start-up issues.
-    logging.basicConfig(level=logging.INFO)
-
-    print("🐧  Starting Penguin TUI … (press Ctrl-C to quit)")
+    logging.basicConfig(level=logging.INFO, filename="tui_debug.log")
     TUI.run() 

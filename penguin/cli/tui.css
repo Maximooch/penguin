@@ -30,18 +30,14 @@ Footer .footer--highlight-key {
 
 #main-container {
     layout: vertical;
-    padding: 1;
+    padding: 0 1; /* Horizontal padding only */
     height: 1fr;
 }
 
-#log {
-    border: round #334e68;
-    background: #101c2c;
+#message-area {
     height: 1fr;
-    margin-bottom: 1;
-    padding: 1;
-    scrollbar-background: #1a2a3f;
-    scrollbar-color: #89cff0;
+    width: 100%;
+    scrollbar-gutter: stable;
 }
 
 #input-box {
@@ -49,11 +45,11 @@ Footer .footer--highlight-key {
     height: 3;
     background: #1a2a3f;
     color: #dadada;
+    margin: 1 0 0 0; /* Margin top */
 }
 
 #input-box:focus {
-    border: round #89cff0;
-    background: #2a3a4f;
+    border: round #b3e5fc;
 }
 
 #status-bar {
@@ -62,16 +58,73 @@ Footer .footer--highlight-key {
     background: #1a2a3f;
     color: #a0a0a0;
     padding: 0 1;
-    text-align: center;
+    text-align: left;
 }
 
-#streaming-output {
-    padding: 1;
+/* --- Chat Message Styling --- */
+
+ChatMessage {
+    padding: 1 2;
     margin: 1 0;
-    background: #0f1a2a;
+    background: #101c2c;
     border: round #334e68;
+    width: 100%;
+    height: auto;
+    layout: vertical;
+}
+
+.message-label {
+    height: auto;
+    margin-bottom: 1;
+}
+
+.message-content {
+    height: auto;
+}
+
+/* Role-specific colors */
+ChatMessage .user {
+    color: #e0e0e0;
+}
+
+ChatMessage .assistant {
+    color: #c8e6c9;
+}
+
+ChatMessage .system {
+    color: #fff59d;
+}
+
+ChatMessage .error {
+    color: #ffcdd2;
+    background: #b71c1c;
+}
+
+/* Style for streaming messages */
+ChatMessage.streaming {
+    border: round #89cff0;
+    background: #1a2a3f;
+}
+
+/* Focus outline for keyboard navigation */
+ChatMessage:focus {
+    border: round #89cff0;
+    background: #162436;
+}
+
+/* Code block inside messages */
+.code-block {
+    padding: 0 1;
+    margin-top: 1;
+    margin-bottom: 1;
 }
 
 .hidden {
     display: none;
+} 
+
+/* Reasoning / blockquote styling */
+Markdown BlockQuote {
+    color: #a0a0a0;
+    text-style: italic;
 } 

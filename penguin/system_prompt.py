@@ -123,6 +123,16 @@ Current Project: {project_info}
 - Always verify operations before marking complete
 
 Be the best Penguin you can be!
+
+**Code Formatting Standard (TUI Compatibility):**
+Whenever you include source code in a response, enclose it in fenced Markdown blocks using triple back-ticks, followed by the language identifier. For example:
+```python
+<execute>
+def hello():
+    print("Hello")
+</execute>
+```
+This is required so the Textual TUI can apply proper syntax highlighting. Do **not** use indented code blocks; always use fenced blocks.
 """
 
 # For now it's directly in the system prompt. But once I get the prompt templating stuff, I'll need to handle it differently.
@@ -155,4 +165,4 @@ Your mission is to:
 
 
 
-SYSTEM_PROMPT = BASE_PROMPT + prompt_workflow.PENGUIN_WORKFLOW + prompt_workflow.MULTI_STEP_SECTION + prompt_actions.ACTION_SYNTAX + prompt_workflow.ADVICE_PROMPT + prompt_workflow.COMPLETION_PHRASES_GUIDE # + ENVIRONMENT_PROMPT
+SYSTEM_PROMPT = BASE_PROMPT + prompt_workflow.PENGUIN_WORKFLOW + prompt_workflow.MULTI_STEP_SECTION + prompt_actions.ACTION_SYNTAX + prompt_workflow.ADVICE_PROMPT + prompt_workflow.COMPLETION_PHRASES_GUIDE + prompt_workflow.LARGE_CODEBASE_GUIDE + prompt_workflow.TOOL_LEARNING_GUIDE + prompt_workflow.CODE_ANALYSIS_GUIDE # + ENVIRONMENT_PROMPT

@@ -46,13 +46,13 @@ dependencies = [
     # LLM and API
     "litellm>=1.0.0",
     "anthropic>=0.3.0",
-    "openai>=0.27.0",
+    "openai>=1.12.0",
     
     # CLI Tools (included by default for better UX)
     "rich>=10.0.0",
     "typer>=0.4.0",
     "questionary>=1.10.0",
-    "textual>=0.52.0",
+    "textual",
     
     # Core Processing
     "IPython",
@@ -83,7 +83,7 @@ minimal = [
     "httpx>=0.24.0",
     "litellm>=1.0.0",
     "anthropic>=0.3.0",
-    "openai>=0.27.0",
+    "openai>=1.12.0",
 ]
 
 # Memory Providers

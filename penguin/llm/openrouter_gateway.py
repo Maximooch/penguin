@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+import json
 from typing import List, Dict, Optional, Any, Union, Callable, AsyncIterator
 
 # --- Added Imports for Vision Handling ---
@@ -10,6 +11,7 @@ import mimetypes
 from PIL import Image as PILImage # Use alias for PIL Image # type: ignore
 # --- End Added Imports ---
 
+import httpx # type: ignore
 import openai # type: ignore
 import tiktoken # type: ignore
 from openai import AsyncOpenAI, APIError # type: ignore
@@ -192,6 +194,9 @@ class OpenRouterGateway:
             return f"[Error: Failed to process message content - {str(e)}]"
         # --- End vision processing ---
 
+        # --- Reasoning tokens configuration ---
+        reasoning_config = self.model_config.get_reasoning_config()
+
         request_params = {
             "model": self.model_config.model,
             "messages": processed_messages, # Use processed messages
@@ -201,6 +206,23 @@ class OpenRouterGateway:
             "extra_headers": self.extra_headers,
             **kwargs # Pass through other arguments like tools
         }
+        
+        # Add include_reasoning parameter if reasoning is enabled
+        if reasoning_config:
+            request_params["include_reasoning"] = True
+            self.logger.info(f"[OpenRouterGateway] Enabling reasoning tokens with include_reasoning=True")
+        
+        # Handle reasoning configuration carefully to avoid SDK compatibility issues
+        use_direct_api = False
+        if reasoning_config:
+            try:
+                # Try to add reasoning config - if SDK doesn't support it, we'll catch the error
+                request_params["reasoning"] = reasoning_config
+                self.logger.info(f"[OpenRouterGateway] Adding reasoning config: {reasoning_config}")
+            except Exception as e:
+                self.logger.warning(f"[OpenRouterGateway] Reasoning config not supported by SDK, will use direct API: {e}")
+                use_direct_api = True
+            
         # Filter out None values for cleaner API calls
         request_params = {k: v for k, v in request_params.items() if v is not None}
 
@@ -210,70 +232,135 @@ class OpenRouterGateway:
                           f"max_tokens={request_params.get('max_tokens')}, "
                           f"temp={request_params.get('temperature')}, "
                           f"headers={request_params.get('extra_headers')}, "
+                          f"reasoning={request_params.get('reasoning')}, "
                           f"other_keys={list(kwargs.keys())}")
 
         full_response_content = ""
+        full_reasoning_content = ""
         try:
+            # Try the API call with reasoning parameter
             completion = await self.client.chat.completions.create(**request_params)
+        except TypeError as e:
+            if "reasoning" in str(e) and reasoning_config:
+                # SDK doesn't support reasoning parameter, try without it and use httpx fallback
+                self.logger.warning(f"[OpenRouterGateway] SDK doesn't support reasoning parameter, falling back to direct API call")
+                return await self._direct_api_call_with_reasoning(
+                    request_params, reasoning_config, use_streaming, stream_callback
+                )
+            else:
+                raise
+        except Exception:
+            raise
+            
+        try:
 
             if use_streaming:
                 self.logger.info("[OpenRouterGateway] Starting stream processing loop.")
                 chunk_index = 0
-                # internal_accumulator for this specific call, to ensure clean deltas to the external callback
-                _gateway_accumulated_text = ""
+                # Separate accumulators for reasoning and content
+                _gateway_accumulated_reasoning = ""
+                _gateway_accumulated_content = ""
+                reasoning_phase_complete = False
+                
                 async for chunk in completion:
-                    content_delta = chunk.choices[0].delta.content
-                    tool_calls_delta = chunk.choices[0].delta.tool_calls
+                    delta_obj = chunk.choices[0].delta
+
+                    # ChoiceDelta objects expose attributes but not dict methods; fall back to dict check.
+                    content_delta = getattr(delta_obj, "content", None)
+                    if content_delta is None and isinstance(delta_obj, dict):
+                        content_delta = delta_obj.get("content")
+
+                    reasoning_delta = getattr(delta_obj, "reasoning", None)
+                    if reasoning_delta is None and isinstance(delta_obj, dict):
+                        reasoning_delta = delta_obj.get("reasoning")
+                    tool_calls_delta = delta_obj.tool_calls
 
                     try:
-                        chunk_log = f"[OpenRouterGateway] Raw Chunk {chunk_index}: ID={chunk.id}, Model={chunk.model}, FinishReason={chunk.choices[0].finish_reason}, DeltaContent='{content_delta}', DeltaTools='{tool_calls_delta}'"
+                        chunk_log = f"[OpenRouterGateway] Raw Chunk {chunk_index}: ID={chunk.id}, Model={chunk.model}, FinishReason={chunk.choices[0].finish_reason}, DeltaContent='{content_delta}', DeltaReasoning='{reasoning_delta}', DeltaTools='{tool_calls_delta}'"
                     except Exception:
-                        chunk_log = f"[OpenRouterGateway] Raw Chunk {chunk_index} (Minimal Log): DeltaContent='{content_delta}'"
+                        chunk_log = f"[OpenRouterGateway] Raw Chunk {chunk_index} (Minimal Log): DeltaContent='{content_delta}', DeltaReasoning='{reasoning_delta}'"
                     self.logger.debug(chunk_log)
                     chunk_index += 1
 
-                    if content_delta:
-                        # Determine the truly new part of the content_delta
-                        new_text_segment = ""
-                        if content_delta.startswith(_gateway_accumulated_text):
-                            new_text_segment = content_delta[len(_gateway_accumulated_text):]
+                    # Handle reasoning tokens
+                    if reasoning_delta and not reasoning_phase_complete:
+                        new_reasoning_segment = ""
+                        if reasoning_delta.startswith(_gateway_accumulated_reasoning):
+                            new_reasoning_segment = reasoning_delta[len(_gateway_accumulated_reasoning):]
                         else:
-                            # This case implies the chunking is not purely accumulative from the start,
-                            # or there was a disconnect. For robustness, treat current content_delta as new if unsure.
-                            # However, many SDKs send the full accumulated text. If this happens often, 
-                            # it might indicate the provider sends deltas, and this logic needs adjustment.
-                            # For OpenRouter with OpenAI SDK, it often sends accumulated text.
-                            # A simpler approach if all chunks are full accumulated: new_text_segment = content_delta if not _gateway_accumulated_text else content_delta[len(_gateway_accumulated_text):] (if len > prev)
-                            # Let's assume for now content_delta might be a pure new segment or fully accumulated.
-                            # If content_delta is a segment that should be appended:
-                            if not _gateway_accumulated_text.endswith(content_delta):
-                                new_text_segment = content_delta # Or more complex diff if needed
+                            new_reasoning_segment = reasoning_delta
                         
-                        if new_text_segment:
-                            _gateway_accumulated_text += new_text_segment
-                            if stream_callback: # Call the EXTERNAL callback with ONLY the new segment
+                        if new_reasoning_segment:
+                            _gateway_accumulated_reasoning += new_reasoning_segment
+                            if stream_callback:
                                 try:
-                                    if new_text_segment.strip(): # Avoid sending empty/whitespace-only updates
-                                        self.logger.debug(f"[OpenRouterGateway] Calling stream_callback with new segment: '{new_text_segment}'")
-                                        await stream_callback(new_text_segment, "assistant")
+                                    if new_reasoning_segment.strip():
+                                        self.logger.debug(f"[OpenRouterGateway] Calling stream_callback with reasoning segment: '{new_reasoning_segment}'")
+                                        # Use a special message type to indicate reasoning
+                                        await stream_callback(new_reasoning_segment, "reasoning")
                                 except Exception as cb_err:
-                                    self.logger.error(f"[OpenRouterGateway] Error in stream_callback: {cb_err}", exc_info=True)
-                        full_response_content = _gateway_accumulated_text # The overall full response
+                                    self.logger.error(f"[OpenRouterGateway] Error in reasoning stream_callback: {cb_err}", exc_info=True)
+                        
+                        full_reasoning_content = _gateway_accumulated_reasoning
+
+                    # Handle content tokens
+                    elif content_delta:
+                        # Mark reasoning phase as complete when we start getting content
+                        if not reasoning_phase_complete and _gateway_accumulated_reasoning:
+                            reasoning_phase_complete = True
+                            self.logger.debug("[OpenRouterGateway] Reasoning phase complete, switching to content phase")
+                        
+                        new_content_segment = ""
+                        if content_delta.startswith(_gateway_accumulated_content):
+                            new_content_segment = content_delta[len(_gateway_accumulated_content):]
+                        else:
+                            new_content_segment = content_delta
+                        
+                        if new_content_segment:
+                            _gateway_accumulated_content += new_content_segment
+                            if stream_callback:
+                                try:
+                                    if new_content_segment.strip():
+                                        self.logger.debug(f"[OpenRouterGateway] Calling stream_callback with content segment: '{new_content_segment}'")
+                                        await stream_callback(new_content_segment, "assistant")
+                                except Exception as cb_err:
+                                    self.logger.error(f"[OpenRouterGateway] Error in content stream_callback: {cb_err}", exc_info=True)
+                        
+                        full_response_content = _gateway_accumulated_content
 
                     elif tool_calls_delta:
                          self.logger.debug(f"[OpenRouterGateway] Received tool_calls delta: {tool_calls_delta}.")
                          # Tool call streaming logic would go here if needed for external callback
                     else:
-                        self.logger.debug(f"[OpenRouterGateway] Chunk {chunk_index-1} had no text/tool delta.")
+                        self.logger.debug(f"[OpenRouterGateway] Chunk {chunk_index-1} had no text/reasoning/tool delta.")
 
-                self.logger.info(f"[OpenRouterGateway] Finished stream. Accumulated text length: {len(full_response_content)}")
+                self.logger.info(f"[OpenRouterGateway] Finished stream. Accumulated reasoning length: {len(full_reasoning_content)}, content length: {len(full_response_content)}")
+
+                # For streaming responses, we return only the content part
+                # The reasoning was already streamed via callback
                 return full_response_content
 
             else: # Not streaming
-                # Extract content
+                # Extract content and reasoning
                 if completion.choices and completion.choices[0].message:
                      response_message = completion.choices[0].message
-                     full_response_content = response_message.content
+                     full_response_content = response_message.content or ""
+                     
+                     # Extract reasoning if present
+                     reasoning_content = getattr(response_message, 'reasoning', None)
+                     if reasoning_content:
+                         full_reasoning_content = reasoning_content
+                         self.logger.info(f"[OpenRouterGateway] Non-streaming response includes reasoning tokens: {len(reasoning_content)} chars")
+                         
+                         # If reasoning is not excluded, we could prepend it to the response
+                         # or handle it separately based on configuration
+                         if not self.model_config.reasoning_exclude and reasoning_content:
+                             # For non-streaming, we can emit the reasoning via callback if provided
+                             if stream_callback:
+                                 try:
+                                     await stream_callback(reasoning_content, "reasoning")
+                                 except Exception as cb_err:
+                                     self.logger.error(f"[OpenRouterGateway] Error in non-streaming reasoning callback: {cb_err}", exc_info=True)
 
                      # TODO: Handle tool calls in non-streaming response
                      if response_message.tool_calls:
@@ -327,6 +414,157 @@ class OpenRouterGateway:
         except Exception as e:
             self.logger.error(f"Unexpected error during OpenRouter API call: {e}", exc_info=True)
             return f"[Error: Unexpected error communicating with OpenRouter - {str(e)}]"
+
+    async def _direct_api_call_with_reasoning(
+        self,
+        request_params: Dict[str, Any],
+        reasoning_config: Dict[str, Any],
+        use_streaming: bool,
+        stream_callback: Optional[Callable[[str, str], None]]
+    ) -> str:
+        """
+        Make a direct HTTP call to OpenRouter API with reasoning support.
+        
+        This bypasses the OpenAI SDK when it doesn't support the reasoning parameter.
+        """
+        # Remove parameters that are SDK-specific
+        direct_params = request_params.copy()
+        extra_headers = direct_params.pop("extra_headers", {})
+        
+        # Add reasoning configuration
+        direct_params["reasoning"] = reasoning_config
+        direct_params["include_reasoning"] = True
+        
+        # Prepare headers
+        headers = {
+            "Authorization": f"Bearer {self.client.api_key}",
+            "Content-Type": "application/json",
+            **extra_headers
+        }
+        
+        url = "https://openrouter.ai/api/v1/chat/completions"
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                if use_streaming:
+                    return await self._handle_streaming_response(
+                        client, url, headers, direct_params, stream_callback
+                    )
+                else:
+                    return await self._handle_non_streaming_response(
+                        client, url, headers, direct_params, stream_callback
+                    )
+                    
+        except Exception as e:
+            self.logger.error(f"Direct API call failed: {e}", exc_info=True)
+            return f"[Error: Direct API call failed - {str(e)}]"
+
+    async def _handle_streaming_response(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: Dict[str, str],
+        params: Dict[str, Any],
+        stream_callback: Optional[Callable[[str, str], None]]
+    ) -> str:
+        """Handle streaming response from direct API call."""
+        params["stream"] = True
+        
+        full_content = ""
+        full_reasoning = ""
+        reasoning_phase_complete = False
+        
+        async with client.stream("POST", url, headers=headers, json=params) as response:
+            if response.status_code != 200:
+                error_text = await response.atext()
+                self.logger.error(f"Direct API call failed with status {response.status_code}: {error_text}")
+                return f"[Error: API call failed with status {response.status_code}]"
+            
+            async for line in response.aiter_lines():
+                if not line.strip():
+                    continue
+                    
+                if line.startswith("data: "):
+                    data_str = line[6:]  # Remove "data: " prefix
+                    
+                    if data_str.strip() == "[DONE]":
+                        break
+                        
+                    try:
+                        data = json.loads(data_str)
+                        choice = data.get("choices", [{}])[0]
+                        delta = choice.get("delta", {})
+                        
+                        # Handle reasoning content
+                        reasoning_delta = getattr(delta, "reasoning", None) if hasattr(delta, "reasoning") else delta.get("reasoning")
+                        if reasoning_delta and not reasoning_phase_complete:
+                            full_reasoning += reasoning_delta
+                            if stream_callback:
+                                try:
+                                    await stream_callback(reasoning_delta, "reasoning")
+                                except Exception as cb_err:
+                                    self.logger.error(f"Error in reasoning callback: {cb_err}")
+                        
+                        # Handle regular content
+                        content_delta = getattr(delta, "content", None) if hasattr(delta, "content") else delta.get("content")
+                        if content_delta:
+                            if not reasoning_phase_complete and full_reasoning:
+                                reasoning_phase_complete = True
+                                self.logger.debug("Reasoning phase complete, switching to content")
+                            
+                            full_content += content_delta
+                            if stream_callback:
+                                try:
+                                    await stream_callback(content_delta, "assistant")
+                                except Exception as cb_err:
+                                    self.logger.error(f"Error in content callback: {cb_err}")
+                        
+                    except json.JSONDecodeError as e:
+                        self.logger.warning(f"Failed to parse SSE data: {data_str[:100]}... Error: {e}")
+                        continue
+        
+        self.logger.info(f"Direct streaming call completed. Reasoning: {len(full_reasoning)} chars, Content: {len(full_content)} chars")
+        return full_content
+
+    async def _handle_non_streaming_response(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: Dict[str, str],
+        params: Dict[str, Any],
+        stream_callback: Optional[Callable[[str, str], None]]
+    ) -> str:
+        """Handle non-streaming response from direct API call."""
+        params["stream"] = False
+        
+        response = await client.post(url, headers=headers, json=params)
+        
+        if response.status_code != 200:
+            error_text = response.text
+            self.logger.error(f"Direct API call failed with status {response.status_code}: {error_text}")
+            return f"[Error: API call failed with status {response.status_code}]"
+        
+        try:
+            data = response.json()
+            choice = data.get("choices", [{}])[0]
+            message = choice.get("message", {})
+            
+            content = message.get("content", "")
+            reasoning = message.get("reasoning", "")
+            
+            # If we have reasoning and a callback, emit it
+            if reasoning and stream_callback:
+                try:
+                    await stream_callback(reasoning, "reasoning")
+                except Exception as cb_err:
+                    self.logger.error(f"Error in reasoning callback: {cb_err}")
+            
+            self.logger.info(f"Direct non-streaming call completed. Reasoning: {len(reasoning)} chars, Content: {len(content)} chars")
+            return content
+            
+        except json.JSONDecodeError as e:
+            self.logger.error(f"Failed to parse response JSON: {e}")
+            return f"[Error: Failed to parse response - {str(e)}]"
 
     def count_tokens(self, content: Union[str, List, Dict]) -> int:
         """
