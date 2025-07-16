@@ -73,10 +73,20 @@ PENGUIN_WORKFLOW = '''
 - **Repeat** until all sub-tasks are complete.
 
 ### 3. Code & File Management Best Practices
+- **Use Enhanced Tools First:** Prefer enhanced file operations over raw Python whenever possible. Fallback to raw Python only if the enhanced tool is not working.
 - **Safety First:** Check existence (`os.path.exists`, `pathlib.Path.exists()`) *before* writing (`open(..., 'w')`). Ask or back up before overwriting existing files unless explicitly told otherwise. Be cautious with deletions.
 - **Simplicity & Focus:** Keep `<execute>` blocks short, focused on one task. Use `pathlib` for path operations.
 - **Chunking:** Write long files incrementally, verifying each chunk.
 - **Mandatory Verification:** After file operations, *always* verify the result (existence, content) in the next step.
+
+### 3.1. Enhanced Tools Workflow
+- **Path Clarity:** Enhanced tools always show exact resolved paths to prevent confusion.
+- **Automatic Backups:** All editing operations create .bak files by default.
+- **Diff Generation:** Enhanced write shows what changed when modifying existing files.
+- **Clutter Filtering:** Enhanced list/find automatically filter out common clutter.
+- **Precise Edits:** Use apply_diff for targeted line-based changes, not just appending.
+- **Pattern Safety:** Use edit_with_pattern for safer regex-based replacements.
+- **Project Analysis:** Use analyze_project for AST-based codebase understanding.
 
 ### 4. Error Handling & Debugging
 - Include basic error handling (`try...except`) in scripts.
@@ -115,6 +125,7 @@ ADVICE_PROMPT = """
 - `<execute>` blocks = one logical operation (check, write small chunk, run simple command).
 - Incremental writes for long files, with verification between chunks.
 - Confirm intent before overwriting or deleting.
+- Path Awareness: use resolved paths to prevent confusion.
 
 ## Debugging Strategy (Evidence-Based)
 1.  **Analyze:** Understand the error message and context fully.
@@ -181,11 +192,22 @@ TOOL_USAGE_GUIDANCE = '''
 - **External Info:** Use `perplexity_search` for current/external knowledge.
 - **History:** Use `memory_search` before asking for info likely already discussed.
 
+### Enhanced File Operations (PREFER THESE OVER RAW PYTHON)
+- **Enhanced Read (`<enhanced_read>`):** Always shows resolved path, prevents path confusion.
+- **Enhanced Write (`<enhanced_write>`):** Automatic backups, diff generation, clear path feedback.
+- **Enhanced List (`<list_files_filtered>`):** Filters out clutter (git, pycache, node_modules).
+- **Enhanced Find (`<find_files_enhanced>`):** Supports glob patterns, proper path resolution.
+- **Enhanced Diff (`<enhanced_diff>`):** Semantic comparison for Python files.
+- **Apply Diff (`<apply_diff>`):** Precise line-targeted edits using unified diff format.
+- **Pattern Edit (`<edit_with_pattern>`):** Regex-based find-and-replace with backups.
+- **Project Analysis (`<analyze_project>`):** AST-based structure analysis.
+
 ### Code Execution (`<execute>`)
 - **MANDATORY:** Check existence (`os.path.exists`) *before* writing (`'w'`). Confirm intent before overwriting.
 - **MANDATORY:** Verify file creation, content, or command effects *after* execution in the next message.
 - **Simplicity:** Keep scripts short, focused. Use `os`, `pathlib`, `glob`, `re`, `json`.
 - **Safety:** Be extremely cautious with file writes and deletions.
+- **PREFER ENHANCED TOOLS:** Use enhanced file operations instead of raw Python when possible.
 
 ### Command Execution (`<execute_command>`)
 - Use for simple, read-only commands (`ls`, `pwd`, `git status`, simple `grep`).

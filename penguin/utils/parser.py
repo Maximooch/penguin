@@ -36,6 +36,15 @@ class ActionType(Enum):
     # LINT = "lint"
     MEMORY_SEARCH = "memory_search"
     ADD_DECLARATIVE_NOTE = "add_declarative_note"
+    # Enhanced file operations
+    LIST_FILES_FILTERED = "list_files_filtered"
+    FIND_FILES_ENHANCED = "find_files_enhanced"
+    ENHANCED_DIFF = "enhanced_diff"
+    ANALYZE_PROJECT = "analyze_project"
+    ENHANCED_READ = "enhanced_read"
+    ENHANCED_WRITE = "enhanced_write"
+    APPLY_DIFF = "apply_diff"
+    EDIT_WITH_PATTERN = "edit_with_pattern"
     # TASK_CREATE = "task_create"
     # TASK_UPDATE = "task_update"
     # TASK_COMPLETE = "task_complete"
@@ -224,7 +233,16 @@ class ActionExecutor:
             ActionType.PYDOLL_BROWSER_INTERACT: self._pydoll_browser_interact,
             ActionType.PYDOLL_BROWSER_SCREENSHOT: self._pydoll_browser_screenshot,
             # PyDoll debug toggle
-            ActionType.PYDOLL_DEBUG_TOGGLE: self._pydoll_debug_toggle
+            ActionType.PYDOLL_DEBUG_TOGGLE: self._pydoll_debug_toggle,
+            # Enhanced file operations
+            ActionType.LIST_FILES_FILTERED: self._list_files_filtered,
+            ActionType.FIND_FILES_ENHANCED: self._find_files_enhanced,
+            ActionType.ENHANCED_DIFF: self._enhanced_diff,
+            ActionType.ANALYZE_PROJECT: self._analyze_project,
+            ActionType.ENHANCED_READ: self._enhanced_read,
+            ActionType.ENHANCED_WRITE: self._enhanced_write,
+            ActionType.APPLY_DIFF: self._apply_diff,
+            ActionType.EDIT_WITH_PATTERN: self._edit_with_pattern
         }
 
         try:
@@ -900,3 +918,127 @@ class ActionExecutor:
                 "force_full": force_full,
             },
         )
+
+    def _list_files_filtered(self, params: str) -> str:
+        """Enhanced file listing. Format: path:group_by_type:show_hidden"""
+        parts = params.split(":")
+        path = parts[0].strip() if parts and parts[0].strip() else "."
+        group_by_type = parts[1].strip().lower() == "true" if len(parts) > 1 else False
+        show_hidden = parts[2].strip().lower() == "true" if len(parts) > 2 else False
+        
+        return self.tool_manager.execute_tool("list_files", {
+            "path": path,
+            "group_by_type": group_by_type,
+            "show_hidden": show_hidden
+        })
+
+    def _find_files_enhanced(self, params: str) -> str:
+        """Enhanced file finding. Format: pattern:search_path:include_hidden:file_type"""
+        parts = params.split(":")
+        if not parts or not parts[0].strip():
+            return "Error: Pattern is required"
+        
+        pattern = parts[0].strip()
+        search_path = parts[1].strip() if len(parts) > 1 and parts[1].strip() else "."
+        include_hidden = parts[2].strip().lower() == "true" if len(parts) > 2 else False
+        file_type = parts[3].strip() if len(parts) > 3 and parts[3].strip() else None
+        
+        return self.tool_manager.execute_tool("find_file", {
+            "filename": pattern,
+            "search_path": search_path,
+            "include_hidden": include_hidden,
+            "file_type": file_type
+        })
+
+    def _enhanced_diff(self, params: str) -> str:
+        """Compare two files with enhanced diff. Format: file1:file2:semantic"""
+        parts = params.split(":")
+        if len(parts) < 2:
+            return "Error: Need at least two files to compare"
+        
+        file1 = parts[0].strip()
+        file2 = parts[1].strip()
+        semantic = parts[2].strip().lower() == "true" if len(parts) > 2 else True
+        
+        return self.tool_manager.execute_tool("enhanced_diff", {
+            "file1": file1,
+            "file2": file2,
+            "semantic": semantic
+        })
+
+    def _analyze_project(self, params: str) -> str:
+        """Analyze project structure. Format: directory:include_external"""
+        parts = params.split(":")
+        directory = parts[0].strip() if parts and parts[0].strip() else "."
+        include_external = parts[1].strip().lower() == "true" if len(parts) > 1 else False
+        
+        return self.tool_manager.execute_tool("analyze_project", {
+            "directory": directory,
+            "include_external": include_external
+        })
+
+    def _enhanced_read(self, params: str) -> str:
+        """Enhanced file reading. Format: path:show_line_numbers:max_lines"""
+        parts = params.split(":")
+        if not parts or not parts[0].strip():
+            return "Error: File path is required"
+        
+        path = parts[0].strip()
+        show_line_numbers = parts[1].strip().lower() == "true" if len(parts) > 1 else False
+        max_lines = int(parts[2].strip()) if len(parts) > 2 and parts[2].strip().isdigit() else None
+        
+        return self.tool_manager.execute_tool("read_file", {
+            "path": path,
+            "show_line_numbers": show_line_numbers,
+            "max_lines": max_lines
+        })
+
+    def _enhanced_write(self, params: str) -> str:
+        """Enhanced file writing. Format: path:content:backup"""
+        parts = params.split(":", 2)
+        if len(parts) < 2:
+            return "Error: Need path and content"
+        
+        path = parts[0].strip()
+        content = parts[1]  # Don't strip content as it may contain important whitespace
+        backup = parts[2].strip().lower() == "true" if len(parts) > 2 else True
+        
+        return self.tool_manager.execute_tool("write_to_file", {
+            "path": path,
+            "content": content,
+            "backup": backup
+        })
+
+    def _apply_diff(self, params: str) -> str:
+        """Apply a diff to edit a file. Format: file_path:diff_content:backup"""
+        parts = params.split(":", 2)
+        if len(parts) < 2:
+            return "Error: Need file path and diff content"
+        
+        file_path = parts[0].strip()
+        diff_content = parts[1]  # Don't strip - diff content has important formatting
+        backup = parts[2].strip().lower() == "true" if len(parts) > 2 else True
+        
+        return self.tool_manager.execute_tool("apply_diff", {
+            "file_path": file_path,
+            "diff_content": diff_content,
+            "backup": backup
+        })
+
+    def _edit_with_pattern(self, params: str) -> str:
+        """Edit file with pattern replacement. Format: file_path:search_pattern:replacement:backup"""
+        parts = params.split(":", 3)
+        if len(parts) < 3:
+            return "Error: Need file path, search pattern, and replacement"
+        
+        file_path = parts[0].strip()
+        search_pattern = parts[1]  # Don't strip - regex patterns may need whitespace
+        replacement = parts[2]      # Don't strip - replacement may need whitespace
+        backup = parts[3].strip().lower() == "true" if len(parts) > 3 else True
+        
+        return self.tool_manager.execute_tool("edit_with_pattern", {
+            "file_path": file_path,
+            "search_pattern": search_pattern,
+            "replacement": replacement,
+            "backup": backup
+        })

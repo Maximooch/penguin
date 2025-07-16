@@ -97,11 +97,16 @@ class ToolManager:
             self._tool_registry = {
                 'create_folder': 'penguin.tools.core.support.create_folder',
                 'create_file': 'penguin.tools.core.support.create_file',
-                'write_to_file': 'penguin.tools.core.support.write_to_file',
-                'read_file': 'penguin.tools.core.support.read_file',
-                'list_files': 'penguin.tools.core.support.list_files',
-                'find_file': 'penguin.tools.core.support.find_file',
+                'write_to_file': 'penguin.tools.core.support.enhanced_write_to_file',
+                'read_file': 'penguin.tools.core.support.enhanced_read_file',
+                'list_files': 'penguin.tools.core.support.list_files_filtered',
+                'find_file': 'penguin.tools.core.support.find_files_enhanced',
                 'encode_image_to_base64': 'penguin.tools.core.support.encode_image_to_base64',
+                # New enhanced tools
+                'enhanced_diff': 'penguin.tools.core.support.enhanced_diff',
+                'analyze_project': 'penguin.tools.core.support.analyze_project_structure',
+                'apply_diff': 'penguin.tools.core.support.apply_diff_to_file',
+                'edit_with_pattern': 'penguin.tools.core.support.edit_file_with_pattern',
                 'add_declarative_note': 'self.declarative_memory_tool.add_note',
                 'grep_search': 'self.grep_search.search',
                 'memory_search': 'self.perform_memory_search',
@@ -182,7 +187,7 @@ class ToolManager:
             },
             {
                 "name": "write_to_file",
-                "description": "Write content to a file at the specified path. If the file exists, only the necessary changes will be applied. If the file doesn't exist, it will be created. Always provide the full intended content of the file.",
+                "description": "Enhanced file writing with diff generation and backup options. Shows the exact path being written to and creates backups by default. If the file exists, shows what changed.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -194,19 +199,31 @@ class ToolManager:
                             "type": "string",
                             "description": "The full content to write to the file",
                         },
+                        "backup": {
+                            "type": "boolean",
+                            "description": "Create backup of existing file (default: true)",
+                        }
                     },
                     "required": ["path", "content"],
                 },
             },
             {
                 "name": "read_file",
-                "description": "Read the contents of a file at the specified path. Use this when you need to examine the contents of an existing file.",
+                "description": "Enhanced file reading with options for line numbers and truncation. Always shows the exact path being read.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
                             "description": "The path of the file to read",
+                        },
+                        "show_line_numbers": {
+                            "type": "boolean",
+                            "description": "Show line numbers in output (default: false)",
+                        },
+                        "max_lines": {
+                            "type": "integer",
+                            "description": "Maximum number of lines to read (optional)",
                         }
                     },
                     "required": ["path"],
@@ -214,13 +231,26 @@ class ToolManager:
             },
             {
                 "name": "list_files",
-                "description": "List all files and directories in the root folder where the script is running. Use this when you need to see the contents of the current directory.",
+                "description": "Enhanced file listing with filtering and grouping options. Automatically filters out clutter like .git, __pycache__, node_modules, etc. Always shows the exact path being listed.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
                             "description": "The path of the folder to list (default: current directory)",
+                        },
+                        "group_by_type": {
+                            "type": "boolean",
+                            "description": "Group files by type/extension (default: false)",
+                        },
+                        "show_hidden": {
+                            "type": "boolean",
+                            "description": "Show hidden files starting with . (default: false)",
+                        },
+                        "ignore_patterns": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Additional patterns to ignore (beyond defaults)",
                         }
                     },
                 },
@@ -315,18 +345,27 @@ class ToolManager:
             },
             {
                 "name": "find_file",
-                "description": "Find a file by name in the project structure. You can specify a search path or search from the root directory.",
+                "description": "Enhanced file finding with pattern matching and filtering. Supports glob patterns like '*.py' or exact filenames. Always shows the search path being used.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "filename": {
                             "type": "string",
-                            "description": "The name of the file to find",
+                            "description": "The pattern or name of the file to find (supports glob patterns)",
                         },
                         "search_path": {
                             "type": "string",
                             "description": "The path to start the search from (optional, defaults to root project directory)",
                         },
+                        "include_hidden": {
+                            "type": "boolean",
+                            "description": "Include hidden files/directories (default: false)",
+                        },
+                        "file_type": {
+                            "type": "string",
+                            "enum": ["file", "directory"],
+                            "description": "Filter by file type (optional)",
+                        }
                     },
                     "required": ["filename"],
                 },
@@ -511,6 +550,97 @@ class ToolManager:
                         "force_full": {"type": "boolean", "default": False},
                         "file_types": {"type": "array", "items": {"type": "string"}},
                     },
+                },
+            },
+            {
+                "name": "enhanced_diff",
+                "description": "Compare two files with enhanced diff analysis. For Python files, shows semantic changes like added/removed functions and classes.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file1": {
+                            "type": "string",
+                            "description": "Path to the first file to compare",
+                        },
+                        "file2": {
+                            "type": "string", 
+                            "description": "Path to the second file to compare",
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "description": "Number of context lines to show (default: 3)",
+                        },
+                        "semantic": {
+                            "type": "boolean",
+                            "description": "Enable semantic analysis for Python files (default: true)",
+                        }
+                    },
+                    "required": ["file1", "file2"],
+                },
+            },
+            {
+                "name": "analyze_project",
+                "description": "Analyze project structure and dependencies using AST analysis. Shows file stats, imports, functions, and classes.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "directory": {
+                            "type": "string",
+                            "description": "Directory to analyze (default: current directory)",
+                        },
+                        "include_external": {
+                            "type": "boolean",
+                            "description": "Include external imports in analysis (default: false)",
+                        }
+                    },
+                },
+            },
+            {
+                "name": "apply_diff",
+                "description": "Apply a unified diff to a file to make actual edits. This EDITS the file, not just compares it.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to the file to edit",
+                        },
+                        "diff_content": {
+                            "type": "string",
+                            "description": "The unified diff content to apply",
+                        },
+                        "backup": {
+                            "type": "boolean",
+                            "description": "Create backup of original file (default: true)",
+                        }
+                    },
+                    "required": ["file_path", "diff_content"],
+                },
+            },
+            {
+                "name": "edit_with_pattern",
+                "description": "Edit a file by finding and replacing text patterns using regex. This EDITS the file directly.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to the file to edit",
+                        },
+                        "search_pattern": {
+                            "type": "string",
+                            "description": "Regular expression pattern to search for",
+                        },
+                        "replacement": {
+                            "type": "string",
+                            "description": "Text to replace matches with",
+                        },
+                        "backup": {
+                            "type": "boolean",
+                            "description": "Create backup of original file (default: true)",
+                        }
+                    },
+                    "required": ["file_path", "search_pattern", "replacement"],
                 },
             },
         ]
@@ -802,7 +932,7 @@ class ToolManager:
         return tool_instance
     
     def _execute_file_operation(self, operation_name: str, tool_input: dict) -> Union[str, dict]:
-        """Execute file operations with lazy loading."""
+        """Execute file operations with enhanced tools and workspace integration."""
         if operation_name == "create_folder":
             from penguin.tools.core.support import create_folder
             return create_folder(os.path.join(WORKSPACE_PATH, tool_input["path"]))
@@ -810,19 +940,81 @@ class ToolManager:
             from penguin.tools.core.support import create_file
             return create_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input.get("content", ""))
         elif operation_name == "write_to_file":
-            from penguin.tools.core.support import write_to_file
-            return write_to_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input["content"])
+            from penguin.tools.core.support import enhanced_write_to_file
+            return enhanced_write_to_file(
+                tool_input["path"], 
+                tool_input["content"],
+                backup=tool_input.get("backup", True),
+                workspace_path=WORKSPACE_PATH
+            )
         elif operation_name == "read_file":
-            from penguin.tools.core.support import read_file
-            return read_file(os.path.join(WORKSPACE_PATH, tool_input["path"]))
+            from penguin.tools.core.support import enhanced_read_file
+            return enhanced_read_file(
+                tool_input["path"],
+                show_line_numbers=tool_input.get("show_line_numbers", False),
+                max_lines=tool_input.get("max_lines"),
+                workspace_path=WORKSPACE_PATH
+            )
         elif operation_name == "list_files":
-            from penguin.tools.core.support import list_files
-            return list_files(os.path.join(WORKSPACE_PATH, tool_input.get("path", ".")))
+            from penguin.tools.core.support import list_files_filtered
+            return list_files_filtered(
+                tool_input.get("path", "."),
+                ignore_patterns=tool_input.get("ignore_patterns"),
+                group_by_type=tool_input.get("group_by_type", False),
+                show_hidden=tool_input.get("show_hidden", False),
+                workspace_path=WORKSPACE_PATH
+            )
         elif operation_name == "find_file":
-            from penguin.tools.core.support import find_file
-            return find_file(tool_input["filename"], tool_input.get("search_path", "."))
+            from penguin.tools.core.support import find_files_enhanced
+            return find_files_enhanced(
+                tool_input["filename"],
+                search_path=tool_input.get("search_path", "."),
+                include_hidden=tool_input.get("include_hidden", False),
+                file_type=tool_input.get("file_type"),
+                workspace_path=WORKSPACE_PATH
+            )
         else:
             raise ValueError(f"Unknown file operation: {operation_name}")
+
+    def _execute_enhanced_diff(self, tool_input: dict) -> str:
+        """Execute enhanced diff with workspace integration."""
+        from penguin.tools.core.support import enhanced_diff
+        return enhanced_diff(
+            tool_input["file1"],
+            tool_input["file2"],
+            context_lines=tool_input.get("context_lines", 3),
+            semantic=tool_input.get("semantic", True)
+        )
+
+    def _execute_analyze_project(self, tool_input: dict) -> str:
+        """Execute project analysis with workspace integration."""
+        from penguin.tools.core.support import analyze_project_structure
+        return analyze_project_structure(
+            directory=tool_input.get("directory", "."),
+            include_external=tool_input.get("include_external", False),
+            workspace_path=WORKSPACE_PATH
+        )
+
+    def _execute_apply_diff(self, tool_input: dict) -> str:
+        """Execute diff application with workspace integration."""
+        from penguin.tools.core.support import apply_diff_to_file
+        return apply_diff_to_file(
+            file_path=tool_input["file_path"],
+            diff_content=tool_input["diff_content"],
+            backup=tool_input.get("backup", True),
+            workspace_path=WORKSPACE_PATH
+        )
+
+    def _execute_edit_with_pattern(self, tool_input: dict) -> str:
+        """Execute pattern-based editing with workspace integration."""
+        from penguin.tools.core.support import edit_file_with_pattern
+        return edit_file_with_pattern(
+            file_path=tool_input["file_path"],
+            search_pattern=tool_input["search_pattern"],
+            replacement=tool_input["replacement"],
+            backup=tool_input.get("backup", True),
+            workspace_path=WORKSPACE_PATH
+        )
 
     def execute_tool(self, tool_name: str, tool_input: dict) -> Union[str, dict]:
         with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
@@ -901,6 +1093,10 @@ class ToolManager:
                         tool_input.get("file_types"),
                     )
                 ),
+                "enhanced_diff": lambda: self._execute_enhanced_diff(tool_input),
+                "analyze_project": lambda: self._execute_analyze_project(tool_input),
+                "apply_diff": lambda: self._execute_apply_diff(tool_input),
+                "edit_with_pattern": lambda: self._execute_edit_with_pattern(tool_input),
             }
 
             logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
