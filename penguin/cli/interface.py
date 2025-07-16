@@ -1192,7 +1192,7 @@ class PenguinInterface:
     async def _handle_models_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle /models command - launches interactive model selector"""
         try:
-            from penguin.chat.model_selector import interactive_model_selector
+            from penguin.cli.model_selector import interactive_model_selector
             
             # Get current model for display
             current_model_name = None
