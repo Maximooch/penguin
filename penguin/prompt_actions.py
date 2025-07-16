@@ -80,6 +80,87 @@ Executes a shell command in the workspace root. **Use sparingly and cautiously.*
 
 ---
 
+### Enhanced File Operations
+
+**IMPORTANT:** These enhanced tools provide better path handling and feedback than basic file operations. Use these instead of raw Python file operations whenever possible.
+
+1.  **Enhanced File Reading (`<enhanced_read>`):**
+    `<enhanced_read>path:show_line_numbers:max_lines</enhanced_read>`
+    -   **Always shows exact resolved path** to prevent path confusion.
+    -   `show_line_numbers` (true/false): Include line numbers in output.
+    -   `max_lines` (optional): Limit output to first N lines.
+    -   Example: `<enhanced_read>src/main.py:true:50</enhanced_read>`
+
+2.  **Enhanced File Writing (`<enhanced_write>`):**
+    `<enhanced_write>path:content:backup</enhanced_write>`
+    -   **Creates automatic backups** and shows exact resolved path.
+    -   **Generates diff** when modifying existing files.
+    -   `backup` (true/false): Create .bak file (default: true).
+    -   Example: `<enhanced_write>config.py:print("Hello"):true</enhanced_write>`
+
+3.  **Enhanced File Listing (`<list_files_filtered>`):**
+    `<list_files_filtered>path:group_by_type:show_hidden</list_files_filtered>`
+    -   **Automatically filters clutter** (.git, __pycache__, node_modules, etc.).
+    -   `group_by_type` (true/false): Group files by extension.
+    -   `show_hidden` (true/false): Include hidden files.
+    -   Example: `<list_files_filtered>src:true:false</list_files_filtered>`
+
+4.  **Enhanced File Finding (`<find_files_enhanced>`):**
+    `<find_files_enhanced>pattern:search_path:include_hidden:file_type</find_files_enhanced>`
+    -   **Supports glob patterns** (*.py, main.py, etc.).
+    -   `pattern`: File pattern to search for.
+    -   `search_path`: Directory to search in (default: current).
+    -   `include_hidden` (true/false): Include hidden files.
+    -   `file_type`: Filter by "file" or "directory".
+    -   Example: `<find_files_enhanced>*.py:src:false:file</find_files_enhanced>`
+
+---
+
+### File Editing Operations
+
+**CRITICAL:** These tools edit files directly. Always verify the current state first.
+
+1.  **Apply Unified Diff (`<apply_diff>`):**
+    `<apply_diff>file_path:diff_content:backup</apply_diff>`
+    -   **Applies unified diff format** to make precise edits.
+    -   **Targets specific lines** - does not just append content.
+    -   Creates backup by default.
+    -   Example with diff content:
+    ```
+    <apply_diff>src/main.py:--- a/src/main.py
+    +++ b/src/main.py
+    @@ -1,3 +1,4 @@
+     def hello():
+    +    ""Say hello.""
+         print("Hello")
+    :true</apply_diff>
+    ```
+
+2.  **Pattern-Based Editing (`<edit_with_pattern>`):**
+    `<edit_with_pattern>file_path:search_pattern:replacement:backup</edit_with_pattern>`
+    -   **Uses regex patterns** for find-and-replace operations.
+    -   Safer than manual string replacement.
+    -   Example: `<edit_with_pattern>config.py:DEBUG = False:DEBUG = True:true</edit_with_pattern>`
+
+---
+
+### File Comparison and Analysis
+
+1.  **Enhanced Diff (`<enhanced_diff>`):**
+    `<enhanced_diff>file1:file2:semantic</enhanced_diff>`
+    -   **Compare two files** with contextual diff output.
+    -   `semantic` (true/false): For Python files, shows added/removed functions/classes.
+    -   Example: `<enhanced_diff>old_config.py:new_config.py:true</enhanced_diff>`
+
+2.  **Project Structure Analysis (`<analyze_project>`):**
+    `<analyze_project>directory:include_external</analyze_project>`
+    -   **Analyzes codebase structure** using AST parsing.
+    -   Shows file stats, imports, functions, and classes.
+    -   `include_external` (true/false): Include external library imports.
+    -   Example: `<analyze_project>src:false</analyze_project>`
+
+---
+
 ### Search Operations
 
 Use for information retrieval. Acknowledge results before acting.
@@ -100,11 +181,6 @@ Use for information retrieval. Acknowledge results before acting.
     -   `k`, `memory_type`, `categories` (comma-separated) are optional.
     -   Example: `<memory_search>database connection string discussion:5:all:database,config</memory_search >`
     -   Example: `<memory_search>user preferences</memory_search >`
-
-4.  **File Content Search (via `<execute>`):**
-    -   For specific pattern/regex matching when `workspace_search` isn't suitable.
-    -   Use Python's file reading (`Path.read_text()`) and `re` module. Keep scripts simple and focused.
-    -   Verify results. (See example in previous `prompt_workflow.py` section or `system_prompt.py` draft)
 
 ---
 
@@ -211,7 +287,6 @@ PLACEHOLDER = """
 <execute>your_code_here</execute> - Run code
 Description: Run code in the terminal, using iPython or shell/bash (depending on OS)
 
-
 <search>query</search> - Search for patterns
 
 <process_start>name:description</process_start> - Start a new process
@@ -221,6 +296,16 @@ Description: Run code in the terminal, using iPython or shell/bash (depending on
 <process_enter>name</process_enter> - Enter a process
 <process_send>name:message</process_send> - Send a message to a process
 
+# Enhanced File Operations (USE THESE INSTEAD OF RAW PYTHON FILE OPS)
+
+<enhanced_read>path:show_line_numbers:max_lines</enhanced_read> - Read file with path feedback
+<enhanced_write>path:content:backup</enhanced_write> - Write file with automatic backup and diff
+<list_files_filtered>path:group_by_type:show_hidden</list_files_filtered> - List files (filters clutter)
+<find_files_enhanced>pattern:search_path:include_hidden:file_type</find_files_enhanced> - Find files with glob patterns
+<enhanced_diff>file1:file2:semantic</enhanced_diff> - Compare files with semantic analysis
+<analyze_project>directory:include_external</analyze_project> - Analyze project structure with AST
+<apply_diff>file_path:diff_content:backup</apply_diff> - Apply unified diff to edit files precisely
+<edit_with_pattern>file_path:search_pattern:replacement:backup</edit_with_pattern> - Edit files with regex patterns
 
 # Memory
 
