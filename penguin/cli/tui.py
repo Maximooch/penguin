@@ -16,6 +16,7 @@ from textual.reactive import reactive # type: ignore
 
 # Standard Textual widgets always present
 from textual.widgets import Header, Footer, Input, Static, Markdown as TextualMarkdown # type: ignore
+from textual.suggester import Suggester # type: ignore
 
 try:
     # Available from Textual ≥ 0.53 (approx). If the current version doesn't
@@ -111,6 +112,67 @@ import re
 # Project imports
 from penguin.core import PenguinCore
 from penguin.cli.interface import PenguinInterface
+
+
+class CommandSuggester(Suggester):
+    """Provides autocompletion for slash commands in the TUI."""
+    
+    def __init__(self):
+        super().__init__()
+        self.commands = [
+            # Chat & Navigation
+            "/help",
+            "/clear", 
+            "/quit",
+            "/exit",
+            
+            # Chat commands
+            "/chat list",
+            "/chat load",
+            "/chat summary",
+            
+            # RunMode & Tasks
+            "/run continuous",
+            "/run task",
+            "/run stop",
+            "/task create",
+            "/project create",
+            "/list",
+            
+            # Model & Configuration
+            "/models",
+            "/model set",
+            "/stream on",
+            "/stream off",
+            "/tokens",
+            "/tokens reset",
+            "/tokens detail",
+            
+            # Context
+            "/context list",
+            "/context load",
+            
+            # Debug & Development
+            "/debug",
+            "/debug tokens",
+            "/debug stream", 
+            "/debug sample",
+            "/recover",
+        ]
+    
+    async def get_suggestion(self, value: str) -> str | None:
+        """Get completion suggestion for the current input value."""
+        if not value.startswith("/"):
+            return None
+            
+        # Find commands that start with the current input
+        matches = [cmd for cmd in self.commands if cmd.startswith(value)]
+        
+        if not matches:
+            return None
+            
+        # Return the first match
+        return matches[0]
 
 # Set up logging for debug purposes
 logger = logging.getLogger(__name__)
@@ -408,13 +470,18 @@ class PenguinTextualApp(App):
         self._stream_timeout_task: Optional[asyncio.Task] = None  # Stream timeout monitor
         self._stream_start_time: float = 0
         self._stream_chunk_count: int = 0
+        self._conversation_list: Optional[list] = None  # For conversation selection
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
         yield Header()
         with Container(id="main-container"):
             yield VerticalScroll(id="message-area")
-            yield Input(placeholder="Type your message... (/help for commands)", id="input-box")
+            yield Input(
+                placeholder="Type your message... (/help for commands, Tab for autocomplete)", 
+                id="input-box",
+                suggester=CommandSuggester()
+            )
         yield Static(id="status-bar")
         yield Footer()
 
@@ -479,7 +546,7 @@ class PenguinTextualApp(App):
             self.interface = PenguinInterface(self.core)
             
             self.status_text = "Ready"
-            welcome_panel = Panel("🐧 [bold cyan]Penguin AI[/bold cyan] is ready! Type a message or /help.", title="Welcome", border_style="cyan")
+            welcome_panel = Panel("🐧 [bold cyan]Penguin AI[/bold cyan] is ready! Type a message or /help. Use Tab for command autocomplete.", title="Welcome", border_style="cyan")
             self.query_one("#message-area").mount(Static(welcome_panel))
 
         except Exception as e:
@@ -772,15 +839,35 @@ class PenguinTextualApp(App):
         
         event.input.value = ""
         
+        # Check if user typed a number to select a conversation
+        if hasattr(self, '_conversation_list') and self._conversation_list and user_input.isdigit():
+            conv_num = int(user_input)
+            if 1 <= conv_num <= len(self._conversation_list):
+                selected_conv = self._conversation_list[conv_num - 1]
+                # Display selection message
+                self.add_message(f"Loading conversation: {selected_conv.title}", "user")
+                # Load the conversation
+                await self._handle_command(f"chat load {selected_conv.session_id}")
+                # Clear the conversation list to prevent accidental selections
+                self._conversation_list = None
+                return
+            else:
+                self.add_message(f"Invalid selection. Please choose a number between 1 and {len(self._conversation_list)}", "error")
+                return
+        
         # Display user message immediately for better UX
         self.add_message(user_input, "user")
 
         if user_input.startswith("/"):
+            # Clear conversation list when executing other commands
+            self._conversation_list = None
             # Handle commands with enhanced support
             await self._handle_command(user_input[1:])
             return
 
         try:
+            # Clear conversation list when sending regular messages
+            self._conversation_list = None
             self.status_text = "Penguin is thinking..."
             # Core processing is now event-driven, we just kick it off
             await self.interface.process_input({'text': user_input})
@@ -897,15 +984,20 @@ class PenguinTextualApp(App):
             await self._display_token_usage(response["token_usage"])
     
     async def _display_conversations(self, conversations):
-        """Display conversation list in a formatted way."""
+        """Display conversation list in a formatted way with numbered selection."""
         if not conversations:
             self.add_message("No conversations found.", "system")
             return
         
+        # Store conversations for selection
+        self._conversation_list = conversations
+        
         content = "**Available Conversations:**\n\n"
-        for conv in conversations:
-            content += f"- **{conv.title}** ({conv.session_id[:8]}...)\n"
-            content += f"  {conv.message_count} messages, last active: {conv.last_active}\n\n"
+        for i, conv in enumerate(conversations, 1):
+            content += f"**{i}.** **{conv.title}** ({conv.session_id[:8]}...)\n"
+            content += f"    {conv.message_count} messages, last active: {conv.last_active}\n\n"
+        
+        content += "💡 **To load a conversation:** Type the number (e.g., `1`, `2`, `3`) or `/chat load <session_id>`"
         
         self.add_message(content, "system")
     
@@ -950,6 +1042,7 @@ class PenguinTextualApp(App):
         """Display enhanced help message with all available commands."""
         help_text = """
 **Available Commands:**
+*Use Tab key for autocomplete on any command*
 
 **Chat & Navigation:**
 - `/help` - Show this help message
