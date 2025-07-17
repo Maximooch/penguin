@@ -15,7 +15,7 @@ from textual.reactive import reactive # type: ignore
 # fall back to a sentinel so the rest of the code can degrade gracefully.
 
 # Standard Textual widgets always present
-from textual.widgets import Header, Footer, Input, Static, Markdown as TextualMarkdown # type: ignore
+from textual.widgets import Header, Footer, Input, Static, Markdown as TextualMarkdown, Collapsible # type: ignore
 from textual.suggester import Suggester # type: ignore
 
 try:
@@ -296,17 +296,137 @@ class ChatMessage(Static, can_focus=True):
 
     def stream_in(self, chunk: str) -> None:
         """Append a chunk of text to the message content."""
-        self.content += chunk
+        # Clean up streaming artifacts before adding to content
+        cleaned_chunk = self._clean_streaming_artifacts(chunk)
+        self.content += cleaned_chunk
         # Query the Markdown widget and update it
         try:
             markdown_widget = self.query_one(TextualMarkdown)
             markdown_widget.update(self.content)
         except Exception as e:
             logger.error(f"Error updating markdown widget: {e}")
+    
+    def _clean_streaming_artifacts(self, chunk: str) -> str:
+        """Clean up common streaming artifacts from different providers."""
+        if not chunk:
+            return chunk
+            
+        # Remove leading/trailing whitespace while preserving intentional formatting
+        cleaned = chunk
+        
+        # Clean up orphaned block quote markers that aren't part of reasoning
+        # This handles cases where > appears at start of lines but isn't reasoning
+        lines = cleaned.split('\n')
+        processed_lines = []
+        
+        for line in lines:
+            # Skip cleaning if this looks like intentional markdown blockquote
+            if line.startswith('> ') and len(line) > 2:
+                # Check if this is likely a reasoning token artifact vs intentional quote
+                # Reasoning artifacts tend to be short or have specific patterns
+                if len(line.strip()) < 3 or line.strip() in ['> ', '>', '> \n']:
+                    continue  # Skip likely artifacts
+                    
+            processed_lines.append(line)
+        
+        cleaned = '\n'.join(processed_lines)
+        
+        # Remove common streaming artifacts
+        artifacts_to_remove = [
+            '\x00',  # Null bytes
+            '\ufffd',  # Replacement character
+            '\r',  # Carriage returns (keep \n)
+        ]
+        
+        for artifact in artifacts_to_remove:
+            cleaned = cleaned.replace(artifact, '')
+            
+        # Clean up excessive whitespace but preserve paragraph breaks
+        # Remove multiple consecutive spaces (but not intentional indentation)
+        import re
+        cleaned = re.sub(r' {3,}', ' ', cleaned)  # 3+ spaces -> 1 space
+        
+        # Clean up excessive newlines (more than 2 consecutive)
+        cleaned = re.sub(r'\n{4,}', '\n\n\n', cleaned)
+        
+        return cleaned
+    
+    def _clean_final_content(self, content: str) -> str:
+        """Final cleanup of complete streamed content."""
+        if not content:
+            return content
+            
+        import re
+        
+        # Process HTML details tags since Textual markdown doesn't support them
+        content = self._process_details_tags(content)
+        
+        # Remove orphaned block quote markers that may have been left behind
+        lines = content.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            # Remove lines that are just orphaned block quote markers
+            if line.strip() in ['>', '> ', '> \n']:
+                continue
+                
+            # Clean up lines that start with > but have minimal content (likely artifacts)
+            if line.startswith('> ') and len(line.strip()) <= 3:
+                continue
+                
+            cleaned_lines.append(line)
+        
+        content = '\n'.join(cleaned_lines)
+        
+        # Clean up any remaining streaming artifacts
+        content = re.sub(r'\n{3,}', '\n\n', content)  # Max 2 consecutive newlines
+        content = re.sub(r' {2,}', ' ', content)      # Max 1 space between words
+        
+        # Remove trailing whitespace from lines while preserving intentional formatting
+        lines = content.split('\n')
+        content = '\n'.join(line.rstrip() for line in lines)
+        
+        return content.strip()
+    
+    def _process_details_tags(self, content: str) -> str:
+        """Convert HTML details tags to markdown-friendly format."""
+        import re
+        
+        # Pattern to match <details><summary>...</summary>content</details>
+        details_pattern = r'<details>\s*<summary>([^<]*)</summary>\s*(.*?)</details>'
+        
+        def replace_details(match):
+            summary = match.group(1).strip()
+            details_content = match.group(2).strip()
+            
+            # Remove any existing > prefixes from the content to avoid double-prefixing
+            cleaned_content = re.sub(r'^> ', '', details_content, flags=re.MULTILINE)
+            
+            # Store the original content for toggling
+            if not hasattr(self, '_original_reasoning_content'):
+                self._original_reasoning_content = cleaned_content
+            
+            # Create a collapsible section with clear visual indicator
+            return f"**{summary}** `[🧠 Reasoning - Press Ctrl+R to toggle]`\n\n> {cleaned_content.replace(chr(10), chr(10) + '> ')}"
+        
+        # Replace all details tags
+        content = re.sub(details_pattern, replace_details, content, flags=re.DOTALL)
+        
+        return content
 
     def end_stream(self) -> None:
         """Finalize the stream, perhaps by adding a specific style."""
         self.remove_class("streaming")
+        
+        # Final cleanup of the complete content
+        self.content = self._clean_final_content(self.content)
+        
+        # Update the markdown widget with cleaned content
+        try:
+            markdown_widget = self.query_one(TextualMarkdown)
+            markdown_widget.update(self.content)
+        except Exception as e:
+            logger.error(f"Error updating markdown widget during final cleanup: {e}")
 
         # ---------------------------------------------
         # Post-processing: wrap reasoning in <details>
@@ -423,15 +543,62 @@ class ChatMessage(Static, can_focus=True):
     def action_toggle_expander(self) -> None:  # noqa: D401 – keybinding handler
         """Toggle the first collapsible reasoning block (if any)."""
         try:
-            # Prefer built-in Expander where available, else our SimpleExpander
+            # Try to find traditional expander widgets first
             if Expander is not None:
                 exp = self.query_one(Expander)  # type: ignore[arg-type]
                 exp.open = not exp.open  # type: ignore[attr-defined]
+                return
             else:
                 exp = self.query_one(SimpleExpander)
                 exp.action_toggle()
+                return
         except Exception:
-            # No expander present – silently ignore
+            # No traditional expander found, try to toggle reasoning blockquotes
+            pass
+        
+        # Toggle reasoning blockquotes by modifying content
+        try:
+            markdown_widget = self.query_one(TextualMarkdown)
+            current_content = self.content
+            
+            # Check if reasoning is currently visible (contains blockquotes after reasoning header)
+            if '🧠 Reasoning' in current_content and '> ' in current_content:
+                # Hide reasoning by removing blockquotes
+                import re
+                lines = current_content.split('\n')
+                filtered_lines = []
+                skip_reasoning = False
+                
+                for line in lines:
+                    if '🧠 Reasoning' in line and 'Press Ctrl+R to toggle' in line:
+                        # Replace the toggle indicator to show it's hidden
+                        filtered_lines.append(line.replace('🧠 Reasoning - Press Ctrl+R to toggle', '🧠 Reasoning Hidden - Press Ctrl+R to show'))
+                        skip_reasoning = True
+                    elif skip_reasoning and line.startswith('> '):
+                        continue  # Skip reasoning lines
+                    elif skip_reasoning and line.strip() == '':
+                        continue  # Skip empty lines after reasoning
+                    else:
+                        skip_reasoning = False
+                        filtered_lines.append(line)
+                
+                self.content = '\n'.join(filtered_lines)
+                
+            elif '🧠 Reasoning Hidden' in current_content:
+                # Show reasoning by restoring from original content
+                if hasattr(self, '_original_reasoning_content'):
+                    # Restore the full reasoning content
+                    restored_reasoning = f"**🧠 Click to show / hide internal reasoning** `[🧠 Reasoning - Press Ctrl+R to toggle]`\n\n> {self._original_reasoning_content.replace(chr(10), chr(10) + '> ')}"
+                    # Replace the hidden indicator with the full content
+                    self.content = current_content.replace('**🧠 Click to show / hide internal reasoning** `[🧠 Reasoning Hidden - Press Ctrl+R to show]`', restored_reasoning)
+                else:
+                    # Fallback - just change the indicator
+                    self.content = current_content.replace('🧠 Reasoning Hidden - Press Ctrl+R to show', '🧠 Reasoning - Press Ctrl+R to toggle')
+                
+            markdown_widget.update(self.content)
+            
+        except Exception:
+            # No reasoning content to toggle
             pass
 
 # Simple status message to bubble up to PenguinTextualApp
@@ -471,6 +638,8 @@ class PenguinTextualApp(App):
         self._stream_start_time: float = 0
         self._stream_chunk_count: int = 0
         self._conversation_list: Optional[list] = None  # For conversation selection
+        self._reasoning_content: str = ""  # For accumulating reasoning content during streaming
+        self._original_reasoning_content: str = ""  # For storing original reasoning content for toggle
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
@@ -600,6 +769,7 @@ class PenguinTextualApp(App):
                 chunk = data.get("chunk", "")
                 is_final = data.get("is_final", False)
                 stream_id = data.get("stream_id", "default")
+                message_type = data.get("message_type", "assistant")
 
                 if not self.current_streaming_widget and chunk:
                     # First chunk of a new stream, create the widget
@@ -607,6 +777,9 @@ class PenguinTextualApp(App):
                     self.current_streaming_widget.add_class("streaming")
                     self._stream_start_time = asyncio.get_event_loop().time()
                     self._stream_chunk_count = 0
+                    
+                    # Initialize reasoning content accumulator
+                    self._reasoning_content = ""
                     
                     # Start stream timeout monitor
                     self._stream_timeout_task = asyncio.create_task(self._monitor_stream_timeout())
@@ -624,14 +797,16 @@ class PenguinTextualApp(App):
                             self.debug_messages.append(f"Long stream detected: {stream_duration:.1f}s, {self._stream_chunk_count} chunks")
                     
                     if not is_final:
-                        # Subsequent chunk – prefix reasoning chunks for styling
-                        is_reasoning = data.get("is_reasoning", False)
-                        if is_reasoning:
-                            chunk = "> " + chunk  # block-quote styling
-                        self.current_streaming_widget.stream_in(chunk)
-                        # Keep the latest buffer for deduplication against upcoming message event
-                        self.last_finalized_content = self.current_streaming_widget.content
-                        self._scroll_to_bottom()
+                        # Handle different message types
+                        if message_type == "reasoning":
+                            # Accumulate reasoning content separately
+                            self._reasoning_content += chunk
+                        else:
+                            # Stream assistant content directly
+                            self.current_streaming_widget.stream_in(chunk)
+                            # Keep the latest buffer for deduplication against upcoming message event
+                            self.last_finalized_content = self.current_streaming_widget.content
+                            self._scroll_to_bottom()
                 
                 if is_final and self.current_streaming_widget:
                     # Cancel timeout monitor
@@ -642,6 +817,19 @@ class PenguinTextualApp(App):
                     # Finalize the message
                     stream_duration = asyncio.get_event_loop().time() - getattr(self, '_stream_start_time', 0)
                     self.debug_messages.append(f"Stream completed: {stream_duration:.1f}s, {self._stream_chunk_count} chunks")
+                    
+                    # Add reasoning content if present
+                    if hasattr(self, '_reasoning_content') and self._reasoning_content.strip():
+                        reasoning_details = f"<details>\n<summary>🧠 Click to show / hide internal reasoning</summary>\n\n{self._reasoning_content.strip()}\n\n</details>\n\n"
+                        # Prepend reasoning to the assistant content
+                        current_content = self.current_streaming_widget.content
+                        self.current_streaming_widget.content = reasoning_details + current_content
+                        # Update the markdown widget
+                        try:
+                            markdown_widget = self.current_streaming_widget.query_one(TextualMarkdown)
+                            markdown_widget.update(self.current_streaming_widget.content)
+                        except Exception as e:
+                            logger.error(f"Error updating markdown widget with reasoning: {e}")
                     
                     # Validate final content
                     final_content = self.current_streaming_widget.content.strip()
