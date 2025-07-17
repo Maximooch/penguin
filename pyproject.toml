@@ -61,7 +61,8 @@ dependencies = [
     "plotext",
     "matplotlib",
     "networkx",
-    "watchdog>=2.3.0"
+    "watchdog>=2.3.0",
+    "PyGithub>=1.55"
 ]
 
 [project.optional-dependencies]

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from git import Repo, GitCommandError # type: ignore
+from penguin.config import GITHUB_APP_ID
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,29 @@ class GitIntegration:
         if self.repo:
             logger.info("Git repository already initialized")
             return
+    
+    def _configure_github_app_identity(self) -> None:
+        """Configure git user identity to match GitHub App if available."""
+        if not self.repo:
+            return
+            
+        try:
+            # Use GitHub App identity if configured
+            if GITHUB_APP_ID:
+                # Use a more explicit noreply email format for GitHub Apps
+                app_email = f"penguin-agent[bot]@users.noreply.github.com"
+                
+                # Configure git user to match GitHub App
+                config = self.repo.config_writer()
+                config.set_value("user", "name", "Penguin Agent")
+                config.set_value("user", "email", app_email)
+                config.release()
+                
+                logger.info(f"Configured git identity for GitHub App: Penguin Agent <{app_email}>")
+            else:
+                logger.debug("No GitHub App ID configured, using existing git identity")
+        except Exception as e:
+            logger.warning(f"Failed to configure GitHub App identity: {e}")
             
         try:
             self.repo = Repo.init(self.workspace_path)
@@ -130,6 +154,9 @@ class GitIntegration:
             return None
             
         try:
+            # Configure GitHub App identity before committing
+            self._configure_github_app_identity()
+            
             if add_all:
                 changed_files = self.get_changed_files()
                 if not changed_files:
