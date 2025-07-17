@@ -1809,7 +1809,7 @@ class PenguinCore:
             "metadata": {
                 **self._streaming_state["metadata"],
                 "has_reasoning": bool(reasoning_content),
-                "reasoning_length": len(reasoning_content),
+                "reasoning_length": self.api_client.count_tokens(reasoning_content) if reasoning_content and self.api_client else len(reasoning_content) // 4,
             }
         }
         
@@ -1838,7 +1838,7 @@ class PenguinCore:
             # Add reasoning metadata if present
             if reasoning_content:
                 final_metadata["has_reasoning"] = True
-                final_metadata["reasoning_length"] = len(reasoning_content)
+                final_metadata["reasoning_length"] = self.api_client.count_tokens(reasoning_content) if self.api_client else len(reasoning_content) // 4
                 
             if hasattr(self, "conversation_manager") and self.conversation_manager:
                 self.conversation_manager.conversation.add_message(
