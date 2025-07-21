@@ -245,10 +245,26 @@ class RepositoryManager:
             }
 
 # Pre-configured repository managers
+def _get_penguin_local_path() -> Path:
+    """Get the local path for the penguin repository, using configurable workspace."""
+    import os
+    from penguin.config import get_workspace_root
+    
+    # Priority order:
+    # 1. Environment variable for explicit override
+    # 2. Relative to workspace root (penguin/src)
+    # 3. Current working directory as fallback
+    
+    if penguin_path := os.getenv('PENGUIN_REPO_PATH'):
+        return Path(penguin_path).expanduser()
+    
+    workspace_root = get_workspace_root()
+    return workspace_root / "src" / "penguin"
+
 PENGUIN_REPO_CONFIG = RepositoryConfig(
     name="penguin",
     owner="Maximooch", 
-    local_path=Path("/Users/maximusputnam/Documents/code/Penguin/penguin"),
+    local_path=_get_penguin_local_path(),
     default_branch="main"
 )
 
@@ -258,10 +274,21 @@ def get_penguin_repository_manager() -> RepositoryManager:
 
 def get_test_repository_manager() -> RepositoryManager:
     """Get a repository manager for the test repository."""
+    import os
+    import tempfile
+    from penguin.config import get_workspace_root
+    
+    # Use environment variable or workspace-relative path for test repo
+    if test_repo_path := os.getenv('PENGUIN_TEST_REPO_PATH'):
+        local_path = Path(test_repo_path).expanduser()
+    else:
+        workspace_root = get_workspace_root()
+        local_path = workspace_root / "test-repos" / "penguin-test-repo"
+    
     test_config = RepositoryConfig(
         name="penguin-test-repo",
         owner="Maximooch",
-        local_path=Path("/tmp/penguin-test-repo"),  # Would need to be cloned
+        local_path=local_path,
         default_branch="main"
     )
     return RepositoryManager(test_config)
