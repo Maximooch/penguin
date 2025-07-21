@@ -1,0 +1,1 @@
+# local gemini cli adapter because my credit card is almost maxed out
