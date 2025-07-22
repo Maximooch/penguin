@@ -1,7 +1,7 @@
 """
-Repository management tools for Penguin.
+Generic repository management tools.
 
-These tools allow Penguin to interact with GitHub repositories,
+These tools allow interaction with any GitHub repository,
 create PRs, and manage code changes.
 """
 
@@ -12,23 +12,35 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from penguin.project.repository_manager import (
-    get_penguin_repository_manager,
-    get_test_repository_manager,
     RepositoryManager,
     RepositoryConfig
 )
 
 logger = logging.getLogger(__name__)
 
-def create_penguin_improvement_pr(
+def _get_repository_manager(repo_owner: str, repo_name: str) -> RepositoryManager:
+    """Helper function to get a repository manager for any repository."""
+    config = RepositoryConfig(
+        owner=repo_owner,
+        name=repo_name,
+        local_path=Path.cwd(),
+        default_branch="main"
+    )
+    return RepositoryManager(config)
+
+def create_improvement_pr(
+    repo_owner: str,
+    repo_name: str,
     title: str,
     description: str,
     files_changed: Optional[str] = None
 ) -> str:
     """
-    Create a pull request for improvements to the main Penguin repository.
+    Create a pull request for improvements to a GitHub repository.
     
     Args:
+        repo_owner: GitHub repository owner
+        repo_name: GitHub repository name
         title: Title of the improvement PR
         description: Detailed description of the improvements
         files_changed: Comma-separated list of files that were changed
@@ -38,7 +50,7 @@ def create_penguin_improvement_pr(
     """
     try:
         # Get repository manager
-        repo_manager = get_penguin_repository_manager()
+        repo_manager = _get_repository_manager(repo_owner, repo_name)
         
         # Parse files changed
         file_list = []
@@ -60,19 +72,23 @@ def create_penguin_improvement_pr(
             return f"❌ Failed to create PR: {result['message']}"
             
     except Exception as e:
-        logger.error(f"Error creating Penguin improvement PR: {e}")
+        logger.error(f"Error creating improvement PR for {repo_owner}/{repo_name}: {e}")
         return f"❌ Error creating PR: {str(e)}"
 
-def create_penguin_feature_pr(
+def create_feature_pr(
+    repo_owner: str,
+    repo_name: str,
     feature_name: str,
     description: str,
     implementation_notes: str = "",
     files_modified: Optional[str] = None
 ) -> str:
     """
-    Create a pull request for a new feature in the Penguin repository.
+    Create a pull request for a new feature in a GitHub repository.
     
     Args:
+        repo_owner: GitHub repository owner
+        repo_name: GitHub repository name
         feature_name: Name of the new feature
         description: Description of what the feature does
         implementation_notes: Additional implementation details
@@ -82,7 +98,7 @@ def create_penguin_feature_pr(
         String with PR creation result
     """
     try:
-        repo_manager = get_penguin_repository_manager()
+        repo_manager = _get_repository_manager(repo_owner, repo_name)
         
         file_list = []
         if files_modified:
@@ -103,18 +119,22 @@ def create_penguin_feature_pr(
             return f"❌ Failed to create feature PR: {result['message']}"
             
     except Exception as e:
-        logger.error(f"Error creating Penguin feature PR: {e}")
+        logger.error(f"Error creating feature PR for {repo_owner}/{repo_name}: {e}")
         return f"❌ Error creating feature PR: {str(e)}"
 
-def create_penguin_bugfix_pr(
+def create_bugfix_pr(
+    repo_owner: str,
+    repo_name: str,
     bug_description: str,
     fix_description: str,
     files_fixed: Optional[str] = None
 ) -> str:
     """
-    Create a pull request for a bug fix in the Penguin repository.
+    Create a pull request for a bug fix in a GitHub repository.
     
     Args:
+        repo_owner: GitHub repository owner
+        repo_name: GitHub repository name
         bug_description: Description of the bug that was fixed
         fix_description: Description of how the bug was fixed
         files_fixed: Comma-separated list of files that were fixed
@@ -123,7 +143,7 @@ def create_penguin_bugfix_pr(
         String with PR creation result
     """
     try:
-        repo_manager = get_penguin_repository_manager()
+        repo_manager = _get_repository_manager(repo_owner, repo_name)
         
         file_list = []
         if files_fixed:
@@ -143,25 +163,32 @@ def create_penguin_bugfix_pr(
             return f"❌ Failed to create bug fix PR: {result['message']}"
             
     except Exception as e:
-        logger.error(f"Error creating Penguin bug fix PR: {e}")
+        logger.error(f"Error creating bug fix PR for {repo_owner}/{repo_name}: {e}")
         return f"❌ Error creating bug fix PR: {str(e)}"
 
-def get_penguin_repository_status() -> str:
+def get_repository_status(
+    repo_owner: str,
+    repo_name: str
+) -> str:
     """
-    Get the current status of the Penguin repository.
+    Get the current status of a GitHub repository.
+    
+    Args:
+        repo_owner: GitHub repository owner
+        repo_name: GitHub repository name
     
     Returns:
         String with repository status information
     """
     try:
-        repo_manager = get_penguin_repository_manager()
+        repo_manager = _get_repository_manager(repo_owner, repo_name)
         status = repo_manager.get_repository_status()
         
         if "error" in status:
             return f"❌ Error getting repository status: {status['error']}"
         
         result = f"""
-🐧 **Penguin Repository Status**
+📁 **Repository Status: {repo_owner}/{repo_name}**
 
 📁 **Repository:** {status['repository']}
 📂 **Local Path:** {status['local_path']}
@@ -185,13 +212,17 @@ def get_penguin_repository_status() -> str:
         return f"❌ Error getting repository status: {str(e)}"
 
 def commit_and_push_changes(
+    repo_owner: str,
+    repo_name: str,
     commit_message: str,
     files_to_add: Optional[str] = None
 ) -> str:
     """
-    Commit and push changes to the current branch.
+    Commit and push changes to the current branch of a GitHub repository.
     
     Args:
+        repo_owner: GitHub repository owner
+        repo_name: GitHub repository name
         commit_message: Commit message
         files_to_add: Comma-separated list of files to add, or None for all changes
         
@@ -199,7 +230,7 @@ def commit_and_push_changes(
         String with commit result
     """
     try:
-        repo_manager = get_penguin_repository_manager()
+        repo_manager = _get_repository_manager(repo_owner, repo_name)
         git_integration = repo_manager.git_manager.git_integration
         
         # Add files
@@ -231,18 +262,24 @@ def commit_and_push_changes(
         logger.error(f"Error committing and pushing changes: {e}")
         return f"❌ Error committing changes: {str(e)}"
 
-def create_and_switch_branch(branch_name: str) -> str:
+def create_and_switch_branch(
+    repo_owner: str,
+    repo_name: str,
+    branch_name: str
+) -> str:
     """
-    Create a new branch and switch to it.
+    Create a new branch and switch to it in a GitHub repository.
     
     Args:
+        repo_owner: GitHub repository owner
+        repo_name: GitHub repository name
         branch_name: Name of the new branch to create
         
     Returns:
         String with branch creation result
     """
     try:
-        repo_manager = get_penguin_repository_manager()
+        repo_manager = _get_repository_manager(repo_owner, repo_name)
         git_integration = repo_manager.git_manager.git_integration
         
         # Create and switch to branch
@@ -260,20 +297,24 @@ def create_and_switch_branch(branch_name: str) -> str:
 # Tool definitions for integration with Penguin's tool system
 REPOSITORY_TOOLS = [
     {
-        "name": "create_penguin_improvement_pr",
-        "description": "Create a pull request for improvements to the main Penguin repository",
-        "function": create_penguin_improvement_pr,
+        "name": "create_improvement_pr",
+        "description": "Create a pull request for improvements to a GitHub repository",
+        "function": create_improvement_pr,
         "parameters": {
+            "repo_owner": "GitHub repository owner",
+            "repo_name": "GitHub repository name",
             "title": "Title of the improvement PR",
             "description": "Detailed description of the improvements",
             "files_changed": "Comma-separated list of files that were changed (optional)"
         }
     },
     {
-        "name": "create_penguin_feature_pr", 
-        "description": "Create a pull request for a new feature in the Penguin repository",
-        "function": create_penguin_feature_pr,
+        "name": "create_feature_pr", 
+        "description": "Create a pull request for a new feature in a GitHub repository",
+        "function": create_feature_pr,
         "parameters": {
+            "repo_owner": "GitHub repository owner",
+            "repo_name": "GitHub repository name",
             "feature_name": "Name of the new feature",
             "description": "Description of what the feature does",
             "implementation_notes": "Additional implementation details (optional)",
@@ -281,35 +322,44 @@ REPOSITORY_TOOLS = [
         }
     },
     {
-        "name": "create_penguin_bugfix_pr",
-        "description": "Create a pull request for a bug fix in the Penguin repository", 
-        "function": create_penguin_bugfix_pr,
+        "name": "create_bugfix_pr",
+        "description": "Create a pull request for a bug fix in a GitHub repository", 
+        "function": create_bugfix_pr,
         "parameters": {
+            "repo_owner": "GitHub repository owner",
+            "repo_name": "GitHub repository name",
             "bug_description": "Description of the bug that was fixed",
             "fix_description": "Description of how the bug was fixed",
             "files_fixed": "Comma-separated list of files that were fixed (optional)"
         }
     },
     {
-        "name": "get_penguin_repository_status",
-        "description": "Get the current status of the Penguin repository",
-        "function": get_penguin_repository_status,
-        "parameters": {}
+        "name": "get_repository_status",
+        "description": "Get the current status of a GitHub repository",
+        "function": get_repository_status,
+        "parameters": {
+            "repo_owner": "GitHub repository owner",
+            "repo_name": "GitHub repository name"
+        }
     },
     {
         "name": "commit_and_push_changes",
-        "description": "Commit and push changes to the current branch",
+        "description": "Commit and push changes to the current branch of a repository",
         "function": commit_and_push_changes,
         "parameters": {
+            "repo_owner": "GitHub repository owner",
+            "repo_name": "GitHub repository name",
             "commit_message": "Commit message",
             "files_to_add": "Comma-separated list of files to add, or None for all changes (optional)"
         }
     },
     {
         "name": "create_and_switch_branch",
-        "description": "Create a new branch and switch to it",
+        "description": "Create a new branch and switch to it in a repository",
         "function": create_and_switch_branch,
         "parameters": {
+            "repo_owner": "GitHub repository owner",
+            "repo_name": "GitHub repository name",
             "branch_name": "Name of the new branch to create"
         }
     }
