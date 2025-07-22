@@ -336,6 +336,15 @@ Description: Run code in the terminal, using iPython or shell/bash (depending on
 
 <perplexity_search>query</perplexity_search> - Search the web
 
+# Repository Management
+
+<get_repository_status>repo_owner:repo_name</get_repository_status> - Get repository status (branch, changes, GitHub config)
+<create_and_switch_branch>repo_owner:repo_name:branch_name</create_and_switch_branch> - Create and switch to a new git branch
+<commit_and_push_changes>repo_owner:repo_name:commit_message</commit_and_push_changes> - Commit and push current changes  
+<create_improvement_pr>repo_owner:repo_name:title:description:files_changed</create_improvement_pr> - Create PR for improvements
+<create_feature_pr>repo_owner:repo_name:feature_name:description:implementation_notes:files_modified</create_feature_pr> - Create PR for new features
+<create_bugfix_pr>repo_owner:repo_name:bug_description:fix_description:files_fixed</create_bugfix_pr> - Create PR for bug fixes
+
 
 # Browser Automation
 
