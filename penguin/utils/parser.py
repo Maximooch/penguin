@@ -95,6 +95,14 @@ class ActionType(Enum):
     PYDOLL_BROWSER_SCREENSHOT = "pydoll_browser_screenshot"
     # PyDoll debug toggle
     PYDOLL_DEBUG_TOGGLE = "pydoll_debug_toggle"
+    
+    # Repository management actions
+    GET_REPOSITORY_STATUS = "get_repository_status"
+    CREATE_AND_SWITCH_BRANCH = "create_and_switch_branch"
+    COMMIT_AND_PUSH_CHANGES = "commit_and_push_changes"
+    CREATE_IMPROVEMENT_PR = "create_improvement_pr"
+    CREATE_FEATURE_PR = "create_feature_pr"
+    CREATE_BUGFIX_PR = "create_bugfix_pr"
 
 
 class CodeActAction:
@@ -242,7 +250,14 @@ class ActionExecutor:
             ActionType.ENHANCED_READ: self._enhanced_read,
             ActionType.ENHANCED_WRITE: self._enhanced_write,
             ActionType.APPLY_DIFF: self._apply_diff,
-            ActionType.EDIT_WITH_PATTERN: self._edit_with_pattern
+            ActionType.EDIT_WITH_PATTERN: self._edit_with_pattern,
+            # Repository management actions
+            ActionType.GET_REPOSITORY_STATUS: self._get_repository_status,
+            ActionType.CREATE_AND_SWITCH_BRANCH: self._create_and_switch_branch,
+            ActionType.COMMIT_AND_PUSH_CHANGES: self._commit_and_push_changes,
+            ActionType.CREATE_IMPROVEMENT_PR: self._create_improvement_pr,
+            ActionType.CREATE_FEATURE_PR: self._create_feature_pr,
+            ActionType.CREATE_BUGFIX_PR: self._create_bugfix_pr
         }
 
         try:
@@ -1041,4 +1056,113 @@ class ActionExecutor:
             "search_pattern": search_pattern,
             "replacement": replacement,
             "backup": backup
+        })
+    
+    # Repository management action handlers
+    def _get_repository_status(self, params: str) -> str:
+        """Get status of a repository. Format: repo_owner:repo_name"""
+        parts = params.split(":", 1)
+        if len(parts) < 2:
+            return "Error: Need repo_owner:repo_name format"
+        
+        repo_owner = parts[0].strip()
+        repo_name = parts[1].strip()
+        
+        return self.tool_manager.execute_tool("get_repository_status", {
+            "repo_owner": repo_owner,
+            "repo_name": repo_name
+        })
+    
+    def _create_and_switch_branch(self, params: str) -> str:
+        """Create and switch to a new git branch. Format: repo_owner:repo_name:branch_name"""
+        parts = params.split(":", 2)
+        if len(parts) < 3:
+            return "Error: Need repo_owner:repo_name:branch_name format"
+        
+        repo_owner = parts[0].strip()
+        repo_name = parts[1].strip()
+        branch_name = parts[2].strip()
+        
+        return self.tool_manager.execute_tool("create_and_switch_branch", {
+            "repo_owner": repo_owner,
+            "repo_name": repo_name,
+            "branch_name": branch_name
+        })
+    
+    def _commit_and_push_changes(self, params: str) -> str:
+        """Commit and push changes. Format: repo_owner:repo_name:commit_message"""
+        parts = params.split(":", 2)
+        if len(parts) < 3:
+            return "Error: Need repo_owner:repo_name:commit_message format"
+        
+        repo_owner = parts[0].strip()
+        repo_name = parts[1].strip()
+        commit_message = parts[2].strip()
+        
+        return self.tool_manager.execute_tool("commit_and_push_changes", {
+            "repo_owner": repo_owner,
+            "repo_name": repo_name,
+            "commit_message": commit_message
+        })
+    
+    def _create_improvement_pr(self, params: str) -> str:
+        """Create improvement PR. Format: repo_owner:repo_name:title:description:files_changed"""
+        parts = params.split(":", 4)
+        if len(parts) < 4:
+            return "Error: Need repo_owner:repo_name:title:description format (files_changed is optional)"
+        
+        repo_owner = parts[0].strip()
+        repo_name = parts[1].strip()
+        title = parts[2].strip()
+        description = parts[3].strip()
+        files_changed = parts[4].strip() if len(parts) > 4 else None
+        
+        return self.tool_manager.execute_tool("create_improvement_pr", {
+            "repo_owner": repo_owner,
+            "repo_name": repo_name,
+            "title": title,
+            "description": description,
+            "files_changed": files_changed
+        })
+    
+    def _create_feature_pr(self, params: str) -> str:
+        """Create feature PR. Format: repo_owner:repo_name:feature_name:description:implementation_notes:files_modified"""
+        parts = params.split(":", 5)
+        if len(parts) < 4:
+            return "Error: Need repo_owner:repo_name:feature_name:description format"
+        
+        repo_owner = parts[0].strip()
+        repo_name = parts[1].strip()
+        feature_name = parts[2].strip()
+        description = parts[3].strip()
+        implementation_notes = parts[4].strip() if len(parts) > 4 else ""
+        files_modified = parts[5].strip() if len(parts) > 5 else None
+        
+        return self.tool_manager.execute_tool("create_feature_pr", {
+            "repo_owner": repo_owner,
+            "repo_name": repo_name,
+            "feature_name": feature_name,
+            "description": description,
+            "implementation_notes": implementation_notes,
+            "files_modified": files_modified
+        })
+    
+    def _create_bugfix_pr(self, params: str) -> str:
+        """Create bug fix PR. Format: repo_owner:repo_name:bug_description:fix_description:files_fixed"""
+        parts = params.split(":", 4)
+        if len(parts) < 4:
+            return "Error: Need repo_owner:repo_name:bug_description:fix_description format"
+        
+        repo_owner = parts[0].strip()
+        repo_name = parts[1].strip()
+        bug_description = parts[2].strip()
+        fix_description = parts[3].strip()
+        files_fixed = parts[4].strip() if len(parts) > 4 else None
+        
+        return self.tool_manager.execute_tool("create_bugfix_pr", {
+            "repo_owner": repo_owner,
+            "repo_name": repo_name,
+            "bug_description": bug_description,
+            "fix_description": fix_description,
+            "files_fixed": files_fixed
         })

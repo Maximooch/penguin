@@ -36,6 +36,16 @@ from penguin.tools.pydoll_tools import (
 # from penguin.llm.model_manager import ModelManager
 from penguin.memory.provider import MemoryProvider
 
+# Repository management tools
+from penguin.tools.repository_tools import (
+    create_improvement_pr,
+    create_feature_pr, 
+    create_bugfix_pr,
+    get_repository_status,
+    commit_and_push_changes,
+    create_and_switch_branch
+)
+
 logger = logging.getLogger(__name__) # Add logger
 
 class ToolManager:
@@ -643,6 +653,167 @@ class ToolManager:
                     "required": ["file_path", "search_pattern", "replacement"],
                 },
             },
+            # Repository management tools
+            {
+                "name": "create_improvement_pr",
+                "description": "Create a pull request for improvements to a GitHub repository. Use this when you make enhancements, optimizations, or general improvements to a codebase.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_owner": {
+                            "type": "string",
+                            "description": "GitHub repository owner"
+                        },
+                        "repo_name": {
+                            "type": "string",
+                            "description": "GitHub repository name"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "Title of the improvement PR"
+                        },
+                        "description": {
+                            "type": "string", 
+                            "description": "Detailed description of the improvements made"
+                        },
+                        "files_changed": {
+                            "type": "string",
+                            "description": "Comma-separated list of files that were changed (optional)"
+                        }
+                    },
+                    "required": ["repo_owner", "repo_name", "title", "description"]
+                }
+            },
+            {
+                "name": "create_feature_pr",
+                "description": "Create a pull request for a new feature in a GitHub repository. Use this when adding new functionality or capabilities to a codebase.",
+                "input_schema": {
+                    "type": "object", 
+                    "properties": {
+                        "repo_owner": {
+                            "type": "string",
+                            "description": "GitHub repository owner"
+                        },
+                        "repo_name": {
+                            "type": "string",
+                            "description": "GitHub repository name"
+                        },
+                        "feature_name": {
+                            "type": "string",
+                            "description": "Name of the new feature"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Description of what the feature does"
+                        },
+                        "implementation_notes": {
+                            "type": "string",
+                            "description": "Additional implementation details (optional)"
+                        },
+                        "files_modified": {
+                            "type": "string",
+                            "description": "Comma-separated list of files that were modified (optional)"
+                        }
+                    },
+                    "required": ["repo_owner", "repo_name", "feature_name", "description"]
+                }
+            },
+            {
+                "name": "create_bugfix_pr",
+                "description": "Create a pull request for a bug fix in a GitHub repository. Use this when fixing bugs, errors, or issues in a codebase.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_owner": {
+                            "type": "string",
+                            "description": "GitHub repository owner"
+                        },
+                        "repo_name": {
+                            "type": "string",
+                            "description": "GitHub repository name"
+                        },
+                        "bug_description": {
+                            "type": "string",
+                            "description": "Description of the bug that was fixed"
+                        },
+                        "fix_description": {
+                            "type": "string",
+                            "description": "Description of how the bug was fixed"
+                        },
+                        "files_fixed": {
+                            "type": "string",
+                            "description": "Comma-separated list of files that were fixed (optional)"
+                        }
+                    },
+                    "required": ["repo_owner", "repo_name", "bug_description", "fix_description"]
+                }
+            },
+            {
+                "name": "get_repository_status",
+                "description": "Get the current status of a GitHub repository including branch, changed files, and GitHub configuration.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_owner": {
+                            "type": "string",
+                            "description": "GitHub repository owner"
+                        },
+                        "repo_name": {
+                            "type": "string",
+                            "description": "GitHub repository name"
+                        }
+                    },
+                    "required": ["repo_owner", "repo_name"]
+                }
+            },
+            {
+                "name": "commit_and_push_changes",
+                "description": "Commit and push changes to the current branch in a GitHub repository. Use this to save your work before creating PRs.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_owner": {
+                            "type": "string",
+                            "description": "GitHub repository owner"
+                        },
+                        "repo_name": {
+                            "type": "string",
+                            "description": "GitHub repository name"
+                        },
+                        "commit_message": {
+                            "type": "string",
+                            "description": "Commit message describing the changes"
+                        },
+                        "files_to_add": {
+                            "type": "string", 
+                            "description": "Comma-separated list of files to add, or leave empty to add all changes (optional)"
+                        }
+                    },
+                    "required": ["repo_owner", "repo_name", "commit_message"]
+                }
+            },
+            {
+                "name": "create_and_switch_branch", 
+                "description": "Create a new git branch and switch to it in a GitHub repository. Use this before making changes that you want to turn into a PR.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_owner": {
+                            "type": "string",
+                            "description": "GitHub repository owner"
+                        },
+                        "repo_name": {
+                            "type": "string",
+                            "description": "GitHub repository name"
+                        },
+                        "branch_name": {
+                            "type": "string",
+                            "description": "Name of the new branch to create"
+                        }
+                    },
+                    "required": ["repo_owner", "repo_name", "branch_name"]
+                }
+            },
         ]
 
     async def _background_initialize_async_components(self):
@@ -1097,6 +1268,44 @@ class ToolManager:
                 "analyze_project": lambda: self._execute_analyze_project(tool_input),
                 "apply_diff": lambda: self._execute_apply_diff(tool_input),
                 "edit_with_pattern": lambda: self._execute_edit_with_pattern(tool_input),
+                # Repository management tools
+                "create_improvement_pr": lambda: create_improvement_pr(
+                    tool_input["repo_owner"],
+                    tool_input["repo_name"],
+                    tool_input["title"],
+                    tool_input["description"], 
+                    tool_input.get("files_changed")
+                ),
+                "create_feature_pr": lambda: create_feature_pr(
+                    tool_input["repo_owner"],
+                    tool_input["repo_name"],
+                    tool_input["feature_name"],
+                    tool_input["description"],
+                    tool_input.get("implementation_notes", ""),
+                    tool_input.get("files_modified")
+                ),
+                "create_bugfix_pr": lambda: create_bugfix_pr(
+                    tool_input["repo_owner"],
+                    tool_input["repo_name"],
+                    tool_input["bug_description"],
+                    tool_input["fix_description"], 
+                    tool_input.get("files_fixed")
+                ),
+                "get_repository_status": lambda: get_repository_status(
+                    tool_input["repo_owner"],
+                    tool_input["repo_name"]
+                ),
+                "commit_and_push_changes": lambda: commit_and_push_changes(
+                    tool_input["repo_owner"],
+                    tool_input["repo_name"],
+                    tool_input["commit_message"],
+                    tool_input.get("files_to_add")
+                ),
+                "create_and_switch_branch": lambda: create_and_switch_branch(
+                    tool_input["repo_owner"],
+                    tool_input["repo_name"],
+                    tool_input["branch_name"]
+                ),
             }
 
             logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
