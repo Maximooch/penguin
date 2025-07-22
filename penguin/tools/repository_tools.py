@@ -19,11 +19,28 @@ from penguin.project.repository_manager import (
 logger = logging.getLogger(__name__)
 
 def _get_repository_manager(repo_owner: str, repo_name: str) -> RepositoryManager:
-    """Helper function to get a repository manager for any repository."""
+    """
+    Helper function to get a repository manager for any repository.
+    
+    NOTE: This function creates git operations against the CURRENT LOCAL REPOSITORY
+    directory, but PRs will be created against the specified repo_owner/repo_name
+    on GitHub. This means you should be in the correct local repository directory
+    when using these tools.
+    
+    For example, if you're in the penguin-test-repo directory locally but specify
+    repo_owner="Maximooch" and repo_name="penguin", it will:
+    - Perform git operations in the penguin-test-repo directory (current dir)
+    - Create PRs against the Maximooch/penguin repository on GitHub
+    """
+    
+    # Always use current directory for local git operations
+    local_path = Path.cwd()
+    
+    # But configure for the specified GitHub repository
     config = RepositoryConfig(
         owner=repo_owner,
         name=repo_name,
-        local_path=Path.cwd(),
+        local_path=local_path,
         default_branch="main"
     )
     return RepositoryManager(config)
