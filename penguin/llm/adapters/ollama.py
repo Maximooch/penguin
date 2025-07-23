@@ -58,10 +58,11 @@ class OllamaAdapter(BaseAdapter):
         }
 
         if stream:
+            chunk = None
             async for chunk in self.client.chat(**params):
                 text = chunk.get("message", {}).get("content", "")
                 if stream_callback:
-                    await stream_callback(text)
+                    stream_callback(text)
             return chunk
         else:
             return await self.client.chat(**params)
@@ -77,10 +78,10 @@ class OllamaAdapter(BaseAdapter):
         if stream:
             collected: List[str] = []
 
-            async def _cb(chunk: str):
+            def _cb(chunk: str):
                 collected.append(chunk)
                 if stream_callback:
-                    await stream_callback(chunk)
+                    stream_callback(chunk)
 
             await self.create_completion(
                 messages,
