@@ -4,7 +4,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import ollama  # type: ignore
 
 from ..model_config import ModelConfig
-from ..utils.diagnostics import diagnostics
+from ...utils.diagnostics import diagnostics
 from .base import BaseAdapter
 
 logger = logging.getLogger(__name__)
@@ -58,8 +58,12 @@ class OllamaAdapter(BaseAdapter):
         }
 
         if stream:
-            async for chunk in self.client.chat(**params):
+            response = await self.client.chat(**params)
+            async for chunk in response:
                 text = chunk.get("message", {}).get("content", "")
+                # Debug: log the raw chunk to see formatting
+                # logger.debug(f"Ollama chunk received: {repr(text)} (length: {len(text) if text else 0})")
+                # Always call the callback, even for empty chunks, as they might contain formatting
                 if stream_callback:
                     await stream_callback(text)
             return chunk
