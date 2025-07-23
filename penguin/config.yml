@@ -8,13 +8,13 @@ workspace:
   - projects
   - context
 model:
-  default: moonshotai/kimi-k2
-  provider: openrouter
-  client_preference: openrouter
+  default: gemma3n:e4b
+  provider: ollama
+  client_preference: native
   streaming_enabled: true
   temperature: 0.5
-  context_window: 63000
-  max_tokens: 15750
+  context_window: 128000
+  max_tokens: 32000
 api:
   base_url: null
 tools:
