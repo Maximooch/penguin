@@ -516,22 +516,52 @@ async def upload_file(
 
 @router.get("/api/v1/capabilities")
 async def get_capabilities(core: PenguinCore = Depends(get_core)):
-    """Get model capabilities like vision support."""
+    """Get comprehensive model and system capabilities."""
     try:
         capabilities = {
             "vision_enabled": False,
-            "streaming_enabled": True
+            "streaming_enabled": True,
+            "checkpoint_management": False,
+            "model_switching": False,
+            "file_upload": True,
+            "websocket_support": True,
+            "task_execution": False,
+            "run_mode": True,
+            "multi_modal": False,
+            "context_files": True
         }
         
-        # Check if the model supports vision
-        if hasattr(core, "model_config") and hasattr(core.model_config, "vision_enabled"):
-            capabilities["vision_enabled"] = core.model_config.vision_enabled
-            
-        # Check streaming support
-        if hasattr(core, "model_config") and hasattr(core.model_config, "streaming_enabled"):
+        # Check model capabilities
+        if hasattr(core, "model_config") and core.model_config:
+            capabilities["vision_enabled"] = getattr(core.model_config, "vision_enabled", False)
             capabilities["streaming_enabled"] = core.model_config.streaming_enabled
+            capabilities["multi_modal"] = getattr(core.model_config, "vision_enabled", False)
             
-        return capabilities
+        # Check system capabilities
+        if hasattr(core, "conversation_manager") and core.conversation_manager:
+            capabilities["checkpoint_management"] = hasattr(core.conversation_manager, "checkpoint_manager")
+            
+        # Check if model switching is available
+        capabilities["model_switching"] = hasattr(core, "list_available_models")
+        
+        # Check if Engine/task execution is available
+        capabilities["task_execution"] = hasattr(core, "engine") and core.engine is not None
+        
+        # Add current model info if available
+        current_model = None
+        if hasattr(core, "model_config") and core.model_config:
+            current_model = {
+                "model": core.model_config.model,
+                "provider": core.model_config.provider,
+                "vision_enabled": getattr(core.model_config, "vision_enabled", False)
+            }
+        
+        return {
+            "capabilities": capabilities,
+            "current_model": current_model,
+            "api_version": "v1",
+            "penguin_version": "0.2.4"
+        }
     except Exception as e:
         logger.error(f"Error getting capabilities: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

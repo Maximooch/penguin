@@ -96,7 +96,7 @@ flowchart LR
 
 #### POST `/api/v1/chat/message`
 
-Process a chat message with optional conversation support.
+Process a chat message with optional conversation support, including multi-modal capabilities.
 
 **Request Body:**
 ```json
@@ -106,7 +106,8 @@ Process a chat message with optional conversation support.
   "context": {"key": "value"},
   "context_files": ["path/to/file1.py", "path/to/file2.py"],
   "streaming": false,
-  "max_iterations": 5
+  "max_iterations": 5,
+  "image_path": "/path/to/image.png"
 }
 ```
 
@@ -123,6 +124,11 @@ Process a chat message with optional conversation support.
   ]
 }
 ```
+
+**New Features:**
+- `image_path`: Optional path to an image file for vision-enabled models
+- Enhanced streaming support with improved buffering
+- Better error handling and response consistency
 
 #### WebSocket `/api/v1/chat/stream`
 
@@ -194,6 +200,349 @@ Load a context file into the current conversation.
 ```json
 {
   "file_path": "path/to/context/file.md"
+}
+```
+
+### Checkpoint Management
+
+Penguin now supports conversation checkpointing for branching and rollback functionality.
+
+#### POST `/api/v1/checkpoints/create`
+
+Create a manual checkpoint of the current conversation state.
+
+**Request Body:**
+```json
+{
+  "name": "Before refactoring",
+  "description": "Checkpoint before starting code refactoring"
+}
+```
+
+**Response:**
+```json
+{
+  "checkpoint_id": "ckpt_abc123",
+  "status": "created",
+  "name": "Before refactoring",
+  "description": "Checkpoint before starting code refactoring"
+}
+```
+
+#### GET `/api/v1/checkpoints`
+
+List available checkpoints with optional filtering.
+
+**Query Parameters:**
+- `session_id`: Filter by session ID (optional)
+- `limit`: Maximum number of checkpoints (default: 50)
+
+**Response:**
+```json
+{
+  "checkpoints": [
+    {
+      "id": "ckpt_abc123",
+      "name": "Before refactoring",
+      "description": "Checkpoint before starting code refactoring",
+      "created_at": "2024-01-01T10:00:00Z",
+      "type": "manual",
+      "session_id": "session_xyz"
+    }
+  ]
+}
+```
+
+#### POST `/api/v1/checkpoints/{checkpoint_id}/rollback`
+
+Rollback conversation to a specific checkpoint.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "checkpoint_id": "ckpt_abc123",
+  "message": "Successfully rolled back to checkpoint ckpt_abc123"
+}
+```
+
+#### POST `/api/v1/checkpoints/{checkpoint_id}/branch`
+
+Create a new conversation branch from a checkpoint.
+
+**Request Body:**
+```json
+{
+  "name": "Alternative approach",
+  "description": "Exploring different solution path"
+}
+```
+
+**Response:**
+```json
+{
+  "branch_id": "conv_branch_xyz",
+  "source_checkpoint_id": "ckpt_abc123",
+  "status": "created",
+  "name": "Alternative approach",
+  "description": "Exploring different solution path"
+}
+```
+
+#### GET `/api/v1/checkpoints/stats`
+
+Get statistics about the checkpointing system.
+
+**Response:**
+```json
+{
+  "enabled": true,
+  "total_checkpoints": 25,
+  "auto_checkpoints": 20,
+  "manual_checkpoints": 4,
+  "branch_checkpoints": 1,
+  "config": {
+    "frequency": 1,
+    "retention_hours": 24,
+    "max_age_days": 30
+  }
+}
+```
+
+#### POST `/api/v1/checkpoints/cleanup`
+
+Clean up old checkpoints according to retention policy.
+
+**Response:**
+```json
+{
+  "status": "completed",
+  "cleaned_count": 5,
+  "message": "Cleaned up 5 old checkpoints"
+}
+```
+
+### Model Management
+
+Penguin supports runtime model switching and model discovery.
+
+#### GET `/api/v1/models`
+
+List all available models from configuration.
+
+**Response:**
+```json
+{
+  "models": [
+    {
+      "id": "claude-3-sonnet",
+      "name": "anthropic/claude-3-sonnet-20240229",
+      "provider": "anthropic",
+      "vision_enabled": true,
+      "max_tokens": 4000,
+      "current": true
+    },
+    {
+      "id": "gpt-4",
+      "name": "openai/gpt-4",
+      "provider": "openai",
+      "vision_enabled": false,
+      "max_tokens": 8000,
+      "current": false
+    }
+  ]
+}
+```
+
+#### POST `/api/v1/models/load`
+
+Switch to a different model at runtime.
+
+**Request Body:**
+```json
+{
+  "model_id": "gpt-4"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "model_id": "gpt-4",
+  "current_model": "openai/gpt-4",
+  "message": "Successfully loaded model: gpt-4"
+}
+```
+
+#### GET `/api/v1/models/current`
+
+Get information about the currently loaded model.
+
+**Response:**
+```json
+{
+  "model": "anthropic/claude-3-sonnet-20240229",
+  "provider": "anthropic",
+  "client_preference": "native",
+  "max_tokens": 4000,
+  "temperature": 0.7,
+  "streaming_enabled": true,
+  "vision_enabled": true
+}
+```
+
+### Enhanced Task Execution
+
+#### POST `/api/v1/tasks/execute-sync`
+
+Execute a task synchronously using the Engine layer with enhanced error handling.
+
+**Request Body:**
+```json
+{
+  "name": "Create API endpoint",
+  "description": "Create a REST API endpoint for user management",
+  "continuous": false,
+  "time_limit": 300
+}
+```
+
+**Response:**
+```json
+{
+  "status": "completed",
+  "response": "I've created a REST API endpoint for user management...",
+  "iterations": 3,
+  "execution_time": 45.2,
+  "action_results": [
+    {
+      "action": "file_creation",
+      "result": "Created api/users.py",
+      "status": "completed"
+    }
+  ],
+  "task_metadata": {
+    "name": "Create API endpoint",
+    "continuous": false
+  }
+}
+```
+
+#### WebSocket `/api/v1/tasks/stream`
+
+Stream task execution events in real-time for long-running tasks.
+
+**WebSocket Events:**
+- `start`: Task execution started
+- `progress`: Progress updates during execution
+- `action`: Individual action execution results
+- `complete`: Task completed successfully
+- `error`: Error occurred during execution
+
+### System Diagnostics
+
+#### GET `/api/v1/system/info`
+
+Get comprehensive system information including component status.
+
+**Response:**
+```json
+{
+  "penguin_version": "0.2.4",
+  "engine_available": true,
+  "checkpoints_enabled": true,
+  "current_model": {
+    "model": "anthropic/claude-3-sonnet-20240229",
+    "provider": "anthropic",
+    "streaming_enabled": true,
+    "vision_enabled": true
+  },
+  "conversation_manager": {
+    "active": true,
+    "current_session_id": "session_xyz",
+    "total_messages": 42
+  },
+  "tool_manager": {
+    "active": true,
+    "total_tools": 15
+  },
+  "memory_provider": {
+    "initialized": true,
+    "provider_type": "LanceProvider"
+  }
+}
+```
+
+#### GET `/api/v1/system/status`
+
+Get current system status and runtime information.
+
+**Response:**
+```json
+{
+  "status": "active",
+  "runmode_status": "RunMode idle.",
+  "continuous_mode": false,
+  "streaming_active": false,
+  "token_usage": {
+    "total": {"input": 1500, "output": 800},
+    "session": {"input": 300, "output": 150}
+  },
+  "timestamp": "2024-01-01T12:00:00Z",
+  "initialization": {
+    "core_initialized": true,
+    "fast_startup_enabled": true
+  }
+}
+```
+
+### Enhanced Capabilities Discovery
+
+#### GET `/api/v1/capabilities`
+
+Get comprehensive model and system capabilities.
+
+**Response:**
+```json
+{
+  "capabilities": {
+    "vision_enabled": true,
+    "streaming_enabled": true,
+    "checkpoint_management": true,
+    "model_switching": true,
+    "file_upload": true,
+    "websocket_support": true,
+    "task_execution": true,
+    "run_mode": true,
+    "multi_modal": true,
+    "context_files": true
+  },
+  "current_model": {
+    "model": "anthropic/claude-3-sonnet-20240229",
+    "provider": "anthropic",
+    "vision_enabled": true
+  },
+  "api_version": "v1",
+  "penguin_version": "0.2.4"
+}
+```
+
+### File Upload and Multi-Modal Support
+
+#### POST `/api/v1/upload`
+
+Upload files (primarily images) for use in conversations.
+
+**Request Body:** (multipart/form-data)
+- `file`: The file to upload
+
+**Response:**
+```json
+{
+  "path": "/workspace/uploads/abc123.png",
+  "filename": "image.png",
+  "content_type": "image/png"
 }
 ```
 

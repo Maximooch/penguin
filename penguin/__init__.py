@@ -9,16 +9,38 @@ Penguin is a comprehensive AI assistant for software development, featuring:
 
 Example Usage:
     ```python
-    from penguin import PenguinAgent, PenguinCore
+    from penguin import PenguinAgent, PenguinCore, PenguinClient, create_client
     
     # Simple agent usage
     agent = PenguinAgent()
     result = await agent.chat("Help me analyze this code")
     
-    # Full core usage
+    # High-level client usage (recommended)
+    async with create_client() as client:
+        # Basic chat
+        response = await client.chat("Help me optimize this code")
+        
+        # Checkpoint workflow
+        checkpoint = await client.create_checkpoint("Before optimization")
+        await client.rollback_to_checkpoint(checkpoint)
+        
+        # Model management
+        models = await client.list_models()
+        await client.switch_model("anthropic/claude-3-sonnet-20240229")
+        
+        # Task execution
+        result = await client.execute_task("Create a web scraper")
+    
+    # Full core usage for advanced scenarios
     core = PenguinCore()
     await core.initialize()
+    
+    # Enhanced task execution
     response = await core.run_task("Create a simple web server")
+    
+    # System diagnostics
+    info = core.get_system_info()
+    status = core.get_system_status()
     ```
 """
 
@@ -74,6 +96,35 @@ except ImportError as exc:  # pragma: no cover – only trips in broken installs
 # Project management exports
 from .project import ProjectManager, Project, Task
 
+# Checkpoint management exports
+try:
+    from .system.checkpoint_manager import CheckpointManager, CheckpointConfig, CheckpointType, CheckpointMetadata
+    _checkpoint_exports = ["CheckpointManager", "CheckpointConfig", "CheckpointType", "CheckpointMetadata"]
+except ImportError:
+    _checkpoint_exports = []
+
+# Model configuration exports
+try:
+    from .llm.model_config import ModelConfig
+    _model_exports = ["ModelConfig"]
+except ImportError:
+    _model_exports = []
+
+# System diagnostics exports
+try:
+    from .system.conversation_manager import ConversationManager
+    from .system.state import Session, Message, MessageCategory
+    _system_exports = ["ConversationManager", "Session", "Message", "MessageCategory"]
+except ImportError:
+    _system_exports = []
+
+# API client exports
+try:
+    from .api_client import PenguinClient, ChatOptions, TaskOptions, CheckpointInfo, ModelInfo, create_client
+    _api_client_exports = ["PenguinClient", "ChatOptions", "TaskOptions", "CheckpointInfo", "ModelInfo", "create_client"]
+except ImportError:
+    _api_client_exports = []
+
 # Version info
 __version__ = "0.2.4"
 __author__ = "Maximus Putnam"
@@ -102,6 +153,12 @@ __all__ = [
     "__email__",
     "__license__",
 ]
+
+# Add conditional exports to __all__
+__all__.extend(_checkpoint_exports)
+__all__.extend(_model_exports)
+__all__.extend(_system_exports)
+__all__.extend(_api_client_exports)
 
 # Optional exports that require extra dependencies
 def _get_optional_exports():
