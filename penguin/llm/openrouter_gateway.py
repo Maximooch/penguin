@@ -19,9 +19,17 @@ from openai import AsyncOpenAI, APIError # type: ignore
 # Assuming ModelConfig is in the same directory or adjust import path
 try:
     from .model_config import ModelConfig
+    # from .debug_utils import get_debugger, debug_request, debug_stream_start, debug_stream_chunk, debug_stream_complete, debug_error
 except ImportError:
     # Handle case where script might be run directly or structure changes
     from model_config import ModelConfig # type: ignore
+    # # Mock debug functions for standalone usage
+    # def get_debugger(): return None
+    # def debug_request(*args, **kwargs): return f"debug_{id(args)}"
+    # def debug_stream_start(*args, **kwargs): pass
+    # def debug_stream_chunk(*args, **kwargs): pass  
+    # def debug_stream_complete(*args, **kwargs): pass
+    # def debug_error(*args, **kwargs): pass
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +181,18 @@ class OpenRouterGateway:
             The complete response text content.
             Returns an error string "[Error: ...]" if an API call fails.
         """
-        self.logger.info(f"[OpenRouterGateway] ENTERING get_response: stream_arg={stream}, stream_callback_arg={stream_callback}, model_config_streaming={self.model_config.streaming_enabled}")
+        # # Initialize debug session
+        # debug_config = {
+        #     'model': self.model_config.model,
+        #     'provider': 'openrouter',
+        #     'streaming': stream if stream is not None else self.model_config.streaming_enabled,
+        #     'reasoning_enabled': bool(self.model_config.get_reasoning_config()),
+        #     'temperature': temperature if temperature is not None else self.model_config.temperature,
+        #     'max_tokens': max_tokens or self.model_config.max_tokens
+        # }
+        # request_id = debug_request(messages, debug_config, "openrouter_completion")
+        
+        # self.logger.info(f"[OpenRouterGateway] ENTERING get_response [{request_id}]: stream_arg={stream}, stream_callback_arg={stream_callback}, model_config_streaming={self.model_config.streaming_enabled}")
 
         # Determine if streaming should be used *based on the passed flag first*
         # If stream is explicitly False, don't stream, even if config says yes.
@@ -190,6 +209,8 @@ class OpenRouterGateway:
         try:
             processed_messages = await self._process_messages_for_vision(messages)
         except Exception as e:
+            # error_context = {'request_id': request_id, 'phase': 'vision_processing', 'messages_count': len(messages)}
+            # debug_error(e, error_context)
             self.logger.error(f"Error processing messages for vision: {e}", exc_info=True)
             return f"[Error: Failed to process message content - {str(e)}]"
         # --- End vision processing ---
@@ -255,7 +276,8 @@ class OpenRouterGateway:
         try:
 
             if use_streaming:
-                self.logger.info("[OpenRouterGateway] Starting stream processing loop.")
+                # self.logger.info(f"[OpenRouterGateway] Starting stream processing loop [{request_id}].")
+                # debug_stream_start(request_id, debug_config)
                 chunk_index = 0
                 # Separate accumulators for reasoning and content
                 _gateway_accumulated_reasoning = ""
@@ -292,6 +314,7 @@ class OpenRouterGateway:
                         
                         if new_reasoning_segment:
                             _gateway_accumulated_reasoning += new_reasoning_segment
+                            # debug_stream_chunk(request_id, {'chunk': new_reasoning_segment, 'type': 'reasoning'}, "reasoning")
                             if stream_callback:
                                 try:
                                     if new_reasoning_segment.strip():
@@ -318,6 +341,7 @@ class OpenRouterGateway:
                         
                         if new_content_segment:
                             _gateway_accumulated_content += new_content_segment
+                            # debug_stream_chunk(request_id, {'chunk': new_content_segment, 'type': 'content'}, "content")
                             if stream_callback:
                                 try:
                                     if new_content_segment.strip():
@@ -334,7 +358,8 @@ class OpenRouterGateway:
                     else:
                         self.logger.debug(f"[OpenRouterGateway] Chunk {chunk_index-1} had no text/reasoning/tool delta.")
 
-                self.logger.info(f"[OpenRouterGateway] Finished stream. Accumulated reasoning length: {len(full_reasoning_content)}, content length: {len(full_response_content)}")
+                # self.logger.info(f"[OpenRouterGateway] Finished stream [{request_id}]. Accumulated reasoning length: {len(full_reasoning_content)}, content length: {len(full_response_content)}")
+                # debug_stream_complete(request_id, full_response_content)
 
                 # For streaming responses, we return only the content part
                 # The reasoning was already streamed via callback
@@ -409,10 +434,14 @@ class OpenRouterGateway:
                 return full_response_content or "" # Ensure string return
 
         except APIError as e:
-            self.logger.error(f"OpenRouter API error: {e}", exc_info=True)
+            # error_context = {'request_id': request_id, 'phase': 'api_call', 'model': self.model_config.model}
+            # debug_error(e, error_context)
+            self.logger.error(f"OpenRouter API error [{request_id}]: {e}", exc_info=True)
             return f"[Error: OpenRouter API Error - {e.status_code} - {e.message}]"
         except Exception as e:
-            self.logger.error(f"Unexpected error during OpenRouter API call: {e}", exc_info=True)
+            # error_context = {'request_id': request_id, 'phase': 'unexpected', 'model': self.model_config.model}
+            # debug_error(e, error_context)
+            self.logger.error(f"Unexpected error during OpenRouter API call [{request_id}]: {e}", exc_info=True)
             return f"[Error: Unexpected error communicating with OpenRouter - {str(e)}]"
 
     async def _direct_api_call_with_reasoning(

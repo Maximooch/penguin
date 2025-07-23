@@ -1,0 +1,62 @@
+name: core_tools
+version: "1.0.0"
+description: "Core file system and development tools for Penguin"
+author: "Penguin Team"
+entry_point: "main:CoreToolsPlugin"
+dependencies: []
+permissions:
+  - filesystem.read
+  - filesystem.write
+  - system.execute
+tools:
+  - name: create_folder
+    description: "Create a new folder/directory"
+    category: filesystem
+  - name: create_file
+    description: "Create a new file with optional content"
+    category: filesystem
+  - name: write_to_file
+    description: "Write content to a file (overwrites existing content)"
+    category: filesystem
+  - name: read_file
+    description: "Read the contents of a file"
+    category: filesystem
+  - name: list_files
+    description: "List files in a directory with optional filtering"
+    category: filesystem
+  - name: find_file
+    description: "Find files by name pattern in a directory tree"
+    category: filesystem
+  - name: encode_image_to_base64
+    description: "Encode an image file to base64 string"
+    category: media
+  - name: enhanced_diff
+    description: "Generate enhanced diff between files or content"
+    category: development
+  - name: analyze_project
+    description: "Analyze project structure and generate summary"
+    category: development
+  - name: apply_diff
+    description: "Apply a diff patch to a file"
+    category: development
+  - name: edit_with_pattern
+    description: "Edit file using pattern matching and replacement"
+    category: development
+  - name: lint_python
+    description: "Lint Python code using flake8 or similar tools"
+    category: development
+  - name: execute_command
+    description: "Execute a system command and return the output"
+    category: system
+config_schema:
+  type: object
+  properties:
+    max_command_timeout:
+      type: integer
+      default: 30
+      description: "Maximum timeout for command execution in seconds"
+    allowed_commands:
+      type: array
+      items:
+        type: string
+      description: "List of allowed commands (empty = all allowed)"
