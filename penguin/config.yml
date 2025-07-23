@@ -8,13 +8,13 @@ workspace:
   - projects
   - context
 model:
-  default: anthropic/claude-sonnet-4
+  default: moonshotai/kimi-k2
   provider: openrouter
   client_preference: openrouter
   streaming_enabled: true
   temperature: 0.5
-  context_window: 200000
-  max_tokens: 50000
+  context_window: 63000
+  max_tokens: 15750
 api:
   base_url: null
 tools:
