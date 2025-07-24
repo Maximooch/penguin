@@ -1104,7 +1104,7 @@ class PenguinCore:
         """
         try:
             info = {
-                "penguin_version": "0.2.4",  # TODO: Extract from __init__.py
+                "penguin_version": "0.3.0",  # TODO: Extract from __init__.py
                 "engine_available": hasattr(self, 'engine') and self.engine is not None,
                 "checkpoints_enabled": self.get_checkpoint_stats().get('enabled', False),
                 "current_model": None,

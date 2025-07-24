@@ -88,7 +88,7 @@ def mock_core():
     
     # Mock system methods
     core.get_system_info = MagicMock(return_value={
-        "penguin_version": "0.2.4",
+        "penguin_version": "0.3.0",
         "engine_available": True,
         "checkpoints_enabled": True
     })
@@ -531,7 +531,7 @@ class TestPenguinClientSystemMethods:
         """Test getting system information."""
         info = await client.get_system_info()
         
-        assert info["penguin_version"] == "0.2.4"
+        assert info["penguin_version"] == "0.3.0"
         assert info["engine_available"] is True
         assert info["checkpoints_enabled"] is True
         client._core.get_system_info.assert_called_once()
@@ -632,7 +632,7 @@ class TestPenguinClientIntegrationScenarios:
         """Test a complete client workflow scenario."""
         # Step 1: Get system info
         info = await client.get_system_info()
-        assert info["penguin_version"] == "0.2.4"
+        assert info["penguin_version"] == "0.3.0"
         
         # Step 2: Create checkpoint
         checkpoint_id = await client.create_checkpoint("Before work")
