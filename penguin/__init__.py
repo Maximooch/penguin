@@ -126,7 +126,7 @@ except ImportError:
     _api_client_exports = []
 
 # Version info
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 __author__ = "Maximus Putnam"
 __email__ = "MaximusPutnam@gmail.com"
 __license__ = "AGPL-3.0-or-later"

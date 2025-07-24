@@ -560,7 +560,7 @@ async def get_capabilities(core: PenguinCore = Depends(get_core)):
             "capabilities": capabilities,
             "current_model": current_model,
             "api_version": "v1",
-            "penguin_version": "0.3.0"
+            "penguin_version": "0.3.1"
         }
     except Exception as e:
         logger.error(f"Error getting capabilities: {str(e)}")
