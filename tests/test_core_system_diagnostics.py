@@ -116,7 +116,7 @@ class TestPenguinCoreSystemDiagnostics:
         result = mock_core.get_system_info()
         
         # Verify basic system info
-        assert result["penguin_version"] == "0.3.0"
+        assert result["penguin_version"] == "0.3.1"
         assert result["engine_available"] is True
         assert result["checkpoints_enabled"] is True
         
@@ -151,7 +151,7 @@ class TestPenguinCoreSystemDiagnostics:
         result = mock_core.get_system_info()
         
         # Basic info should still be present
-        assert result["penguin_version"] == "0.3.0"
+        assert result["penguin_version"] == "0.3.1"
         assert result["engine_available"] is False
         assert result["current_model"] is None
         
@@ -287,7 +287,7 @@ class TestSystemDiagnosticsIntegration:
         """Test a complete system health check workflow."""
         # Step 1: Get system information
         info = mock_core.get_system_info()
-        assert info["penguin_version"] == "0.3.0"
+        assert info["penguin_version"] == "0.3.1"
         assert info["engine_available"] is True
         
         # Step 2: Get current status
