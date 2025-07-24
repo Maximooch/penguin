@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-ai"
-version = "0.3.2"
+version = "0.3.2.1"
 description = "Penguin: A modular, extensible AI coding agent and software engineer with its own execution environment."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -57,13 +57,19 @@ dependencies = [
     
     # Core Processing
     "IPython",
-    "ipykernel",
+    "ipykernel", 
     "ipywidgets",
     "plotext",
     "matplotlib",
     "networkx",
     "watchdog>=2.3.0",
-    "PyGithub>=1.55"
+    "PyGithub>=1.55",
+    
+    # Git and Image Processing
+    "GitPython>=3.1.0",
+    "Pillow>=8.3.0",
+    "numpy>=1.20.0",
+    "pandas>=1.3.0"
 ]
 
 [project.optional-dependencies]
