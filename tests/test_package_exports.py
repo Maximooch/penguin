@@ -306,7 +306,7 @@ class TestVersionInfo:
             assert __license__ is not None
             
             # Check expected values
-            assert __version__ == "0.2.4"
+            assert __version__ == "0.3.0"
             assert __author__ == "Maximus Putnam"
             assert __email__ == "MaximusPutnam@gmail.com"
             assert __license__ == "AGPL-3.0-or-later"

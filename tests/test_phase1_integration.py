@@ -216,7 +216,7 @@ def integrated_core(mock_checkpoint_manager, mock_model_manager):
     # System diagnostics
     def get_system_info():
         return {
-            "penguin_version": "0.2.4",
+            "penguin_version": "0.3.0",
             "engine_available": system_state["engine_available"],
             "checkpoints_enabled": True,
             "current_model": mock_model_manager.get_current_model(),
@@ -307,7 +307,7 @@ class TestPenguinClientIntegration:
         try:
             # Step 1: Get initial system state
             initial_info = await client.get_system_info()
-            assert initial_info["penguin_version"] == "0.2.4"
+            assert initial_info["penguin_version"] == "0.3.0"
             assert initial_info["engine_available"] is True
             assert initial_info["conversation_manager"]["total_messages"] == 0
             
@@ -517,7 +517,7 @@ class TestPenguinClientIntegration:
             initial_status = await client.get_system_status()
             initial_usage = await client.get_token_usage()
             
-            assert initial_info["penguin_version"] == "0.2.4"
+            assert initial_info["penguin_version"] == "0.3.0"
             assert initial_status["status"] == "active"
             assert initial_usage["total"]["input"] == 0
             assert initial_usage["total"]["output"] == 0
@@ -814,7 +814,7 @@ class TestCreateClientIntegration:
                 
                 # Full workflow should work
                 info = await client.get_system_info()
-                assert info["penguin_version"] == "0.2.4"
+                assert info["penguin_version"] == "0.3.0"
                 
                 checkpoint_id = await client.create_checkpoint("Test")
                 assert checkpoint_id.startswith("ckpt_")
@@ -878,7 +878,7 @@ async def test_complete_phase1_integration_scenario(integrated_core):
             
             # Check system capabilities
             info = await client.get_system_info()
-            assert info["penguin_version"] == "0.2.4"
+            assert info["penguin_version"] == "0.3.0"
             assert info["engine_available"] is True
             assert info["checkpoints_enabled"] is True
             
