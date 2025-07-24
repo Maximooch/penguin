@@ -8,7 +8,7 @@ GitHub repositories, including the main Penguin repository.
 import asyncio
 import logging
 import time
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from dataclasses import dataclass
@@ -74,7 +74,7 @@ class RepositoryManager:
         
         # Create a task object for this improvement
         task_id = f"improvement-{int(time.time())}"
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         task = Task(
             id=task_id,
             title=title,
@@ -140,7 +140,7 @@ class RepositoryManager:
 *This PR was created automatically by Penguin Agent.*
 """
         
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         task = Task(
             id=task_id,
             title=f"Add {feature_name} feature",
@@ -199,7 +199,7 @@ class RepositoryManager:
 *This PR was created automatically by Penguin Agent.*
 """
         
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         task = Task(
             id=task_id,
             title=f"Fix: {bug_description[:50]}...",
