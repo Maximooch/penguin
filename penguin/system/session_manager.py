@@ -239,6 +239,7 @@ class SessionManager:
         # Try primary file
         primary_path = self.base_path / f"{session_id}.{self.format}"
         backup_path = self.base_path / f"{session_id}.{self.format}.bak"
+        primary_error: Optional[Exception] = None
         
         try:
             # Try loading from primary file
@@ -249,7 +250,8 @@ class SessionManager:
                 logger.debug(f"Loaded session from primary file: {session_id}")
                 return session
         except Exception as e:
-            logger.error(f"Error loading session {session_id} from primary file: {str(e)}")
+            primary_error = e
+            logger.error(f"Error loading session {session_id} from primary file: {str(e)}", exc_info=True)
             
             # Try backup file
             try:
@@ -264,10 +266,10 @@ class SessionManager:
                         logger.warning(f"Restored session {session_id} from backup")
                         return session
             except Exception as backup_error:
-                logger.error(f"Error loading backup for session {session_id}: {str(backup_error)}")
+                logger.error(f"Error loading backup for session {session_id}: {str(backup_error)}", exc_info=True)
         
         # If we get here, both primary and backup loading failed
-        logger.warning(f"Could not load session {session_id}, creating recovery session")
+        logger.warning(f"Could not load session {session_id}, creating recovery session. Primary error: {primary_error!r}", exc_info=True)
         return self._create_recovery_session(session_id)
     
     def _add_to_session_cache(self, session_id: str, session: Session) -> None:

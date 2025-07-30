@@ -177,16 +177,21 @@ class PenguinAPI:
         conversation_id: Optional[str] = None,
         image_path: Optional[str] = None,
         tools_enabled: bool = True,
-        streaming: bool = False
+        streaming: bool = False,
+        max_iterations: int = 10  # Add max_iterations
     ) -> Dict[str, Any]:
         """Send a chat message and get a response.
+        
+        This method now uses the conversational `run_response` engine for a more
+        natural multi-turn chat experience.
         
         Args:
             message: The message to send
             conversation_id: Optional conversation ID to continue an existing conversation
             image_path: Optional path to an image file for vision models
-            tools_enabled: Whether to enable tool use
-            streaming: Whether to use streaming (not supported in programmatic API)
+            tools_enabled: Whether to enable tool use (currently respected by Engine)
+            streaming: Whether to use streaming for responses
+            max_iterations: The maximum number of conversational turns.
             
         Returns:
             Dictionary containing the response and any action results
@@ -195,15 +200,21 @@ class PenguinAPI:
             # Switch to conversation if specified
             if conversation_id:
                 await self.core.conversation_manager.switch_conversation(conversation_id)
-            
-            # Process the message
-            request_data = {"text": message}
-            if image_path:
-                request_data["image_path"] = image_path
-                
-            response = await self.core.process(
-                request_data,
-                streaming=False  # Programmatic API doesn't support streaming
+
+            # Use the more capable run_response for conversational chat
+            if not self.core.engine:
+                return {
+                    "error": "Engine not available",
+                    "assistant_response": "The core Engine is not available for processing.",
+                    "action_results": []
+                }
+
+            response = await self.core.engine.run_response(
+                prompt=message,
+                image_path=image_path,
+                max_iterations=max_iterations,
+                streaming=streaming,
+                # stream_callback is not directly supported here; websockets should be used for streaming
             )
             
             return response
