@@ -88,6 +88,16 @@ async def handle_chat_message(
 ):
     """Process a chat message, with optional conversation support."""
     try:
+        # Maybe?
+        # # If no conversation_id is provided, try to use the most recent one
+        # if not request.conversation_id:
+        #     # This is a temporary solution until the frontend manages sessions more explicitly.
+        #     # We fetch the list of conversations and use the most recent one.
+        #     recent_conversations = core.list_conversations(limit=1)
+        #     if recent_conversations:
+        #         request.conversation_id = recent_conversations[0].get("id")
+        #         logger.debug(f"No conversation_id provided. Using most recent: {request.conversation_id}")
+
         # Create input data dictionary from request
         input_data = {
             "text": request.text

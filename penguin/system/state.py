@@ -226,20 +226,24 @@ class Session:
         """Validate session data integrity."""
         # Check for required fields
         if not self.id or not isinstance(self.id, str):
+            logger.warning(f"Session validation failed: Invalid or missing ID. Got: {self.id!r}")
             return False
         
         # Validate timestamps
         try:
             datetime.fromisoformat(self.created_at)
             datetime.fromisoformat(self.last_active)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Session validation failed: Invalid timestamp. Created: {self.created_at!r}, Last Active: {self.last_active!r}. Error: {e}")
             return False
         
         # Validate messages
-        for msg in self.messages:
+        for i, msg in enumerate(self.messages):
             if not isinstance(msg, Message):
+                logger.warning(f"Session validation failed: Message at index {i} is not a valid Message object. Type: {type(msg)}")
                 return False
             if not msg.role or not isinstance(msg.role, str):
+                logger.warning(f"Session validation failed: Message at index {i} has an invalid or missing role. Role: {msg.role!r}")
                 return False
                 
         return True
