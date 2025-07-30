@@ -1,6 +1,6 @@
 # Project Management API Reference (v0.1.x)
 
-Penguin's project subsystem is under active development.  The current release ships **minimal but functional** CRUD helpers backed by SQLite.  Anything not mentioned here (advanced dependency graphs, event bus, async streaming, etc.) is planned—see the roadmap in [future considerations](../advanced/future_considerations.md).
+Penguin's project subsystem manages projects and tasks with a simple SQLite backend.  Recent releases add **EventBus integration** so task execution can emit real‑time progress updates.  Advanced features like dependency graphs are still on the roadmap—see [future considerations](../advanced/future_considerations.md).
 
 ---
 
@@ -69,11 +69,11 @@ Current implementation **does not** support:
 * Hierarchical subtasks beyond parent_task_id linkage
 * Dependency management / graphs
 * Bulk operations
-* EventBus or real-time updates
-* Resource constraints or execution records
+* Resource constraints beyond basic execution recording
+* Execution recording can be toggled with `ProjectManager.disable_execution_recording()`
 
 These items are tracked in the roadmap.
 
 ---
 
-*Last updated: June 13 2025* 
+*Last updated: July 30 2025*
