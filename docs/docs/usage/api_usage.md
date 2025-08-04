@@ -163,7 +163,7 @@ import requests
 
 # Create a new project
 response = requests.post(
-    "http://localhost:8000/api/v1/projects/create",
+    "http://localhost:8000/api/v1/projects",
     json={
         "name": "Website Development",
         "description": "Create a responsive website with React and FastAPI backend"
@@ -368,6 +368,80 @@ When deploying Penguin in a production environment:
 - Implement proper authentication and authorization
 - Restrict CORS settings to known domains
 - Review and limit model capabilities as needed
+
+<!-- TODO: Test these before making them public -->
+<!-- ## Additional APIs
+
+### Checkpoint Management
+
+```python
+import requests
+
+# Create a checkpoint
+response = requests.post(
+    "http://localhost:8000/api/v1/checkpoints/create",
+    json={
+        "name": "Before refactor",
+        "description": "Save state prior to major refactor"
+    }
+)
+checkpoint_id = response.json()["checkpoint_id"]
+
+# List checkpoints
+checkpoints = requests.get("http://localhost:8000/api/v1/checkpoints").json()["checkpoints"]
+
+# Rollback
+requests.post(f"http://localhost:8000/api/v1/checkpoints/{checkpoint_id}/rollback")
+```
+
+### Model Management
+
+```python
+import requests
+
+# List available models
+models = requests.get("http://localhost:8000/api/v1/models").json()["models"]
+
+# Switch model
+requests.post(
+    "http://localhost:8000/api/v1/models/load",
+    json={"model_id": "openai/gpt-4o"}
+)
+
+# Get current model
+current = requests.get("http://localhost:8000/api/v1/models/current").json()
+```
+
+### Memory API
+
+```python
+import requests
+
+# Store memory
+memory = requests.post(
+    "http://localhost:8000/api/v1/memory/store",
+    json={
+        "content": "Remember that Friday is deploy day",
+        "categories": ["dev_notes"]
+    }
+).json()
+
+# Search memory
+results = requests.post(
+    "http://localhost:8000/api/v1/memory/search",
+    json={"query": "deploy day", "max_results": 3}
+).json()["results"]
+```
+
+### System & Capabilities
+
+```bash
+# Capabilities
+curl http://localhost:8000/api/v1/capabilities
+
+# System status
+curl http://localhost:8000/api/v1/system/status
+``` -->
 
 ## Next Steps
 

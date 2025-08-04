@@ -1272,9 +1272,27 @@ class PenguinCore:
             
             # Use new Engine layer if available
             if self.engine:
-                # The core's own chunk handler is the source of truth for managing
-                # streaming state and emitting events. We use it whenever streaming.
-                engine_stream_callback = self._handle_stream_chunk if streaming else None
+                # Build streaming callback for Engine that first updates internal streaming
+                # state via _handle_stream_chunk and then forwards chunks to any external
+                # stream_callback supplied by callers (e.g., WebSocket).
+                if streaming:
+                    if stream_callback:
+                        async def _combined_stream_callback(chunk: str, message_type: str = "assistant"):
+                            # Update internal streaming handling
+                            await self._handle_stream_chunk(chunk, message_type=message_type)
+                            # Forward to external callback (supports sync or async functions)
+                            try:
+                                if asyncio.iscoroutinefunction(stream_callback):
+                                    await stream_callback(chunk)
+                                else:
+                                    await asyncio.to_thread(stream_callback, chunk)
+                            except Exception as cb_err:
+                                logger.error(f"Error in external stream_callback: {cb_err}")
+                        engine_stream_callback = _combined_stream_callback
+                    else:
+                        engine_stream_callback = self._handle_stream_chunk
+                else:
+                    engine_stream_callback = None
 
                 if multi_step:
                     # Check if this is a formal task (RunMode) or conversational multi-step
