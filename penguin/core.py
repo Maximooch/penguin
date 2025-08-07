@@ -536,7 +536,10 @@ class PenguinCore:
         print(f"DEBUG: ProjectManager type: {type(self.project_manager)}")
         print(f"DEBUG: ConversationManager type: {type(self.conversation_manager)}")
         self.action_executor = ActionExecutor(
-            self.tool_manager, self.project_manager, self.conversation_manager
+            self.tool_manager,
+            self.project_manager,
+            self.conversation_manager,
+            ui_event_callback=self.emit_ui_event,
         )
         self.current_runmode_status_summary: str = "RunMode idle." # New attribute
 
@@ -1827,6 +1830,7 @@ class PenguinCore:
             logger.debug(f"Unregistered UI event handler: {handler.__qualname__ if hasattr(handler, '__qualname__') else str(handler)}")
     
     async def emit_ui_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        logger.debug(f"Core emit_ui_event {event_type} keys={list(data.keys())}")
         """
         Emit an event to all registered UI subscribers.
         

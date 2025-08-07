@@ -11,6 +11,9 @@ copywriting/
 __pycache__/
 *.py[cod]
 
+# UV cache
+uv.lock
+
 # Ruff cache
 .ruff_cache/
 
