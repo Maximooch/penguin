@@ -11,7 +11,7 @@ import re
 from datetime import datetime
 from enum import Enum
 from html import unescape
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Callable, Awaitable
 import base64
 from penguin.local_task.manager import ProjectManager
 from penguin.tools import ToolManager
@@ -168,16 +168,52 @@ def parse_action(content: str) -> List[CodeActAction]:
 
 
 class ActionExecutor:
-    def __init__(self, tool_manager: ToolManager, task_manager: ProjectManager, conversation_system=None):
+    def __init__(
+        self,
+        tool_manager: ToolManager,
+        task_manager: ProjectManager,
+        conversation_system=None,
+        ui_event_callback: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    ):
+        """Execute parsed actions and (optionally) emit UI events.
+        
+        Args:
+            tool_manager: The ToolManager instance
+            task_manager: The Project/Task manager
+            conversation_system: Conversation manager (optional)
+            ui_event_callback: Async callback to emit UI events (e.g. PenguinCore.emit_ui_event)
+        """
         self.tool_manager = tool_manager
         self.task_manager = task_manager
         self.process_manager = ProcessManager()
         self.current_process = None
         self.conversation_system = conversation_system
+        self._ui_event_cb = ui_event_callback
         # No direct initialization of expensive tools, we'll use tool_manager's properties
 
     async def execute_action(self, action: CodeActAction) -> str:
+        """Execute an action and emit UI events if a callback is provided."""
         logger.debug(f"Attempting to execute action: {action.action_type.value}")
+        import uuid
+        action_id = str(uuid.uuid4())[:8]
+        
+        # --------------------------------------------------
+        # Emit *start* UI event
+        # --------------------------------------------------
+        if self._ui_event_cb:
+            try:
+                logger.debug(f"UI-emit start action id={action_id} type={action.action_type.value}")
+                await self._ui_event_cb(
+                    "action",
+                    {
+                        "id": action_id,
+                        "type": action.action_type.value,
+                        "params": action.params,
+                    },
+                )
+            except Exception as e:
+                logger.debug(f"UI event emit failed (action start): {e}")
+        
         action_map = {
             # ActionType.READ: lambda params: self.tool_manager.execute_tool("read_file", {"path": params}),
             # ActionType.WRITE: self._write_file,
@@ -278,12 +314,43 @@ class ActionExecutor:
                     result = await result
 
             logger.info(f"Action {action.action_type.value} executed successfully")
+            # --------------------------------------------------
+            # Emit success UI event
+            # --------------------------------------------------
+            if self._ui_event_cb:
+                try:
+                    logger.debug(f"UI-emit success action_result id={action_id}")
+                    await self._ui_event_cb(
+                        "action_result",
+                        {
+                            "id": action_id,
+                            "status": "completed",
+                            "result": result if isinstance(result, str) else str(result),
+                            "action_name": action.action_type.value,
+                        },
+                    )
+                except Exception as e:
+                    logger.debug(f"UI event emit failed (action result): {e}")
             return result
         except Exception as e:
             error_message = (
                 f"Error executing action {action.action_type.value}: {str(e)}"
             )
             logger.error(error_message, exc_info=True)
+            if self._ui_event_cb:
+                try:
+                    logger.debug(f"UI-emit error action_result id={action_id}")
+                    await self._ui_event_cb(
+                        "action_result",
+                        {
+                            "id": action_id,
+                            "status": "error",
+                            "result": error_message,
+                            "action_name": action.action_type.value,
+                        },
+                    )
+                except Exception as ee:
+                    logger.debug(f"UI event emit failed (action error): {ee}")
             return error_message
 
     # def _write_file(self, params: str) -> str:

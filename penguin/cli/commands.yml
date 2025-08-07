@@ -1,0 +1,273 @@
+# Penguin TUI Command Configuration
+# This file defines all available commands in the TUI
+# Future: Can be extended by plugins and MCP servers
+
+version: "1.0"
+
+# Command categories for better organization
+categories:
+  - name: chat
+    description: "Chat and conversation management"
+    icon: "💬"
+  
+  - name: model
+    description: "Model selection and configuration"
+    icon: "🤖"
+  
+  - name: task
+    description: "Task and project management"
+    icon: "📋"
+  
+  - name: debug
+    description: "Debugging and diagnostics"
+    icon: "🔍"
+  
+  - name: system
+    description: "System commands"
+    icon: "⚙️"
+
+# Command definitions
+commands:
+  # Chat commands
+  - name: help
+    category: system
+    description: "Show available commands"
+    aliases: ["h", "?"]
+    handler: "_show_enhanced_help"
+    
+  - name: clear
+    category: chat
+    description: "Clear the chat history"
+    aliases: ["cls", "reset"]
+    handler: "action_clear_log"
+    
+  - name: quit
+    category: system
+    description: "Exit the application"
+    aliases: ["exit", "q"]
+    handler: "action_quit"
+    
+  # Chat management
+  - name: "chat list"
+    category: chat
+    description: "List available conversations"
+    handler: "_handle_chat_list"
+    
+  - name: "chat load"
+    category: chat
+    description: "Load a conversation by ID"
+    parameters:
+      - name: session_id
+        type: string
+        required: true
+        description: "Session ID to load"
+    handler: "_handle_chat_load"
+    
+  - name: "chat save"
+    category: chat
+    description: "Save current conversation"
+    handler: "_handle_chat_save"
+    
+  - name: "chat summary"
+    category: chat
+    description: "Show conversation summary"
+    handler: "_handle_chat_summary"
+    
+  # RunMode commands
+  - name: "run continuous"
+    category: task
+    description: "Start continuous RunMode"
+    parameters:
+      - name: task
+        type: string
+        required: false
+        description: "Optional task description"
+    handler: "_handle_run_continuous"
+    
+  - name: "run task"
+    category: task
+    description: "Run a specific task"
+    parameters:
+      - name: name
+        type: string
+        required: true
+        description: "Task name"
+      - name: description
+        type: string
+        required: false
+        description: "Task description"
+    handler: "_handle_run_task"
+    
+  - name: "run stop"
+    category: task
+    description: "Stop current RunMode execution"
+    handler: "_handle_run_stop"
+    
+  # Task management
+  - name: "task create"
+    category: task
+    description: "Create a new task"
+    parameters:
+      - name: name
+        type: string
+        required: true
+      - name: description
+        type: string
+        required: false
+    handler: "_handle_task_create"
+    
+  - name: "task list"
+    category: task
+    description: "List all tasks"
+    handler: "_handle_task_list"
+    
+  - name: "task complete"
+    category: task
+    description: "Mark task as complete"
+    parameters:
+      - name: task_id
+        type: string
+        required: true
+    handler: "_handle_task_complete"
+    
+  # Project management
+  - name: "project create"
+    category: task
+    description: "Create a new project"
+    parameters:
+      - name: name
+        type: string
+        required: true
+      - name: description
+        type: string
+        required: false
+    handler: "_handle_project_create"
+    
+  - name: "project list"
+    category: task
+    description: "List all projects"
+    handler: "_handle_project_list"
+    
+  - name: list
+    category: task
+    description: "Show all projects and tasks"
+    handler: "_handle_list"
+    
+  # Model commands
+  - name: models
+    category: model
+    description: "Interactive model selection"
+    handler: "_handle_models"
+    
+  - name: "model set"
+    category: model
+    description: "Set specific model"
+    parameters:
+      - name: model_id
+        type: string
+        required: true
+        description: "Model identifier"
+    handler: "_handle_model_set"
+    
+  - name: "stream on"
+    category: model
+    description: "Enable streaming mode"
+    handler: "_handle_stream_on"
+    
+  - name: "stream off"
+    category: model
+    description: "Disable streaming mode"
+    handler: "_handle_stream_off"
+    
+  # Token management
+  - name: tokens
+    category: debug
+    description: "Show token usage"
+    handler: "_handle_tokens"
+    
+  - name: "tokens reset"
+    category: debug
+    description: "Reset token counter"
+    handler: "_handle_tokens_reset"
+    
+  - name: "tokens detail"
+    category: debug
+    description: "Show detailed token breakdown"
+    handler: "_handle_tokens_detail"
+    
+  # Context commands
+  - name: "context list"
+    category: chat
+    description: "List context files"
+    handler: "_handle_context_list"
+    
+  - name: "context load"
+    category: chat
+    description: "Load context file"
+    parameters:
+      - name: file
+        type: string
+        required: true
+        description: "File path to load"
+    handler: "_handle_context_load"
+    
+  - name: "context clear"
+    category: chat
+    description: "Clear current context"
+    handler: "_handle_context_clear"
+    
+  # Debug commands
+  - name: debug
+    category: debug
+    description: "Show debug information"
+    handler: "action_show_debug"
+    
+  - name: "debug tokens"
+    category: debug
+    description: "Debug token counting"
+    handler: "_handle_debug_tokens"
+    
+  - name: "debug stream"
+    category: debug
+    description: "Debug streaming"
+    handler: "_handle_debug_stream"
+    
+  - name: "debug sample"
+    category: debug
+    description: "Show sample debug data"
+    handler: "_handle_debug_sample"
+    
+  - name: recover
+    category: debug
+    description: "Force recovery of stuck streams"
+    handler: "_force_stream_recovery"
+    
+  # Theme commands (future)
+  - name: "theme list"
+    category: system
+    description: "List available themes"
+    handler: "_handle_theme_list"
+    enabled: false  # For future implementation
+    
+  - name: "theme set"
+    category: system
+    description: "Set UI theme"
+    parameters:
+      - name: theme_name
+        type: string
+        required: true
+        description: "Theme name (ocean, nord, dracula, etc.)"
+    handler: "_handle_theme_set"
+    enabled: false  # For future implementation
+
+# Plugin command extension points (future)
+plugins:
+  enabled: false
+  directories:
+    - "~/.penguin/plugins"
+    - "./plugins"
+  
+# MCP server command integration (future)
+mcp:
+  enabled: false
+  servers: []

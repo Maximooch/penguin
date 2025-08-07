@@ -112,6 +112,9 @@ import re
 # Project imports
 from penguin.core import PenguinCore
 from penguin.cli.interface import PenguinInterface
+from penguin.cli.widgets import ToolExecutionWidget, StreamingStateMachine, StreamState
+from penguin.cli.widgets.unified_display import UnifiedExecution, ExecutionAdapter, ExecutionStatus
+from penguin.cli.command_registry import CommandRegistry
 
 
 class CommandSuggester(Suggester):
@@ -190,7 +193,8 @@ class ChatMessage(Static, can_focus=True):
     # and tolerates both LF and CRLF newlines.  Example matches:
     #   ```python\nprint("hi")\n```
     #   ```\r\ncode\r\n```
-    CODE_FENCE = re.compile(r"```([^\n`]*)\r?\n(.*?)```", re.S)
+    # Also handle cases where there's no newline after the language identifier
+    CODE_FENCE = re.compile(r"```([^\n`]*?)[\r\n]*(.*?)```", re.S)
     BINDINGS = [("c", "copy", "Copy to clipboard"), ("ctrl+r", "toggle_expander", "Toggle reasoning")]  # visible in footer
 
     def __init__(self, content: str, role: str, **kwargs) -> None:
@@ -203,7 +207,26 @@ class ChatMessage(Static, can_focus=True):
 
         # Pre-process bespoke tags (<execute>, <execute_command>, etc.) → fenced code
         processed_content = self.content
-        processed_content = re.sub(r"<execute(?:_command|_code)?>(.*?)</execute(?:_command|_code)?>", r"```python\n\1```", processed_content, flags=re.S)
+        
+        # Debug: Log the original content to see what we're getting
+        if "<execute" in processed_content or "```" in processed_content:
+            logger.debug(f"ChatMessage original content (first 500 chars): {processed_content[:500]}")
+        
+        # Try to handle both execute tags and already-formatted code blocks
+        def format_execute_block(match):
+            code = match.group(1)
+            # Try to detect and fix common formatting issues
+            # Fix missing spaces after imports
+            code = re.sub(r'import(\w)', r'import \1', code)
+            code = re.sub(r'from(\w)', r'from \1', code)
+            # Fix comments that got concatenated
+            code = re.sub(r'([^#\n])#', r'\1\n#', code)
+            # Try to add newlines before common Python keywords if they're missing
+            code = re.sub(r'([;\}])([a-z])', r'\1\n\2', code)
+            return f"```python\n{code}\n```"
+        
+        processed_content = re.sub(r"<execute(?:_command|_code)?>(.*?)</execute(?:_command|_code)?>", 
+                                   format_execute_block, processed_content, flags=re.S)
 
         # --- Reasoning / Thinking tokens support -----------------------
         # Convert <thinking>...</thinking> blocks into nice markdown block-quotes
@@ -286,10 +309,19 @@ class ChatMessage(Static, can_focus=True):
                     yield TextualMarkdown(chunk)
             elif mod == 1:
                 # language identifier (may be empty)
-                lang = chunk or "text"
-                code = parts[idx + 1]
-                syntax_obj = Syntax(code, lang, theme="monokai", line_numbers=False)
-                yield Static(syntax_obj, classes="code-block")
+                lang = chunk.strip() or "python"  # Default to python if no language specified
+                if idx + 1 < len(parts):
+                    code = parts[idx + 1]
+                    # Clean up the code a bit
+                    code = code.strip()
+                    if code:
+                        try:
+                            syntax_obj = Syntax(code, lang, theme="monokai", line_numbers=True)
+                            yield Static(syntax_obj, classes="code-block")
+                        except Exception as e:
+                            # Fallback if syntax highlighting fails
+                            logger.debug(f"Syntax highlighting failed: {e}")
+                            yield TextualMarkdown(f"```{lang}\n{code}\n```")
             else:
                 # code segment handled by mod==1
                 continue
@@ -640,6 +672,11 @@ class PenguinTextualApp(App):
         self._conversation_list: Optional[list] = None  # For conversation selection
         self._reasoning_content: str = ""  # For accumulating reasoning content during streaming
         self._original_reasoning_content: str = ""  # For storing original reasoning content for toggle
+        
+        # New: Tool execution tracking
+        self._active_tools: Dict[str, ToolExecutionWidget] = {}
+        self.command_registry: Optional[CommandRegistry] = None
+        self.streaming_state_machine = StreamingStateMachine()
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
@@ -714,6 +751,10 @@ class PenguinTextualApp(App):
             
             self.interface = PenguinInterface(self.core)
             
+            # Initialize command registry
+            self.status_text = "Loading commands..."
+            self.command_registry = CommandRegistry()
+            
             self.status_text = "Ready"
             welcome_panel = Panel("🐧 [bold cyan]Penguin AI[/bold cyan] is ready! Type a message or /help. Use Tab for command autocomplete.", title="Welcome", border_style="cyan")
             self.query_one("#message-area").mount(Static(welcome_panel))
@@ -736,6 +777,7 @@ class PenguinTextualApp(App):
             pass
 
     async def handle_core_event(self, event_type: str, data: Any) -> None:
+        logger.debug(f"TUI handle_core_event {event_type} keys={list(data.keys()) if isinstance(data, dict) else 'n/a'}")
         """Handle events from PenguinCore."""
         try:
             self.debug_messages.append(f"Received event: {event_type} with data: {str(data)[:200]}")
@@ -756,9 +798,14 @@ class PenguinTextualApp(App):
                     self.debug_messages.append(f"Deduplicated assistant message: {content[:50]}...")
                     return
                 
-                # Handle system messages with appropriate formatting
-                if role == "system" or category == "SYSTEM":
-                    # Format system messages to be less intrusive
+                # Handle system messages – but suppress duplicate "Tool Result" / "Action Result" output
+                if role == "system" or category in ("SYSTEM", "SYSTEM_OUTPUT"):
+                    lowered = content.lower().lstrip()
+                    if lowered.startswith("tool result") or lowered.startswith("action result"):
+                        # Already rendered via ToolExecutionWidget – skip duplicate
+                        self.debug_messages.append("Skipped duplicate system output message")
+                        return
+                    # Format other system messages
                     if len(content) > 500:
                         content = self._format_system_output("System", content)
                     self.add_message(content, "system")
@@ -849,34 +896,104 @@ class PenguinTextualApp(App):
                     self.dedup_clear_task = asyncio.create_task(self._clear_dedup_content())
                     self._scroll_to_bottom()
 
+            elif event_type == "action":
+                # Handle XML-style action tags executed by ActionExecutor
+                action_name = data.get("type", "unknown")
+                action_params = data.get("params", "")
+                action_id = data.get("id", None)
+
+                execution = ExecutionAdapter.from_action(action_name, action_params, action_id)
+                execution.status = ExecutionStatus.RUNNING
+
+                action_widget = ToolExecutionWidget(execution)
+                message_area = self.query_one("#message-area", VerticalScroll)
+                message_area.mount(action_widget)
+
+                # Track active execution widgets by ID
+                self._active_tools[execution.id] = action_widget
+                self._scroll_to_bottom()
+
+            elif event_type == "action_result":
+                result_str = data.get("result", "")
+                status = data.get("status", "completed")
+                action_id = data.get("id", None)
+
+                if action_id in self._active_tools:
+                    action_widget = self._active_tools[action_id]
+                    # Update status based on result
+                    if status == "error":
+                        action_widget.update_status(ExecutionStatus.FAILED, error=result_str)
+                    else:
+                        action_widget.update_status(ExecutionStatus.SUCCESS, result=result_str)
+
+                    # Remove from active tools
+                    del self._active_tools[action_id]
+                else:
+                    # Fallback: show as system message if widget missing
+                    if status == "error":
+                        content = f"❌ Action failed:\n```\n{result_str}\n```"
+                        self.add_message(content, "error")
+                    else:
+                        content = self._format_system_output("Action", result_str)
+                        self.add_message(content, "system")
+
             elif event_type == "tool_call":
                 tool_name = data.get("name", "unknown")
                 tool_args = data.get("arguments", {})
+                tool_id = data.get("id", None)
                 
-                # Create a more informative tool call message
-                if tool_args and len(str(tool_args)) < 200:
-                    content = f"🔧 Using tool: `{tool_name}` with args: {tool_args}"
-                else:
-                    content = f"🔧 Using tool: `{tool_name}`"
+                # Create unified execution from tool
+                execution = ExecutionAdapter.from_tool(tool_name, tool_args, tool_id)
+                execution.status = ExecutionStatus.RUNNING
                 
-                self.add_message(content, "system")
+                # Create and mount tool execution widget
+                tool_widget = ToolExecutionWidget(execution)
+                message_area = self.query_one("#message-area", VerticalScroll)
+                message_area.mount(tool_widget)
+                
+                # Track active tool
+                self._active_tools[execution.id] = tool_widget
+                self._scroll_to_bottom()
             
             elif event_type == "tool_result":
                 result_str = data.get("result", "")
                 action_name = data.get("action_name", "unknown")
                 status = data.get("status", "completed")
+                tool_id = data.get("id", None)
                 
-                if status == "error":
-                    content = f"❌ Tool `{action_name}` failed:\n```\n{result_str}\n```"
-                    self.add_message(content, "error")
+                # Find the active tool widget
+                widget_id = tool_id or action_name
+                if widget_id in self._active_tools:
+                    tool_widget = self._active_tools[widget_id]
+                    
+                    # Update status based on result
+                    if status == "error":
+                        tool_widget.update_status(ExecutionStatus.FAILED, error=result_str)
+                    else:
+                        tool_widget.update_status(ExecutionStatus.SUCCESS, result=result_str)
+                    
+                    # Remove from active tools
+                    del self._active_tools[widget_id]
                 else:
-                    # Limit system output with expand/collapse
-                    content = self._format_system_output(action_name, result_str)
-                    self.add_message(content, "system")
+                    # Fallback to old behavior if widget not found
+                    if status == "error":
+                        content = f"❌ Tool `{action_name}` failed:\n```\n{result_str}\n```"
+                        self.add_message(content, "error")
+                    else:
+                        content = self._format_system_output(action_name, result_str)
+                        self.add_message(content, "system")
 
             elif event_type == "error":
                 error_msg = data.get("message", "Unknown error")
-                self.add_message(f"An error occurred: {error_msg}", "error")
+                context = data.get("context", None)
+                
+                # Create error execution widget
+                execution = ExecutionAdapter.from_error(error_msg, context)
+                error_widget = ToolExecutionWidget(execution)
+                
+                message_area = self.query_one("#message-area", VerticalScroll)
+                message_area.mount(error_widget)
+                self._scroll_to_bottom()
 
         except Exception as e:
             error_msg = f"Error handling core event {event_type}: {e}"

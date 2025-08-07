@@ -1,8 +1,17 @@
+/* ===============================================
+   Penguin TUI Theme System
+   Default Theme: Deep Ocean
+   =============================================== */
+
 Screen {
     layout: vertical;
     background: #0c141f;
     color: #dadada;
 }
+
+/* ===============================================
+   Core Layout Components
+   =============================================== */
 
 Header {
     dock: top;
@@ -30,7 +39,7 @@ Footer .footer--highlight-key {
 
 #main-container {
     layout: vertical;
-    padding: 0 1; /* Horizontal padding only */
+    padding: 0 1;
     height: 1fr;
 }
 
@@ -45,7 +54,7 @@ Footer .footer--highlight-key {
     height: 3;
     background: #1a2a3f;
     color: #dadada;
-    margin: 1 0 0 0; /* Margin top */
+    margin: 1 0 0 0;
 }
 
 #input-box:focus {
@@ -61,7 +70,9 @@ Footer .footer--highlight-key {
     text-align: left;
 }
 
-/* --- Chat Message Styling --- */
+/* ===============================================
+   Chat Message Styling
+   =============================================== */
 
 ChatMessage {
     padding: 1 2;
@@ -119,12 +130,171 @@ ChatMessage:focus {
     margin-bottom: 1;
 }
 
+/* ===============================================
+   Tool Execution Widget Styles
+   =============================================== */
+
+.tool-execution {
+    margin: 1 0;
+    padding: 1;
+    background: #101c2c;
+    border: round #334e68;
+}
+
+.tool-execution:focus {
+    border: round #89cff0;
+    background: #162436;
+}
+
+.tool-container {
+    layout: vertical;
+    width: 100%;
+}
+
+.tool-header {
+    padding: 1;
+    background: #1a2a3f;
+    border-bottom: solid #334e68;
+    text-style: bold;
+}
+
+.tool-params-section {
+    margin-top: 1;
+    background: #162436;
+    border: round #334e68;
+}
+
+.tool-params-content {
+    padding: 1;
+    color: #a0a0a0;
+}
+
+.tool-result-section {
+    margin-top: 1;
+    background: #162436;
+    border: round #334e68;
+}
+
+.tool-result-content {
+    padding: 1;
+}
+
+/* Tool status colors */
+.tool-status-pending {
+    color: #ffd54f;
+}
+
+.tool-status-running {
+    color: #ffeb3b;
+    text-style: bold;
+}
+
+.tool-status-success {
+    color: #66bb6a;
+}
+
+.tool-status-failed {
+    color: #ef5350;
+}
+
+.tool-status-cancelled {
+    color: #757575;
+}
+
+/* ===============================================
+   Collapsible Sections
+   =============================================== */
+
+Collapsible {
+    background: #101c2c;
+    border: round #334e68;
+    margin: 1 0;
+}
+
+Collapsible > .label {
+    padding: 1;
+    background: #1a2a3f;
+    color: #89cff0;
+}
+
+Collapsible:focus > .label {
+    background: #162436;
+    color: #b3e5fc;
+}
+
+/* ===============================================
+   Utility Classes
+   =============================================== */
+
 .hidden {
     display: none;
-} 
+}
+
+.dim {
+    opacity: 0.7;
+}
+
+.error-text {
+    color: #ffcdd2;
+}
+
+.success-text {
+    color: #66bb6a;
+}
+
+.warning-text {
+    color: #ffd54f;
+}
 
 /* Reasoning / blockquote styling */
 Markdown BlockQuote {
     color: #a0a0a0;
     text-style: italic;
-} 
+    border-left: thick #334e68;
+    padding-left: 1;
+}
+
+/* ===============================================
+   RunMode Output Styling
+   =============================================== */
+
+.runmode-output {
+    background: #162436;
+    border: round #89cff0;
+    padding: 1;
+    margin: 1 0;
+}
+
+/* ===============================================
+   Theme Variants (Future Implementation)
+   =============================================== */
+
+/* ===============================================
+   Future Theme Templates
+   =============================================== */
+
+/* Nord Theme (for future implementation)
+.theme-nord Screen {
+    background: #2e3440;
+    color: #eceff4;
+}
+
+.theme-nord Header,
+.theme-nord Footer {
+    background: #3b4252;
+    color: #88c0d0;
+}
+*/
+
+/* Dracula Theme (for future implementation)
+.theme-dracula Screen {
+    background: #282a36;
+    color: #f8f8f2;
+}
+
+.theme-dracula Header,
+.theme-dracula Footer {
+    background: #44475a;
+    color: #bd93f9;
+}
+*/
