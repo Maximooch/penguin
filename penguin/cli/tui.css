@@ -135,7 +135,8 @@ ChatMessage:focus {
    =============================================== */
 
 .tool-execution {
-    margin: 1 0;
+    /* Remove bottom margin on the card to avoid large trailing gaps */
+    margin: 1 0 0 0;
     padding: 1;
     background: #101c2c;
     border: round #334e68;
@@ -159,24 +160,33 @@ ChatMessage:focus {
 }
 
 .tool-params-section {
-    margin-top: 1;
+    /* Override base Collapsible margin (1 0) to remove bottom gap */
+    margin: 1 0 0 0;
     background: #162436;
     border: round #334e68;
+    padding: 0;
 }
 
 .tool-params-content {
     padding: 1;
     color: #a0a0a0;
+    min-height: 0;
+    margin: 0;
 }
 
 .tool-result-section {
-    margin-top: 1;
+    /* Override base Collapsible margin (1 0) to remove bottom gap */
+    margin: 1 0 0 0;
     background: #162436;
     border: round #334e68;
+    padding: 0;
+    min-height: 0;
 }
 
 .tool-result-content {
     padding: 1;
+    min-height: 0;
+    margin: 0;
 }
 
 /* Tool status colors */
@@ -209,6 +219,13 @@ Collapsible {
     background: #101c2c;
     border: round #334e68;
     margin: 1 0;
+    min-height: 0;
+}
+
+/* Inside tool cards, trim Collapsible bottom margin further */
+.tool-execution Collapsible {
+    margin: 1 0 0 0;
+    min-height: 0;
 }
 
 Collapsible > .label {
@@ -298,3 +315,38 @@ Markdown BlockQuote {
     color: #bd93f9;
 }
 */
+
+/* Tighten Markdown spacing inside tool sections to avoid large trailing gaps */
+.tool-params-content Markdown,
+.tool-result-content Markdown {
+    margin: 0;
+}
+
+/* Keep code blocks compact inside cards */
+.tool-params-content .code-block,
+.tool-result-content .code-block {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+/* Remove extra spacing added by Collapsible container body */
+.tool-params-section > .content,
+.tool-result-section > .content {
+    padding: 0;
+    margin: 0;
+    min-height: 0;
+}
+
+/* Ensure Markdown inside collapsibles doesn't reserve space when empty */
+.tool-params-content,
+.tool-result-content {
+    min-height: 0;
+    height: auto;
+}
+
+/* Make Collapsible bodies shrink to fit content to avoid trailing whitespace */
+.tool-params-section,
+.tool-result-section,
+.tool-execution {
+    min-height: 0;
+}

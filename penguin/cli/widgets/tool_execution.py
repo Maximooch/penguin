@@ -15,6 +15,7 @@ from rich.markdown import Markdown as RichMarkdown
 import json
 from typing import Optional, Any, Dict
 from enum import Enum
+import logging
 
 from .base import PenguinWidget
 from .unified_display import UnifiedExecution, ExecutionStatus, ExecutionType
@@ -41,6 +42,40 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
     - Copy functionality (future)
     """
     
+    # Minimal built-in styles so the widget packs tightly even when the host
+    # app doesn't load our global tui.css. These mirror the overrides we ship
+    # in penguin/penguin/cli/tui.css that prevent tall empty boxes below cards.
+    DEFAULT_CSS = """
+    .tool-execution {
+        margin: 1 0 0 0;
+        padding: 1;
+        min-height: 0;
+    }
+
+    .tool-execution Collapsible { 
+        margin: 1 0 0 0;
+        min-height: 0;
+    }
+
+    .tool-params-section, .tool-result-section {
+        padding: 0;
+        min-height: 0;
+    }
+
+    .tool-params-section > .content,
+    .tool-result-section > .content {
+        padding: 0;
+        margin: 0;
+        min-height: 0;
+    }
+
+    .tool-params-content, .tool-result-content {
+        min-height: 0;
+        height: auto;
+        margin: 0;
+    }
+    """
+    
     BINDINGS = [
         ("enter", "toggle", "Toggle expand/collapse"),
         ("space", "toggle", "Toggle expand/collapse"),
@@ -48,16 +83,23 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
     ]
     
     execution: reactive[Optional[UnifiedExecution]] = reactive(None)
+    # Rendering/preview limits to keep the UI responsive on very large outputs
+    _MAX_PREVIEW_CHARS = 4000
+    _MAX_PREVIEW_LINES = 200
     
     def __init__(self, execution: UnifiedExecution, **kwargs):
         super().__init__(**kwargs)
         self.execution = execution
         self.add_class("tool-execution")
+        self._log = logging.getLogger(__name__)
         
         # Track internal state
         self._params_expanded = False
         self._result_expanded = False
         self._start_time = execution.started_at
+        # Cache full strings so copy uses complete content even if preview is truncated
+        self._full_result_cache: Optional[str] = None
+        self._full_params_cache: Optional[str] = None
         
     def compose(self) -> ComposeResult:
         """Build the widget structure."""
@@ -67,20 +109,82 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
         
         # Wrap all child widgets inside a container so Textual mounts them *after* this widget is attached
         with Container(classes="tool-container"):
+            # Defensive: collapse any inherited non-zero min-heights that would
+            # otherwise force tall empty boxes after content.
+            try:
+                self.styles.min_height = 0
+                self.styles.height = "auto"
+            except Exception:
+                pass
+            # Debug: log current execution summary
+            try:
+                self._log.debug(
+                    "ToolExecutionWidget compose: id=%s name=%s status=%s params_len=%s has_result=%s has_error=%s",
+                    getattr(self.execution, "id", "-"),
+                    getattr(self.execution, "name", "-"),
+                    getattr(self.execution, "status", "-"),
+                    len(str(getattr(self.execution, "parameters", "")) or ""),
+                    getattr(self.execution, "result", None) is not None,
+                    bool(getattr(self.execution, "error", None)),
+                )
+            except Exception:
+                pass
             # Header with status, icon, and name
             yield self._create_header()
             
             # Parameters section
             if self.execution.show_parameters and self.execution.parameters:
                 params_content = self._format_parameters_content()
-                with Collapsible(title="📋 Parameters", collapsed=not self._params_expanded):
-                    yield Static(params_content, classes="tool-params-content")
+                with Collapsible(title="📋 Parameters", collapsed=not self._params_expanded, classes="tool-params-section") as params_col:
+                    try:
+                        params_col.styles.min_height = 0
+                        params_col.styles.height = "auto"
+                    except Exception:
+                        pass
+                    md = Markdown(params_content, classes="tool-params-content")
+                    try:
+                        md.styles.min_height = 0
+                        md.styles.height = "auto"
+                    except Exception:
+                        pass
+                    # Debug: log params summary and visual flags
+                    try:
+                        self._log.debug(
+                            "ToolExecutionWidget params: chars=%d lines=%d",
+                            len(params_content or ""),
+                            len((params_content or "").splitlines()),
+                        )
+                    except Exception:
+                        pass
+                    yield md
             
             # Result section
             if self.execution.show_result or self.execution.error:
                 result_title, result_content, initially_expanded = self._format_result_content()
-                with Collapsible(title=result_title, collapsed=not initially_expanded):
-                    yield Static(result_content, classes="tool-result-content")
+                with Collapsible(title=result_title, collapsed=not initially_expanded, classes="tool-result-section") as result_col:
+                    try:
+                        result_col.styles.min_height = 0
+                        result_col.styles.height = "auto"
+                    except Exception:
+                        pass
+                    md = Markdown(result_content, classes="tool-result-content")
+                    try:
+                        md.styles.min_height = 0
+                        md.styles.height = "auto"
+                    except Exception:
+                        pass
+                    # Debug: log result summary and expansion state
+                    try:
+                        self._log.debug(
+                            "ToolExecutionWidget result: title=%s expanded=%s chars=%d lines=%d",
+                            result_title,
+                            initially_expanded,
+                            len(result_content or ""),
+                            len((result_content or "").splitlines()),
+                        )
+                    except Exception:
+                        pass
+                    yield md
     
     def _create_header(self) -> Static:
         """Create the header with status indicator."""
@@ -133,13 +237,17 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
                 # Multiple parameters - format as JSON
                 try:
                     formatted = json.dumps(params, indent=2)
-                    content_str = f"```json\n{formatted}\n```"
+                    full = f"```json\n{formatted}\n```"
+                    self._full_params_cache = full
+                    content_str = self._truncate_large_text(full)
                 except:
                     content_str = str(params)
         else:
-            content_str = str(params)
+            raw = str(params)
+            self._full_params_cache = raw
+            content_str = self._truncate_large_text(raw)
         
-        return content_str
+        return self._strip_trailing_blank_lines(content_str)
     
     def _format_result_content(self) -> tuple[str, str, bool]:
         """Format result content for display.
@@ -181,7 +289,9 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
         if isinstance(result, dict):
             try:
                 formatted = json.dumps(result, indent=2)
-                return f"```json\n{formatted}\n```"
+                full = f"```json\n{formatted}\n```"
+                self._full_result_cache = full
+                return self._truncate_large_text(full)
             except:
                 return str(result)
         elif isinstance(result, list):
@@ -189,7 +299,9 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
             if all(isinstance(item, dict) for item in result):
                 try:
                     formatted = json.dumps(result, indent=2)
-                    return f"```json\n{formatted}\n```"
+                    full = f"```json\n{formatted}\n```"
+                    self._full_result_cache = full
+                    return self._truncate_large_text(full)
                 except:
                     pass
             
@@ -199,17 +311,24 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
                 lines.append(f"  {i+1}. {item}")
             if len(result) > 50:
                 lines.append(f"  ... and {len(result) - 50} more items")
-            return "\n".join(lines)
+            full = "\n".join(lines)
+            self._full_result_cache = full
+            return self._truncate_large_text(full)
         elif isinstance(result, str):
             # Check for multiline strings that might be code
             if "\n" in result and len(result.splitlines()) > 3:
                 # Try to detect and highlight code
                 if self._looks_like_code(result):
                     lang = self._detect_language(result)
-                    return f"```{lang}\n{result}\n```"
-            return result
+                    full = f"```{lang}\n{result}\n```"
+                    self._full_result_cache = full
+                    return self._truncate_large_text(full)
+            self._full_result_cache = result
+            return self._strip_trailing_blank_lines(self._truncate_large_text(result))
         else:
-            return str(result)
+            raw = str(result)
+            self._full_result_cache = raw
+            return self._strip_trailing_blank_lines(self._truncate_large_text(raw))
     
     def _format_error(self, error: str) -> str:
         """Format error for display."""
@@ -273,10 +392,10 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
     
     def action_copy_result(self) -> None:
         """Copy result to clipboard."""
-        if self.execution and self.execution.result:
+        if self.execution and (self.execution.result is not None or self._full_result_cache):
             try:
                 import pyperclip
-                result_str = str(self.execution.result)
+                result_str = self._full_result_cache if self._full_result_cache is not None else str(self.execution.result)
                 pyperclip.copy(result_str)
                 self.notify("Result copied to clipboard ✅")
             except:
@@ -300,7 +419,50 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
                 self.execution.error = error
             if status in [ExecutionStatus.SUCCESS, ExecutionStatus.FAILED, ExecutionStatus.CANCELLED]:
                 self.execution.completed_at = datetime.now()
+            # Debug: log size info for result/error
+            try:
+                size = len(str(self.execution.result)) if self.execution.result is not None else 0
+                self._log.debug(
+                    "ToolExecutionWidget update_status: status=%s result_chars=%d has_error=%s",
+                    status,
+                    size,
+                    bool(self.execution.error),
+                )
+            except Exception:
+                pass
             self.refresh()
+
+    # -------------------------
+    # Helpers
+    # -------------------------
+    def _truncate_large_text(self, text: str) -> str:
+        """Return a preview of text if it exceeds size thresholds.
+
+        Adds a hint line when content was truncated to keep the UI snappy.
+        """
+        if not text:
+            return text
+        lines = text.splitlines()
+        truncated = False
+        if len(lines) > self._MAX_PREVIEW_LINES:
+            text = "\n".join(lines[: self._MAX_PREVIEW_LINES])
+            truncated = True
+        if len(text) > self._MAX_PREVIEW_CHARS:
+            text = text[: self._MAX_PREVIEW_CHARS]
+            truncated = True
+        if truncated:
+            hint = "\n\n[dim]…preview shown. Press 'c' to copy full content.[/dim]"
+            return f"{text}{hint}"
+        return text
+
+    def _strip_trailing_blank_lines(self, text: str) -> str:
+        """Trim trailing blank lines/whitespace to avoid extra vertical space."""
+        if not text:
+            return text
+        lines = text.splitlines()
+        while lines and lines[-1].strip() == "":
+            lines.pop()
+        return "\n".join(lines)
     
     def watch_execution(self, execution: Optional[UnifiedExecution]) -> None:
         """React to execution changes."""
