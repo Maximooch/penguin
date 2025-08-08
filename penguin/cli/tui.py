@@ -116,64 +116,20 @@ from penguin.cli.command_registry import CommandRegistry
 
 
 class CommandSuggester(Suggester):
-    """Provides autocompletion for slash commands in the TUI."""
-    
-    def __init__(self):
+    """Provides autocompletion for slash commands using CommandRegistry."""
+
+    def __init__(self, registry: "CommandRegistry"):
         super().__init__()
-        self.commands = [
-            # Chat & Navigation
-            "/help",
-            "/clear", 
-            "/quit",
-            "/exit",
-            
-            # Chat commands
-            "/chat list",
-            "/chat load",
-            "/chat summary",
-            
-            # RunMode & Tasks
-            "/run continuous",
-            "/run task",
-            "/run stop",
-            "/task create",
-            "/project create",
-            "/list",
-            
-            # Model & Configuration
-            "/models",
-            "/model set",
-            "/stream on",
-            "/stream off",
-            "/tokens",
-            "/tokens reset",
-            "/tokens detail",
-            
-            # Context
-            "/context list",
-            "/context load",
-            
-            # Debug & Development
-            "/debug",
-            "/debug tokens",
-            "/debug stream", 
-            "/debug sample",
-            "/recover",
-        ]
-    
+        self.registry = registry
+
     async def get_suggestion(self, value: str) -> str | None:
-        """Get completion suggestion for the current input value."""
-        if not value.startswith("/"):
+        if not value or not value.startswith("/"):
             return None
-            
-        # Find commands that start with the current input
-        matches = [cmd for cmd in self.commands if cmd.startswith(value)]
-        
-        if not matches:
+        try:
+            suggestions = self.registry.get_suggestions(value)
+            return suggestions[0] if suggestions else None
+        except Exception:
             return None
-            
-        # Return the first match
-        return matches[0]
 
 # Set up logging for debug purposes
 logger = logging.getLogger(__name__)
@@ -248,7 +204,11 @@ class ChatMessage(Static, can_focus=True):
         for m in DETAILS_RE.finditer(processed_content):
             before = processed_content[pos:m.start()]
             if before.strip():
-                yield TextualMarkdown(before)
+                # Trim trailing blanks and apply message-content classes to avoid extra spacing
+                yield TextualMarkdown(
+                    self._clean_final_content(before),
+                    classes=f"message-content {self.role}"
+                )
 
             summary_text = m.group(2) or "Details"
             body_md = m.group(3).strip()
@@ -275,7 +235,10 @@ class ChatMessage(Static, can_focus=True):
         if pos > 0:
             if processed_content:
                 # There was some trailing text outside details block(s)
-                yield TextualMarkdown(processed_content)
+                yield TextualMarkdown(
+                    self._clean_final_content(processed_content),
+                    classes=f"message-content {self.role}"
+                )
             return
 
         # Role label
@@ -296,7 +259,10 @@ class ChatMessage(Static, can_focus=True):
                 syntax_obj = Syntax(processed_content.strip(), "python", theme="monokai", line_numbers=False)
                 yield Static(syntax_obj, classes="code-block")
             else:
-                yield TextualMarkdown(processed_content, classes=f"message-content {self.role}")
+                yield TextualMarkdown(
+                    self._clean_final_content(processed_content),
+                    classes=f"message-content {self.role}"
+                )
             return
 
         for idx, chunk in enumerate(parts):
@@ -304,7 +270,10 @@ class ChatMessage(Static, can_focus=True):
             if mod == 0:
                 # narrative segment
                 if chunk.strip():
-                    yield TextualMarkdown(chunk)
+                    yield TextualMarkdown(
+                        self._clean_final_content(chunk),
+                        classes=f"message-content {self.role}"
+                    )
             elif mod == 1:
                 # language identifier (may be empty)
                 lang = chunk.strip() or "python"  # Default to python if no language specified
@@ -714,8 +683,7 @@ class PenguinTextualApp(App):
             yield VerticalScroll(id="message-area")
             yield Input(
                 placeholder="Type your message... (/help for commands, Tab for autocomplete)", 
-                id="input-box",
-                suggester=CommandSuggester()
+                id="input-box"
             )
         yield Static(id="status-bar")
         yield Footer()
@@ -798,6 +766,12 @@ class PenguinTextualApp(App):
             # Initialize command registry
             self.status_text = "Loading commands..."
             self.command_registry = CommandRegistry()
+            # Attach registry-backed suggester
+            try:
+                input_widget = self.query_one(Input)
+                input_widget.suggester = CommandSuggester(self.command_registry)
+            except Exception:
+                pass
             
             self.status_text = "Ready"
             welcome_panel = Panel("🐧 [bold cyan]Penguin AI[/bold cyan] is ready! Type a message or /help. Use Tab for command autocomplete.", title="Welcome", border_style="cyan")
@@ -1263,49 +1237,78 @@ class PenguinTextualApp(App):
     async def _handle_command(self, command: str) -> None:
         """Handle slash commands with enhanced support."""
         try:
-            # Parse command and arguments
+            # Prefer registry-based routing when available
+            if self.command_registry:
+                cmd_obj, args_dict = self.command_registry.parse_input(command)
+                if cmd_obj:
+                    handler = cmd_obj.handler or ""
+                    # TUI-local handlers
+                    if handler in ("_show_enhanced_help", "action_clear_log", "action_quit", "action_show_debug", "_force_stream_recovery"):
+                        if handler == "_show_enhanced_help":
+                            await self._show_enhanced_help()
+                        elif handler == "action_clear_log":
+                            self.action_clear_log()
+                        elif handler == "action_quit":
+                            self.action_quit()
+                        elif handler == "action_show_debug":
+                            self.action_show_debug()
+                        elif handler == "_force_stream_recovery":
+                            await self._force_stream_recovery()
+                        return
+
+                    # Otherwise, delegate to interface; rebuild command string
+                    tokens: list[str] = []
+                    if cmd_obj.parameters:
+                        for p in cmd_obj.parameters:
+                            if p.name in args_dict and args_dict[p.name] is not None:
+                                val = str(args_dict[p.name])
+                                if " " in val:
+                                    val = f'"{val}"'
+                                tokens.append(val)
+                    built = cmd_obj.name + (" " + " ".join(tokens) if tokens else "")
+                    if cmd_obj.name.startswith("run ") or cmd_obj.name == "run":
+                        response = await self.interface.handle_command(
+                            built,
+                            runmode_stream_cb=self._handle_runmode_stream,
+                            runmode_ui_update_cb=self._handle_runmode_ui_update,
+                        )
+                    else:
+                        response = await self.interface.handle_command(built)
+                    await self._display_command_response(response)
+                    return
+
+            # Fallback to legacy path
             parts = command.split(" ", 1)
             cmd = parts[0].lower()
             args = parts[1] if len(parts) > 1 else ""
-            
-            # Handle built-in TUI commands first
             if cmd == "help":
                 await self._show_enhanced_help()
                 return
-            elif cmd == "clear":
+            if cmd == "clear":
                 self.action_clear_log()
                 return
-            elif cmd == "quit" or cmd == "exit":
+            if cmd in ("quit", "exit"):
                 self.action_quit()
                 return
-            elif cmd == "debug":
+            if cmd == "debug":
                 if args:
-                    # Handle debug subcommands
                     response = await self.interface.handle_command(command)
                     await self._display_command_response(response)
                 else:
                     self.action_show_debug()
                 return
-            elif cmd == "recover":
-                # Manual recovery for stuck streams
+            if cmd == "recover":
                 await self._force_stream_recovery()
                 return
-            
-            # For other commands, use the interface with enhanced callbacks
             if cmd == "run":
-                # Enhanced run command with UI callbacks
                 response = await self.interface.handle_command(
-                    command, 
+                    command,
                     runmode_stream_cb=self._handle_runmode_stream,
-                    runmode_ui_update_cb=self._handle_runmode_ui_update
+                    runmode_ui_update_cb=self._handle_runmode_ui_update,
                 )
             else:
-                # Regular command handling
                 response = await self.interface.handle_command(command)
-            
-            # Display response
             await self._display_command_response(response)
-            
         except Exception as e:
             error_msg = f"Error handling command /{command}: {e}"
             logger.error(error_msg, exc_info=True)
@@ -1350,6 +1353,10 @@ class PenguinTextualApp(App):
         
         if "token_usage" in response:
             await self._display_token_usage(response["token_usage"])
+        
+        # Optional detailed token usage
+        if "token_usage_detailed" in response:
+            await self._display_token_usage(response["token_usage_detailed"])
     
     async def _display_conversations(self, conversations):
         """Display conversation list in a formatted way with numbered selection."""
@@ -1408,40 +1415,14 @@ class PenguinTextualApp(App):
     
     async def _show_enhanced_help(self) -> None:
         """Display enhanced help message with all available commands."""
-        help_text = """
-**Available Commands:**
-*Use Tab key for autocomplete on any command*
-
-**Chat & Navigation:**
-- `/help` - Show this help message
-- `/clear` - Clear the chat history  
-- `/quit` or `/exit` - Exit the application
-
-**RunMode & Tasks:**
-- `/run continuous [task]` - Start continuous RunMode
-- `/run task [name] [description]` - Run a specific task
-- `/run stop` - Stop current RunMode execution
-- `/task create "name" "description"` - Create a new task
-- `/project create "name" "description"` - Create a new project
-- `/list` - Show all projects and tasks
-
-**Model & Configuration:**
-- `/models` - Interactive model selection
-- `/model set <id>` - Set specific model
-- `/stream [on|off]` - Toggle streaming mode
-- `/tokens [reset|detail]` - Show or manage token usage
-
-**Conversations & Context:**
-- `/chat list` - List available conversations
-- `/chat load <id>` - Load a conversation
-- `/context list` - List context files
-- `/context load <file>` - Load context file
-
-**Debug & Development:**
-- `/debug [tokens|stream|sample]` - Debug functions
-- `/recover` - Force recovery of stuck streams
-        """
-        self.add_message(help_text, "system")
+        try:
+            if self.command_registry:
+                help_md = self.command_registry.get_help_text()
+                self.add_message(help_md, "system")
+                return
+        except Exception:
+            pass
+        self.add_message("Type /help for available commands. Use Tab for autocomplete.", "system")
 
     async def show_help(self) -> None:
         """Display the structured help message."""
