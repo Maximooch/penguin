@@ -34,8 +34,6 @@ except ImportError:  # pragma: no cover – depends on external library version
 
 # If the above import failed on older Textual versions we expose a
 # *minimal* fallback that provides interactive collapse / expand.
-except ImportError:  # pragma: no cover – depends on external library version
-    Expander = None  # type: ignore[misc, assignment]
 
 # ------------------------------------------------------------------
 # Fallback implementation (always defined when Expander is None)
@@ -678,6 +676,37 @@ class PenguinTextualApp(App):
         self.command_registry: Optional[CommandRegistry] = None
         self.streaming_state_machine = StreamingStateMachine()
 
+    # -------------------------
+    # Utilities
+    # -------------------------
+    def _prune_trailing_blank_messages(self, max_check: int = 5) -> None:
+        """Remove up to max_check trailing ChatMessage widgets that are visually empty.
+
+        A message is considered empty if its raw `content` is only whitespace
+        (after stripping newlines), which avoids large blank areas between
+        the tool card and the next message.
+        """
+        try:
+            message_area = self.query_one("#message-area", VerticalScroll)
+            # Work on a snapshot of children to avoid iterator invalidation
+            children = list(message_area.children)
+            removed = 0
+            for w in reversed(children[-max_check:]):
+                if isinstance(w, ChatMessage):
+                    raw = getattr(w, "content", "")
+                    if raw and raw.strip() == "":
+                        w.remove()
+                        removed += 1
+                    elif not raw:
+                        w.remove()
+                        removed += 1
+                    else:
+                        break
+            if removed:
+                self.debug_messages.append(f"Pruned {removed} blank message(s)")
+        except Exception:
+            pass
+
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
         yield Header()
@@ -699,6 +728,13 @@ class PenguinTextualApp(App):
 
     def add_message(self, content: str, role: str) -> ChatMessage:
         """Helper to add a new message widget to the display."""
+        # Trim excessive leading / trailing blank lines to avoid large visual gaps
+        try:
+            content = re.sub(r"^\n{2,}", "\n", content)
+        except Exception:
+            pass
+        content = content.strip("\n")
+
         message_area = self.query_one("#message-area", VerticalScroll)
         new_message = ChatMessage(content, role)
         message_area.mount(new_message)
@@ -743,6 +779,14 @@ class PenguinTextualApp(App):
         """Initialize the PenguinCore and interface."""
         try:
             self.status_text = "Initializing Penguin Core..."
+            # Print versions to help debug Textual-related layout issues
+            try:
+                import textual  # type: ignore
+                import rich  # type: ignore
+                logger.debug(f"Textual version: {getattr(textual, '__version__', 'unknown')}")
+                logger.debug(f"Rich version: {getattr(rich, '__version__', 'unknown')}")
+            except Exception:
+                pass
             self.core = await PenguinCore.create(fast_startup=True, show_progress=False)
             
             self.status_text = "Setting up interface..."
@@ -777,7 +821,16 @@ class PenguinTextualApp(App):
             pass
 
     async def handle_core_event(self, event_type: str, data: Any) -> None:
-        logger.debug(f"TUI handle_core_event {event_type} keys={list(data.keys()) if isinstance(data, dict) else 'n/a'}")
+        # Throttle extremely verbose stream_chunk logs: print every 50th chunk or final only
+        if event_type == "stream_chunk":
+            try:
+                is_final = bool(data.get("is_final", False))
+            except Exception:
+                is_final = False
+            if is_final or (getattr(self, "_stream_chunk_count", 0) % 50 == 0):
+                logger.debug(f"TUI handle_core_event {event_type} keys={list(data.keys()) if isinstance(data, dict) else 'n/a'}")
+        else:
+            logger.debug(f"TUI handle_core_event {event_type} keys={list(data.keys()) if isinstance(data, dict) else 'n/a'}")
         """Handle events from PenguinCore."""
         try:
             self.debug_messages.append(f"Received event: {event_type} with data: {str(data)[:200]}")
@@ -808,8 +861,12 @@ class PenguinTextualApp(App):
                     # Format other system messages
                     if len(content) > 500:
                         content = self._format_system_output("System", content)
+                    # Avoid leading newlines that create visual gaps
+                    content = content.lstrip("\n")
                     self.add_message(content, "system")
                 else:
+                    # Avoid leading newlines that create visual gaps
+                    content = content.lstrip("\n")
                     self.add_message(content, role)
 
             elif event_type == "stream_chunk":
@@ -911,6 +968,8 @@ class PenguinTextualApp(App):
 
                 # Track active execution widgets by ID
                 self._active_tools[execution.id] = action_widget
+                # Remove any trailing blank assistant/system cells that might have been left by streaming
+                self._prune_trailing_blank_messages()
                 self._scroll_to_bottom()
 
             elif event_type == "action_result":
@@ -936,6 +995,8 @@ class PenguinTextualApp(App):
                     else:
                         content = self._format_system_output("Action", result_str)
                         self.add_message(content, "system")
+                # Clean up blanks after finalizing
+                self._prune_trailing_blank_messages()
 
             elif event_type == "tool_call":
                 tool_name = data.get("name", "unknown")
@@ -953,6 +1014,7 @@ class PenguinTextualApp(App):
                 
                 # Track active tool
                 self._active_tools[execution.id] = tool_widget
+                self._prune_trailing_blank_messages()
                 self._scroll_to_bottom()
             
             elif event_type == "tool_result":
@@ -982,6 +1044,7 @@ class PenguinTextualApp(App):
                     else:
                         content = self._format_system_output(action_name, result_str)
                         self.add_message(content, "system")
+                self._prune_trailing_blank_messages()
 
             elif event_type == "error":
                 error_msg = data.get("message", "Unknown error")
@@ -1403,6 +1466,7 @@ class TUI:
         os.environ['PENGUIN_TUI_MODE'] = '1'
         app = PenguinTextualApp()
         try:
+            # Run without DevTools to keep the UI clean
             app.run()
         finally:
             os.environ.pop('PENGUIN_TUI_MODE', None)
@@ -1416,5 +1480,38 @@ class TUI:
                 print("="*60)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, filename="tui_debug.log")
+    # Configure both console + rolling file logs (debug_log_<n>.txt)
+    # import os as _os
+    # import time as _time
+
+    # def _next_log_filename(prefix: str = "debug_log_", ext: str = ".txt", directory: str = ".") -> str:
+    #     for i in range(1, 1000):
+    #         candidate = _os.path.join(directory, f"{prefix}{i}{ext}")
+    #         if not _os.path.exists(candidate):
+    #             return candidate
+    #     # Fallback to timestamp if too many files
+    #     return _os.path.join(directory, f"{prefix}{int(_time.time())}{ext}")
+
+    # _log_path = _next_log_filename()
+
+    # _root = logging.getLogger()
+    # _root.setLevel(logging.DEBUG)
+    # # Reset any prior basicConfig
+    # for h in list(_root.handlers):
+    #     _root.removeHandler(h)
+
+    # _fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # _console = logging.StreamHandler()
+    # # Keep console quieter; detailed logs go to file
+    # _console.setLevel(logging.INFO)
+    # _console.setFormatter(_fmt)
+
+    # _file = logging.FileHandler(_log_path, mode="w")
+    # _file.setLevel(logging.DEBUG)
+    # _file.setFormatter(_fmt)
+
+    # _root.addHandler(_console)
+    # _root.addHandler(_file)
+
+    # logging.getLogger(__name__).info(f"Writing debug log to: {_log_path}")
     TUI.run() 

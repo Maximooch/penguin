@@ -36,6 +36,44 @@ This document outlines a comprehensive plan to enhance the Penguin TUI, bringing
 └─────────────────────────────────────────────────┘
 ```
 
+#### Immediate Visual Enhancements (Quick Wins)
+These refinements keep the current architecture, focus on UX polish, and are safe to implement before Phase 2.
+
+- Header
+  - Show live elapsed time while running; freeze on completion.
+  - Status-colored accent (pending, running, success, failed, cancelled) with a subtle fade on transition.
+  - Hover/focus outline for keyboard users; header right-click/shortcut to copy raw execution JSON.
+
+- Parameters
+  - Auto-collapse oversized values (>15 lines) with a “show more” toggle per key.
+  - Render keys in bold monospace; lightly highlight value types (bool, number, string, null).
+  - Detect filesystem paths and URLs; make them activatable (open in viewer/editor or browser).
+
+- Result
+  - While streaming, show a tiny progress shimmer or dot animation in the gutter.
+  - Mini toolbar: Copy result, Rerun tool, and Download if a file path is returned.
+  - Pretty-print JSON with fold/unfold (keyboard j/k to expand/collapse when focused).
+  - For very large plain-text/code, open in a pager dialog instead of overflowing the card.
+
+- Layout & Spacing
+  - Harmonize corner radii for card and its inner sections; slightly reduce vertical padding.
+  - Darker divider between Parameters and Result for clearer separation.
+
+- Accessibility & Navigation
+  - Left/Right arrows toggle collapse in addition to Space/Enter.
+  - Preserve scroll position when expanding/collapsing sections.
+  - Provide quick jumps: “gg” to first widget, “G” to last.
+
+- Performance hygiene (for long transcripts)
+  - Lazy-mount inner content when a section first opens.
+  - When a widget scrolls far off-screen, trim in-memory result strings to head/tail windows (persist full content on disk if downloadable).
+
+- Extensibility hooks
+  - `on_card_mount` signal so plugins can add custom tabs (e.g., Diff view for `apply_diff`).
+  - Optional per-card footer area for thumbnails or action-specific controls.
+
+These changes are Phase‑1 friendly (no streaming refactor required) and align with the Phase‑2 theme work.
+
 ### 2. Complete Command System Migration
 **Priority: High**  
 **Complexity: Medium**

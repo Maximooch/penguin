@@ -1,0 +1,58 @@
+2025-08-07 23:05:32,728 INFO __main__: Writing debug log to: ./debug_log_5.txt
+2025-08-07 23:05:32,734 DEBUG asyncio: Using selector: KqueueSelector
+2025-08-07 23:05:32,759 DEBUG __main__: Textual version: 5.3.0
+2025-08-07 23:05:32,759 DEBUG __main__: Rich version: unknown
+2025-08-07 23:05:32,759 INFO penguin.core: STARTUP: Loading environment variables
+2025-08-07 23:05:32,759 INFO penguin.core: PROFILING: Load environment took 0.0003 seconds
+2025-08-07 23:05:32,759 INFO penguin.core: STARTUP: Setting up logging configuration
+2025-08-07 23:05:32,759 INFO penguin.core: PROFILING: Setup logging took 0.0002 seconds
+2025-08-07 23:05:32,759 INFO penguin.core: STARTUP: Loading and parsing configuration
+2025-08-07 23:05:32,760 INFO root: Diagnostics enabled via config.yml.
+2025-08-07 23:05:32,760 INFO root: Diagnostics enabled
+2025-08-07 23:05:32,760 INFO penguin.core: STARTUP: Config loaded in 0.0010s
+2025-08-07 23:05:32,760 INFO penguin.core: PROFILING: Load configuration took 0.0011 seconds
+2025-08-07 23:05:32,760 INFO penguin.core: STARTUP: Creating model configuration
+2025-08-07 23:05:32,760 INFO penguin.core: STARTUP: Using model=moonshotai/kimi-k2, provider=openrouter, client=openrouter
+2025-08-07 23:05:32,760 INFO penguin.core: PROFILING: Create model config took 0.0001 seconds
+2025-08-07 23:05:32,760 INFO penguin.core: STARTUP: Initializing API client
+2025-08-07 23:05:32,760 INFO penguin.llm.api_client: Initializing APIClient for model: moonshotai/kimi-k2, Provider: openrouter, Preference: openrouter
+2025-08-07 23:05:32,775 INFO penguin.llm.openrouter_gateway: OpenRouterGateway initialized for model: moonshotai/kimi-k2
+2025-08-07 23:05:32,775 INFO penguin.llm.openrouter_gateway: Site URL: None, Site Title: Penguin_AI_Agent
+2025-08-07 23:05:32,775 DEBUG penguin.llm.openrouter_gateway: Using extra headers: {'X-Title': 'Penguin_AI_Agent'}
+2025-08-07 23:05:32,775 INFO penguin.llm.api_client: Using OpenRouterGateway for moonshotai/kimi-k2
+2025-08-07 23:05:32,775 DEBUG penguin.llm.api_client: System prompt set. Length: 31194
+2025-08-07 23:05:32,775 INFO penguin.core: STARTUP: API client initialized in 0.0144s
+2025-08-07 23:05:32,775 INFO penguin.core: PROFILING: Initialize API client took 0.0144 seconds
+2025-08-07 23:05:32,775 INFO penguin.core: STARTUP: Creating tool manager (fast_startup=True)
+2025-08-07 23:05:32,775 INFO penguin.tools.tool_manager: Initializing ToolManager with true lazy loading...
+2025-08-07 23:05:32,787 INFO penguin.tools.tool_manager: ToolManager initialized with true lazy loading. Fast startup: True
+2025-08-07 23:05:32,787 INFO penguin.core: STARTUP: Tool manager created in 0.0126s with 33 tools
+2025-08-07 23:05:32,787 INFO penguin.core: PROFILING: Create tool manager took 0.0126 seconds
+2025-08-07 23:05:32,787 INFO penguin.core: STARTUP: Creating core instance
+2025-08-07 23:05:32,791 INFO penguin.project.storage: Initialized ProjectStorage at /Users/maximusputnam/penguin_workspace/projects.db
+2025-08-07 23:05:32,791 INFO penguin.project.manager: EventBus integration enabled
+2025-08-07 23:05:32,791 INFO penguin.project.manager: ProjectManager initialized with workspace: /Users/maximusputnam/penguin_workspace
+2025-08-07 23:05:32,791 INFO penguin.system.conversation_manager: Initializing conversation components...
+2025-08-07 23:05:32,791 INFO penguin.system.context_window: Using model's max_tokens: 15750
+2025-08-07 23:05:32,791 INFO penguin.system.context_window: Using API client token counter from unknown
+2025-08-07 23:05:32,791 INFO penguin.system.conversation_manager: Context window initialized with max tokens: 15750
+2025-08-07 23:05:32,793 INFO penguin.system.conversation_manager: Session manager initialized with 457 sessions
+2025-08-07 23:05:32,802 INFO penguin.system.checkpoint_manager: CheckpointManager initialized with 3719 existing checkpoints
+2025-08-07 23:05:32,803 INFO penguin.system.conversation_manager: Checkpoint manager initialized with 3719 checkpoints
+2025-08-07 23:05:32,806 INFO penguin.core: PenguinCore initialized successfully
+2025-08-07 23:05:32,806 INFO penguin.core: STARTUP: Core instance created in 1754625932.7879s
+2025-08-07 23:05:32,806 INFO penguin.core: PROFILING: Create core instance took 0.0188 seconds
+2025-08-07 23:05:32,806 INFO penguin.core: STARTUP COMPLETE: Total initialization time: 0.0475 seconds
+2025-08-07 23:05:32,806 INFO penguin.core: STARTUP TIMING SUMMARY:
+2025-08-07 23:05:32,806 INFO penguin.core:   - Load environment: 0.0003s (0.6%)
+2025-08-07 23:05:32,806 INFO penguin.core:   - Setup logging: 0.0002s (0.3%)
+2025-08-07 23:05:32,806 INFO penguin.core:   - Load configuration: 0.0011s (2.3%)
+2025-08-07 23:05:32,806 INFO penguin.core:   - Create model config: 0.0001s (0.1%)
+2025-08-07 23:05:32,806 INFO penguin.core:   - Initialize API client: 0.0144s (30.4%)
+2025-08-07 23:05:32,806 INFO penguin.core:   - Create tool manager: 0.0126s (26.6%)
+2025-08-07 23:05:32,806 INFO penguin.core:   - Create core instance: 0.0188s (39.7%)
+2025-08-07 23:05:32,806 INFO penguin.core: FAST STARTUP enabled - memory indexing deferred to first use
+2025-08-07 23:05:32,806 INFO penguin.core: ToolManager startup stats: {'fast_startup': True, 'memory_provider_exists': False, 'indexing_completed': False, 'lazy_initialized': {'declarative_memory_tool': False, 'grep_search': False, 'file_map': False, 'summary_notes_tool': False, 'notebook_executor': False, 'perplexity_provider': False, 'memory_provider': False, 'memory_indexing': False, 'browser_tools': False, 'pydoll_tools': False}}
+2025-08-07 23:05:32,806 DEBUG penguin.core: Registered UI event handler: PenguinTextualApp.handle_core_event
+2025-08-07 23:05:32,816 INFO penguin.cli.command_registry: Loaded 31 commands from /Users/maximusputnam/Code/Penguin/penguin/penguin/cli/commands.yml
+2025-08-07 23:06:27,148 DEBUG asyncio: Using selector: KqueueSelector
