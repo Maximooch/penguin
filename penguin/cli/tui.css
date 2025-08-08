@@ -47,6 +47,7 @@ Footer .footer--highlight-key {
     height: 1fr;
     width: 100%;
     scrollbar-gutter: stable;
+    min-height: 0; /* ensure scroll container shrinks to content */
 }
 
 #input-box {
@@ -91,6 +92,8 @@ ChatMessage {
 
 .message-content {
     height: auto;
+    margin: 0;           /* remove default block margins */
+    min-height: 0;       /* prevent reserved vertical space */
 }
 
 /* Role-specific colors */

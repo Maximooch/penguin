@@ -141,7 +141,10 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
                         params_col.styles.height = "auto"
                     except Exception:
                         pass
-                    md = Markdown(params_content, classes="tool-params-content")
+                    md = Markdown(
+                        self._strip_trailing_blank_lines(params_content),
+                        classes="tool-params-content"
+                    )
                     try:
                         md.styles.min_height = 0
                         md.styles.height = "auto"
@@ -167,7 +170,10 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
                         result_col.styles.height = "auto"
                     except Exception:
                         pass
-                    md = Markdown(result_content, classes="tool-result-content")
+                    md = Markdown(
+                        self._strip_trailing_blank_lines(result_content),
+                        classes="tool-result-content"
+                    )
                     try:
                         md.styles.min_height = 0
                         md.styles.height = "auto"

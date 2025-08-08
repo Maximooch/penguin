@@ -43,54 +43,38 @@ class Command:
     
     def parse_args(self, args_str: str) -> Dict[str, Any]:
         """Parse arguments string into parameter dict."""
-        # Simple parsing for now - can be enhanced
-        args = {}
-        
-        if not args_str.strip():
-            # No arguments provided
+        import shlex
+        args: Dict[str, Any] = {}
+
+        # No arguments provided
+        if not args_str or not args_str.strip():
             for param in self.parameters:
-                if param.required:
-                    # For now, don't raise error for missing params in parse
-                    # This allows checking if command exists before validating args
-                    pass
-                else:
+                if not param.required:
                     args[param.name] = param.default
             return args
-        
-        # Split arguments (simple space-based for now, could be enhanced with shlex)
-        parts = args_str.split()
-        
+
+        # Use shlex to honor quotes
+        try:
+            parts = shlex.split(args_str)
+        except ValueError:
+            parts = args_str.split()
+
         for i, param in enumerate(self.parameters):
             if i < len(parts):
-                # Basic type conversion
+                raw = parts[i]
                 if param.type == "int":
                     try:
-                        args[param.name] = int(parts[i])
+                        args[param.name] = int(raw)
                     except ValueError:
                         args[param.name] = param.default
                 elif param.type == "bool":
-                    args[param.name] = parts[i].lower() in ["true", "yes", "1"]
+                    args[param.name] = str(raw).lower() in ("true", "yes", "1", "on")
                 else:
-                    # For strings, if there are quotes, try to handle them
-                    value = parts[i]
-                    # If value starts with quote, collect until closing quote
-                    if value.startswith('"') or value.startswith("'"):
-                        quote_char = value[0]
-                        collected_parts = [value[1:]]  # Remove opening quote
-                        j = i + 1
-                        while j < len(parts) and not parts[j-1].endswith(quote_char):
-                            collected_parts.append(parts[j])
-                            j += 1
-                        value = " ".join(collected_parts)
-                        if value.endswith(quote_char):
-                            value = value[:-1]  # Remove closing quote
-                    args[param.name] = value
-            elif param.required:
-                # Don't raise here, let caller handle validation
-                pass
-            else:
+                    args[param.name] = raw
+            elif not param.required:
                 args[param.name] = param.default
-        
+            # else: leave missing required param unfilled
+
         return args
 
 
@@ -190,20 +174,11 @@ class CommandRegistry:
         self.handlers[handler_name] = handler
     
     def find_command(self, input_str: str) -> Optional[Command]:
-        """Find command matching input string."""
-        # Direct match
+        """Find command by exact name or alias (no partial matching)."""
         if input_str in self.commands:
             return self.commands[input_str]
-        
-        # Alias match
         if input_str in self.aliases:
             return self.commands[self.aliases[input_str]]
-        
-        # Partial match (for multi-word commands)
-        for cmd_name, command in self.commands.items():
-            if input_str.startswith(cmd_name):
-                return command
-        
         return None
     
     def parse_input(self, input_str: str) -> Tuple[Optional[Command], Dict[str, Any]]:
@@ -221,23 +196,37 @@ class CommandRegistry:
         if input_str.startswith('/'):
             input_str = input_str[1:]
         
-        # Find matching command
-        command = None
-        remaining_args = ""
-        
-        # Try longest match first (for multi-word commands)
+        # Tokenize input
         parts = input_str.split()
-        for i in range(len(parts), 0, -1):
-            potential_cmd = " ".join(parts[:i])
-            command = self.find_command(potential_cmd)
+        command: Optional[Command] = None
+        remaining_args = ""
+
+        # 1) Exact match on full string first
+        cmd_candidate = input_str
+        if cmd_candidate in self.commands or cmd_candidate in self.aliases:
+            command = self.find_command(cmd_candidate)
             if command:
-                remaining_args = " ".join(parts[i:])
-                break
-        
+                used_tokens = len(command.name.split())
+                remaining_args = " ".join(parts[used_tokens:])
+
+        # 2) Longest prefix match by command tokens
+        if not command:
+            best_name = None
+            best_len = -1
+            for cmd_name in self.commands.keys():
+                cmd_tokens = cmd_name.split()
+                if len(parts) >= len(cmd_tokens) and parts[:len(cmd_tokens)] == cmd_tokens:
+                    if len(cmd_tokens) > best_len:
+                        best_name = cmd_name
+                        best_len = len(cmd_tokens)
+            if best_name:
+                command = self.commands[best_name]
+                remaining_args = " ".join(parts[best_len:])
+
         if not command:
             return None, {}
-        
-        # Parse arguments
+
+        # Parse arguments from the remaining string
         try:
             args = command.parse_args(remaining_args) if remaining_args else {}
         except ValueError as e:
@@ -255,7 +244,7 @@ class CommandRegistry:
         if partial.startswith('/'):
             partial = partial[1:]
         
-        suggestions = []
+        suggestions: List[str] = []
         
         # Check direct commands
         for cmd_name in self.commands:

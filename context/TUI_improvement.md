@@ -87,6 +87,7 @@ These changes are Phase‑1 friendly (no streaming refactor required) and align 
 - **Model Commands**: `models`, `model`, `set`
 - **Context Commands**: `context`, `clear-context`
 
+
 #### Future Enhancement
 - Implement `commands.yml` for user customization
 - Allow command aliases and shortcuts
@@ -367,6 +368,22 @@ These changes are Phase‑1 friendly (no streaming refactor required) and align 
    - Browser extension
    - Mobile companion
    - API access
+
+### Additional Future Considerations
+- **CommandRegistry as single source**: Make `CommandRegistry` authoritative for names, aliases, arg schemas, help text, and execution callbacks. Autogenerate help and autocomplete from specs. Allow user overrides via `commands.yml`.
+- **Config layering and location**: Load `commands.yml` from the same directory as `config.yml`, layering: built-in → repo-level → user-level. Consider hot-reload on file changes.
+- **Unified argument parsing**: Centralize parsing/validation in `PenguinInterface` so both non-interactive CLI (`-p/--prompt`) and TUI share logic without importing Textual.
+- **Context-aware autocomplete**: Hierarchical completion (command → subcommand → flags → values) with dynamic value completers (e.g., model IDs, conversation IDs). Cache to maintain low latency.
+- **Error UX for commands**: On parse/validation errors, display usage with examples and nearest-match suggestions. Keep behavior consistent across CLI and TUI.
+- **Cancellation and concurrency**: Add `/cancel <id>` and a keybinding to cancel foreground commands; optionally support background jobs with job IDs and a lightweight jobs panel.
+- **Permissions and safety**: Introduce a policy layer to gate destructive commands (filesystem, code execution), confirmations, environment-based restrictions, and a safe mode.
+- **Telemetry and auditing**: Optional audit trail of executed commands (with redacted args), visible in TUI debug view and persisted; summarize command metrics in the status panel.
+- **Dedicated output widgets**: Beyond markdown defaults, provide widgets for model picker, token usage table, and file diffs. Fix trailing whitespace/gap issues in tool/action widgets via content normalization and CSS/layout adjustments.
+- **Hooks and extensibility**: Pre/post-command hooks, custom completers, and a plugin API to approach IDE/Claude Code parity while sandboxing third-party code.
+- **Internationalization**: i18n/l10n for help, errors, and status messages; ensure RTL and wide-character rendering work well.
+- **Accessibility**: Improve keyboard navigation maps, focus outlines, and screen-reader hints; configurable keybindings.
+- **Testing strategy**: Golden tests for help/usage, parser property tests, latency budgets for autocomplete, and snapshot tests for widget rendering.
+- **Observability**: Expose command/job states in the status panel, simple diagnostics toggles, and profiling hooks for command execution paths.
 
 ---
 
