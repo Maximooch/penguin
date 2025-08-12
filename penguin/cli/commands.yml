@@ -67,11 +67,14 @@ commands:
     category: chat
     description: "Save current conversation"
     handler: "_handle_chat_save"
+    enabled: false
     
   - name: "chat summary"
     category: chat
     description: "Show conversation summary"
     handler: "_handle_chat_summary"
+    enabled: false
+    # TODO: Implement chat summary
     
   # RunMode commands
   - name: "run continuous"
@@ -152,6 +155,27 @@ commands:
     category: task
     description: "Show all projects and tasks"
     handler: "_handle_list"
+
+  # Image message (TUI implementation)
+  - name: image
+    category: chat
+    description: "Send an image with optional description"
+    parameters:
+      - name: path
+        type: string
+        required: true
+        description: "Path to the image file (drag-and-drop supported)"
+      - name: description
+        type: string
+        required: false
+        description: "Optional description text"
+    handler: "_handle_image"
+
+  # Attachment management
+  - name: "attachments clear"
+    category: chat
+    description: "Clear pending image attachments for the next message"
+    handler: "_attachments_clear"
     
   # Model commands
   - name: models
