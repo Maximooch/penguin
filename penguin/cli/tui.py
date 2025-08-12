@@ -645,6 +645,9 @@ class PenguinTextualApp(App):
         self.command_registry: Optional[CommandRegistry] = None
         self.streaming_state_machine = StreamingStateMachine()
 
+        # Pending image attachments (paths) captured from input path detection
+        self._pending_attachments: list[str] = []
+
     # -------------------------
     # Utilities
     # -------------------------
@@ -1175,9 +1178,13 @@ class PenguinTextualApp(App):
             self.add_message("Core not initialized yet. Please wait.", "error")
             return
         
-        user_input = event.value.strip()
+        # First pass: detect and stage any image paths in the input
+        user_input_raw = event.value
+        user_input = self._detect_and_stage_attachments(user_input_raw).strip()
         if not user_input:
-            return
+            # Allow sending only attachments (no text)
+            if not self._pending_attachments:
+                return
         
         event.input.value = ""
         
@@ -1197,8 +1204,13 @@ class PenguinTextualApp(App):
                 self.add_message(f"Invalid selection. Please choose a number between 1 and {len(self._conversation_list)}", "error")
                 return
         
-        # Display user message immediately for better UX
-        self.add_message(user_input, "user")
+        # Display user message immediately for better UX (show attachments chip)
+        display_text = user_input
+        if self._pending_attachments:
+            chip = ", ".join(os.path.basename(p) for p in self._pending_attachments)
+            display_text = (display_text + "\n" if display_text else "") + f"[attachments: {chip}]"
+        if display_text:
+            self.add_message(display_text, "user")
 
         if user_input.startswith("/"):
             # Clear conversation list when executing other commands
@@ -1211,14 +1223,24 @@ class PenguinTextualApp(App):
             # Clear conversation list when sending regular messages
             self._conversation_list = None
             self.status_text = "Penguin is thinking..."
+            # Build payload with optional image attachments
+            payload: Dict[str, Any] = {'text': user_input}
+            if self._pending_attachments:
+                # Support multiple images by sending the first (current interface supports single image_path)
+                # For now, send one-by-one; future: extend interface/core to accept a list
+                first = self._pending_attachments[0]
+                payload['image_path'] = first
             # Core processing is now event-driven, we just kick it off
-            await self.interface.process_input({'text': user_input})
+            await self.interface.process_input(payload)
             self.status_text = "Ready"
         except Exception as e:
             self.status_text = "Error"
             error_msg = f"Error processing input: {e}"
             logger.error(error_msg, exc_info=True)
             self.add_message(error_msg, "error")
+        finally:
+            # Clear attachments after send
+            self._pending_attachments.clear()
 
     def action_clear_log(self) -> None:
         """Clear the chat log."""
@@ -1243,7 +1265,7 @@ class PenguinTextualApp(App):
                 if cmd_obj:
                     handler = cmd_obj.handler or ""
                     # TUI-local handlers
-                    if handler in ("_show_enhanced_help", "action_clear_log", "action_quit", "action_show_debug", "_force_stream_recovery"):
+                    if handler in ("_show_enhanced_help", "action_clear_log", "action_quit", "action_show_debug", "_force_stream_recovery", "_handle_image", "_attachments_clear"):
                         if handler == "_show_enhanced_help":
                             await self._show_enhanced_help()
                         elif handler == "action_clear_log":
@@ -1254,6 +1276,11 @@ class PenguinTextualApp(App):
                             self.action_show_debug()
                         elif handler == "_force_stream_recovery":
                             await self._force_stream_recovery()
+                        elif handler == "_handle_image":
+                            await self._handle_image_command(args_dict)
+                        elif handler == "_attachments_clear":
+                            self._pending_attachments.clear()
+                            self.add_message("Attachments cleared.", "system")
                         return
 
                     # Otherwise, delegate to interface; rebuild command string
@@ -1313,6 +1340,57 @@ class PenguinTextualApp(App):
             error_msg = f"Error handling command /{command}: {e}"
             logger.error(error_msg, exc_info=True)
             self.add_message(error_msg, "error")
+
+    async def _handle_image_command(self, args: Dict[str, Any]) -> None:
+        """Handle /image path [description] with drag-and-drop support."""
+        try:
+            image_path = str(args.get("path", "")).strip().strip("'\"")
+            description = str(args.get("description", "")).strip()
+
+            # If path is missing, prompt the user via a simple input
+            if not image_path:
+                # Allow drag-and-drop into terminal-like prompt
+                self.add_message("Drag and drop an image path, then press Enter:", "system")
+                return
+
+            if not os.path.exists(image_path):
+                self.add_message(f"Image file not found: {image_path}", "error")
+                return
+
+            if not description:
+                description = ""
+
+            # Send through interface like CLI does, relying on core to process image
+            if self.interface:
+                await self.interface.process_input({"text": description, "image_path": image_path})
+                self.add_message(f"Image sent: {os.path.basename(image_path)}", "system")
+        except Exception as e:
+            self.add_message(f"Error handling image: {e}", "error")
+
+    def _detect_and_stage_attachments(self, text: str) -> str:
+        """Detect file paths for images in input text and stage them as attachments.
+        Returns text with paths removed when staged successfully.
+        """
+        if not text:
+            return text
+        # Accept common image extensions
+        valid_ext = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        tokens = text.split()
+        kept_tokens: list[str] = []
+        staged: list[str] = []
+        for tok in tokens:
+            # Strip quotes
+            cleaned = tok.strip('"\'')
+            _, ext = os.path.splitext(cleaned)
+            if ext.lower() in valid_ext and os.path.exists(cleaned):
+                staged.append(cleaned)
+            else:
+                kept_tokens.append(tok)
+        if staged:
+            self._pending_attachments.extend(staged)
+            self.add_message(f"Staged attachment(s): {', '.join(os.path.basename(p) for p in staged)}", "system")
+            return " ".join(kept_tokens)
+        return text
     
     async def _handle_runmode_stream(self, content: str) -> None:
         """Handle streaming content from RunMode."""

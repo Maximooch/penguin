@@ -8,7 +8,7 @@ workspace:
   - projects
   - context
 model:
-  default: moonshotai/kimi-k2
+  default: openai/gpt-5-mini
   provider: openrouter
   client_preference: openrouter
   streaming_enabled: true
