@@ -1,7 +1,7 @@
 # CLI Argument Parsing Unification Plan
 
 ## Objective
-Create a thin, shared parser so both the shell CLI (`cli.py` via Typer) and the TUI use the same command specs, without removing Typer as the outer shell for process arguments and environment flags.
+Adopt a TUI‑first experience while keeping a powerful headless CLI. The new Typer‑based `cli.py` becomes a slim entrypoint that launches the TUI by default, or runs headless commands. The legacy Rich CLI is preserved as `old_cli.py` and can be invoked via `--old-cli`.
 
 ## Scope
 - Single source of truth for in-app command names, parameters, and help (backed by `commands.yml` and `CommandRegistry`).
@@ -12,15 +12,16 @@ Non-goals
 - Replace Typer for process-level argument parsing.
 - Change existing CLI flags or break current workflows.
 
-## Artifacts (proposed)
-- `penguin/penguin/cli/shared_parser.py`
-  - `parse(command_str: str) -> ParsedCommand` (name, args, errors)
-  - `format_usage(command_name: str) -> str`
-  - `suggest(partial: str) -> list[str]`
-  - Thin façade over `CommandRegistry` with stricter validation and usage text.
-- `penguin/penguin/cli/shared_executor.py` (optional)
-  - `execute(parsed: ParsedCommand, interface: PenguinInterface, callbacks=...)` → Dict
-  - Bridges registry handlers to interface methods or TUI-local actions.
+## Artifacts
+- `penguin/penguin/cli/cli.py` (NEW slim Typer CLI)
+  - Defaults to TUI when no headless flags/subcommands are used
+  - Global flags: `--old-cli`, `--no-tui`, `-p/--prompt`, `--output-format`, `--version`, `--project`
+  - Existing globals preserved: `--continue/--resume`, `--run/--247`, `--time-limit`, `--description`, `--model/-m`, `--workspace/-w`, `--no-streaming`, `--fast-startup`
+  - Log control: `--quiet`, `--verbose`, `--no-color`
+  - Headless commands: `setup`, `delegate`, `project`, `task`, `perf-test`, `profile`
+- `penguin/penguin/cli/old_cli.py` (legacy Rich CLI; unchanged)
+- `penguin/penguin/cli/shared_parser.py` (DONE)
+  - `parse/suggest/usage` using `CommandRegistry` for consistent parsing
 
 ## Integration Plan
 1) TUI (already done)
@@ -28,14 +29,24 @@ Non-goals
 - Help: render from registry.
 - Routing: parse via shared parser, then delegate to interface or TUI-local actions.
 
-2) CLI (Typer stays)
-- Typer continues to parse process flags and known subcommands.
-- For slash-like or registry-backed commands, Typer forwards the remaining string to `shared_parser.parse()` then executes via `shared_executor`.
-- Gradually migrate Typer subcommands to call the shared executor (keeping flags where useful for UX).
+2) CLI (Typer, slim outer layer)
+- If any headless flags/commands are present (`--old-cli`, `--no-tui`, `-p/--prompt`, `setup`, `delegate`, `project`, `task`, `perf-test`, `profile`) ⇒ run headless and exit
+- Otherwise ⇒ run TUI by default (`penguin.cli.tui.TUI.run()`)
+- `--old-cli` imports and runs legacy `old_cli.py`
+- `--project <name>` routes delegate/project/task to named project; if omitted, tasks are independent
 
 3) Command specs
 - Continue using `commands.yml` as canonical.
 - Support config layering (built-in → repo → user), hot-reload later.
+
+## Key Behaviors
+- **Global --project flag**: Routes tasks/delegate to specified project; independent if omitted
+- **Exit codes**: Non-zero on errors; stable codes for automation
+- **Output formats**: Text by default; `--output-format json` for stable automation
+- **Context handling**: Accept local paths and URLs for delegate; paths attached, URLs stored as metadata
+- **Security**: Confirm force deletes; validate paths; never log secrets
+- **Performance**: Lazy imports; default fast_startup=True for one-shots
+- **Signal handling**: Graceful SIGINT/SIGTERM handling with appropriate exit codes
 
 ## Error & UX
 - On parse/validation error: show generated usage + nearest matches.
@@ -47,17 +58,14 @@ Non-goals
 - E2E: a few CLI flows routed through shared executor.
 
 ## Phases
-- Phase 1
-  - Implement `shared_parser.parse/suggest/usage` using `CommandRegistry`.
-  - Add validation (required args, basic type coercion).
+- Phase 1 (now)
+  - Land slim `cli.py` with: global flags, prompt, setup, delegate, project/task, perf/profile, default‑to‑TUI
+  - Keep `old_cli.py` frozen; wire `--old-cli`
 - Phase 2
-  - Introduce `shared_executor` and wire TUI (done) + optional CLI pathways.
-  - Unify error messages in both UIs.
+  - Migrate CLI subcommands to reuse `SharedParser` where it helps (normalization/usage)
+  - Add dynamic completers and config layering for commands.yml (optional)
 - Phase 3
-  - Config layering and optional hot-reload for `commands.yml`.
-  - Dynamic value completers (models, conversations) with caching.
-- Phase 4
-  - Cancellation hooks, background jobs, telemetry hooks.
+  - Add background jobs/cancellation hooks for long headless runs; telemetry toggles
 
 ## Risks
 - Duplication with Typer for some command trees; mitigate by forwarding to shared executor progressively.

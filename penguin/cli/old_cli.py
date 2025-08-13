@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import datetime
 import os
 import platform
@@ -53,7 +52,12 @@ if PROFILE_ENABLED:
     Syntax = time_import("rich.syntax").Syntax
     Live = time_import("rich.live").Live
     
-    # Removed prompt_toolkit timing imports – legacy Rich CLI removed
+    prompt_toolkit_import = time_import("prompt_toolkit")
+    PromptSession = prompt_toolkit_import.PromptSession
+    KeyBindings = time_import("prompt_toolkit.key_binding").KeyBindings
+    Keys = time_import("prompt_toolkit.keys").Keys
+    Style = time_import("prompt_toolkit.styles").Style
+    HTML = time_import("prompt_toolkit.formatted_text").HTML
     
     # Time internal imports
     config_module = time_import("penguin.config")
@@ -100,22 +104,26 @@ if PROFILE_ENABLED:
 else:
     # Standard imports without timing
     import typer  # type: ignore
-    from rich.console import Console as RichConsole  # type: ignore
+    from rich.console import Console as RichConsole # Renamed to avoid conflict # type: ignore
     from rich.markdown import Markdown  # type: ignore
     from rich.panel import Panel  # type: ignore
+    from rich.progress import Progress, SpinnerColumn, TextColumn  # type: ignore
+    from rich.syntax import Syntax  # type: ignore
+    from rich.live import Live  # type: ignore
+    import rich  # type: ignore
+    from prompt_toolkit import PromptSession  # type: ignore
+    from prompt_toolkit.key_binding import KeyBindings  # type: ignore
+    from prompt_toolkit.keys import Keys  # type: ignore
+    from prompt_toolkit.styles import Style  # type: ignore
+    from prompt_toolkit.formatted_text import HTML  # type: ignore
 
-    from penguin.config import (
-        config as penguin_config_global,
-        DEFAULT_MODEL,
-        DEFAULT_PROVIDER,
-        WORKSPACE_PATH,
-        GITHUB_REPOSITORY,
-    )
+    from penguin.config import config as penguin_config_global, DEFAULT_MODEL, DEFAULT_PROVIDER, WORKSPACE_PATH, GITHUB_REPOSITORY
 from penguin.core import PenguinCore
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig
 from penguin.run_mode import RunMode # We will mock this but need the type for spec
-from penguin.system.state import MessageCategory
+from penguin.system.state import parse_iso_datetime, MessageCategory
+from penguin.system.conversation_menu import ConversationMenu, ConversationSummary # Used by PenguinCLI class
 from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
@@ -154,7 +162,7 @@ except ImportError as e:
         """Fallback: assume config is complete if setup unavailable"""
         return True
 
-app = typer.Typer(help="Penguin AI Assistant - Your command-line AI companion.\nRun with -p/--prompt for headless mode. Without headless flags/subcommands, Penguin launches the TUI by default.")
+app = typer.Typer(help="Penguin AI Assistant - Your command-line AI companion.\nRun with -p/--prompt for non-interactive mode, or with a subcommand (e.g., 'chat').\nIf no prompt or subcommand is given, starts an interactive chat session.")
 console = RichConsole() # Use the renamed import
 logger = setup_logger("penguin_cli.log") # Setup a logger for the CLI module
 
@@ -406,13 +414,22 @@ async def _run_penguin_direct_prompt(prompt_text: str, output_format: str):
         raise typer.Exit(code=1)
 
 async def _run_interactive_chat():
-    """Launch the Textual TUI for interactive mode."""
-    try:
-        from penguin.cli.tui import TUI
-        TUI.run()
-    except Exception as e:
-        console.print(f"[red]Failed to launch TUI:[/red] {e}")
-        raise typer.Exit(code=1)
+    global _core, _interface, _interactive_session_manager
+    if not _core or not _interface:
+        logger.error("Core or Interface not initialized for interactive chat.")
+        # Attempt to initialize if called directly
+        await _initialize_core_components_globally()
+        if not _core or not _interface:
+            console.print("[red]Error: Core components failed to initialize for interactive chat.[/red]")
+            raise typer.Exit(code=1)
+
+    if _interactive_session_manager is None:
+        # PenguinCLI class is defined later in this file.
+        # It takes `core` and its __init__ creates `PenguinInterface(core)`.
+        _interactive_session_manager = PenguinCLI(_core) 
+    
+    # The chat_loop should handle its own Rich Live context if needed.
+    await _interactive_session_manager.chat_loop()
 
 # Store the original app.callback to restore if needed, or adjust for Typer's intended use.
 # Typer allows only one app.callback.
@@ -473,12 +490,8 @@ def main_entry(
     ),
     # Add other global options from the plan here eventually
     # e.g., continue_session, resume_session_id, system_prompt_override, etc.
-    project: Optional[str] = typer.Option(
-        None, "--project", help="Route tasks to a project; if omitted, tasks are independent"
-    ),
-    old_cli: bool = typer.Option(False, "--old-cli", help="Run the legacy Rich CLI"),
-    version: Optional[bool] = typer.Option(
-        None, "--version", "-V", help="Show Penguin version and exit.", is_eager=True
+    version: Optional[bool] = typer.Option( # Example: adding a version flag
+        None, "--version", "-v", help="Show Penguin version and exit.", is_eager=True
     )
 ):
     """
@@ -489,44 +502,9 @@ def main_entry(
         console.print("Penguin AI Assistant v0.1.0 (Placeholder Version)") 
         raise typer.Exit()
 
-    # Old CLI handoff
-    if old_cli:
-        # Robust import so this works whether executed as module or as a file
-        try:
-            from .old_cli import app as old_app  # package-relative
-        except Exception:
-            try:
-                # Add this directory to sys.path so `old_cli` can be imported as a sibling
-                import sys, os
-                sys.path.insert(0, os.path.dirname(__file__))
-                from old_cli import app as old_app  # sibling import
-            except Exception:
-                # Fallbacks for different install layouts
-                try:
-                    from penguin.penguin.cli.old_cli import app as old_app
-                except Exception:
-                    from penguin.cli.old_cli import app as old_app
-        old_app()
-        raise typer.Exit()
-
-    # Default-to-TUI behavior: if no headless flags/subcommands → launch TUI
-    headless_flags = any([
-        prompt is not None,
-        continue_last,
-        resume_session is not None,
-        run_task is not None,
-        continuous,
-        ctx.invoked_subcommand is not None,
-    ])
-
-    if not headless_flags:
-        try:
-            from penguin.cli.tui import TUI
-            TUI.run()
-        except Exception as e:
-            console.print(f"[red]Failed to launch TUI:[/red] {e}")
-            raise typer.Exit(code=1)
-        raise typer.Exit()
+    # Skip heavy initialization for config commands and certain lightweight commands
+    if ctx.invoked_subcommand in ["config"]:
+        return  # Let the subcommand handle its own logic without core initialization
 
     # Create a sync wrapper around our async code
     async def _async_init_and_run():
@@ -575,10 +553,6 @@ def main_entry(
             console.print(f"[bold red]Fatal Initialization Error:[/bold red] {e}")
             console.print("Please check logs for more details.")
             raise typer.Exit(code=1)
-
-        # Record project flag for downstream commands
-        ctx.obj = ctx.obj or {}
-        ctx.obj["project"] = project
 
         # Check for priority flags in order of precedence:
         # 1. Task execution (--run)
@@ -1505,8 +1479,8 @@ class PenguinCLI:
         self.interface = PenguinInterface(core)
         self.in_247_mode = False
         self.message_count = 0
-        self.console = None
-        self.conversation_menu = None
+        self.console = RichConsole()  # Use RichConsole instead of Console
+        self.conversation_menu = ConversationMenu(self.console)
         self.core.register_progress_callback(self.on_progress_update)
 
         # Add direct Core event subscription for improved event flow
@@ -1549,8 +1523,42 @@ class PenguinCLI:
     def _create_prompt_session(self):
         """Create and configure a prompt_toolkit session with multi-line support"""
         # Define key bindings
-        # Legacy prompt toolkit removed
-        return None
+        kb = KeyBindings()
+
+        # Add keybinding for Alt+Enter to create a new line
+        @kb.add(Keys.Escape, Keys.Enter)
+        def _(event):
+            """Insert a new line when Alt (or Option) + Enter is pressed."""
+            event.current_buffer.insert_text("\n")
+
+        # Add keybinding for Enter to submit
+        @kb.add(Keys.Enter)
+        def _(event):
+            """Submit the input when Enter is pressed without modifiers."""
+            # If there's already text and cursor is at the end, submit
+            buffer = event.current_buffer
+            if buffer.text and buffer.cursor_position == len(buffer.text):
+                buffer.validate_and_handle()
+            else:
+                # Otherwise insert a new line
+                buffer.insert_text("\n")
+
+        # Add a custom style
+        style = Style.from_dict(
+            {
+                "prompt": f"bold {self.USER_COLOR}",
+            }
+        )
+
+        # Create the PromptSession
+        return PromptSession(
+            key_bindings=kb,
+            style=style,
+            multiline=True,  # Enable multi-line editing
+            vi_mode=False,  # Use Emacs keybindings by default
+            wrap_lines=True,  # Wrap long lines
+            complete_in_thread=True,
+        )
 
     def _handle_interrupt(self, sig, frame):
         self._safely_stop_progress()
@@ -1584,7 +1592,34 @@ class PenguinCLI:
                 self._finalize_streaming()
                 return
 
-        # Simplified headless output
+        styles = {
+            "assistant": self.PENGUIN_COLOR,
+            "user": self.USER_COLOR,
+            "system": self.TOOL_COLOR,
+            "error": "red bold",
+            "output": self.RESULT_COLOR,
+            "code": self.CODE_COLOR,
+        }
+
+        emojis = {
+            "assistant": self.PENGUIN_EMOJI,
+            "user": "👤",
+            "system": "🐧",
+            "error": "⚠️",
+            "code": "💻",
+        }
+
+        style = styles.get(role, "white")
+        emoji = emojis.get(role, "💬")
+
+        # Special handling for welcome message
+        if role == "system" and "Welcome to the Penguin AI Assistant!" in message:
+            header = f"{emoji} System (Welcome):"
+        else:
+            display_role = "Penguin" if role == "assistant" else role.capitalize()
+            header = f"{emoji} {display_role}"
+
+        # Enhanced code block formatting
         processed_message = message or ""
         code_blocks_found = False
 
@@ -1686,8 +1721,23 @@ class PenguinCLI:
 
             # Display the detected code blocks
             for code_text, lang in code_block_lines:
-                # Headless: print code plainly
-                print("\n```{}\n{}\n```\n".format(lang, code_text.strip()))
+                lang_display = self.LANGUAGE_DISPLAY_NAMES.get(lang, lang.capitalize())
+                highlighted_code = Syntax(
+                    code_text.strip(),
+                    lang,
+                    theme="monokai",
+                    line_numbers=True,
+                    word_wrap=True,
+                )
+
+                code_panel = Panel(
+                    highlighted_code,
+                    title=f"📋 {lang_display} Code",
+                    title_align="left",
+                    border_style=self.CODE_COLOR,
+                    padding=(1, 2),
+                )
+                self.console.print(code_panel)
 
         # Handle code blocks in tool outputs (like execute results)
         if (
@@ -1710,11 +1760,27 @@ class PenguinCLI:
                     ):
                         # Detect language
                         language = self._detect_language(code_output)
-                        print("\n```{}\n{}\n```\n".format(language, code_output))
+                        lang_display = self.LANGUAGE_DISPLAY_NAMES.get(
+                            language, language.capitalize()
+                        )
 
-        # Plain headless output
-        prefix = "You:" if role == "user" else ("Penguin:" if role == "assistant" else "System:")
-        print(f"{prefix} {processed_message}")
+                        # Display output in a special panel
+                        self._display_code_output_panel(code_output, language, "Output")
+                        # Simplify the message to avoid duplication
+                        processed_message = message.replace(
+                            code_output, f"[{lang_display} output displayed above]"
+                        )
+
+        # Regular message display with markdown
+        panel = Panel(
+            Markdown(processed_message),
+            title=header,
+            title_align="left",
+            border_style=style,
+            width=self.console.width - 8,
+            box=rich.box.ROUNDED,
+        )
+        self.console.print(panel)
 
         # If message is suspiciously short, could provide visual indication
         if len(message.strip()) <= 1:
@@ -1735,9 +1801,40 @@ class PenguinCLI:
                     language, language.capitalize()
                 )
 
-        # Headless code block output
-        print("\n```{}\n{}\n```\n".format(language, code.strip()))
-        return message.replace(original_block, "[Code block printed above]")
+        # Choose theme based on language
+        theme = "monokai"  # Default
+        if language in ["html", "xml"]:
+            theme = "github-dark"
+        elif language in ["bash", "shell"]:
+            theme = "native"
+
+        # Create a syntax highlighted version
+        highlighted_code = Syntax(
+            code.strip(),
+            language,
+            theme=theme,
+            line_numbers=True,
+            word_wrap=True,
+            code_width=min(
+                100, self.console.width - 20
+            ),  # Limit width for better readability
+        )
+
+        # Create a panel for the code
+        code_panel = Panel(
+            highlighted_code,
+            title=f"📋 {lang_display} Code",
+            title_align="left",
+            border_style=self.CODE_COLOR,
+            padding=(1, 2),
+        )
+
+        # Display the code block separately
+        self.console.print(code_panel)
+
+        # Replace in original message with a note
+        placeholder = f"[Code block displayed above ({lang_display})]"
+        return message.replace(original_block, placeholder)
 
     def _detect_language(self, code):
         """Automatically detect the programming language of the code"""
@@ -1769,9 +1866,20 @@ class PenguinCLI:
 
     def _display_code_output_panel(self, code_output: str, language: str, title: str = "Output"):
         lang_display = self.LANGUAGE_DISPLAY_NAMES.get(language, language.capitalize())
-        print(f"--- {lang_display} {title} ---")
-        print(code_output)
-        print(f"--- End {lang_display} {title} ---")
+        output_panel = Panel(
+            Syntax(code_output, language, theme="monokai", word_wrap=True),
+            title=f"📤 {lang_display} {title}",
+            title_align="left",
+            border_style="green", # Or self.RESULT_COLOR
+            padding=(1, 2),
+            width=self.console.width - 8 if self.console else None
+        )
+        if self.console:
+            self.console.print(output_panel)
+        else: # Fallback if console not available (e.g. direct prompt mode context)
+            print(f"--- {lang_display} {title} ---")
+            print(code_output)
+            print(f"--- End {lang_display} {title} ---")
     
     def _display_list_response(self, response: Dict[str, Any]):
         """Display the /list command response in a nicely formatted way"""
@@ -1982,8 +2090,8 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                 self._ensure_progress_cleared()
 
                 # Use prompt_toolkit instead of input()
-                # Legacy prompt_html removed in slim CLI
-                user_input = ""
+                prompt_html = HTML(f"<prompt>You [{self.message_count}]: </prompt>")
+                user_input = await self.session.prompt_async(prompt_html)
 
                 if user_input.lower() in ["exit", "quit"]:
                     break
@@ -2287,8 +2395,22 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                 if not title or title.startswith("Session "):
                     title = f"Conversation {idx + 1}"
 
-                # Append tuple summary in slim CLI
-                conversations.append((session_id, title, session.get("message_count", 0)))
+                # Create the ConversationSummary with the extracted title
+                conversations.append(
+                    ConversationSummary(
+                        session_id=session_id,
+                        title=title,
+                        message_count=session.get("message_count", 0),
+                        # Format the datetime properly
+                        last_active=(
+                            parse_iso_datetime(session.get("last_active", "")).strftime(
+                                "%Y-%m-%d %H:%M"
+                            )
+                            if session.get("last_active")
+                            else "Unknown date"
+                        ),
+                    )
+                )
             # Let user select a conversation
             session_id = self.conversation_menu.select_conversation(conversations)
             if session_id:
@@ -2591,8 +2713,25 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
 
 
 @app.command()
-async def chat():
-    """Start the TUI interactive chat."""
+async def chat(): # Removed model, workspace, no_streaming options
+    """Start an interactive chat session with Penguin."""
+    global _core # Ensure we're referring to the global
+    if not _core:
+        # This should ideally be caught by main_entry's initialization.
+        # If `penguin chat` is called directly, main_entry runs first.
+        logger.warning("Chat command invoked, but core components appear uninitialized. main_entry should handle this.")
+        # Attempting to initialize with defaults if somehow missed.
+        try:
+            await _initialize_core_components_globally()
+        except Exception as e:
+            logger.error(f"Error re-initializing core for chat command: {e}", exc_info=True)
+            console.print(f"[red]Error: Core components failed to initialize for chat: {e}[/red]")
+            raise typer.Exit(code=1)
+        
+        if not _core: # Still not initialized after attempt
+            console.print("[red]Critical Error: Core components could not be initialized.[/red]")
+            raise typer.Exit(code=1)
+            
     await _run_interactive_chat()
 
 # Profile command remains largely the same, ensure it uses `console` correctly
@@ -2786,8 +2925,12 @@ def profile(
 # async def chat_duplicate_disabled():  # deprecated duplicate chat, kept for reference but unused
 
 if __name__ == "__main__":
+    # This makes Typer process the CLI arguments and call the appropriate function.
+    # For async callbacks, we need to wrap app() with asyncio.run
     try:
         asyncio.run(app())
-    except Exception as e:
-        print(f"Unhandled exception at CLI entry point: {e}", file=sys.stderr)
+    except Exception as e: # Catch any unhandled exceptions from Typer/asyncio layers
+        logger.critical(f"Unhandled exception at CLI entry point: {e}", exc_info=True)
+        console.print(f"[bold red]Unhandled Critical Error:[/bold red] {e}")
+        console.print("This is unexpected. Please check logs or report this issue.")
         sys.exit(1)
