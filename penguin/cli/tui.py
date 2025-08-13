@@ -131,8 +131,22 @@ class CommandSuggester(Suggester):
         except Exception:
             return None
 
-# Set up logging for debug purposes
+# Set up logging for debug purposes (file + quiet console)
 logger = logging.getLogger(__name__)
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    try:
+        log_path = os.path.join(os.path.dirname(__file__), "tui_debug.log")
+        fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        logger.addHandler(fh)
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.WARNING)
+        ch.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+        logger.addHandler(ch)
+    except Exception:
+        pass
 
 # --- Custom Widgets ---
 
@@ -155,6 +169,9 @@ class ChatMessage(Static, can_focus=True):
         super().__init__(**kwargs)
         self.content = content
         self.role = role
+        self._md_cached = None
+        self._pending_update_task = None
+        self._last_update_ts = 0.0
 
     def compose(self) -> ComposeResult:
         """Render the message with code fences highlighted."""
@@ -300,10 +317,9 @@ class ChatMessage(Static, can_focus=True):
         self.content += cleaned_chunk
         # Query the Markdown widget and update it
         try:
-            markdown_widget = self.query_one(TextualMarkdown)
-            markdown_widget.update(self.content)
-        except Exception as e:
-            logger.error(f"Error updating markdown widget: {e}")
+            self._schedule_markdown_update()
+        except Exception:
+            pass
     
     def _clean_streaming_artifacts(self, chunk: str) -> str:
         """Clean up common streaming artifacts from different providers."""
@@ -349,6 +365,37 @@ class ChatMessage(Static, can_focus=True):
         cleaned = re.sub(r'\n{4,}', '\n\n\n', cleaned)
         
         return cleaned
+
+    def _get_markdown_widget(self):
+        if self._md_cached is not None:
+            return self._md_cached
+        try:
+            self._md_cached = self.query_one(TextualMarkdown)
+        except Exception:
+            self._md_cached = None
+        return self._md_cached
+
+    def _schedule_markdown_update(self, min_interval: float = 0.05) -> None:
+        loop = asyncio.get_event_loop()
+        now = loop.time()
+        if self._pending_update_task is None and (now - self._last_update_ts) >= min_interval:
+            self._pending_update_task = loop.create_task(self._flush_markdown_update())
+        elif self._pending_update_task is None:
+            delay = max(0.0, min_interval - (now - self._last_update_ts))
+            self._pending_update_task = loop.create_task(self._flush_markdown_update(delay))
+
+    async def _flush_markdown_update(self, delay: float = 0.0) -> None:
+        try:
+            if delay > 0.0:
+                await asyncio.sleep(delay)
+            md = self._get_markdown_widget()
+            if md is not None:
+                md.update(self.content)
+            self._last_update_ts = asyncio.get_event_loop().time()
+        except Exception:
+            pass
+        finally:
+            self._pending_update_task = None
     
     def _clean_final_content(self, content: str) -> str:
         """Final cleanup of complete streamed content."""
@@ -422,10 +469,11 @@ class ChatMessage(Static, can_focus=True):
         
         # Update the markdown widget with cleaned content
         try:
-            markdown_widget = self.query_one(TextualMarkdown)
-            markdown_widget.update(self.content)
-        except Exception as e:
-            logger.error(f"Error updating markdown widget during final cleanup: {e}")
+            md = self._get_markdown_widget()
+            if md is not None:
+                md.update(self.content)
+        except Exception:
+            pass
 
         # ---------------------------------------------
         # Post-processing: wrap reasoning in <details>
@@ -887,7 +935,9 @@ class PenguinTextualApp(App):
                             self.current_streaming_widget.stream_in(chunk)
                             # Keep the latest buffer for deduplication against upcoming message event
                             self.last_finalized_content = self.current_streaming_widget.content
-                            self._scroll_to_bottom()
+                            # Debounce scrolling to reduce churn
+                            if (self._stream_chunk_count % 10) == 0:
+                                self._scroll_to_bottom()
                 
                 if is_final and self.current_streaming_widget:
                     # Cancel timeout monitor
@@ -1523,6 +1573,31 @@ class TUI:
     def run():
         """Run the Textual application."""
         os.environ['PENGUIN_TUI_MODE'] = '1'
+        # Configure root logging to file, keep console quiet to avoid TUI flicker
+        try:
+            root = logging.getLogger()
+            # Remove existing handlers to avoid duplicate writes
+            for h in list(root.handlers):
+                root.removeHandler(h)
+            root.setLevel(logging.INFO)
+            log_path = os.path.join(os.path.dirname(__file__), "tui_debug.log")
+            fhd = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+            fhd.setLevel(logging.DEBUG)
+            fhd.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+            root.addHandler(fhd)
+            # Console handler only for errors to keep terminal clean
+            chd = logging.StreamHandler()
+            chd.setLevel(logging.ERROR)
+            chd.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+            root.addHandler(chd)
+            # Silence noisy third-party loggers
+            for noisy in ("httpx", "urllib3", "openai", "litellm", "penguin.llm.openrouter_gateway"):
+                try:
+                    logging.getLogger(noisy).setLevel(logging.ERROR)
+                except Exception:
+                    pass
+        except Exception:
+            pass
         app = PenguinTextualApp()
         try:
             # Run without DevTools to keep the UI clean
