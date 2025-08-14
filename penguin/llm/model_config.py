@@ -81,8 +81,8 @@ class ModelConfig:
         if "deepseek" in model_lower and ("r1" in model_lower or "reasoning" in model_lower):
             return True
             
-        # OpenAI o-series models (though they don't return reasoning tokens)
-        if any(pattern in model_lower for pattern in ["o1", "o3", "openai/o"]):
+        # OpenAI o-series and GPT-5+ models
+        if any(pattern in model_lower for pattern in ["o1", "o3", "openai/o", "gpt-5", "gpt-6"]):
             return True
             
         # Gemini thinking models and Gemini 2.5 Pro
