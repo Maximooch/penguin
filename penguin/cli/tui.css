@@ -1,6 +1,6 @@
 /* ===============================================
-   Penguin TUI Theme System
-   Default Theme: Deep Ocean
+   Penguin TUI Theme & Layout System
+   Default Theme: Ocean; Layout: Flat
    =============================================== */
 
 Screen {
@@ -27,15 +27,9 @@ Footer {
     background: #1a2a3f;
 }
 
-Footer .footer--key {
-    background: #334e68;
-    color: #89cff0;
-}
+Footer .footer--key { background: #334e68; color: #89cff0; }
 
-Footer .footer--highlight-key {
-    background: #89cff0;
-    color: #0c141f;
-}
+Footer .footer--highlight-key { background: #89cff0; color: #0c141f; }
 
 #main-container {
     layout: vertical;
@@ -50,40 +44,22 @@ Footer .footer--highlight-key {
     min-height: 0; /* ensure scroll container shrinks to content */
 }
 
-#input-box {
-    border: round #89cff0;
-    height: 3;
-    background: #1a2a3f;
-    color: #dadada;
-    margin: 1 0 0 0;
-}
+#input-box { border: round #89cff0; height: 3; background: #1a2a3f; color: #dadada; margin: 1 0 0 0; }
 
 #input-box:focus {
     border: round #b3e5fc;
 }
 
-#status-bar {
-    dock: bottom;
-    height: 1;
-    background: #1a2a3f;
-    color: #a0a0a0;
-    padding: 0 1;
-    text-align: left;
-}
+#status-bar { dock: bottom; height: 1; background: #1a2a3f; color: #a0a0a0; padding: 0 1; text-align: left; }
 
 /* ===============================================
    Chat Message Styling
    =============================================== */
 
-ChatMessage {
-    padding: 1 2;
-    margin: 1 0;
-    background: #101c2c;
-    border: round #334e68;
-    width: 100%;
-    height: auto;
-    layout: vertical;
-}
+/* Boxed layout */
+.layout-boxed ChatMessage { padding: 1 2; margin: 1 0; background: #101c2c; border: round #334e68; width: 100%; height: auto; layout: vertical; }
+/* Flat layout */
+.layout-flat ChatMessage { padding: 1 2; margin: 0 0 1 0; background: transparent; border: none; width: 100%; height: auto; layout: vertical; border-bottom: solid #223247; }
 
 .message-label {
     height: auto;
@@ -96,79 +72,45 @@ ChatMessage {
     min-height: 0;       /* prevent reserved vertical space */
 }
 
-/* Role-specific colors */
-ChatMessage .user {
-    color: #e0e0e0;
-}
+/* Role label colors remain for text accents */
+ChatMessage .user { color: #e0e0e0; }
+ChatMessage .assistant { color: #c8e6c9; }
+ChatMessage .system { color: #fff59d; }
+ChatMessage .error { color: #ffcdd2; background: #b71c1c; }
 
-ChatMessage .assistant {
-    color: #c8e6c9;
-}
+/* Role ribbons in flat layout */
+.layout-flat .message-content.assistant { border-left: solid #89cff0; }
+.layout-flat .message-content.user { border-left: solid #66bb6a; }
+.layout-flat .message-content.system { border-left: solid #ffd54f; }
+.layout-flat .message-content.error { border-left: solid #ef5350; background: rgba(239,83,80,0.12); }
+.layout-flat .message-content { padding-left: 1; }
 
-ChatMessage .system {
-    color: #fff59d;
-}
-
-ChatMessage .error {
-    color: #ffcdd2;
-    background: #b71c1c;
-}
-
-/* Style for streaming messages */
-ChatMessage.streaming {
-    border: round #89cff0;
-    background: #1a2a3f;
-}
+/* Streaming highlight */
+.layout-boxed ChatMessage.streaming { border: round #89cff0; background: #1a2a3f; }
 
 /* Focus outline for keyboard navigation */
-ChatMessage:focus {
-    border: round #89cff0;
-    background: #162436;
-}
+.layout-boxed ChatMessage:focus { border: round #89cff0; background: #162436; }
+.layout-flat ChatMessage:focus .message-content { background: #162436; }
 
 /* Code block inside messages */
-.code-block {
-    padding: 0 1;
-    margin-top: 1;
-    margin-bottom: 1;
-}
+.code-block { padding: 0 1; margin-top: 1; margin-bottom: 1; background: #111a28; border: round #334e68; }
 
 /* ===============================================
    Tool Execution Widget Styles
    =============================================== */
 
-.tool-execution {
-    /* Remove bottom margin on the card to avoid large trailing gaps */
-    margin: 1 0 0 0;
-    padding: 1;
-    background: #101c2c;
-    border: round #334e68;
-}
+.tool-execution { margin: 1 0 0 0; padding: 1; background: #101c2c; border: round #334e68; }
 
-.tool-execution:focus {
-    border: round #89cff0;
-    background: #162436;
-}
+.tool-execution:focus { border: round #89cff0; background: #162436; }
 
 .tool-container {
     layout: vertical;
     width: 100%;
 }
 
-.tool-header {
-    padding: 1;
-    background: #1a2a3f;
-    border-bottom: solid #334e68;
-    text-style: bold;
-}
+.tool-header { padding: 1; background: #1a2a3f; border-bottom: solid #334e68; text-style: bold; }
 
-.tool-params-section {
-    /* Override base Collapsible margin (1 0) to remove bottom gap */
-    margin: 1 0 0 0;
-    background: #162436;
-    border: round #334e68;
-    padding: 0;
-}
+.tool-params-section { margin: 1 0 0 0; background: #162436; border: round #334e68; padding: 0; }
 
 .tool-params-content {
     padding: 1;
@@ -177,14 +119,7 @@ ChatMessage:focus {
     margin: 0;
 }
 
-.tool-result-section {
-    /* Override base Collapsible margin (1 0) to remove bottom gap */
-    margin: 1 0 0 0;
-    background: #162436;
-    border: round #334e68;
-    padding: 0;
-    min-height: 0;
-}
+.tool-result-section { margin: 1 0 0 0; background: #162436; border: round #334e68; padding: 0; min-height: 0; }
 
 .tool-result-content {
     padding: 1;
@@ -202,9 +137,7 @@ ChatMessage:focus {
     text-style: bold;
 }
 
-.tool-status-success {
-    color: #66bb6a;
-}
+.tool-status-success { color: #66bb6a; }
 
 .tool-status-failed {
     color: #ef5350;
@@ -218,12 +151,7 @@ ChatMessage:focus {
    Collapsible Sections
    =============================================== */
 
-Collapsible {
-    background: #101c2c;
-    border: round #334e68;
-    margin: 1 0;
-    min-height: 0;
-}
+Collapsible { background: #101c2c; border: round #334e68; margin: 1 0; min-height: 0; }
 
 /* Inside tool cards, trim Collapsible bottom margin further */
 .tool-execution Collapsible {
@@ -231,11 +159,7 @@ Collapsible {
     min-height: 0;
 }
 
-Collapsible > .label {
-    padding: 1;
-    background: #1a2a3f;
-    color: #89cff0;
-}
+Collapsible > .label { padding: 1; background: #1a2a3f; color: #89cff0; }
 
 Collapsible:focus > .label {
     background: #162436;
@@ -267,27 +191,54 @@ Collapsible:focus > .label {
 }
 
 /* Reasoning / blockquote styling */
-Markdown BlockQuote {
-    color: #a0a0a0;
-    text-style: italic;
-    border-left: thick #334e68;
-    padding-left: 1;
-}
+Markdown BlockQuote { color: #a0a0a0; text-style: italic; border-left: thick #334e68; padding-left: 1; }
 
 /* ===============================================
    RunMode Output Styling
    =============================================== */
 
-.runmode-output {
-    background: #162436;
-    border: round #89cff0;
-    padding: 1;
-    margin: 1 0;
-}
+.runmode-output { background: #162436; border: round #89cff0; padding: 1; margin: 1 0; }
 
-/* ===============================================
-   Theme Variants (Future Implementation)
-   =============================================== */
+/* Theme variants (class added to App). These override key colors. */
+.theme-ocean { background:#0c141f; color:#dadada; }
+.theme-ocean Header, .theme-ocean Footer { background:#1a2a3f; }
+.theme-ocean #status-bar { background:#1a2a3f; }
+
+.theme-nord { background:#2e3440; color:#eceff4; }
+.theme-nord Header, .theme-nord Footer { background:#3b4252; }
+.theme-nord #status-bar { background:#3b4252; }
+.theme-nord #input-box { border: round #88c0d0; background:#3b4252; color:#eceff4; }
+.theme-nord Footer .footer--key { background:#4c566a; color:#88c0d0; }
+.theme-nord Footer .footer--highlight-key { background:#88c0d0; color:#2e3440; }
+.theme-nord .layout-boxed ChatMessage { background:#2b3240; border: round #4c566a; }
+.theme-nord .tool-execution { background:#2b3240; border: round #4c566a; }
+.theme-nord .tool-header { background:#3b4252; border-bottom: solid #4c566a; }
+.theme-nord Collapsible { background:#2b3240; border: round #4c566a; }
+.theme-nord Collapsible > .label { background:#3b4252; color:#88c0d0; }
+.theme-nord Markdown BlockQuote { border-left: thick #4c566a; }
+.theme-nord .runmode-output { border: round #88c0d0; }
+.theme-nord .layout-flat .message-content.assistant { border-left: solid #88c0d0; }
+.theme-nord .layout-flat .message-content.user { border-left: solid #a3be8c; }
+.theme-nord .layout-flat .message-content.system { border-left: solid #ebcb8b; }
+.theme-nord .layout-flat .message-content.error { border-left: solid #bf616a; background: rgba(191,97,106,0.12); }
+
+.theme-dracula { background:#282a36; color:#f8f8f2; }
+.theme-dracula Header, .theme-dracula Footer { background:#44475a; }
+.theme-dracula #status-bar { background:#44475a; }
+.theme-dracula #input-box { border: round #8be9fd; background:#44475a; color:#f8f8f2; }
+.theme-dracula Footer .footer--key { background:#6272a4; color:#8be9fd; }
+.theme-dracula Footer .footer--highlight-key { background:#8be9fd; color:#282a36; }
+.theme-dracula .layout-boxed ChatMessage { background:#232531; border: round #6272a4; }
+.theme-dracula .tool-execution { background:#232531; border: round #6272a4; }
+.theme-dracula .tool-header { background:#44475a; border-bottom: solid #6272a4; }
+.theme-dracula Collapsible { background:#232531; border: round #6272a4; }
+.theme-dracula Collapsible > .label { background:#44475a; color:#8be9fd; }
+.theme-dracula Markdown BlockQuote { border-left: thick #6272a4; }
+.theme-dracula .runmode-output { border: round #8be9fd; }
+.theme-dracula .layout-flat .message-content.assistant { border-left: solid #8be9fd; }
+.theme-dracula .layout-flat .message-content.user { border-left: solid #50fa7b; }
+.theme-dracula .layout-flat .message-content.system { border-left: solid #f1fa8c; }
+.theme-dracula .layout-flat .message-content.error { border-left: solid #ff5555; background: rgba(255,85,85,0.12); }
 
 /* ===============================================
    Future Theme Templates

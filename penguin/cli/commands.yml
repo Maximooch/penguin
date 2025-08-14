@@ -271,7 +271,7 @@ commands:
     category: system
     description: "List available themes"
     handler: "_handle_theme_list"
-    enabled: false  # For future implementation
+    enabled: true
     
   - name: "theme set"
     category: system
@@ -282,7 +282,23 @@ commands:
         required: true
         description: "Theme name (ocean, nord, dracula, etc.)"
     handler: "_handle_theme_set"
-    enabled: false  # For future implementation
+    enabled: true
+
+  # Layout commands
+  - name: "layout set"
+    category: system
+    description: "Set chat layout style"
+    parameters:
+      - name: mode
+        type: string
+        required: true
+        description: "Layout mode (flat or boxed)"
+    handler: "_handle_layout_set"
+
+  - name: "layout get"
+    category: system
+    description: "Show current layout mode"
+    handler: "_handle_layout_get"
 
 # Plugin command extension points (future)
 plugins:

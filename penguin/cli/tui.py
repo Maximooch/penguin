@@ -696,6 +696,11 @@ class PenguinTextualApp(App):
         # Pending image attachments (paths) captured from input path detection
         self._pending_attachments: list[str] = []
 
+        # Preferences (theme/layout) persisted across sessions
+        self._prefs_path: str = os.path.expanduser("~/.penguin/tui_prefs.yml")
+        self._theme_name: str = "ocean"  # ocean | nord | dracula
+        self._layout_mode: str = "flat"   # flat | boxed
+
     # -------------------------
     # Utilities
     # -------------------------
@@ -729,6 +734,10 @@ class PenguinTextualApp(App):
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
+        # Apply theme/layout classes before composing children
+        self._load_prefs()
+        self._apply_theme_class()
+        self._apply_layout_class()
         yield Header()
         with Container(id="main-container"):
             yield VerticalScroll(id="message-area")
@@ -1315,7 +1324,7 @@ class PenguinTextualApp(App):
                 if cmd_obj:
                     handler = cmd_obj.handler or ""
                     # TUI-local handlers
-                    if handler in ("_show_enhanced_help", "action_clear_log", "action_quit", "action_show_debug", "_force_stream_recovery", "_handle_image", "_attachments_clear"):
+                    if handler in ("_show_enhanced_help", "action_clear_log", "action_quit", "action_show_debug", "_force_stream_recovery", "_handle_image", "_attachments_clear", "_handle_theme_list", "_handle_theme_set", "_handle_layout_set", "_handle_layout_get"):
                         if handler == "_show_enhanced_help":
                             await self._show_enhanced_help()
                         elif handler == "action_clear_log":
@@ -1331,6 +1340,14 @@ class PenguinTextualApp(App):
                         elif handler == "_attachments_clear":
                             self._pending_attachments.clear()
                             self.add_message("Attachments cleared.", "system")
+                        elif handler == "_handle_theme_list":
+                            await self._handle_theme_list()
+                        elif handler == "_handle_theme_set":
+                            await self._handle_theme_set(args_dict)
+                        elif handler == "_handle_layout_set":
+                            await self._handle_layout_set(args_dict)
+                        elif handler == "_handle_layout_get":
+                            await self._handle_layout_get()
                         return
 
                     # Otherwise, delegate to interface; rebuild command string
@@ -1551,6 +1568,113 @@ class PenguinTextualApp(App):
         except Exception:
             pass
         self.add_message("Type /help for available commands. Use Tab for autocomplete.", "system")
+
+    # ---------------------------
+    # Theme & Layout management
+    # ---------------------------
+    def _load_prefs(self) -> None:
+        try:
+            import yaml  # type: ignore
+            if os.path.exists(self._prefs_path):
+                with open(self._prefs_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                self._theme_name = str(data.get("theme", self._theme_name))
+                self._layout_mode = str(data.get("layout", self._layout_mode))
+        except Exception:
+            pass
+
+    def _save_prefs(self) -> None:
+        try:
+            import yaml  # type: ignore
+            os.makedirs(os.path.dirname(self._prefs_path), exist_ok=True)
+            with open(self._prefs_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump({"theme": self._theme_name, "layout": self._layout_mode}, f)
+        except Exception:
+            pass
+
+    def _apply_theme_class(self) -> None:
+        try:
+            target = getattr(self, "screen", None) or self
+            # Remove any prior theme classes
+            for cls in ("theme-ocean", "theme-nord", "theme-dracula"):
+                try:
+                    target.remove_class(cls)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            # Map names
+            name = self._theme_name.lower()
+            if name in ("ocean", "deep-ocean", "default"):
+                try:
+                    target.add_class("theme-ocean")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            elif name == "nord":
+                try:
+                    target.add_class("theme-nord")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            elif name == "dracula":
+                try:
+                    target.add_class("theme-dracula")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            else:
+                try:
+                    target.add_class("theme-ocean")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _apply_layout_class(self) -> None:
+        try:
+            target = getattr(self, "screen", None) or self
+            for cls in ("layout-flat", "layout-boxed"):
+                try:
+                    target.remove_class(cls)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            if self._layout_mode.lower() == "boxed":
+                try:
+                    target.add_class("layout-boxed")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            else:
+                try:
+                    target.add_class("layout-flat")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    async def _handle_theme_list(self) -> None:
+        themes = ["ocean", "nord", "dracula"]
+        msg = "**Available themes:**\n\n" + "\n".join(f"- {t}{' (current)' if t==self._theme_name else ''}" for t in themes)
+        self.add_message(msg, "system")
+
+    async def _handle_theme_set(self, args: Dict[str, Any]) -> None:
+        name = str(args.get("theme_name", "")).strip().lower()
+        if name not in ("ocean", "nord", "dracula", "deep-ocean", "default"):
+            self.add_message(f"Unknown theme '{name}'. Try /theme list.", "error")
+            return
+        # Normalize
+        self._theme_name = "ocean" if name in ("deep-ocean", "default") else name
+        self._apply_theme_class()
+        self._save_prefs()
+        self.add_message(f"Theme set to {self._theme_name}.", "system")
+
+    async def _handle_layout_set(self, args: Dict[str, Any]) -> None:
+        mode = str(args.get("mode", "")).strip().lower()
+        if mode not in ("flat", "boxed"):
+            self.add_message("Unknown layout. Use 'flat' or 'boxed'.", "error")
+            return
+        self._layout_mode = mode
+        self._apply_layout_class()
+        self._save_prefs()
+        self.add_message(f"Layout set to {mode}.", "system")
+
+    async def _handle_layout_get(self) -> None:
+        self.add_message(f"Current layout: {self._layout_mode}.", "system")
 
     async def show_help(self) -> None:
         """Display the structured help message."""
