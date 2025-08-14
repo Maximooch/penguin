@@ -260,9 +260,9 @@ class ChatMessage(Static, can_focus=True):
 
         # Role label
         if self.role == "user":
-            label_text = Text("You", style="bold cyan")
+            label_text = Text("You", style="bold green")
         elif self.role == "assistant":
-            label_text = Text("Penguin", style="bold green")
+            label_text = Text("Penguin", style="bold cyan")
         else:
             label_text = Text(self.role.capitalize(), style="bold yellow")
 
@@ -990,96 +990,39 @@ class PenguinTextualApp(App):
                     self._scroll_to_bottom()
 
             elif event_type == "action":
-                # Handle XML-style action tags executed by ActionExecutor
+                # Temporarily render actions as simple markdown within system message
                 action_name = data.get("type", "unknown")
-                action_params = data.get("params", "")
-                action_id = data.get("id", None)
-
-                execution = ExecutionAdapter.from_action(action_name, action_params, action_id)
-                execution.status = ExecutionStatus.RUNNING
-
-                action_widget = ToolExecutionWidget(execution)
-                message_area = self.query_one("#message-area", VerticalScroll)
-                message_area.mount(action_widget)
-
-                # Track active execution widgets by ID
-                self._active_tools[execution.id] = action_widget
-                # Remove any trailing blank assistant/system cells that might have been left by streaming
-                self._prune_trailing_blank_messages()
-                self._scroll_to_bottom()
+                params = data.get("params", {})
+                md = "**Action:** " + action_name + "\n\n" + "```json\n" + str(params) + "\n```"
+                self.add_message(md, "system")
 
             elif event_type == "action_result":
                 result_str = data.get("result", "")
                 status = data.get("status", "completed")
-                action_id = data.get("id", None)
-
-                if action_id in self._active_tools:
-                    action_widget = self._active_tools[action_id]
-                    # Update status based on result
-                    if status == "error":
-                        action_widget.update_status(ExecutionStatus.FAILED, error=result_str)
-                    else:
-                        action_widget.update_status(ExecutionStatus.SUCCESS, result=result_str)
-
-                    # Remove from active tools
-                    del self._active_tools[action_id]
+                if status == "error":
+                    content = f"❌ Action failed:\n```text\n{result_str}\n```"
+                    self.add_message(content, "error")
                 else:
-                    # Fallback: show as system message if widget missing
-                    if status == "error":
-                        content = f"❌ Action failed:\n```\n{result_str}\n```"
-                        self.add_message(content, "error")
-                    else:
-                        content = self._format_system_output("Action", result_str)
-                        self.add_message(content, "system")
-                # Clean up blanks after finalizing
+                    content = self._format_system_output("Action", result_str)
+                    self.add_message(content, "system")
                 self._prune_trailing_blank_messages()
 
             elif event_type == "tool_call":
                 tool_name = data.get("name", "unknown")
                 tool_args = data.get("arguments", {})
-                tool_id = data.get("id", None)
-                
-                # Create unified execution from tool
-                execution = ExecutionAdapter.from_tool(tool_name, tool_args, tool_id)
-                execution.status = ExecutionStatus.RUNNING
-                
-                # Create and mount tool execution widget
-                tool_widget = ToolExecutionWidget(execution)
-                message_area = self.query_one("#message-area", VerticalScroll)
-                message_area.mount(tool_widget)
-                
-                # Track active tool
-                self._active_tools[execution.id] = tool_widget
-                self._prune_trailing_blank_messages()
-                self._scroll_to_bottom()
+                md = "**Tool:** " + tool_name + "\n\n" + "```json\n" + str(tool_args) + "\n```"
+                self.add_message(md, "system")
             
             elif event_type == "tool_result":
                 result_str = data.get("result", "")
                 action_name = data.get("action_name", "unknown")
                 status = data.get("status", "completed")
-                tool_id = data.get("id", None)
-                
-                # Find the active tool widget
-                widget_id = tool_id or action_name
-                if widget_id in self._active_tools:
-                    tool_widget = self._active_tools[widget_id]
-                    
-                    # Update status based on result
-                    if status == "error":
-                        tool_widget.update_status(ExecutionStatus.FAILED, error=result_str)
-                    else:
-                        tool_widget.update_status(ExecutionStatus.SUCCESS, result=result_str)
-                    
-                    # Remove from active tools
-                    del self._active_tools[widget_id]
+                if status == "error":
+                    content = f"❌ Tool `{action_name}` failed:\n```text\n{result_str}\n```"
+                    self.add_message(content, "error")
                 else:
-                    # Fallback to old behavior if widget not found
-                    if status == "error":
-                        content = f"❌ Tool `{action_name}` failed:\n```\n{result_str}\n```"
-                        self.add_message(content, "error")
-                    else:
-                        content = self._format_system_output(action_name, result_str)
-                        self.add_message(content, "system")
+                    content = self._format_system_output(action_name, result_str)
+                    self.add_message(content, "system")
                 self._prune_trailing_blank_messages()
 
             elif event_type == "error":
