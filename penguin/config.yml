@@ -13,8 +13,8 @@ model:
   client_preference: openrouter
   streaming_enabled: true
   temperature: 0.5
-  context_window: 120000
-  max_tokens: 390000
+  context_window: 390000
+  max_tokens: 120000
 api:
   base_url: null
 tools:
