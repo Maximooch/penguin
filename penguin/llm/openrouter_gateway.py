@@ -156,6 +156,88 @@ class OpenRouterGateway:
                 # Not a list content, keep message as is
                 processed_messages.append(message)
         return processed_messages
+    
+    def _contains_penguin_action_tags(self, content: str) -> bool:
+        """
+        Check if content contains any Penguin action tags using the same logic as parser.py
+        """
+        try:
+            # Import here to avoid circular imports
+            from penguin.utils.parser import ActionType
+            import re
+            
+            # Generate pattern from ActionType enum (exactly like parser.py does)
+            action_tag_pattern = "|".join([action_type.value for action_type in ActionType])
+            # Use same regex pattern as parser: full tag pairs only, case-insensitive but strict
+            action_tag_regex = f"<({action_tag_pattern})>.*?</\\1>"
+            
+            return bool(re.search(action_tag_regex, content, re.DOTALL | re.IGNORECASE))
+        except ImportError:
+            # Fallback to basic check if import fails
+            return any(f"<{tag}>" in content.lower() and f"</{tag}>" in content.lower() 
+                      for tag in ['execute', 'search', 'memory_search'])
+    
+    def _clean_conversation_format(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Reformat conversation to be compatible with OpenAI SDK while preserving all content.
+        
+        This aggressively converts all tool calling to plain text format to avoid
+        OpenAI SDK 1.99+ tool call validation errors, while preserving all message content.
+        """
+        reformatted_messages = []
+        
+        for message in messages:
+            reformatted_message = message.copy()
+            
+            # Handle content field
+            if isinstance(message.get('content'), str):
+                content = message['content']
+                
+                # Clean up orphaned tool call references that could cause validation errors
+                if 'call_' in content and ('tool_calls' not in message):
+                    # Replace call_id references with plain text to avoid SDK validation
+                    import re
+                    content = re.sub(r'call_[a-zA-Z0-9_-]+', '[tool-call-reference]', content)
+                    self.logger.debug(f"Reformatted tool call references in message")
+                
+                # Check for XML action tags - they're Penguin's tool system and should be preserved
+                if self._contains_penguin_action_tags(content):
+                    self.logger.debug(f"Preserving Penguin XML action tags in message: {content[:100]}...")
+                
+                reformatted_message['content'] = content
+            
+            # AGGRESSIVE FIX: Convert ALL tool calling to plain text to avoid validation errors
+            # This prevents the "No tool call found" error by not sending tool call formats at all
+            
+            if message.get('role') == 'assistant' and 'tool_calls' in message:
+                # Convert assistant message with tool_calls to plain assistant message
+                self.logger.debug(f"Converting assistant message with tool_calls to plain text")
+                # Remove tool_calls field and keep content as-is (it already has the action tags)
+                reformatted_message = {
+                    'role': 'assistant',
+                    'content': message.get('content', '')
+                }
+                # Copy other fields but exclude tool_calls
+                for key, value in message.items():
+                    if key not in ['role', 'content', 'tool_calls']:
+                        reformatted_message[key] = value
+            
+            elif message.get('role') == 'tool':
+                # Convert ALL tool messages to assistant messages with prefixed content
+                self.logger.debug(f"Converting tool result message to assistant message")
+                reformatted_message = {
+                    'role': 'assistant', 
+                    'content': f"[Tool Result] {message.get('content', '')}"
+                }
+                # Copy other fields but exclude tool_call_id
+                for key, value in message.items():
+                    if key not in ['role', 'content', 'tool_call_id']:
+                        reformatted_message[key] = value
+            
+            reformatted_messages.append(reformatted_message)
+        
+        self.logger.debug(f"Reformatted conversation: {len(messages)} messages processed, all tool calling converted to plain text")
+        return reformatted_messages
 
     async def get_response(
         self,
@@ -205,15 +287,17 @@ class OpenRouterGateway:
             self.logger.warning("Streaming requested/configured but no stream_callback provided. Falling back to non-streaming mode.")
             use_streaming = False
 
-        # --- Process messages for vision --- 
+        # --- Process messages for vision and reformat conversation --- 
         try:
             processed_messages = await self._process_messages_for_vision(messages)
+            # Reformat conversation to be compatible with OpenAI SDK while preserving content
+            processed_messages = self._clean_conversation_format(processed_messages)
         except Exception as e:
             # error_context = {'request_id': request_id, 'phase': 'vision_processing', 'messages_count': len(messages)}
             # debug_error(e, error_context)
-            self.logger.error(f"Error processing messages for vision: {e}", exc_info=True)
+            self.logger.error(f"Error processing messages for vision and conversation format: {e}", exc_info=True)
             return f"[Error: Failed to process message content - {str(e)}]"
-        # --- End vision processing ---
+        # --- End vision and conversation processing ---
 
         # --- Reasoning tokens configuration ---
         reasoning_config = self.model_config.get_reasoning_config()
@@ -228,21 +312,21 @@ class OpenRouterGateway:
             **kwargs # Pass through other arguments like tools
         }
         
-        # Add include_reasoning parameter if reasoning is enabled
+        # Add new unified reasoning parameter if reasoning is enabled
         if reasoning_config:
-            request_params["include_reasoning"] = True
-            self.logger.info(f"[OpenRouterGateway] Enabling reasoning tokens with include_reasoning=True")
-        
-        # Handle reasoning configuration carefully to avoid SDK compatibility issues
-        use_direct_api = False
-        if reasoning_config:
-            try:
-                # Try to add reasoning config - if SDK doesn't support it, we'll catch the error
+            # Use new unified reasoning format instead of include_reasoning
+            if isinstance(reasoning_config, dict):
                 request_params["reasoning"] = reasoning_config
-                self.logger.info(f"[OpenRouterGateway] Adding reasoning config: {reasoning_config}")
-            except Exception as e:
-                self.logger.warning(f"[OpenRouterGateway] Reasoning config not supported by SDK, will use direct API: {e}")
-                use_direct_api = True
+                self.logger.info(f"[OpenRouterGateway] Using new reasoning config: {reasoning_config}")
+            else:
+                # Fallback to simple enabled format for backwards compatibility
+                request_params["reasoning"] = {"enabled": True}
+                self.logger.info(f"[OpenRouterGateway] Using basic reasoning config with enabled=True")
+        
+        # Handle reasoning configuration - always use direct API for reasoning
+        use_direct_api = bool(reasoning_config)
+        if reasoning_config:
+            self.logger.info(f"[OpenRouterGateway] Reasoning enabled, will use direct API call to bypass SDK limitations")
             
         # Filter out None values for cleaner API calls
         request_params = {k: v for k, v in request_params.items() if v is not None}
@@ -258,18 +342,17 @@ class OpenRouterGateway:
 
         full_response_content = ""
         full_reasoning_content = ""
+        
+        # Use direct API call if reasoning is enabled to avoid SDK compatibility issues
+        if use_direct_api:
+            self.logger.debug(f"[OpenRouterGateway] Using direct API call for reasoning support")
+            return await self._direct_api_call_with_reasoning(
+                request_params, reasoning_config, use_streaming, stream_callback
+            )
+        
+        # Use OpenAI SDK for non-reasoning requests
         try:
-            # Try the API call with reasoning parameter
             completion = await self.client.chat.completions.create(**request_params)
-        except TypeError as e:
-            if "reasoning" in str(e) and reasoning_config:
-                # SDK doesn't support reasoning parameter, try without it and use httpx fallback
-                self.logger.warning(f"[OpenRouterGateway] SDK doesn't support reasoning parameter, falling back to direct API call")
-                return await self._direct_api_call_with_reasoning(
-                    request_params, reasoning_config, use_streaming, stream_callback
-                )
-            else:
-                raise
         except Exception:
             raise
             
@@ -460,9 +543,9 @@ class OpenRouterGateway:
         direct_params = request_params.copy()
         extra_headers = direct_params.pop("extra_headers", {})
         
-        # Add reasoning configuration
+        # Add reasoning configuration using new unified format
         direct_params["reasoning"] = reasoning_config
-        direct_params["include_reasoning"] = True
+        # Remove include_reasoning - now using unified reasoning parameter
         
         # Prepare headers
         headers = {
@@ -505,7 +588,7 @@ class OpenRouterGateway:
         
         async with client.stream("POST", url, headers=headers, json=params) as response:
             if response.status_code != 200:
-                error_text = await response.atext()
+                error_text = (await response.aread()).decode()
                 self.logger.error(f"Direct API call failed with status {response.status_code}: {error_text}")
                 return f"[Error: API call failed with status {response.status_code}]"
             
