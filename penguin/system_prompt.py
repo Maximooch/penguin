@@ -165,4 +165,5 @@ Your mission is to:
 
 
 
-SYSTEM_PROMPT = BASE_PROMPT + prompt_workflow.PENGUIN_WORKFLOW + prompt_workflow.MULTI_STEP_SECTION + prompt_actions.ACTION_SYNTAX + prompt_workflow.ADVICE_PROMPT + prompt_workflow.COMPLETION_PHRASES_GUIDE + prompt_workflow.LARGE_CODEBASE_GUIDE + prompt_workflow.TOOL_LEARNING_GUIDE + prompt_workflow.CODE_ANALYSIS_GUIDE # + ENVIRONMENT_PROMPT
+# SYSTEM_PROMPT = BASE_PROMPT + prompt_workflow.PENGUIN_WORKFLOW + prompt_workflow.MULTI_STEP_SECTION + prompt_actions.ACTION_SYNTAX + prompt_workflow.ADVICE_PROMPT + prompt_workflow.COMPLETION_PHRASES_GUIDE + prompt_workflow.LARGE_CODEBASE_GUIDE + prompt_workflow.TOOL_LEARNING_GUIDE + prompt_workflow.CODE_ANALYSIS_GUIDE # + ENVIRONMENT_PROMPT
+SYSTEM_PROMPT = BASE_PROMPT + prompt_workflow.MULTI_STEP_SECTION + prompt_actions.ACTION_SYNTAX + prompt_workflow.ADVICE_PROMPT + prompt_workflow.COMPLETION_PHRASES_GUIDE + prompt_workflow.LARGE_CODEBASE_GUIDE + prompt_workflow.TOOL_LEARNING_GUIDE + prompt_workflow.CODE_ANALYSIS_GUIDE # + ENVIRONMENT_PROMPT

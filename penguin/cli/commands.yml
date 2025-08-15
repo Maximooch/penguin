@@ -209,6 +209,20 @@ commands:
     description: "Show token usage"
     handler: "_handle_tokens"
     
+  - name: diff
+    category: debug
+    description: "Show a syntax-aware diff between two files or git refs"
+    parameters:
+      - name: a
+        type: string
+        required: true
+        description: "Left file or git ref:path"
+      - name: b
+        type: string
+        required: true
+        description: "Right file or git ref:path"
+    handler: "_handle_diff"
+    
   - name: "tokens reset"
     category: debug
     description: "Reset token counter"

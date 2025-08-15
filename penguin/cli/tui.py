@@ -108,6 +108,7 @@ import signal
 import shlex
 import re
 import time
+import shutil
 
 # Project imports
 from penguin.core import PenguinCore
@@ -126,6 +127,10 @@ class StatusSidebar(Static):
 
     def update_status(self, data: Dict[str, Any]) -> None:
         try:
+            # Allow callers to bypass formatting and set raw text
+            if data.get("raw"):
+                self.update(str(data["raw"]))
+                return
             model = data.get("model", "model?")
             cur = data.get("tokens_cur", 0)
             max_t = data.get("tokens_max", 0)
@@ -198,6 +203,7 @@ class ChatMessage(Static, can_focus=True):
         self._md_stream = None
         self._pending_update_task = None
         self._last_update_ts = 0.0
+        self._prefixed = False
 
     def compose(self) -> ComposeResult:
         """Render the message with code fences highlighted."""
@@ -206,10 +212,14 @@ class ChatMessage(Static, can_focus=True):
         # to avoid partial / unparsed markdown during progressive updates.
         try:
             if self.has_class("streaming"):
-                yield TextualMarkdown(
-                    self._clean_final_content(self.content),
-                    classes=f"message-content {self.role}"
-                )
+                text = self._clean_final_content(self.content)
+                try:
+                    if self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not self._prefixed:
+                        text = ("🐧 " + text) if not text.startswith("🐧 ") else text
+                        self._prefixed = True
+                except Exception:
+                    pass
+                yield TextualMarkdown(text, classes=f"message-content {self.role}")
                 return
         except Exception:
             pass
@@ -306,6 +316,13 @@ class ChatMessage(Static, can_focus=True):
 
         yield Static(label_text, classes="message-label")
 
+        # Compact mode: prefix penguin emoji for assistant messages
+        try:
+            if self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not processed_content.startswith("🐧 "):
+                processed_content = f"🐧 {processed_content}"
+        except Exception:
+            pass
+
         parts = self.CODE_FENCE.split(processed_content)
         # parts = [before, lang1, code1, after1, lang2, code2, ...]
         if len(parts) == 1:
@@ -362,6 +379,22 @@ class ChatMessage(Static, can_focus=True):
         """Append a chunk of text to the message content."""
         # Clean up streaming artifacts before adding to content
         cleaned_chunk = self._clean_streaming_artifacts(chunk)
+        # Emit penguin prefix once in compact mode before first chunk
+        try:
+            if self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not self._prefixed:
+                md = self._get_markdown_widget()
+                if md is not None and hasattr(md, "get_stream"):
+                    if self._md_stream is None:
+                        try:
+                            self._md_stream = md.get_stream()
+                        except Exception:
+                            self._md_stream = None
+                    if self._md_stream is not None:
+                        self._md_stream.write("🐧 ")
+                self.content += "🐧 "
+                self._prefixed = True
+        except Exception:
+            pass
         self.content += cleaned_chunk
         # Prefer Textual Markdown streaming API when available to avoid partial renders
         try:
@@ -769,6 +802,8 @@ class PenguinTextualApp(App):
         self._latest_token_usage: Dict[str, Any] = {}
         self._app_start_ts: float = time.time()
         self._status_task: Optional[asyncio.Task] = None
+        self._pending_response: bool = False
+        self._spinner_index: int = 0
         self._status_visible: bool = True
 
         # Preferences (theme/layout) persisted across sessions
@@ -869,19 +904,48 @@ class PenguinTextualApp(App):
         lines = result_str.splitlines()
 
         if view != "compact":
-            # Detailed: full output
-            return f"```text\n{result_str}\n```"
+            # Detailed: full output with best-effort language fence
+            def _guess_lang(s: str) -> str | None:
+                snippet = s.strip()[:400]
+                if re.search(r"^\s*(from\s+\w+\s+import|import\s+\w+|def\s+\w+\(|class\s+\w+|if __name__ == '__main__')", snippet, re.M):
+                    return "python"
+                if snippet.startswith("{") or snippet.startswith("["):
+                    return "json"
+                return None
+            lang = _guess_lang(result_str)
+            fence = f"```{lang}\n" if lang else "```\n"
+            return f"{fence}{result_str}\n```"
 
         # Compact:
         if len(lines) <= max_lines:
-            return f"```text\n{result_str}\n```"
+            # Compact short block
+            def _guess_lang(s: str) -> str | None:
+                snippet = s.strip()[:400]
+                if re.search(r"^\s*(from\s+\w+\s+import|import\s+\w+|def\s+\w+\(|class\s+\w+|if __name__ == '__main__')", snippet, re.M):
+                    return "python"
+                if snippet.startswith("{") or snippet.startswith("["):
+                    return "json"
+                return None
+            lang = _guess_lang(result_str)
+            fence = f"```{lang}\n" if lang else "```\n"
+            return f"{fence}{result_str}\n```"
 
         preview = "\n".join(lines[:max_lines])
         remainder = "\n".join(lines[max_lines:])
-        content = f"```text\n{preview}\n```\n\n"
+        def _guess_lang(s: str) -> str | None:
+            snippet = s.strip()[:400]
+            if re.search(r"^\s*(from\s+\w+\s+import|import\s+\w+|def\s+\w+\(|class\s+\w+|if __name__ == '__main__')", snippet, re.M):
+                return "python"
+            if snippet.startswith("{") or snippet.startswith("["):
+                return "json"
+            return None
+        lang = _guess_lang(result_str)
+        fence = f"```{lang}\n" if lang else "```\n"
+        content = f"{fence}{preview}\n```\n\n"
         content += "<details>\n"
         content += f"<summary>Show {len(lines) - max_lines} more lines…</summary>\n\n"
-        content += f"```text\n{remainder}\n```\n\n"
+        fence_full = f"```{lang}\n" if lang else "```\n"
+        content += f"{fence_full}{remainder}\n```\n\n"
         content += "</details>"
         return content
 
@@ -945,6 +1009,16 @@ class PenguinTextualApp(App):
                 visible = getattr(self, "_status_visible", True)
                 sidebar.display = visible
                 if visible:
+                    # Pre-stream waiting animation (before first chunk arrives)
+                    if getattr(self, "_pending_response", False) and self.current_streaming_widget is None:
+                        frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+                        self._spinner_index = (self._spinner_index + 1) % len(frames)
+                        spinner = frames[self._spinner_index]
+                        sidebar.update_status({
+                            "raw": f"{spinner} waiting for response..."
+                        })
+                        await asyncio.sleep(0.1)
+                        continue
                     elapsed = int(asyncio.get_event_loop().time() - getattr(self, "_stream_start_time", 0)) if self.current_streaming_widget else int(time.time() - self._app_start_ts)
                     model = None
                     if self.core and getattr(self.core, "model_config", None):
@@ -986,6 +1060,14 @@ class PenguinTextualApp(App):
             self.debug_messages.append(f"Received event: {event_type} with data: {str(data)[:200]}")
             
             if event_type == "message":
+                # A message event means Core has started working; if it's an assistant
+                # reply and streaming hasn't begun yet, mark pending for spinner.
+                try:
+                    role_peek = data.get("role", "")
+                    if role_peek == "assistant" and self.current_streaming_widget is None:
+                        self._pending_response = True
+                except Exception:
+                    pass
                 role = data.get("role", "unknown")
                 content = data.get("content", "")
                 category = data.get("category", "DIALOG")
@@ -1031,6 +1113,7 @@ class PenguinTextualApp(App):
                     self.current_streaming_widget.add_class("streaming")
                     self._stream_start_time = asyncio.get_event_loop().time()
                     self._stream_chunk_count = 0
+                    self._pending_response = False  # stop spinner
                     
                     # Initialize reasoning content accumulator
                     self._reasoning_content = ""
@@ -1053,7 +1136,17 @@ class PenguinTextualApp(App):
                     if not is_final:
                         # Handle different message types
                         if message_type == "reasoning":
-                            # Accumulate reasoning content separately
+                            # Stream reasoning live as a lightweight banner in the sidebar
+                            # to avoid adding/removing widgets in the scroll area.
+                            sidebar = None
+                            try:
+                                sidebar = self.query_one(StatusSidebar)
+                            except Exception:
+                                sidebar = None
+                            if sidebar is not None:
+                                dots = ("…" * ((self._stream_chunk_count % 3) + 1))
+                                sidebar.update_status({"raw": f"🧠 reasoning{dots}"})
+                            # Accumulate reasoning text but do not mount a separate message
                             self._reasoning_content += chunk
                         else:
                             # Stream assistant content directly
@@ -1086,6 +1179,11 @@ class PenguinTextualApp(App):
                             markdown_widget.update(self.current_streaming_widget.content)
                         except Exception as e:
                             logger.error(f"Error updating markdown widget with reasoning: {e}")
+                        # Clear sidebar banner
+                        try:
+                            self.query_one(StatusSidebar).update_status({"raw": ""})
+                        except Exception:
+                            pass
                     
                     # Validate final content
                     final_content = self.current_streaming_widget.content.strip()
@@ -1104,6 +1202,7 @@ class PenguinTextualApp(App):
                     # Schedule the dedupe key to be cleared after a short delay
                     self.dedup_clear_task = asyncio.create_task(self._clear_dedup_content())
                     self._scroll_to_bottom()
+                    self._pending_response = False
 
             elif event_type == "action":
                 # Render action in XML-like tag form (compact look)
@@ -1421,6 +1520,9 @@ class PenguinTextualApp(App):
                                     val = f'"{val}"'
                                 tokens.append(val)
                     built = cmd_obj.name + (" " + " ".join(tokens) if tokens else "")
+                    if cmd_obj.name == "diff":
+                        await self._handle_diff(args_dict)
+                        return
                     if cmd_obj.name.startswith("run ") or cmd_obj.name == "run":
                         response = await self.interface.handle_command(
                             built,
@@ -1504,6 +1606,51 @@ class PenguinTextualApp(App):
                 self.add_message(f"Image sent: {os.path.basename(image_path)}", "system")
         except Exception as e:
             self.add_message(f"Error handling image: {e}", "error")
+
+    async def _handle_diff(self, args: Dict[str, Any]) -> None:
+        """Handle /diff a b using difftastic if available, else git diff or diff.
+        Renders the stdout as a fenced text block (auto-collapsed in compact mode).
+        """
+        try:
+            a = str(args.get("a", "")).strip()
+            b = str(args.get("b", "")).strip()
+            if not a or not b:
+                self.add_message("Usage: /diff <a> <b>", "error")
+                return
+            # Determine available tool
+            tool = None
+            for candidate in ("difft", "difftastic", "git", "diff"):
+                if shutil.which(candidate):
+                    tool = candidate
+                    break
+            if tool is None:
+                self.add_message("No diff tool found (tried: difft/difftastic/git/diff)", "error")
+                return
+            # Build command
+            if tool in ("difft", "difftastic"):
+                cmd = [tool, "--background=dark", a, b]
+            elif tool == "git":
+                cmd = ["git", "--no-pager", "diff", "--", a, b]
+            else:
+                cmd = ["diff", "-u", a, b]
+            # Run non-interactively
+            import subprocess
+            try:
+                out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
+            except subprocess.CalledProcessError as e:
+                out = e.output or "(no output)"
+            # Format and display
+            view = getattr(self, "_view_mode", "compact")
+            fenced = f"```text\n{out}\n```"
+            if view == "compact" and out.count("\n") > 60:
+                head = "\n".join(out.splitlines()[:40])
+                tail = "\n".join(out.splitlines()[-20:])
+                body = f"```text\n{head}\n...\n{tail}\n```\n\n<details>\n<summary>Show full diff…</summary>\n\n```text\n{out}\n```\n\n</details>"
+                self.add_message(body, "system")
+            else:
+                self.add_message(fenced, "system")
+        except Exception as e:
+            self.add_message(f"Diff error: {e}", "error")
 
     def _detect_and_stage_attachments(self, text: str) -> str:
         """Detect file paths for images in input text and stage them as attachments.

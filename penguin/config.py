@@ -442,6 +442,28 @@ class Config:
         provider_for_init = specific_config.get("provider", default_provider)
         client_pref_for_init = specific_config.get("client_preference", default_client_pref)
 
+        # --- Reasoning configuration (supports global under model.reasoning and per‑model override) ---
+        reasoning_global = default_model_settings.get("reasoning", {}) if isinstance(default_model_settings.get("reasoning"), dict) else {}
+        reasoning_specific = specific_config.get("reasoning", {}) if isinstance(specific_config.get("reasoning"), dict) else {}
+
+        def _pick_reasoning(key, cast=None):
+            value = reasoning_specific.get(key, reasoning_global.get(key))
+            if value is None:
+                return None
+            try:
+                return cast(value) if cast else value
+            except Exception:
+                return None
+
+        reasoning_enabled_val = _pick_reasoning("enabled")
+        reasoning_effort_val = _pick_reasoning("effort")
+        if isinstance(reasoning_effort_val, str):
+            reasoning_effort_val = reasoning_effort_val.lower()
+            if reasoning_effort_val not in {"low", "medium", "high"}:
+                reasoning_effort_val = None
+        reasoning_max_tokens_val = _pick_reasoning("max_tokens", int)
+        reasoning_exclude_val = _pick_reasoning("exclude")
+
         llm_model_config = LLMModelConfig(
             model=model_name_for_init,
             provider=provider_for_init,
@@ -454,6 +476,11 @@ class Config:
             vision_enabled=specific_config.get("vision_enabled", default_model_settings.get("vision_enabled", os.getenv("PENGUIN_VISION_ENABLED", "").lower() == "true" if os.getenv("PENGUIN_VISION_ENABLED") != "" else None)),
             max_history_tokens=specific_config.get("max_history_tokens", default_model_settings.get("max_history_tokens", int(os.getenv("PENGUIN_MAX_HISTORY_TOKENS")) if os.getenv("PENGUIN_MAX_HISTORY_TOKENS") else None)),
             api_version=specific_config.get("api_version", default_model_settings.get("api_version", os.getenv("API_VERSION"))), # Added API version
+            # Reasoning configuration (optional)
+            reasoning_enabled=bool(reasoning_enabled_val) if reasoning_enabled_val is not None else False,
+            reasoning_effort=reasoning_effort_val,
+            reasoning_max_tokens=reasoning_max_tokens_val,
+            reasoning_exclude=bool(reasoning_exclude_val) if reasoning_exclude_val is not None else False,
         )
 
         return cls(
