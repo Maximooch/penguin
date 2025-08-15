@@ -103,9 +103,11 @@ from rich.syntax import Syntax # type: ignore
 
 # Standard library imports
 import os
+import json
 import signal
 import shlex
 import re
+import time
 
 # Project imports
 from penguin.core import PenguinCore
@@ -170,11 +172,24 @@ class ChatMessage(Static, can_focus=True):
         self.content = content
         self.role = role
         self._md_cached = None
+        self._md_stream = None
         self._pending_update_task = None
         self._last_update_ts = 0.0
 
     def compose(self) -> ComposeResult:
         """Render the message with code fences highlighted."""
+
+        # Streaming path: keep a single Markdown widget and append to it
+        # to avoid partial / unparsed markdown during progressive updates.
+        try:
+            if self.has_class("streaming"):
+                yield TextualMarkdown(
+                    self._clean_final_content(self.content),
+                    classes=f"message-content {self.role}"
+                )
+                return
+        except Exception:
+            pass
 
         # Pre-process bespoke tags (<execute>, <execute_command>, etc.) → fenced code
         processed_content = self.content
@@ -273,7 +288,12 @@ class ChatMessage(Static, can_focus=True):
         if len(parts) == 1:
             # No fenced code detected – heuristic: treat whole block as code if it *looks* like code
             if self._looks_like_code(processed_content):
-                syntax_obj = Syntax(processed_content.strip(), "python", theme="monokai", line_numbers=False)
+                # Line numbers only in detailed view
+                try:
+                    line_nums = getattr(self.app, "_view_mode", "compact") == "detailed"  # type: ignore[attr-defined]
+                except Exception:
+                    line_nums = False
+                syntax_obj = Syntax(processed_content.strip(), "python", theme="monokai", line_numbers=line_nums)
                 yield Static(syntax_obj, classes="code-block")
             else:
                 yield TextualMarkdown(
@@ -300,7 +320,12 @@ class ChatMessage(Static, can_focus=True):
                     code = code.strip()
                     if code:
                         try:
-                            syntax_obj = Syntax(code, lang, theme="monokai", line_numbers=True)
+                            # Compact view hides line numbers for a cleaner look
+                            try:
+                                line_nums = getattr(self.app, "_view_mode", "compact") == "detailed"  # type: ignore[attr-defined]
+                            except Exception:
+                                line_nums = True
+                            syntax_obj = Syntax(code, lang, theme="monokai", line_numbers=line_nums)
                             yield Static(syntax_obj, classes="code-block")
                         except Exception as e:
                             # Fallback if syntax highlighting fails
@@ -315,8 +340,22 @@ class ChatMessage(Static, can_focus=True):
         # Clean up streaming artifacts before adding to content
         cleaned_chunk = self._clean_streaming_artifacts(chunk)
         self.content += cleaned_chunk
-        # Query the Markdown widget and update it
+        # Prefer Textual Markdown streaming API when available to avoid partial renders
         try:
+            md = self._get_markdown_widget()
+            if md is not None and hasattr(md, "get_stream"):
+                if self._md_stream is None:
+                    try:
+                        self._md_stream = md.get_stream()  # type: ignore[attr-defined]
+                    except Exception:
+                        self._md_stream = None
+                if self._md_stream is not None:
+                    try:
+                        self._md_stream.write(cleaned_chunk)
+                        return
+                    except Exception:
+                        self._md_stream = None
+            # Fallback: schedule a throttled update
             self._schedule_markdown_update()
         except Exception:
             pass
@@ -469,6 +508,13 @@ class ChatMessage(Static, can_focus=True):
         
         # Update the markdown widget with cleaned content
         try:
+            if self._md_stream is not None:
+                try:
+                    self._md_stream.stop()
+                except Exception:
+                    pass
+                finally:
+                    self._md_stream = None
             md = self._get_markdown_widget()
             if md is not None:
                 md.update(self.content)
@@ -696,10 +742,16 @@ class PenguinTextualApp(App):
         # Pending image attachments (paths) captured from input path detection
         self._pending_attachments: list[str] = []
 
+        # Status micro-row state
+        self._latest_token_usage: Dict[str, Any] = {}
+        self._app_start_ts: float = time.time()
+        self._status_task: Optional[asyncio.Task] = None
+
         # Preferences (theme/layout) persisted across sessions
         self._prefs_path: str = os.path.expanduser("~/.penguin/tui_prefs.yml")
         self._theme_name: str = "ocean"  # ocean | nord | dracula
         self._layout_mode: str = "flat"   # flat | boxed
+        self._view_mode: str = "compact"  # compact | detailed
 
     # -------------------------
     # Utilities
@@ -746,6 +798,7 @@ class PenguinTextualApp(App):
                 id="input-box"
             )
         yield Static(id="status-bar")
+        yield Static(id="micro-status")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -753,6 +806,8 @@ class PenguinTextualApp(App):
         self.query_one("#status-bar", Static).update(self.status_text)
         self.query_one(Input).focus()
         asyncio.create_task(self.initialize_core())
+        # Start micro status updater
+        self._status_task = asyncio.create_task(self._update_micro_status_loop())
 
     def add_message(self, content: str, role: str) -> ChatMessage:
         """Helper to add a new message widget to the display."""
@@ -779,28 +834,30 @@ class PenguinTextualApp(App):
             pass
     
     def _format_system_output(self, action_name: str, result_str: str, max_lines: int = 20) -> str:
-        """Format system output with expand/collapse for long content."""
+        """Format tool / action output.
+
+        - Compact view: show fenced text. If longer than max_lines, include a
+          preview and a <details> block with the remainder. No extra headers.
+        - Detailed view: show full output with a small header line.
+        """
+        view = getattr(self, "_view_mode", "compact")
         lines = result_str.splitlines()
-        
+
+        if view != "compact":
+            # Detailed: full output
+            return f"```text\n{result_str}\n```"
+
+        # Compact:
         if len(lines) <= max_lines:
-            # Short output, display normally
-            return f"✅ Tool `{action_name}` output:\n```text\n{result_str}\n```"
-        
-        # Long output, use collapsible format
-        preview_lines = lines[:max_lines]
-        remaining_lines = lines[max_lines:]
-        
-        preview_text = "\n".join(preview_lines)
-        full_text = "\n".join(remaining_lines)
-        
-        # Create collapsible content
-        content = f"✅ Tool `{action_name}` output (showing {max_lines}/{len(lines)} lines):\n"
-        content += f"```text\n{preview_text}\n```\n\n"
+            return f"```text\n{result_str}\n```"
+
+        preview = "\n".join(lines[:max_lines])
+        remainder = "\n".join(lines[max_lines:])
+        content = f"```text\n{preview}\n```\n\n"
         content += "<details>\n"
-        content += f"<summary>Show {len(remaining_lines)} more lines...</summary>\n\n"
-        content += f"```text\n{full_text}\n```\n\n"
+        content += f"<summary>Show {len(lines) - max_lines} more lines…</summary>\n\n"
+        content += f"```text\n{remainder}\n```\n\n"
         content += "</details>"
-        
         return content
 
     async def initialize_core(self) -> None:
@@ -853,6 +910,28 @@ class PenguinTextualApp(App):
                 status_bar.update(f"[dim]{status}[/dim]")
         except Exception:
             pass
+
+    async def _update_micro_status_loop(self) -> None:
+        while True:
+            try:
+                # Respect compact vs detailed: only show in detailed
+                if getattr(self, "_view_mode", "compact") == "detailed":
+                    elapsed = int(asyncio.get_event_loop().time() - getattr(self, "_stream_start_time", 0)) if self.current_streaming_widget else int(time.time() - self._app_start_ts)
+                    model = None
+                    if self.core and getattr(self.core, "model_config", None):
+                        model = getattr(self.core.model_config, "model", None)
+                    tokens = self.interface.get_token_usage() if self.interface else {}
+                    cur = tokens.get("current_total_tokens", 0)
+                    max_t = tokens.get("max_tokens", 0)
+                    pct = (cur / max_t * 100) if max_t else 0
+                    text = f"{model or 'model?'}  |  tokens: {cur}/{max_t} ({pct:.1f}%)  |  ⏱ {elapsed}s"
+                    self.query_one("#micro-status", Static).update(text)
+                else:
+                    self.query_one("#micro-status", Static).update("")
+            except Exception:
+                # keep loop resilient
+                pass
+            await asyncio.sleep(1.0)
 
     async def handle_core_event(self, event_type: str, data: Any) -> None:
         # Throttle extremely verbose stream_chunk logs: print every 50th chunk or final only
@@ -990,27 +1069,26 @@ class PenguinTextualApp(App):
                     self._scroll_to_bottom()
 
             elif event_type == "action":
-                # Temporarily render actions as simple markdown within system message
+                # Render action in XML-like tag form (compact look)
                 action_name = data.get("type", "unknown")
-                params = data.get("params", {})
-                md = "**Action:** " + action_name + "\n\n" + "```json\n" + str(params) + "\n```"
+                params = str(data.get("params", ""))
+                md = f"```text\n<{action_name}>{params}</{action_name}>\n```"
                 self.add_message(md, "system")
 
             elif event_type == "action_result":
                 result_str = data.get("result", "")
                 status = data.get("status", "completed")
                 if status == "error":
-                    content = f"❌ Action failed:\n```text\n{result_str}\n```"
-                    self.add_message(content, "error")
+                    self.add_message(f"```text\n{result_str}\n```", "system")
                 else:
-                    content = self._format_system_output("Action", result_str)
-                    self.add_message(content, "system")
+                    self.add_message(self._format_system_output("Action", result_str), "system")
                 self._prune_trailing_blank_messages()
 
             elif event_type == "tool_call":
                 tool_name = data.get("name", "unknown")
                 tool_args = data.get("arguments", {})
-                md = "**Tool:** " + tool_name + "\n\n" + "```json\n" + str(tool_args) + "\n```"
+                args_s = json.dumps(tool_args, indent=2, ensure_ascii=False) if isinstance(tool_args, (dict, list)) else str(tool_args)
+                md = f"```text\n<tool name=\"{tool_name}\">\n{args_s}\n</tool>\n```"
                 self.add_message(md, "system")
             
             elif event_type == "tool_result":
@@ -1018,24 +1096,17 @@ class PenguinTextualApp(App):
                 action_name = data.get("action_name", "unknown")
                 status = data.get("status", "completed")
                 if status == "error":
-                    content = f"❌ Tool `{action_name}` failed:\n```text\n{result_str}\n```"
-                    self.add_message(content, "error")
+                    self.add_message(f"```text\n{result_str}\n```", "system")
                 else:
-                    content = self._format_system_output(action_name, result_str)
-                    self.add_message(content, "system")
+                    self.add_message(self._format_system_output(action_name, result_str), "system")
                 self._prune_trailing_blank_messages()
 
             elif event_type == "error":
+                # Render errors as simple markdown instead of a widget in compact mode
                 error_msg = data.get("message", "Unknown error")
                 context = data.get("context", None)
-                
-                # Create error execution widget
-                execution = ExecutionAdapter.from_error(error_msg, context)
-                error_widget = ToolExecutionWidget(execution)
-                
-                message_area = self.query_one("#message-area", VerticalScroll)
-                message_area.mount(error_widget)
-                self._scroll_to_bottom()
+                content = "**Error:**\n\n```text\n" + str(error_msg) + "\n" + (str(context) if context else "") + "\n```"
+                self.add_message(content, "system")
 
         except Exception as e:
             error_msg = f"Error handling core event {event_type}: {e}"
@@ -1291,6 +1362,10 @@ class PenguinTextualApp(App):
                             await self._handle_layout_set(args_dict)
                         elif handler == "_handle_layout_get":
                             await self._handle_layout_get()
+                        elif handler == "_handle_view_set":
+                            await self._handle_view_set(args_dict)
+                        elif handler == "_handle_view_get":
+                            await self._handle_view_get()
                         return
 
                     # Otherwise, delegate to interface; rebuild command string
@@ -1318,6 +1393,16 @@ class PenguinTextualApp(App):
             parts = command.split(" ", 1)
             cmd = parts[0].lower()
             args = parts[1] if len(parts) > 1 else ""
+            # Fallback handling for view commands to avoid registry issues
+            if cmd == "view":
+                sub = args.split(" ", 1)[0] if args else "get"
+                if sub == "set":
+                    mode = args.split(" ", 1)[1] if " " in args else ""
+                    await self._handle_view_set({"mode": mode})
+                    return
+                else:
+                    await self._handle_view_get()
+                    return
             if cmd == "help":
                 await self._show_enhanced_help()
                 return
@@ -1523,6 +1608,7 @@ class PenguinTextualApp(App):
                     data = yaml.safe_load(f) or {}
                 self._theme_name = str(data.get("theme", self._theme_name))
                 self._layout_mode = str(data.get("layout", self._layout_mode))
+                self._view_mode = str(data.get("view", self._view_mode))
         except Exception:
             pass
 
@@ -1531,7 +1617,7 @@ class PenguinTextualApp(App):
             import yaml  # type: ignore
             os.makedirs(os.path.dirname(self._prefs_path), exist_ok=True)
             with open(self._prefs_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump({"theme": self._theme_name, "layout": self._layout_mode}, f)
+                yaml.safe_dump({"theme": self._theme_name, "layout": self._layout_mode, "view": self._view_mode}, f)
         except Exception:
             pass
 
@@ -1618,6 +1704,18 @@ class PenguinTextualApp(App):
 
     async def _handle_layout_get(self) -> None:
         self.add_message(f"Current layout: {self._layout_mode}.", "system")
+
+    async def _handle_view_set(self, args: Dict[str, Any]) -> None:
+        mode = str(args.get("mode", "")).strip().lower()
+        if mode not in ("compact", "detailed"):
+            self.add_message("Unknown view. Use 'compact' or 'detailed'.", "error")
+            return
+        self._view_mode = mode
+        self._save_prefs()
+        self.add_message(f"View set to {mode}.", "system")
+
+    async def _handle_view_get(self) -> None:
+        self.add_message(f"Current view: {self._view_mode}.", "system")
 
     async def show_help(self) -> None:
         """Display the structured help message."""

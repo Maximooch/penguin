@@ -31,11 +31,7 @@ Footer .footer--key { background: #334e68; color: #89cff0; }
 
 Footer .footer--highlight-key { background: #89cff0; color: #0c141f; }
 
-#main-container {
-    layout: vertical;
-    padding: 0 1;
-    height: 1fr;
-}
+#main-container { layout: vertical; padding: 0 1; height: 1fr; }
 
 #message-area {
     height: 1fr;
@@ -52,6 +48,15 @@ Footer .footer--highlight-key { background: #89cff0; color: #0c141f; }
 
 #status-bar { dock: bottom; height: 1; background: #1a2a3f; color: #a0a0a0; padding: 0 1; text-align: left; }
 
+/* Micro status row (detailed view only; hidden in compact by default) */
+#micro-status {
+    dock: bottom;
+    height: 1;
+    background: #0f1826;
+    color: #89cff0;
+    padding: 0 1;
+}
+
 /* ===============================================
    Chat Message Styling
    =============================================== */
@@ -59,12 +64,9 @@ Footer .footer--highlight-key { background: #89cff0; color: #0c141f; }
 /* Boxed layout */
 .layout-boxed ChatMessage { padding: 1 2; margin: 1 0; background: #101c2c; border: round #334e68; width: 100%; height: auto; layout: vertical; }
 /* Flat layout */
-.layout-flat ChatMessage { padding: 1 2; margin: 0 0 1 0; background: transparent; border: none; width: 100%; height: auto; layout: vertical; border-bottom: solid #223247; }
+.layout-flat ChatMessage { padding: 0 1; margin: 0 0 1 0; background: transparent; border: none; width: 100%; height: auto; layout: vertical; }
 
-.message-label {
-    height: auto;
-    margin-bottom: 1;
-}
+.message-label { display: none; height: 0; margin: 0; padding: 0; }
 
 .message-content {
     height: auto;
@@ -72,18 +74,14 @@ Footer .footer--highlight-key { background: #89cff0; color: #0c141f; }
     min-height: 0;       /* prevent reserved vertical space */
 }
 
-/* Role label colors remain for text accents */
-ChatMessage .user { color: #e0e0e0; }
-ChatMessage .assistant { color: #c8e6c9; }
-ChatMessage .system { color: #fff59d; }
-ChatMessage .error { color: #ffcdd2; background: #b71c1c; }
+/* Role label colors removed to reduce noise (inherit screen color by default). */
 
 /* Role ribbons in flat layout */
 .layout-flat .message-content.assistant { border-left: solid #89cff0; }
 .layout-flat .message-content.user { border-left: solid #66bb6a; }
 .layout-flat .message-content.system { border-left: solid #ffd54f; }
 .layout-flat .message-content.error { border-left: solid #ef5350; background: rgba(239,83,80,0.12); }
-.layout-flat .message-content { padding-left: 1; }
+.layout-flat .message-content { padding-left: 1; margin-top: 0; }
 
 /* Streaming highlight */
 .layout-boxed ChatMessage.streaming { border: round #89cff0; background: #1a2a3f; }
@@ -93,7 +91,7 @@ ChatMessage .error { color: #ffcdd2; background: #b71c1c; }
 .layout-flat ChatMessage:focus .message-content { background: #162436; }
 
 /* Code block inside messages */
-.code-block { padding: 0 1; margin-top: 1; margin-bottom: 1; background: #111a28; border: round #334e68; }
+.code-block { padding: 0 1; margin-top: 0; margin-bottom: 0; background: #111a28; border: round #334e68; }
 
 /* ===============================================
    Tool Execution Widget Styles
@@ -108,24 +106,15 @@ ChatMessage .error { color: #ffcdd2; background: #b71c1c; }
     width: 100%;
 }
 
-.tool-header { padding: 1; background: #1a2a3f; border-bottom: solid #334e68; text-style: bold; }
+.tool-header { padding: 0; background: transparent; border: none; text-style: none; }
 
 .tool-params-section { margin: 1 0 0 0; background: #162436; border: round #334e68; padding: 0; }
 
-.tool-params-content {
-    padding: 1;
-    color: #a0a0a0;
-    min-height: 0;
-    margin: 0;
-}
+.tool-params-content { padding: 0 1; color: #a0a0a0; min-height: 0; margin: 0; }
 
 .tool-result-section { margin: 1 0 0 0; background: #162436; border: round #334e68; padding: 0; min-height: 0; }
 
-.tool-result-content {
-    padding: 1;
-    min-height: 0;
-    margin: 0;
-}
+.tool-result-content { padding: 0 1; min-height: 0; margin: 0; }
 
 /* Tool status colors */
 .tool-status-pending {
