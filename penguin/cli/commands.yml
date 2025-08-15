@@ -300,6 +300,22 @@ commands:
     description: "Show current layout mode"
     handler: "_handle_layout_get"
 
+  # View density commands
+  - name: "view set"
+    category: system
+    description: "Set view density (compact or detailed)"
+    parameters:
+      - name: mode
+        type: string
+        required: true
+        description: "View mode (compact|detailed)"
+    handler: "_handle_view_set"
+
+  - name: "view get"
+    category: system
+    description: "Show current view mode"
+    handler: "_handle_view_get"
+
 # Plugin command extension points (future)
 plugins:
   enabled: false
