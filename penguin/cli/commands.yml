@@ -316,6 +316,22 @@ commands:
     description: "Show current view mode"
     handler: "_handle_view_get"
 
+  # Status sidebar commands
+  - name: "status show"
+    category: system
+    description: "Show status sidebar"
+    handler: "_handle_status_show"
+
+  - name: "status hide"
+    category: system
+    description: "Hide status sidebar"
+    handler: "_handle_status_hide"
+
+  - name: "status toggle"
+    category: system
+    description: "Toggle status sidebar visibility"
+    handler: "_handle_status_toggle"
+
 # Plugin command extension points (future)
 plugins:
   enabled: false

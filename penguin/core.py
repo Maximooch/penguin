@@ -357,7 +357,12 @@ class PenguinCore:
                         api_base=config.api.base_url if hasattr(config, 'api') and hasattr(config.api, 'base_url') else None, # Safe access
                         use_assistants_api=config.model.get("use_assistants_api", False),
                         client_preference=config.model.get("client_preference", "native"),
-                        streaming_enabled=config.model.get("streaming_enabled", True)
+                        streaming_enabled=config.model.get("streaming_enabled", True),
+                        # Use full context window when provided; fallback to legacy max_tokens
+                        max_tokens=(
+                            config.model.get("context_window")
+                            or config.model.get("max_tokens")
+                        ),
                     )
                     logger.info(f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}")
                     if pbar: pbar.update(1)
@@ -495,11 +500,11 @@ class PenguinCore:
         if not self.config.diagnostics.enabled:
             disable_diagnostics()
         
-        # Ensure model_config max_tokens is consistent - fix for test failures
+        # Ensure model_config max_tokens is consistent – prefer context_window from config
         if model_config and not hasattr(model_config, 'max_tokens'):
-            model_config.max_tokens = self.config.model.get("max_tokens", 8000)
+            model_config.max_tokens = self.config.model.get("context_window") or self.config.model.get("max_tokens", 8000)
         elif model_config and model_config.max_tokens is None:
-            model_config.max_tokens = self.config.model.get("max_tokens", 8000)
+            model_config.max_tokens = self.config.model.get("context_window") or self.config.model.get("max_tokens", 8000)
 
         # Initialize conversation manager (replaces conversation system)
         from penguin.config import WORKSPACE_PATH
@@ -1703,7 +1708,9 @@ class PenguinCore:
                     "provider": provider_for_config,
                     "client_preference": client_pref,
                     "streaming_enabled": True,
-                    "max_tokens": model_specs.get("max_output_tokens"),  # Require real specs, no fallback
+                    # Prefer full context window when available; this is what
+                    # ContextWindowManager and Interface use for budgeting.
+                    "max_tokens": model_specs.get("context_length") or model_specs.get("max_output_tokens"),
                 }
 
             # Sanity-check we have the minimum required keys.
@@ -1712,13 +1719,14 @@ class PenguinCore:
                 logger.error(f"Invalid configuration for model '{model_id}': missing provider field.")
                 return False
 
-            # Update max_tokens with fetched specs - require real specs, no fallbacks
-            if "max_output_tokens" in model_specs:
-                # Use max_output_tokens for the API output limit
+            # Update max_tokens with fetched specs – prefer context_length
+            if "context_length" in model_specs:
+                model_conf["max_tokens"] = model_specs["context_length"]
+            elif "max_output_tokens" in model_specs:
                 model_conf["max_tokens"] = model_specs["max_output_tokens"]
             else:
                 # If we don't have real specs, error instead of guessing
-                logger.error(f"Could not fetch max_output_tokens for model '{model_id}' from OpenRouter API")
+                logger.error(f"Could not fetch context_length/max_output_tokens for model '{model_id}' from OpenRouter API")
                 return False
 
             # -----------------------------------------------------------------
@@ -1729,7 +1737,7 @@ class PenguinCore:
                 "provider": provider,
                 "client_preference": model_conf.get("client_preference", "native"),
                 "api_base": model_conf.get("api_base"),
-                "max_tokens": model_conf.get("max_tokens"),  # Should be set from real specs above
+                "max_tokens": model_conf.get("max_tokens"),
                 "temperature": model_conf.get("temperature", 0.7),
                 "use_assistants_api": model_conf.get("use_assistants_api", False),
                 "streaming_enabled": model_conf.get("streaming_enabled", True),
@@ -2152,11 +2160,13 @@ class PenguinCore:
             # Update model settings
             config_data['model']['default'] = model_id
             
-            # Update max_tokens with the actual max output limit
-            if 'max_output_tokens' in model_specs:
+            # Update max_tokens using the context window when available
+            if 'context_length' in model_specs:
+                config_data['model']['max_tokens'] = model_specs['context_length']
+            elif 'max_output_tokens' in model_specs:
                 config_data['model']['max_tokens'] = model_specs['max_output_tokens']
             else:
-                logger.error(f"No max_output_tokens available for model {model_id}")
+                logger.error(f"No context_length/max_output_tokens available for model {model_id}")
                 return
             
             # Store context window info for reference
@@ -2171,7 +2181,7 @@ class PenguinCore:
             with open(config_path, 'w') as f:
                 yaml.safe_dump(config_data, f, default_flow_style=False, sort_keys=False)
                 
-            logger.info(f"Updated config.yml with model {model_id}, max_tokens {config_data['model']['max_tokens']}, context_window {model_specs.get('context_length', 'unknown')}")
+            logger.info(f"Updated config.yml with model {model_id}, max_tokens (context window) {config_data['model']['max_tokens']}, context_window {model_specs.get('context_length', 'unknown')}")
             
         except Exception as e:
             logger.error(f"Failed to update config.yml: {e}")
