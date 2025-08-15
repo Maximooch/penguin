@@ -204,6 +204,7 @@ class ChatMessage(Static, can_focus=True):
         self._pending_update_task = None
         self._last_update_ts = 0.0
         self._prefixed = False
+        self._headline: Optional[str] = None
 
     def compose(self) -> ComposeResult:
         """Render the message with code fences highlighted."""
@@ -306,15 +307,24 @@ class ChatMessage(Static, can_focus=True):
                 )
             return
 
-        # Role label
-        if self.role == "user":
-            label_text = Text("You", style="bold green")
-        elif self.role == "assistant":
-            label_text = Text("Penguin", style="bold cyan")
-        else:
-            label_text = Text(self.role.capitalize(), style="bold yellow")
-
-        yield Static(label_text, classes="message-label")
+        # Compact headline for assistant messages (one-liner, toggles density)
+        try:
+            if self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact":
+                summary = self._compute_headline(self.content)
+                # Small clickable header widget that toggles density for this message
+                class _HL(Static):
+                    can_focus = True
+                    def on_click(self) -> None:  # type: ignore[override]
+                        try:
+                            self.parent.action_toggle_density()  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+                    BINDINGS = [("enter", "toggle", "Toggle"), ("space", "toggle", "Toggle")]
+                    def action_toggle(self) -> None:
+                        self.on_click()
+                yield _HL(Text(summary, style="bold cyan"), classes="msg-head")
+        except Exception:
+            pass
 
         # Compact mode: prefix penguin emoji for assistant messages
         try:
@@ -329,10 +339,7 @@ class ChatMessage(Static, can_focus=True):
             # No fenced code detected – heuristic: treat whole block as code if it *looks* like code
             if self._looks_like_code(processed_content):
                 # Line numbers only in detailed view
-                try:
-                    line_nums = getattr(self.app, "_view_mode", "compact") == "detailed"  # type: ignore[attr-defined]
-                except Exception:
-                    line_nums = False
+                line_nums = self._is_detailed()
                 syntax_obj = Syntax(processed_content.strip(), "python", theme="monokai", line_numbers=line_nums)
                 yield Static(syntax_obj, classes="code-block")
             else:
@@ -361,11 +368,45 @@ class ChatMessage(Static, can_focus=True):
                     if code:
                         try:
                             # Compact view hides line numbers for a cleaner look
+                            line_nums = self._is_detailed()
+                            # Smarter fencing: try explicit lang, fall back to python → text
+                            # Map custom languages
+                            actual_lang = (lang or "python").lower()
+                            if actual_lang == "actionxml":
+                                actual_lang = "xml"
+
+                            # Auto-collapse ActionTag/tool blocks in compact view (except diffs)
+                            preview_lines = getattr(self.app, "_tools_preview_lines", 5)
+                            should_autocollapse = (
+                                getattr(self.app, "_view_mode", "compact") == "compact"
+                                and getattr(self.app, "_tools_compact", True)
+                                and (lang.lower() == "actionxml" or "<tool" in code or "<execute" in code)
+                                and lang.lower() != "diff"
+                            )
+                            if should_autocollapse:
+                                lines = code.splitlines()
+                                if len(lines) > preview_lines:
+                                    head = "\n".join(lines[:preview_lines])
+                                    try:
+                                        preview_syntax = Syntax(head, actual_lang, theme="monokai", line_numbers=line_nums)
+                                    except Exception:
+                                        preview_syntax = Syntax(head, "text", theme="monokai", line_numbers=line_nums)
+                                    yield Static(preview_syntax, classes="code-block")
+                                    remainder = "\n".join(lines[preview_lines:])
+                                    summary = f"Show {len(lines) - preview_lines} more lines…"
+                                    body_md = f"```{lang}\n{remainder}\n```"
+                                    if Expander is not None:
+                                        expander = Expander(summary, open=False)  # type: ignore[call-arg]
+                                        expander.mount(TextualMarkdown(body_md))
+                                        yield expander
+                                    else:
+                                        yield SimpleExpander(summary, body_md, open=False)
+                                    continue
+
                             try:
-                                line_nums = getattr(self.app, "_view_mode", "compact") == "detailed"  # type: ignore[attr-defined]
+                                syntax_obj = Syntax(code, actual_lang, theme="monokai", line_numbers=line_nums)
                             except Exception:
-                                line_nums = True
-                            syntax_obj = Syntax(code, lang, theme="monokai", line_numbers=line_nums)
+                                syntax_obj = Syntax(code, "text", theme="monokai", line_numbers=line_nums)
                             yield Static(syntax_obj, classes="code-block")
                         except Exception as e:
                             # Fallback if syntax highlighting fails
@@ -704,6 +745,75 @@ class ChatMessage(Static, can_focus=True):
         except Exception:
             # No traditional expander found, try to toggle reasoning blockquotes
             pass
+
+    # --------- Helpers ---------
+    def _is_detailed(self) -> bool:
+        """Return True if this message should render in detailed density.
+
+        Checks a per-message override first, then falls back to the app's
+        global view mode. Safe on older Textual versions and during early mount.
+        """
+        try:
+            override = getattr(self, "_override_detailed", None)
+            if override is not None:
+                return bool(override)
+            app_mode = getattr(self.app, "_view_mode", "compact")
+            return app_mode == "detailed"
+        except Exception:
+            return False
+
+    def _is_compact(self) -> bool:
+        try:
+            return not self._is_detailed()
+        except Exception:
+            return True
+
+    def _rebuild_contents(self) -> None:
+        """Recompose children to apply density changes (e.g., line numbers)."""
+        try:
+            # Remove existing children and re-yield from compose()
+            for ch in list(self.children):
+                ch.remove()
+            # Compose returns a generator; mount each produced widget
+            for widget in self.compose():
+                self.mount(widget)
+        except Exception:
+            # Fall back to forcing markdown update if present
+            try:
+                md = self.query_one(TextualMarkdown)
+                md.update(self.content)
+            except Exception:
+                pass
+    def _compute_headline(self, text: str) -> str:
+        base = text.strip().splitlines()
+        if not base:
+            return "Penguin"
+        first = base[0].strip()
+        # Remove leading emoji/prefix
+        if first.startswith("🐧 "):
+            first = first[2:].strip()
+        # Keep short
+        if len(first) > 80:
+            first = first[:77] + "…"
+        return first or "Penguin"
+
+    def action_toggle_density(self) -> None:
+        try:
+            app = getattr(self, 'app', None)
+            if not app:
+                return
+            # Store per-message override flag on self
+            current = getattr(self, '_override_detailed', None)
+            if current is None:
+                # If app is compact, expand just this message to detailed; else collapse
+                app_compact = getattr(app, '_view_mode', 'compact') == 'compact'
+                self._override_detailed = app_compact
+            else:
+                self._override_detailed = not current
+            # Rebuild contents so Syntax blocks can pick up line-number changes
+            self._rebuild_contents()
+        except Exception:
+            pass
         
         # Toggle reasoning blockquotes by modifying content
         try:
@@ -811,6 +921,9 @@ class PenguinTextualApp(App):
         self._theme_name: str = "ocean"  # ocean | nord | dracula
         self._layout_mode: str = "flat"   # flat | boxed
         self._view_mode: str = "compact"  # compact | detailed
+        # Compact tool display controls
+        self._tools_compact: bool = True
+        self._tools_preview_lines: int = 20
 
     # -------------------------
     # Utilities
@@ -901,9 +1014,12 @@ class PenguinTextualApp(App):
         - Detailed view: show full output with a small header line.
         """
         view = getattr(self, "_view_mode", "compact")
+        compact_tools = getattr(self, "_tools_compact", True)
+        if compact_tools:
+            max_lines = getattr(self, "_tools_preview_lines", max_lines)
         lines = result_str.splitlines()
 
-        if view != "compact":
+        if view != "compact" and not compact_tools:
             # Detailed: full output with best-effort language fence
             def _guess_lang(s: str) -> str | None:
                 snippet = s.strip()[:400]
@@ -917,7 +1033,7 @@ class PenguinTextualApp(App):
             return f"{fence}{result_str}\n```"
 
         # Compact:
-        if len(lines) <= max_lines:
+        if len(lines) <= max_lines or not compact_tools:
             # Compact short block
             def _guess_lang(s: str) -> str | None:
                 snippet = s.strip()[:400]
@@ -934,10 +1050,21 @@ class PenguinTextualApp(App):
         remainder = "\n".join(lines[max_lines:])
         def _guess_lang(s: str) -> str | None:
             snippet = s.strip()[:400]
+            # Custom ActionTag format
+            if re.search(r"<(/)?(execute|execute_command|apply_diff|enhanced_\w+|tool|action)[^>]*>", snippet):
+                return "actionxml"
             if re.search(r"^\s*(from\s+\w+\s+import|import\s+\w+|def\s+\w+\(|class\s+\w+|if __name__ == '__main__')", snippet, re.M):
                 return "python"
+            if re.search(r"\bfunction\s+\w+\s*\(|console\.log\(|=>\s*\w*\(", snippet):
+                return "javascript"
             if snippet.startswith("{") or snippet.startswith("["):
                 return "json"
+            if re.search(r"^\s*#\!/?\w*sh", snippet) or re.search(r"\b(set -e|#!/bin/sh|#!/usr/bin/env bash)\b", snippet):
+                return "sh"
+            if re.search(r"^\[.*\]\s*$", snippet, re.M) and re.search(r"^\w+\s*=\s*", snippet, re.M):
+                return "toml"
+            if re.search(r"^(\+\+\+|---|@@) ", snippet, re.M):
+                return "diff"
             return None
         lang = _guess_lang(result_str)
         fence = f"```{lang}\n" if lang else "```\n"
@@ -1225,16 +1352,24 @@ class PenguinTextualApp(App):
                 tool_args = data.get("arguments", {})
                 args_s = json.dumps(tool_args, indent=2, ensure_ascii=False) if isinstance(tool_args, (dict, list)) else str(tool_args)
                 md = f"```text\n<tool name=\"{tool_name}\">\n{args_s}\n</tool>\n```"
-                self.add_message(md, "system")
+                msg = self.add_message(md, "system")
+                try:
+                    msg.add_class("tool-call")
+                except Exception:
+                    pass
             
             elif event_type == "tool_result":
                 result_str = data.get("result", "")
                 action_name = data.get("action_name", "unknown")
                 status = data.get("status", "completed")
                 if status == "error":
-                    self.add_message(f"```text\n{result_str}\n```", "system")
+                    msg = self.add_message(f"```text\n{result_str}\n```", "system")
                 else:
-                    self.add_message(self._format_system_output(action_name, result_str), "system")
+                    msg = self.add_message(self._format_system_output(action_name, result_str), "system")
+                try:
+                    msg.add_class("tool-result")
+                except Exception:
+                    pass
                 self._prune_trailing_blank_messages()
 
             elif event_type == "error":
@@ -1522,6 +1657,22 @@ class PenguinTextualApp(App):
                     built = cmd_obj.name + (" " + " ".join(tokens) if tokens else "")
                     if cmd_obj.name == "diff":
                         await self._handle_diff(args_dict)
+                        return
+                    if cmd_obj.name == "tools compact on":
+                        self._tools_compact = True
+                        self.add_message("Tool outputs: compact ON", "system")
+                        return
+                    if cmd_obj.name == "tools compact off":
+                        self._tools_compact = False
+                        self.add_message("Tool outputs: compact OFF", "system")
+                        return
+                    if cmd_obj.name == "tools preview":
+                        try:
+                            n = int(str(args_dict.get("lines", "20")))
+                            self._tools_preview_lines = max(5, min(200, n))
+                            self.add_message(f"Tool preview lines set to {self._tools_preview_lines}.", "system")
+                        except Exception:
+                            self.add_message("Usage: /tools preview <lines>", "error")
                         return
                     if cmd_obj.name.startswith("run ") or cmd_obj.name == "run":
                         response = await self.interface.handle_command(

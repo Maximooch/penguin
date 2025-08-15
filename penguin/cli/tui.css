@@ -85,6 +85,16 @@ Footer .footer--highlight-key { background: #89cff0; color: #0c141f; }
 .layout-flat .message-content.error { border-left: solid #ef5350; background: rgba(239,83,80,0.12); }
 .layout-flat .message-content { padding-left: 1; margin-top: 0; }
 
+/* Tool chain gutter connector (compact) */
+/* Both call and result share the same left border to visually connect */
+ChatMessage.tool-call .message-content { border-left: solid #57c7ff; }
+ChatMessage.tool-result .message-content { border-left: solid #57c7ff; }
+ChatMessage.tool-call .message-content,
+ChatMessage.tool-result .message-content { padding-left: 1; }
+
+/* Assistant headline (compact) */
+.msg-head { color: #a3bffa; text-style: bold; padding: 0 1 0 1; margin: 0; }
+
 /* Streaming highlight */
 .layout-boxed ChatMessage.streaming { border: round #89cff0; background: #1a2a3f; }
 

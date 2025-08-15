@@ -96,8 +96,7 @@ PENGUIN_WORKFLOW = '''
 - Ensure all requirements are met and verified through checks.
 - Document the final state and key decisions.
 
-### 2. Incremental Implementation & Verification Cycle
-- **Browser Tasks Specific Flow:**
+### 2.1. Browser Tasks: Verification Loop Applied
     1. `<browser_navigate>URL</browser_navigate >`
     2. **Verify Navigation Success** (Acknowledge system message).
     3. **IMMEDIATELY:** `<browser_screenshot></browser_screenshot >`

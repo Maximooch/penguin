@@ -209,6 +209,27 @@ commands:
     description: "Show token usage"
     handler: "_handle_tokens"
     
+  # Tools display controls
+  - name: "tools compact on"
+    category: system
+    description: "Enable compact rendering for tool/action outputs"
+    handler: "_handle_tools_compact_on"
+
+  - name: "tools compact off"
+    category: system
+    description: "Disable compact rendering for tool/action outputs"
+    handler: "_handle_tools_compact_off"
+
+  - name: "tools preview"
+    category: system
+    description: "Set preview lines for compact tool outputs"
+    parameters:
+      - name: lines
+        type: string
+        required: true
+        description: "Number of lines to show before collapsing"
+    handler: "_handle_tools_preview"
+
   - name: diff
     category: debug
     description: "Show a syntax-aware diff between two files or git refs"
