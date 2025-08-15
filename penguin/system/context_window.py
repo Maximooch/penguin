@@ -64,7 +64,7 @@ class ContextWindowManager:
             token_counter: Function to count tokens for content
             api_client: API client for token counting
         """
-        # Get max_tokens from model_config if available
+        # Get max_tokens from model_config / config context_window when available
         self.max_tokens = 150000  # Default fallback
         
         if model_config and hasattr(model_config, 'max_tokens') and model_config.max_tokens:
@@ -81,6 +81,12 @@ class ContextWindowManager:
                     if config_max_tokens:
                         self.max_tokens = config_max_tokens
                         logger.info(f"Using config.yml max_tokens for {model_name}: {self.max_tokens}")
+            # Prefer global model.context_window if present
+            if 'model' in config and isinstance(config['model'], dict):
+                cw = config['model'].get('context_window')
+                if cw:
+                    self.max_tokens = cw
+                    logger.info(f"Using global context_window from config.yml: {self.max_tokens}")
         except (ImportError, AttributeError) as e:
             logger.warning(f"Could not load config.yml for max_tokens: {e}")
 

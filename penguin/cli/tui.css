@@ -31,7 +31,9 @@ Footer .footer--key { background: #334e68; color: #89cff0; }
 
 Footer .footer--highlight-key { background: #89cff0; color: #0c141f; }
 
-#main-container { layout: vertical; padding: 0 1; height: 1fr; }
+#main-container { layout: horizontal; padding: 0 1; height: 1fr; }
+#center-pane { layout: vertical; height: 1fr; width: 1fr; }
+#status-sidebar { width: 36; dock: right; background: #0f1826; color: #89cff0; padding: 0 1; border: round #334e68; }
 
 #message-area {
     height: 1fr;

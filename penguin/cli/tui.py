@@ -117,6 +117,29 @@ from penguin.cli.widgets.unified_display import UnifiedExecution, ExecutionAdapt
 from penguin.cli.command_registry import CommandRegistry
 
 
+class StatusSidebar(Static):
+    """Right-docked status sidebar with compact metrics."""
+
+    def __init__(self) -> None:
+        super().__init__(id="status-sidebar")
+        self._last = {}
+
+    def update_status(self, data: Dict[str, Any]) -> None:
+        try:
+            model = data.get("model", "model?")
+            cur = data.get("tokens_cur", 0)
+            max_t = data.get("tokens_max", 0)
+            pct = (cur / max_t * 100) if max_t else 0
+            elapsed = data.get("elapsed", 0)
+            lines = [
+                f"[bold]{model}[/bold]",
+                f"tokens: {cur}/{max_t} ({pct:.1f}%)",
+                f"⏱ {elapsed:>4}s",
+            ]
+            self.update("\n".join(lines))
+        except Exception:
+            pass
+
 class CommandSuggester(Suggester):
     """Provides autocompletion for slash commands using CommandRegistry."""
 
@@ -746,6 +769,7 @@ class PenguinTextualApp(App):
         self._latest_token_usage: Dict[str, Any] = {}
         self._app_start_ts: float = time.time()
         self._status_task: Optional[asyncio.Task] = None
+        self._status_visible: bool = True
 
         # Preferences (theme/layout) persisted across sessions
         self._prefs_path: str = os.path.expanduser("~/.penguin/tui_prefs.yml")
@@ -792,13 +816,14 @@ class PenguinTextualApp(App):
         self._apply_layout_class()
         yield Header()
         with Container(id="main-container"):
-            yield VerticalScroll(id="message-area")
-            yield Input(
-                placeholder="Type your message... (/help for commands, Tab for autocomplete)", 
-                id="input-box"
-            )
+            with Container(id="center-pane"):
+                yield VerticalScroll(id="message-area")
+                yield Input(
+                    placeholder="Type your message... (/help for commands, Tab for autocomplete)", 
+                    id="input-box"
+                )
+            yield StatusSidebar()
         yield Static(id="status-bar")
-        yield Static(id="micro-status")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -807,7 +832,7 @@ class PenguinTextualApp(App):
         self.query_one(Input).focus()
         asyncio.create_task(self.initialize_core())
         # Start micro status updater
-        self._status_task = asyncio.create_task(self._update_micro_status_loop())
+        self._status_task = asyncio.create_task(self._update_status_loop())
 
     def add_message(self, content: str, role: str) -> ChatMessage:
         """Helper to add a new message widget to the display."""
@@ -911,11 +936,15 @@ class PenguinTextualApp(App):
         except Exception:
             pass
 
-    async def _update_micro_status_loop(self) -> None:
+    async def _update_status_loop(self) -> None:
         while True:
             try:
-                # Respect compact vs detailed: only show in detailed
-                if getattr(self, "_view_mode", "compact") == "detailed":
+                sidebar = self.query_one(StatusSidebar)
+                # For now, keep the sidebar visible when explicitly enabled,
+                # regardless of compact/detailed, to aid testing across terminals.
+                visible = getattr(self, "_status_visible", True)
+                sidebar.display = visible
+                if visible:
                     elapsed = int(asyncio.get_event_loop().time() - getattr(self, "_stream_start_time", 0)) if self.current_streaming_widget else int(time.time() - self._app_start_ts)
                     model = None
                     if self.core and getattr(self.core, "model_config", None):
@@ -923,15 +952,23 @@ class PenguinTextualApp(App):
                     tokens = self.interface.get_token_usage() if self.interface else {}
                     cur = tokens.get("current_total_tokens", 0)
                     max_t = tokens.get("max_tokens", 0)
-                    pct = (cur / max_t * 100) if max_t else 0
-                    text = f"{model or 'model?'}  |  tokens: {cur}/{max_t} ({pct:.1f}%)  |  ⏱ {elapsed}s"
-                    self.query_one("#micro-status", Static).update(text)
-                else:
-                    self.query_one("#micro-status", Static).update("")
+                    sidebar.update_status({"model": model or "model?", "tokens_cur": cur, "tokens_max": max_t, "elapsed": elapsed})
             except Exception:
                 # keep loop resilient
                 pass
             await asyncio.sleep(1.0)
+
+    async def _handle_status_show(self) -> None:
+        self._status_visible = True
+        self.add_message("Status sidebar shown.", "system")
+
+    async def _handle_status_hide(self) -> None:
+        self._status_visible = False
+        self.add_message("Status sidebar hidden.", "system")
+
+    async def _handle_status_toggle(self) -> None:
+        self._status_visible = not getattr(self, "_status_visible", True)
+        self.add_message(f"Status sidebar {'shown' if self._status_visible else 'hidden'}.", "system")
 
     async def handle_core_event(self, event_type: str, data: Any) -> None:
         # Throttle extremely verbose stream_chunk logs: print every 50th chunk or final only
@@ -1338,7 +1375,7 @@ class PenguinTextualApp(App):
                 if cmd_obj:
                     handler = cmd_obj.handler or ""
                     # TUI-local handlers
-                    if handler in ("_show_enhanced_help", "action_clear_log", "action_quit", "action_show_debug", "_force_stream_recovery", "_handle_image", "_attachments_clear", "_handle_theme_list", "_handle_theme_set", "_handle_layout_set", "_handle_layout_get"):
+                    if handler in ("_show_enhanced_help", "action_clear_log", "action_quit", "action_show_debug", "_force_stream_recovery", "_handle_image", "_attachments_clear", "_handle_theme_list", "_handle_theme_set", "_handle_layout_set", "_handle_layout_get", "_handle_status_show", "_handle_status_hide", "_handle_status_toggle"):
                         if handler == "_show_enhanced_help":
                             await self._show_enhanced_help()
                         elif handler == "action_clear_log":
@@ -1366,6 +1403,12 @@ class PenguinTextualApp(App):
                             await self._handle_view_set(args_dict)
                         elif handler == "_handle_view_get":
                             await self._handle_view_get()
+                        elif handler == "_handle_status_show":
+                            await self._handle_status_show()
+                        elif handler == "_handle_status_hide":
+                            await self._handle_status_hide()
+                        elif handler == "_handle_status_toggle":
+                            await self._handle_status_toggle()
                         return
 
                     # Otherwise, delegate to interface; rebuild command string

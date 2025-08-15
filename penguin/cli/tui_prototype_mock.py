@@ -88,6 +88,8 @@ class PrototypePenguinApp(PenguinTextualApp):
             border_style="cyan",
         )
         self.query_one("#message-area", VerticalScroll).mount(Static(welcome_panel))
+        # Show sidebar in detailed view for the prototype
+        self._status_visible = True
 
     # ------------- Demo actions -------------
     async def action_demo_message(self) -> None:
