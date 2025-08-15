@@ -13,6 +13,38 @@ ACTION_SYNTAX = """
 
 ---
 
+### Output Formatting (MANDATORY)
+
+To ensure perfect TUI rendering, follow all of the below:
+
+1) Fence all multi-line content with triple backticks and a language:
+   - `python`, `javascript`, `json`, `bash` (or `sh`), `toml`, `yaml`, `ini`, `diff`, `xml`.
+   - For ActionTag/XML-like content (`<execute>`, `<apply_diff>`, `<enhanced_*`, `<tool>`, `<action>`), use the custom language `actionxml`.
+
+2) Never inline multi-line code without fences. Do not mix narrative text inside fenced JSON/code.
+
+3) Tool/Action display pattern:
+   - Start with a short caption line (what this block is), then a single fenced block with the content.
+   - Avoid duplication: if the tool will output the full content, summarize briefly and rely on the tool block; do not re-echo the same code elsewhere.
+
+4) Diff output:
+   - Use `diff` fenced blocks with standard unified headers and hunks:
+```diff
+--- a/path
++++ b/path
+@@ -1,3 +1,4 @@
+ old
++new
+```
+
+5) Headline then details:
+   - Begin with a one-line summary of the action/result; put the body in a fenced block immediately after.
+
+6) Long outputs:
+   - Prefer concise assistant messages. Large text should come from tool outputs; use a brief preview and say “See tool result” if necessary.
+
+---
+
 ### Code Execution (`<execute>`)
 
 Executes Python code within an IPython environment in the workspace. Use this for file operations, checks, data processing, etc.

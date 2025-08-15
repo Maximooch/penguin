@@ -93,15 +93,37 @@ class PrototypePenguinApp(PenguinTextualApp):
 
     # ------------- Demo actions -------------
     async def action_demo_message(self) -> None:
+        # Demo message with inline ActionTag, then emit a separate tool call/result
+        # to mirror the typical duplication sequence seen in real runs.
+        content = (
+            "Here is a short demo reply.\n\n"
+            # Small inline code block
+            "```python\nprint('hello from Penguin prototype')\n```\n\n"
+            # Large ActionTag block (to trigger auto-collapse preview in compact)
+            "```actionxml\n<execute>\nimport os\nfrom pathlib import Path\n\nbase = Path('demo.txt')\nif not base.exists():\n    base.write_text('demo\n', encoding='utf-8')\nprint('exists?', base.exists())\nfor i in range(10):\n    print('line', i)\nprint('done')\n</execute>\n```\n\n"
+            # Diff block should remain fully expanded
+            "```diff\n--- a/demo.txt\n+++ b/demo.txt\n@@ -1,1 +1,3 @@\n-demo\n+demo\n+added-1\n+added-2\n```\n"
+        )
         await self.handle_core_event(
             "message",
+            {"role": "assistant", "content": content, "category": "DIALOG"},
+        )
+        # Emit the same tool call + result the engine would send afterwards
+        await self.handle_core_event(
+            "tool_call",
+            {"name": "workspace_search", "arguments": {"query": "auth flow", "max": 3}, "id": "dup1"},
+        )
+        # Produce a long result list to exercise preview/expander on tool results
+        long_listing = "\n".join(
+            [f"- src/module_{i:02d}.py:{i} func_{i}()" for i in range(1, 36)]
+        )
+        await self.handle_core_event(
+            "tool_result",
             {
-                "role": "assistant",
-                "content": (
-                    "Here is a short demo reply.\n\n"
-                    "```python\nprint('hello from Penguin prototype')\n```\n"
-                ),
-                "category": "DIALOG",
+                "action_name": "workspace_search",
+                "result": long_listing,
+                "status": "completed",
+                "id": "dup1",
             },
         )
 
@@ -156,11 +178,14 @@ class PrototypePenguinApp(PenguinTextualApp):
             {"name": "workspace_search", "arguments": {"query": "auth flow", "max": 3}, "id": "t1"},
         )
         # Tool result
+        long_listing = "\n".join(
+            [f"- pkg/file_{i:02d}.py:{i} call_{i}()" for i in range(1, 28)]
+        )
         await self.handle_core_event(
             "tool_result",
             {
                 "action_name": "workspace_search",
-                "result": "- auth.py:42 authenticate(user)\n- login.py:10 auth()",
+                "result": long_listing,
                 "status": "completed",
                 "id": "t1",
             },
