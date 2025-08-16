@@ -247,22 +247,29 @@ These changes are Phase‑1 friendly (no streaming refactor required) and align 
 ### Performance Optimizations
 
 1. **Rendering**
-   - Batch DOM updates
-   - Use virtual scrolling for long lists
-   - Lazy render collapsed sections
-   - Debounce rapid updates
+   - Batch updates to avoid unnecessary relayouts
+   - Use virtual scrolling for long lists (Phase B)
+   - Lazy render collapsed sections (mount heavy content on expand only)
+   - Debounce rapid updates (throttle streaming Markdown updates)
+   - Coalesce status/sidebar updates (skip identical frames)
 
-2. **Memory**
+2. **Scrolling & Autoscroll**
+   - Implement an autoscroll gate: only auto-scroll when the user is at/near the bottom
+   - Debounce scroll-to-bottom requests (≈80–120ms) to avoid fighting manual scrolling
+   - Provide a quick jump-to-bottom to re-enable autoscroll
+   - Prepare for Textual granular mouse reporting (pixel-level) when supported by terminal/Textual
+
+3. **Memory**
    - Limit conversation history in memory
    - Implement message pagination
    - Clean up old widget instances
    - Use weak references where appropriate
 
-3. **Streaming**
-   - Buffer streaming updates
-   - Batch render on idle
-   - Smart scroll behavior
-   - Prevent layout thrashing
+4. **Streaming**
+   - Buffer streaming updates (centralize in StreamingStateMachine)
+   - Batch renders on a cadence (~8–10 FPS perceived)
+   - Smart scroll behavior: do not scroll when user is browsing history
+   - Prevent layout thrashing by minimizing parent refreshes and reflows
 
 ---
 
@@ -436,3 +443,31 @@ These changes are Phase‑1 friendly (no streaming refactor required) and align 
 This improvement plan transforms the Penguin TUI from a basic interface into a powerful, modern development environment. By focusing on core functionality first, then enhancing visuals and finally adding advanced features, we ensure a stable and usable product at each phase.
 
 The key to success is maintaining simplicity while adding power - making the common cases easy while enabling advanced workflows. With careful implementation of the outlined phases, the TUI will become the preferred interface for Penguin users.
+
+---
+
+## Performance Plan (Updated)
+
+This plan incorporates optimizations to address freezes during plain assistant streaming and choppy scrolling, while preparing for Textual’s granular (pixel-level) scrolling where available.
+
+- Immediate (Phase A)
+  - Autoscroll gate + debounced scroll (80–120ms) to prevent fighting the user while they scroll
+  - Throttle streaming Markdown updates (~120–160ms) and prefer Textual’s streaming API
+  - Coalesce sidebar/status updates (skip identical frames)
+  - Keep previews short for large tool/action outputs; defer heavy formatting to background threads
+
+- Near-term (Phase B)
+  - Virtualized message list (render only visible messages)
+  - Adopt `StreamingStateMachine` to centralize chunk buffering and cleanup, reducing widget churn
+  - Enable granular mouse reporting (Textual ≥ 2.0, Kitty/Ghostty, etc.) for smoother scroll deltas; capability-gated
+
+- Tool/Action Widgets
+  - Mount minimal previews when collapsed; mount full Markdown on expand (lazy mounting)
+  - Preserve head/tail windows for very large strings; offer copy/download for full content
+
+- Profiling & Budgets
+  - Use `pyinstrument -r html` to validate hot paths (streaming, large results, long scrollback)
+  - Target ~8–10 FPS perceived streaming updates; coalesce scroll and status changes into that cadence
+
+- References
+  - Textual smooth scrolling (pixel reporting + pixel-size reporting; requires Textual ≥ 2.0 and supporting terminals such as Kitty, Ghostty).

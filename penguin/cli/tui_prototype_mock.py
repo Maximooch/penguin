@@ -27,6 +27,8 @@ from typing import Any, Dict
 
 import sys
 from pathlib import Path
+import os
+import argparse
 
 from textual.widgets import Static, Input  # type: ignore
 from textual.containers import VerticalScroll  # type: ignore
@@ -50,6 +52,11 @@ class PrototypePenguinApp(PenguinTextualApp):
         ("a", "action_sample", "Action"),
         ("t", "tool_sample", "Tool"),
         ("e", "error_sample", "Error"),
+        ("h", "stress_stream_heavy", "Stress stream"),
+        ("j", "stress_scroll_while_streaming", "Scroll test"),
+        ("r", "stress_tools_heavy", "Stress tools"),
+        ("b", "jump_bottom", "Bottom"),
+        ("A", "toggle_autoscroll", "Autoscroll"),
     ]
 
     async def on_mount(self) -> None:  # type: ignore[override]
@@ -155,6 +162,121 @@ class PrototypePenguinApp(PenguinTextualApp):
             {"chunk": "", "is_final": True, "stream_id": "demo", "message_type": "assistant"},
         )
 
+    async def action_stress_stream_heavy(self) -> None:
+        """Spam a large number of streaming chunks to stress throughput and scroll debouncing."""
+        # Build a long text with mixed markdown/code
+        base = (
+            "### Stress paragraph\n" + ("lorem ipsum dolor sit amet "+"consectetur adipiscing elit ")*8 + "\n\n"
+            + "```python\nfor i in range(20):\n    print(i)\n```\n\n"
+        )
+        payload = base * 40  # ~40 blocks
+        chunks = [payload[i:i+192] for i in range(0, len(payload), 192)]
+        start = asyncio.get_event_loop().time()
+        total = len(chunks)
+        for idx, ch in enumerate(chunks, 1):
+            await self.handle_core_event(
+                "stream_chunk",
+                {
+                    "chunk": ch,
+                    "is_final": False,
+                    "stream_id": "stress",
+                    "message_type": "assistant",
+                },
+            )
+            if (idx % 25) == 0:
+                # Simulate user interaction while streaming: occasional scroll up/down
+                try:
+                    area = self.query_one("#message-area", VerticalScroll)
+                    if (idx // 25) % 2 == 0:
+                        area.scroll_home(animate=False)
+                    else:
+                        area.scroll_end(animate=False)
+                except Exception:
+                    pass
+            await asyncio.sleep(0.005)
+        # finalize
+        await self.handle_core_event(
+            "stream_chunk",
+            {"chunk": "", "is_final": True, "stream_id": "stress", "message_type": "assistant"},
+        )
+        dur = asyncio.get_event_loop().time() - start
+        try:
+            self.query_one("#status-bar", Static).update(f"Stress stream: {total} chunks in {dur:.2f}s (~{total/dur:.1f} cps)")
+        except Exception:
+            pass
+
+    async def action_stress_scroll_while_streaming(self) -> None:
+        """Start a streaming response while continuously toggling scroll to emulate user behavior."""
+        # Fire and forget a scroller
+        async def _scroller():
+            for _ in range(50):
+                try:
+                    area = self.query_one("#message-area", VerticalScroll)
+                    area.scroll_home(animate=False)
+                    await asyncio.sleep(0.03)
+                    area.scroll_end(animate=False)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.03)
+        asyncio.create_task(_scroller())
+
+        # Stream medium-size content concurrently
+        text = ("Streaming under scroll test. " * 40) + "\n" + ("data "+"* ")*200
+        chunks = [text[i:i+160] for i in range(0, len(text), 160)]
+        for i, ch in enumerate(chunks, 1):
+            await self.handle_core_event(
+                "stream_chunk",
+                {
+                    "chunk": ch,
+                    "is_final": i == len(chunks),
+                    "stream_id": "scrolltest",
+                    "message_type": "assistant",
+                },
+            )
+            await asyncio.sleep(0.01)
+
+    async def action_stress_tools_heavy(self) -> None:
+        """Emit many tool results with large outputs to exercise collapsibles and lazy mounting."""
+        for i in range(1, 16):
+            # tool call
+            await self.handle_core_event(
+                "tool_call",
+                {"name": "workspace_search", "arguments": {"query": f"stress-{i}", "max": 5}, "id": f"tool{i}"},
+            )
+            # large result body
+            big = "\n".join([f"{i:02d}:{j:04d} result line for stress test" for j in range(0, 600)])
+            await self.handle_core_event(
+                "tool_result",
+                {
+                    "action_name": "workspace_search",
+                    "result": big,
+                    "status": "completed",
+                    "id": f"tool{i}",
+                },
+            )
+        try:
+            self.query_one("#status-bar", Static).update("Stress tools: emitted 15 large tool results")
+        except Exception:
+            pass
+
+    def action_jump_bottom(self) -> None:
+        """Jump to bottom and (re)enable autoscroll."""
+        try:
+            self._autoscroll = True
+            self._scroll_to_bottom()
+            self.query_one("#status-bar", Static).update("Autoscroll ON; jumped to bottom")
+        except Exception:
+            pass
+
+    def action_toggle_autoscroll(self) -> None:
+        """Toggle autoscroll flag to validate behavior while streaming."""
+        try:
+            self._autoscroll = not getattr(self, "_autoscroll", True)
+            state = "ON" if self._autoscroll else "OFF"
+            self.query_one("#status-bar", Static).update(f"Autoscroll {state}")
+        except Exception:
+            pass
+
     async def action_action_sample(self) -> None:
         # Action request
         await self.handle_core_event(
@@ -199,8 +321,60 @@ class PrototypePenguinApp(PenguinTextualApp):
 
 
 def main() -> None:
-    app = PrototypePenguinApp()
-    app.run()
+    parser = argparse.ArgumentParser(description="Run Penguin TUI prototype")
+    parser.add_argument("--profile", action="store_true", help="Enable pyinstrument HTML profiling")
+    parser.add_argument(
+        "--profile-out",
+        default=str(Path(__file__).resolve().with_name("tui_profile.html")),
+        help="HTML profile output path (used with --profile)",
+    )
+    parser.add_argument("--speedscope", action="store_true", help="Write Speedscope JSON profile")
+    parser.add_argument(
+        "--speedscope-out",
+        default=str(Path(__file__).resolve().with_name("tui_profile.speedscope")),
+        help="Speedscope JSON output path (used with --speedscope)",
+    )
+    args = parser.parse_args()
+
+    # Ensure output directory exists if profiling
+    if args.profile or args.speedscope:
+        out_path = Path(args.profile_out).expanduser()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        ss_out_path = Path(args.speedscope_out).expanduser()
+        ss_out_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            from pyinstrument import Profiler  # type: ignore
+        except Exception:
+            print("[Profiler] pyinstrument not installed. Install with: uv pip install pyinstrument", file=sys.stderr)
+            # Fallback to normal run
+            app = PrototypePenguinApp()
+            app.run()
+            return
+        profiler = Profiler()
+        profiler.start()
+        try:
+            app = PrototypePenguinApp()
+            app.run()
+        finally:
+            profiler.stop()
+            try:
+                if args.profile:
+                    profiler.write_html(out_path)
+                    print(f"[Profiler] Wrote HTML profile to: {out_path}")
+                if args.speedscope:
+                    try:
+                        from pyinstrument.renderers.speedscope import SpeedscopeRenderer  # type: ignore
+                        rendered = SpeedscopeRenderer().render(profiler.last_session)
+                        with open(ss_out_path, "w", encoding="utf-8") as f:
+                            f.write(rendered)
+                        print(f"[Profiler] Wrote Speedscope profile to: {ss_out_path}")
+                    except Exception as e:
+                        print(f"[Profiler] Failed to write Speedscope profile: {e}", file=sys.stderr)
+            except Exception as e:
+                print(f"[Profiler] Failed to write profile: {e}", file=sys.stderr)
+    else:
+        app = PrototypePenguinApp()
+        app.run()
 
 
 if __name__ == "__main__":

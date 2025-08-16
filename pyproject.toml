@@ -155,6 +155,7 @@ Documentation = "https://penguin-rho.vercel.app"
 [project.scripts]
 penguin = "penguin.cli.cli:app"
 penguin-web = "penguin.web.server:main"
+penguin-tui-proto = "penguin.penguin.cli.tui_prototype_mock:main"
 
 [tool.setuptools.packages.find]
 include = ["penguin*"]

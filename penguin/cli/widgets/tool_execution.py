@@ -85,7 +85,7 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
     execution: reactive[Optional[UnifiedExecution]] = reactive(None)
     # Rendering/preview limits to keep the UI responsive on very large outputs
     _MAX_PREVIEW_CHARS = 4000
-    _MAX_PREVIEW_LINES = 200
+    _MAX_PREVIEW_LINES = 100
     
     def __init__(self, execution: UnifiedExecution, **kwargs):
         super().__init__(**kwargs)
@@ -191,6 +191,45 @@ class ToolExecutionWidget(PenguinWidget, can_focus=True):
                     except Exception:
                         pass
                     yield md
+
+    # --- Collapsible event handlers to swap preview/full content ---
+    def on_collapsible_expanded(self, event) -> None:  # type: ignore[override]
+        try:
+            col = getattr(event, "sender", None) or getattr(event, "collapsible", None)
+            if col is None:
+                return
+            # Parameters
+            if getattr(col, "classes", set()) and ("tool-params-section" in col.classes):
+                full = self._full_params_cache or self._format_parameters_content()
+                md = col.query_one(Markdown)
+                md.update(self._strip_trailing_blank_lines(full))
+                return
+            # Result
+            if getattr(col, "classes", set()) and ("tool-result-section" in col.classes):
+                full = self._full_result_cache or (self._format_result_content()[1])
+                md = col.query_one(Markdown)
+                md.update(self._strip_trailing_blank_lines(full))
+        except Exception:
+            pass
+
+    def on_collapsible_collapsed(self, event) -> None:  # type: ignore[override]
+        try:
+            col = getattr(event, "sender", None) or getattr(event, "collapsible", None)
+            if col is None:
+                return
+            # Parameters → show truncated
+            if getattr(col, "classes", set()) and ("tool-params-section" in col.classes):
+                preview = self._format_parameters_content()
+                md = col.query_one(Markdown)
+                md.update(self._strip_trailing_blank_lines(preview))
+                return
+            # Result → show truncated
+            if getattr(col, "classes", set()) and ("tool-result-section" in col.classes):
+                _, preview, _ = self._format_result_content()
+                md = col.query_one(Markdown)
+                md.update(self._strip_trailing_blank_lines(preview))
+        except Exception:
+            pass
     
     def _create_header(self) -> Static:
         """Create the header with status indicator."""
