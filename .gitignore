@@ -23,6 +23,10 @@ penguin/workspace/memory_db/
 penguin/workspace/logs
 penguin_workspace/
 
+# Local config files – users should not commit personal config
+penguin/penguin/config.yml
+penguin/config.yml
+
 # Embeddings
 embeddings/
 

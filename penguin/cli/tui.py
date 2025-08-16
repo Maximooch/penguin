@@ -1024,11 +1024,8 @@ class PenguinTextualApp(App):
 
         area = self._message_area_ref or self.query_one("#message-area", VerticalScroll)
         new_message = ChatMessage(content, role)
-        # Ensure the loader button stays at the very top
-        if self._show_older_btn and self._show_older_btn in area.children:
-            area.mount(new_message, after=self._show_older_btn)
-        else:
-            area.mount(new_message)
+        # Append new messages at the end to keep chronological order (oldest at top, newest at bottom)
+        area.mount(new_message)
         self._maybe_trim_messages(area)
         # Request a debounced scroll to bottom to avoid layout thrash
         self._request_scroll_to_bottom()
