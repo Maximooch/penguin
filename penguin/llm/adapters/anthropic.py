@@ -175,6 +175,42 @@ class AnthropicAdapter(BaseAdapter):
         except Exception as e:
             logger.error(f"Error in Anthropic API call: {str(e)}")
             raise
+
+    async def get_response(
+        self,
+        messages: List[Dict[str, Any]],
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        stream: bool = False,
+        stream_callback: Optional[Callable[[str], None]] = None,
+    ) -> str:
+        """Unified entrypoint to satisfy BaseAdapter interface.
+
+        - Streams via create_completion when stream=True and returns accumulated text
+        - Non-streaming: calls create_completion and processes the response
+        """
+        if stream:
+            # Ensure callback is callable; pass through directly
+            final_text = await self.create_completion(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=True,
+                stream_callback=stream_callback,
+            )
+            # create_completion returns a string when streaming
+            return final_text or ""
+
+        # Non-streaming path
+        response = await self.create_completion(
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=False,
+            stream_callback=None,
+        )
+        content, _ = self.process_response(response)
+        return content or ""
     
     async def _handle_streaming(
         self, 
