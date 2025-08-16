@@ -435,7 +435,11 @@ async def run_setup_wizard() -> Dict[str, Any]:
             style=STYLE
         ).ask_async()
         
-        console.print("[green]✓[/green] API key saved securely")
+        # Persist key to ~/.config/penguin/.env and export it
+        if _persist_api_key(actual_provider, api_key):
+            console.print("[green]✓[/green] API key saved to ~/.config/penguin/.env and exported for this session")
+        else:
+            console.print("[yellow]⚠️ Could not persist API key automatically. It will be shown in next steps.[/yellow]")
     else:
         console.print("[yellow]ℹ️ No API key provided. You'll need to set this up later.[/yellow]")
     
@@ -655,38 +659,49 @@ async def run_setup_wizard() -> Dict[str, Any]:
     
     return config
 
-def get_config_path() -> Path:
-    """Return the path to the config file"""
-    # First check for explicit override
-    if os.environ.get("PENGUIN_CONFIG_PATH"):
-        return Path(os.environ.get("PENGUIN_CONFIG_PATH"))
-    
-    # For user configuration, we want to use a user-specific location
-    # that's separate from the package's default config
-    
-    # Check if we're in development mode (running from source)
-    try:
-        from penguin.config import get_project_root
-        project_root = get_project_root()
-        
-        # If PROJECT_ROOT points to a development directory (not .penguin), 
-        # use it for config (development mode)
-        if not str(project_root).endswith('.penguin'):
-            dev_config_path = project_root / "penguin" / "config.yml"
-            return dev_config_path
-    except Exception:
-        pass
-    
-    # For installed/production use, store user config in user's config directory
-    # Following XDG Base Directory specification on Linux/macOS
+def _user_config_dir() -> Path:
+    """Return cross-platform user config directory for Penguin."""
     if os.name == 'posix':  # Linux/macOS
-        config_base = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
-        user_config_path = config_base / "penguin" / "config.yml"
-    else:  # Windows
-        config_base = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
-        user_config_path = config_base / "penguin" / "config.yml"
-    
-    return user_config_path
+        return Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'penguin'
+    return Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming')) / 'penguin'
+
+def get_config_path() -> Path:
+    """Return the path to the user config file (env override wins)."""
+    # 1) Explicit override
+    if os.environ.get("PENGUIN_CONFIG_PATH"):
+        return Path(os.environ["PENGUIN_CONFIG_PATH"]).expanduser()
+    # 2) User config directory (do not write into repo path)
+    return _user_config_dir() / "config.yml"
+
+def _persist_api_key(provider: str, api_key: str) -> bool:
+    """Write provider API key to ~/.config/penguin/.env and export in-process.
+
+    Returns True on success, False on failure.
+    """
+    try:
+        env_dir = _user_config_dir()
+        env_dir.mkdir(parents=True, exist_ok=True)
+        env_path = env_dir / ".env"
+        # Read existing lines (if any)
+        existing: list[str] = []
+        if env_path.exists():
+            existing = env_path.read_text(encoding="utf-8").splitlines()
+        key = f"{provider.upper()}_API_KEY"
+        kv = f"{key}={api_key}"
+        replaced = False
+        for i, line in enumerate(existing):
+            if line.startswith(f"{key}="):
+                existing[i] = kv
+                replaced = True
+                break
+        if not replaced:
+            existing.append(kv)
+        env_path.write_text("\n".join(existing) + "\n", encoding="utf-8")
+        # Export for current process so the rest of the run sees it
+        os.environ[key] = api_key
+        return True
+    except Exception:
+        return False
 
 def save_config(config: Dict[str, Any]) -> bool:
     """
