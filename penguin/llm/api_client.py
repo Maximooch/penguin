@@ -26,39 +26,21 @@ logger = logging.getLogger(__name__)
 
 
 def load_config() -> Dict[str, Any]:
+    """Load Penguin config using central resolver, with safe fallback.
+
+    Delegates to penguin.config.load_config, which already checks:
+    - PENGUIN_CONFIG_PATH
+    - ~/.config/penguin/config.yml (or platform equivalent)
+    - dev/repo defaults
+    Returns an empty dict on failure instead of raising during import.
     """
-    Load the configuration from the config.yml file.
-
-    This function reads the config.yml file located one directory up 
-    (expected to be penguin/penguin/) from the current file's directory 
-    (penguin/penguin/llm/).
-    It uses the yaml library to parse the YAML content into a Python dictionary.
-
-    Returns:
-        Dict[str, Any]: A dictionary containing the configuration data.
-                        If 'model_configs' key is not present, it returns an empty dictionary for that key.
-
-    Raises:
-        FileNotFoundError: If the config.yml file is not found.
-        yaml.YAMLError: If there's an error parsing the YAML content.
-    """
-    # Path(__file__) is .../llm/api_client.py
-    # .parent is .../llm/
-    # .parent is .../ (the penguin/penguin/ directory)
-    config_path = Path(__file__).parent.parent / "config.yml" # Updated path
-    if not config_path.exists():
-        logger.error(f"Config file not found at expected location: {config_path}")
-        raise FileNotFoundError(f"Config file not found at {config_path}")
-        
     try:
-        with open(config_path) as config_file:
-            return yaml.safe_load(config_file)
-    except yaml.YAMLError as e:
-        logger.error(f"Error parsing config file {config_path}: {e}")
-        raise
+        from penguin.config import load_config as core_load_config
+        data = core_load_config()
+        return data if isinstance(data, dict) else {}
     except Exception as e:
-        logger.error(f"Unexpected error loading config file {config_path}: {e}")
-        raise
+        logger.warning(f"api_client.load_config fallback: {e}")
+        return {}
 
 
 # Load the model configurations from the config file
