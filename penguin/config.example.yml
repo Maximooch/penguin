@@ -1,0 +1,40 @@
+## Penguin configuration example (copy to ~/.config/penguin/config.yml or set PENGUIN_CONFIG_PATH)
+#
+# If you don't already have a config.yml file you can either configure it in the setup wizard, or rename this file to config.yml and edit values as needed.
+# If you already have a config.yml file, you can edit it to your liking.
+
+workspace:
+  path: ~/penguin_workspace
+  create_dirs:
+    - conversations
+    - memory_db
+    - logs
+    - notes
+    - projects
+    - context
+
+model:
+  default: anthropic/claude-sonnet-4
+  provider: openrouter
+  client_preference: openrouter
+  streaming_enabled: true
+  temperature: 0.5
+  context_window: 200000
+  max_tokens: 64000
+  # If it's GPT-5, you can uncomment this and set the reasoning effort.
+  # reasoning: 
+  #   enabled: true
+  #   effort: low  # options: low | medium | high (if supported by model)
+  #   exclude: false  # if true, do not include internal reasoning in final content
+api:
+  base_url: null
+
+tools:
+  enabled: true
+  allow_web_access: true
+  allow_file_operations: true
+  allow_code_execution: true
+
+diagnostics:
+  enabled: true
+  verbose_logging: true

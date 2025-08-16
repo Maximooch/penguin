@@ -58,7 +58,8 @@ def load_config():
     except Exception:
         pass
     
-    # 4. Package default config (fallback)
+    # 4. Package default config (fallback example)
+    # Ship a template config at package path; treat it as example only.
     package_config_path = Path(__file__).parent / "config.yml"
     config_paths.append(package_config_path)
     
@@ -79,7 +80,16 @@ def load_config():
             logger.warning(f"Error loading config from {config_path}: {e}")
             continue
     
-    # If no config file found, return empty dict
+    # If no config file found, try to launch setup wizard (non-interactive-safe)
+    try:
+        from penguin.setup.wizard import check_first_run, run_setup_wizard_sync
+        if check_first_run():
+            logger.info("No user config detected. Launching setup wizard…")
+            result = run_setup_wizard_sync()
+            if isinstance(result, dict) and result and not result.get("error"):
+                return result
+    except Exception as e:
+        logger.debug(f"Setup wizard not available or failed to run: {e}")
     logger.debug("No config file found, using defaults")
     return {}
 
