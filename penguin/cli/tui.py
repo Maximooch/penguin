@@ -15,7 +15,7 @@ from textual.reactive import reactive # type: ignore
 # fall back to a sentinel so the rest of the code can degrade gracefully.
 
 # Standard Textual widgets always present
-from textual.widgets import Header, Footer, Input, Static, Markdown as TextualMarkdown, Collapsible # type: ignore
+from textual.widgets import Header, Footer, Input, Static, Markdown as TextualMarkdown, Collapsible, Button # type: ignore
 from textual.suggester import Suggester # type: ignore
 
 try:
@@ -449,6 +449,8 @@ class ChatMessage(Static, can_focus=True):
                 if self._md_stream is not None:
                     try:
                         self._md_stream.write(cleaned_chunk)
+                        # Avoid forcing a full markdown update while streaming
+                        # The streaming API handles incremental rendering.
                         return
                     except Exception:
                         self._md_stream = None
@@ -511,7 +513,7 @@ class ChatMessage(Static, can_focus=True):
             self._md_cached = None
         return self._md_cached
 
-    def _schedule_markdown_update(self, min_interval: float = 0.05) -> None:
+    def _schedule_markdown_update(self, min_interval: float = 0.18) -> None:
         loop = asyncio.get_event_loop()
         now = loop.time()
         if self._pending_update_task is None and (now - self._last_update_ts) >= min_interval:
@@ -923,7 +925,22 @@ class PenguinTextualApp(App):
         self._view_mode: str = "compact"  # compact | detailed
         # Compact tool display controls
         self._tools_compact: bool = True
-        self._tools_preview_lines: int = 20
+        self._tools_preview_lines: int = 10
+
+        # Scrolling performance controls
+        self._autoscroll: bool = True
+        self._scroll_request_task: Optional[asyncio.Task] = None
+        self._scroll_debounce_ms: int = 180  # ~5-8 FPS scroll updates
+        self._stream_update_min_interval: float = 0.22
+        self._linkify_on_finalization: bool = True
+        self._message_area_ref: Optional[VerticalScroll] = None
+        self._status_bar_ref: Optional[Static] = None
+        self._trim_notice_added: bool = False
+        self._older_messages_cache: list[dict] = []  # [{'role': str, 'content': str}]
+        self._show_older_btn: Optional[Button] = None
+
+        # Coalesced sidebar status
+        self._last_status_payload: Optional[Dict[str, Any]] = None
 
     # -------------------------
     # Utilities
@@ -976,7 +993,21 @@ class PenguinTextualApp(App):
 
     async def on_mount(self) -> None:
         """Called when the app is mounted."""
-        self.query_one("#status-bar", Static).update(self.status_text)
+        try:
+            self._status_bar_ref = self.query_one("#status-bar", Static)
+            self._status_bar_ref.update(self.status_text)
+            self._message_area_ref = self.query_one("#message-area", VerticalScroll)
+            # Mount a Show Older loader button at the top of the message area
+            try:
+                self._show_older_btn = Button("Show older…", id="show-older")
+                # Insert as the first child so older messages appear after it
+                self._message_area_ref.mount(self._show_older_btn)
+                # Hide if no cache present
+                self._show_older_btn.display = False
+            except Exception:
+                pass
+        except Exception:
+            pass
         self.query_one(Input).focus()
         asyncio.create_task(self.initialize_core())
         # Start micro status updater
@@ -991,20 +1022,64 @@ class PenguinTextualApp(App):
             pass
         content = content.strip("\n")
 
-        message_area = self.query_one("#message-area", VerticalScroll)
+        area = self._message_area_ref or self.query_one("#message-area", VerticalScroll)
         new_message = ChatMessage(content, role)
-        message_area.mount(new_message)
-        # Immediately jump to bottom to avoid animation jitter
-        self._scroll_to_bottom()
+        # Ensure the loader button stays at the very top
+        if self._show_older_btn and self._show_older_btn in area.children:
+            area.mount(new_message, after=self._show_older_btn)
+        else:
+            area.mount(new_message)
+        self._maybe_trim_messages(area)
+        # Request a debounced scroll to bottom to avoid layout thrash
+        self._request_scroll_to_bottom()
         return new_message
 
     def _scroll_to_bottom(self) -> None:
         """Scroll the message area to the bottom without animation."""
         try:
-            message_area = self.query_one("#message-area", VerticalScroll)
-            message_area.scroll_end(animate=False)  # immediate jump
+            area = self._message_area_ref or self.query_one("#message-area", VerticalScroll)
+            area.scroll_end(animate=False)  # immediate jump
         except Exception:
             pass
+
+    def _request_scroll_to_bottom(self) -> None:
+        """Debounce scroll-to-bottom requests to reduce reflow during streaming."""
+        try:
+            # Respect autoscroll flag
+            if not getattr(self, "_autoscroll", True):
+                return
+            loop = asyncio.get_event_loop()
+            # Cancel any pending request
+            if self._scroll_request_task and not self._scroll_request_task.done():
+                self._scroll_request_task.cancel()
+            # Schedule a new one
+            async def _do_scroll_after_delay(delay_ms: int) -> None:
+                try:
+                    await asyncio.sleep(max(0.0, delay_ms / 1000.0))
+                    self._scroll_to_bottom()
+                except Exception:
+                    pass
+            self._scroll_request_task = loop.create_task(_do_scroll_after_delay(self._scroll_debounce_ms))
+        except Exception:
+            # Fallback to immediate scroll on error
+            self._scroll_to_bottom()
+
+    def _is_near_bottom(self, threshold_px: int = 32) -> bool:
+        """Best-effort check if message area is near the bottom.
+
+        Returns True on uncertainty to avoid surprising behavior.
+        """
+        try:
+            message_area = self._message_area_ref or self.query_one("#message-area", VerticalScroll)
+            virtual_size = getattr(message_area, "virtual_size", None)
+            scroll_offset = getattr(message_area, "scroll_offset", None)
+            size = getattr(message_area, "size", None)
+            if virtual_size and scroll_offset and size:
+                remaining = getattr(virtual_size, "height", 0) - (getattr(scroll_offset, "y", 0) + getattr(size, "height", 0))
+                return remaining <= max(0, threshold_px)
+        except Exception:
+            pass
+        return True
     
     def _format_system_output(self, action_name: str, result_str: str, max_lines: int = 20) -> str:
         """Format tool / action output.
@@ -1122,8 +1197,8 @@ class PenguinTextualApp(App):
         """Update the status bar when status_text changes."""
         try:
             if self.is_mounted:
-                status_bar = self.query_one("#status-bar", Static)
-                status_bar.update(f"[dim]{status}[/dim]")
+                bar = self._status_bar_ref or self.query_one("#status-bar", Static)
+                bar.update(f"[dim]{status}[/dim]")
         except Exception:
             pass
 
@@ -1141,9 +1216,10 @@ class PenguinTextualApp(App):
                         frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
                         self._spinner_index = (self._spinner_index + 1) % len(frames)
                         spinner = frames[self._spinner_index]
-                        sidebar.update_status({
-                            "raw": f"{spinner} waiting for response..."
-                        })
+                        payload = {"raw": f"{spinner} waiting for response..."}
+                        if payload != getattr(self, "_last_status_payload", None):
+                            sidebar.update_status(payload)
+                            self._last_status_payload = payload
                         await asyncio.sleep(0.1)
                         continue
                     elapsed = int(asyncio.get_event_loop().time() - getattr(self, "_stream_start_time", 0)) if self.current_streaming_widget else int(time.time() - self._app_start_ts)
@@ -1153,7 +1229,10 @@ class PenguinTextualApp(App):
                     tokens = self.interface.get_token_usage() if self.interface else {}
                     cur = tokens.get("current_total_tokens", 0)
                     max_t = tokens.get("max_tokens", 0)
-                    sidebar.update_status({"model": model or "model?", "tokens_cur": cur, "tokens_max": max_t, "elapsed": elapsed})
+                    payload = {"model": model or "model?", "tokens_cur": cur, "tokens_max": max_t, "elapsed": elapsed}
+                    if payload != getattr(self, "_last_status_payload", None):
+                        sidebar.update_status(payload)
+                        self._last_status_payload = payload
             except Exception:
                 # keep loop resilient
                 pass
@@ -1282,7 +1361,7 @@ class PenguinTextualApp(App):
                             self.last_finalized_content = self.current_streaming_widget.content
                             # Debounce scrolling to reduce churn
                             if (self._stream_chunk_count % 10) == 0:
-                                self._scroll_to_bottom()
+                                self._request_scroll_to_bottom()
                 
                 if is_final and self.current_streaming_widget:
                     # Cancel timeout monitor
@@ -1328,7 +1407,7 @@ class PenguinTextualApp(App):
                     self.current_streaming_widget = None
                     # Schedule the dedupe key to be cleared after a short delay
                     self.dedup_clear_task = asyncio.create_task(self._clear_dedup_content())
-                    self._scroll_to_bottom()
+                    self._request_scroll_to_bottom()
                     self._pending_response = False
 
             elif event_type == "action":
@@ -1477,7 +1556,7 @@ class PenguinTextualApp(App):
                 self.current_streaming_widget.end_stream()
                 self.last_finalized_content = self.current_streaming_widget.content
                 self.current_streaming_widget = None
-                self._scroll_to_bottom()
+                self._request_scroll_to_bottom()
                 
         except asyncio.CancelledError:
             # Normal cancellation when stream completes
@@ -1505,7 +1584,7 @@ class PenguinTextualApp(App):
             self.current_streaming_widget.end_stream()
             self.last_finalized_content = self.current_streaming_widget.content
             self.current_streaming_widget = None
-            self._scroll_to_bottom()
+            self._request_scroll_to_bottom()
             
             self.add_message("Stream recovery completed. You can continue the conversation.", "system")
         else:
@@ -1710,6 +1789,16 @@ class PenguinTextualApp(App):
                 return
             if cmd == "debug":
                 if args:
+                    # Inline runtime tuning fast-path: /debug throttle <ms>, /debug scroll <ms>, /debug linkify on|off
+                    tokens = args.split()
+                    if tokens and tokens[0] in ("throttle", "scroll", "linkify"):
+                        payload: Dict[str, Any] = {"action": tokens[0]}
+                        if tokens[0] == "linkify" and len(tokens) > 1:
+                            payload["value"] = tokens[1]
+                        if tokens[0] in ("throttle", "scroll") and len(tokens) > 1:
+                            payload["ms"] = tokens[1]
+                        await self._handle_debug_tuning(payload)
+                        return
                     response = await self.interface.handle_command(command)
                     await self._display_command_response(response)
                 else:
@@ -1939,6 +2028,41 @@ class PenguinTextualApp(App):
         self.add_message("Type /help for available commands. Use Tab for autocomplete.", "system")
 
     # ---------------------------
+    # Debug runtime tuning hooks
+    # ---------------------------
+    async def _handle_debug_tuning(self, args: Dict[str, Any]) -> None:
+        try:
+            action = str(args.get("action", "")).strip().lower()
+            if action == "throttle":
+                try:
+                    ms = float(str(args.get("ms", "")))
+                    self._stream_update_min_interval = max(0.05, ms / 1000.0)
+                    self.add_message(f"Stream throttle set to {self._stream_update_min_interval*1000:.0f}ms.", "system")
+                except Exception:
+                    self.add_message("Usage: /debug throttle <ms>", "error")
+            elif action == "scroll":
+                try:
+                    ms = int(str(args.get("ms", "")))
+                    self._scroll_debounce_ms = max(20, min(500, ms))
+                    self.add_message(f"Scroll debounce set to {self._scroll_debounce_ms}ms.", "system")
+                except Exception:
+                    self.add_message("Usage: /debug scroll <ms>", "error")
+            elif action == "linkify":
+                val = str(args.get("value", "")).strip().lower()
+                if val in ("on", "true", "1"):
+                    self._linkify_on_finalization = True
+                elif val in ("off", "false", "0"):
+                    self._linkify_on_finalization = False
+                else:
+                    self.add_message("Usage: /debug linkify [on|off]", "error")
+                    return
+                self.add_message(f"Linkify on finalization set to {self._linkify_on_finalization}.", "system")
+            else:
+                self.add_message("Usage: /debug [throttle|scroll|linkify] ...", "system")
+        except Exception as e:
+            self.add_message(f"Debug tuning error: {e}", "error")
+
+    # ---------------------------
     # Theme & Layout management
     # ---------------------------
     def _load_prefs(self) -> None:
@@ -2067,10 +2191,74 @@ class PenguinTextualApp(App):
         self.exit()
 
     async def on_status_message(self, event: StatusMessage) -> None:  # Textual auto dispatch
-        bar = self.query_one("#status-bar", Static)
+        bar = self._status_bar_ref or self.query_one("#status-bar", Static)
         bar.update(event.text)
         await asyncio.sleep(1.5)
         bar.update("")
+
+    # -------------------------
+    # Helpers: trim old messages
+    # -------------------------
+    def _maybe_trim_messages(self, area: Optional[VerticalScroll] = None, keep_last: int = 300) -> None:
+        try:
+            area_ref = area or self._message_area_ref or self.query_one("#message-area", VerticalScroll)
+            msgs = [w for w in area_ref.children if isinstance(w, ChatMessage)]
+            if len(msgs) > keep_last:
+                excess = len(msgs) - keep_last
+                for w in msgs[:excess]:
+                    try:
+                        # Cache removed content for on-demand load
+                        self._older_messages_cache.append({
+                            "role": getattr(w, "role", "assistant"),
+                            "content": getattr(w, "content", ""),
+                        })
+                    except Exception:
+                        pass
+                    w.remove()
+                # Reveal loader if older messages exist
+                if self._show_older_btn:
+                    self._show_older_btn.display = len(self._older_messages_cache) > 0
+                if not self._trim_notice_added:
+                    area_ref.mount(Static("[dim]Older messages trimmed to keep UI responsive.[/dim]"))
+                    self._trim_notice_added = True
+        except Exception:
+            pass
+
+    # -------------------------
+    # Load older messages on demand
+    # -------------------------
+    def _load_older_messages(self, batch: int = 50) -> None:
+        try:
+            if not self._older_messages_cache:
+                if self._show_older_btn:
+                    self._show_older_btn.display = False
+                return
+            area = self._message_area_ref or self.query_one("#message-area", VerticalScroll)
+            btn = self._show_older_btn
+            # Take the last N (oldest-first preserved below)
+            n = max(1, min(batch, len(self._older_messages_cache)))
+            slice_items = self._older_messages_cache[-n:]
+            # Remove from cache
+            del self._older_messages_cache[-n:]
+            # Mount in chronological order after the loader button
+            for msg in slice_items:
+                cm = ChatMessage(str(msg.get("content", "")), str(msg.get("role", "assistant")))
+                if btn and btn in area.children:
+                    area.mount(cm, after=btn)
+                else:
+                    area.mount(cm)
+            # Hide the loader if cache is empty
+            if self._show_older_btn:
+                self._show_older_btn.display = len(self._older_messages_cache) > 0
+        except Exception:
+            pass
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:  # type: ignore[override]
+        try:
+            if event.button.id == "show-older":
+                self._load_older_messages(batch=50)
+        except Exception:
+            pass
 
 class TUI:
     """Entry point for the Textual UI."""
