@@ -6,6 +6,7 @@ import httpx
 import asyncio
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 from typing import Dict, Any, List, Optional, Tuple
 from rich.console import Console
@@ -603,10 +604,11 @@ async def run_setup_wizard() -> Dict[str, Any]:
     ).ask_async():
         # Show saving indicator
         with console.status("[bold cyan]Saving configuration...[/bold cyan]", spinner="dots"):
-            save_success = save_config(config)
+            saved_config_path = save_config(config)
         
-        if save_success:
+        if saved_config_path:
             console.print("[bold green]✓ Configuration saved successfully![/bold green]")
+            console.print(f"[dim]Saved to:[/dim] {saved_config_path}")
             
             # Mark setup as complete
             mark_setup_complete()
@@ -639,11 +641,22 @@ async def run_setup_wizard() -> Dict[str, Any]:
                     default=False,
                     style=STYLE
                 ).ask_async():
-                    config_path = get_config_path()
-                    if open_in_default_editor(config_path):
-                        console.print(f"[green]✓ Opened config file:[/green] {config_path}")
+                    cfg_path = saved_config_path
+                    # In Codespaces/containers, prefer $EDITOR if available, else fallback
+                    editor = os.environ.get("EDITOR")
+                    opened = False
+                    if editor and shutil.which(editor.split()[0]):
+                        try:
+                            subprocess.run([*editor.split(), str(cfg_path)], check=True)
+                            opened = True
+                        except Exception:
+                            opened = False
+                    if not opened:
+                        opened = open_in_default_editor(cfg_path)
+                    if opened:
+                        console.print(f"[green]✓ Opened config file:[/green] {cfg_path}")
                     else:
-                        console.print(f"[yellow]⚠️ Could not open config file. It's located at:[/yellow] {config_path}")
+                        console.print(f"[yellow]⚠️ Could not open config file. It's located at:[/yellow] {cfg_path}")
         else:
             console.print("[bold red]Failed to save configuration. Please check permissions and try again.[/bold red]")
     else:
@@ -703,31 +716,31 @@ def _persist_api_key(provider: str, api_key: str) -> bool:
     except Exception:
         return False
 
-def save_config(config: Dict[str, Any]) -> bool:
+def save_config(config: Dict[str, Any]) -> Optional[Path]:
     """
-    Save the config to a YAML file
-    
+    Save the config to a YAML file and return the resolved path.
+
     Returns:
-        bool: True if save was successful, False otherwise
+        Path on success; None on failure.
     """
     config_path = get_config_path()
-    
+
     try:
         # Make sure parent directory exists
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Write config with nice formatting
         with open(config_path, 'w') as f:
             yaml.dump(config, f, sort_keys=False, default_flow_style=False)
-        
-        return True
+
+        return config_path
     except PermissionError:
         console.print(f"[bold red]⚠️ Permission denied:[/bold red] Cannot write to {config_path}")
         console.print("[yellow]Try running with administrator/sudo privileges or choose a different location.[/yellow]")
-        return False
+        return None
     except Exception as e:
         console.print(f"[bold red]⚠️ Error saving configuration:[/bold red] {str(e)}")
-        return False
+        return None
 
 def open_in_default_editor(file_path: Path) -> bool:
     """
