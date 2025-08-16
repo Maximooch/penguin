@@ -17,6 +17,8 @@ embeddings/
 .workspace/memory_db/
 .workspace/logs
 
+config.yml
+
 # Environment variables
 .env
 
