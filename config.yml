@@ -1,0 +1,20 @@
+workspace:
+  path: "/tmp/penguin_workspace"
+
+model:
+  default: "gpt-4o-mini"
+  provider: "openai"
+  client_preference: "litellm"
+
+api:
+  base_url: "https://api.openai.com/v1"
+
+memory:
+  enabled: false
+
+performance:
+  fast_startup: true
+  profiling: true
+
+diagnostics:
+  enabled: false
