@@ -13,13 +13,15 @@ import tiktoken  # type: ignore
 # TODO: greatly simplify api_client while maintaining full functionality
 # TODO: add streaming support # Done for quite a while. 
 # TODO: add support for images, files, audio, and video
-from litellm import acompletion, completion, token_counter, cost_per_token, completion_cost # Keep litellm imports for now? maybe remove acompletion/completion direct use # type: ignore
+# Lazy import litellm to avoid 1+ second import time overhead
+# from litellm import acompletion, completion, token_counter, cost_per_token, completion_cost
 from PIL import Image  # type: ignore
 
 from .model_config import ModelConfig
 from .adapters import get_adapter # Keep for native preference
-from .litellm_gateway import LiteLLMGateway # Import the gateway
-from .openrouter_gateway import OpenRouterGateway # Import the OpenRouter gateway
+# Lazy import gateways to avoid import overhead
+# from .litellm_gateway import LiteLLMGateway
+# from .openrouter_gateway import OpenRouterGateway
 # from penguin.llm.provider_adapters import get_provider_adapter # Seems unused
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,8 @@ class APIClient:
         # --- Instantiate the correct handler ---
         if model_config.client_preference == 'litellm':
             try:
+                # Lazy import LiteLLMGateway to avoid import overhead
+                from .litellm_gateway import LiteLLMGateway
                 # LiteLLM gateway handles API keys/base internally based on model_config
                 self.client_handler = LiteLLMGateway(model_config)
                 self.logger.info(f"Using LiteLLMGateway for {model_config.model}")
@@ -88,6 +92,8 @@ class APIClient:
 
         elif model_config.client_preference == 'openrouter':
             try:
+                # Lazy import OpenRouterGateway to avoid import overhead
+                from .openrouter_gateway import OpenRouterGateway
                 # Initialize OpenRouter gateway with model_config
                 self.client_handler = OpenRouterGateway(model_config)
                 self.logger.info(f"Using OpenRouterGateway for {model_config.model}")

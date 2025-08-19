@@ -591,16 +591,23 @@ class PenguinCore:
         # Add an accumulated token counter
         self.accumulated_tokens = {"prompt": 0, "completion": 0, "total": 0}
 
-        # Disable LiteLLM debugging
-        try:
-            from litellm import _logging # type: ignore
-            _logging._disable_debugging()
-            # Also set these to be safe
-            import litellm # type: ignore
-            litellm.set_verbose = False
-            litellm.drop_params = False
-        except Exception as e:
-            logger.warning(f"Failed to disable LiteLLM debugging: {e}")
+        # Defer LiteLLM configuration until first use to avoid import overhead
+        self._litellm_configured = False
+
+    def _ensure_litellm_configured(self):
+        """Configure LiteLLM on first use to avoid import time overhead."""
+        if not self._litellm_configured:
+            try:
+                from litellm import _logging # type: ignore
+                _logging._disable_debugging()
+                # Also set these to be safe
+                import litellm # type: ignore
+                litellm.set_verbose = False
+                litellm.drop_params = False
+                self._litellm_configured = True
+            except Exception as e:
+                logger.warning(f"Failed to disable LiteLLM debugging: {e}")
+                self._litellm_configured = True  # Don't try again
 
         # Add these attributes
         self.current_stream = None
