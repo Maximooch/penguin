@@ -3,15 +3,16 @@ import logging
 
 __all__ = [
     "AnthropicAdapter",
-    "BaseAdapter",
+    "BaseAdapter", 
     "OllamaAdapter",
     "get_adapter",
 ]
 
 from ..provider_adapters import get_provider_adapter
-from .anthropic import AnthropicAdapter
 from .base import BaseAdapter
-from .ollama import OllamaAdapter
+# Lazy import the heavy adapters to avoid import time overhead
+# from .anthropic import AnthropicAdapter
+# from .ollama import OllamaAdapter
 
 
 def get_adapter(provider: str, model_config):
@@ -35,6 +36,7 @@ def get_adapter(provider: str, model_config):
             and provider in provider_mapping
         ):
             module_name, class_name = provider_mapping[provider]
+            # Dynamic import to avoid import-time overhead
             adapter_module = __import__(
                 f"penguin.llm.adapters.{module_name}", fromlist=[class_name]
             )

@@ -13,7 +13,7 @@ MAX_CONTEXT_TOKENS = 200000
 class TokenTracker:
     def __init__(self):
         self.tokens = {"input": 0, "output": 0}
-        self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        self._tokenizer = None
 
     def update(self, input_tokens: int, output_tokens: int):
         """Update token counts directly with numbers"""
@@ -26,6 +26,14 @@ class TokenTracker:
         """Reset token counts"""
         print("[TokenTracker] Resetting token counts")
         self.tokens = {"input": 0, "output": 0}
+    
+    @property
+    def tokenizer(self):
+        """Lazy load tokenizer when first needed"""
+        if self._tokenizer is None:
+            import tiktoken
+            self._tokenizer = tiktoken.get_encoding("cl100k_base")
+        return self._tokenizer
 
 
 class Diagnostics:
@@ -36,7 +44,15 @@ class Diagnostics:
             "tools": TokenTracker(),
             "memory": TokenTracker(),
         }
-        self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        self._tokenizer = None
+
+    @property
+    def tokenizer(self):
+        """Lazy load tokenizer when first needed"""
+        if self._tokenizer is None:
+            import tiktoken
+            self._tokenizer = tiktoken.get_encoding("cl100k_base")
+        return self._tokenizer
 
     def count_tokens(self, text):
         """Count tokens using tiktoken with fallback for non-string content"""
