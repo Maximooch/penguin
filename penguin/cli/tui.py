@@ -2289,6 +2289,29 @@ class TUI:
                     pass
         except Exception:
             pass
+        # Best-effort: ensure CSS resource exists; if missing, disable CSS to avoid crash
+        try:
+            # Allow override via env to disable CSS on problematic terminals
+            if os.environ.get('PENGUIN_TUI_NO_CSS') == '1' or os.environ.get('PENGUIN_TUI_DISABLE_CSS') == '1':
+                PenguinTextualApp.CSS_PATH = None
+            
+            try:
+                from importlib import resources as _res  # py3.9+
+                has_css = False
+                try:
+                    # Deprecated in 3.11 but still available; robust across versions
+                    has_css = _res.is_resource('penguin.cli', 'tui.css')  # type: ignore[attr-defined]
+                except Exception:
+                    # Fallback: attempt to read the resource
+                    with _res.open_text('penguin.cli', 'tui.css') as _f:  # type: ignore[attr-defined]
+                        has_css = bool(_f.read(1) or True)
+                if not has_css:
+                    PenguinTextualApp.CSS_PATH = None  # Disable external CSS load
+            except Exception:
+                # If importlib.resources isn't available or any error occurs, keep defaults
+                pass
+        except Exception:
+            pass
         app = PenguinTextualApp()
         try:
             # Run without DevTools to keep the UI clean
