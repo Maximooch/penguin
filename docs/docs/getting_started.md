@@ -44,15 +44,15 @@ pip install "penguin-ai[full]"   # All features including web interface
 
 ## 2. Verify Installation
 ```bash
-penguin --version     # prints version string (v0.3.1)
-penguin --help        # shows enhanced CLI options
-penguin --diagnostics # shows system information and performance stats
+penguin --version     # prints version string
+penguin --help        # shows CLI options
 ```
 
 ### Check Configuration
 ```bash
-penguin config show   # displays current configuration
-penguin model list    # lists available models
+penguin config check  # validates required keys are present
+penguin config debug  # prints extended diagnostic info
+penguin config edit   # open the config file in your editor
 ```
 
 ---
@@ -67,33 +67,28 @@ penguin --no-tui      # CLI mode without graphical interface
 
 ### Streaming and Checkpoint Features
 ```bash
-penguin -p "Help me debug this Python function"  # streaming response
-penguin --checkpoint "Before major changes"      # create checkpoint
-penguin --model claude-3-5-sonnet              # specify model
+penguin -p "Help me debug this Python function"  # one-off prompt
+# penguin chat                                     # explicit synonym for interactive chat
 ```
+
+<!-- TODO: Checkpointing command support -->
 
 ### Model Management
-```bash
-# Switch models dynamically
-penguin model switch openai/gpt-5
-
-# Get model information
-penguin model info
-```
+Model subcommands are not yet exposed via CLI. Use defaults in config for now.
 
 ### Advanced Project & Task Management
 ```bash
-# Create project with enhanced features
+# Create a project
 penguin project create "AI Assistant Demo" -d "Demonstrating new features"
 
-# List projects with metadata
-penguin project list --detailed
+# List projects (note the ID from the table)
+penguin project list
 
-# Create task with automatic checkpointing
-penguin task create "Implement streaming chat" --project "demo-project"
+# Create a task for that project (replace <PROJECT_ID>)
+penguin project task create <PROJECT_ID> "Implement streaming chat"
 
-# View task progress
-penguin task status
+# View tasks (optionally filtered by project)
+penguin project task list [<PROJECT_ID>]
 ```
 
 ### Enhanced Web Interface (optional)
@@ -208,25 +203,26 @@ memory:
 
 1. **Command not found**: Ensure you installed with `pip install penguin-ai`, not the minimal option
 2. **Web interface not starting**: Install with `pip install "penguin-ai[web]"` and check port 8000
-3. **API errors**: Verify API keys and check `penguin --diagnostics` for configuration issues
+3. **API errors**: Verify API keys and use `penguin config debug` for configuration issues
 4. **Streaming not working**: Ensure your model supports streaming and check client preference settings
 5. **Checkpoint errors**: Check disk space and file permissions for the workspace directory
-6. **Performance issues**: Try `fast_startup=true` in config or use `penguin --diagnostics` for profiling
+6. **Performance issues**: Try `fast_startup=true` in config or use `penguin profile` / `penguin perf-test` for profiling
 
 ### Getting Help
 
 - **GitHub Issues**: [Report bugs and feature requests](https://github.com/Maximooch/penguin/issues)
 - **Documentation**: Check the [System Documentation](system/) for advanced configuration
-- **Performance**: Use `penguin --diagnostics` for system information and performance metrics
-- **Configuration**: Run `penguin config show` to verify your current settings
+- **Performance**: Use `penguin profile` or `penguin perf-test` for system performance insights
+- **Configuration**: Run `penguin config check` or `penguin config debug` to inspect your settings. You can also review your `config.yml` by doing `penguin config edit`
+<!-- For environment variables, if they aren't expored but within Penguin, should we assume they're just saved to a .env file, or do some further safety checking? What was it that Bun was doing? Look into that -->
 
 **Quick Diagnostic Commands:**
 ```bash
 penguin --version              # Check version
-penguin --diagnostics          # System information and performance
-penguin config show            # Current configuration
-penguin model list             # Available models
-penguin model info             # Current model details
+penguin --help                 # CLI options
+penguin profile               # Profile startup and save a report
+penguin perf-test             # Benchmark startup performance
+penguin config debug          # Extended config + environment diagnostics
 ```
 
 
