@@ -1,65 +1,86 @@
 # Context Window Manager
 
-The `ContextWindowManager` handles token budgeting and content trimming for conversation context across different message categories.
+The `ContextWindowManager` v0.3.1 handles advanced token budgeting and content trimming for conversation context with enhanced multimodal content handling and dynamic budget allocation.
 
 ## Overview
 
 The ContextWindowManager is responsible for:
 
-1. Tracking token usage across different message categories
-2. Managing token budgets based on priority
-3. Intelligently trimming content when context windows fill up
-4. Handling special content types like images
-5. Ensuring conversations don't exceed model token limits
+1. **Advanced Token Budgeting**: Dynamic allocation based on content type and priority
+2. **Enhanced Image Handling**: Intelligent trimming of multimodal content to preserve tokens
+3. **Category-Based Management**: Fine-grained control over different message types
+4. **Real-time Usage Tracking**: Live monitoring of token consumption
+5. **Smart Trimming Strategies**: Context-aware content removal with recency preservation
+6. **Multi-Provider Token Counting**: Automatic fallback tokenization strategies
+7. **Rich Reporting**: Human-readable and programmatic token usage statistics
 
 ## Message Categories and Priorities
 
-Messages are categorized into four priority levels for trimming:
+Messages are categorized into five priority levels for intelligent trimming:
 
-1. **SYSTEM** (highest priority): System instructions - never trimmed if possible (10% budget)
-2. **CONTEXT**: Important reference information like documentation (35% budget)
+1. **SYSTEM** (highest priority): System instructions and prompts - **never trimmed** (10% budget)
+2. **CONTEXT**: Important reference information, documentation, and context files (35% budget)
 3. **DIALOG**: Main conversation between user and assistant (50% budget)
-4. **SYSTEM_OUTPUT** (lowest priority): Tool outputs, code execution results (5% budget)
+4. **SYSTEM_OUTPUT**: Tool outputs, code execution results, and action responses (5% budget)
+5. **ERROR**: Error messages and debugging information (fallback 5% budget)
 
-When trimming is necessary, messages are removed starting from the lowest priority categories.
+### Enhanced Priority System
+
+- **SYSTEM messages**: Guaranteed preservation with strict 10% minimum allocation
+- **Chronological trimming**: Within each category, oldest messages are trimmed first to preserve recency
+- **Dynamic budget management**: Automatic budget redistribution when categories are under-utilized
+- **Image-aware processing**: Special handling for multimodal content with token-intensive elements
+- **Fallback categories**: Automatic handling of new message types with default budgets
 
 ```mermaid
-pie title Default Token Budget Allocation
+pie title Enhanced Token Budget Allocation v0.3.1
     "SYSTEM" : 10
     "CONTEXT" : 35
     "DIALOG" : 50
     "SYSTEM_OUTPUT" : 5
+    "ERROR (fallback)" : 5
 ```
 
 ## Trimming Strategy
 
 ```mermaid
 flowchart TD
-    Start([Start]) --> AnalyzeSession[Analyze Session]
-    AnalyzeSession --> CheckBudget{Total Over Budget?}
-    
-    CheckBudget -- Yes --> TrimLowPriority[Trim SYSTEM_OUTPUT Messages]
-    TrimLowPriority --> CheckAgain1{Still Over Budget?}
-    
-    CheckAgain1 -- Yes --> TrimDialog[Trim DIALOG Messages]
-    TrimDialog --> CheckAgain2{Still Over Budget?}
-    
-    CheckAgain2 -- Yes --> TrimContext[Trim CONTEXT Messages]
-    TrimContext --> Reassemble[Reassemble Session]
-    
-    CheckAgain2 -- No --> Reassemble
-    CheckAgain1 -- No --> Reassemble
-    CheckBudget -- No --> CategoryCheck{Any Category Over Budget?}
-    
-    CategoryCheck -- Yes --> TrimCategory[Trim Specific Category]
-    TrimCategory --> Reassemble
+    Start([Start]) --> AnalyzeSession[Analyze Session & Count Tokens]
+    AnalyzeSession --> ImageCheck{Contains Multiple Images?}
+
+    ImageCheck -- Yes --> HandleImages[Replace Old Images with Placeholders]
+    HandleImages --> AnalyzeSession
+
+    ImageCheck -- No --> CheckBudget{Total Over Budget?}
+
+    CheckBudget -- Yes --> PriorityTrim[Trim by Priority Order]
+    PriorityTrim --> TrimLowest[Trim ERROR/SYSTEM_OUTPUT First]
+    TrimLowest --> CheckBudget1{Still Over Budget?}
+
+    CheckBudget1 -- Yes --> TrimDialog[Trim DIALOG Messages]
+    TrimDialog --> CheckBudget2{Still Over Budget?}
+
+    CheckBudget2 -- Yes --> TrimContext[Trim CONTEXT Messages]
+    TrimContext --> PreserveSystem[Preserve SYSTEM Messages]
+    PreserveSystem --> Reassemble[Reassemble Session]
+
+    CheckBudget2 -- No --> PreserveSystem
+    CheckBudget1 -- No --> PreserveSystem
+
+    CheckBudget -- No --> CategoryCheck{Any Category Over Individual Budget?}
+
+    CategoryCheck -- Yes --> TrimSpecific[Trim Specific Category]
+    TrimSpecific --> Reassemble
+
     CategoryCheck -- No --> Return[Return Original Session]
-    
+
     Reassemble --> Return
-    
-    style TrimLowPriority fill:#f99,stroke:#333
+
+    style HandleImages fill:#bbf,stroke:#333,stroke-width:2px
+    style TrimLowest fill:#f99,stroke:#333
     style TrimDialog fill:#f96,stroke:#333
     style TrimContext fill:#ff6,stroke:#333
+    style PreserveSystem fill:#6f6,stroke:#333,stroke-width:2px
 ```
 
 ## Special Content Handling
@@ -94,21 +115,41 @@ flowchart LR
     style Placeholder3 fill:#eee,stroke:#333
 ```
 
-## Initialization
+## Enhanced Initialization
 
 ```python
 def __init__(
     self,
-    model_config = None,
+    model_config=None,
     token_counter: Optional[Callable[[Any], int]] = None,
-    api_client=None
+    api_client=None,
+    config_obj: Optional[Any] = None,
 )
 ```
 
-Parameters:
-- `model_config`: Optional model configuration with max_tokens
-- `token_counter`: Function to count tokens for content
-- `api_client`: API client for token counting
+### Smart Configuration Resolution
+
+The ContextWindowManager automatically resolves configuration from multiple sources in priority order:
+
+1. **Model Configuration**: `model_config.max_tokens` (if provided)
+2. **Live Config Object**: `config_obj.model_config.max_history_tokens` (preferred)
+3. **Global Config**: `config.yml` model settings
+4. **Fallback**: Default 150,000 tokens
+
+### Intelligent Token Counter Selection
+
+The system automatically selects the best available token counter:
+
+1. **API Client Counter**: `api_client.count_tokens()` (provider-specific)
+2. **Diagnostics Counter**: `diagnostics.count_tokens()` (tiktoken-based)
+3. **Fallback Counter**: Rough estimation (4 chars per token)
+
+### Enhanced Features
+
+- **Dynamic Max Tokens**: Adapts to model capabilities automatically
+- **Multi-source Configuration**: Supports live config updates
+- **Provider-aware Tokenization**: Uses provider-specific token counting when available
+- **Robust Fallbacks**: Graceful degradation when components are unavailable
 
 ## Key Methods
 
@@ -172,67 +213,220 @@ def process_session(self, session: Session) -> Session
 
 Processes a session through token budgeting and trimming - main entry point for integration.
 
-### Reporting
+### Advanced Reporting and Analytics
 
 ```python
 def get_token_usage(self) -> Dict[str, int]
 ```
 
-Gets token usage dictionary for tracking.
+Returns comprehensive token usage statistics with enhanced structure:
+
+```python
+{
+    "total": 45000,
+    "available": 105000,
+    "max": 150000,
+    "usage_percentage": 30.0,
+    "MessageCategory.SYSTEM": 5000,
+    "MessageCategory.CONTEXT": 15000,
+    "MessageCategory.DIALOG": 20000,
+    "MessageCategory.SYSTEM_OUTPUT": 5000
+}
+```
 
 ```python
 def format_token_usage(self) -> str
 ```
 
-Formats token usage in a human-readable format.
+Returns human-readable token usage summary with category breakdowns.
 
 ```python
 def format_token_usage_rich(self) -> str
 ```
 
-Formats token usage with rich text for prettier CLI output.
-
-## Trimming Strategy
-
-The trimming strategy follows these steps:
-
-1. Check if session exceeds total budget
-2. Identify categories exceeding their individual budgets
-3. Trim categories in priority order (SYSTEM_OUTPUT → DIALOG → CONTEXT)
-4. Preserve SYSTEM messages at all costs
-5. Within each category, trim oldest messages first
-
-For sessions with multiple images:
-1. Keep the most recent image intact
-2. Replace older images with text placeholders to save tokens
-
-## Example Usage
+Returns rich-formatted token usage with progress bars and color coding.
 
 ```python
-# Initialize the context manager
-context_window = ContextWindowManager(
-    model_config=model_config,
-    api_client=api_client
-)
-
-# Analyze a session
-stats = context_window.analyze_session(session)
-print(f"Total tokens: {stats['total_tokens']}")
-print(f"Over budget: {stats['over_budget']}")
-
-# Process a session (analyze and trim if needed)
-trimmed_session = context_window.process_session(session)
-
-# Display token usage
-print(context_window.format_token_usage())
+def get_current_allocations(self) -> Dict[MessageCategory, float]
 ```
 
-## Token Budgeting
+Returns current token allocations as percentages for monitoring.
 
-The default token budget allocation is:
-- SYSTEM: 10% (highest priority, preserved longest)
-- CONTEXT: 35% (high priority, preserved for reference)
-- DIALOG: 50% (medium priority, oldest trimmed first)
-- SYSTEM_OUTPUT: 5% (lowest priority, trimmed first)
+```python
+def get_usage(self, category: MessageCategory) -> int
+```
 
-This allocation ensures that critical system instructions remain intact while maximizing space for actual conversation. 
+Returns current token usage for a specific category.
+
+## Advanced Trimming Strategy
+
+The enhanced trimming strategy v0.3.1 follows a sophisticated multi-pass approach:
+
+### Phase 1: Image Optimization
+1. **Multi-image Detection**: Identify sessions with multiple images
+2. **Recency Preservation**: Keep the most recent image intact
+3. **Token-Efficient Replacement**: Replace older images with placeholders
+4. **Metadata Preservation**: Store original image references for context
+
+### Phase 2: Budget Analysis
+1. **Total Budget Check**: Compare session tokens against model limits
+2. **Category Budget Analysis**: Check individual category limits
+3. **Priority Queue Creation**: Order categories by trim priority
+
+### Phase 3: Intelligent Trimming
+1. **Chronological Trimming**: Remove oldest messages first within each category
+2. **Minimum Budget Enforcement**: Respect minimum token allocations
+3. **SYSTEM Protection**: Never trim SYSTEM messages
+4. **Iterative Reduction**: Continue trimming until budget is met
+
+### Phase 4: Session Reconstruction
+1. **Order Preservation**: Maintain original message ordering
+2. **Category Integrity**: Keep messages in their logical categories
+3. **Metadata Updates**: Update session statistics and metadata
+
+## Enhanced Image Handling
+
+The system includes specialized handling for multimodal content:
+
+### Image Token Estimation
+- **Claude Models**: ~4,000 tokens per image (higher for safety)
+- **Vision Models**: Provider-specific token calculations
+- **Fallback Estimation**: Character-based approximation
+
+### Smart Image Trimming
+```python
+def _handle_image_trimming(self, session: Session) -> Session:
+    """
+    Replace all but the most recent image with placeholders.
+    Preserves conversation context while saving significant tokens.
+    """
+```
+
+### Placeholder Generation
+- **Context Preservation**: Maintains conversation flow
+- **Reference Tracking**: Stores original image metadata
+- **User-Friendly Messages**: Clear indication of image removal
+
+## Token Counter Fallback Chain
+
+The system implements a robust fallback strategy for token counting:
+
+1. **Provider-Specific Counter**: Uses native model tokenizer (optimal accuracy)
+2. **LiteLLM Generic Counter**: Fallback to model-specific tiktoken
+3. **Diagnostics Counter**: Uses tiktoken with model mapping
+4. **Character Estimation**: Rough fallback (4 chars = 1 token)
+
+This ensures accurate token counting across all scenarios while maintaining performance.
+
+## Advanced Usage Examples
+
+### Basic Setup with Enhanced Configuration
+
+```python
+from penguin.system.context_window import ContextWindowManager
+from penguin.llm.model_config import ModelConfig
+
+# Initialize with enhanced configuration
+context_window = ContextWindowManager(
+    model_config=model_config,
+    api_client=api_client,
+    config_obj=live_config  # Supports live config updates
+)
+
+# Automatic configuration resolution from multiple sources
+print(f"Max tokens: {context_window.max_tokens}")
+print(f"Available tokens: {context_window.available_tokens}")
+```
+
+### Comprehensive Session Analysis
+
+```python
+# Analyze session with multimodal content detection
+stats = context_window.analyze_session(session)
+print(f"Total tokens: {stats['total_tokens']}")
+print(f"Images detected: {stats['image_count']}")
+print(f"Tokens by category: {stats['per_category']}")
+print(f"Over budget: {stats['over_budget']}")
+
+# Detailed breakdown
+for category, tokens in stats['per_category'].items():
+    percentage = (tokens / stats['total_tokens']) * 100 if stats['total_tokens'] > 0 else 0
+    print(f"  {category.name}: {tokens} tokens ({percentage:.1f}%)")
+```
+
+### Intelligent Session Processing
+
+```python
+# Process session with automatic trimming and optimization
+original_token_count = context_window.analyze_session(session)['total_tokens']
+trimmed_session = context_window.process_session(session)
+final_token_count = context_window.analyze_session(trimmed_session)['total_tokens']
+
+print(f"Original tokens: {original_token_count}")
+print(f"Final tokens: {final_token_count}")
+print(f"Reduction: {original_token_count - final_token_count} tokens")
+
+# Session integrity preserved
+print(f"Messages removed: {len(session.messages) - len(trimmed_session.messages)}")
+print(f"SYSTEM messages preserved: {len([m for m in trimmed_session.messages if m.category.name == 'SYSTEM'])}")
+```
+
+### Real-time Token Monitoring
+
+```python
+# Monitor token usage in real-time
+usage = context_window.get_token_usage()
+print(context_window.format_token_usage())
+
+# Rich formatting for CLI
+if rich_available:
+    print(context_window.format_token_usage_rich())
+
+# Programmatic access
+for category in MessageCategory:
+    budget = context_window.get_budget(category)
+    usage = context_window.get_usage(category)
+    percentage = (usage / budget.max_tokens) * 100 if budget.max_tokens > 0 else 0
+    print(f"{category.name}: {usage}/{budget.max_tokens} ({percentage:.1f}%)")
+```
+
+### Advanced Category Management
+
+```python
+# Update usage tracking manually
+context_window.update_usage(MessageCategory.CONTEXT, 5000)
+
+# Check if any category is over budget
+for category in MessageCategory:
+    if context_window.is_over_budget(category):
+        print(f"Warning: {category.name} is over budget!")
+
+# Reset usage tracking
+context_window.reset_usage()  # Reset all
+context_window.reset_usage(MessageCategory.DIALOG)  # Reset specific category
+```
+
+## Enhanced Token Budgeting System
+
+The dynamic token budget allocation system v0.3.1 includes:
+
+### Intelligent Budget Distribution
+- **SYSTEM**: 10% (guaranteed preservation, strict minimum enforcement)
+- **CONTEXT**: 35% (documentation and reference materials)
+- **DIALOG**: 50% (main conversation, flexible allocation)
+- **SYSTEM_OUTPUT**: 5% (tool results and action outputs)
+- **ERROR**: 5% (fallback for error messages and debugging)
+
+### Dynamic Budget Management
+- **Automatic Redistribution**: Unused budget from one category can benefit others
+- **Minimum Guarantees**: Each category has a minimum token allocation
+- **Maximum Limits**: Prevents any category from consuming excessive tokens
+- **Runtime Adjustments**: Budgets can be modified during session processing
+
+### Token Efficiency Features
+- **Image Optimization**: Intelligent replacement of redundant images
+- **Smart Trimming**: Chronological removal preserving conversation coherence
+- **Category-Aware Processing**: Different strategies for different content types
+- **Metadata Preservation**: Maintains conversation context during optimization
+
+This enhanced system ensures optimal token utilization while preserving conversation quality and system functionality. 
