@@ -4,20 +4,26 @@ sidebar_position: 1
 
 # Penguin AI Assistant Documentation
 
-Welcome to the Penguin AI Assistant documentation. Penguin is a modular, extensible AI coding agent that supports various language models through LiteLLM, now with enhanced project management and web interface capabilities.
+Welcome to the Penguin AI Assistant documentation. Penguin v0.3.1 is a modular, extensible AI coding agent with advanced conversation management, real-time streaming, and comprehensive checkpoint capabilities.
 
 ## Features
 
-
-- File manipulation and code generation
-- Web searches for up-to-date information
-- Automated task execution with Run Mode
-- Project management
-- Custom tool integration
-- PyDoll browser automation
-- Memory search across conversations
-- Pluggable memory providers with vector search
-- Diagnostic logging and error handling
+- **Advanced Conversation Management**: Checkpoint and snapshot system for conversation state management
+- **Real-time Streaming**: Enhanced streaming with event-driven architecture and UI coordination
+- **Token Management**: Context window management with category-based budgets and image handling
+- **Runtime Model Switching**: Dynamic model switching with automatic configuration updates
+- **Fast Startup**: Optional deferred initialization for improved performance
+- **Comprehensive Diagnostics**: Performance monitoring and startup reporting
+- **Event-Driven Architecture**: Real-time UI updates via comprehensive event system
+- **File manipulation and code generation**
+- **Web searches for up-to-date information**
+- **Automated task execution with Run Mode**
+- **Project management with SQLite persistence**
+- **Custom tool integration**
+- **PyDoll browser automation**
+- **Memory search across conversations**
+- **Pluggable memory providers with vector search**
+- **Diagnostic logging and error handling**
 
 ## Quick Start
 
@@ -95,14 +101,28 @@ response = agent.chat("Help me debug this function")
 
 ## Architecture Overview
 
-Penguin v0.2.0 introduces a clean modular architecture:
+Penguin v0.3.1 introduces an enhanced modular architecture with event-driven communication and advanced state management:
 
-- **`penguin.cli`** - Command-line interface and tools
-- **`penguin.web`** - Web interface and REST API (optional)
+### Core Components
+
+- **`penguin.core`** - Central coordinator with event system and real-time streaming
+- **`penguin.system`** - Advanced conversation management with checkpoints and snapshots
+- **`penguin.llm`** - Enhanced API client with streaming and provider abstraction
+- **`penguin.cli`** - Command-line interface with TUI and performance monitoring
+- **`penguin.web`** - Web interface and REST API with programmatic access
 - **`penguin.project`** - SQLite-backed project and task management
-- **`penguin.core`** - Core engine and coordination layer
+- **`penguin.tools`** - Extensible tool ecosystem with lazy initialization
 - **`penguin.memory`** - Conversation and knowledge persistence
-- **`penguin.tools`** - Extensible tool ecosystem
+
+### Key Architecture Improvements
+
+- **Event-Driven Communication**: Real-time UI updates via comprehensive event system
+- **Checkpoint System**: Advanced conversation state management with branching
+- **Enhanced Streaming**: Real-time response streaming with callback compatibility
+- **Token Management**: Category-based budgeting with image optimization
+- **Fast Startup**: Deferred initialization for improved performance
+- **Provider Abstraction**: Multiple client handlers (native, LiteLLM, OpenRouter)
+- **Configuration Management**: Enhanced config resolution with live updates
 
 ## Contributing
 
