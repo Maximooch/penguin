@@ -420,7 +420,7 @@ class Config:
         diagnostics_config = DiagnosticsConfig(
             enabled=config_data.get("diagnostics", {}).get("enabled", False),
             max_context_tokens=config_data.get("diagnostics", {}).get(
-                "max_context_tokens", 200000
+                "max_context_tokens", 400000 # TODO: Possible culprit. Make this a default value in the config.yml
             ),
             log_to_file=config_data.get("diagnostics", {}).get("log_to_file", False),
             log_path=Path(config_data["diagnostics"]["log_path"]) if config_data.get("diagnostics", {}).get("log_path") else None
@@ -442,7 +442,7 @@ class Config:
         # --- Determine Model Config --- #
         default_model_settings = config_data.get("model", {})
         # Use model ID from config if present, else default from env/hardcoded
-        default_model_id = default_model_settings.get("default") or os.getenv("PENGUIN_DEFAULT_MODEL", "anthropic/claude-3-5-sonnet-20240620") 
+        default_model_id = default_model_settings.get("default") or os.getenv("PENGUIN_DEFAULT_MODEL", "anthropic/claude-3-5-sonnet-20240620") # This may be why it defaulted to this model and didn't work earlier.
         default_provider = default_model_settings.get("provider") or os.getenv("PENGUIN_DEFAULT_PROVIDER", "anthropic") 
         default_client_pref = default_model_settings.get("client_preference") or os.getenv("PENGUIN_CLIENT_PREFERENCE", "litellm")
 

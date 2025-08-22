@@ -2,7 +2,7 @@ include README.md
 include LICENSE
 include penguin/config.yml
 include penguin/requirements.txt
-recursive-include penguin *.yml *.yaml *.json *.txt *.md
+recursive-include penguin *.yml *.yaml *.json *.txt *.md *.css
 recursive-include penguin/workspace *.gitkeep
 recursive-exclude penguin/workspace/conversations *
 recursive-exclude penguin/workspace/memory_db *
