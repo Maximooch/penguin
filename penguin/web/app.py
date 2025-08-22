@@ -35,24 +35,14 @@ def _create_core() -> PenguinCore:
     try:
         # Create a proper Config object
         config_obj = Config.load_config()
-        
-        # Create ModelConfig from configuration
-        model_config = ModelConfig(
-            model=config["model"]["default"],
-            provider=config["model"]["provider"],
-            api_base=config["api"]["base_url"],
-            streaming_enabled=config["model"].get("streaming_enabled", True),
-            client_preference=config["model"].get("client_preference", "native"),
-            max_tokens=config["model"].get("max_tokens", 8000),
-            temperature=config["model"].get("temperature", 0.7),
-            enable_token_counting=config["model"].get("enable_token_counting", True),
-            vision_enabled=config["model"].get("vision_enabled", None)
-        )
+        model_config = config_obj.model_config
 
-        # Initialize components
+        # Initialize components using live Config-derived model_config
         api_client = APIClient(model_config=model_config)
         api_client.set_system_prompt(SYSTEM_PROMPT)
-        tool_manager = ToolManager(config, log_error)
+        # Pass a stable dict derived from live Config
+        config_dict = config_obj.to_dict() if hasattr(config_obj, 'to_dict') else {}
+        tool_manager = ToolManager(config_dict, log_error)
 
         # Create core with proper Config object
         core = PenguinCore(

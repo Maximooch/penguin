@@ -27,23 +27,13 @@ def init_core():
     try:
         # Create a proper Config object instead of using the raw dictionary
         config_obj = Config.load_config()
-        
-        # Create ModelConfig for the LLM with parameters from config dictionary
-        model_config = ModelConfig(
-            model=config["model"]["default"],
-            provider=config["model"]["provider"],
-            api_base=config["api"]["base_url"],
-            streaming_enabled=config["model"].get("streaming_enabled", True),
-            client_preference=config["model"].get("client_preference", "native"),  # 'native', 'litellm', or 'openrouter'
-            max_tokens=config["model"].get("max_tokens", 8000),
-            temperature=config["model"].get("temperature", 0.7),
-            enable_token_counting=config["model"].get("enable_token_counting", True),
-            vision_enabled=config["model"].get("vision_enabled", None)
-        )
+        model_config = config_obj.model_config
 
         api_client = APIClient(model_config=model_config)
         api_client.set_system_prompt(SYSTEM_PROMPT)
-        tool_manager = ToolManager(config, log_error)
+        # Use a dict derived from the live Config object
+        config_dict = config_obj.to_dict() if hasattr(config_obj, 'to_dict') else {}
+        tool_manager = ToolManager(config_dict, log_error)
 
         # Pass the proper Config object, not the raw dictionary
         core = PenguinCore(
