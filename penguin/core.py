@@ -302,7 +302,9 @@ class PenguinCore:
                     if progress_callback:
                         current_step_index += 1
                         progress_callback(current_step_index, total_steps, "Loading environment")
-                    load_dotenv()
+                    # load_dotenv() is already invoked centrally in config.py at import time.
+                    # Calling it again here is redundant and can subtly override earlier values.
+                    # Intentionally no-op.
                     if pbar: pbar.update(1)
                     log_step_time("Load environment")
 
@@ -351,18 +353,26 @@ class PenguinCore:
                     if progress_callback:
                         current_step_index += 1
                         progress_callback(current_step_index, total_steps, "Creating model config")
+                    # Source of truth for runtime model settings is the live Config.model_config.
+                    # Allow explicit overrides via function args for tests/CLI.
                     model_config = ModelConfig(
-                        model=model or config.model.get("default", DEFAULT_MODEL), # Use config.model.get
-                        provider=provider or config.model.get("provider", DEFAULT_PROVIDER),
-                        api_base=config.api.base_url if hasattr(config, 'api') and hasattr(config.api, 'base_url') else None, # Safe access
-                        use_assistants_api=config.model.get("use_assistants_api", False),
-                        client_preference=config.model.get("client_preference", "native"),
-                        streaming_enabled=config.model.get("streaming_enabled", True),
-                        # Use full context window when provided; fallback to legacy max_tokens
-                        max_tokens=(
-                            config.model.get("context_window")
-                            or config.model.get("max_tokens")
+                        model=(
+                            model
+                            or getattr(config.model_config, 'model', DEFAULT_MODEL)
                         ),
+                        provider=(
+                            provider
+                            or getattr(config.model_config, 'provider', DEFAULT_PROVIDER)
+                        ),
+                        api_base=(
+                            getattr(config.model_config, 'api_base', None)
+                            or (config.api.base_url if hasattr(config, 'api') and hasattr(config.api, 'base_url') else None)
+                        ),
+                        use_assistants_api=bool(getattr(config.model_config, 'use_assistants_api', False)),
+                        client_preference=getattr(config.model_config, 'client_preference', 'native'),
+                        streaming_enabled=bool(getattr(config.model_config, 'streaming_enabled', True)),
+                        # Generation cap should be the configured model's value; do not substitute context window here
+                        max_tokens=getattr(config.model_config, 'max_tokens', None),
                     )
                     logger.info(f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}")
                     if pbar: pbar.update(1)
@@ -394,11 +404,11 @@ class PenguinCore:
                     print(f"DEBUG: Passing config of type {type(config)} to ToolManager.")
                     print(f"DEBUG: Passing log_error of type {type(log_error)} to ToolManager.")
                     print(f"DEBUG: Fast startup mode: {fast_startup}")
-                    # Convert config to dict format for ToolManager
-                    # Use the global processed config dict instead of the dataclass __dict__
-                    # to ensure all configurations (especially memory) are properly passed
-                    from penguin.config import config as global_config_dict
-                    config_dict = global_config_dict if isinstance(global_config_dict, dict) else (config.__dict__ if hasattr(config, '__dict__') else config)
+                    # Provide ToolManager with a deterministic dict derived from the live Config
+                    try:
+                        config_dict = config.to_dict() if hasattr(config, 'to_dict') else {}
+                    except Exception:
+                        config_dict = {}
                     tool_manager = ToolManager(config_dict, log_error, fast_startup=fast_startup)
                     logger.info(f"STARTUP: Tool manager created in {time.time() - tool_manager_start:.4f}s with {len(tool_manager.tools) if hasattr(tool_manager, 'tools') else 'unknown'} tools")
                     if pbar: pbar.update(1)
@@ -418,7 +428,7 @@ class PenguinCore:
                         tool_manager=tool_manager, 
                         model_config=model_config
                     )
-                    logger.info(f"STARTUP: Core instance created in {core_start:.4f}s")
+                    logger.info(f"STARTUP: Core instance created in {time.time() - core_start:.4f}s")
                     if pbar: pbar.update(1)
                     log_step_time("Create core instance")
 
@@ -491,6 +501,22 @@ class PenguinCore:
 
         # Set system prompt from import
         self.system_prompt = SYSTEM_PROMPT
+
+        # Initialize streaming primitives immediately (before Engine/handlers can use them)
+        self.current_stream = None
+        self.stream_lock = asyncio.Lock()
+        self._streaming_state = {
+            "active": False,
+            "content": "",
+            "reasoning_content": "",
+            "message_type": None,
+            "role": None,
+            "metadata": {},
+            "started_at": None,
+            "last_update": None,
+            "empty_response_count": 0,
+            "error": None,
+        }
 
         # Initialize project manager with workspace path from config
         from penguin.config import WORKSPACE_PATH
@@ -591,33 +617,25 @@ class PenguinCore:
         # Add an accumulated token counter
         self.accumulated_tokens = {"prompt": 0, "completion": 0, "total": 0}
 
-        # Disable LiteLLM debugging
-        try:
-            from litellm import _logging # type: ignore
-            _logging._disable_debugging()
-            # Also set these to be safe
-            import litellm # type: ignore
-            litellm.set_verbose = False
-            litellm.drop_params = False
-        except Exception as e:
-            logger.warning(f"Failed to disable LiteLLM debugging: {e}")
+        # Defer LiteLLM configuration until first use to avoid import overhead
+        self._litellm_configured = False
 
-        # Add these attributes
-        self.current_stream = None
-        self.stream_lock = asyncio.Lock()
+    def _ensure_litellm_configured(self):
+        """Configure LiteLLM on first use to avoid import time overhead."""
+        if not self._litellm_configured:
+            try:
+                from litellm import _logging # type: ignore
+                _logging._disable_debugging()
+                # Also set these to be safe
+                import litellm # type: ignore
+                litellm.set_verbose = False
+                litellm.drop_params = False
+                self._litellm_configured = True
+            except Exception as e:
+                logger.warning(f"Failed to disable LiteLLM debugging: {e}")
+                self._litellm_configured = True  # Don't try again
 
-        # Initialize streaming state management
-        self._streaming_state = {
-            "active": False,
-            "content": "",
-            "message_type": None,
-            "role": None,
-            "metadata": {},
-            "started_at": None,
-            "last_update": None,
-            "empty_response_count": 0,
-            "error": None
-        }
+        # Streaming primitives are initialized in __init__ now
         self.current_runmode_status_summary: str = "RunMode idle."
 
     def validate_path(self, path: Path):

@@ -93,37 +93,20 @@ except ImportError as exc:  # pragma: no cover – only trips in broken installs
                 "ensure optional dependencies are installed."
             )
 
-# Project management exports
-from .project import ProjectManager, Project, Task
+# Project management exports - lazy load to avoid import overhead
+# from .project import ProjectManager, Project, Task
 
-# Checkpoint management exports
-try:
-    from .system.checkpoint_manager import CheckpointManager, CheckpointConfig, CheckpointType, CheckpointMetadata
-    _checkpoint_exports = ["CheckpointManager", "CheckpointConfig", "CheckpointType", "CheckpointMetadata"]
-except ImportError:
-    _checkpoint_exports = []
+# Checkpoint management exports - lazy load
+_checkpoint_exports = ["CheckpointManager", "CheckpointConfig", "CheckpointType", "CheckpointMetadata"]
 
-# Model configuration exports
-try:
-    from .llm.model_config import ModelConfig
-    _model_exports = ["ModelConfig"]
-except ImportError:
-    _model_exports = []
+# Model configuration exports - lazy load  
+_model_exports = ["ModelConfig"]
 
-# System diagnostics exports
-try:
-    from .system.conversation_manager import ConversationManager
-    from .system.state import Session, Message, MessageCategory
-    _system_exports = ["ConversationManager", "Session", "Message", "MessageCategory"]
-except ImportError:
-    _system_exports = []
+# System diagnostics exports - lazy load
+_system_exports = ["ConversationManager", "Session", "Message", "MessageCategory"]
 
-# API client exports
-try:
-    from .api_client import PenguinClient, ChatOptions, TaskOptions, CheckpointInfo, ModelInfo, create_client
-    _api_client_exports = ["PenguinClient", "ChatOptions", "TaskOptions", "CheckpointInfo", "ModelInfo", "create_client"]
-except ImportError:
-    _api_client_exports = []
+# API client exports - lazy load
+_api_client_exports = ["PenguinClient", "ChatOptions", "TaskOptions", "CheckpointInfo", "ModelInfo", "create_client"]
 
 # Version info
 __version__ = "0.3.2.2"
@@ -189,6 +172,113 @@ def _get_optional_exports():
     return optional
 
 # Extend public API with available optional components
-_optional_exports = _get_optional_exports()
-__all__.extend(_optional_exports.keys())
-globals().update(_optional_exports)
+# Don't load optional exports at import time - use lazy loading instead
+_optional_exports = {}
+
+def __getattr__(name):
+    """Lazy loading for optional exports to avoid import overhead."""
+    if name in _optional_exports:
+        return _optional_exports[name]
+    
+    # Try to load project management exports
+    if name in ['ProjectManager', 'Project', 'Task']:
+        try:
+            from .project import ProjectManager, Project, Task
+            _optional_exports.update({
+                "ProjectManager": ProjectManager,
+                "Project": Project,
+                "Task": Task,
+            })
+            if name in _optional_exports:
+                return _optional_exports[name]
+        except ImportError:
+            pass
+    
+    # Try to load checkpoint management exports
+    if name in _checkpoint_exports:
+        try:
+            from .system.checkpoint_manager import CheckpointManager, CheckpointConfig, CheckpointType, CheckpointMetadata
+            _optional_exports.update({
+                "CheckpointManager": CheckpointManager,
+                "CheckpointConfig": CheckpointConfig,
+                "CheckpointType": CheckpointType,
+                "CheckpointMetadata": CheckpointMetadata,
+            })
+            if name in _optional_exports:
+                return _optional_exports[name]
+        except ImportError:
+            pass
+    
+    # Try to load model configuration exports
+    if name in _model_exports:
+        try:
+            from .llm.model_config import ModelConfig
+            _optional_exports.update({
+                "ModelConfig": ModelConfig,
+            })
+            if name in _optional_exports:
+                return _optional_exports[name]
+        except ImportError:
+            pass
+    
+    # Try to load system diagnostics exports
+    if name in _system_exports:
+        try:
+            from .system.conversation_manager import ConversationManager
+            from .system.state import Session, Message, MessageCategory
+            _optional_exports.update({
+                "ConversationManager": ConversationManager,
+                "Session": Session,
+                "Message": Message,
+                "MessageCategory": MessageCategory,
+            })
+            if name in _optional_exports:
+                return _optional_exports[name]
+        except ImportError:
+            pass
+    
+    # Try to load API client exports
+    if name in _api_client_exports:
+        try:
+            from .api_client import PenguinClient, ChatOptions, TaskOptions, CheckpointInfo, ModelInfo, create_client
+            _optional_exports.update({
+                "PenguinClient": PenguinClient,
+                "ChatOptions": ChatOptions,
+                "TaskOptions": TaskOptions,
+                "CheckpointInfo": CheckpointInfo,
+                "ModelInfo": ModelInfo,
+                "create_client": create_client,
+            })
+            if name in _optional_exports:
+                return _optional_exports[name]
+        except ImportError:
+            pass
+    
+    # Try to load CLI exports
+    if name in ['PenguinCLI', 'get_cli_app']:
+        try:
+            from .cli import PenguinCLI, get_cli_app
+            _optional_exports.update({
+                "PenguinCLI": PenguinCLI,
+                "get_cli_app": get_cli_app,
+            })
+            if name in _optional_exports:
+                return _optional_exports[name]
+        except ImportError:
+            pass
+    
+    # Try to load web exports  
+    if name in ['create_app', 'PenguinAPI', 'PenguinWeb']:
+        try:
+            from .web import create_app, PenguinAPI, PenguinWeb
+            _optional_exports.update({
+                "create_app": create_app,
+                "PenguinAPI": PenguinAPI,
+                "PenguinWeb": PenguinWeb,
+            })
+            if name in _optional_exports:
+                return _optional_exports[name]
+        except ImportError:
+            pass
+    
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")

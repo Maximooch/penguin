@@ -47,7 +47,7 @@ The following global flags can be combined with either interactive or non-intera
 | `--run <TASK_NAME>`     | Execute a stored task in autonomous **run-mode** |
 | `--247 / --continuous`  | Keep run-mode running continuously until interrupted |
 | `--time-limit <MIN>`    | Set a time limit for run-mode |
-| `--version/-v`          | Print Penguin version and exit |
+| `--version/-V`          | Print Penguin version and exit |
 
 ---
 
@@ -96,14 +96,16 @@ Manage the Penguin configuration file and first-run setup wizard.
 
 ## Examples
 ```bash
-# Create a project and a task, then start the task interactively
+# Create a project and a task, then start the task
 penguin project create "Demo" -d "Playground project"
-PROJECT_ID=$(penguin project list --json | jq -r '.[0].ID')
 
-penguin project task create "$PROJECT_ID" "Research llama-models"
-TASK_ID=$(penguin project task list $PROJECT_ID --json | jq -r '.[0].ID')
+# List projects and copy the ID from the table
+penguin project list
 
-penguin project task start $TASK_ID
+# Create and start a task (replace <PROJECT_ID> and <TASK_ID>)
+penguin project task create <PROJECT_ID> "Research llama models"
+penguin project task list <PROJECT_ID>
+penguin project task start <TASK_ID>
 ```
 
 ---
@@ -113,6 +115,6 @@ Earlier versions of the docs referenced commands such as `penguin memory`, `peng
 
 ---
 
-*Last updated: June 13th 2025*  
+*Last updated: August 22nd 2025*  
 Please open an issue on GitHub if you find any inaccuracies.
 
