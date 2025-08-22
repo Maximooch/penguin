@@ -76,7 +76,8 @@ class ConversationManager:
         # Token window manager for content trimming
         self.context_window = ContextWindowManager(
             model_config=model_config,
-            api_client=api_client
+            api_client=api_client,
+            config_obj=self._get_live_config()
         )
         logger.info(f"Context window initialized with max tokens: {self.context_window.max_tokens}")
         
@@ -121,6 +122,19 @@ class ConversationManager:
         self.context_loader = SimpleContextLoader(
             context_manager=self.conversation
         )
+
+    def _get_live_config(self):
+        """Best-effort accessor for the live Config instance used by Core.
+        Falls back to None if unavailable (e.g., tests).
+        """
+        try:
+            # PenguinCore passes a Config instance to ConversationManager via the core
+            # but not directly stored here; when available through the backref, use it.
+            if hasattr(self, 'core') and getattr(self, 'core') and hasattr(self.core, 'config'):
+                return self.core.config
+        except Exception:
+            pass
+        return None
         
         # Load core context files
         loaded_files = self.context_loader.load_core_context()

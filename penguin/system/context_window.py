@@ -54,7 +54,8 @@ class ContextWindowManager:
         self,
         model_config = None,
         token_counter: Optional[Callable[[Any], int]] = None,
-        api_client=None
+        api_client=None,
+        config_obj: Optional[Any] = None,
     ):
         """
         Initialize the context window manager.
@@ -71,7 +72,21 @@ class ContextWindowManager:
             self.max_tokens = model_config.max_tokens
             logger.info(f"Using model's max_tokens: {self.max_tokens}")
         
-        # Try to load from config.yml if available
+        # Prefer values coming from the live Config instance when provided
+        if config_obj is not None:
+            try:
+                cw_from_config = None
+                # Prefer a dedicated max_history_tokens (context capacity) when present
+                if hasattr(config_obj, 'model_config') and hasattr(config_obj.model_config, 'max_history_tokens'):
+                    cw_from_config = config_obj.model_config.max_history_tokens
+                # Upgrade only if larger
+                if cw_from_config and cw_from_config > self.max_tokens:
+                    self.max_tokens = cw_from_config
+                    logger.info(f"Using live Config max_history_tokens: {self.max_tokens}")
+            except Exception as e:
+                logger.warning(f"Failed to read context window from live Config: {e}")
+
+        # Try to load from module-level config as a last resort (legacy path)
         try:
             from penguin.config import config
             if 'model_configs' in config:
@@ -81,12 +96,17 @@ class ContextWindowManager:
                     if config_max_tokens:
                         self.max_tokens = config_max_tokens
                         logger.info(f"Using config.yml max_tokens for {model_name}: {self.max_tokens}")
-            # Prefer global model.context_window if present
+            # Prefer global model.context_window if present. Do not downgrade the
+            # window if model_config already provides a larger, authoritative value
+            # (e.g., fetched from model specs). Use the larger of the two.
             if 'model' in config and isinstance(config['model'], dict):
                 cw = config['model'].get('context_window')
                 if cw:
-                    self.max_tokens = cw
-                    logger.info(f"Using global context_window from config.yml: {self.max_tokens}")
+                    if self.max_tokens and cw > self.max_tokens:
+                        self.max_tokens = cw
+                        logger.info(f"Using global context_window from config.yml (upgraded): {self.max_tokens}")
+                    else:
+                        logger.info(f"Retaining model's max_tokens ({self.max_tokens}); global context_window={cw} not larger")
         except (ImportError, AttributeError) as e:
             logger.warning(f"Could not load config.yml for max_tokens: {e}")
 
