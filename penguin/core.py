@@ -497,7 +497,7 @@ class PenguinCore:
         
         # Add event system
         self.ui_subscribers: List[EventHandler] = []
-        self.event_types: Set[str] = {"stream_chunk", "token_update", "message", "status", "error"}
+        self.event_types: Set[str] = {"stream_chunk", "token_update", "message", "status", "error", "action", "action_result"}
 
         # Set system prompt from import
         self.system_prompt = SYSTEM_PROMPT
