@@ -661,8 +661,9 @@ class OpenRouterGateway:
             choice = data.get("choices", [{}])[0]
             message = choice.get("message", {})
             
-            content = message.get("content", "")
-            reasoning = message.get("reasoning", "")
+            # Some providers include keys with explicit None values; coalesce to empty strings
+            content = message.get("content") or ""
+            reasoning = message.get("reasoning") or ""
             
             # If we have reasoning and a callback, emit it
             if reasoning and stream_callback:
