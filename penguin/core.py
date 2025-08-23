@@ -497,7 +497,20 @@ class PenguinCore:
         
         # Add event system
         self.ui_subscribers: List[EventHandler] = []
-        self.event_types: Set[str] = {"stream_chunk", "token_update", "message", "status", "error", "action", "action_result"}
+        # Allowed UI event types – expanded to include action/tool events emitted
+        # by the Engine/RunMode so the TUI can consume them without warnings.
+        self.event_types: Set[str] = {
+            "stream_chunk",
+            "token_update",
+            "message",
+            "status",
+            "error",
+            # Additional structured events used across the app
+            "action",
+            "action_result",
+            "tool_call",
+            "tool_result",
+        }
 
         # Set system prompt from import
         self.system_prompt = SYSTEM_PROMPT
@@ -516,6 +529,9 @@ class PenguinCore:
             "last_update": None,
             "empty_response_count": 0,
             "error": None,
+            # Coalescing buffer to avoid per-token UI updates
+            "emit_buffer": "",
+            "last_emit_ts": 0.0,
         }
 
         # Initialize project manager with workspace path from config
@@ -1937,26 +1953,57 @@ class PenguinCore:
         
         # Handle different message types
         if message_type == "reasoning":
-            # Track reasoning separately
+            # Track reasoning separately and emit immediately (it's lightweight)
             self._streaming_state["reasoning_content"] += chunk
-        else:
-            # Regular content
-            self._streaming_state["content"] += chunk
+            self._streaming_state["last_update"] = now
+            await self.emit_ui_event("stream_chunk", {
+                "stream_id": self._streaming_state.get("id"),
+                "chunk": chunk,
+                "is_final": False,
+                "message_type": message_type,
+                "role": role,
+                "content_so_far": self._streaming_state["content"],
+                "reasoning_so_far": self._streaming_state.get("reasoning_content", ""),
+                "metadata": self._streaming_state["metadata"],
+                "is_reasoning": True,
+            })
+            return
         
+        # Regular assistant content – append and coalesce tiny bursts to avoid
+        # token-by-token UI updates in RunMode.
+        self._streaming_state["content"] += chunk
         self._streaming_state["last_update"] = now
-        
-        # Emit event to UI subscribers - this is the ONLY way chunks are distributed
-        await self.emit_ui_event("stream_chunk", {
-            "stream_id": self._streaming_state.get("id"),
-            "chunk": chunk,
-            "is_final": False,
-            "message_type": message_type,
-            "role": role,
-            "content_so_far": self._streaming_state["content"],
-            "reasoning_so_far": self._streaming_state.get("reasoning_content", ""),
-            "metadata": self._streaming_state["metadata"],
-            "is_reasoning": message_type == "reasoning",
-        })
+
+        # Coalescing thresholds
+        try:
+            import time as _time
+            ts_now = _time.monotonic()
+        except Exception:
+            ts_now = 0.0
+        buf: str = self._streaming_state.get("emit_buffer", "") + chunk
+        last_ts: float = float(self._streaming_state.get("last_emit_ts", 0.0))
+        min_interval = 0.04  # ~25 fps
+        min_chars = 12       # small bursts
+
+        should_emit = (len(buf) >= min_chars) or (last_ts == 0.0) or ((ts_now - last_ts) >= min_interval)
+        if should_emit:
+            # Emit buffered chunk
+            await self.emit_ui_event("stream_chunk", {
+                "stream_id": self._streaming_state.get("id"),
+                "chunk": buf,
+                "is_final": False,
+                "message_type": message_type,
+                "role": role,
+                "content_so_far": self._streaming_state["content"],
+                "reasoning_so_far": self._streaming_state.get("reasoning_content", ""),
+                "metadata": self._streaming_state["metadata"],
+                "is_reasoning": False,
+            })
+            self._streaming_state["emit_buffer"] = ""
+            self._streaming_state["last_emit_ts"] = ts_now
+        else:
+            # Keep buffering until threshold; defer UI emission
+            self._streaming_state["emit_buffer"] = buf
 
         if chunk and self._streaming_state["content"].endswith(chunk):
             return          # suppress prefix-repeat
@@ -2046,6 +2093,24 @@ class PenguinCore:
                 # handled above; UI just needs the final `stream_chunk` with
                 # `is_final=True` which we emit later.
 
+        # Flush any residual coalesced buffer before the final event so the UI
+        # doesn't miss the tail end of the message.
+        try:
+            pending = self._streaming_state.get("emit_buffer", "")
+            if pending:
+                asyncio.create_task(self.emit_ui_event("stream_chunk", {
+                    "stream_id": self._streaming_state.get("id"),
+                    "chunk": pending,
+                    "is_final": False,
+                    "message_type": "assistant",
+                    "role": self._streaming_state["role"],
+                    "content_so_far": self._streaming_state["content"],
+                    "reasoning_so_far": reasoning_content,
+                    "metadata": final_message["metadata"],
+                }))
+        except Exception:
+            pass
+
         # Emit final streaming event with is_final=True
         asyncio.create_task(self.emit_ui_event("stream_chunk", {
             "stream_id": self._streaming_state.get("id"),
@@ -2069,7 +2134,9 @@ class PenguinCore:
             "started_at": None,
             "last_update": None,
             "empty_response_count": 0,
-            "error": None
+            "error": None,
+            "emit_buffer": "",
+            "last_emit_ts": 0.0,
         }
         
         return final_message
