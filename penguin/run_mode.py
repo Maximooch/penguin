@@ -773,14 +773,25 @@ class RunMode:
 
                     if new_part:
                         # Forward the *new* part to Core so that the UI receives a
-                        # single, de-duplicated stream of text chunks.
-                        # Tag as "assistant" to align with the rest of the streaming pipeline
-                        # (TUI uses message_type to distinguish reasoning vs assistant content).
+                        # single, de-duplicated stream of text chunks. Use the
+                        # standard "assistant" message_type so downstream renderers
+                        # (TUI/web) treat this as primary assistant content rather
+                        # than an opaque "text" subtype.
                         try:
                             await self.core._handle_stream_chunk(new_part, message_type="assistant", role="assistant")
                         except Exception:
                             pass  # Never break RunMode on UI errors
                     return  # Assistant handled – skip further processing
+
+                # ------------------------------------------------------------------
+                # 1b. Reasoning stream – route via Core so TUI renders sidebar
+                # ------------------------------------------------------------------
+                if message_type == "reasoning":
+                    try:
+                        await self.core._handle_stream_chunk(message, message_type="reasoning", role="assistant")
+                    except Exception:
+                        pass
+                    return
 
                 # ------------------------------------------------------------------
                 # 2. Tool output, errors, system notes – emit as regular events
