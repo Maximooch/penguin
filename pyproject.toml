@@ -79,6 +79,7 @@ web = [
     "uvicorn>=0.15.0",
     "websockets>=10.0",
     "jinja2>=3.0.0",
+    "python-multipart>=0.0.7",
 ]
 
 # Minimal install for library/embedding usage (overrides default dependencies)

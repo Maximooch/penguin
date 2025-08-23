@@ -1306,12 +1306,24 @@ class PenguinCore:
                         async def _combined_stream_callback(chunk: str, message_type: str = "assistant"):
                             # Update internal streaming handling
                             await self._handle_stream_chunk(chunk, message_type=message_type)
-                            # Forward to external callback (supports sync or async functions)
+                            # Forward to external callback, preserving message_type when supported
                             try:
+                                import inspect
+                                params = []
+                                try:
+                                    params = list(inspect.signature(stream_callback).parameters.keys())
+                                except Exception:
+                                    params = []
                                 if asyncio.iscoroutinefunction(stream_callback):
-                                    await stream_callback(chunk)
+                                    if len(params) >= 2:
+                                        await stream_callback(chunk, message_type)
+                                    else:
+                                        await stream_callback(chunk)
                                 else:
-                                    await asyncio.to_thread(stream_callback, chunk)
+                                    if len(params) >= 2:
+                                        await asyncio.to_thread(stream_callback, chunk, message_type)
+                                    else:
+                                        await asyncio.to_thread(stream_callback, chunk)
                             except Exception as cb_err:
                                 logger.error(f"Error in external stream_callback: {cb_err}")
                         engine_stream_callback = _combined_stream_callback
