@@ -24,6 +24,7 @@ class MessageRequest(BaseModel):
     streaming: Optional[bool] = True
     max_iterations: Optional[int] = 5
     image_path: Optional[str] = None
+    include_reasoning: Optional[bool] = False
 
 class StreamResponse(BaseModel):
     id: str
@@ -80,6 +81,22 @@ router = APIRouter()
 
 async def get_core():
     return router.core
+
+
+@router.get("/api/v1/health")
+async def health():
+    """Basic health probe."""
+    return {"status": "healthy"}
+
+
+@router.get("/api/v1/system-info")
+async def system_info(core: PenguinCore = Depends(get_core)):
+    """Return core system information."""
+    try:
+        return core.get_system_info()
+    except Exception as e:
+        logger.error(f"system-info error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/api/v1/chat/message")
@@ -142,12 +159,12 @@ async def stream_chat(
         BUFFER_TIMEOUT = 0.1 # Or send after this many seconds of inactivity
 
         while True:
-            token = None
+            item = None
             try:
                 # Wait for a token with a timeout
-                token = await asyncio.wait_for(queue.get(), timeout=BUFFER_TIMEOUT)
+                item = await asyncio.wait_for(queue.get(), timeout=BUFFER_TIMEOUT)
 
-                if token is None: # Sentinel value to stop
+                if item is None: # Sentinel value to stop
                     logger.debug("[Sender Task] Received stop signal.")
                     # Send any remaining buffer before stopping
                     if send_buffer:
@@ -157,10 +174,32 @@ async def stream_chat(
                     queue.task_done()
                     break
 
-                # Add token to buffer
-                send_buffer += token
-                queue.task_done()
-                logger.debug(f"[Sender Task] Added to buffer: '{token}'. Buffer size: {len(send_buffer)}")
+                # Handle dict payloads {token, type, include_reasoning}
+                if isinstance(item, dict):
+                    tkn = item.get("token", "")
+                    mtype = item.get("type", "assistant")
+                    inc_reason = bool(item.get("include_reasoning", False))
+
+                    if mtype == "reasoning":
+                        # Flush any pending assistant buffer before reasoning
+                        if send_buffer and inc_reason:
+                            await websocket.send_json({"event": "token", "data": {"token": send_buffer}})
+                            send_buffer = ""
+                        # Emit reasoning token only if requested
+                        if inc_reason and tkn:
+                            await websocket.send_json({"event": "reasoning", "data": {"token": tkn}})
+                        queue.task_done()
+                        continue
+                    else:
+                        # Regular assistant content – buffer and coalesce
+                        send_buffer += tkn
+                        queue.task_done()
+                        logger.debug(f"[Sender Task] Added to buffer: '{tkn}'. Buffer size: {len(send_buffer)}")
+                else:
+                    # Backward-compat: plain string token
+                    send_buffer += str(item)
+                    queue.task_done()
+                    logger.debug(f"[Sender Task] Added to buffer: '{item}'. Buffer size: {len(send_buffer)}")
 
                 # Send buffer if it reaches size threshold
                 if len(send_buffer) >= BUFFER_SEND_SIZE:
@@ -186,14 +225,7 @@ async def stream_chat(
 
         logger.info("[Sender Task] Exiting.")
 
-    # Define callback for streaming tokens - this will ONLY put tokens on the queue
-    async def stream_callback(token: str):
-        try:
-            logger.debug(f"[stream_callback] Putting token on queue: '{token}'")
-            await response_queue.put(token)
-        except Exception as e:
-            # Log error putting onto queue, but don't stop the main process
-            logger.error(f"[stream_callback] Error putting token on queue: {e}", exc_info=True)
+    # (per-request stream_callback is defined inside the loop to capture include_reasoning)
 
     try:
         # Start the sender task
@@ -211,6 +243,7 @@ async def stream_chat(
             context = data.get("context")
             max_iterations = data.get("max_iterations", 5)
             image_path = data.get("image_path")
+            include_reasoning = bool(data.get("include_reasoning", False))
 
             input_data = {"text": text}
             if image_path:
@@ -248,6 +281,17 @@ async def stream_chat(
                 # Run core.process as a task - NOTE: We don't await the *result* here immediately
                 # The stream_callback puts tokens on the queue for the sender_task
                 logger.info("Starting core.process...")
+                # Define a per-request callback that preserves message_type
+                async def per_request_stream_callback(chunk: str, message_type: str = "assistant"):
+                    try:
+                        await response_queue.put({
+                            "token": chunk,
+                            "type": message_type,
+                            "include_reasoning": include_reasoning
+                        })
+                    except Exception as e:
+                        logger.error(f"Error enqueuing stream chunk: {e}")
+
                 process_task = asyncio.create_task(core.process(
                     input_data=input_data,
                     conversation_id=conversation_id,
@@ -255,7 +299,7 @@ async def stream_chat(
                     context_files=context_files,
                     context=context,
                     streaming=True,
-                    stream_callback=stream_callback
+                    stream_callback=per_request_stream_callback
                 ))
 
                 # Wait for the core process to finish
@@ -283,13 +327,13 @@ async def stream_chat(
 
                 # Send final complete message AFTER sender is done
                 logger.info("Sending 'complete' event to client.")
-                await websocket.send_json({
-                    "event": "complete",
-                    "data": {
-                        "response": process_result.get("assistant_response", ""),
-                        "action_results": process_result.get("action_results", [])
-                    }
-                })
+                complete_payload = {
+                    "response": process_result.get("assistant_response", ""),
+                    "action_results": process_result.get("action_results", [])
+                }
+                if include_reasoning and hasattr(core, "_streaming_state"):
+                    complete_payload["reasoning"] = core._streaming_state.get("reasoning_content", "")
+                await websocket.send_json({"event": "complete", "data": complete_payload})
                 logger.info("Sent 'complete' event to client.")
 
             except Exception as process_err:
