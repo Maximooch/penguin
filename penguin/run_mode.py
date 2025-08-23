@@ -774,8 +774,10 @@ class RunMode:
                     if new_part:
                         # Forward the *new* part to Core so that the UI receives a
                         # single, de-duplicated stream of text chunks.
+                        # Tag as "assistant" to align with the rest of the streaming pipeline
+                        # (TUI uses message_type to distinguish reasoning vs assistant content).
                         try:
-                            await self.core._handle_stream_chunk(new_part, message_type="text", role="assistant")
+                            await self.core._handle_stream_chunk(new_part, message_type="assistant", role="assistant")
                         except Exception:
                             pass  # Never break RunMode on UI errors
                     return  # Assistant handled – skip further processing

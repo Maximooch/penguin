@@ -57,6 +57,7 @@ def main():
     test_scripts = [
         test_dir / "test_openrouter_fixes.py",
         test_dir / "test_action_tag_parser.py",
+        test_dir / "test_runmode_streaming.py",
         # Note: test_reasoning_models.py requires API key, run separately
     ]
     
