@@ -303,11 +303,8 @@ def get_workspace_root() -> Path:
 # Base paths
 PROJECT_ROOT = get_project_root()
 
-# Load config first to get workspace path
+# Load config first (without initializing diagnostics yet)
 config = load_config()
-
-# Initialize diagnostics after config is loaded
-init_diagnostics(config)
 
 # Use workspace path from config.yml (respecting environment variable and config file)
 WORKSPACE_PATH = get_workspace_root()
@@ -371,6 +368,9 @@ def substitute_path_variables(obj, paths):
 
 # Substitute path variables in the entire config
 config = substitute_path_variables(config, config['paths'])
+
+# Now that WORKSPACE_PATH is defined and paths resolved, initialize diagnostics
+init_diagnostics(config)
 
 # Avoid noisy stdout during normal startup; log at DEBUG level instead.
 logger.debug(f"Workspace path: {WORKSPACE_PATH}")
