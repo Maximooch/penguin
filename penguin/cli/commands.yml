@@ -269,6 +269,36 @@ commands:
         required: true
         description: "File path to load"
     handler: "_handle_context_load"
+  
+  - name: "context add"
+    category: chat
+    description: "Copy files into workspace context (supports glob). Use --workspace/--project"
+    handler: "_handle_context_add"
+    enabled: true
+  
+  - name: "context write"
+    category: chat
+    description: "Write text to a file under workspace context"
+    handler: "_handle_context_write"
+    enabled: true
+  
+  - name: "context edit"
+    category: chat
+    description: "Replace text in a workspace context file"
+    handler: "_handle_context_edit"
+    enabled: true
+  
+  - name: "context remove"
+    category: chat
+    description: "Remove a workspace context file"
+    handler: "_handle_context_remove"
+    enabled: true
+  
+  - name: "context note"
+    category: chat
+    description: "Create a markdown note in workspace context/notes"
+    handler: "_handle_context_note"
+    enabled: true
     
   - name: "context clear"
     category: chat

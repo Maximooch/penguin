@@ -3,8 +3,10 @@ import traceback
 import httpx # Added for making async HTTP requests # type: ignore
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Callable, Tuple, Awaitable
+import json
 from pathlib import Path
 import os
+import shutil
 
 import logging
 
@@ -361,6 +363,7 @@ class PenguinInterface:
             "task": self._handle_task_command,
             "project": self._handle_project_command,
             "run": self._handle_run_command,
+            "config": self._handle_config_command,
             "list": self._handle_list_command,
             "help": self._handle_help_command,
             "exit": self._handle_exit_command,
@@ -575,6 +578,99 @@ class PenguinInterface:
                 return {"error": f"Failed to get project status: {str(e)}"}
         return {"error": f"Unknown project command: {action}"}
 
+    async def _handle_config_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle configuration commands: list|get|set|add|remove
+
+        Usage examples:
+          /config list
+          /config get model.default
+          /config set model.temperature 0.4
+          /config add project.additional_directories "/opt/shared"
+          /config remove project.additional_directories "/opt/shared"
+          /config --global set model.default "openai/gpt-5"
+          /config --cwd /path/to/project get model.default
+        """
+        try:
+            if not args:
+                return {"error": "Missing config action (list|get|set|add|remove)"}
+
+            # Parse simple flags manually (order-independent for first few tokens)
+            scope = "project"
+            cwd_override: Optional[str] = None
+            tokens: List[str] = []
+            i = 0
+            while i < len(args):
+                tok = args[i]
+                if tok in ("--global", "-g", "global"):
+                    scope = "global"
+                    i += 1
+                    continue
+                if tok == "--cwd" and i + 1 < len(args):
+                    cwd_override = args[i + 1]
+                    i += 2
+                    continue
+                tokens.append(tok)
+                i += 1
+
+            if not tokens:
+                return {"error": "Missing config action after flags"}
+
+            action = tokens[0].lower()
+            key = tokens[1] if len(tokens) > 1 else None
+            raw_value = tokens[2] if len(tokens) > 2 else None
+
+            from penguin.config import (
+                load_config as _load_config,
+                set_config_value as _set_config_value,
+                get_config_value as _get_config_value,
+            )
+
+            if action == "list":
+                cfg = _load_config()
+                return {"status": "ok", "config": cfg}
+
+            if action == "get":
+                if not key:
+                    return {"error": "'get' requires a key"}
+                val = _get_config_value(key, default=None, cwd_override=cwd_override)
+                return {"status": "ok", "key": key, "value": val}
+
+            if action in ("set", "add", "remove"):
+                if not key:
+                    return {"error": f"'{action}' requires a key"}
+                if action == "set" and raw_value is None:
+                    return {"error": "'set' requires a value"}
+
+                # Attempt to parse JSON; fall back to string
+                parsed_val: Any = raw_value
+                if raw_value is not None:
+                    try:
+                        parsed_val = json.loads(raw_value)
+                    except Exception:
+                        parsed_val = raw_value
+
+                list_op = action if action in ("add", "remove") else None
+                written_path = _set_config_value(
+                    key,
+                    parsed_val,
+                    scope=scope,
+                    cwd_override=cwd_override,
+                    list_op=list_op,
+                )
+                return {
+                    "status": "ok",
+                    "action": action,
+                    "key": key,
+                    "value": parsed_val,
+                    "written": str(written_path),
+                    "scope": scope,
+                }
+
+            return {"error": "Unknown config action. Use list|get|set|add|remove"}
+
+        except Exception as e:
+            return {"error": f"Config command failed: {str(e)}"}
+
     async def _handle_run_command(self, args: List[str], 
                                   runmode_stream_cb: Optional[Callable[[str], Awaitable[None]]] = None, 
                                   runmode_ui_update_cb: Optional[Callable[[], Awaitable[None]]] = None) -> Dict[str, Any]:
@@ -771,28 +867,159 @@ class PenguinInterface:
             
     async def _handle_context_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle context file commands"""
-        if not args:
-            # List available context files
-            return {"context_files": self.core.list_context_files()}
-            
-        action = args[0].lower()
-        if action == "list":
-            return {"context_files": self.core.list_context_files()}
-        elif action == "load" and len(args) > 1:
-            file_path = args[1]
-            if not hasattr(self.core, 'conversation_manager') or \
-               not hasattr(self.core.conversation_manager, 'load_context_file'):
-                return {"error": "Context loading function not available in ConversationManager."}
-                
-            success = self.core.conversation_manager.load_context_file(file_path)
-            if success:
-                # After loading context, token usage might change
-                self.update_token_display()
-                return {"status": f"Loaded context file: {file_path}"}
-            else:
+        try:
+            if not args:
+                return {"context_files": self.core.list_context_files()}
+            action = args[0].lower()
+
+            # Basic list/load retained
+            if action == "list":
+                return {"context_files": self.core.list_context_files()}
+            if action == "load" and len(args) > 1:
+                file_path = args[1]
+                if not hasattr(self.core, 'conversation_manager') or \
+                   not hasattr(self.core.conversation_manager, 'load_context_file'):
+                    return {"error": "Context loading function not available in ConversationManager."}
+                success = self.core.conversation_manager.load_context_file(file_path)
+                if success:
+                    self.update_token_display()
+                    return {"status": f"Loaded context file: {file_path}"}
                 return {"error": f"Failed to load context file: {file_path}"}
-        
-        return {"error": f"Unknown context command: {action}"}
+
+            # New operations: add|write|edit|remove|note with flags
+            from penguin.config import WORKSPACE_PATH, load_config
+            from penguin.utils.path_utils import enforce_allowed_path
+
+            cfg = load_config()
+            scratch_rel = cfg.get('context', {}).get('scratchpad_dir', 'context')
+            workspace_context_dir = Path(WORKSPACE_PATH) / scratch_rel
+            workspace_context_dir.mkdir(parents=True, exist_ok=True)
+
+            if action == "add" and len(args) >= 2:
+                # /context add <path|glob> [--project|--workspace] [--as <name>]
+                src = args[1]
+                as_name = None
+                root_pref = 'project'
+                i = 2
+                while i < len(args):
+                    tok = args[i]
+                    if tok == "--workspace":
+                        root_pref = 'workspace'
+                        i += 1
+                        continue
+                    if tok == "--project":
+                        root_pref = 'project'
+                        i += 1
+                        continue
+                    if tok == "--as" and i + 1 < len(args):
+                        as_name = args[i + 1]
+                        i += 2
+                        continue
+                    i += 1
+
+                # Resolve source(s)
+                src_path = Path(src)
+                if not src_path.is_absolute():
+                    # Try treating as project-relative by default
+                    # Guard path according to root
+                    src_path = enforce_allowed_path(src_path, root_pref=root_pref)
+
+                matches = []
+                if any(ch in str(src_path) for ch in ['*', '?', '[']):
+                    matches = list(src_path.parent.glob(src_path.name))
+                else:
+                    matches = [src_path]
+                if not matches:
+                    return {"error": f"No files matched: {src}"}
+
+                copied = []
+                for m in matches:
+                    if not m.exists() or not m.is_file():
+                        continue
+                    dest_name = as_name or m.name
+                    dest = workspace_context_dir / dest_name
+                    shutil.copy2(m, dest)
+                    copied.append(str(dest))
+                return {"status": "ok", "copied": copied}
+
+            if action == "write" and len(args) >= 2:
+                # /context write <relpath> --body "text"
+                rel = args[1]
+                body = None
+                i = 2
+                while i < len(args):
+                    tok = args[i]
+                    if tok == "--body" and i + 1 < len(args):
+                        body = args[i + 1]
+                        i += 2
+                        continue
+                    i += 1
+                if body is None:
+                    return {"error": "Missing --body <text>"}
+                dest = workspace_context_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text(body, encoding='utf-8')
+                return {"status": "ok", "written": str(dest)}
+
+            if action == "edit" and len(args) >= 2:
+                # /context edit <relpath> --replace A --with B
+                rel = args[1]
+                repl_from = repl_to = None
+                i = 2
+                while i < len(args):
+                    tok = args[i]
+                    if tok == "--replace" and i + 1 < len(args):
+                        repl_from = args[i + 1]
+                        i += 2
+                        continue
+                    if tok == "--with" and i + 1 < len(args):
+                        repl_to = args[i + 1]
+                        i += 2
+                        continue
+                    i += 1
+                if repl_from is None or repl_to is None:
+                    return {"error": "Missing --replace and/or --with"}
+                dest = workspace_context_dir / rel
+                if not dest.exists():
+                    return {"error": f"File does not exist: {dest}"}
+                content = dest.read_text(encoding='utf-8')
+                content = content.replace(repl_from, repl_to)
+                dest.write_text(content, encoding='utf-8')
+                return {"status": "ok", "edited": str(dest)}
+
+            if action == "remove" and len(args) >= 2:
+                # /context remove <relpath>
+                rel = args[1]
+                dest = workspace_context_dir / rel
+                if not dest.exists():
+                    return {"error": f"File does not exist: {dest}"}
+                dest.unlink()
+                return {"status": "ok", "removed": str(dest)}
+
+            if action == "note" and len(args) >= 2:
+                # /context note "Title" --body "text"
+                title = args[1].strip().replace('/', '-').replace('..', '')
+                body = None
+                i = 2
+                while i < len(args):
+                    tok = args[i]
+                    if tok == "--body" and i + 1 < len(args):
+                        body = args[i + 1]
+                        i += 2
+                        continue
+                    i += 1
+                if body is None:
+                    return {"error": "Missing --body <text>"}
+                notes_dir = workspace_context_dir / 'notes'
+                notes_dir.mkdir(parents=True, exist_ok=True)
+                filename = f"{title}.md"
+                dest = notes_dir / filename
+                dest.write_text(body, encoding='utf-8')
+                return {"status": "ok", "note": str(dest)}
+
+            return {"error": f"Unknown context command: {action}"}
+        except Exception as e:
+            return {"error": f"Context command failed: {str(e)}"}
     
     async def _handle_model_command(self, args: List[str]) -> Dict[str, Any]:
         """Handles /model set command for manual model setting"""

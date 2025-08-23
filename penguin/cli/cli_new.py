@@ -99,6 +99,7 @@ def main(
     
     # Version
     version: bool = typer.Option(False, "--version", "-V", help="Show version and exit"),
+    cwd: Optional[Path] = typer.Option(None, "--cwd", help="Operate as if launched from this directory"),
 ):
     """Penguin AI - Intelligent coding assistant."""
     
@@ -123,6 +124,9 @@ def main(
     # Configure output/logging based on flags
     if no_color:
         os.environ["NO_COLOR"] = "1"
+    # Set explicit working directory for config/project root detection
+    if cwd is not None:
+        os.environ["PENGUIN_CWD"] = str(cwd.resolve())
     
     # Check for --old-cli first
     if old_cli:
@@ -292,6 +296,85 @@ def setup():
         console.print(f"[red]Setup failed:[/red] {e}", file=sys.stderr)
         sys.exit(EXIT_ERROR)
 
+
+@app.command()
+def config(
+    ctx: typer.Context,
+    action: str = typer.Argument(..., help="list|get|set|add|remove"),
+    key: Optional[str] = typer.Argument(None, help="Dot path key (for get/set/add/remove)"),
+    value: Optional[str] = typer.Argument(None, help="Value to set or add/remove"),
+    global_scope: bool = typer.Option(False, "-g", "--global", help="Operate on user config instead of project"),
+    output_format: str = typer.Option("text", "--output-format", help="text or json"),
+    cwd: Optional[Path] = typer.Option(None, "--cwd", help="Operate as if launched from this directory"),
+):
+    """Manage Penguin configuration (project/user)."""
+    lazy_imports()
+    console = Console()
+    try:
+        from penguin.config import (
+            load_config as _load_config,
+            set_config_value as _set_config_value,
+            get_config_value as _get_config_value,
+            get_user_config_path as _get_user_config_path,
+            get_project_config_paths as _get_project_config_paths,
+        )
+
+        scope = 'global' if global_scope else 'project'
+        cwd_str = str(cwd.resolve()) if cwd else os.environ.get('PENGUIN_CWD')
+
+        if action == 'list':
+            cfg = _load_config()
+            if output_format == 'json':
+                print(json.dumps(cfg, indent=2))
+            else:
+                console.print("[cyan]Effective configuration (merged):[/cyan]")
+                console.print(json.dumps(cfg, indent=2))
+            return
+
+        if action == 'get':
+            if not key:
+                console.print("[red]Error:[/red] 'get' requires a key")
+                raise typer.Exit(code=1)
+            val = _get_config_value(key, default=None, cwd_override=cwd_str)
+            if output_format == 'json':
+                print(json.dumps({"key": key, "value": val}, indent=2))
+            else:
+                console.print(f"{key} = {val!r}")
+            return
+
+        if action in ('set', 'add', 'remove'):
+            if not key:
+                console.print(f"[red]Error:[/red] '{action}' requires a key")
+                raise typer.Exit(code=1)
+            if action == 'set' and value is None:
+                console.print("[red]Error:[/red] 'set' requires a value")
+                raise typer.Exit(code=1)
+            # Try to parse JSON values when possible
+            parsed_val: Any = value
+            if value is not None:
+                try:
+                    parsed_val = json.loads(value)
+                except Exception:
+                    parsed_val = value
+            list_op = None
+            if action in ('add', 'remove'):
+                list_op = action
+            written_path = _set_config_value(key, parsed_val, scope=scope, cwd_override=cwd_str, list_op=list_op)
+            if output_format == 'json':
+                print(json.dumps({"status": "ok", "written": str(written_path), "action": action, "key": key, "value": parsed_val}, indent=2))
+            else:
+                console.print(f"[green]Updated[/green] {action} {key} -> {parsed_val!r} in {written_path}")
+            return
+
+        console.print("[red]Error:[/red] Unknown action. Use list|get|set|add|remove")
+        raise typer.Exit(code=1)
+
+    except Exception as e:
+        if output_format == 'json':
+            print(json.dumps({"status": "error", "error": str(e)}, indent=2))
+        else:
+            console.print(f"[red]Error:[/red] {e}", file=sys.stderr)
+        sys.exit(EXIT_ERROR)
 
 @app.command()
 def delegate(

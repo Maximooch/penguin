@@ -4,6 +4,7 @@ import io
 import os
 import traceback
 from pathlib import Path
+from penguin.utils.path_utils import enforce_allowed_path
 import glob
 import fnmatch
 import stat
@@ -32,9 +33,10 @@ def create_file(path: str, content: str = "") -> str:
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
 
-        with open(path, "w") as f:
+        safe_path = enforce_allowed_path(Path(path), root_pref='project')
+        with open(safe_path, "w") as f:
             f.write(content)
-        return f"File created successfully at {os.path.abspath(path)}"
+        return f"File created successfully at {os.path.abspath(safe_path)}"
     except Exception as e:
         return f"Error creating file: {str(e)}\nStack trace: {traceback.format_exc()}"
 
@@ -55,9 +57,10 @@ def generate_and_apply_diff(original_content, new_content, full_path, encoding):
         return "No changes detected."
 
     try:
-        with open(full_path, "w", encoding=encoding) as f:
+        safe_full = enforce_allowed_path(Path(full_path), root_pref='project')
+        with open(safe_full, "w", encoding=encoding) as f:
             f.write(new_content)
-        return f"Changes applied to {full_path}:\n" + "".join(diff)
+        return f"Changes applied to {safe_full}:\n" + "".join(diff)
     except Exception as e:
         return f"Error applying changes: {str(e)}"
 
@@ -69,15 +72,17 @@ def write_to_file(path, content):
     for encoding in encodings:
         try:
             if os.path.exists(full_path):
-                with open(full_path, encoding=encoding) as f:
+                safe_full = enforce_allowed_path(Path(full_path), root_pref='project')
+                with open(safe_full, encoding=encoding) as f:
                     original_content = f.read()
                 result = generate_and_apply_diff(
-                    original_content, content, full_path, encoding
+                    original_content, content, str(safe_full), encoding
                 )
             else:
-                with open(full_path, "w", encoding=encoding) as f:
+                safe_full = enforce_allowed_path(Path(full_path), root_pref='project')
+                with open(safe_full, "w", encoding=encoding) as f:
                     f.write(content)
-                result = f"New file created and content written to: {full_path}"
+                result = f"New file created and content written to: {safe_full}"
             # Return after successful write
             return result
         except (UnicodeEncodeError, UnicodeDecodeError):
@@ -93,7 +98,8 @@ def read_file(path):
     encodings = ["utf-8", "latin-1", "utf-16"]
     for encoding in encodings:
         try:
-            with open(full_path, encoding=encoding) as f:
+            safe_full = enforce_allowed_path(Path(full_path), root_pref='auto')
+            with open(safe_full, encoding=encoding) as f:
                 content = f.read()
             return content
         except UnicodeDecodeError:

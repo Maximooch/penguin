@@ -22,7 +22,7 @@ def run_test_script(script_path):
     try:
         # Run the script
         result = subprocess.run(
-            [sys.executable, str(script_path)], 
+            ["python", str(script_path)], 
             capture_output=True, 
             text=True,
             cwd=script_path.parent
@@ -59,6 +59,7 @@ def main():
         test_dir / "test_runmode_streaming.py",
         test_dir / "test_openrouter_fixes.py",
         test_dir / "test_action_tag_parser.py",
+        test_dir / "test_context_commands.py",
         # Note: test_reasoning_models.py requires API key, run separately
     ]
     
