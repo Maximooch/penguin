@@ -10,6 +10,7 @@ import stat
 import time
 import shutil
 from collections import defaultdict
+from typing import Optional
 
 from PIL import Image  # type: ignore
 
@@ -563,7 +564,7 @@ def _is_external_import(import_name):
     return any(import_name.startswith(pattern) for pattern in external_patterns)
 
 
-def apply_diff_to_file(file_path, diff_content, backup=True, workspace_path=None):
+def apply_diff_to_file(file_path, diff_content, backup=True, workspace_path=None, return_json=False):
     """
     Apply a unified diff to a file to make actual edits.
     This is for EDITING files, not just comparing them.
@@ -589,32 +590,94 @@ def apply_diff_to_file(file_path, diff_content, backup=True, workspace_path=None
             shutil.copy2(target_path, backup_path)
             print(f"Backup created: {backup_path}")
         
-        # Read original content
+        # Read original content without newline translation to detect CRLF
         try:
-            original_content = target_path.read_text(encoding='utf-8')
-        except UnicodeDecodeError:
-            for encoding in ['latin-1', 'utf-16']:
-                try:
-                    original_content = target_path.read_text(encoding=encoding)
-                    break
-                except UnicodeDecodeError:
-                    continue
-            else:
-                return f"Error: Unable to decode file with common encodings"
+            raw = target_path.read_bytes()
+            try:
+                original_content = raw.decode('utf-8')
+            except UnicodeDecodeError:
+                for encoding in ['latin-1', 'utf-16']:
+                    try:
+                        original_content = raw.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    return f"Error: Unable to decode file with common encodings"
+        except Exception as e:
+            return f"Error reading file: {str(e)}"
         
         # Parse and apply the diff
         try:
-            # Simple diff application - this handles unified diff format
             modified_content = _apply_unified_diff(original_content, diff_content)
-            
-            # Write modified content back
-            target_path.write_text(modified_content, encoding='utf-8')
-            
+
+            # If the patcher signals a failure, return that up
+            if isinstance(modified_content, dict) and modified_content.get("error"):
+                # Restore from backup if we created one
+                if backup:
+                    try:
+                        backup_path = target_path.with_suffix(target_path.suffix + '.bak')
+                        if backup_path.exists():
+                            shutil.copy2(backup_path, target_path)
+                    except Exception:
+                        pass
+                # Log failure details for reproduction
+                log_path = _log_diff_failure(file_path, diff_content, original_content, workspace_path)
+                err_msg = f"Error applying diff: {modified_content['error']}"
+                if log_path:
+                    err_msg += f" (logged at {log_path})"
+                return err_msg
+
+            # Write modified content back preserving original newline style if consistent
+            newline = None
+            if '\n' in original_content:
+                crlf_pairs = original_content.count('\r\n')
+                total_lf = original_content.count('\n')
+                lone_lf = total_lf - crlf_pairs
+                # Preserve CRLF if it is present and at least as common as lone LF
+                if crlf_pairs > 0 and crlf_pairs >= lone_lf:
+                    newline = '\r\n'
+            # write_text can't set newline directly; emulate by normalizing
+            if newline:
+                # Normalize by re-joining on target newline to avoid double substitutions
+                parts = modified_content.splitlines(keepends=False)
+                normed = newline.join(parts)
+                if modified_content.endswith('\n'):
+                    normed += newline
+                target_path.write_bytes(normed.encode('utf-8'))
+            else:
+                target_path.write_text(modified_content, encoding='utf-8')
+
             print(f"Diff applied successfully to: {target_path}")
-            return f"Successfully applied diff to {target_path}"
-            
+            if return_json:
+                import json
+                analysis = _analyze_diff(diff_content)
+                result = {
+                    "status": "success",
+                    "file": str(target_path),
+                    "newline_style": "CRLF" if newline == '\r\n' else "LF",
+                    "backup_created": bool(backup),
+                    "analysis": analysis,
+                }
+                return json.dumps(result)
+            else:
+                return f"Successfully applied diff to {target_path}"
+
         except Exception as e:
-            return f"Error applying diff: {str(e)}"
+            # Attempt to restore from backup
+            if backup:
+                try:
+                    backup_path = target_path.with_suffix(target_path.suffix + '.bak')
+                    if backup_path.exists():
+                        shutil.copy2(backup_path, target_path)
+                except Exception:
+                    pass
+            # Log unexpected failure
+            log_path = _log_diff_failure(file_path, diff_content, original_content, workspace_path)
+            msg = f"Error applying diff: {str(e)}"
+            if log_path:
+                msg += f" (logged at {log_path})"
+            return msg
         
     except Exception as e:
         return f"Error processing diff application: {str(e)}"
@@ -622,65 +685,232 @@ def apply_diff_to_file(file_path, diff_content, backup=True, workspace_path=None
 
 def _apply_unified_diff(original_content, diff_content):
     """
-    Apply a unified diff to content.
-    Properly handles line-based edits targeting specific lines.
+    Apply a unified diff to content with basic validation.
+
+    - Preserves line endings by operating on keepends=True sequences
+    - Validates context lines before applying changes
+    - Supports multiple hunks
+
+    Returns the modified content on success, or {'error': msg} on failure.
     """
     import re
-    
-    original_lines = original_content.splitlines()
-    diff_lines = diff_content.splitlines()
-    
-    # Parse unified diff chunks
-    chunks = []
-    current_chunk = None
-    
-    for line in diff_lines:
+
+    # Work with explicit line endings preserved
+    orig_lines = original_content.splitlines(keepends=True)
+    diff_lines = diff_content.splitlines(keepends=False)
+
+    # Reject multi-file patches (more than one file header in a single diff)
+    header_count = sum(1 for l in diff_lines if l.startswith('--- '))
+    if header_count > 1:
+        return {"error": "Multi-file patches are not supported by apply_diff_to_file"}
+
+    # Skip headers (---, +++) if present
+    idx = 0
+    while idx < len(diff_lines) and (diff_lines[idx].startswith('---') or diff_lines[idx].startswith('+++')):
+        idx += 1
+
+    # Parse hunks
+    hunks = []
+    while idx < len(diff_lines):
+        header = diff_lines[idx]
+        if not header.startswith('@@'):
+            # Skip non-hunk noise
+            idx += 1
+            continue
+        m = re.match(r"@@ -(?P<o_start>\d+)(?:,(?P<o_cnt>\d+))? \+(?P<n_start>\d+)(?:,(?P<n_cnt>\d+))? @@", header)
+        if not m:
+            return {"error": f"Invalid hunk header: {header}"}
+        o_start = int(m.group('o_start')) - 1
+        o_cnt = int(m.group('o_cnt') or '1')
+        # new range not used for application, but parsed for completeness
+
+        idx += 1
+        ops = []
+        while idx < len(diff_lines):
+            line = diff_lines[idx]
+            if line.startswith('@@'):
+                break
+            if line == r"\ No newline at end of file":
+                idx += 1
+                continue
+            if not line:
+                # Empty context line is valid; treat as space with empty
+                ops.append(('context', ''))
+                idx += 1
+                continue
+            tag = line[0]
+            content = line[1:]
+            if tag == ' ':
+                ops.append(('context', content))
+            elif tag == '+':
+                ops.append(('add', content))
+            elif tag == '-':
+                ops.append(('del', content))
+            else:
+                return {"error": f"Unexpected diff line: {line}"}
+            idx += 1
+        hunks.append((o_start, o_cnt, ops))
+
+    # Apply hunks
+    result = list(orig_lines)
+    for o_start, o_cnt, ops in reversed(hunks):
+        # Compute expected original slice from ops (context + deletions only)
+        expected_old = []
+        for typ, txt in ops:
+            if typ in ('context', 'del'):
+                # Re-add newline to align with keepends in orig_lines
+                expected_old.append(txt + '\n')
+        # Slice from original
+        old_slice = result[o_start:o_start + o_cnt]
+        # Compare ignoring trailing newline differences which diffs sometimes elide
+        def _norm(seq):
+            return [s.rstrip('\r\n') for s in seq]
+        if _norm(old_slice) != _norm(expected_old):
+            return {"error": "Context mismatch while applying diff (file changed since diff was generated)"}
+
+        # Build replacement slice (context + additions)
+        replacement = []
+        for typ, txt in ops:
+            if typ == 'context':
+                replacement.append(txt + '\n')
+            elif typ == 'add':
+                replacement.append(txt + '\n')
+            # deletions are omitted
+
+        result[o_start:o_start + o_cnt] = replacement
+
+    return ''.join(result)
+
+
+def _analyze_diff(diff_content: str) -> dict:
+    """Return a simple analysis dict: hunks, adds, dels, contexts."""
+    adds = dels = ctx = hunks = 0
+    for line in diff_content.splitlines():
         if line.startswith('@@'):
-            # Parse chunk header like @@ -1,4 +1,6 @@
-            match = re.match(r'@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@', line)
-            if match:
-                old_start = int(match.group(1)) - 1  # Convert to 0-based indexing
-                old_count = int(match.group(2)) if match.group(2) else 1
-                new_start = int(match.group(3)) - 1
-                new_count = int(match.group(4)) if match.group(4) else 1
-                
-                current_chunk = {
-                    'old_start': old_start,
-                    'old_count': old_count,
-                    'new_start': new_start,
-                    'new_count': new_count,
-                    'operations': []
-                }
-                chunks.append(current_chunk)
-        elif current_chunk is not None:
-            if line.startswith('-'):
-                current_chunk['operations'].append(('remove', line[1:]))
-            elif line.startswith('+'):
-                current_chunk['operations'].append(('add', line[1:]))
-            elif line.startswith(' '):
-                current_chunk['operations'].append(('context', line[1:]))
-    
-    # Apply chunks in reverse order to avoid index shifting issues
-    for chunk in reversed(chunks):
-        old_start = chunk['old_start']
-        old_count = chunk['old_count']
-        
-        # Build the replacement lines by processing operations sequentially
-        replacement_lines = []
-        
-        for operation, content in chunk['operations']:
-            if operation == 'context':
-                # Context lines are kept as-is
-                replacement_lines.append(content)
-            elif operation == 'add':
-                # Add lines are included in the replacement
-                replacement_lines.append(content)
-            # Remove lines are simply not included (they're deleted)
-        
-        # Replace the chunk in original content
-        original_lines[old_start:old_start + old_count] = replacement_lines
-    
-    return '\n'.join(original_lines)
+            hunks += 1
+        elif line.startswith('+') and not line.startswith('+++'):
+            adds += 1
+        elif line.startswith('-') and not line.startswith('---'):
+            dels += 1
+        elif line.startswith(' '):
+            ctx += 1
+    return {"hunks": hunks, "adds": adds, "dels": dels, "context": ctx}
+
+
+def _log_diff_failure(file_path: str, diff_content: str, original_content: str, workspace_path: str | None) -> str | None:
+    """Log failing diff and original content to errors_log/diffs; return path directory."""
+    try:
+        from datetime import datetime
+        base = Path(workspace_path or ".") / "errors_log" / "diffs"
+        base.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        dirp = base / f"failure_{ts}"
+        dirp.mkdir(parents=True, exist_ok=True)
+        (dirp / "target.txt").write_text(original_content, encoding="utf-8", errors="ignore")
+        (dirp / "patch.diff").write_text(diff_content, encoding="utf-8", errors="ignore")
+        (dirp / "file_path.txt").write_text(str(file_path), encoding="utf-8", errors="ignore")
+        return str(dirp)
+    except Exception:
+        return None
+
+
+def preview_unified_diff(diff_content: str) -> str:
+    """Produce a human-friendly summary of a unified diff's hunks and line ops."""
+    a = _analyze_diff(diff_content)
+    parts = [
+        "Diff preview:",
+        f"  hunks: {a['hunks']}",
+        f"  additions: {a['adds']}",
+        f"  deletions: {a['dels']}",
+        f"  context: {a['context']}",
+    ]
+    return "\n".join(parts)
+
+
+def _split_multifile_unified_patch(patch_text: str) -> list[dict]:
+    """Split a unified diff containing multiple file patches into parts.
+
+    Returns a list of { 'from': from_path, 'to': to_path, 'content': file_patch_text }.
+    """
+    lines = patch_text.splitlines()
+    parts = []
+    i = 0
+    current = None
+    buf = []
+    from_path = to_path = None
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith('--- '):
+            # flush previous
+            if buf and from_path is not None and to_path is not None:
+                parts.append({'from': from_path, 'to': to_path, 'content': "\n".join(buf) + "\n"})
+                buf = []
+                from_path = to_path = None
+            from_path = line[4:].strip()
+            buf.append(line)
+            # expect +++ next
+            if i + 1 < len(lines) and lines[i + 1].startswith('+++ '):
+                i += 1
+                to_path = lines[i][4:].strip()
+                buf.append(lines[i])
+            else:
+                # malformed but continue collecting
+                pass
+        else:
+            buf.append(line)
+        i += 1
+    if buf and from_path is not None and to_path is not None:
+        parts.append({'from': from_path, 'to': to_path, 'content': "\n".join(buf) + "\n"})
+    return parts
+
+
+def _strip_prefix(path_str: str) -> str:
+    # Drop common diff prefixes like a/ and b/
+    if path_str.startswith('a/') or path_str.startswith('b/'):
+        return path_str[2:]
+    return path_str
+
+
+def apply_unified_patch(patch_text: str, workspace_path: Optional[str] = None, backup: bool = True, return_json: bool = False) -> str:
+    """Apply a unified patch that may contain multiple files.
+
+    Performs best-effort transactional behavior: if any file fails, previously-applied
+    files are restored from their backups.
+    """
+    file_patches = _split_multifile_unified_patch(patch_text)
+    if not file_patches:
+        return "Error applying diff: No file patches found"
+
+    applied = []
+    results = []
+    for fp in file_patches:
+        to_path = _strip_prefix(fp['to'])
+        # Resolve target path
+        target = Path(to_path)
+        if not target.is_absolute():
+            base = Path(workspace_path or ".")
+            target = (base / to_path).resolve()
+        # Apply
+        res = apply_diff_to_file(str(target), fp['content'], backup=backup, workspace_path=workspace_path, return_json=return_json)
+        results.append(res)
+        if isinstance(res, str) and res.startswith("Error applying diff"):
+            # rollback previously applied files
+            for prev in applied:
+                try:
+                    p = Path(prev)
+                    bak = p.with_suffix(p.suffix + '.bak')
+                    if bak.exists():
+                        shutil.copy2(bak, p)
+                except Exception:
+                    pass
+            return res
+        else:
+            applied.append(str(target))
+
+    if return_json:
+        import json
+        return json.dumps({"status": "success", "files": applied})
+    return f"Successfully applied patch to {len(applied)} file(s)"
 
 
 def generate_diff_patch(original_content, new_content, file_path="file"):
