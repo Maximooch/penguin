@@ -26,72 +26,244 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent
 
 def load_config():
-    """Load configuration from config.yml, checking multiple locations."""
-    
-    # Priority order for config file locations:
-    # 1. Explicit environment variable override
-    # 2. User config directory (cross-platform)
-    # 3. Development config (if running from source)
-    # 4. Package default config (fallback)
-    
-    config_paths = []
-    
-    # 1. Environment variable override
-    if os.getenv('PENGUIN_CONFIG_PATH'):
-        config_paths.append(Path(os.getenv('PENGUIN_CONFIG_PATH')))
-    
-    # 2. User config directory (same logic as setup wizard)
+    """Load configuration by merging multiple locations with clear precedence.
+
+    Precedence (lowest → highest):
+      1. Package default (penguin/penguin/config.yml)
+      2. Development repo default (repo_root/penguin/config.yml)
+      3. User config (~/.config/penguin/config.yml or %APPDATA%/penguin/config.yml)
+      4. Project config (<project_root>/.penguin/config.yml)
+      5. Project local overrides (<project_root>/.penguin/settings.local.yml)
+      6. Explicit override via PENGUIN_CONFIG_PATH (highest single-file override)
+
+    Note: Enterprise-managed policy layer can be added above these in future.
+    """
+
+    def deep_merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+        for key, value in (override or {}).items():
+            if isinstance(value, dict) and isinstance(base.get(key), dict):
+                base[key] = deep_merge_dicts(dict(base.get(key, {})), value)
+            else:
+                base[key] = value
+        return base
+
+    # 0) Start with empty config
+    merged: Dict[str, Any] = {}
+
+    # 1) Package default
+    package_config_path = Path(__file__).parent / "config.yml"
+    try:
+        if package_config_path.exists():
+            with open(package_config_path) as f:
+                merged = deep_merge_dicts(merged, yaml.safe_load(f) or {})
+                logger.debug(f"Loaded package default config: {package_config_path}")
+    except Exception as e:
+        logger.warning(f"Error loading package default config {package_config_path}: {e}")
+
+    # 2) Development repo default (if running from source)
+    try:
+        project_root = get_project_root()
+        if not str(project_root).endswith('.penguin'):
+            dev_config_path = project_root / "penguin" / "config.yml"
+            if dev_config_path.exists():
+                with open(dev_config_path) as f:
+                    merged = deep_merge_dicts(merged, yaml.safe_load(f) or {})
+                    logger.debug(f"Loaded dev repo config: {dev_config_path}")
+    except Exception:
+        pass
+
+    # 3) User config
     if os.name == 'posix':  # Linux/macOS
         config_base = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
         user_config_path = config_base / "penguin" / "config.yml"
     else:  # Windows
         config_base = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
         user_config_path = config_base / "penguin" / "config.yml"
-    config_paths.append(user_config_path)
-    
-    # 3. Development config (if running from source and PROJECT_ROOT != .penguin)
     try:
-        project_root = get_project_root()
-        if not str(project_root).endswith('.penguin'):
-            dev_config_path = project_root / "penguin" / "config.yml"
-            config_paths.append(dev_config_path)
+        if user_config_path.exists():
+            with open(user_config_path) as f:
+                merged = deep_merge_dicts(merged, yaml.safe_load(f) or {})
+                logger.debug(f"Loaded user config: {user_config_path}")
+    except Exception as e:
+        logger.warning(f"Error loading user config {user_config_path}: {e}")
+
+    # 4) Project config + local overrides
+    def find_git_root(start_path: Path) -> Optional[Path]:
+        path = start_path
+        while True:
+            if (path / '.git').exists():
+                return path
+            if path.parent == path:
+                return None
+            path = path.parent
+
+    try:
+        start_dir = Path(os.environ.get('PENGUIN_CWD', os.getcwd())).resolve()
+    except Exception:
+        start_dir = Path.cwd().resolve()
+
+    git_root = find_git_root(start_dir)
+    project_root_for_config = git_root or start_dir
+    project_config_dir = project_root_for_config / '.penguin'
+    project_config_path = project_config_dir / 'config.yml'
+    project_local_path = project_config_dir / 'settings.local.yml'
+
+    try:
+        if project_config_path.exists():
+            with open(project_config_path) as f:
+                merged = deep_merge_dicts(merged, yaml.safe_load(f) or {})
+                logger.debug(f"Loaded project config: {project_config_path}")
+    except Exception as e:
+        logger.warning(f"Error loading project config {project_config_path}: {e}")
+
+    try:
+        if project_local_path.exists():
+            with open(project_local_path) as f:
+                merged = deep_merge_dicts(merged, yaml.safe_load(f) or {})
+                logger.debug(f"Loaded project local overrides: {project_local_path}")
+    except Exception as e:
+        logger.warning(f"Error loading project local settings {project_local_path}: {e}")
+
+    # 5) Explicit override (highest single-file override)
+    try:
+        if os.getenv('PENGUIN_CONFIG_PATH'):
+            override_path = Path(os.getenv('PENGUIN_CONFIG_PATH'))
+            if override_path.exists():
+                with open(override_path) as f:
+                    merged = deep_merge_dicts(merged, yaml.safe_load(f) or {})
+                    logger.debug(f"Loaded override config: {override_path}")
+    except Exception as e:
+        logger.warning(f"Error loading override config via PENGUIN_CONFIG_PATH: {e}")
+
+    # If still empty, try setup wizard (non-interactive-safe)
+    if not merged:
+        try:
+            from penguin.setup.wizard import check_first_run, run_setup_wizard_sync
+            if check_first_run():
+                logger.info("No user config detected. Launching setup wizard…")
+                result = run_setup_wizard_sync()
+                if isinstance(result, dict) and result and not result.get("error"):
+                    return result
+        except Exception as e:
+            logger.debug(f"Setup wizard not available or failed to run: {e}")
+        logger.debug("No config file found, using defaults")
+        return {}
+
+    return merged
+
+# -------------------------
+# Config helper utilities
+# -------------------------
+
+def _find_git_root(start_path: Path) -> Optional[Path]:
+    path = start_path
+    while True:
+        if (path / '.git').exists():
+            return path
+        if path.parent == path:
+            return None
+        path = path.parent
+
+def get_user_config_path() -> Path:
+    if os.name == 'posix':
+        base = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+    else:
+        base = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+    return base / 'penguin' / 'config.yml'
+
+def get_project_config_paths(cwd_override: Optional[str] = None) -> Dict[str, Path]:
+    try:
+        start_dir = Path(cwd_override or os.environ.get('PENGUIN_CWD') or os.getcwd()).resolve()
+    except Exception:
+        start_dir = Path.cwd().resolve()
+    git_root = _find_git_root(start_dir)
+    project_root = git_root or start_dir
+    cfg_dir = project_root / '.penguin'
+    return {
+        'project_root': project_root,
+        'dir': cfg_dir,
+        'project': cfg_dir / 'config.yml',
+        'local': cfg_dir / 'settings.local.yml',
+    }
+
+def _ensure_parent_dir(path: Path) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
-    
-    # 4. Package default config (fallback example)
-    # Ship a template config at package path; treat it as example only.
-    package_config_path = Path(__file__).parent / "config.yml"
-    config_paths.append(package_config_path)
-    
-    # Try each path in order
-    for config_path in config_paths:
-        try:
-            if config_path.exists():
-                with open(config_path) as f:
-                    config = yaml.safe_load(f)
-                    logger.debug(f"Loaded config from: {config_path}")
-                    return config if config else {}
-        except FileNotFoundError:
-            continue
-        except yaml.YAMLError as e:
-            logger.warning(f"YAML error in config file {config_path}: {e}")
-            continue
-        except Exception as e:
-            logger.warning(f"Error loading config from {config_path}: {e}")
-            continue
-    
-    # If no config file found, try to launch setup wizard (non-interactive-safe)
+
+def _read_yaml(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
     try:
-        from penguin.setup.wizard import check_first_run, run_setup_wizard_sync
-        if check_first_run():
-            logger.info("No user config detected. Launching setup wizard…")
-            result = run_setup_wizard_sync()
-            if isinstance(result, dict) and result and not result.get("error"):
-                return result
-    except Exception as e:
-        logger.debug(f"Setup wizard not available or failed to run: {e}")
-    logger.debug("No config file found, using defaults")
-    return {}
+        with open(path, 'r') as f:
+            data = yaml.safe_load(f) or {}
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _write_yaml(path: Path, data: Dict[str, Any]) -> None:
+    _ensure_parent_dir(path)
+    with open(path, 'w') as f:
+        yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+
+def _set_nested(config_dict: Dict[str, Any], key_path: str, value: Any) -> None:
+    parts = [p for p in key_path.split('.') if p]
+    node = config_dict
+    for p in parts[:-1]:
+        if p not in node or not isinstance(node[p], dict):
+            node[p] = {}
+        node = node[p]
+    node[parts[-1]] = value
+
+def _get_nested(config_dict: Dict[str, Any], key_path: str, default=None):
+    parts = [p for p in key_path.split('.') if p]
+    node = config_dict
+    for p in parts:
+        if not isinstance(node, dict) or p not in node:
+            return default
+        node = node[p]
+    return node
+
+def set_config_value(key: str, value: Any, scope: str = 'project', cwd_override: Optional[str] = None, list_op: Optional[str] = None) -> Path:
+    """Set or modify a config value in the selected scope.
+
+    scope: 'project' (default) writes to .penguin/settings.local.yml;
+           'global' writes to user config (~/.config/penguin/config.yml).
+    list_op: 'add' | 'remove' for list manipulation.
+    Returns the path written.
+    """
+    if scope not in ('project', 'global'):
+        raise ValueError("scope must be 'project' or 'global'")
+
+    if scope == 'global':
+        target_path = get_user_config_path()
+    else:
+        paths = get_project_config_paths(cwd_override)
+        target_path = paths['local']
+
+    data = _read_yaml(target_path)
+    current = _get_nested(data, key, None)
+
+    if list_op:
+        lst = current if isinstance(current, list) else ([] if current in (None, '') else [current])
+        if list_op == 'add':
+            if value not in lst:
+                lst.append(value)
+        elif list_op == 'remove':
+            lst = [x for x in lst if x != value]
+        else:
+            raise ValueError("list_op must be 'add' or 'remove'")
+        _set_nested(data, key, lst)
+    else:
+        _set_nested(data, key, value)
+
+    _write_yaml(target_path, data)
+    return target_path
+
+def get_config_value(key: str, default=None, cwd_override: Optional[str] = None):
+    cfg = load_config()
+    return _get_nested(cfg, key, default)
 
 def init_diagnostics(config_data: dict):
     """Initialize diagnostics based on configuration. Call this after config is loaded."""
