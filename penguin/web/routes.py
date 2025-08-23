@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import uuid
 import websockets
+import httpx
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
@@ -99,6 +100,108 @@ async def system_info(core: PenguinCore = Depends(get_core)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/api/v1/models")
+async def list_models(core: PenguinCore = Depends(get_core)):
+    """List available models with metadata.
+
+    If no explicit model_configs are present, include at least the current model
+    so clients can always see and select something.
+    """
+    try:
+        raw_models = core.list_available_models() if hasattr(core, "list_available_models") else []
+        models_list: List[Dict[str, Any]] = list(raw_models or [])
+
+        if not models_list:
+            # Fallback: expose the current model so the list is never empty
+            cur = core.get_current_model() if hasattr(core, "get_current_model") else None
+            if isinstance(cur, dict) and cur.get("model"):
+                models_list.append({
+                    "id": cur.get("model"),
+                    "name": cur.get("model"),
+                    "provider": cur.get("provider"),
+                    "client_preference": cur.get("client_preference"),
+                    "max_tokens": cur.get("max_tokens"),
+                    "temperature": cur.get("temperature"),
+                    "vision_enabled": cur.get("vision_enabled", False),
+                    "current": True,
+                })
+
+        return {"models": models_list}
+    except Exception as e:
+        logger.error(f"Error listing models: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list models")
+
+
+@router.post("/api/v1/models/switch")
+async def switch_model(request: ModelLoadRequest, core: PenguinCore = Depends(get_core)):
+    """Switch the active model at runtime."""
+    try:
+        ok = await core.load_model(request.model_id)
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"Failed to load model '{request.model_id}'")
+        return {"ok": True, "current_model": core.get_current_model()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error switching model to {request.model_id}: {e}")
+        raise HTTPException(status_code=500, detail="Unexpected error switching model")
+
+
+@router.get("/api/v1/models/discover")
+async def discover_models(core: PenguinCore = Depends(get_core)):
+    """Discover models via OpenRouter catalogue.
+
+    Requires OPENROUTER_API_KEY in the server environment. Returns the raw
+    OpenRouter catalogue mapped to a lean schema: id, name, provider,
+    context_length, max_output_tokens, pricing (if present).
+    """
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="OPENROUTER_API_KEY not set on server")
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    # Optional headers for leaderboard attribution
+    site_url = os.getenv("OPENROUTER_SITE_URL")
+    site_title = os.getenv("OPENROUTER_SITE_TITLE") or "Penguin_AI"
+    if site_url:
+        headers["HTTP-Referer"] = site_url
+    if site_title:
+        headers["X-Title"] = site_title
+
+    url = "https://openrouter.ai/api/v1/models"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            payload = resp.json()
+            data = payload.get("data", []) if isinstance(payload, dict) else []
+
+            # Map to a slimmer structure
+            mapped = []
+            for m in data:
+                try:
+                    mapped.append({
+                        "id": m.get("id"),
+                        "name": m.get("name"),
+                        "provider": (m.get("id", "").split("/", 1)[0] if "id" in m else None),
+                        "context_length": m.get("context_length"),
+                        "max_output_tokens": m.get("max_output_tokens"),
+                        "pricing": m.get("pricing"),
+                    })
+                except Exception:
+                    continue
+
+            return {"models": mapped}
+    except httpx.HTTPStatusError as e:
+        logger.error(f"OpenRouter catalogue error: {e.response.status_code} {e.response.text[:200]}")
+        raise HTTPException(status_code=502, detail="Upstream OpenRouter error fetching models")
+    except Exception as e:
+        logger.error(f"OpenRouter catalogue request failed: {e}")
+        raise HTTPException(status_code=502, detail="Failed to fetch OpenRouter model catalogue")
+
 @router.post("/api/v1/chat/message")
 async def handle_chat_message(
     request: MessageRequest, core: PenguinCore = Depends(get_core)
@@ -124,6 +227,19 @@ async def handle_chat_message(
         if request.image_path:
             input_data["image_path"] = request.image_path
         
+        # If reasoning is requested, capture reasoning chunks via a local callback
+        reasoning_buf: List[str] = []
+        stream_cb = None
+        effective_streaming = bool(request.streaming)
+        if request.include_reasoning:
+            effective_streaming = True  # force streaming internally to collect reasoning
+
+            async def _rest_stream_cb(chunk: str, message_type: str = "assistant"):
+                if message_type == "reasoning" and chunk:
+                    reasoning_buf.append(chunk)
+
+            stream_cb = _rest_stream_cb
+
         # Process the message with all available options
         process_result = await core.process(
             input_data=input_data,
@@ -131,12 +247,18 @@ async def handle_chat_message(
             conversation_id=request.conversation_id,
             max_iterations=request.max_iterations or 5,
             context_files=request.context_files,
-            streaming=request.streaming
+            streaming=effective_streaming,
+            stream_callback=stream_cb,
         )
         
-        # The frontend expects a "response" field
-        return {"response": process_result.get("assistant_response", ""), 
-                "action_results": process_result.get("action_results", [])}
+        # Build response
+        resp: Dict[str, Any] = {
+            "response": process_result.get("assistant_response", ""),
+            "action_results": process_result.get("action_results", []),
+        }
+        if request.include_reasoning:
+            resp["reasoning"] = "".join(reasoning_buf)
+        return resp
     except Exception as e:
         logger.error(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

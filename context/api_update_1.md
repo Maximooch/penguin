@@ -91,11 +91,81 @@ OpenAPI additions
 
 - Document include_reasoning, event schema for WebSocket, and REST response fields.
 
+Priority focus – General robustness
+
+- [ ] Standard error envelope across REST + WS (include code/message/request_id)
+- [ ] Request IDs propagated (X-Request-ID) through logs and responses
+- [ ] Provider fallback policy (retry once without reasoning; clear 404/validation on unknown model ids)
+- [ ] Outbound timeouts and backoff for provider calls (OpenRouter/etc.)
+- [ ] Basic rate limiting with 429 + Retry-After
+- [ ] WS heartbeats/idle timeout and backpressure-safe buffering
+- [ ] Structured JSON logging (latency, provider timing), minimal PII
+
 Implementation checklist
 
-- [ ] Add include_reasoning to WebSocket handler and forward type to events
-- [ ] Add include_reasoning to REST chat and include reasoning in response when requested
-- [ ] Expose /api/v1/health and /api/v1/system-info
-- [ ] Add python-multipart to [project.optional-dependencies].web
+- [x] Add include_reasoning to WebSocket handler and forward type to events
+  <!-- Implemented: penguin/penguin/web/routes.py (WS handler); core forwards message_type to external callbacks -->
+- [x] Add include_reasoning to REST chat and include reasoning in response when requested
+  <!-- Implemented: penguin/penguin/web/routes.py (collects reasoning via stream_callback and returns 'reasoning' when requested) -->
+- [x] Expose /api/v1/health and /api/v1/system-info
+  <!-- Implemented: penguin/penguin/web/routes.py -->
+- [x] Add python-multipart to [project.optional-dependencies].web
+  <!-- Implemented: penguin/pyproject.toml -->
 - [ ] (Optional) Add /api/v1/models and switch endpoint
 - [ ] Update docs: API reference, getting started, and examples
+
+Next endpoints/support
+
+- [ ] Merge discovered models with configured ones in /api/v1/models (never empty)
+- [ ] Add filters to /api/v1/models/discover (provider=, search=, min_context=)
+- [ ] RunMode REST: POST /api/v1/run/start, GET /api/v1/run/status, POST /api/v1/run/stop
+- [ ] RunMode WS: /api/v1/run/stream (status, message, token, reasoning, complete)
+- [ ] SSE alternative for chat stream: /api/v1/chat/stream-sse with same event names
+
+---
+
+Additional improvements (proposed)
+
+- Standard error envelope (REST + WS):
+  - REST response on error: {"error": {"code": "...", "message": "...", "details": {...}, "request_id": "..."}}
+  - WS error event: {"event":"error","data":{"code":"...","message":"...","request_id":"..."}}
+  - Always attach a request_id and propagate X-Request-ID/X-Correlation-ID.
+
+- Rate limiting & headers:
+  - Per-IP and per-API-key sliding window with 429 + Retry-After.
+  - Expose X-RateLimit-Limit/Remaining/Reset headers on REST; WS sends a warning event before closing.
+
+- Auth & security:
+  - Pluggable auth: API key (current) and OAuth2 (device code / client credentials) as optional backends.
+  - Strict CORS allowlist and configurable origins; consider signed WS tokens (query/header) with expiry.
+  - Sanitize uploads (MIME allowlist, size caps), prevent path traversal, and redact secrets in logs.
+
+- Versioning & deprecation:
+  - Keep URL version (/api/v1) and optionally support Accept: application/vnd.penguin.v1+json.
+  - Emit deprecation headers (Sunset/Deprecation) and changelog links when retiring fields.
+
+- Observability:
+  - Structured JSON logs, request timing, and provider breakdown (connect, first-byte, total).
+  - OpenTelemetry traces (WS spans for start→complete), with provider spans.
+  - /metrics (Prometheus): request counts, latency histograms, WS connections, tokens streamed.
+
+- Provider fallback policy:
+  - When reasoning-enabled provider fails: retry once without reasoning; optionally failover to secondary provider.
+  - Include {"provider":"...","reasoning_used":true|false} in complete payload for transparency.
+
+- WS robustness:
+  - Heartbeats/keepalive (ping) and idle timeout; client sees progress or heartbeat events periodically.
+  - Backpressure-aware buffering and maximum message size limits; document close codes.
+
+- Contracts & limits:
+  - Document max text length, max image size, supported MIME types, and truncation semantics.
+  - Idempotency-Key header for upload and run/start endpoints.
+  - Optional batch chat endpoint for non-streaming batch requests.
+
+- OpenAPI & SDKs:
+  - Expand examples for REST & WS (reasoning on/off, images, context files).
+  - Generate client SDKs (Python/TypeScript) from OpenAPI with typed events.
+
+- Testing & chaos:
+  - Integration tests for WS reasoning/token ordering, error paths, and timeouts.
+  - Chaos toggles to simulate provider timeouts/network failures to validate fallbacks.
