@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import os
 import shutil
+import concurrent.futures
 
 import logging
 
@@ -266,11 +267,15 @@ class PenguinInterface:
             # Process the input using Core
             logger.debug(f"Calling core.process with streaming={streaming_enabled}")
             try:
+                # FIXED: Don't use thread pool for now - it causes event loop conflicts
+                # The core.process emits events back to the TUI which expect to be on the same loop
+                # TODO: Revisit this optimization once we fully decouple Core from TUI event loops
                 response = await self.core.process(
-                    input_data_dict, 
-                    streaming=streaming_enabled, 
+                    input_data_dict,
+                    streaming=streaming_enabled,
                     stream_callback=None  # Let event system handle display
                 )
+                    
                 logger.debug(f"Core.process completed with response keys: {response.keys() if isinstance(response, dict) else 'not a dict'}")
             except Exception as e:
                 logger.error(f"Error in core.process: {str(e)}", exc_info=True)
