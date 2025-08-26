@@ -20,25 +20,50 @@ def normalize_path(path: str) -> str:
     return full_path
 
 
-def get_allowed_roots(cwd_override: Optional[str] = None) -> Tuple[Path, Path, List[Path]]:
-    """Return (project_root, workspace_root, additional_allowed).
+def get_allowed_roots(cwd_override: Optional[str] = None) -> Tuple[Path, Path, List[Path], List[Path]]:
+    """Return (project_root, workspace_root, project_additional, context_additional).
 
-    - project_root: git root if available, else CWD (or from PENGUIN_CWD/cwd_override)
-    - workspace_root: WORKSPACE_PATH
-    - additional_allowed: list of extra directories from config (project.additional_directories)
+    Honors project.root_strategy: 'git-root' (default) or 'cwd'.
     """
     cfg = load_config()
-    paths = get_project_config_paths(cwd_override)
-    project_root = paths['project_root']
-    workspace_root = Path(WORKSPACE_PATH)
-    additional = cfg.get('project', {}).get('additional_directories', []) or []
-    additional_paths: List[Path] = []
-    for p in additional:
+
+    # Determine project root based on strategy
+    strategy = (cfg.get('project', {}).get('root_strategy') or 'git-root').lower()
+    if strategy == 'cwd':
         try:
-            additional_paths.append(Path(p).expanduser().resolve())
+            start_dir = Path(cwd_override or os.environ.get('PENGUIN_CWD') or os.getcwd()).resolve()
+        except Exception:
+            start_dir = Path.cwd().resolve()
+        project_root = start_dir
+    else:
+        paths = get_project_config_paths(cwd_override)
+        project_root = paths['project_root']
+
+    workspace_root = Path(WORKSPACE_PATH)
+
+    proj_add_list = cfg.get('project', {}).get('additional_directories', []) or []
+    ctx_add_list = cfg.get('context', {}).get('additional_paths', []) or []
+
+    project_additional: List[Path] = []
+    for p in proj_add_list:
+        try:
+            project_additional.append(Path(p).expanduser().resolve())
         except Exception:
             continue
-    return project_root.resolve(), workspace_root.resolve(), additional_paths
+
+    context_additional: List[Path] = []
+    for p in ctx_add_list:
+        try:
+            context_additional.append(Path(p).expanduser().resolve())
+        except Exception:
+            continue
+
+    return (
+        project_root.resolve(),
+        workspace_root.resolve(),
+        project_additional,
+        context_additional,
+    )
 
 
 def is_path_allowed(target: Path, root_pref: str = 'auto', cwd_override: Optional[str] = None) -> bool:
@@ -52,17 +77,29 @@ def is_path_allowed(target: Path, root_pref: str = 'auto', cwd_override: Optiona
     except Exception:
         return False
 
-    project_root, workspace_root, additional = get_allowed_roots(cwd_override)
+    project_root, workspace_root, project_additional, context_additional = get_allowed_roots(cwd_override)
 
     def _starts_with(parent: Path) -> bool:
         return str(target).startswith(str(parent))
 
     if root_pref == 'project':
-        return _starts_with(project_root) or any(_starts_with(a) for a in additional)
+        return _starts_with(project_root) or any(_starts_with(a) for a in project_additional)
     if root_pref == 'workspace':
-        return _starts_with(workspace_root)
+        return _starts_with(workspace_root) or any(_starts_with(a) for a in context_additional)
 
-    return _starts_with(project_root) or _starts_with(workspace_root) or any(_starts_with(a) for a in additional)
+    return (
+        _starts_with(project_root)
+        or _starts_with(workspace_root)
+        or any(_starts_with(a) for a in project_additional)
+        or any(_starts_with(a) for a in context_additional)
+    )
+
+
+def get_default_write_root() -> str:
+    """Return default write root from config.defaults.write_root (project|workspace)."""
+    cfg = load_config()
+    val = (cfg.get('defaults', {}).get('write_root') or 'project').lower()
+    return 'workspace' if val == 'workspace' else 'project'
 
 
 def enforce_allowed_path(target: Path, root_pref: str = 'auto', cwd_override: Optional[str] = None) -> Path:

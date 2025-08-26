@@ -875,6 +875,34 @@ class PenguinInterface:
             # Basic list/load retained
             if action == "list":
                 return {"context_files": self.core.list_context_files()}
+            if action == "paths":
+                from penguin.utils.path_utils import get_allowed_roots
+                import json as _json
+                prj_root, ws_root, proj_extra, ctx_extra = get_allowed_roots()
+                data = {
+                    "project_root": str(prj_root),
+                    "workspace_root": str(ws_root),
+                    "project_additional": [str(p) for p in proj_extra],
+                    "context_additional": [str(p) for p in ctx_extra],
+                }
+                # Build a simple pretty view for TUI
+                lines = [
+                    "Paths:",
+                    f"- project_root: {data['project_root']}",
+                    f"- workspace_root: {data['workspace_root']}",
+                    "- project_additional:",
+                ]
+                if data["project_additional"]:
+                    lines.extend([f"  - {p}" for p in data["project_additional"]])
+                else:
+                    lines.append("  (none)")
+                lines.append("- context_additional:")
+                if data["context_additional"]:
+                    lines.extend([f"  - {p}" for p in data["context_additional"]])
+                else:
+                    lines.append("  (none)")
+                pretty = "\n".join(lines)
+                return {"status": pretty, "paths": data}
             if action == "load" and len(args) > 1:
                 file_path = args[1]
                 if not hasattr(self.core, 'conversation_manager') or \
@@ -956,7 +984,13 @@ class PenguinInterface:
                     i += 1
                 if body is None:
                     return {"error": "Missing --body <text>"}
-                dest = workspace_context_dir / rel
+                # If env override requests workspace root, honor it for headless CLI parity tests
+                root_pref = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+                if root_pref == 'workspace':
+                    base_dir = Path(WORKSPACE_PATH)
+                else:
+                    base_dir = workspace_context_dir
+                dest = base_dir / rel
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_text(body, encoding='utf-8')
                 return {"status": "ok", "written": str(dest)}

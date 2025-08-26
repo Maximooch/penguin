@@ -4,7 +4,7 @@ import io
 import os
 import traceback
 from pathlib import Path
-from penguin.utils.path_utils import enforce_allowed_path
+from penguin.utils.path_utils import enforce_allowed_path, get_default_write_root
 import glob
 import fnmatch
 import stat
@@ -33,7 +33,9 @@ def create_file(path: str, content: str = "") -> str:
         if dir_name:
             os.makedirs(dir_name, exist_ok=True)
 
-        safe_path = enforce_allowed_path(Path(path), root_pref='project')
+        root_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+        root_pref = root_env if root_env in ('project', 'workspace') else get_default_write_root()
+        safe_path = enforce_allowed_path(Path(path), root_pref=root_pref)
         with open(safe_path, "w") as f:
             f.write(content)
         return f"File created successfully at {os.path.abspath(safe_path)}"
@@ -57,7 +59,9 @@ def generate_and_apply_diff(original_content, new_content, full_path, encoding):
         return "No changes detected."
 
     try:
-        safe_full = enforce_allowed_path(Path(full_path), root_pref='project')
+        root_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+        root_pref = root_env if root_env in ('project', 'workspace') else get_default_write_root()
+        safe_full = enforce_allowed_path(Path(full_path), root_pref=root_pref)
         with open(safe_full, "w", encoding=encoding) as f:
             f.write(new_content)
         return f"Changes applied to {safe_full}:\n" + "".join(diff)
@@ -72,14 +76,18 @@ def write_to_file(path, content):
     for encoding in encodings:
         try:
             if os.path.exists(full_path):
-                safe_full = enforce_allowed_path(Path(full_path), root_pref='project')
+                root_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+                root_pref = root_env if root_env in ('project', 'workspace') else get_default_write_root()
+                safe_full = enforce_allowed_path(Path(full_path), root_pref=root_pref)
                 with open(safe_full, encoding=encoding) as f:
                     original_content = f.read()
                 result = generate_and_apply_diff(
                     original_content, content, str(safe_full), encoding
                 )
             else:
-                safe_full = enforce_allowed_path(Path(full_path), root_pref='project')
+                root_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+                root_pref = root_env if root_env in ('project', 'workspace') else get_default_write_root()
+                safe_full = enforce_allowed_path(Path(full_path), root_pref=root_pref)
                 with open(safe_full, "w", encoding=encoding) as f:
                     f.write(content)
                 result = f"New file created and content written to: {safe_full}"

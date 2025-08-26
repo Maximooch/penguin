@@ -60,6 +60,8 @@ def main():
         test_dir / "test_openrouter_fixes.py",
         test_dir / "test_action_tag_parser.py",
         test_dir / "test_context_commands.py",
+        test_dir / "test_context_cli.py",
+        test_dir / "test_root_override.py",
         # Note: test_reasoning_models.py requires API key, run separately
     ]
     
