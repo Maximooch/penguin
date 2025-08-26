@@ -1,4 +1,73 @@
-#!/usr/bin/env python3
+# # Context subcommands (headless parity)
+# @app.command("context")
+# def context_cmd(
+#     action: str = typer.Argument(..., help="list|paths|write|edit|remove|note|add"),
+#     arg1: Optional[str] = typer.Argument(None, help="Primary argument (file/relpath/title)"),
+#     arg2: Optional[str] = typer.Argument(None, help="Secondary argument"),
+#     workspace_flag: bool = typer.Option(False, "--workspace", help="Treat input as workspace-rooted for add"),
+#     as_name: Optional[str] = typer.Option(None, "--as", help="Destination filename for add"),
+#     body: Optional[str] = typer.Option(None, "--body", help="Body text for write/note"),
+#     replace: Optional[str] = typer.Option(None, "--replace", help="Text to replace for edit"),
+#     with_text: Optional[str] = typer.Option(None, "--with", help="Replacement text for edit"),
+# ):
+#     """Headless /context parity."""
+#     # Reuse Interface handlers for consistent behavior
+#     try:
+#         import asyncio
+#         from penguin.core import PenguinCore
+#         from penguin.cli.interface import PenguinInterface
+
+#         async def run():
+#             core = await PenguinCore.create(show_progress=False, fast_startup=True)
+#             interface = PenguinInterface(core)
+#             args: list[str] = [action]
+#             if action == 'list' or action == 'paths':
+#                 pass
+#             elif action == 'load':
+#                 if not arg1:
+#                     raise typer.BadParameter("/context load requires a file path")
+#                 args.append(arg1)
+#             elif action == 'write':
+#                 if not arg1 or body is None:
+#                     raise typer.BadParameter("/context write requires <relpath> and --body")
+#                 args += [arg1, "--body", body]
+#             elif action == 'edit':
+#                 if not arg1 or replace is None or with_text is None:
+#                     raise typer.BadParameter("/context edit requires <relpath>, --replace and --with")
+#                 args += [arg1, "--replace", replace, "--with", with_text]
+#             elif action == 'remove':
+#                 if not arg1:
+#                     raise typer.BadParameter("/context remove requires <relpath>")
+#                 args.append(arg1)
+#             elif action == 'note':
+#                 if not arg1 or body is None:
+#                     raise typer.BadParameter("/context note requires <Title> and --body")
+#                 args += [arg1, "--body", body]
+#             elif action == 'add':
+#                 if not arg1:
+#                     raise typer.BadParameter("/context add requires a source path")
+#                 args.append(arg1)
+#                 if workspace_flag:
+#                     args.append("--workspace")
+#                 else:
+#                     args.append("--project")
+#                 if as_name:
+#                     args += ["--as", as_name]
+#             else:
+#                 raise typer.BadParameter("Unknown context action")
+#             result = await interface._handle_context_command(args)
+#             # Print a friendly status or JSON
+#             status = result.get("status")
+#             if status:
+#                 print(status)
+#             else:
+#                 print(json.dumps(result, indent=2))
+
+#         asyncio.run(run())
+#     except Exception as e:
+#         print(json.dumps({"status": "error", "error": str(e)}, indent=2))
+#         raise typer.Exit(code=1)
+# #!/usr/bin/env python3
 """
 Penguin CLI - Slim entrypoint that defaults to TUI.
 
@@ -300,7 +369,7 @@ def setup():
 @app.command()
 def config(
     ctx: typer.Context,
-    action: str = typer.Argument(..., help="list|get|set|add|remove"),
+    action: str = typer.Argument(..., help="list|get|set|add|remove|paths|validate"),
     key: Optional[str] = typer.Argument(None, help="Dot path key (for get/set/add/remove)"),
     value: Optional[str] = typer.Argument(None, help="Value to set or add/remove"),
     global_scope: bool = typer.Option(False, "-g", "--global", help="Operate on user config instead of project"),
@@ -329,6 +398,43 @@ def config(
             else:
                 console.print("[cyan]Effective configuration (merged):[/cyan]")
                 console.print(json.dumps(cfg, indent=2))
+            return
+
+        if action == 'paths':
+            from penguin.utils.path_utils import get_allowed_roots
+            prj_root, ws_root, proj_extra, ctx_extra = get_allowed_roots(cwd_str)
+            data = {
+                "project_root": str(prj_root),
+                "workspace_root": str(ws_root),
+                "project_additional": [str(p) for p in proj_extra],
+                "context_additional": [str(p) for p in ctx_extra],
+            }
+            if output_format == 'json':
+                print(json.dumps(data, indent=2))
+            else:
+                console.print(json.dumps(data, indent=2))
+            return
+
+        if action == 'validate':
+            # Light schema check: warn unknown top-level keys and type mismatches for known ones
+            cfg = _load_config()
+            known = {"workspace", "model", "api", "tools", "diagnostics", "project", "context", "defaults", "model_configs", "paths"}
+            warnings = []
+            for k in cfg.keys():
+                if k not in known:
+                    warnings.append(f"Unknown top-level key: {k}")
+            # Type checks
+            if not isinstance(cfg.get("project", {}), dict):
+                warnings.append("'project' should be a mapping")
+            if not isinstance(cfg.get("context", {}), dict):
+                warnings.append("'context' should be a mapping")
+            if not isinstance(cfg.get("defaults", {}), dict):
+                warnings.append("'defaults' should be a mapping")
+            result = {"status": "ok" if not warnings else "warn", "warnings": warnings}
+            if output_format == 'json':
+                print(json.dumps(result, indent=2))
+            else:
+                console.print(json.dumps(result, indent=2))
             return
 
         if action == 'get':
@@ -366,7 +472,7 @@ def config(
                 console.print(f"[green]Updated[/green] {action} {key} -> {parsed_val!r} in {written_path}")
             return
 
-        console.print("[red]Error:[/red] Unknown action. Use list|get|set|add|remove")
+        console.print("[red]Error:[/red] Unknown action. Use list|get|set|add|remove|paths|validate")
         raise typer.Exit(code=1)
 
     except Exception as e:
@@ -597,6 +703,99 @@ def profile(
         console.print(f"[red]Profiling failed:[/red] {e}", file=sys.stderr)
         sys.exit(EXIT_ERROR)
 
+
+# Context subcommands (headless parity) - registered after app exists
+@app.command("context")
+def context_cmd(
+    action: str = typer.Argument(..., help="list|paths|write|edit|remove|note|add"),
+    arg1: Optional[str] = typer.Argument(None, help="Primary argument (file/relpath/title)"),
+    arg2: Optional[str] = typer.Argument(None, help="Secondary argument"),
+    workspace_flag: bool = typer.Option(False, "--workspace", help="Treat input as workspace-rooted for add"),
+    as_name: Optional[str] = typer.Option(None, "--as", help="Destination filename for add"),
+    body: Optional[str] = typer.Option(None, "--body", help="Body text for write/note"),
+    replace: Optional[str] = typer.Option(None, "--replace", help="Text to replace for edit"),
+    with_text: Optional[str] = typer.Option(None, "--with", help="Replacement text for edit"),
+):
+    """Headless /context parity."""
+    try:
+        import asyncio
+        import os as _os
+
+        # Force a low-impact, no-network client preference during tests or when keys are absent
+        no_network_flag = _os.environ.get("PENGUIN_NO_NETWORK", "0") == "1"
+        no_keys_present = not (_os.environ.get("OPENROUTER_API_KEY") or _os.environ.get("OPENAI_API_KEY") or _os.environ.get("ANTHROPIC_API_KEY"))
+        if no_network_flag or no_keys_present:
+            _os.environ["PENGUIN_CLIENT_PREFERENCE"] = "litellm"
+            # Keep defaults simple; LiteLLM won't contact network until actually used
+            _os.environ.setdefault("PENGUIN_DEFAULT_PROVIDER", "openai")
+            _os.environ.setdefault("PENGUIN_DEFAULT_MODEL", "gpt-4o-mini")
+            # Ensure gateways that require API keys can initialize without network calls
+            _os.environ.setdefault("OPENROUTER_API_KEY", "DUMMY")
+            _os.environ.setdefault("OPENAI_API_KEY", "DUMMY")
+            _os.environ.setdefault("ANTHROPIC_API_KEY", "DUMMY")
+
+        # Import after environment overrides so config/model selection sees them
+        from penguin.core import PenguinCore
+        from penguin.cli.interface import PenguinInterface
+
+        async def run():
+            # When forcing no-network, also pass explicit model/provider to bypass config defaults
+            if no_network_flag or no_keys_present:
+                core = await PenguinCore.create(
+                    show_progress=False,
+                    fast_startup=True,
+                    model=_os.environ.get("PENGUIN_DEFAULT_MODEL", "gpt-4o-mini"),
+                    provider=_os.environ.get("PENGUIN_DEFAULT_PROVIDER", "openai"),
+                )
+            else:
+                core = await PenguinCore.create(show_progress=False, fast_startup=True)
+            interface = PenguinInterface(core)
+            args: list[str] = [action]
+            if action in ('list', 'paths'):
+                pass
+            elif action == 'load':
+                if not arg1:
+                    raise typer.BadParameter("/context load requires a file path")
+                args.append(arg1)
+            elif action == 'write':
+                if not arg1 or body is None:
+                    raise typer.BadParameter("/context write requires <relpath> and --body")
+                args += [arg1, "--body", body]
+            elif action == 'edit':
+                if not arg1 or replace is None or with_text is None:
+                    raise typer.BadParameter("/context edit requires <relpath>, --replace and --with")
+                args += [arg1, "--replace", replace, "--with", with_text]
+            elif action == 'remove':
+                if not arg1:
+                    raise typer.BadParameter("/context remove requires <relpath>")
+                args.append(arg1)
+            elif action == 'note':
+                if not arg1 or body is None:
+                    raise typer.BadParameter("/context note requires <Title> and --body")
+                args += [arg1, "--body", body]
+            elif action == 'add':
+                if not arg1:
+                    raise typer.BadParameter("/context add requires a source path")
+                args.append(arg1)
+                if workspace_flag:
+                    args.append("--workspace")
+                else:
+                    args.append("--project")
+                if as_name:
+                    args += ["--as", as_name]
+            else:
+                raise typer.BadParameter("Unknown context action")
+            result = await interface._handle_context_command(args)
+            status = result.get("status")
+            if status:
+                print(status)
+            else:
+                print(json.dumps(result, indent=2))
+
+        asyncio.run(run())
+    except Exception as e:
+        print(json.dumps({"status": "error", "error": str(e)}, indent=2))
+        raise typer.Exit(code=1)
 
 def main():
     """Main entry point."""

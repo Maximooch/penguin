@@ -206,6 +206,22 @@ def _write_yaml(path: Path, data: Dict[str, Any]) -> None:
     _ensure_parent_dir(path)
     with open(path, 'w') as f:
         yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+    # Auto-gitignore local settings in .penguin/.gitignore
+    try:
+        if path.name == 'settings.local.yml':
+            gitignore = path.parent / '.gitignore'
+            _ensure_parent_dir(gitignore)
+            line = 'settings.local.yml\n'
+            if gitignore.exists():
+                existing = gitignore.read_text(encoding='utf-8')
+                if 'settings.local.yml' not in existing:
+                    with open(gitignore, 'a', encoding='utf-8') as gf:
+                        gf.write(line)
+            else:
+                with open(gitignore, 'w', encoding='utf-8') as gf:
+                    gf.write(line)
+    except Exception:
+        pass
 
 def _set_nested(config_dict: Dict[str, Any], key_path: str, value: Any) -> None:
     parts = [p for p in key_path.split('.') if p]
