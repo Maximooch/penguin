@@ -204,6 +204,11 @@ class ChatMessage(Static, can_focus=True):
         self._pending_update_task = None
         self._last_update_ts = 0.0
         self._prefixed = False
+        
+        # PERFORMANCE: Chunk buffering for markdown optimization
+        self._chunk_buffer: List[str] = []
+        self._buffer_size_limit = 500  # Characters before forcing update
+        self._last_buffer_flush = 0.0
         self._headline: Optional[str] = None
 
     def compose(self) -> ComposeResult:
@@ -417,9 +422,10 @@ class ChatMessage(Static, can_focus=True):
                 continue
 
     def stream_in(self, chunk: str) -> None:
-        """Append a chunk of text to the message content."""
+        """Append a chunk of text to the message content with buffering optimization."""
         # Clean up streaming artifacts before adding to content
         cleaned_chunk = self._clean_streaming_artifacts(chunk)
+        
         # Emit penguin prefix once in compact mode before first chunk
         try:
             if self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not self._prefixed:
@@ -436,8 +442,38 @@ class ChatMessage(Static, can_focus=True):
                 self._prefixed = True
         except Exception:
             pass
+        
+        # Update content immediately for accuracy
         self.content += cleaned_chunk
-        # Prefer Textual Markdown streaming API when available to avoid partial renders
+        
+        # PERFORMANCE FIX: Buffer chunks to reduce markdown processing frequency
+        self._chunk_buffer.append(cleaned_chunk)
+        current_buffer_size = sum(len(c) for c in self._chunk_buffer)
+        current_time = asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0
+        
+        # Flush buffer if it's getting large OR enough time has passed
+        should_flush = (
+            current_buffer_size >= self._buffer_size_limit or
+            (current_time - self._last_buffer_flush) >= 0.2  # 200ms minimum
+        )
+        
+        if should_flush:
+            self._flush_chunk_buffer()
+        else:
+            # Just schedule a throttled update without immediate processing
+            self._schedule_markdown_update(min_interval=0.3)  # Increase interval during heavy streaming
+
+    def _flush_chunk_buffer(self) -> None:
+        """Flush buffered chunks to markdown widget for better performance."""
+        if not self._chunk_buffer:
+            return
+            
+        # Process accumulated chunks at once
+        buffered_content = ''.join(self._chunk_buffer)
+        self._chunk_buffer.clear()
+        self._last_buffer_flush = asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0
+        
+        # Prefer Textual Markdown streaming API when available
         try:
             md = self._get_markdown_widget()
             if md is not None and hasattr(md, "get_stream"):
@@ -448,16 +484,16 @@ class ChatMessage(Static, can_focus=True):
                         self._md_stream = None
                 if self._md_stream is not None:
                     try:
-                        self._md_stream.write(cleaned_chunk)
-                        # Avoid forcing a full markdown update while streaming
-                        # The streaming API handles incremental rendering.
-                        return
+                        self._md_stream.write(buffered_content)
+                        return  # Streaming API handled it
                     except Exception:
                         self._md_stream = None
-            # Fallback: schedule a throttled update
+            
+            # Fallback: schedule a regular markdown update
             self._schedule_markdown_update()
         except Exception:
-            pass
+            # If all else fails, schedule an update
+            self._schedule_markdown_update()
     
     def _clean_streaming_artifacts(self, chunk: str) -> str:
         """Clean up common streaming artifacts from different providers."""
@@ -514,13 +550,23 @@ class ChatMessage(Static, can_focus=True):
         return self._md_cached
 
     def _schedule_markdown_update(self, min_interval: float = 0.18) -> None:
-        loop = asyncio.get_event_loop()
-        now = loop.time()
-        if self._pending_update_task is None and (now - self._last_update_ts) >= min_interval:
-            self._pending_update_task = loop.create_task(self._flush_markdown_update())
-        elif self._pending_update_task is None:
-            delay = max(0.0, min_interval - (now - self._last_update_ts))
-            self._pending_update_task = loop.create_task(self._flush_markdown_update(delay))
+        try:
+            loop = asyncio.get_event_loop()
+            now = loop.time()
+            
+            # Cancel existing task if it's still pending
+            if self._pending_update_task is not None and not self._pending_update_task.done():
+                self._pending_update_task.cancel()
+                self._pending_update_task = None
+            
+            if self._pending_update_task is None and (now - self._last_update_ts) >= min_interval:
+                self._pending_update_task = loop.create_task(self._flush_markdown_update())
+            elif self._pending_update_task is None:
+                delay = max(0.0, min_interval - (now - self._last_update_ts))
+                self._pending_update_task = loop.create_task(self._flush_markdown_update(delay))
+        except Exception:
+            # Don't let markdown scheduling issues crash the app
+            pass
 
     async def _flush_markdown_update(self, delay: float = 0.0) -> None:
         try:
@@ -601,6 +647,15 @@ class ChatMessage(Static, can_focus=True):
     def end_stream(self) -> None:
         """Finalize the stream, perhaps by adding a specific style."""
         self.remove_class("streaming")
+        
+        # PERFORMANCE FIX: Flush any remaining buffered chunks before finalizing
+        self._flush_chunk_buffer()
+        
+        # Cancel any pending markdown update tasks to prevent crashes
+        if hasattr(self, '_pending_update_task') and self._pending_update_task is not None:
+            if not self._pending_update_task.done():
+                self._pending_update_task.cancel()
+            self._pending_update_task = None
         
         # Final cleanup of the complete content
         self.content = self._clean_final_content(self.content)
@@ -1248,19 +1303,31 @@ class PenguinTextualApp(App):
         self.add_message(f"Status sidebar {'shown' if self._status_visible else 'hidden'}.", "system")
 
     async def handle_core_event(self, event_type: str, data: Any) -> None:
-        # Throttle extremely verbose stream_chunk logs: print every 50th chunk or final only
+        """Handle events from PenguinCore with performance optimizations."""
+        # PERFORMANCE FIX: Reduce logging overhead during heavy streaming
         if event_type == "stream_chunk":
             try:
                 is_final = bool(data.get("is_final", False))
             except Exception:
                 is_final = False
-            if is_final or (getattr(self, "_stream_chunk_count", 0) % 50 == 0):
-                logger.debug(f"TUI handle_core_event {event_type} keys={list(data.keys()) if isinstance(data, dict) else 'n/a'}")
+            # Only log every 100th chunk or final to reduce overhead
+            if is_final or (getattr(self, "_stream_chunk_count", 0) % 100 == 0):
+                logger.debug(f"TUI handle_core_event {event_type} chunk #{getattr(self, '_stream_chunk_count', 0)}")
         else:
-            logger.debug(f"TUI handle_core_event {event_type} keys={list(data.keys()) if isinstance(data, dict) else 'n/a'}")
-        """Handle events from PenguinCore."""
+            logger.debug(f"TUI handle_core_event {event_type}")
+        
+        # PERFORMANCE FIX: Reduce debug message overhead during streaming
         try:
-            self.debug_messages.append(f"Received event: {event_type} with data: {str(data)[:200]}")
+            # Only keep last 50 debug messages to prevent memory bloat
+            if len(self.debug_messages) > 50:
+                self.debug_messages = self.debug_messages[-25:]  # Keep last 25
+            
+            # Simplified debug logging for stream chunks
+            if event_type == "stream_chunk":
+                # Don't add debug message for every chunk - too expensive
+                pass  
+            else:
+                self.debug_messages.append(f"Event: {event_type} ({str(data)[:100]}...)" if len(str(data)) > 100 else f"Event: {event_type}")
             
             if event_type == "message":
                 # A message event means Core has started working; if it's an assistant
@@ -1327,28 +1394,26 @@ class PenguinTextualApp(App):
                 if self.current_streaming_widget and chunk:
                     self._stream_chunk_count += 1
                     
-                    # Check for potential streaming issues
-                    current_time = asyncio.get_event_loop().time()
-                    if hasattr(self, '_stream_start_time'):
-                        stream_duration = current_time - self._stream_start_time
-                        
-                        # Detect potential hang (no final chunk after reasonable time)
-                        if stream_duration > 30 and not is_final:
-                            self.debug_messages.append(f"Long stream detected: {stream_duration:.1f}s, {self._stream_chunk_count} chunks")
+                    # PERFORMANCE FIX: Reduce time-checking overhead - only check every 50th chunk
+                    if self._stream_chunk_count % 50 == 0:
+                        current_time = asyncio.get_event_loop().time()
+                        if hasattr(self, '_stream_start_time'):
+                            stream_duration = current_time - self._stream_start_time
+                            # Detect potential hang (no final chunk after reasonable time)
+                            if stream_duration > 30 and not is_final:
+                                self.debug_messages.append(f"Long stream detected: {stream_duration:.1f}s, {self._stream_chunk_count} chunks")
                     
                     if not is_final:
                         # Handle different message types
                         if message_type == "reasoning":
-                            # Stream reasoning live as a lightweight banner in the sidebar
-                            # to avoid adding/removing widgets in the scroll area.
-                            sidebar = None
-                            try:
-                                sidebar = self.query_one(StatusSidebar)
-                            except Exception:
-                                sidebar = None
-                            if sidebar is not None:
-                                dots = ("…" * ((self._stream_chunk_count % 3) + 1))
-                                sidebar.update_status({"raw": f"🧠 reasoning{dots}"})
+                            # PERFORMANCE FIX: Only update sidebar every 5th reasoning chunk
+                            if self._stream_chunk_count % 5 == 0:
+                                try:
+                                    sidebar = self.query_one(StatusSidebar)
+                                    dots = ("…" * ((self._stream_chunk_count % 3) + 1))
+                                    sidebar.update_status({"raw": f"🧠 reasoning{dots}"})
+                                except Exception:
+                                    pass  # Don't let sidebar issues stall streaming
                             # Accumulate reasoning text but do not mount a separate message
                             self._reasoning_content += chunk
                         else:
@@ -1356,8 +1421,8 @@ class PenguinTextualApp(App):
                             self.current_streaming_widget.stream_in(chunk)
                             # Keep the latest buffer for deduplication against upcoming message event
                             self.last_finalized_content = self.current_streaming_widget.content
-                            # Debounce scrolling to reduce churn
-                            if (self._stream_chunk_count % 10) == 0:
+                            # PERFORMANCE FIX: Reduce scroll frequency to improve performance
+                            if (self._stream_chunk_count % 20) == 0:  # Increased from 10 to 20
                                 self._request_scroll_to_bottom()
                 
                 if is_final and self.current_streaming_widget:
@@ -1376,12 +1441,23 @@ class PenguinTextualApp(App):
                         # Prepend reasoning to the assistant content
                         current_content = self.current_streaming_widget.content
                         self.current_streaming_widget.content = reasoning_details + current_content
-                        # Update the markdown widget
+                        # Update the markdown widget safely
                         try:
-                            markdown_widget = self.current_streaming_widget.query_one(TextualMarkdown)
-                            markdown_widget.update(self.current_streaming_widget.content)
+                            # Try to find markdown widget, but don't crash if it doesn't exist
+                            markdown_widgets = self.current_streaming_widget.query(TextualMarkdown)
+                            if markdown_widgets:
+                                markdown_widgets[0].update(self.current_streaming_widget.content)
+                            else:
+                                # Widget not found - trigger a rebuild
+                                logger.debug("Markdown widget not found during reasoning update - triggering rebuild")
+                                self.current_streaming_widget.refresh()
                         except Exception as e:
-                            logger.error(f"Error updating markdown widget with reasoning: {e}")
+                            logger.debug(f"Could not update markdown widget with reasoning: {e}")
+                            # Fallback: trigger a full refresh 
+                            try:
+                                self.current_streaming_widget.refresh()
+                            except Exception:
+                                pass  # Don't let widget issues crash the app
                         # Clear sidebar banner
                         try:
                             self.query_one(StatusSidebar).update_status({"raw": ""})
@@ -1639,18 +1715,34 @@ class PenguinTextualApp(App):
             await self._handle_command(user_input[1:])
             return
 
+        # Clear conversation list when sending regular messages
+        self._conversation_list = None
+        self.status_text = "Penguin is thinking..."
+        # Build payload with optional image attachments
+        payload: Dict[str, Any] = {'text': user_input}
+        if self._pending_attachments:
+            # Support multiple images by sending the first (current interface supports single image_path)
+            # For now, send one-by-one; future: extend interface/core to accept a list
+            first = self._pending_attachments[0]
+            payload['image_path'] = first
+            
+        # CRITICAL FIX: Run processing in background to prevent TUI freeze
+        # Don't await - let it run asynchronously so TUI stays responsive
+        asyncio.create_task(self._process_input_background(payload))
+        
+        # Clear attachments after send
+        self._pending_attachments.clear()
+
+    async def _process_input_background(self, payload: Dict[str, Any]) -> None:
+        """
+        Process input in background to prevent TUI freeze.
+        
+        This method runs asynchronously without blocking the main TUI event loop,
+        allowing users to interact with the interface (including cancellation)
+        while the LLM processes their request.
+        """
         try:
-            # Clear conversation list when sending regular messages
-            self._conversation_list = None
-            self.status_text = "Penguin is thinking..."
-            # Build payload with optional image attachments
-            payload: Dict[str, Any] = {'text': user_input}
-            if self._pending_attachments:
-                # Support multiple images by sending the first (current interface supports single image_path)
-                # For now, send one-by-one; future: extend interface/core to accept a list
-                first = self._pending_attachments[0]
-                payload['image_path'] = first
-            # Core processing is now event-driven, we just kick it off
+            # Process the input through interface
             await self.interface.process_input(payload)
             self.status_text = "Ready"
         except Exception as e:
@@ -1658,9 +1750,6 @@ class PenguinTextualApp(App):
             error_msg = f"Error processing input: {e}"
             logger.error(error_msg, exc_info=True)
             self.add_message(error_msg, "error")
-        finally:
-            # Clear attachments after send
-            self._pending_attachments.clear()
 
     def action_clear_log(self) -> None:
         """Clear the chat log."""

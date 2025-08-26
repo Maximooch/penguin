@@ -1899,14 +1899,28 @@ class PenguinCore:
         
         for handler in self.ui_subscribers:
             try:
+                # CRITICAL FIX: Make event emission fire-and-forget to prevent blocking streaming
                 # Check if the handler is a coroutine function and call it appropriately
                 if asyncio.iscoroutinefunction(handler):
-                    await handler(event_type, data)
+                    # Don't await - let it run in background to prevent stalling streaming
+                    asyncio.create_task(self._handle_ui_event_safe(handler, event_type, data))
                 else:
-                    # Call synchronous handler directly
+                    # Call synchronous handler directly (these are typically fast)
                     handler(event_type, data)
             except Exception as e:
                 logger.error(f"Error in UI event handler during {event_type} event: {e}", exc_info=True)
+
+    async def _handle_ui_event_safe(self, handler: Callable, event_type: str, data: Dict[str, Any]) -> None:
+        """
+        Safely handle UI events in background without blocking streaming.
+        
+        This wrapper ensures that slow or failing UI handlers don't stall
+        the core streaming process.
+        """
+        try:
+            await handler(event_type, data)
+        except Exception as e:
+            logger.error(f"Error in background UI event handler during {event_type} event: {e}", exc_info=True)
 
     # Update stream_chunk to use the event system
     async def _handle_stream_chunk(self, chunk: str, message_type: Optional[str] = None, role: str = "assistant") -> None:
