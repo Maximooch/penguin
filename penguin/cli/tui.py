@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import traceback
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 # Textual imports
 from textual.app import App, ComposeResult # type: ignore
@@ -269,7 +269,8 @@ class ChatMessage(Static, can_focus=True):
         # ----------------------------------------------------------------
 
         # --- Convert HTML <details>/<summary> blocks into Textual Expanders ---
-        DETAILS_RE = re.compile(r"<details>\s*(<summary>(.*?)</summary>)?(.*?)</details>", re.S)
+        # Accept optional attributes on <details>, e.g. <details open>
+        DETAILS_RE = re.compile(r"<details(\s+[^>]*)?>\s*(<summary>(.*?)</summary>)?(.*?)</details>", re.S)
 
         pos = 0
         for m in DETAILS_RE.finditer(processed_content):
@@ -281,17 +282,19 @@ class ChatMessage(Static, can_focus=True):
                     classes=f"message-content {self.role}"
                 )
 
-            summary_text = m.group(2) or "Details"
-            body_md = m.group(3).strip()
+            attrs = m.group(1) or ""
+            summary_text = m.group(3) or "Details"
+            body_md = m.group(4).strip()
+            is_open = "open" in attrs if isinstance(attrs, str) else False
 
             if Expander is not None:
                 # Preferred rich interactive widget when available.
-                expander = Expander(summary_text, open=False)  # type: ignore[call-arg]
+                expander = Expander(summary_text, open=bool(is_open))  # type: ignore[call-arg]
                 expander.mount(TextualMarkdown(body_md))
                 yield expander
             else:
                 # Older Textual – use our minimal interactive fallback.
-                yield SimpleExpander(summary_text, body_md, open=False)
+                yield SimpleExpander(summary_text, body_md, open=bool(is_open))
 
             pos = m.end()
 
@@ -588,8 +591,7 @@ class ChatMessage(Static, can_focus=True):
             
         import re
         
-        # Process HTML details tags since Textual markdown doesn't support them
-        content = self._process_details_tags(content)
+        # Preserve <details> blocks as-is; the compose() method converts them to interactive widgets.
         
         # Remove orphaned block quote markers that may have been left behind
         lines = content.split('\n')
@@ -676,69 +678,28 @@ class ChatMessage(Static, can_focus=True):
             pass
 
         # ---------------------------------------------
-        # Post-processing: wrap reasoning in <details>
+        # Post-processing: ensure reasoning is properly formatted
         # ---------------------------------------------
+        # Note: With the new streaming approach, reasoning should already be 
+        # properly formatted in <details> blocks during streaming, so we skip
+        # most of the old post-processing logic to avoid interference.
         try:
-            if "<details>" in self.content:
-                return  # already wrapped by Core or previous pass
-
-            lines = self.content.splitlines()
-            # Extract leading reasoning lines (those beginning with '> ')
-            reasoning_lines: list[str] = []
-            body_lines: list[str] = []
-            collecting_reasoning = True
-            for ln in lines:
-                if collecting_reasoning and ln.startswith("> "):
-                    reasoning_lines.append(ln[2:])  # strip block-quote marker
-                else:
-                    collecting_reasoning = False
-                    body_lines.append(ln)
-
-            if reasoning_lines:
-                # Build collapsible markdown block
-                details_md = (
-                    "<details>\n"
-                    "<summary>🧠  Click to show / hide internal reasoning</summary>\n\n"
-                    + "\n".join(reasoning_lines)
-                    + "\n\n</details>\n\n"
-                )
-                self.content = details_md + "\n".join(body_lines)
-
-                # Update rendered Markdown widget
-                markdown_widget = self.query_one(TextualMarkdown)
-                markdown_widget.update(self.content)
-        except Exception as e:  # pragma: no cover – defensive
-            logger.debug(f"Post-stream reasoning wrap failed: {e}")
-
-        # ------------------------------------------------------------------
-        # Heuristic fallback – some providers do NOT tag reasoning chunks.
-        # If no '> ' lines were found above, attempt to treat consecutive
-        # bold-heading paragraphs (lines starting with '**') at the start of
-        # the message as reasoning.
-        # ------------------------------------------------------------------
-        # DISABLED: This heuristic doesn't work well with Gemini's output format
-        # which uses bold headings throughout the response, not just for reasoning
-        """
-        try:
-            if '<details>' not in self.content:
+            # Only do minimal cleanup if reasoning wasn't handled during streaming
+            if "<details>" not in self.content and "> " in self.content:
                 lines = self.content.splitlines()
+                # Extract leading reasoning lines (those beginning with '> ')
                 reasoning_lines: list[str] = []
-                body_start_index = 0
-
-                # Collect leading bold-heading blocks and any interstitial
-                # blank lines until we hit the first non-bold content.
-                for idx, ln in enumerate(lines):
-                    if ln.startswith("**") or (ln.strip() == "" and reasoning_lines):
-                        reasoning_lines.append(ln)
-                    elif not reasoning_lines and ln.strip() == "":
-                        # Skip leading empty lines before first heading
-                        continue
+                body_lines: list[str] = []
+                collecting_reasoning = True
+                for ln in lines:
+                    if collecting_reasoning and ln.startswith("> "):
+                        reasoning_lines.append(ln[2:])  # strip block-quote marker
                     else:
-                        body_start_index = idx
-                        break
+                        collecting_reasoning = False
+                        body_lines.append(ln)
 
                 if reasoning_lines:
-                    body_lines = lines[body_start_index:]
+                    # Build collapsible markdown block (fallback for non-streaming case)
                     details_md = (
                         "<details>\n"
                         "<summary>🧠  Click to show / hide internal reasoning</summary>\n\n"
@@ -746,11 +707,23 @@ class ChatMessage(Static, can_focus=True):
                         + "\n\n</details>\n\n"
                     )
                     self.content = details_md + "\n".join(body_lines)
+
+                    # Update rendered Markdown widget
                     markdown_widget = self.query_one(TextualMarkdown)
                     markdown_widget.update(self.content)
-        except Exception as e:
-            logger.debug(f"Fallback reasoning wrap failed: {e}")
-        """
+        except Exception as e:  # pragma: no cover – defensive
+            logger.debug(f"Post-stream reasoning wrap failed: {e}")
+
+        # ------------------------------------------------------------------
+        # Legacy heuristic fallback disabled for streaming approach
+        # ------------------------------------------------------------------
+        # The old heuristic approach has been replaced with real-time streaming
+        # of reasoning tokens, so this fallback is no longer needed.
+        # Finally, recompose contents so <details> blocks become interactive Expanders
+        try:
+            self._rebuild_contents()
+        except Exception:
+            pass
 
     # --------------------------
     # Copy-to-clipboard support
@@ -800,8 +773,8 @@ class ChatMessage(Static, can_focus=True):
                 exp.action_toggle()
                 return
         except Exception:
-            # No traditional expander found, try to toggle reasoning blockquotes
-            pass
+            # No traditional expander found, try to toggle reasoning via content manipulation
+            self._toggle_reasoning_content()
 
     # --------- Helpers ---------
     def _is_detailed(self) -> bool:
@@ -871,50 +844,49 @@ class ChatMessage(Static, can_focus=True):
             self._rebuild_contents()
         except Exception:
             pass
-        
-        # Toggle reasoning blockquotes by modifying content
+
+
+    def _toggle_reasoning_content(self) -> None:
+        """Toggle reasoning content visibility by modifying the content directly."""
         try:
             markdown_widget = self.query_one(TextualMarkdown)
             current_content = self.content
             
-            # Check if reasoning is currently visible (contains blockquotes after reasoning header)
-            if '🧠 Reasoning' in current_content and '> ' in current_content:
-                # Hide reasoning by removing blockquotes
-                import re
-                lines = current_content.split('\n')
-                filtered_lines = []
-                skip_reasoning = False
-                
-                for line in lines:
-                    if '🧠 Reasoning' in line and 'Press Ctrl+R to toggle' in line:
-                        # Replace the toggle indicator to show it's hidden
-                        filtered_lines.append(line.replace('🧠 Reasoning - Press Ctrl+R to toggle', '🧠 Reasoning Hidden - Press Ctrl+R to show'))
-                        skip_reasoning = True
-                    elif skip_reasoning and line.startswith('> '):
-                        continue  # Skip reasoning lines
-                    elif skip_reasoning and line.strip() == '':
-                        continue  # Skip empty lines after reasoning
-                    else:
-                        skip_reasoning = False
-                        filtered_lines.append(line)
-                
-                self.content = '\n'.join(filtered_lines)
-                
-            elif '🧠 Reasoning Hidden' in current_content:
-                # Show reasoning by restoring from original content
-                if hasattr(self, '_original_reasoning_content'):
-                    # Restore the full reasoning content
-                    restored_reasoning = f"**🧠 Click to show / hide internal reasoning** `[🧠 Reasoning - Press Ctrl+R to toggle]`\n\n> {self._original_reasoning_content.replace(chr(10), chr(10) + '> ')}"
-                    # Replace the hidden indicator with the full content
-                    self.content = current_content.replace('**🧠 Click to show / hide internal reasoning** `[🧠 Reasoning Hidden - Press Ctrl+R to show]`', restored_reasoning)
-                else:
-                    # Fallback - just change the indicator
-                    self.content = current_content.replace('🧠 Reasoning Hidden - Press Ctrl+R to show', '🧠 Reasoning - Press Ctrl+R to toggle')
-                
-            markdown_widget.update(self.content)
+            import re
             
+            # Check if we have a details block with reasoning
+            if '<details>' in current_content and '</details>' in current_content:
+                # Find and toggle the details block
+                details_pattern = r'<details([^>]*)>\s*(<summary>.*?</summary>)\s*(.*?)</details>'
+                
+                def toggle_details(match):
+                    attrs = match.group(1)
+                    summary = match.group(2)
+                    body = match.group(3).strip()
+                    
+                    # Check if it's a reasoning block
+                    if '🧠' in summary:
+                        # Toggle by adding/removing 'open' attribute
+                        if 'open' not in attrs:
+                            # Currently closed, open it
+                            return f'<details open>\n{summary}\n\n{body}\n</details>'
+                        else:
+                            # Currently open, close it
+                            return f'<details>\n{summary}\n\n{body}\n</details>'
+                    return match.group(0)  # Return unchanged if not reasoning
+                
+                new_content = re.sub(details_pattern, toggle_details, current_content, flags=re.DOTALL)
+                
+                if new_content != current_content:
+                    self.content = new_content
+                    markdown_widget.update(self.content)
+                    return
+            
+            # Fallback (non-destructive): if no <details>, do nothing to avoid content loss
+            # We no longer try to rewrite blockquote reasoning, which was destructive.
+                
         except Exception:
-            # No reasoning content to toggle
+            # No reasoning content to toggle or error occurred
             pass
 
 # Simple status message to bubble up to PenguinTextualApp
@@ -1385,8 +1357,9 @@ class PenguinTextualApp(App):
                     self._stream_chunk_count = 0
                     self._pending_response = False  # stop spinner
                     
-                    # Initialize reasoning content accumulator
+                    # Initialize reasoning content accumulator and tracking
                     self._reasoning_content = ""
+                    self._reasoning_details_started = False
                     
                     # Start stream timeout monitor
                     self._stream_timeout_task = asyncio.create_task(self._monitor_stream_timeout())
@@ -1414,10 +1387,27 @@ class PenguinTextualApp(App):
                                     sidebar.update_status({"raw": f"🧠 reasoning{dots}"})
                                 except Exception:
                                     pass  # Don't let sidebar issues stall streaming
-                            # Accumulate reasoning text but do not mount a separate message
+                            
+                            # Stream reasoning tokens in real-time with details block
                             self._reasoning_content += chunk
+                            
+                            # Create or update the reasoning details block
+                            if not self._reasoning_details_started:
+                                # Start the reasoning details block
+                                reasoning_header = "<details>\n<summary>🧠 Click to show / hide internal reasoning</summary>\n\n"
+                                self.current_streaming_widget.stream_in(reasoning_header)
+                                self._reasoning_details_started = True
+                            
+                            # Stream the reasoning chunk directly inside the details block
+                            # The blockquote formatting will be handled by the Textual markdown renderer
+                            self.current_streaming_widget.stream_in(chunk)
                         else:
-                            # Stream assistant content directly
+                            # Stream assistant content directly  
+                            # If we were streaming reasoning, close the details block first
+                            if self._reasoning_details_started and message_type != "reasoning":
+                                self.current_streaming_widget.stream_in("\n\n</details>\n\n")
+                                self._reasoning_details_started = False
+                            
                             self.current_streaming_widget.stream_in(chunk)
                             # Keep the latest buffer for deduplication against upcoming message event
                             self.last_finalized_content = self.current_streaming_widget.content
@@ -1435,34 +1425,16 @@ class PenguinTextualApp(App):
                     stream_duration = asyncio.get_event_loop().time() - getattr(self, '_stream_start_time', 0)
                     self.debug_messages.append(f"Stream completed: {stream_duration:.1f}s, {self._stream_chunk_count} chunks")
                     
-                    # Add reasoning content if present
-                    if hasattr(self, '_reasoning_content') and self._reasoning_content.strip():
-                        reasoning_details = f"<details>\n<summary>🧠 Click to show / hide internal reasoning</summary>\n\n{self._reasoning_content.strip()}\n\n</details>\n\n"
-                        # Prepend reasoning to the assistant content
-                        current_content = self.current_streaming_widget.content
-                        self.current_streaming_widget.content = reasoning_details + current_content
-                        # Update the markdown widget safely
-                        try:
-                            # Try to find markdown widget, but don't crash if it doesn't exist
-                            markdown_widgets = self.current_streaming_widget.query(TextualMarkdown)
-                            if markdown_widgets:
-                                markdown_widgets[0].update(self.current_streaming_widget.content)
-                            else:
-                                # Widget not found - trigger a rebuild
-                                logger.debug("Markdown widget not found during reasoning update - triggering rebuild")
-                                self.current_streaming_widget.refresh()
-                        except Exception as e:
-                            logger.debug(f"Could not update markdown widget with reasoning: {e}")
-                            # Fallback: trigger a full refresh 
-                            try:
-                                self.current_streaming_widget.refresh()
-                            except Exception:
-                                pass  # Don't let widget issues crash the app
-                        # Clear sidebar banner
-                        try:
-                            self.query_one(StatusSidebar).update_status({"raw": ""})
-                        except Exception:
-                            pass
+                    # Close reasoning details block if still open
+                    if hasattr(self, '_reasoning_details_started') and self._reasoning_details_started:
+                        self.current_streaming_widget.stream_in("\n\n</details>\n\n")
+                        self._reasoning_details_started = False
+                    
+                    # Clear sidebar banner
+                    try:
+                        self.query_one(StatusSidebar).update_status({"raw": ""})
+                    except Exception:
+                        pass
                     
                     # Validate final content
                     final_content = self.current_streaming_widget.content.strip()
