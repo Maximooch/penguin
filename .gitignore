@@ -77,6 +77,9 @@ node_modules/
 # .vscode
 .vscode/
 
+# Crush local cache
+.crush/
+
 # ct1
 ct1/
 
