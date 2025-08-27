@@ -1,4 +1,5 @@
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 import logging
@@ -135,8 +136,19 @@ def load_config():
     except Exception as e:
         logger.warning(f"Error loading override config via PENGUIN_CONFIG_PATH: {e}")
 
-    # If still empty, try setup wizard (non-interactive-safe)
+    # If still empty, try setup wizard (skip in non-interactive/CI)
     if not merged:
+        # Detect CI/non-interactive environments to avoid prompting
+        non_interactive = (
+            os.environ.get("CI", "").lower() == "true"
+            or os.environ.get("GITHUB_ACTIONS", "").lower() == "true"
+            or os.environ.get("PENGUIN_NO_SETUP", "") == "1"
+            or not sys.stdin.isatty()
+        )
+        if non_interactive:
+            logger.debug("Non-interactive environment detected; skipping setup wizard and using defaults")
+            logger.debug("No config file found, using defaults")
+            return {}
         try:
             from penguin.setup.wizard import check_first_run, run_setup_wizard_sync
             if check_first_run():
@@ -385,6 +397,10 @@ def substitute_path_variables(obj, paths):
 # Substitute path variables in the entire config
 config = substitute_path_variables(config, config['paths'])
 
+# Safe access to common sections
+_MODEL = config.get('model', {}) if isinstance(config.get('model'), dict) else {}
+_API = config.get('api', {}) if isinstance(config.get('api'), dict) else {}
+
 # Now that WORKSPACE_PATH is defined and paths resolved, initialize diagnostics
 init_diagnostics(config)
 
@@ -420,19 +436,19 @@ NEED_USER_CLARIFICATION_PHRASE = "NEED_USER_CLARIFICATION"  # Pause for user inp
 MAX_TASK_ITERATIONS = 100 # Check to see if it works fine with 100 messages before more
 
 
-# Default model configuration
-DEFAULT_MODEL = os.getenv("PENGUIN_DEFAULT_MODEL", config["model"]["default"])
-DEFAULT_PROVIDER = os.getenv("PENGUIN_DEFAULT_PROVIDER", config["model"]["provider"])
-DEFAULT_API_BASE = os.getenv("PENGUIN_DEFAULT_API_BASE", config["api"]["base_url"])
-USE_ASSISTANTS_API = config["model"].get("use_assistants_api", True)
+# Default model configuration (safe defaults for CI/non-interactive)
+DEFAULT_MODEL = os.getenv("PENGUIN_DEFAULT_MODEL", _MODEL.get("default")) or "openai/gpt-5"
+DEFAULT_PROVIDER = os.getenv("PENGUIN_DEFAULT_PROVIDER", _MODEL.get("provider", "openai"))
+DEFAULT_API_BASE = os.getenv("PENGUIN_DEFAULT_API_BASE", _API.get("base_url"))
+USE_ASSISTANTS_API = _MODEL.get("use_assistants_api", True)
 
 # Project Management Configuration
 GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", config.get("project", {}).get("github_repository"))
 
 # Add assistant-specific configuration
 ASSISTANT_CONFIG = {
-    "provider": config["model"].get("provider", "openai"),
-    "enabled": config["model"].get("use_assistants_api", False),
+    "provider": _MODEL.get("provider", "openai"),
+    "enabled": _MODEL.get("use_assistants_api", False),
     "custom_llm_provider": "openai",  # Required by litellm
     "model_name_override": None,  # Optional override for assistant model name
 }
@@ -464,10 +480,8 @@ def get_model_config(model_name: Optional[str] = None) -> Dict[str, Any]:
         "api_base": base_config.get("api_base", DEFAULT_API_BASE),
         "max_tokens": base_config.get("max_tokens"),
         "temperature": base_config.get("temperature"),
-        "use_assistants_api": config["model"].get("use_assistants_api", False),
-        "assistant_config": get_assistant_config()
-        if config["model"].get("use_assistants_api", False)
-        else None,
+        "use_assistants_api": _MODEL.get("use_assistants_api", False),
+        "assistant_config": get_assistant_config() if _MODEL.get("use_assistants_api", False) else None,
     }
 
 
