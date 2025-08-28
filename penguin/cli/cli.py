@@ -519,6 +519,12 @@ def main_entry(
         ctx.invoked_subcommand is not None,
     ])
 
+    # If a subcommand is invoked (e.g., `penguin config setup`), do not
+    # pre-initialize core components here. Let the subcommand run first.
+    # Subcommands that need core components will initialize them explicitly.
+    if ctx.invoked_subcommand is not None:
+        return
+
     if not headless_flags:
         try:
             from penguin.cli.tui import TUI
