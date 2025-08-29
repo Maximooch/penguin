@@ -149,6 +149,14 @@ def load_config():
             logger.debug("Non-interactive environment detected; skipping setup wizard and using defaults")
             logger.debug("No config file found, using defaults")
             return {}
+
+        # New guard: do not run setup wizard during import unless explicitly enabled.
+        # This prevents blocking behaviors when penguin is imported by standalone scripts.
+        # CLI entry points can opt-in by setting PENGUIN_SETUP_ON_IMPORT=1 before import.
+        if os.environ.get("PENGUIN_SETUP_ON_IMPORT", "").lower() != "1":
+            logger.debug("Setup wizard disabled on import (PENGUIN_SETUP_ON_IMPORT not set). Using defaults")
+            return {}
+
         try:
             from penguin.setup.wizard import check_first_run, run_setup_wizard_sync
             if check_first_run():

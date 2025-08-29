@@ -150,6 +150,29 @@ PENGUIN_FAST_STARTUP=true
 PENGUIN_MAX_TOKENS=400000
 ```
 
+### Execution Root (Project vs Workspace)
+Penguin separates where it edits code from where it stores assistant state:
+
+- Project root: your current repository (CWD/git root) for file edits, shell commands, diffs, and analysis.
+- Workspace root: Penguin’s own data (conversations, notes, logs, memory) at `WORKSPACE_PATH`.
+
+Control which root file tools operate on:
+
+- CLI flag: `--root project|workspace` (applies for the current run)
+- Env var: `PENGUIN_WRITE_ROOT=project|workspace` (overrides config)
+- Config default: `defaults.write_root: project|workspace`
+- Fallback default: `project`
+
+On startup the CLI prints the active execution root, e.g.
+```
+Execution root: project (/path/to/your/repo)
+```
+
+Set project as the default once:
+```bash
+penguin config set defaults.write_root project
+```
+
 ### Advanced Configuration File
 Create `config.yml` for comprehensive settings:
 ```yaml
@@ -224,7 +247,6 @@ penguin profile               # Profile startup and save a report
 penguin perf-test             # Benchmark startup performance
 penguin config debug          # Extended config + environment diagnostics
 ```
-
 
 
 

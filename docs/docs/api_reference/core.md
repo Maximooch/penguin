@@ -198,6 +198,23 @@ Creates a new PenguinCore instance with optional CLI. This method handles the in
 
 ## Core Methods
 
+### Execution Root (ToolManager)
+File tools and command execution operate against an “execution root” that is separate from Penguin’s workspace:
+
+- Project root: the current repo (CWD/git root) for edits, shell commands, diffs, and code analysis
+- Workspace root: assistant state (conversations, notes, logs, memory) under `WORKSPACE_PATH`
+
+Selection precedence:
+- CLI flag: `--root project|workspace`
+- Env var: `PENGUIN_WRITE_ROOT=project|workspace`
+- Config: `defaults.write_root`
+- Default: `project`
+
+The CLI prints the active root at startup. Tools can switch roots at runtime via:
+```python
+tm.set_execution_root("project")  # or "workspace"
+```
+
 ### `__init__`
 
 ```python
