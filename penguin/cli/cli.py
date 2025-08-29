@@ -26,6 +26,9 @@ except (AttributeError, OSError):
     # If wrapping fails, continue with existing streams
     pass
 
+# Allow setup wizard on import when launched via CLI entry point
+os.environ.setdefault("PENGUIN_SETUP_ON_IMPORT", "1")
+
 # Add import timing for profiling if enabled
 import time
 PROFILE_ENABLED = os.environ.get("PENGUIN_PROFILE", "0") == "1"
@@ -104,7 +107,7 @@ else:
     from rich.markdown import Markdown  # type: ignore
     from rich.panel import Panel  # type: ignore
 
-    from penguin.config import (
+from penguin.config import (
         config as penguin_config_global,
         DEFAULT_MODEL,
         DEFAULT_PROVIDER,
@@ -477,6 +480,9 @@ def main_entry(
         None, "--project", help="Route tasks to a project; if omitted, tasks are independent"
     ),
     old_cli: bool = typer.Option(False, "--old-cli", help="Run the legacy Rich CLI"),
+    root: Optional[str] = typer.Option(
+        None, "--root", help="Execution root for file ops and commands: 'project' or 'workspace'"
+    ),
     version: Optional[bool] = typer.Option(
         None, "--version", "-V", help="Show Penguin version and exit.", is_eager=True
     )
@@ -581,6 +587,21 @@ def main_entry(
             console.print(f"[bold red]Fatal Initialization Error:[/bold red] {e}")
             console.print("Please check logs for more details.")
             raise typer.Exit(code=1)
+
+        # Apply execution root toggle if requested
+        global _tool_manager
+        if root:
+            try:
+                msg = _tool_manager.set_execution_root(root)
+                console.print(f"[dim]{msg}[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]Warning: failed to set execution root: {e}[/yellow]")
+
+        # Always show the current execution root for clarity
+        try:
+            console.print(f"[dim]Execution root: {_tool_manager.file_root_mode} ({_tool_manager._file_root})[/dim]")
+        except Exception:
+            pass
 
         # Record project flag for downstream commands
         ctx.obj = ctx.obj or {}

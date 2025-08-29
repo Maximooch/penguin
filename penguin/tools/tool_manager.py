@@ -14,6 +14,7 @@ from collections import defaultdict
 # from utils.log_error import log_error
 # from .core.support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
 from penguin.config import config, WORKSPACE_PATH
+from penguin.utils.path_utils import get_allowed_roots, get_default_write_root
 from penguin.memory.summary_notes import SummaryNotes
 from penguin.utils import FileMap
 from penguin.utils.profiling import profile_operation, profile_startup_phase, profiler
@@ -66,7 +67,21 @@ class ToolManager:
             self.config = config
             self.log_error = log_error_func
             self.fast_startup = fast_startup
-            self.project_root = WORKSPACE_PATH  # Set project root to workspace path
+            # Resolve the active project root (prefer CWD/git-root) instead of workspace
+            try:
+                prj_root, _ws_root, *_ = get_allowed_roots()
+                self.project_root = str(prj_root)
+            except Exception:
+                # Fallback to current working directory
+                self.project_root = os.getcwd()
+            # Determine active file root (project or workspace)
+            self.workspace_root = str(WORKSPACE_PATH)
+            root_pref_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+            if root_pref_env in ('project', 'workspace'):
+                self.file_root_mode = root_pref_env
+            else:
+                self.file_root_mode = get_default_write_root()
+            self._file_root = self.project_root if self.file_root_mode == 'project' else self.workspace_root
             
             # Track what's been initialized - expanded for all tools
             self._lazy_initialized = {
@@ -923,7 +938,8 @@ class ToolManager:
         if not self._lazy_initialized['file_map']:
             with profile_operation("ToolManager.lazy_load_file_map"):
                 logger.debug("Lazy-loading file map")
-                self._file_map = FileMap(WORKSPACE_PATH)
+                # Map the active file root (project/workspace)
+                self._file_map = FileMap(self._file_root)
                 self._lazy_initialized['file_map'] = True
         return self._file_map
     
@@ -944,6 +960,11 @@ class ToolManager:
             with profile_operation("ToolManager.lazy_load_notebook_executor"):
                 logger.debug("Lazy-loading notebook executor")
                 self._notebook_executor = NotebookExecutor()
+                # Execute code relative to the selected file root when invoked
+                try:
+                    self._notebook_executor.active_directory = self._file_root
+                except Exception:
+                    pass
                 self._lazy_initialized['notebook_executor'] = True
         return self._notebook_executor
     
@@ -1106,17 +1127,17 @@ class ToolManager:
         """Execute file operations with enhanced tools and workspace integration."""
         if operation_name == "create_folder":
             from penguin.tools.core.support import create_folder
-            return create_folder(os.path.join(WORKSPACE_PATH, tool_input["path"]))
+            return create_folder(os.path.join(self._file_root, tool_input["path"]))
         elif operation_name == "create_file":
             from penguin.tools.core.support import create_file
-            return create_file(os.path.join(WORKSPACE_PATH, tool_input["path"]), tool_input.get("content", ""))
+            return create_file(os.path.join(self._file_root, tool_input["path"]), tool_input.get("content", ""))
         elif operation_name == "write_to_file":
             from penguin.tools.core.support import enhanced_write_to_file
             return enhanced_write_to_file(
                 tool_input["path"], 
                 tool_input["content"],
                 backup=tool_input.get("backup", True),
-                workspace_path=WORKSPACE_PATH
+                workspace_path=self._file_root
             )
         elif operation_name == "read_file":
             from penguin.tools.core.support import enhanced_read_file
@@ -1124,7 +1145,7 @@ class ToolManager:
                 tool_input["path"],
                 show_line_numbers=tool_input.get("show_line_numbers", False),
                 max_lines=tool_input.get("max_lines"),
-                workspace_path=WORKSPACE_PATH
+                workspace_path=self._file_root
             )
         elif operation_name == "list_files":
             from penguin.tools.core.support import list_files_filtered
@@ -1133,7 +1154,7 @@ class ToolManager:
                 ignore_patterns=tool_input.get("ignore_patterns"),
                 group_by_type=tool_input.get("group_by_type", False),
                 show_hidden=tool_input.get("show_hidden", False),
-                workspace_path=WORKSPACE_PATH
+                workspace_path=self._file_root
             )
         elif operation_name == "find_file":
             from penguin.tools.core.support import find_files_enhanced
@@ -1142,7 +1163,7 @@ class ToolManager:
                 search_path=tool_input.get("search_path", "."),
                 include_hidden=tool_input.get("include_hidden", False),
                 file_type=tool_input.get("file_type"),
-                workspace_path=WORKSPACE_PATH
+                workspace_path=self._file_root
             )
         else:
             raise ValueError(f"Unknown file operation: {operation_name}")
@@ -1163,7 +1184,7 @@ class ToolManager:
         return analyze_project_structure(
             directory=tool_input.get("directory", "."),
             include_external=tool_input.get("include_external", False),
-            workspace_path=WORKSPACE_PATH
+            workspace_path=self._file_root
         )
 
     def _execute_apply_diff(self, tool_input: dict) -> str:
@@ -1173,7 +1194,7 @@ class ToolManager:
             file_path=tool_input["file_path"],
             diff_content=tool_input["diff_content"],
             backup=tool_input.get("backup", True),
-            workspace_path=WORKSPACE_PATH
+            workspace_path=self._file_root
         )
 
     def _execute_edit_with_pattern(self, tool_input: dict) -> str:
@@ -1184,8 +1205,35 @@ class ToolManager:
             search_pattern=tool_input["search_pattern"],
             replacement=tool_input["replacement"],
             backup=tool_input.get("backup", True),
-            workspace_path=WORKSPACE_PATH
+            workspace_path=self._file_root
         )
+
+    def set_execution_root(self, mode: str) -> str:
+        """Switch active execution root between 'project' and 'workspace'."""
+        mode_l = (mode or '').lower()
+        if mode_l not in ('project', 'workspace'):
+            return f"Invalid root mode '{mode}'. Use 'project' or 'workspace'."
+        self.file_root_mode = mode_l
+        self._file_root = self.project_root if mode_l == 'project' else self.workspace_root
+        # Update process-wide default write root so support.create_file/create_folder honor policy
+        try:
+            os.environ['PENGUIN_WRITE_ROOT'] = mode_l
+        except Exception:
+            pass
+        # Update notebook executor directory if loaded
+        if self._lazy_initialized.get('notebook_executor') and self._notebook_executor:
+            try:
+                self._notebook_executor.active_directory = self._file_root
+            except Exception:
+                pass
+        # Refresh file map to reflect new root
+        try:
+            self._file_map = FileMap(self._file_root)
+            self._lazy_initialized['file_map'] = True
+        except Exception:
+            # Defer until first access
+            self._lazy_initialized['file_map'] = False
+        return f"Execution root set to {mode_l}: {self._file_root}"
 
     def execute_tool(self, tool_name: str, tool_input: dict) -> Union[str, dict]:
         with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
@@ -1394,7 +1442,7 @@ class ToolManager:
                 shell=shell,
                 capture_output=True,
                 text=True,
-                cwd=self.project_root,
+                cwd=self._file_root,
             )
 
             if result.returncode == 0:
@@ -1611,8 +1659,8 @@ class ToolManager:
             from pathlib import Path
             from collections import defaultdict
             
-            # Default to project root if no directory is specified
-            target_dir = Path(directory or self.project_root)
+            # Default to active file root if no directory is specified
+            target_dir = Path(directory or self._file_root)
             
             if not target_dir.exists():
                 return json.dumps({"error": f"Directory '{target_dir}' does not exist."})
