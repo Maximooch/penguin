@@ -411,8 +411,21 @@ logger.debug(f"Workspace path: {WORKSPACE_PATH}")
 # logging.basicConfig(level=logging.DEBUG)
 # logger = logging.getLogger(__name__)
 
-# Load environment variables from .env file, overriding existing system variables
-# This allows project-specific tokens (e.g., in a .env file) to take precedence.
+# Load environment variables from user-level and project .env files
+# 1) User-level: ~/.config/penguin/.env (or APPDATA equivalent) – provides persistent keys
+try:
+    if os.name == 'posix':
+        user_env_dir = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'penguin'
+    else:
+        user_env_dir = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming')) / 'penguin'
+    user_env_path = user_env_dir / '.env'
+    if user_env_path.exists():
+        load_dotenv(dotenv_path=str(user_env_path), override=False)
+except Exception:
+    # Non-fatal if user-level .env loading fails
+    pass
+
+# 2) Project-level: nearest .env up the CWD chain – overrides user-level values
 load_dotenv(override=True)
 
 # API Keys
@@ -599,23 +612,35 @@ class Config:
 
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "Config":
-        """Load configuration from config.yml"""
+        """Load effective Penguin config using the central resolver.
+
+        This delegates to the top‑level load_config() in this module, which
+        merges config from (in order): package defaults, dev repo defaults,
+        user config (~/.config/penguin/config.yml), project overrides, and
+        an explicit PENGUIN_CONFIG_PATH override. This avoids divergence
+        between different config loading paths across the codebase.
+        """
         # Import ModelConfig here to avoid circular imports
         from penguin.llm.model_config import ModelConfig as LLMModelConfig
-        
+
+        # Prefer the merged config resolver, unless an explicit file path was provided
         if config_path is None:
-            # Default to loading from the same directory as this config.py file
-            config_path = Path(__file__).parent / "config.yml"
-            
-        try:
-            with open(config_path) as f:
-                config_data = yaml.safe_load(f)
-        except (FileNotFoundError, yaml.YAMLError):
+            config_data = load_config()
+        else:
+            try:
+                with open(config_path) as f:
+                    config_data = yaml.safe_load(f) or {}
+            except (FileNotFoundError, yaml.YAMLError):
+                config_data = {}
+
+        if not isinstance(config_data, dict):
             config_data = {}
 
         if not config_data:
-            logging.getLogger(__name__).warning("Configuration file not found or empty. Using default settings.")
-            # If config fails to load, create a default ModelConfig using environment variables
+            logging.getLogger(__name__).warning(
+                "No resolved config found. Falling back to environment defaults."
+            )
+            # Fall back to environment defaults
             default_llm_model_config = LLMModelConfig.from_env()
             return cls(model_config=default_llm_model_config)
 
@@ -744,5 +769,3 @@ CONVERSATION_CONFIG = {
 # class BrowserConfig:
 #     preferred_browser: str = 'chromium'  # 'chrome' or 'chromium'
 #     suppress_popups: bool = True
-
-
