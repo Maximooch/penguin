@@ -9,6 +9,7 @@ import platform
 import shutil
 import subprocess
 from typing import Dict, Any, List, Optional, Tuple
+import shutil
 from rich.console import Console
 
 # Create rich console for enhanced output
@@ -759,10 +760,22 @@ def open_in_default_editor(file_path: Path) -> bool:
             elif platform.system() == 'Darwin':  # macOS
                 subprocess.run(['open', file_path], check=True)
             else:  # Linux
+                # In headless environments (e.g., Codespaces) xdg-open may not exist
+                if shutil.which('xdg-open') is None:
+                    console.print(
+                        f"[yellow]⚠️ GUI launcher not available (xdg-open not found). File saved at:[/yellow] {file_path}"
+                    )
+                    return False
                 subprocess.run(['xdg-open', file_path], check=True)
             return True
-        except FileNotFoundError:
-                console.print(f"[bold red]⚠️ File not found:[/bold red] {file_path}")
+        except FileNotFoundError as e:
+                # Differentiate missing editor launcher vs missing file
+                if file_path.exists():
+                    console.print(
+                        f"[yellow]⚠️ Could not launch editor ({e}). File saved at:[/yellow] {file_path}"
+                    )
+                else:
+                    console.print(f"[bold red]⚠️ File not found:[/bold red] {file_path}")
                 return False
         except PermissionError:
                 console.print(f"[bold red]⚠️ Permission denied:[/bold red] Cannot open {file_path}")
