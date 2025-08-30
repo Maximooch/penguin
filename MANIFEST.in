@@ -2,24 +2,30 @@ include README.md
 include LICENSE
 include penguin/config.yml
 include penguin/requirements.txt
+
+# Only include necessary data inside the penguin package
 recursive-include penguin *.yml *.yaml *.json *.txt *.md *.css
-recursive-include penguin/workspace *.gitkeep
-recursive-exclude penguin/workspace/conversations *
-recursive-exclude penguin/workspace/memory_db *
-recursive-exclude penguin/workspace/logs *
+
+# Do not descend into heavy runtime/content directories
+prune penguin/workspace
+prune penguin/logs
+prune penguin/errors_log
+prune penguin/notes
+
+# Exclude common junk/bytecode within the package
 recursive-exclude penguin *.pyc
 recursive-exclude penguin __pycache__
 recursive-exclude penguin .DS_Store
 recursive-exclude penguin *.log
-recursive-exclude penguin/logs *
-recursive-exclude penguin/errors_log *
-recursive-exclude penguin/notes *
+
+# Exclude sensitive or local artifacts
 exclude penguin/.env*
 exclude penguin/.penguin_setup_complete
 exclude penguin/IMG.jpg
 exclude penguin/speedtest.py
 exclude penguin/setup_venv.py
-# Exclude test files
+
+# Exclude tests and dev-only files under penguin
 recursive-exclude penguin test_*.py
 recursive-exclude penguin *_test.py
 recursive-exclude penguin/tests *
@@ -28,7 +34,28 @@ recursive-exclude penguin/llm streaming_smoke_test.py
 recursive-exclude penguin/local_task test_*.py
 recursive-exclude penguin/utils test_*.py
 recursive-exclude penguin/tools/notes *
-# Exclude development files
 exclude penguin/run_web.py
 exclude penguin/main.py
-exclude penguin/possible_prompt.py 
+exclude penguin/possible_prompt.py
+
+# Massive top-level directories to avoid scanning entirely
+prune .git
+prune .github
+prune .venv
+prune .uv
+prune build
+prune dist
+prune docs
+prune misc
+prune tests
+prune scripts
+prune embeddings
+prune errors_log
+prune hold
+prune junkdrawer
+prune notes
+prune penguin_workspace
+prune penguin-web
+prune penguin1
+prune thing
+prune *.egg-info
