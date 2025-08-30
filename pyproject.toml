@@ -159,7 +159,7 @@ penguin-web = "penguin.web.server:main"
 penguin-tui-proto = "penguin.penguin.cli.tui_prototype_mock:main"
 
 [tool.setuptools.packages.find]
-include = ["penguin*"]
+include = ["penguin", "penguin.*"]
 exclude = [
     "tests*", 
     "penguin.tests*", 
@@ -194,6 +194,7 @@ penguin = ["config.yml", "requirements.txt", "*.yml", "*.yaml", "*.css", "cli/*.
     "notes/*",
     "tools/notes/*",
 ]
+
 
 # Development tools configuration
 [tool.black]
