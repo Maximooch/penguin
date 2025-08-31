@@ -57,9 +57,22 @@ class StopCondition:
         raise NotImplementedError
 
 
+# TODO: Look into how the mechanics of this work
+# It would be redundant to stop something that happens to go over the budget
+# when the context window manager is designed exactly to deal with this...
 class TokenBudgetStop(StopCondition):
     async def should_stop(self, engine: "Engine") -> bool:
-        cw = engine.conversation_manager.context_window
+        # Use the active agent's conversation window if available
+        cm = engine.get_conversation_manager()
+        cw = None
+        if cm:
+            if hasattr(cm, "get_current_context_window"):
+                try:
+                    cw = cm.get_current_context_window()  # type: ignore[attr-defined]
+                except Exception:
+                    cw = getattr(cm, "context_window", None)
+            else:
+                cw = getattr(cm, "context_window", None)
         return cw.is_over_budget() if cw else False
 
 
@@ -83,6 +96,23 @@ class ExternalCallbackStop(StopCondition):
 # Engine core
 # ---------------------------------------------------------------------------
 
+@dataclass
+class EngineAgent:
+    """Registered agent runtime with its own conversation manager and optional
+    component overrides.
+
+    By default, agents inherit the Engine's shared `api_client`, `tool_manager`,
+    and `action_executor` unless explicitly provided.
+    """
+
+    agent_id: str
+    conversation_manager: ConversationManager
+    settings: Optional[EngineSettings] = None
+    api_client: Optional[APIClient] = None
+    tool_manager: Optional[ToolManager] = None
+    action_executor: Optional[ActionExecutor] = None
+
+
 class Engine:
     """High‑level coordinator for reasoning / action loops."""
 
@@ -97,11 +127,20 @@ class Engine:
         stop_conditions: Optional[Sequence[StopCondition]] = None,
     ) -> None:
         self.settings = settings
-        self.conversation_manager = conversation_manager
+        # Shared components (agents can override per-agent)
         self.api_client = api_client
         self.tool_manager = tool_manager
         self.action_executor = action_executor
         self.stop_conditions: List[StopCondition] = list(stop_conditions or [])
+
+        # Multi-agent registry and defaults
+        self.agents: Dict[str, EngineAgent] = {}
+        self.default_agent_id: str = "default"
+        self.current_agent_id: Optional[str] = None
+        # Register a default agent backed by the provided ConversationManager
+        self.register_agent(agent_id=self.default_agent_id, conversation_manager=conversation_manager)
+        # Back-compat: keep attribute pointing at default agent's manager
+        self.conversation_manager = conversation_manager
 
         # Inject default conditions based on settings
         if settings.token_budget_stop_enabled and not any(isinstance(s, TokenBudgetStop) for s in self.stop_conditions):
@@ -115,22 +154,113 @@ class Engine:
         self._interrupted: bool = False
 
     # ------------------------------------------------------------------
+    # Agent registry API
+    # ------------------------------------------------------------------
+
+    def register_agent(
+        self,
+        *,
+        agent_id: str,
+        conversation_manager: ConversationManager,
+        settings: Optional[EngineSettings] = None,
+        api_client: Optional[APIClient] = None,
+        tool_manager: Optional[ToolManager] = None,
+        action_executor: Optional[ActionExecutor] = None,
+    ) -> None:
+        """Register or replace an agent in the Engine registry."""
+        self.agents[agent_id] = EngineAgent(
+            agent_id=agent_id,
+            conversation_manager=conversation_manager,
+            settings=settings,
+            api_client=api_client,
+            tool_manager=tool_manager,
+            action_executor=action_executor,
+        )
+
+    def get_agent(self, agent_id: Optional[str] = None) -> Optional[EngineAgent]:
+        return self.agents.get(agent_id or self.default_agent_id)
+
+    def list_agents(self) -> List[str]:
+        return list(self.agents.keys())
+
+    def set_default_agent(self, agent_id: str) -> None:
+        if agent_id not in self.agents:
+            raise KeyError(f"Agent '{agent_id}' is not registered")
+        self.default_agent_id = agent_id
+
+    def get_conversation_manager(self, agent_id: Optional[str] = None) -> Optional[ConversationManager]:
+        agent = self.get_agent(agent_id or self.current_agent_id)
+        return agent.conversation_manager if agent else None
+
+    def _resolve_components(
+        self, agent_id: Optional[str] = None
+    ):
+        """Return (conversation_manager, api_client, tool_manager, action_executor)
+        for the target agent, falling back to Engine shared instances.
+        """
+        agent = self.get_agent(agent_id)
+        if agent is None:
+            # Fallback to defaults for safety
+            cm = self.conversation_manager
+            # If the CM supports multi-agents, set the active one when provided
+            if agent_id and hasattr(cm, "set_current_agent"):
+                try:
+                    cm.set_current_agent(agent_id)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+            return (
+                cm,
+                self.api_client,
+                self.tool_manager,
+                self.action_executor,
+            )
+        cm = agent.conversation_manager
+        # If the CM supports multi-agents, set the active one explicitly
+        if agent_id and hasattr(cm, "set_current_agent"):
+            try:
+                cm.set_current_agent(agent_id)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        return (
+            cm,
+            agent.api_client or self.api_client,
+            agent.tool_manager or self.tool_manager,
+            agent.action_executor or self.action_executor,
+        )
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    async def run_single_turn(self, prompt: str, *, image_path: Optional[str] = None, tools_enabled: bool = True, streaming: Optional[bool] = None, stream_callback: Optional[Callable[[str], None]] = None):
+    async def run_single_turn(
+        self,
+        prompt: str,
+        *,
+        image_path: Optional[str] = None,
+        tools_enabled: bool = True,
+        streaming: Optional[bool] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
+        agent_id: Optional[str] = None,
+    ):
         """Run a single reasoning → (optional) action → response cycle.
 
         Returns the same structured dict that ``_llm_step`` emits so callers
         may access both the assistant text **and** any action_results.
         """
-        self.conversation_manager.conversation.prepare_conversation(prompt, image_path)
-        response_data = await self._llm_step(tools_enabled=tools_enabled, streaming=streaming, stream_callback=stream_callback)
+        self.current_agent_id = agent_id or self.default_agent_id
+        cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
+        cm.conversation.prepare_conversation(prompt, image_path)
+        response_data = await self._llm_step(
+            tools_enabled=tools_enabled,
+            streaming=streaming,
+            stream_callback=stream_callback,
+            agent_id=self.current_agent_id,
+        )
         return response_data
 
-    async def stream(self, prompt: str):
+    async def stream(self, prompt: str, *, agent_id: Optional[str] = None):
         """Yield chunks as they arrive (if provider supports streaming)."""
-        async for chunk in self._llm_stream(prompt):
+        async for chunk in self._llm_stream(prompt, agent_id=agent_id):
             yield chunk
 
     async def run_response(
@@ -140,7 +270,8 @@ class Engine:
         image_path: Optional[str] = None,
         max_iterations: Optional[int] = None,
         streaming: Optional[bool] = None,
-        stream_callback: Optional[Callable[[str], None]] = None
+        stream_callback: Optional[Callable[[str], None]] = None,
+        agent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Multi-step conversational loop that continues until no actions are taken.
@@ -163,8 +294,10 @@ class Engine:
         self.current_iteration = 0
         self.start_time = datetime.utcnow()
         
-        # Prepare conversation with initial prompt
-        self.conversation_manager.conversation.prepare_conversation(prompt, image_path=image_path)
+        # Prepare conversation with initial prompt for the selected agent
+        self.current_agent_id = agent_id or self.default_agent_id
+        cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
+        cm.conversation.prepare_conversation(prompt, image_path=image_path)
         
         last_response = ""
         all_action_results = []
@@ -179,9 +312,9 @@ class Engine:
                     break
                 
                 # Reset streaming state before each iteration to ensure separate UI panels
-                if hasattr(self.conversation_manager, 'core') and self.conversation_manager.core:
+                if hasattr(cm, 'core') and cm.core:
                     # Force finalize any previous streaming before starting new iteration
-                    self.conversation_manager.core.finalize_streaming_message()
+                    cm.core.finalize_streaming_message()
                 
                 # Determine effective streaming flag
                 streaming_flag = streaming if streaming is not None else self.settings.streaming_default
@@ -190,22 +323,23 @@ class Engine:
                 response_data = await self._llm_step(
                     tools_enabled=True,
                     streaming=streaming_flag,
-                    stream_callback=stream_callback
+                    stream_callback=stream_callback,
+                    agent_id=self.current_agent_id,
                 )
                 
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
                 
                 # CRITICAL: Finalize streaming message after each iteration to force separate UI panels
-                if hasattr(self.conversation_manager, 'core') and self.conversation_manager.core:
+                if hasattr(cm, 'core') and cm.core:
                     # Force finalize any active streaming to break message boundaries
-                    self.conversation_manager.core.finalize_streaming_message()
+                    cm.core.finalize_streaming_message()
                     
                     # Small delay to allow UI to process the message boundary
                     await asyncio.sleep(0.05)
                 
                 # Save conversation state after each iteration to persist separate messages
-                self.conversation_manager.save()
+                cm.save()
                 
                 # Collect all action results
                 if iteration_results:
@@ -245,7 +379,8 @@ class Engine:
         completion_phrases: Optional[List[str]] = None,
         on_completion: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
         enable_events: bool = True,
-        message_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
+        message_callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
+        agent_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Multi‑step reasoning loop with comprehensive task handling.
@@ -272,7 +407,10 @@ class Engine:
         max_iters = max_iterations or self.settings.max_iterations_default
         self.current_iteration = 0
         self.start_time = datetime.utcnow()
-        self.conversation_manager.conversation.prepare_conversation(task_prompt, image_path=image_path)
+        # Select agent and prepare its conversation
+        self.current_agent_id = agent_id or self.default_agent_id
+        cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
+        cm.conversation.prepare_conversation(task_prompt, image_path=image_path)
         
         # Prepare task metadata
         task_metadata = {
@@ -326,7 +464,8 @@ class Engine:
                 response_data = await self._llm_step(
                     tools_enabled=True,
                     streaming=self.settings.streaming_default,
-                    stream_callback=message_callback if message_callback else None
+                    stream_callback=message_callback if message_callback else None,
+                    agent_id=self.current_agent_id,
                 )
                 
                 last_response = response_data.get("assistant_response", "")
@@ -440,11 +579,12 @@ class Engine:
     async def spawn_child(self, *, purpose: str = "child", inherit_tools: bool = False, shared_conversation: bool = False) -> "Engine":
         """Spawn a sub‑engine in a separate process.  Minimal stub for now."""
         logger.warning("spawn_child is a stub – running in‑process for now")
-        cm = self.conversation_manager if shared_conversation else ConversationManager(
-            model_config=self.conversation_manager.model_config,
+        base_cm = self.get_conversation_manager() or self.conversation_manager
+        cm = base_cm if shared_conversation else ConversationManager(
+            model_config=base_cm.model_config,
             api_client=self.api_client,
-            workspace_path=self.conversation_manager.workspace_path,
-            system_prompt=self.conversation_manager.conversation.system_prompt,
+            workspace_path=base_cm.workspace_path,
+            system_prompt=base_cm.conversation.system_prompt,
         )
         tm = self.tool_manager if inherit_tools else ToolManager(
             config=self.tool_manager.config if hasattr(self.tool_manager, 'config') else {},
@@ -457,10 +597,18 @@ class Engine:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _llm_step(self, *, tools_enabled: bool = True, streaming: Optional[bool] = None, stream_callback: Optional[Callable[[str], None]] = None):
-        messages = self.conversation_manager.conversation.get_formatted_messages()
+    async def _llm_step(
+        self,
+        *,
+        tools_enabled: bool = True,
+        streaming: Optional[bool] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
+        agent_id: Optional[str] = None,
+    ):
+        cm, api_client, _tm, action_executor = self._resolve_components(agent_id or self.current_agent_id)
+        messages = cm.conversation.get_formatted_messages()
         # First attempt – honour requested streaming setting
-        assistant_response = await self.api_client.get_response(
+        assistant_response = await api_client.get_response(
             messages,
             stream=streaming,
             stream_callback=stream_callback,
@@ -470,7 +618,7 @@ class Engine:
         # fail in streaming-mode but succeed with a normal completion request).
         if not assistant_response or not assistant_response.strip():
             logger.warning("_llm_step got empty response (stream=%s). Retrying once without streaming.", streaming)
-            assistant_response = await self.api_client.get_response(messages, stream=False)
+            assistant_response = await api_client.get_response(messages, stream=False)
 
         # Still empty? Give up but do NOT pollute the history with blank messages.
         if not assistant_response or not assistant_response.strip():
@@ -483,17 +631,17 @@ class Engine:
             # below, so adding it here would create a duplicate and break
             # chronological ordering.
             if not streaming:
-                self.conversation_manager.conversation.add_assistant_message(assistant_response)
+                cm.conversation.add_assistant_message(assistant_response)
 
         # ------------------------------------------------------------------
         # Ensure any streaming content is finalised **before** we process and
         # append tool-result messages.  This guarantees the natural order:
         #   assistant → tool-output, matching real conversational flow.
         # ------------------------------------------------------------------
-        if streaming and hasattr(self.conversation_manager, "core") and self.conversation_manager.core:
+        if streaming and hasattr(cm, "core") and cm.core:
             # This is a no-op when streaming was disabled or already finalised.
             try:
-                self.conversation_manager.core.finalize_streaming_message()
+                cm.core.finalize_streaming_message()
             except Exception as _fin_err:
                 logger.warning("Failed to finalise streaming message early: %s", _fin_err)
 
@@ -501,7 +649,7 @@ class Engine:
         if tools_enabled:
             actions: List[CodeActAction] = parse_action(assistant_response)
             for act in actions:
-                result = await self.action_executor.execute_action(act)
+                result = await action_executor.execute_action(act)
                 # Format result for display
                 action_result = {
                     "action_name": act.action_type.value if hasattr(act.action_type, 'value') else str(act.action_type),
@@ -511,7 +659,7 @@ class Engine:
                 action_results.append(action_result)
                 
                 # Persist result in conversation - CRITICAL FIX
-                self.conversation_manager.add_action_result(
+                cm.add_action_result(
                     action_type=action_result["action_name"],
                     result=action_result["output"],
                     status=action_result["status"]
@@ -519,9 +667,9 @@ class Engine:
                 logger.debug(f"Added action result to conversation: {action_result['action_name']}")
 
                 # Emit UI event immediately for real-time display
-                if hasattr(self.conversation_manager, 'core') and self.conversation_manager.core:
+                if hasattr(cm, 'core') and cm.core:
                     try:
-                        await self.conversation_manager.core.emit_ui_event("message", {
+                        await cm.core.emit_ui_event("message", {
                             "role": "system", 
                             "content": f"Tool Result ({action_result['action_name']}):\n{action_result['output']}",
                             "category": MessageCategory.SYSTEM_OUTPUT.name,  # Convert enum to string
@@ -532,33 +680,34 @@ class Engine:
                         logger.warning(f"Failed to emit tool result UI event: {e}")
 
         # Persist conversation state
-        self.conversation_manager.save()
+        cm.save()
         return {"assistant_response": assistant_response, "action_results": action_results}
 
-    async def _llm_stream(self, prompt: str):
+    async def _llm_stream(self, prompt: str, *, agent_id: Optional[str] = None):
         """Helper to stream chunks to caller."""
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[str] = asyncio.Queue()
 
         async def run():
             # Prepare conversation
-            self.conversation_manager.conversation.prepare_conversation(prompt)
+            cm, api_client, _tm, _ae = self._resolve_components(agent_id or self.current_agent_id)
+            cm.conversation.prepare_conversation(prompt)
 
             # Inner callback forwards chunks into queue
             async def _cb(chunk: str):
                 await queue.put(chunk)
 
             # Call provider with streaming enabled
-            messages = self.conversation_manager.conversation.get_formatted_messages()
-            full_response = await self.api_client.get_response(
+            messages = cm.conversation.get_formatted_messages()
+            full_response = await api_client.get_response(
                 messages,
                 stream=True,
                 stream_callback=lambda c: asyncio.create_task(_cb(c)),
             )
 
             # Persist full assistant response now that streaming done
-            self.conversation_manager.conversation.add_assistant_message(full_response)
-            self.conversation_manager.save()
+            cm.conversation.add_assistant_message(full_response)
+            cm.save()
 
             await queue.put(None)  # sentinel
 
@@ -575,3 +724,25 @@ class Engine:
                 logger.info("Engine stopping due to %s", cond.__class__.__name__)
                 return True
         return False
+
+    # ------------------------------------------------------------------
+    # Convenience: explicit per-agent single-turn helper
+    # ------------------------------------------------------------------
+    async def run_agent_turn(
+        self,
+        agent_id: str,
+        prompt: str,
+        *,
+        image_path: Optional[str] = None,
+        tools_enabled: bool = True,
+        streaming: Optional[bool] = None,
+        stream_callback: Optional[Callable[[str], None]] = None,
+    ):
+        return await self.run_single_turn(
+            prompt,
+            image_path=image_path,
+            tools_enabled=tools_enabled,
+            streaming=streaming,
+            stream_callback=stream_callback,
+            agent_id=agent_id,
+        )

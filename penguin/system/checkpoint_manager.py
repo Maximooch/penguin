@@ -105,9 +105,10 @@ class CheckpointManager:
         self.checkpoint_index: Dict[str, CheckpointMetadata] = {}
         self._load_checkpoint_index()
         
-        # Async worker setup
-        self.checkpoint_queue: asyncio.Queue = asyncio.Queue()
-        self.cleanup_queue: asyncio.Queue = asyncio.Queue()
+        # Async worker setup (queues created lazily in the owning event loop)
+        self.checkpoint_queue: Optional[asyncio.Queue] = None
+        self.cleanup_queue: Optional[asyncio.Queue] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._workers_started = False
         self._worker_tasks: List[asyncio.Task] = []
         
@@ -121,6 +122,12 @@ class CheckpointManager:
         if self._workers_started:
             return
             
+        # Bind queues to the current running loop and spawn workers in the same loop
+        loop = asyncio.get_running_loop()
+        self._loop = loop
+        self.checkpoint_queue = asyncio.Queue()
+        self.cleanup_queue = asyncio.Queue()
+        
         # Start checkpoint worker
         checkpoint_worker = asyncio.create_task(self._checkpoint_worker())
         self._worker_tasks.append(checkpoint_worker)
@@ -227,7 +234,8 @@ class CheckpointManager:
             auto=(checkpoint_type == CheckpointType.AUTO)
         )
         
-        # Enqueue for async processing
+        # Enqueue for async processing (queue is guaranteed after start_workers)
+        assert self.checkpoint_queue is not None
         await self.checkpoint_queue.put(('create', session, metadata))
         
         logger.debug(f"Enqueued checkpoint creation: {checkpoint_id}")
@@ -489,6 +497,7 @@ class CheckpointManager:
         """Async worker that processes checkpoint creation requests."""
         while True:
             try:
+                assert self.checkpoint_queue is not None
                 action, session, metadata = await self.checkpoint_queue.get()
                 
                 if action == 'create':
@@ -505,6 +514,7 @@ class CheckpointManager:
         """Async worker that processes cleanup requests."""
         while True:
             try:
+                assert self.cleanup_queue is not None
                 action = await self.cleanup_queue.get()
                 
                 if action == 'cleanup':

@@ -690,6 +690,205 @@ class PenguinCore:
         # if self.action_executor: # ActionExecutor does not have a reset method currently
         #     self.action_executor.reset()
 
+    # ------------------------------------------------------------------
+    # Multi-agent helpers (Core ↔ Engine wiring)
+    # ------------------------------------------------------------------
+
+    def register_agent(
+        self,
+        agent_id: str,
+        *,
+        system_prompt: Optional[str] = None,
+        activate: bool = False,
+        share_session_with: Optional[str] = None,
+        share_context_window_with: Optional[str] = None,
+        shared_cw_max_tokens: Optional[int] = None,
+        model_max_tokens: Optional[int] = None,
+    ) -> None:
+        """Register an agent with a per-agent ActionExecutor bound to its conversation.
+
+        - Ensures an agent-scoped ConversationSystem exists in ConversationManager
+        - Creates an ActionExecutor that targets that agent's conversation
+        - Registers the agent with Engine, overriding the action executor for that agent
+
+        Args:
+            agent_id: Unique agent identifier
+            system_prompt: Optional system prompt override for the agent
+            activate: If True, makes this the active/default agent for subsequent calls
+        """
+        if not getattr(self, 'engine', None):
+            raise RuntimeError("Engine is not initialized; cannot register agents")
+
+        # Provision agent or sub-agent
+        # Determine effective clamp target for shared CW
+        effective_cw_cap = None
+        if shared_cw_max_tokens is not None and model_max_tokens is not None:
+            effective_cw_cap = min(int(shared_cw_max_tokens), int(model_max_tokens))
+        elif shared_cw_max_tokens is not None:
+            effective_cw_cap = int(shared_cw_max_tokens)
+        elif model_max_tokens is not None:
+            effective_cw_cap = int(model_max_tokens)
+
+        if share_session_with or share_context_window_with:
+            parent = share_session_with or share_context_window_with  # prefer explicit share_session target
+            self.conversation_manager.create_sub_agent(
+                agent_id,
+                parent_agent_id=parent,
+                share_session=bool(share_session_with),
+                share_context_window=True if (share_session_with or share_context_window_with) else False,
+                shared_cw_max_tokens=effective_cw_cap,
+            )
+            conv = self.conversation_manager.get_agent_conversation(agent_id)
+        else:
+            # Ensure isolated agent conversation exists
+            conv = self.conversation_manager.get_agent_conversation(agent_id, create_if_missing=True)
+        if system_prompt:
+            conv.set_system_prompt(system_prompt)
+
+        # Create per-agent ActionExecutor targeting this agent's conversation
+        agent_action_executor = ActionExecutor(
+            self.tool_manager,
+            self.project_manager,
+            conv,  # Pass ConversationSystem so tools can add messages directly
+            ui_event_callback=self.emit_ui_event,
+        )
+
+        # Register with Engine using the shared ConversationManager but per-agent executor
+        try:
+            self.engine.register_agent(
+                agent_id=agent_id,
+                conversation_manager=self.conversation_manager,
+                action_executor=agent_action_executor,
+            )
+        except Exception as e:
+            logger.error(f"Failed to register agent '{agent_id}' with Engine: {e}")
+            raise
+
+        if activate:
+            self.set_active_agent(agent_id)
+
+    def set_active_agent(self, agent_id: str) -> None:
+        """Switch the active agent across ConversationManager and Engine."""
+        # Switch CM
+        try:
+            self.conversation_manager.set_current_agent(agent_id)
+        except Exception as e:
+            logger.error(f"Failed to switch ConversationManager to agent '{agent_id}': {e}")
+            raise
+
+        # Switch Engine default routing
+        try:
+            if getattr(self, 'engine', None):
+                self.engine.set_default_agent(agent_id)
+        except Exception as e:
+            logger.error(f"Failed to set Engine default agent '{agent_id}': {e}")
+            raise
+
+    # Thin wrappers for agent-scoped conversations
+    def create_agent_conversation(self, agent_id: str) -> str:
+        return self.conversation_manager.create_agent_conversation(agent_id)
+
+    def list_all_conversations(self, *, limit_per_agent: int = 1000, offset: int = 0):
+        return self.conversation_manager.list_all_conversations(limit_per_agent=limit_per_agent, offset=offset)
+
+    def load_agent_conversation(self, agent_id: str, conversation_id: str, *, activate: bool = True) -> bool:
+        return self.conversation_manager.load_agent_conversation(agent_id, conversation_id, activate=activate)
+
+    def delete_agent_conversation(self, agent_id: str, conversation_id: str) -> bool:
+        return self.conversation_manager.delete_agent_conversation(agent_id, conversation_id)
+
+    def delete_agent_conversation_guarded(self, agent_id: str, conversation_id: str, *, force: bool = False) -> Dict[str, Any]:
+        """Delete a conversation with safety checks for shared sessions.
+
+        Returns a dict: {"success": bool, "warning": Optional[str]}
+        """
+        cm = self.conversation_manager
+        warning = None
+
+        try:
+            # Determine if the target conversation is currently shared
+            shared_agents = cm.agents_sharing_session(agent_id)
+            if len(shared_agents) > 1:
+                # Confirm this shared group is pointing at the same session id
+                conv = cm.get_agent_conversation(agent_id)
+                current_id = getattr(conv.session, "id", None)
+                if current_id == conversation_id and not force:
+                    warning = (
+                        f"Conversation {conversation_id} is shared by agents {shared_agents}. "
+                        f"Deletion aborted. Use force=True to delete anyway."
+                    )
+                    return {"success": False, "warning": warning}
+        except Exception:
+            # Best-effort safeguard only; continue with delete
+            pass
+
+        ok = cm.delete_agent_conversation(agent_id, conversation_id)
+        return {"success": ok, "warning": None}
+
+    # ------------------------------------------------------------------
+    # Diagnostics: Smoke test for agent wiring
+    # ------------------------------------------------------------------
+    def smoke_check_agents(self) -> Dict[str, Any]:
+        """Return a diagnostic snapshot of agent wiring and context windows.
+
+        Includes per-agent session, conversation object identity, context window
+        limits and usage, and Engine registry presence.
+        """
+        cm = self.conversation_manager
+        summary: Dict[str, Any] = {
+            "active_agent": getattr(cm, "current_agent_id", "default"),
+            "agents": [],
+            "shared_conversations": [],
+            "engine_registry": {},
+        }
+
+        # Build per-agent info and detect shared ConversationSystem groups
+        conv_to_agents: Dict[int, list] = {}
+        for aid, conv in getattr(cm, "agent_sessions", {}).items():
+            try:
+                session_id = getattr(conv.session, "id", None)
+                cw = cm.agent_context_windows.get(aid) if hasattr(cm, "agent_context_windows") else getattr(cm, "context_window", None)
+                cw_usage = {}
+                cw_max = None
+                if cw and hasattr(cw, "get_token_usage"):
+                    try:
+                        u = cw.get_token_usage()
+                        # Normalize usage fields
+                        cw_usage = {
+                            "total": u.get("total", u.get("current_total_tokens")),
+                            "available": u.get("available", u.get("available_tokens")),
+                        }
+                        cw_max = u.get("max", u.get("max_tokens"))
+                    except Exception:
+                        pass
+                # Record agent info
+                summary["agents"].append({
+                    "agent_id": aid,
+                    "session_id": session_id,
+                    "conversation_obj": id(conv),
+                    "context_window_max": cw_max,
+                    "context_window_usage": cw_usage,
+                })
+                conv_to_agents.setdefault(id(conv), []).append(aid)
+            except Exception:
+                continue
+
+        # Shared conversation groups
+        summary["shared_conversations"] = [
+            {"conversation_obj": k, "agents": v}
+            for k, v in conv_to_agents.items() if len(v) > 1
+        ]
+
+        # Engine registry presence
+        try:
+            engine_agents = set(self.engine.list_agents()) if getattr(self, "engine", None) else set()
+        except Exception:
+            engine_agents = set()
+        for a in [a.get("agent_id") for a in summary["agents"]]:
+            summary["engine_registry"][a] = (a in engine_agents)
+
+        return summary
+
     @property
     def total_tokens_used(self) -> int:
         """Get total tokens used via conversation manager"""

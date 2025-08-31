@@ -110,7 +110,7 @@ class ConversationManager:
                 logger.warning(f"Failed to initialize checkpoint manager: {e}")
                 self.checkpoint_manager = None
         
-        # Initialize conversation system
+        # Initialize conversation system (default agent)
         self.conversation = ConversationSystem(
             context_window_manager=self.context_window,
             session_manager=self.session_manager,
@@ -122,6 +122,20 @@ class ConversationManager:
         self.context_loader = SimpleContextLoader(
             context_manager=self.conversation
         )
+
+        # ---------------------------
+        # Multi-agent scaffolding (Phase 2)
+        # ---------------------------
+        # Keep a registry of per-agent ConversationSystem and SessionManager.
+        # Backward-compat: the "default" agent is the one used above and exposed
+        # via `self.conversation` and `self.session_manager`.
+        self.current_agent_id: str = "default"
+        self.agent_sessions: Dict[str, ConversationSystem] = {"default": self.conversation}
+        self.agent_session_managers: Dict[str, SessionManager] = {"default": self.session_manager}
+        # Namespace checkpoint managers per agent (optional; default agent uses the prebuilt one).
+        self.agent_checkpoint_managers: Dict[str, Optional[CheckpointManager]] = {"default": self.checkpoint_manager}
+        # Separate context windows per agent (default shares existing)
+        self.agent_context_windows: Dict[str, ContextWindowManager] = {"default": self.context_window}
 
     def _get_live_config(self):
         """Best-effort accessor for the live Config instance used by Core.
@@ -155,6 +169,284 @@ class ConversationManager:
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt."""
         self.conversation.set_system_prompt(prompt)
+
+    # ------------------------------------------------------------------
+    # Multi-agent helpers
+    # ------------------------------------------------------------------
+
+    def _ensure_agent(self, agent_id: str) -> None:
+        """Ensure internal structures for `agent_id` exist.
+
+        Creates a dedicated SessionManager under `conversations/<agent_id>/` and
+        a separate ConversationSystem bound to it. Checkpoints are stored under
+        `<workspace>/agents/<agent_id>/checkpoints` to keep them isolated.
+        """
+        if agent_id in self.agent_sessions:
+            return
+
+        # Create namespaced paths
+        conversations_root = Path(self.workspace_path) / "conversations"
+        agent_conv_path = conversations_root / agent_id
+        agent_conv_path.mkdir(parents=True, exist_ok=True)
+
+        # Dedicated SessionManager per agent
+        agent_sm = SessionManager(
+            base_path=str(agent_conv_path),
+            max_messages_per_session=self.session_manager.max_messages_per_session,
+            max_sessions_in_memory=self.session_manager.max_sessions_in_memory,
+            auto_save_interval=self.session_manager.auto_save_interval,
+        )
+
+        # Dedicated ContextWindowManager per agent (isolation by default)
+        agent_cw = ContextWindowManager(
+            model_config=self.model_config,
+            api_client=self.api_client,
+            config_obj=self._get_live_config(),
+        )
+
+        # Dedicated CheckpointManager per agent (separate folder tree)
+        agent_workspace = Path(self.workspace_path) / "agents" / agent_id
+        agent_workspace.mkdir(parents=True, exist_ok=True)
+        agent_cp: Optional[CheckpointManager] = None
+        if self.checkpoint_manager is not None:
+            try:
+                agent_cp = CheckpointManager(
+                    workspace_path=agent_workspace,
+                    session_manager=agent_sm,
+                    config=self.checkpoint_manager.config,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to init agent checkpoint manager for '{agent_id}': {e}")
+                agent_cp = None
+
+        # ConversationSystem for this agent (uses its own ContextWindowManager)
+        agent_conv = ConversationSystem(
+            context_window_manager=agent_cw,
+            session_manager=agent_sm,
+            system_prompt=self.conversation.system_prompt,
+            checkpoint_manager=agent_cp,
+        )
+
+        # Register
+        self.agent_session_managers[agent_id] = agent_sm
+        self.agent_checkpoint_managers[agent_id] = agent_cp
+        self.agent_sessions[agent_id] = agent_conv
+        self.agent_context_windows[agent_id] = agent_cw
+
+    def set_current_agent(self, agent_id: str) -> None:
+        """Switch active agent for backward-compatible APIs.
+
+        Updates `self.conversation`, `self.session_manager`, and context loader
+        bindings to the agent's instances.
+        """
+        self._ensure_agent(agent_id)
+        self.current_agent_id = agent_id
+        self.conversation = self.agent_sessions[agent_id]
+        self.session_manager = self.agent_session_managers[agent_id]
+        # Keep checkpoint_manager reference in sync (optional)
+        self.checkpoint_manager = self.agent_checkpoint_managers.get(agent_id)
+        # Update current context window reference
+        try:
+            self.context_window = self.agent_context_windows[agent_id]
+        except Exception:
+            pass
+        # Update context loader target
+        if getattr(self, "context_loader", None):
+            self.context_loader.context_manager = self.conversation
+
+    def get_current_context_window(self) -> Optional[ContextWindowManager]:
+        """Return the active agent's ContextWindowManager."""
+        try:
+            return self.agent_context_windows.get(self.current_agent_id, self.context_window)
+        except Exception:
+            return self.context_window
+
+    def get_agent_conversation(self, agent_id: str, *, create_if_missing: bool = True) -> ConversationSystem:
+        if create_if_missing:
+            self._ensure_agent(agent_id)
+        conv = self.agent_sessions.get(agent_id)
+        if conv is None:
+            raise KeyError(f"Agent conversation not found for '{agent_id}'")
+        return conv
+
+    def create_agent_conversation(self, agent_id: str) -> str:
+        """Create a new conversation for a specific agent and return its ID."""
+        self._ensure_agent(agent_id)
+        sm = self.agent_session_managers[agent_id]
+        conv = self.agent_sessions[agent_id]
+        session = sm.create_session()
+        # Tag session with agent ownership for Phase 3 compatibility
+        try:
+            session.metadata["agent_id"] = agent_id
+        except Exception:
+            pass
+        conv.session = session
+        conv.system_prompt_sent = False
+        conv._modified = True
+        # If switching to this agent is desired, caller should invoke set_current_agent
+        return session.id
+
+    def create_sub_agent(
+        self,
+        agent_id: str,
+        *,
+        parent_agent_id: str,
+        share_session: bool = True,
+        share_context_window: bool = True,
+        shared_cw_max_tokens: Optional[int] = None,
+    ) -> None:
+        """Create a sub-agent with isolated session and context window, then copy SYSTEM+CONTEXT.
+
+        Note: For compatibility the signature includes share_session/share_context_window,
+        but this implementation enforces isolation (no shared CWM or transcript).
+        """
+        # Ensure parent and child agents exist (child created if missing)
+        self._ensure_agent(parent_agent_id)
+        self._ensure_agent(agent_id)
+
+        # Configure child's CWM max_tokens from parent (optionally clamp)
+        try:
+            parent_cw = self.agent_context_windows[parent_agent_id]
+            child_cw = self.agent_context_windows[agent_id]
+            if parent_cw and child_cw and hasattr(parent_cw, 'max_tokens') and hasattr(child_cw, 'max_tokens'):
+                desired = parent_cw.max_tokens
+                if shared_cw_max_tokens is not None:
+                    desired = min(desired, int(shared_cw_max_tokens))
+                child_cw.max_tokens = desired
+                if shared_cw_max_tokens is not None and desired < parent_cw.max_tokens:
+                    # Inform parent of clamp difference
+                    self.add_system_note(
+                        parent_agent_id,
+                        content=(
+                            f"Note: Sub-agent '{agent_id}' uses isolated CWM with max_tokens={desired} (parent={parent_cw.max_tokens})."
+                        ),
+                        metadata={"type": "cw_clamp_notice", "sub_agent": agent_id, "child_max": desired, "parent_max": parent_cw.max_tokens},
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to configure sub-agent CWM: {e}")
+
+        # One-time partial share: copy SYSTEM + CONTEXT messages from parent
+        try:
+            self.partial_share_context(
+                parent_agent_id,
+                agent_id,
+                categories=[MessageCategory.SYSTEM, MessageCategory.CONTEXT],
+                replace_child_context=False,
+            )
+        except Exception as e:
+            logger.warning(f"Failed partial context share to '{agent_id}': {e}")
+
+    def save_all(self) -> int:
+        """Save all agent conversations. Returns count of successful saves."""
+        saved = 0
+        for aid, conv in self.agent_sessions.items():
+            try:
+                if conv.save():
+                    saved += 1
+            except Exception as e:
+                logger.warning(f"Failed to save conversation for agent '{aid}': {e}")
+        return saved
+
+    def partial_share_context(
+        self,
+        parent_agent_id: str,
+        child_agent_id: str,
+        *,
+        categories: Optional[List[MessageCategory]] = None,
+        replace_child_context: bool = False,
+    ) -> None:
+        """Copy selected categories (default: SYSTEM + CONTEXT) from parent to child.
+
+        On replace_child_context=True, clears existing messages in those categories in the child first.
+        """
+        self._ensure_agent(parent_agent_id)
+        self._ensure_agent(child_agent_id)
+
+        cats = categories or [MessageCategory.SYSTEM, MessageCategory.CONTEXT]
+        parent_conv = self.agent_sessions[parent_agent_id]
+        child_conv = self.agent_sessions[child_agent_id]
+
+        if replace_child_context:
+            try:
+                child_conv.session.messages = [m for m in child_conv.session.messages if m.category not in cats]
+                child_conv._modified = True
+            except Exception:
+                pass
+
+        for msg in parent_conv.session.messages:
+            if msg.category in cats:
+                try:
+                    child_conv.add_message(role=msg.role, content=msg.content, category=msg.category, metadata=msg.metadata)
+                except Exception:
+                    continue
+
+        # Recompute usage under child's CWM
+        try:
+            if child_conv.context_window:
+                child_conv.session = child_conv.context_window.process_session(child_conv.session)
+        except Exception:
+            pass
+
+    def list_all_conversations(self, *, limit_per_agent: int = 1000, offset: int = 0) -> List[Dict[str, Any]]:
+        """List conversations across all agents with agent_id included."""
+        results: List[Dict[str, Any]] = []
+        for aid, sm in self.agent_session_managers.items():
+            try:
+                lst = sm.list_sessions(limit=limit_per_agent, offset=offset)
+                for item in lst:
+                    item = dict(item)
+                    item["agent_id"] = aid
+                    results.append(item)
+            except Exception as e:
+                logger.warning(f"Failed listing sessions for agent '{aid}': {e}")
+        return results
+
+    def load_agent_conversation(self, agent_id: str, conversation_id: str, *, activate: bool = True) -> bool:
+        """Load a specific conversation for a given agent. Optionally activate the agent."""
+        self._ensure_agent(agent_id)
+        conv = self.agent_sessions[agent_id]
+        ok = conv.load(conversation_id)
+        if ok and activate:
+            self.set_current_agent(agent_id)
+        return ok
+
+    def delete_agent_conversation(self, agent_id: str, conversation_id: str) -> bool:
+        """Delete a specific conversation for a given agent."""
+        self._ensure_agent(agent_id)
+        sm = self.agent_session_managers[agent_id]
+        success = sm.delete_session(conversation_id)
+        if success:
+            try:
+                conv = self.agent_sessions[agent_id]
+                if conv.session and conv.session.id == conversation_id:
+                    conv.reset()
+            except Exception:
+                pass
+        return success
+
+    def add_system_note(self, agent_id: str, content: str, *, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Add a system-level note to an agent's conversation and save it."""
+        try:
+            conv = self.get_agent_conversation(agent_id)
+            conv.add_message(
+                role="system",
+                content=content,
+                category=MessageCategory.SYSTEM,
+                metadata=metadata or {"type": "agent_notice"},
+            )
+            self.save()
+        except Exception as e:
+            logger.warning(f"Failed to add system note to agent '{agent_id}': {e}")
+
+    def agents_sharing_session(self, agent_id: str) -> List[str]:
+        """Return agent IDs that share the same ConversationSystem as agent_id (including itself).
+
+        Useful to warn before deleting sessions that are shared across agents.
+        """
+        self._ensure_agent(agent_id)
+        target_conv = self.agent_sessions[agent_id]
+        shared = [aid for aid, conv in self.agent_sessions.items() if conv is target_conv]
+        return shared
         
     async def process_message(
         self,

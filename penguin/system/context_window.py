@@ -10,6 +10,28 @@ This module provides tools to:
 4. Ensure context windows don't exceed model limits
 """
 
+# Future ideas:
+# - Make the budgets dynamic based on the content of the messages. Maybe?
+# - Don't hardcode the categories, make them configurable. Which means here it deals with the budgets of categories based on the priority they're infered from the config.
+
+# for multi/sub-agents, each will have their own context window manager that sits in that agent's shared context window manager
+# they will also be able to inherit some settings from the parent context window manager
+# these can't be too big, but they can't be too small either.
+# this is one of the reasons i wanted to split out conversation modules (where the conversation can be processed like a queue)
+# if its in that, then its a different conversation as far as the context window manager is concerned
+# in theory, this could extend to tool calls themselves, that could then have their own context window manager
+# yeah, an agent calling a tool that calls a tool that calls a tool etc
+
+"""
+Possibly in terms of Cognitive Architectures, Context Windows could be representated as States/Objects 
+that can be accessed by more than just one Agent. 
+
+Meaning you could have sub-agents that represent functions similar to what a Human brain could do 
+in terms of short/long term memory.
+"""
+
+# Also worth having a features / roadmap / competitors analysis.md files, for Penguin and what others are doing.
+
 # TODO: 
 # - Add a function to get the total token usage for a session
 # - Add a function to get the token usage for a specific category
