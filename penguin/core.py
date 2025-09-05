@@ -197,6 +197,11 @@ from penguin.utils.diagnostics import diagnostics, enable_diagnostics, disable_d
 from penguin.utils.log_error import log_error
 from penguin.utils.parser import ActionExecutor, parse_action
 from penguin.utils.profiling import profile_startup_phase, profile_operation, profiler, print_startup_report
+try:
+    from penguin.system.message_bus import MessageBus, ProtocolMessage
+except Exception:  # pragma: no cover
+    MessageBus = None  # type: ignore
+    ProtocolMessage = None  # type: ignore
 
 # Add the EventHandler type for type hinting
 EventHandler = Callable[[str, Dict[str, Any]], Union[Awaitable[None], None]]
@@ -510,6 +515,8 @@ class PenguinCore:
             "action_result",
             "tool_call",
             "tool_result",
+            # Human-in-the-loop adapter events
+            "human_message",
         }
 
         # Set system prompt from import
@@ -590,6 +597,27 @@ class PenguinCore:
         )
         self.current_runmode_status_summary: str = "RunMode idle." # New attribute
 
+        # Register MessageBus human adapter to forward to UI
+        try:
+            if MessageBus and ProtocolMessage:
+                bus = MessageBus.get_instance()
+
+                async def _human_handler(msg: ProtocolMessage):
+                    payload = {
+                        "agent_id": msg.sender,
+                        "recipient_id": msg.recipient,
+                        "content": msg.content,
+                        "message_type": msg.message_type,
+                        "metadata": msg.metadata,
+                        "session_id": msg.session_id,
+                        "message_id": msg.message_id,
+                    }
+                    await self.emit_ui_event("human_message", payload)
+
+                bus.register_handler("human", _human_handler)
+        except Exception as e:
+            logger.debug(f"MessageBus human adapter not registered: {e}")
+
         # ------------------- Engine Initialization -------------------
         try:
             from penguin.engine import Engine, EngineSettings, TokenBudgetStop, WallClockStop  # type: ignore
@@ -653,6 +681,21 @@ class PenguinCore:
 
         # Streaming primitives are initialized in __init__ now
         self.current_runmode_status_summary: str = "RunMode idle."
+
+    # ------------------------------------------------------------------
+    # Coordinator accessor (singleton per Core)
+    # ------------------------------------------------------------------
+    def get_coordinator(self):
+        """Return a singleton MultiAgentCoordinator bound to this Core."""
+        try:
+            if not hasattr(self, "_coordinator") or getattr(self, "_coordinator") is None:
+                # Use a relative import to avoid path issues in both repo and installed layouts
+                from .multi.coordinator import MultiAgentCoordinator  # type: ignore
+                self._coordinator = MultiAgentCoordinator(self)
+            return self._coordinator
+        except Exception as e:
+            logger.error(f"Failed to get coordinator: {e}")
+            raise
 
     def validate_path(self, path: Path):
         """Validate and create a directory path if needed."""
@@ -767,6 +810,37 @@ class PenguinCore:
         if activate:
             self.set_active_agent(agent_id)
 
+        # Register MessageBus inbox for this agent (route messages to conversation)
+        try:
+            if MessageBus and ProtocolMessage:
+                bus = MessageBus.get_instance()
+
+                async def _agent_inbox(msg: ProtocolMessage, *, _agent_id: str = agent_id):
+                    try:
+                        self.conversation_manager.set_current_agent(_agent_id)
+                        conv_local = self.conversation_manager.get_agent_conversation(_agent_id)
+                        conv_local.add_message(
+                            role="user",
+                            content=msg.content,
+                            category=MessageCategory.DIALOG,
+                            metadata={"via": "message_bus", "from": msg.sender, **(msg.metadata or {})},
+                            message_type=msg.message_type or "message",
+                        )
+                        self.conversation_manager.save()
+                        await self.emit_ui_event("message", {
+                            "role": "user",
+                            "content": msg.content,
+                            "category": MessageCategory.DIALOG.name,
+                            "message_type": msg.message_type or "message",
+                            "metadata": {"via": "message_bus", "from": msg.sender}
+                        })
+                    except Exception as e:
+                        logger.debug(f"Agent inbox handler failed: {e}")
+
+                bus.register_handler(agent_id, _agent_inbox)
+        except Exception as e:
+            logger.debug(f"MessageBus agent inbox not registered: {e}")
+
     def set_active_agent(self, agent_id: str) -> None:
         """Switch the active agent across ConversationManager and Engine."""
         # Switch CM
@@ -824,6 +898,97 @@ class PenguinCore:
 
         ok = cm.delete_agent_conversation(agent_id, conversation_id)
         return {"success": ok, "warning": None}
+
+    # ------------------------------
+    # Message routing via MessageBus
+    # ------------------------------
+    async def route_message(
+        self,
+        recipient_id: str,
+        content: Any,
+        *,
+        message_type: str = "message",
+        metadata: Optional[Dict[str, Any]] = None,
+        agent_id: Optional[str] = None,
+    ) -> bool:
+        try:
+            if not (MessageBus and ProtocolMessage):
+                return False
+            sender = agent_id or getattr(self.conversation_manager, "current_agent_id", None)
+            session_id = None
+            try:
+                session = self.conversation_manager.get_current_session()
+                session_id = getattr(session, "id", None)
+            except Exception:
+                pass
+            msg = ProtocolMessage(
+                sender=sender,
+                recipient=recipient_id,
+                content=content,
+                message_type=message_type,
+                metadata=metadata or {},
+                session_id=session_id,
+            )
+            await MessageBus.get_instance().send(msg)
+            return True
+        except Exception as e:
+            logger.error(f"route_message failed: {e}")
+            return False
+
+    # Convenience wrappers
+    async def send_to_agent(self, agent_id: str, content: Any, *, message_type: str = "message", metadata: Optional[Dict[str, Any]] = None) -> bool:
+        return await self.route_message(agent_id, content, message_type=message_type, metadata=metadata)
+
+    async def send_to_human(self, content: Any, *, message_type: str = "status", metadata: Optional[Dict[str, Any]] = None) -> bool:
+        # Sender defaults to current agent; recipient is "human"
+        return await self.route_message("human", content, message_type=message_type, metadata=metadata)
+
+    async def human_reply(self, agent_id: str, content: Any, *, message_type: str = "message", metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Convenience wrapper for human → agent directed replies via MessageBus.
+
+        Semantically the same as send_to_agent, but forces the sender identity to
+        "human" in the envelope.
+        """
+        try:
+            if not (MessageBus and ProtocolMessage):
+                # Fallback: treat as regular user message to the current conversation
+                self.conversation_manager.conversation.add_message(
+                    role="user",
+                    content=content,
+                    category=MessageCategory.DIALOG,
+                    metadata={"via": "human_reply", **(metadata or {})},
+                    message_type=message_type,
+                )
+                self.conversation_manager.save()
+                await self.emit_ui_event("message", {
+                    "role": "user",
+                    "content": content,
+                    "category": MessageCategory.DIALOG.name,
+                    "message_type": message_type,
+                    "metadata": {"via": "human_reply"}
+                })
+                return True
+
+            # Build ProtocolMessage with sender="human"
+            session_id = None
+            try:
+                session = self.conversation_manager.get_current_session()
+                session_id = getattr(session, "id", None)
+            except Exception:
+                pass
+            msg = ProtocolMessage(
+                sender="human",
+                recipient=agent_id,
+                content=content,
+                message_type=message_type,
+                metadata=metadata or {},
+                session_id=session_id,
+            )
+            await MessageBus.get_instance().send(msg)
+            return True
+        except Exception as e:
+            logger.error(f"human_reply failed: {e}")
+            return False
 
     # ------------------------------------------------------------------
     # Diagnostics: Smoke test for agent wiring
@@ -2094,6 +2259,18 @@ class PenguinCore:
         if event_type not in self.event_types:
             logger.warning(f"Emitting event of unknown type: {event_type}")
             
+        # Tag with agent_id when available so UI can label sources
+        try:
+            if isinstance(data, dict):
+                # Tag missing or empty agent_id with the current active agent
+                if not data.get('agent_id'):
+                    cm = getattr(self, 'conversation_manager', None)
+                    if cm and hasattr(cm, 'current_agent_id'):
+                        data = dict(data)  # shallow copy to avoid mutating caller dict
+                        data['agent_id'] = cm.current_agent_id
+        except Exception:
+            pass
+
         logger.debug(f"Emitting UI event: {event_type} with data keys: {list(data.keys())}")
         
         for handler in self.ui_subscribers:

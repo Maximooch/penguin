@@ -440,7 +440,8 @@ class Engine:
                     "task_name": task_metadata["name"],
                     "task_prompt": task_prompt,
                     "max_iterations": max_iters,
-                    "context": task_context
+                    "context": task_context,
+                    "message_type": "status",
                 })
             except (ImportError, AttributeError):
                 # EventBus not available yet, continue with normal operation
@@ -499,7 +500,8 @@ class Engine:
                             "iteration": self.current_iteration,
                             "max_iterations": max_iters,
                             "response": last_response,
-                            "progress": min(100, int(100 * self.current_iteration / max_iters))
+                            "progress": min(100, int(100 * self.current_iteration / max_iters)),
+                            "message_type": "status",
                         })
                     except (ImportError, AttributeError):
                         pass
@@ -520,7 +522,8 @@ class Engine:
                                 "response": last_response,
                                 "iteration": self.current_iteration,
                                 "max_iterations": max_iters,
-                                "context": task_context
+                                "context": task_context,
+                                "message_type": "status",
                             })
                         except (ImportError, AttributeError):
                             pass
@@ -545,7 +548,8 @@ class Engine:
                         "task_name": task_metadata["name"],
                         "error": str(e),
                         "iteration": self.current_iteration,
-                        "max_iterations": max_iters
+                        "max_iterations": max_iters,
+                        "message_type": "status",
                     })
                 except (ImportError, AttributeError):
                     # EventBus not available yet, continue with normal operation
@@ -673,6 +677,7 @@ class Engine:
                             "role": "system", 
                             "content": f"Tool Result ({action_result['action_name']}):\n{action_result['output']}",
                             "category": MessageCategory.SYSTEM_OUTPUT.name,  # Convert enum to string
+                            "message_type": "action",
                             "metadata": {"action_name": action_result['action_name']}
                         })
                         await asyncio.sleep(0.01)  # Yield control to allow UI to render

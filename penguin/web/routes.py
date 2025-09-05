@@ -14,6 +14,7 @@ import httpx
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
+from penguin.utils.events import EventBus
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,282 @@ router = APIRouter()
 
 async def get_core():
     return router.core
+
+def _get_coordinator(core: PenguinCore):
+    try:
+        return core.get_coordinator()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Coordinator not available: {e}")
+
+def _validate_agent_id(agent_id: str) -> None:
+    if not agent_id or len(agent_id) > 32:
+        raise HTTPException(status_code=400, detail="agent_id must be 1-32 chars")
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", agent_id):
+        raise HTTPException(status_code=400, detail="agent_id must be alphanumeric, dash or underscore")
+
+class AgentCreate(BaseModel):
+    agent_id: str
+    role: str
+    system_prompt: Optional[str] = None
+    model_max_tokens: Optional[int] = None
+    activate: bool = False
+
+class AgentRegister(BaseModel):
+    role: str
+
+class ToAgentRequest(BaseModel):
+    agent_id: str
+    content: Any
+    message_type: Optional[str] = "message"
+    metadata: Optional[Dict[str, Any]] = None
+
+class ToHumanRequest(BaseModel):
+    content: Any
+    message_type: Optional[str] = "status"
+    metadata: Optional[Dict[str, Any]] = None
+
+class HumanReplyRequest(BaseModel):
+    agent_id: str
+    content: Any
+    message_type: Optional[str] = "message"
+
+class CoordRoleSend(BaseModel):
+    role: str
+    content: Any
+    message_type: Optional[str] = "message"
+
+class CoordBroadcast(BaseModel):
+    roles: List[str]
+    content: Any
+    message_type: Optional[str] = "message"
+
+class CoordRRWorkflow(BaseModel):
+    role: str
+    prompts: List[str]
+
+class CoordRoleChain(BaseModel):
+    roles: List[str]
+    content: Any
+
+@router.websocket("/api/v1/events/ws")
+async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core)):
+    """WebSocket stream forwarding bus.message and UI message events with filters.
+
+    Query params:
+      - agent_id: filter by agent id (optional)
+      - message_type: filter by message_type (message|action|status)
+      - include_ui: 'true'|'false' (default 'true')
+      - include_bus: 'true'|'false' (default 'true')
+    """
+    await websocket.accept()
+    params = websocket.query_params
+    agent_filter = params.get("agent_id")
+    type_filter = params.get("message_type")
+    include_ui = (params.get("include_ui", "true").lower() != "false")
+    include_bus = (params.get("include_bus", "true").lower() != "false")
+
+    event_bus = EventBus.get_instance()
+    handlers = []
+
+    async def _send(event: str, payload: Dict[str, Any]):
+        try:
+            a_id = payload.get("agent_id") or payload.get("sender")
+            m_type = payload.get("message_type") or payload.get("type")
+            if agent_filter and a_id != agent_filter:
+                return
+            if type_filter and m_type != type_filter:
+                return
+            await websocket.send_json({"event": event, "data": payload})
+        except Exception as e:
+            # Client closed or other transient error
+            return
+
+    # EventBus: bus.message
+    async def _on_bus_message(data):
+        if not include_bus:
+            return
+        try:
+            if isinstance(data, dict):
+                payload = dict(data)
+                if "agent_id" not in payload and "sender" in payload:
+                    payload["agent_id"] = payload.get("sender")
+                await _send("bus.message", payload)
+        except Exception:
+            pass
+
+    event_bus.subscribe("bus.message", _on_bus_message)
+    handlers.append(("bus.message", _on_bus_message))
+
+    # Core UI events
+    async def _on_ui_event(event_type: str, data: Dict[str, Any]):
+        if not include_ui:
+            return
+        try:
+            if event_type in {"message", "stream_chunk", "human_message"}:
+                payload = dict(data or {})
+                payload.setdefault("agent_id", getattr(core.conversation_manager, "current_agent_id", None))
+                payload.setdefault("message_type", "message")
+                await _send(event_type, payload)
+        except Exception:
+            pass
+
+    core.register_ui(_on_ui_event)
+
+    try:
+        while True:
+            await asyncio.sleep(1.0)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        core.unregister_ui(_on_ui_event)
+        for ev, h in handlers:
+            try:
+                event_bus.unsubscribe(ev, h)
+            except Exception:
+                pass
+
+@router.get("/api/v1/agents")
+async def list_agents(core: PenguinCore = Depends(get_core)):
+    """List registered agents including current conversation ids."""
+    try:
+        cm = core.conversation_manager
+        agents = []
+        agent_sessions = getattr(cm, 'agent_sessions', {}) or {}
+        for aid, conv in agent_sessions.items():
+            try:
+                agents.append({
+                    "agent_id": aid,
+                    "conversation_id": getattr(conv.session, 'id', None),
+                })
+            except Exception:
+                continue
+        return {"agents": agents}
+    except Exception as e:
+        logger.error(f"list_agents error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list agents")
+
+@router.post("/api/v1/agents")
+async def create_agent(req: AgentCreate, core: PenguinCore = Depends(get_core)):
+    _validate_agent_id(req.agent_id)
+    try:
+        coord = _get_coordinator(core)
+        await coord.spawn_agent(
+            req.agent_id,
+            role=req.role,
+            system_prompt=req.system_prompt,
+            model_max_tokens=req.model_max_tokens,
+            activate=req.activate,
+        )
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"create_agent error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create agent")
+
+@router.delete("/api/v1/agents/{agent_id}")
+async def delete_agent(agent_id: str, core: PenguinCore = Depends(get_core)):
+    _validate_agent_id(agent_id)
+    try:
+        coord = _get_coordinator(core)
+        await coord.destroy_agent(agent_id)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"delete_agent error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete agent")
+
+@router.post("/api/v1/agents/{agent_id}/register")
+async def register_agent(agent_id: str, req: AgentRegister, core: PenguinCore = Depends(get_core)):
+    _validate_agent_id(agent_id)
+    try:
+        coord = _get_coordinator(core)
+        coord.register_existing(agent_id, role=req.role)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"register_agent error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to register agent")
+
+@router.post("/api/v1/messages/to-agent")
+async def api_to_agent(req: ToAgentRequest, core: PenguinCore = Depends(get_core)):
+    _validate_agent_id(req.agent_id)
+    try:
+        ok = await core.send_to_agent(req.agent_id, req.content, message_type=req.message_type or "message", metadata=req.metadata)
+        return {"ok": ok}
+    except Exception as e:
+        logger.error(f"to-agent error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send to agent")
+
+@router.post("/api/v1/messages/to-human")
+async def api_to_human(req: ToHumanRequest, core: PenguinCore = Depends(get_core)):
+    try:
+        ok = await core.send_to_human(req.content, message_type=req.message_type or "status", metadata=req.metadata)
+        return {"ok": ok}
+    except Exception as e:
+        logger.error(f"to-human error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send to human")
+
+@router.post("/api/v1/messages/human-reply")
+async def api_human_reply(req: HumanReplyRequest, core: PenguinCore = Depends(get_core)):
+    _validate_agent_id(req.agent_id)
+    try:
+        ok = await core.human_reply(req.agent_id, req.content, message_type=req.message_type or "message")
+        return {"ok": ok}
+    except Exception as e:
+        logger.error(f"human-reply error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send human reply")
+
+@router.post("/api/v1/coord/send-role")
+async def api_coord_send_role(req: CoordRoleSend, core: PenguinCore = Depends(get_core)):
+    try:
+        coord = _get_coordinator(core)
+        target = await coord.send_to_role(req.role, req.content, message_type=req.message_type or "message")
+        return {"ok": True, "target": target}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"coord send-role error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send to role")
+
+@router.post("/api/v1/coord/broadcast")
+async def api_coord_broadcast(req: CoordBroadcast, core: PenguinCore = Depends(get_core)):
+    try:
+        coord = _get_coordinator(core)
+        sent = await coord.broadcast(req.roles, req.content, message_type=req.message_type or "message")
+        return {"ok": True, "sent": sent}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"coord broadcast error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to broadcast")
+
+@router.post("/api/v1/coord/rr-workflow")
+async def api_coord_rr(req: CoordRRWorkflow, core: PenguinCore = Depends(get_core)):
+    try:
+        coord = _get_coordinator(core)
+        await coord.simple_round_robin_workflow(req.prompts, role=req.role)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"coord rr-workflow error: {e}")
+        raise HTTPException(status_code=500, detail="Failed rr-workflow")
+
+@router.post("/api/v1/coord/role-chain")
+async def api_coord_role_chain(req: CoordRoleChain, core: PenguinCore = Depends(get_core)):
+    try:
+        coord = _get_coordinator(core)
+        await coord.role_chain_workflow(req.content, roles=req.roles)
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"coord role-chain error: {e}")
+        raise HTTPException(status_code=500, detail="Failed role-chain")
 
 
 @router.get("/api/v1/health")

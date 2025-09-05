@@ -117,11 +117,36 @@ class ConversationManager:
             system_prompt=system_prompt,
             checkpoint_manager=self.checkpoint_manager
         )
+        # Ensure the default agent is tagged on the initial session so
+        # envelope fields (agent_id) are present for all messages.
+        try:
+            self.conversation.session.metadata.setdefault("agent_id", "default")
+        except Exception:
+            pass
         
         # Initialize context loader
         self.context_loader = SimpleContextLoader(
             context_manager=self.conversation
         )
+
+        # Load core context files if configured
+        try:
+            loaded_files = self.context_loader.load_core_context()
+            if loaded_files:
+                logger.info(f"Loaded {len(loaded_files)} core context files")
+        except Exception as e:
+            logger.warning(f"Failed loading core context files: {e}")
+
+        # -----------------------------------------------------------
+        # Snapshot / Restore support (Phase 3)
+        # -----------------------------------------------------------
+        try:
+            from penguin.system.snapshot_manager import SnapshotManager  # local import to avoid circulars
+            snapshots_path = Path(self.workspace_path) / "snapshots" / "snapshots.db"
+            self.snapshot_manager: Optional[SnapshotManager] = SnapshotManager(snapshots_path)
+        except Exception as e:
+            logger.warning(f"Failed to initialise SnapshotManager – snapshot/restore disabled: {e}")
+            self.snapshot_manager = None
 
         # ---------------------------
         # Multi-agent scaffolding (Phase 2)
@@ -149,22 +174,6 @@ class ConversationManager:
         except Exception:
             pass
         return None
-        
-        # Load core context files
-        loaded_files = self.context_loader.load_core_context()
-        if loaded_files:
-            logger.info(f"Loaded {len(loaded_files)} core context files")
-        
-        # -----------------------------------------------------------
-        # Snapshot / Restore support (Phase 3)
-        # -----------------------------------------------------------
-        try:
-            from penguin.system.snapshot_manager import SnapshotManager  # local import to avoid circulars
-            snapshots_path = Path(self.workspace_path) / "snapshots" / "snapshots.db"
-            self.snapshot_manager: Optional[SnapshotManager] = SnapshotManager(snapshots_path)
-        except Exception as e:
-            logger.warning(f"Failed to initialise SnapshotManager – snapshot/restore disabled: {e}")
-            self.snapshot_manager = None
         
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt."""
@@ -226,6 +235,11 @@ class ConversationManager:
             system_prompt=self.conversation.system_prompt,
             checkpoint_manager=agent_cp,
         )
+        # Ensure the new agent's session is tagged with its owner for envelope routing
+        try:
+            agent_conv.session.metadata.setdefault("agent_id", agent_id)
+        except Exception:
+            pass
 
         # Register
         self.agent_session_managers[agent_id] = agent_sm
@@ -549,7 +563,8 @@ class ConversationManager:
                     role="system",
                     content=f"Error: {str(e)}",
                     category=MessageCategory.SYSTEM_OUTPUT,
-                    metadata={"error": True, "type": "processing_error"}
+                    metadata={"error": True, "type": "processing_error"},
+                    message_type="status",
                 )
                 self.save()
             except Exception:
@@ -728,6 +743,11 @@ class ConversationManager:
     def reset(self) -> None:
         """Reset conversation state."""
         self.conversation.reset()
+        # Preserve agent context on new session
+        try:
+            self.conversation.session.metadata["agent_id"] = getattr(self, "current_agent_id", "default")
+        except Exception:
+            pass
         
     def save(self) -> bool:
         """
@@ -856,6 +876,10 @@ class ConversationManager:
         """
         # Create new session through session manager
         session = self.session_manager.create_session()
+        try:
+            session.metadata["agent_id"] = getattr(self, "current_agent_id", "default")
+        except Exception:
+            pass
         
         # Update conversation system
         self.conversation.session = session

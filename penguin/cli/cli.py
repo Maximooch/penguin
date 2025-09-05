@@ -130,6 +130,11 @@ from penguin.project.spec_parser import parse_project_specification_from_markdow
 from penguin.project.workflow_orchestrator import WorkflowOrchestrator
 from penguin.project.task_executor import ProjectTaskExecutor
 from penguin.project.validation_manager import ValidationManager
+try:
+    # Prefer relative import to support repo and installed layouts
+    from ..multi.coordinator import MultiAgentCoordinator  # type: ignore
+except Exception:
+    MultiAgentCoordinator = None  # type: ignore
 from penguin.project.git_manager import GitManager
 
 # Add better import error handling for setup functions
@@ -164,6 +169,14 @@ logger = setup_logger("penguin_cli.log") # Setup a logger for the CLI module
 # Project management sub-application
 project_app = typer.Typer(help="Project and task management commands")
 app.add_typer(project_app, name="project")
+
+# Messaging sub-application (Phase 3 demo)
+msg_app = typer.Typer(help="Message routing helpers: send to agents or human")
+app.add_typer(msg_app, name="msg")
+
+# Coordinator sub-application (Phase 4 preview)
+coord_app = typer.Typer(help="Multi-agent coordinator commands")
+app.add_typer(coord_app, name="coord")
 
 # Define a type variable for better typing
 T = TypeVar('T')
@@ -2720,6 +2733,164 @@ def perf_test(
             print_startup_report()
     
     asyncio.run(_async_perf_test())
+
+@msg_app.command("to-agent")
+def msg_to_agent(
+    agent_id: str = typer.Argument(..., help="Target agent id"),
+    content: str = typer.Argument(..., help="Message content"),
+    message_type: str = typer.Option("message", "--type", help="Envelope message_type: message|action|status"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Send a directed message to an agent via MessageBus."""
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        assert _core is not None
+        ok = await _core.send_to_agent(agent_id, content, message_type=message_type)
+        console.print(f"[bold green]Sent[/bold green] to {agent_id}: {ok}")
+    asyncio.run(_run())
+
+
+# ---------------------------- Coordinator CLI ----------------------------
+
+def _get_coordinator() -> "MultiAgentCoordinator":  # type: ignore
+    if MultiAgentCoordinator is None:
+        raise RuntimeError("Coordinator not available")
+    assert _core is not None
+    return MultiAgentCoordinator(_core)
+
+
+@coord_app.command("spawn")
+def coord_spawn(
+    agent_id: str = typer.Argument(..., help="New agent id"),
+    role: str = typer.Option(..., "--role", "-r", help="Agent role (e.g., planner, researcher, implementer)"),
+    system_prompt: Optional[str] = typer.Option(None, "--system-prompt", "-s", help="Optional system prompt override"),
+    model_max_tokens: Optional[int] = typer.Option(None, "--model-max-tokens", help="Clamp child CWM at this size"),
+    activate: bool = typer.Option(False, "--activate/--no-activate", help="Make this agent active by default"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        assert _core is not None
+        coord = _get_coordinator()
+        await coord.spawn_agent(agent_id, role=role, system_prompt=system_prompt, model_max_tokens=model_max_tokens, activate=activate)
+        console.print(f"[green]Spawned agent[/green] {agent_id} with role '{role}'")
+    asyncio.run(_run())
+
+
+@coord_app.command("destroy")
+def coord_destroy(
+    agent_id: str = typer.Argument(..., help="Agent id to destroy"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        await coord.destroy_agent(agent_id)
+        console.print(f"[yellow]Destroyed agent[/yellow] {agent_id} (conversation persists)")
+    asyncio.run(_run())
+
+
+@coord_app.command("register")
+def coord_register(
+    agent_id: str = typer.Argument(..., help="Existing agent id"),
+    role: str = typer.Option(..., "--role", "-r", help="Role to register under"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        coord.register_existing(agent_id, role=role)
+        console.print(f"[green]Registered agent[/green] {agent_id} to role '{role}'")
+    asyncio.run(_run())
+
+
+@coord_app.command("send-role")
+def coord_send_role(
+    role: str = typer.Option(..., "--role", "-r", help="Target role"),
+    content: str = typer.Argument(..., help="Message content"),
+    message_type: str = typer.Option("message", "--type", help="Envelope message_type"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        target = await coord.send_to_role(role, content, message_type=message_type)
+        console.print(f"Sent to role '{role}' agent: [cyan]{target}[/cyan]")
+    asyncio.run(_run())
+
+
+@coord_app.command("broadcast")
+def coord_broadcast(
+    roles: str = typer.Option(..., "--roles", help="Comma-separated roles to broadcast to"),
+    content: str = typer.Argument(..., help="Message content"),
+    message_type: str = typer.Option("message", "--type", help="Envelope message_type"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        role_list = [r.strip() for r in roles.split(',') if r.strip()]
+        sent = await coord.broadcast(role_list, content, message_type=message_type)
+        console.print(f"Broadcast sent to: {', '.join(sent) if sent else '(none)'}")
+    asyncio.run(_run())
+
+
+@coord_app.command("rr-workflow")
+def coord_rr_workflow(
+    role: str = typer.Option(..., "--role", "-r", help="Role to round-robin"),
+    prompts: List[str] = typer.Argument(..., help="List of prompts"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        await coord.simple_round_robin_workflow(prompts, role=role)
+        console.print(f"[green]Round-robin workflow complete[/green]")
+    asyncio.run(_run())
+
+
+@coord_app.command("role-chain")
+def coord_role_chain(
+    roles: str = typer.Option(..., "--roles", help="Comma-separated role chain (e.g., planner,researcher,implementer)"),
+    content: str = typer.Argument(..., help="Initial content"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        role_chain = [r.strip() for r in roles.split(',') if r.strip()]
+        await coord.role_chain_workflow(content, roles=role_chain)
+        console.print(f"[green]Role-chain workflow complete[/green]")
+    asyncio.run(_run())
+
+@msg_app.command("to-human")
+def msg_to_human(
+    content: str = typer.Argument(..., help="Message content"),
+    message_type: str = typer.Option("status", "--type", help="Envelope message_type: message|action|status"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Send a message to the human recipient via MessageBus."""
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        assert _core is not None
+        ok = await _core.send_to_human(content, message_type=message_type)
+        console.print(f"[bold green]Sent[/bold green] to human: {ok}")
+    asyncio.run(_run())
+
+@msg_app.command("human-reply")
+def msg_human_reply(
+    agent_id: str = typer.Argument(..., help="Target agent id"),
+    content: str = typer.Argument(..., help="Reply content"),
+    message_type: str = typer.Option("message", "--type", help="Envelope message_type"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Send a human reply to a specific agent (sender set to 'human')."""
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        assert _core is not None
+        ok = await _core.human_reply(agent_id, content, message_type=message_type)
+        console.print(f"[bold green]Human reply sent[/bold green] to {agent_id}: {ok}")
+    asyncio.run(_run())
 
 @app.command()
 def profile(

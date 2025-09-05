@@ -13,6 +13,11 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from penguin.config import CONVERSATION_CONFIG
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.utils.diagnostics import diagnostics
+try:
+    from penguin.system.message_bus import MessageBus, ProtocolMessage
+except Exception:  # pragma: no cover - optional import to avoid cycles in minimal envs
+    MessageBus = None  # type: ignore
+    ProtocolMessage = None  # type: ignore
 
 # Optional - can be replaced with approximation method for multiple providers
 try:
@@ -74,7 +79,11 @@ class ConversationSystem:
         role: str, 
         content: Any,
         category: MessageCategory = None, 
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        *,
+        agent_id: Optional[str] = None,
+        recipient_id: Optional[str] = None,
+        message_type: str = "message",
     ) -> Message:
         """
         Add a message to the current session.
@@ -101,6 +110,13 @@ class ConversationSystem:
             else:
                 category = MessageCategory.DIALOG
         
+        # Resolve agent_id default from session metadata if not provided
+        if agent_id is None:
+            try:
+                agent_id = self.session.metadata.get("agent_id")
+            except Exception:
+                agent_id = None
+
         # Create the message
         message = Message(
             role=role,
@@ -109,11 +125,44 @@ class ConversationSystem:
             id=f"msg_{uuid.uuid4().hex[:8]}",
             timestamp=datetime.now().isoformat(),
             metadata=metadata or {},
+            tokens=0,
+            agent_id=agent_id,
+            recipient_id=recipient_id,
+            message_type=message_type,
         )
         
         # Add to current session
         self.session.messages.append(message)
         self._modified = True
+
+        # Phase 3: publish protocol message to MessageBus (best-effort)
+        try:
+            if MessageBus and ProtocolMessage:
+                bus = MessageBus.get_instance()
+                pm = ProtocolMessage(
+                    sender=message.agent_id,
+                    recipient=None,
+                    content=message.content,
+                    message_type=message.message_type,
+                    metadata={
+                        **(message.metadata or {}),
+                        "category": message.category.name,
+                        "role": message.role,
+                    },
+                    session_id=self.session.id,
+                    message_id=message.id,
+                )
+                # Fire-and-forget, don't block
+                import asyncio as _asyncio
+                try:
+                    loop = _asyncio.get_event_loop()
+                    if loop.is_running():
+                        _asyncio.create_task(bus.send(pm))
+                except RuntimeError:
+                    # No running loop; skip bus delivery in sync contexts
+                    pass
+        except Exception:
+            pass
         
         # NEW: Auto-checkpoint integration
         if self.checkpoint_manager and self.checkpoint_manager.should_checkpoint(message):
@@ -182,7 +231,8 @@ class ConversationSystem:
                 "system", 
                 self.system_prompt, 
                 MessageCategory.SYSTEM,
-                {"type": "system_prompt"}
+                {"type": "system_prompt"},
+                message_type="status",
             )
             self.system_prompt_sent = True
 
@@ -264,7 +314,8 @@ class ConversationSystem:
                 "tool_call_id": tool_call_id,
                 "action_type": action_type,
                 "status": status
-            }
+            },
+            message_type="action",
         )
 
     def add_context(
@@ -309,7 +360,8 @@ class ConversationSystem:
             "system",
             content,
             MessageCategory.SYSTEM_OUTPUT,
-            {"type": "iteration_marker", "iteration": iteration}
+            {"type": "iteration_marker", "iteration": iteration},
+            message_type="status",
         )
 
     def get_history(self) -> List[Dict[str, Any]]:

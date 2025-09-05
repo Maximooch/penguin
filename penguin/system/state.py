@@ -84,6 +84,10 @@ class Message:
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     metadata: Dict[str, Any] = field(default_factory=dict)
     tokens: int = 0
+    # Phase 3 envelope fields
+    agent_id: Optional[str] = None
+    recipient_id: Optional[str] = None
+    message_type: str = "message"  # message|action|status
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert message to a dictionary for serialization."""
@@ -102,6 +106,10 @@ class Message:
             except KeyError:
                 # Default to DIALOG if category is invalid
                 data["category"] = MessageCategory.DIALOG
+        # Backward compatibility: envelope fields may be absent
+        data.setdefault("agent_id", None)
+        data.setdefault("recipient_id", None)
+        data.setdefault("message_type", "message")
         
         return cls(**data)
     
