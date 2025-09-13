@@ -228,11 +228,13 @@ class MemoryProviderFactory:
         except ImportError as e:
             logger.debug(f"FAISS provider not available: {e}")
         
-        # ChromaDB Provider (optional, may have conflicts)
+            # ChromaDB Provider (optional, may have conflicts). Import lazily to avoid heavy deps.
         try:
-            from .chroma_provider import ChromaMemoryProvider
-            cls.register_provider('chroma', ChromaMemoryProvider)
-        except ImportError as e:
+            import importlib
+            if cls._check_provider_dependencies('chroma')['available']:
+                chroma_mod = importlib.import_module('.chroma_provider', package=__package__)
+                cls.register_provider('chroma', getattr(chroma_mod, 'ChromaMemoryProvider'))
+        except Exception as e:
             logger.debug(f"ChromaDB provider not available: {e}")
         
         if not cls._providers:

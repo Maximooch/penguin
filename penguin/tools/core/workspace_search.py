@@ -6,20 +6,22 @@ import os
 import time
 from typing import Any, Dict, List
 
-import chromadb
 import ollama
-from chromadb.config import Settings
+try:
+    import chromadb
+    from chromadb.config import Settings
+except Exception:  # pragma: no cover
+    chromadb = None
+    Settings = None
 
 
 class CodeIndexer:
     def __init__(self, persist_directory: str = "./chroma_db"):
-        # Initialize ChromaDB client
-        self.client = chromadb.Client(
-            Settings(persist_directory=persist_directory, anonymized_telemetry=False)
-        )
-        self.collection = self.client.get_or_create_collection(
-            "penguin_code_collection"
-        )
+        # Initialize ChromaDB client if available
+        if chromadb is None or Settings is None:
+            raise RuntimeError("ChromaDB is not available. Install chromadb to use CodeIndexer.")
+        self.client = chromadb.Client(Settings(persist_directory=persist_directory, anonymized_telemetry=False))
+        self.collection = self.client.get_or_create_collection("penguin_code_collection")
 
         # Initialize Ollama client for embeddings
         self.ollama_client = ollama.Client()

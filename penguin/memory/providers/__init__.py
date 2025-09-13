@@ -30,10 +30,8 @@ try:
 except ImportError:
     FAISSMemoryProvider = None
 
-try:
-    from .chroma_provider import ChromaMemoryProvider
-except ImportError:
-    ChromaMemoryProvider = None
+# Avoid importing Chroma provider at import-time; it will be loaded by factory if deps exist
+ChromaMemoryProvider = None
 
 __all__ = [
     'MemoryProvider',

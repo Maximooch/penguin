@@ -3,7 +3,7 @@ Defines the syntax for actions Penguin can take and provides critical usage guid
 especially regarding safety and verification.
 """
 
-ACTION_SYNTAX = """
+ACTION_SYNTAX = r"""
 ## Action Syntax
 
 **Core Principles Reminder:**

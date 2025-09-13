@@ -50,11 +50,9 @@ from .migration import MemoryMigration, migrate_memory_system
 from .summary_notes import SummaryNotes
 from .declarative_memory import DeclarativeMemory
 
-# Try to import legacy provider for migration
-try:
-    from .chroma_provider import ChromaProvider
-except ImportError:
-    ChromaProvider = None
+# Defer Chroma provider import to avoid heavy dependencies at import-time
+# It will be imported lazily by factory or when explicitly needed.
+ChromaProvider = None
 
 # Legacy provider interface for backward compatibility
 try:
