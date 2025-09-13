@@ -1,5 +1,7 @@
 import base64
 import difflib
+import subprocess
+import tempfile
 import io
 import os
 import traceback
@@ -11,9 +13,25 @@ import stat
 import time
 import shutil
 from collections import defaultdict
-from typing import Optional
+from typing import Optional, Dict
 
 from PIL import Image  # type: ignore
+
+
+def _git_available() -> bool:
+    try:
+        subprocess.run(["git", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        return True
+    except Exception:
+        return False
+
+
+def _is_git_repo(path: Path) -> bool:
+    try:
+        res = subprocess.run(["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True)
+        return res.returncode == 0 and res.stdout.strip() == "true"
+    except Exception:
+        return False
 
 
 def create_folder(path):
@@ -895,8 +913,188 @@ def apply_unified_patch(patch_text: str, workspace_path: Optional[str] = None, b
     if not file_patches:
         return "Error applying diff: No file patches found"
 
-    applied = []
+    applied: list[str] = []
+    created: list[str] = []
     results = []
+
+    # Optional robust backend via git apply --check / --3way (guarded by env)
+    base = Path(workspace_path or ".").resolve()
+    use_robust = os.environ.get("PENGUIN_PATCH_ROBUST", "").lower() in ("1", "true", "yes", "on")
+    three_way = os.environ.get("PENGUIN_PATCH_THREEWAY", "").lower() in ("1", "true", "yes", "on")
+    use_shadow = os.environ.get("PENGUIN_PATCH_SHADOW", "").lower() in ("1", "true", "yes", "on")
+    robust_ok = use_robust and _git_available() and _is_git_repo(base)
+    if robust_ok:
+        try:
+            # Validate allowed paths up front
+            for fp in file_patches:
+                t = _strip_prefix(fp.get('to', ''))
+                if not t:
+                    robust_ok = False
+                    break
+                target = (base / t).resolve()
+                root_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+                root_pref = root_env if root_env in ('project', 'workspace') else get_default_write_root()
+                _ = enforce_allowed_path(target, root_pref=root_pref)
+        except Exception:
+            robust_ok = False
+
+    if robust_ok and not use_shadow:
+        existing_before: Dict[str, bool] = {}
+        try:
+            for fp in file_patches:
+                to_path = _strip_prefix(fp.get('to', ''))
+                if not to_path:
+                    continue
+                tgt = (base / to_path).resolve()
+                exists = tgt.exists()
+                existing_before[str(tgt)] = exists
+                if exists and backup:
+                    bak = tgt.with_suffix(tgt.suffix + '.bak')
+                    shutil.copy2(tgt, bak)
+
+            # Write patch to temporary file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as tf:
+                tf.write(patch_text)
+                tf.flush()
+                patch_file = tf.name
+
+            # Preflight check
+            chk = subprocess.run(["git", "-C", str(base), "apply", "--check", patch_file], capture_output=True, text=True)
+            if chk.returncode != 0:
+                # Preflight failed; clean and fall back to internal engine
+                try:
+                    os.unlink(patch_file)
+                except Exception:
+                    pass
+            else:
+                # Apply (optionally with 3-way)
+                args = ["git", "-C", str(base), "apply"]
+                if three_way:
+                    args.append("--3way")
+                args.append(patch_file)
+                app = subprocess.run(args, capture_output=True, text=True)
+                try:
+                    os.unlink(patch_file)
+                except Exception:
+                    pass
+                if app.returncode != 0:
+                    # Restore from backups and delete created files
+                    for path_str, existed in existing_before.items():
+                        p = Path(path_str)
+                        if not existed and p.exists():
+                            try:
+                                p.unlink()
+                            except Exception:
+                                pass
+                        elif existed:
+                            bak = p.with_suffix(p.suffix + '.bak')
+                            if bak.exists():
+                                try:
+                                    shutil.copy2(bak, p)
+                                except Exception:
+                                    pass
+                    log_path = _log_diff_failure("<git-apply>", patch_text, "", str(base))
+                    err = app.stderr.strip() or app.stdout.strip() or "git apply failed"
+                    if return_json:
+                        import json
+                        return json.dumps({"status": "error", "error": err, "log": log_path})
+                    return f"Error applying diff: {err}{(' (' + log_path + ')') if log_path else ''}"
+                else:
+                    # Success
+                    for path_str, existed in existing_before.items():
+                        p = Path(path_str)
+                        applied.append(str(p))
+                        if not existed and p.exists():
+                            created.append(str(p))
+                    if return_json:
+                        import json
+                        return json.dumps({"status": "success", "files": applied, "created": created})
+                    return f"Successfully applied patch to {len(applied)} file(s)"
+        except Exception:
+            # Fall through to internal engine on any exception
+            pass
+    # Shadow worktree path (optional): apply & commit changes in a dedicated worktree/branch
+    if robust_ok and use_shadow:
+        try:
+            shadow_root = base / ".penguin_shadow_worktree"
+            shadow_root.mkdir(parents=True, exist_ok=True)
+            # Branch naming: env override or default penguin/checkpoints/waddle-<timestamp>
+            from datetime import datetime as _dt
+            default_branch = f"penguin/checkpoints/waddle-{_dt.now().strftime('%Y%m%d_%H%M%S')}"
+            branch = os.environ.get("PENGUIN_PATCH_BRANCH", default_branch)
+
+            # Ensure branch exists
+            res_branch = subprocess.run(["git", "-C", str(base), "rev-parse", "--verify", branch], capture_output=True, text=True)
+            if res_branch.returncode != 0:
+                # Create branch from current HEAD
+                subprocess.run(["git", "-C", str(base), "branch", branch], check=False)
+
+            # Add or rebind worktree
+            if not (shadow_root / ".git").exists():
+                subprocess.run(["git", "-C", str(base), "worktree", "add", str(shadow_root), branch], check=False)
+            else:
+                subprocess.run(["git", "-C", str(shadow_root), "checkout", branch], check=False)
+                subprocess.run(["git", "-C", str(shadow_root), "pull", "--ff-only"], check=False)
+
+            # Write patch
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as tf:
+                tf.write(patch_text)
+                tf.flush()
+                patch_file = tf.name
+
+            # Preflight check in shadow
+            chk = subprocess.run(["git", "-C", str(shadow_root), "apply", "--check", patch_file], capture_output=True, text=True)
+            if chk.returncode != 0:
+                try:
+                    os.unlink(patch_file)
+                except Exception:
+                    pass
+                err = chk.stderr.strip() or chk.stdout.strip() or "git apply --check failed"
+                if return_json:
+                    import json
+                    return json.dumps({"status": "error", "error": err, "branch": branch, "worktree": str(shadow_root)})
+                return f"Error applying diff in shadow: {err}"
+
+            # Apply
+            args = ["git", "-C", str(shadow_root), "apply"]
+            if three_way:
+                args.append("--3way")
+            args.append(patch_file)
+            app = subprocess.run(args, capture_output=True, text=True)
+            try:
+                os.unlink(patch_file)
+            except Exception:
+                pass
+            if app.returncode != 0:
+                err = app.stderr.strip() or app.stdout.strip() or "git apply failed"
+                if return_json:
+                    import json
+                    return json.dumps({"status": "error", "error": err, "branch": branch, "worktree": str(shadow_root)})
+                return f"Error applying diff in shadow: {err}"
+
+            # Stage & commit
+            subprocess.run(["git", "-C", str(shadow_root), "add", "-A"], check=False)
+            commit_msg = os.environ.get("PENGUIN_PATCH_COMMIT_MSG", "Penguin multiedit checkpoint")
+            subprocess.run(["git", "-C", str(shadow_root), "commit", "-m", commit_msg], check=False)
+            sha_res = subprocess.run(["git", "-C", str(shadow_root), "rev-parse", "HEAD"], capture_output=True, text=True)
+            commit_sha = sha_res.stdout.strip()
+            # Files changed in commit
+            diff_res = subprocess.run(["git", "-C", str(shadow_root), "diff-tree", "--no-commit-id", "--name-only", "-r", commit_sha], capture_output=True, text=True)
+            files = [str((shadow_root / f.strip()).resolve()) for f in diff_res.stdout.splitlines() if f.strip()]
+            if return_json:
+                import json
+                return json.dumps({
+                    "status": "success",
+                    "files": files,
+                    "created": [],
+                    "commit": commit_sha,
+                    "branch": branch,
+                    "worktree": str(shadow_root),
+                })
+            return f"Successfully applied patch in shadow worktree (branch {branch}, commit {commit_sha[:8]})"
+        except Exception:
+            # Fall back to internal engine if shadow path fails
+            pass
     for fp in file_patches:
         to_path = _strip_prefix(fp['to'])
         # Resolve target path
@@ -904,26 +1102,91 @@ def apply_unified_patch(patch_text: str, workspace_path: Optional[str] = None, b
         if not target.is_absolute():
             base = Path(workspace_path or ".")
             target = (base / to_path).resolve()
-        # Apply
-        res = apply_diff_to_file(str(target), fp['content'], backup=backup, workspace_path=workspace_path, return_json=return_json)
-        results.append(res)
-        if isinstance(res, str) and res.startswith("Error applying diff"):
-            # rollback previously applied files
-            for prev in applied:
-                try:
-                    p = Path(prev)
-                    bak = p.with_suffix(p.suffix + '.bak')
-                    if bak.exists():
-                        shutil.copy2(bak, p)
-                except Exception:
-                    pass
-            return res
+        # Detect new-file semantics from 'from' path
+        from_path = _strip_prefix(fp.get('from', ''))
+        is_new_file_patch = from_path in ('/dev/null', 'dev/null')
+
+        if is_new_file_patch and not target.exists():
+            # Create new file from patch content (additions only)
+            try:
+                # Enforce write root policy
+                root_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+                root_pref = root_env if root_env in ('project', 'workspace') else get_default_write_root()
+                target = enforce_allowed_path(target, root_pref=root_pref)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                # Extract added lines from hunks
+                added_lines: list[str] = []
+                seen_hunk = False
+                for line in fp['content'].splitlines():
+                    if line.startswith('@@'):
+                        seen_hunk = True
+                        continue
+                    if not seen_hunk:
+                        # Skip headers until first hunk
+                        continue
+                    if line.startswith('+') and not line.startswith('+++'):
+                        added_lines.append(line[1:])
+                    elif line == r"\ No newline at end of file":
+                        continue
+                    elif line.startswith(' '):
+                        # Some generators may include context lines in new-file patches; treat as additions
+                        added_lines.append(line[1:])
+                    else:
+                        # Ignore deletions for new file
+                        pass
+                content = "\n".join(added_lines)
+                # Preserve trailing newline if patch suggests it
+                if fp['content'].endswith('\n'):
+                    content = content + ('\n' if not content.endswith('\n') else '')
+                target.write_text(content, encoding='utf-8')
+                applied.append(str(target))
+                created.append(str(target))
+                if return_json:
+                    results.append({"status": "created", "file": str(target)})
+                else:
+                    results.append(f"Created new file: {target}")
+            except Exception as e:
+                # Failure to create new file; rollback previously applied files and delete created
+                for prev in applied:
+                    try:
+                        p = Path(prev)
+                        if prev in created and p.exists():
+                            p.unlink()
+                        else:
+                            bak = p.with_suffix(p.suffix + '.bak')
+                            if bak.exists():
+                                shutil.copy2(bak, p)
+                    except Exception:
+                        pass
+                log_path = _log_diff_failure(to_path, fp['content'], "", workspace_path)
+                msg = f"Error applying diff: Failed to create new file {target}: {e}"
+                if log_path:
+                    msg += f" (logged at {log_path})"
+                return msg
         else:
-            applied.append(str(target))
+            # Apply patch to existing file using robust single-file editor
+            res = apply_diff_to_file(str(target), fp['content'], backup=backup, workspace_path=workspace_path, return_json=return_json)
+            results.append(res)
+            if isinstance(res, str) and res.startswith("Error applying diff"):
+                # rollback previously applied files
+                for prev in applied:
+                    try:
+                        p = Path(prev)
+                        if prev in created and p.exists():
+                            p.unlink()
+                        else:
+                            bak = p.with_suffix(p.suffix + '.bak')
+                            if bak.exists():
+                                shutil.copy2(bak, p)
+                    except Exception:
+                        pass
+                return res
+            else:
+                applied.append(str(target))
 
     if return_json:
         import json
-        return json.dumps({"status": "success", "files": applied})
+        return json.dumps({"status": "success", "files": applied, "created": created})
     return f"Successfully applied patch to {len(applied)} file(s)"
 
 

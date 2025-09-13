@@ -168,6 +168,7 @@ class ContextWindowManager:
                 if isinstance(item, dict) and item.get("type") in ["image", "image_url"]:
                     # Much more realistic image token estimates - Claude models use ~4000 tokens per image
                     total += 4000  # Higher default for safety
+                    # TODO: Make this dynamic based on the model used
                 elif isinstance(item, dict) and "text" in item:
                     total += len(item["text"]) // 4
                 else:
@@ -806,4 +807,157 @@ class ContextWindowManager:
     def get_usage(self, category: MessageCategory) -> int:
         """Get current token usage for a specific category."""
         budget = self._budgets.get(category)
-        return budget.current_tokens if budget else 0 
+        return budget.current_tokens if budget else 0
+    
+    # =================================================================
+    # Phase 2 Extensions: Dynamic Reallocation and Context Contributors
+    # =================================================================
+    
+    def get_available_tokens(self, category: MessageCategory) -> int:
+        """Get available tokens for a category (max - current)"""
+        budget = self._budgets.get(category)
+        if not budget:
+            return 0
+        return max(0, budget.max_tokens - budget.current_tokens)
+    
+    def borrow_tokens(self, from_category: MessageCategory, to_category: MessageCategory, amount: int) -> bool:
+        """
+        Borrow unused tokens from one category to another.
+        
+        Args:
+            from_category: Category to borrow tokens from
+            to_category: Category to lend tokens to
+            amount: Number of tokens to borrow
+            
+        Returns:
+            True if borrowing was successful
+        """
+        from_budget = self._budgets.get(from_category)
+        to_budget = self._budgets.get(to_category)
+        
+        if not from_budget or not to_budget:
+            return False
+        
+        # Check if from_category has enough unused tokens
+        available_from = from_budget.max_tokens - from_budget.current_tokens
+        if available_from < amount:
+            return False
+        
+        # Perform the borrowing
+        from_budget.max_tokens -= amount
+        to_budget.max_tokens += amount
+        
+        logger.debug(f"Borrowed {amount} tokens from {from_category.name} to {to_category.name}")
+        return True
+    
+    def auto_rebalance_budgets(self) -> Dict[str, int]:
+        """
+        Automatically rebalance budgets based on current usage patterns.
+        Working files can borrow from DIALOG when needed.
+        
+        Returns:
+            Dict showing token movements
+        """
+        movements = {}
+        
+        # Priority for borrowing: CONTEXT (working files) can borrow from DIALOG
+        context_budget = self._budgets.get(MessageCategory.CONTEXT)
+        dialog_budget = self._budgets.get(MessageCategory.DIALOG)
+        
+        if context_budget and dialog_budget:
+            # If CONTEXT is over budget and DIALOG has unused tokens
+            context_over = context_budget.current_tokens - context_budget.max_tokens
+            dialog_available = dialog_budget.max_tokens - dialog_budget.current_tokens
+            
+            if context_over > 0 and dialog_available > 0:
+                # Borrow up to what's needed or available
+                borrow_amount = min(context_over, dialog_available, dialog_available // 2)  # Max 50% of available
+                
+                if self.borrow_tokens(MessageCategory.DIALOG, MessageCategory.CONTEXT, borrow_amount):
+                    movements[f"DIALOG -> CONTEXT"] = borrow_amount
+        
+        return movements
+    
+    def load_project_instructions(self, workspace_root: str = ".") -> Tuple[str, Dict[str, Any]]:
+        """
+        Load project instruction files (PENGUIN.md, AGENTS.md, README.md) with simple autoloading.
+        Simplified version without complex contributor system.
+        
+        Args:
+            workspace_root: Root directory of the workspace
+            
+        Returns:
+            Tuple of (project_content, debug_info)
+        """
+        from pathlib import Path
+        
+        workspace = Path(workspace_root).resolve()
+        content_parts = []
+        loaded_files = []
+        
+        # Priority order: PENGUIN.md > AGENTS.md > README.md  
+        doc_files = [
+            ("PENGUIN.md", "Project Instructions", 2400),  # 600 tokens worth
+            ("AGENTS.md", "Agent Specifications", 2000),   # 500 tokens worth
+            ("README.md", "Project Overview", 1200)        # 300 tokens worth  
+        ]
+        
+        for filename, section_title, max_chars in doc_files:
+            doc_path = workspace / filename
+            if doc_path.exists():
+                try:
+                    with open(doc_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        # Limit content to prevent context overflow
+                        if len(content) > max_chars:
+                            content = content[:max_chars] + "\n... (truncated)"
+                        content_parts.append(f"## {section_title} ({filename})\n{content}")
+                        loaded_files.append(filename)
+                        
+                        # If we found PENGUIN.md or AGENTS.md, don't fall back to README
+                        if filename in ["PENGUIN.md", "AGENTS.md"]:
+                            break
+                            
+                except Exception as e:
+                    logger.warning(f"Failed to read {filename}: {e}")
+        
+        assembled_content = "\n\n".join(content_parts) if content_parts else ""
+        token_count = self.token_counter(assembled_content) if assembled_content else 0
+        
+        debug_info = {
+            "loaded_files": loaded_files,
+            "total_tokens": token_count,
+            "files_checked": [f[0] for f in doc_files],
+            "truncated": any(len(content) > max_chars for _, _, max_chars in doc_files if content_parts)
+        }
+        
+        return assembled_content, debug_info
+    
+    def get_allocation_report(self) -> Dict[str, Any]:
+        """
+        Generate a detailed allocation report for debugging.
+        Shows how tokens are allocated across categories and contributors.
+        """
+        report = {
+            "total_budget": self.max_tokens,
+            "categories": {},
+            "utilization": {}
+        }
+        
+        total_used = 0
+        for category, budget in self._budgets.items():
+            category_info = {
+                "min_tokens": budget.min_tokens,
+                "max_tokens": budget.max_tokens,
+                "current_tokens": budget.current_tokens,
+                "available": budget.max_tokens - budget.current_tokens,
+                "utilization_pct": (budget.current_tokens / budget.max_tokens * 100) if budget.max_tokens else 0
+            }
+            report["categories"][category.name] = category_info
+            total_used += budget.current_tokens
+        
+        report["utilization"]["total_used"] = total_used
+        report["utilization"]["total_available"] = self.max_tokens - total_used
+        report["utilization"]["overall_pct"] = (total_used / self.max_tokens * 100) if self.max_tokens else 0
+        
+        return report 

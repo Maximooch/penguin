@@ -193,6 +193,18 @@ class ToolManager:
                 },
             },
             {
+                "name": "multiedit_apply",
+                "description": "Apply multiple diffs atomically. Accepts unified multi-file patch or per-file block format. Dry-run by default.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "Unified patch or multiedit block"},
+                        "apply": {"type": "boolean", "description": "Apply changes (default false)"},
+                    },
+                    "required": ["content"],
+                },
+            },
+            {
                 "name": "create_file",
                 "description": "Create a new file at the specified path with optional content. Use this when you need to create a new file in the project structure.",
                 "input_schema": {
@@ -1208,6 +1220,59 @@ class ToolManager:
             workspace_path=self._file_root
         )
 
+    def _execute_multiedit(self, tool_input: dict) -> str:
+        """Execute multiedit facade with workspace integration."""
+        from penguin.tools.multiedit import apply_multiedit
+        content = tool_input.get("content", "")
+        do_apply = bool(tool_input.get("apply", False))
+        # Map config toggles → environment for lower layers
+        try:
+            patches_cfg = None
+            if hasattr(self.config, 'patches'):
+                patches_cfg = getattr(self.config, 'patches')
+            elif isinstance(self.config, dict):
+                patches_cfg = self.config.get('patches')
+            if patches_cfg:
+                def _get(k, default=None):
+                    try:
+                        return getattr(patches_cfg, k)
+                    except Exception:
+                        try:
+                            return patches_cfg.get(k, default)
+                        except Exception:
+                            return default
+                robust = _get('robust')
+                three_way = _get('three_way')
+                shadow = _get('shadow')
+                branch = _get('branch') or _get('branch_prefix')
+                commit_message = _get('commit_message')
+                if robust is not None:
+                    os.environ['PENGUIN_PATCH_ROBUST'] = '1' if robust else '0'
+                if three_way is not None:
+                    os.environ['PENGUIN_PATCH_THREEWAY'] = '1' if three_way else '0'
+                if shadow is not None:
+                    os.environ['PENGUIN_PATCH_SHADOW'] = '1' if shadow else '0'
+                if branch:
+                    os.environ['PENGUIN_PATCH_BRANCH'] = str(branch)
+                if commit_message:
+                    os.environ['PENGUIN_PATCH_COMMIT_MSG'] = str(commit_message)
+        except Exception:
+            pass
+        result = apply_multiedit(content, dry_run=(not do_apply), workspace_root=self._file_root)
+        try:
+            import json
+            return json.dumps({
+                "success": result.success,
+                "files_edited": result.files_edited,
+                "files_failed": result.files_failed,
+                "error_messages": result.error_messages,
+                "backup_paths": result.backup_paths,
+                "rollback_performed": result.rollback_performed,
+                "applied": do_apply,
+            })
+        except Exception:
+            return f"success={result.success}, edited={len(result.files_edited)}, failed={len(result.files_failed)}"
+
     def set_execution_root(self, mode: str) -> str:
         """Switch active execution root between 'project' and 'workspace'."""
         mode_l = (mode or '').lower()
@@ -1315,6 +1380,7 @@ class ToolManager:
                 "enhanced_diff": lambda: self._execute_enhanced_diff(tool_input),
                 "analyze_project": lambda: self._execute_analyze_project(tool_input),
                 "apply_diff": lambda: self._execute_apply_diff(tool_input),
+                "multiedit_apply": lambda: self._execute_multiedit(tool_input),
                 "edit_with_pattern": lambda: self._execute_edit_with_pattern(tool_input),
                 # Repository management tools
                 "create_improvement_pr": lambda: create_improvement_pr(

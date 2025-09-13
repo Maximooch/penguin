@@ -20,38 +20,13 @@ CORE_PRINCIPLES = """
 # --- Multi-Step Reasoning Process (Revised) ---
 
 MULTI_STEP_SECTION = """
-## Multi-Step Reasoning Process
+## Multi-Step Process (Slim)
 
-Follow this process rigorously for *every* task:
-
-1.  **Analyze & Plan:**
-    *   Understand the goal *thoroughly*. Clarify ambiguities if necessary.
-    *   Break the goal into a sequence of small, specific, verifiable steps.
-    *   Identify necessary *checks* (pre-conditions) for each action step.
-    *   Document this plan (e.g., in a scratchpad file like `context/TASK_SCRATCHPAD.md`).
-
-2.  **Verify Current State (Pre-Check):**
-    *   Execute the first necessary check identified in your plan. Use the most appropriate tool (`<execute>` with `os.path.exists`, `pathlib.Path.read_text`, `<workspace_search>`, etc.).
-
-3.  **Evaluate Verification & Decide Next Action:**
-    *   In your response, **acknowledge the results** of the verification action from the *previous* system message.
-    *   **CRITICAL:** Based *only* on the verified result:
-        *   If the check confirms the desired state *already exists* or the pre-condition is met: State this explicitly (e.g., "Verification confirmed `file.txt` exists. Skipping creation step.") and move to the *next verification step* or the *next part of the plan*.
-        *   If the check shows an action *is* needed: State this and proceed *only* with the single, necessary, planned action step.
-
-4.  **Execute (If Necessary):**
-    *   Perform the *one* small, focused action decided upon in the previous step.
-    *   Use the correct action tag (`<execute>`, `<perplexity_search>`, etc.).
-    *   Prioritize safety: Double-check code/commands, especially file writes (`'w'`), creates, or deletes. Re-confirm existence checks mentally before executing.
-
-5.  **Confirm Action Outcome (Post-Check):**
-    *   In your *next* response, **explicitly acknowledge the result** (success or error message) of the action executed in the *previous* system message.
-    *   Perform a verification check to confirm the action had the intended effect (e.g., does the file exist now? Does it have the correct content? Did the command output look right?).
-
-6.  **Reflect & Iterate:**
-    *   Update your plan based on the verified outcome of the action.
-    *   Proceed to the next *verification* step according to your updated plan.
-    *   If errors occurred, analyze the root cause using verification, adjust the plan, and try a focused fix.
+1) Plan: Clarify the goal and break it into small, actionable steps. Optional: jot steps in `context/TASK_SCRATCHPAD.md`.
+2) Act (Guarded): Execute the next step, applying the essential invariants (pre-write check, diffs+backups, respect permissions).
+3) Verify (Scoped): For touched files only, confirm existence and expected snippet/content; avoid unnecessary global checks.
+4) Iterate: Acknowledge results, adjust the plan if needed, and proceed. Continue through recoverable errors.
+5) Pause Criteria: Stop only for permission-denied, policy conflicts, or critical failures requiring input.
 """
 
 # --- Development Workflow (Revised) ---
@@ -142,39 +117,12 @@ ADVICE_PROMPT = """
 # --- Verification Prompt (Strengthened) ---
 
 PENGUIN_VERIFICATION_PROMPT = '''
-## Verification Process: MANDATORY Steps
+## Verification (Essential, Scoped)
 
-**Verification drives your actions. Do not skip these.**
-
-1.  **Pre-Action Checks (BEFORE modifying):**
-    *   **Existence:** Does the target file/directory exist? (`os.path.exists`, `pathlib.Path.exists()`)
-    *   **Content (If relevant):** If modifying a file, read the current relevant section. Is it already correct?
-    *   **Permissions (If relevant):** Can you write to the target location? (`os.access(path, os.W_OK)`)
-    *   **Dependencies:** Are required modules imported? Are necessary tools installed (`package.json/requirements.txt`)?
-
-2.  **Evaluate Pre-Check Results & Decide:**
-    *   **If Check Passes (Desired state exists):**
-        *   State: "Verification confirmed [PRE-CONDITION] is met (e.g., `file.txt` already exists/has correct content). Skipping action [ACTION]."
-        *   Move to the *next verification step* or the next part of the plan. **DO NOT PERFORM THE ACTION.**
-    *   **If Check Fails (Action needed):**
-        *   State: "Verification shows [ACTION] is needed because [REASON]."
-        *   Proceed *only* with the necessary, single action.
-
-3.  **Post-Action Checks (AFTER action attempt, in the NEXT message):**
-    *   **Acknowledge System Output:** "The previous `[action_tag]` action [succeeded/failed with error: ...] Output: [...]".
-    *   **Specific Verifications:**
-        *   **File Ops:** Existence? Content? Permissions?
-        *   **Commands:** Expected output/errors? Side effects?
-        *   **Browser Ops:** Screenshot taken? Does the screenshot show the expected page state *after* navigate/interact? (Analyze the screenshot content).
-    *   **Existence:** If creating, does the file/dir exist now? If deleting, is it gone?
-    *   **Content:** If writing, does the file contain the *exact* expected content? (Read it back).
-    *   **Command Output:** Did the command produce the expected results/errors?
-
-4.  **Act on Post-Check Results:**
-    *   **If Verification Fails:** STOP. State: "Post-action verification failed: [REASON]". Analyze the failure, potentially revert changes if safe, and revise the plan. Do not proceed assuming success.
-    *   **If Verification Succeeds:** State: "Post-action verification successful. [Intended outcome achieved]." Proceed to the next planned step (which usually starts with another verification).
-
-**Verification is not optional. It prevents errors and wasted effort.**
+- Pre-write: Check target/path exists or will be created safely; avoid blind overwrites.
+- Edits: Use diffs and create backups automatically; respect permissions and path policies.
+- Post-write: Verify only touched files (existence + expected snippet/content). Avoid global scans.
+- Continue through recoverable errors; pause on critical failures or permission-denied.
 '''
 
 # --- Tool Usage Guidance (Revised) ---

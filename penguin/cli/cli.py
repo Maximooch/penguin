@@ -525,6 +525,14 @@ def main_entry(
                     from penguin.penguin.cli.old_cli import app as old_app
                 except Exception:
                     from penguin.cli.old_cli import app as old_app
+        # Remove the --old-cli flag from argv before delegating to legacy CLI
+        # so the legacy parser doesn't reject an unknown global option
+        try:
+            import sys as _sys
+            _args = [arg for arg in _sys.argv[1:] if arg != "--old-cli"]
+            _sys.argv = [_sys.argv[0]] + _args
+        except Exception:
+            pass
         old_app()
         raise typer.Exit()
 

@@ -44,6 +44,7 @@ class ActionType(Enum):
     ENHANCED_READ = "enhanced_read"
     ENHANCED_WRITE = "enhanced_write"
     APPLY_DIFF = "apply_diff"
+    MULTIEDIT = "multiedit"
     EDIT_WITH_PATTERN = "edit_with_pattern"
     # TASK_CREATE = "task_create"
     # TASK_UPDATE = "task_update"
@@ -252,6 +253,7 @@ class ActionExecutor:
             ActionType.PROCESS_SEND: self._process_send,
             ActionType.PROCESS_EXIT: self._process_exit,
             ActionType.WORKSPACE_SEARCH: self._workspace_search,
+            ActionType.MULTIEDIT: self._multiedit,
             # Project management handlers
             ActionType.PROJECT_CREATE: self._project_create,
             ActionType.PROJECT_LIST: self._project_list,
@@ -1105,6 +1107,20 @@ class ActionExecutor:
             "file_path": file_path,
             "diff_content": diff_content,
             "backup": backup
+        })
+
+    def _multiedit(self, params: str) -> str:
+        """Apply multi-file edits atomically. Content is the multiedit block or unified patch. Default dry-run."""
+        content = params
+        # Optional header directive: apply=true on the first line
+        do_apply = False
+        m = re.match(r"^apply\s*[:=]\s*(true|false)\s*\n", content, flags=re.IGNORECASE)
+        if m:
+            do_apply = m.group(1).lower() == 'true'
+            content = content[m.end():]
+        return self.tool_manager.execute_tool("multiedit_apply", {
+            "content": content,
+            "apply": do_apply,
         })
 
     def _edit_with_pattern(self, params: str) -> str:

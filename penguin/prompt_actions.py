@@ -28,8 +28,7 @@ To ensure perfect TUI rendering, follow all of the below:
    - Avoid duplication: if the tool will output the full content, summarize briefly and rely on the tool block; do not re-echo the same code elsewhere.
 
 4) Diff output:
-   - Use `diff` fenced blocks with standard unified headers and hunks:
-```diff
+   - Use `diff` fenced blocks with standard unified headers and hunks:```diff
 --- a/path
 +++ b/path
 @@ -1,3 +1,4 @@
@@ -154,21 +153,71 @@ Executes a shell command in the workspace root. **Use sparingly and cautiously.*
 
 1.  **Apply Unified Diff (`<apply_diff>`):**
     `<apply_diff>file_path:diff_content:backup</apply_diff>`
-    -   **Applies unified diff format** to make precise edits.
-    -   **Targets specific lines** - does not just append content.
-    -   Creates backup by default.
-    -   Example with diff content:
-    ```
+    -   **Edit a single file** with unified diff format for precise line-based changes.
+    -   **Applies immediately** (no dry-run mode). Backups are created by default (`backup=true`).
+    -   Tip: If your diff content contains colons, omit the optional `:backup` parameter and rely on the default.
+
+    **Example (applies immediately):**
+    ```actionxml
     <apply_diff>src/main.py:--- a/src/main.py
     +++ b/src/main.py
     @@ -1,3 +1,4 @@
      def hello():
-    +    ""Say hello.""
+    +    \"\"\"Say hello.\"\"\"
          print("Hello")
-    :true</apply_diff>
+    </apply_diff>
     ```
 
-2.  **Pattern-Based Editing (`<edit_with_pattern>`):**
+2.  **Multi-File Editing (`<multiedit>`):**
+    `<multiedit>content</multiedit>`
+    -   **Apply multiple diffs atomically** - all succeed or none are applied.
+    -   **DRY-RUN BY DEFAULT** - shows what would change without applying.
+    -   **Creates automatic backups** for all modified files.
+    -   Supports **per-file block format only** (standard unified multi-file patches are not accepted by this tool).
+    -   Add `apply=true` as the first line inside the tag to actually apply.
+    
+    **Per-File Blocks (supported):**
+    ```actionxml
+    <multiedit>
+    path/to/file1.py:
+    --- a/path/to/file1.py
+    +++ b/path/to/file1.py
+    @@ -1,2 +1,3 @@
+     import os
+    +from pathlib import Path
+     print("hi")
+    
+    path/to/new_file.txt:
+    @@ -0,0 +1,2 @@
+    +hello
+    +world
+    </multiedit>
+    ```
+    
+    **Apply Mode Example:**
+    ```actionxml
+    <multiedit>
+    apply=true
+    src/config.py:
+    @@ -10,11 +10,12 @@
+     DEBUG = False
+    +LOG_LEVEL = "INFO"
+     PORT = 8080
+    
+    src/main.py:
+    @@ -1,2 +1,3 @@
+    +#!/usr/bin/env python3
+     import config
+    </multiedit>
+    ```
+    
+    **Notes:**
+    -   All edits are validated before any are applied
+    -   Failed validation shows errors for all problematic edits
+    -   Automatic rollback if any edit fails during application
+    -   Preserves file permissions and attributes
+
+3.  **Pattern-Based Editing (`<edit_with_pattern>`):**
     `<edit_with_pattern>file_path:search_pattern:replacement:backup</edit_with_pattern>`
     -   **Uses regex patterns** for find-and-replace operations.
     -   Safer than manual string replacement.
@@ -197,15 +246,18 @@ Executes a shell command in the workspace root. **Use sparingly and cautiously.*
 
 Use for information retrieval. Acknowledge results before acting.
 
-1.  **Web Search (`<perplexity_search>`):**
+1.  **Grep-like Search (`<search>`):**
+    `<search>pattern</search>`
+    -   Project-local, fast regex search over logs and files. Use `|` to OR patterns.
+    -   Example: `<search>def\s+my_function|class\s+MyClass</search>`
+
+2.  **Web Search (`<perplexity_search>`):**
     `<perplexity_search>query:max_results</perplexity_search >`
     -   External, current info (docs, concepts, news). Max 5 results.
     -   Example: `<perplexity_search>python requests library usage:3</perplexity_search >`
 
-2.  **Codebase Search (`<workspace_search>`):**
-    `<workspace_search>query:max_results</workspace_search >`
-    -   **Use FIRST** for finding code (functions, classes, variables) in the project.
-    -   Example: `<workspace_search>class UserSchema:5</workspace_search >`
+3.  **Codebase Search (`<workspace_search>`):**
+    -   Currently disabled for performance reasons in this build. Use `<search>` and `<find_files_enhanced>` instead.
 
 3.  **Memory Search (`<memory_search>`):**
     `<memory_search>query:k:memory_type:categories</memory_search >`
@@ -240,6 +292,17 @@ Manage long-running background processes.
 -   `<process_exit></process_exit >`
 
 **Notes:** Check status/list before start/stop. Always `process_exit`.
+
+---
+
+### File Editing Best Practices
+
+**Key Principles:**
+-   **Always dry-run first** - Review changes before applying
+-   **Verify state before editing** - Read files to understand current content
+-   **Use appropriate tool** - `apply_diff` for single files, `multiedit` for multiple
+-   **Keep scripts short** - Acknowledge results, continue through recoverable errors
+-   **Enhanced tools available** - File ops, search, and browser tools handle backups/safety automatically
 
 ---
 
@@ -336,7 +399,10 @@ Description: Run code in the terminal, using iPython or shell/bash (depending on
 <find_files_enhanced>pattern:search_path:include_hidden:file_type</find_files_enhanced> - Find files with glob patterns
 <enhanced_diff>file1:file2:semantic</enhanced_diff> - Compare files with semantic analysis
 <analyze_project>directory:include_external</analyze_project> - Analyze project structure with AST
-<apply_diff>file_path:diff_content:backup</apply_diff> - Apply unified diff to edit files precisely
+
+# File Editing (Dry-run by default, add apply=true to apply)
+<apply_diff>file_path:diff_content:backup</apply_diff> - Edit single file with unified diff (creates backups)
+<multiedit>content</multiedit> - Apply multiple diffs atomically (all succeed or none)
 <edit_with_pattern>file_path:search_pattern:replacement:backup</edit_with_pattern> - Edit files with regex patterns
 
 # Memory
