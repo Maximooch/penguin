@@ -109,7 +109,7 @@ _system_exports = ["ConversationManager", "Session", "Message", "MessageCategory
 _api_client_exports = ["PenguinClient", "ChatOptions", "TaskOptions", "CheckpointInfo", "ModelInfo", "create_client"]
 
 # Version info
-__version__ = "0.3.3.1"
+__version__ = "0.3.3.3"
 __author__ = "Maximus Putnam"
 __email__ = "MaximusPutnam@gmail.com"
 __license__ = "AGPL-3.0-or-later"
