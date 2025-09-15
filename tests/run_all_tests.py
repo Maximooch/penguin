@@ -1,131 +1,101 @@
 #!/usr/bin/env python3
 """
-Test runner for all OpenRouter gateway fix tests.
+Penguin test suite runner (print + exit code scripts).
 
-This script runs all the test files in sequence and provides a summary.
+Discovers and runs all test_*.py scripts under penguin/tests recursively.
+Runs in a stable order (prompt → system → tools → runmode → other), with
+optional stress skipping via env PENGUIN_SKIP_STRESS=1.
 
-Run with: python run_all_tests.py
+Usage: python run_all_tests.py
 """
 
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
-def run_test_script(script_path):
-    """Run a test script and capture its output."""
-    print(f"🏃 Running {script_path.name}...")
+
+def run_test_script(script_path: Path):
+    print(f"🏃 Running {script_path.relative_to(ROOT)}")
     print("=" * 60)
-    
     start_time = time.time()
-    
     try:
-        # Run the script
         result = subprocess.run(
-            ["python", str(script_path)], 
-            capture_output=True, 
+            [sys.executable, str(script_path.name)],
+            capture_output=True,
             text=True,
-            cwd=script_path.parent
+            cwd=str(script_path.parent),
         )
-        
         duration = time.time() - start_time
-        
-        # Print output
         if result.stdout:
             print(result.stdout)
-        
         if result.stderr and result.returncode != 0:
-            print("STDERR:", result.stderr)
-        
-        status = "✅ PASSED" if result.returncode == 0 else f"❌ FAILED (exit code {result.returncode})"
-        print(f"\n{status} - {script_path.name} completed in {duration:.2f}s")
-        
-        return result.returncode == 0, duration, result.stdout + result.stderr
-        
+            print("STDERR:")
+            print(result.stderr)
+        status = "✅ PASSED" if result.returncode == 0 else f"❌ FAILED (exit {result.returncode})"
+        print(f"\n{status} - {script_path.name} in {duration:.2f}s")
+        return result.returncode == 0, duration
     except Exception as e:
         duration = time.time() - start_time
-        error_msg = f"💥 ERROR running {script_path.name}: {e}"
-        print(error_msg)
-        return False, duration, error_msg
+        print(f"💥 ERROR running {script_path.name}: {e}")
+        return False, duration
 
-def main():
-    """Run all test scripts."""
-    print("🧪 Running All OpenRouter Gateway Tests\n")
-    
-    # Find test scripts in current directory
-    test_dir = Path(__file__).parent
-    test_scripts = [
-        # Lightweight event/streaming integration test (no network)
-        test_dir / "test_runmode_streaming.py",
-        test_dir / "test_openrouter_fixes.py",
-        test_dir / "test_action_tag_parser.py",
-        test_dir / "test_context_commands.py",
-        test_dir / "test_context_cli.py",
-        test_dir / "test_root_override.py",
-        # Note: test_reasoning_models.py requires API key, run separately
-    ]
-    
-    # Check if scripts exist
-    missing_scripts = [s for s in test_scripts if not s.exists()]
-    if missing_scripts:
-        print("❌ Missing test scripts:")
-        for script in missing_scripts:
-            print(f"   - {script}")
+
+def discover_tests(root: Path) -> list[Path]:
+    tests = []
+    for p in root.rglob("test_*.py"):
+        if p.name == "run_all_tests.py":
+            continue
+        # Optionally skip stress tests
+        if os.environ.get("PENGUIN_SKIP_STRESS", "0") in ("1", "true", "yes"):
+            if "stress" in p.name:
+                continue
+        tests.append(p)
+    # Stable ordering by domain
+    def sort_key(path: Path):
+        parts = path.parts
+        # .../tests/<domain>/file
+        dom = parts[-2] if len(parts) >= 2 else "z"
+        order = {"prompt": 0, "system": 1, "tools": 2, "runmode": 3}
+        return (order.get(dom, 9), str(path))
+    tests.sort(key=sort_key)
+    return tests
+
+
+def main() -> int:
+    global ROOT
+    ROOT = Path(__file__).parent
+    print("🧪 Running Penguin Tests\n")
+    tests = discover_tests(ROOT)
+    if not tests:
+        print("❌ No tests found")
         return 1
-    
+
     results = {}
-    total_duration = 0
-    
-    # Run each test script
-    for script in test_scripts:
-        success, duration, output = run_test_script(script)
-        results[script.name] = {
-            'success': success,
-            'duration': duration,
-            'output': output
-        }
-        total_duration += duration
-        print("\n" + "="*80 + "\n")
-    
-    # Summary
+    total_duration = 0.0
+
+    for script in tests:
+        ok, dur = run_test_script(script)
+        results[str(script.relative_to(ROOT))] = (ok, dur)
+        total_duration += dur
+        print("\n" + "=" * 80 + "\n")
+
     print("📊 TEST SUMMARY")
     print("=" * 60)
-    
-    passed = sum(1 for r in results.values() if r['success'])
+    passed = sum(1 for ok, _ in results.values() if ok)
     total = len(results)
-    
-    for script_name, result in results.items():
-        status = "✅" if result['success'] else "❌"
-        print(f"{status} {script_name:<30} ({result['duration']:.2f}s)")
-    
-    print(f"\nOverall: {passed}/{total} test scripts passed")
+    for name, (ok, dur) in results.items():
+        status = "✅" if ok else "❌"
+        print(f"{status} {name:<45} {dur:.2f}s")
+    print(f"\nOverall: {passed}/{total} passed")
     print(f"Total runtime: {total_duration:.2f}s")
-    
-    # Additional info
-    print(f"\n📝 Additional Tests Available:")
-    reasoning_test = test_dir / "test_reasoning_models.py"
-    if reasoning_test.exists():
-        print(f"  🧠 {reasoning_test.name} - Requires OPENROUTER_API_KEY")
-        print(f"      Run with: python {reasoning_test.name}")
-    
-    # Recommendations based on results
-    if passed == total:
-        print(f"\n🎉 All tests passed! The OpenRouter gateway fixes are working correctly.")
-        print(f"   - Reasoning token configuration is properly formatted")
-        print(f"   - Conversation reformatting preserves all content") 
-        print(f"   - Action tag detection is consistent between parser and gateway")
-        print(f"\n🔬 Next step: Test with actual reasoning models using test_reasoning_models.py")
-    else:
-        print(f"\n⚠️  Some tests failed. Check the output above for details.")
-        failed_scripts = [name for name, result in results.items() if not result['success']]
-        print(f"   Failed scripts: {', '.join(failed_scripts)}")
-    
     return 0 if passed == total else 1
+
 
 if __name__ == "__main__":
     try:
-        exit_code = main()
-        sys.exit(exit_code)
+        sys.exit(main())
     except KeyboardInterrupt:
         print("\n⏹️  Tests interrupted by user")
         sys.exit(130)

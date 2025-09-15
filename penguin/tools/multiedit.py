@@ -62,10 +62,11 @@ class MultiEdit:
         edits = []
         
         # Split by file sections (lines starting with filename and ending with colon)
-        # Be generous: allow filenames without extensions and dotfiles
-        sections = re.split(r'\n([^\n:]+):\n', multiedit_content.strip())
+        # Support both start-of-string and newline-delimited headers.
+        # Be generous: allow filenames without extensions and dotfiles.
+        sections = re.split(r'(?:^|\n)([^\n:]+):\n', multiedit_content.strip())
         
-        # First section is empty/header, then alternating filenames and diffs
+        # First section may be empty/header, then alternating filenames and diffs
         for i in range(1, len(sections), 2):
             if i + 1 < len(sections):
                 filename = sections[i].strip()
@@ -184,7 +185,7 @@ class MultiEdit:
         from penguin.tools.core.support import apply_unified_patch
         unified_patch = self._build_unified_patch(edits)
         res = apply_unified_patch(unified_patch, workspace_path=str(self.workspace_root), backup=True, return_json=True)
-        # The support function returns JSON on success or error string on failure
+        # The support function returns JSON on success or a string (error or plain success) on failure/incompat
         files_edited: List[str] = []
         created: List[str] = []
         files_failed: List[str] = []
@@ -203,16 +204,40 @@ class MultiEdit:
                     backup_paths={}
                 )
         except Exception:
-            # Non-JSON means an error string
-            files_failed = [e.file_path for e in edits]
-            error_messages = {"apply": res}
+            from penguin.tools.core.support import apply_diff_to_file
+            # Try per-file fallback with transactional semantics
+            applied_paths: List[str] = []
+            for e in edits:
+                r = apply_diff_to_file(e.file_path, e.diff_content, backup=True, workspace_path=None, return_json=False)
+                if isinstance(r, str) and r.startswith("Error applying diff"):
+                    # Rollback previously applied
+                    for prev in applied_paths:
+                        try:
+                            p = Path(prev)
+                            bak = p.with_suffix(p.suffix + '.bak')
+                            if bak.exists():
+                                shutil.copy2(bak, p)
+                        except Exception:
+                            pass
+                    files_failed = [e.file_path]
+                    error_messages = {"apply": r}
+                    return MultiEditResult(
+                        success=False,
+                        files_edited=applied_paths,
+                        files_failed=files_failed,
+                        error_messages=error_messages,
+                        backup_paths={},
+                        rollback_performed=True
+                    )
+                else:
+                    applied_paths.append(e.file_path)
+            # All applied successfully via fallback
             return MultiEditResult(
-                success=False,
-                files_edited=files_edited,
-                files_failed=files_failed,
-                error_messages=error_messages,
-                backup_paths={},
-                rollback_performed=True
+                success=True,
+                files_edited=applied_paths,
+                files_failed=[],
+                error_messages={},
+                backup_paths={}
             )
 
 # Global instance

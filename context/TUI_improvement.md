@@ -450,24 +450,75 @@ The key to success is maintaining simplicity while adding power - making the com
 
 This plan incorporates optimizations to address freezes during plain assistant streaming and choppy scrolling, while preparing for Textual’s granular (pixel-level) scrolling where available.
 
-- Immediate (Phase A)
-  - Autoscroll gate + debounced scroll (80–120ms) to prevent fighting the user while they scroll
-  - Throttle streaming Markdown updates (~120–160ms) and prefer Textual’s streaming API
-  - Coalesce sidebar/status updates (skip identical frames)
-  - Keep previews short for large tool/action outputs; defer heavy formatting to background threads
+### High-Impact, Low-Risk Wins (Immediate)
+- Lift hot regexes to module scope: precompile once and reuse.
+  - Implementation: move `DETAILS_RE` from inside `ChatMessage.compose()` to module scope and reuse everywhere.
+- Reduce parsing during streaming: keep the streaming path append-only and defer heavy transforms to finalization.
+  - Implementation: append raw chunks during streaming; perform fence splitting, `<details>` parsing, and code fencing in `end_stream()`.
+- Increase streaming buffer and cadence: reduce Markdown reparses.
+  - Implementation: raise `ChatMessage._buffer_size_limit` from 500 → 1500–2000; increase `_stream_update_min_interval` from ~0.22s → ~0.28–0.32s (adaptive).
+- Cache and reuse Markdown/Expander children: avoid remounting in hot paths.
+  - Implementation: create child widgets on first compose; update via Markdown stream API; only rebuild on density toggles.
+- Precompute language guesses with a tiny LRU: replace ad‑hoc `re.search` calls in `_format_system_output`.
+  - Implementation: precompile language regexes, add a small LRU for recent guesses.
+- Debounce scroll and gate by position: fewer `scroll_end()` calls, smoother streams.
+  - Implementation: keep autoscroll only when near bottom (already implemented); increase debounce to ~200–240ms.
+- Group response threads (from IDE extension message design): collapse non‑final phases by default.
+  - Implementation: add response thread container keyed by `response_id` with phases `analysis|tools|final`, plus a single “Show steps” toggle.
 
-- Near-term (Phase B)
-  - Virtualized message list (render only visible messages)
-  - Adopt `StreamingStateMachine` to centralize chunk buffering and cleanup, reducing widget churn
-  - Enable granular mouse reporting (Textual ≥ 2.0, Kitty/Ghostty, etc.) for smoother scroll deltas; capability-gated
+### Immediate (Phase A)
+- Autoscroll gate + debounced scroll (80–120ms) to prevent fighting the user while they scroll
+- Throttle streaming Markdown updates (~120–160ms) and prefer Textual’s streaming API
+- Coalesce sidebar/status updates (skip identical frames)
+- Keep previews short for large tool/action outputs; defer heavy formatting to background threads
 
-- Tool/Action Widgets
-  - Mount minimal previews when collapsed; mount full Markdown on expand (lazy mounting)
-  - Preserve head/tail windows for very large strings; offer copy/download for full content
+### Near-term (Phase B)
+- Virtualized message list (render only visible messages)
+- Adopt `StreamingStateMachine` to centralize chunk buffering and cleanup, reducing widget churn
+- Enable granular mouse reporting (Textual ≥ 2.0, Kitty/Ghostty, etc.) for smoother scroll deltas; capability-gated
 
-- Profiling & Budgets
-  - Use `pyinstrument -r html` to validate hot paths (streaming, large results, long scrollback)
-  - Target ~8–10 FPS perceived streaming updates; coalesce scroll and status changes into that cadence
+### Tool/Action Widgets
+- Mount minimal previews when collapsed; mount full Markdown on expand (lazy mounting)
+- Preserve head/tail windows for very large strings; offer copy/download for full content
 
-- References
-  - Textual smooth scrolling (pixel reporting + pixel-size reporting; requires Textual ≥ 2.0 and supporting terminals such as Kitty, Ghostty).
+### Response-thread Grouping (Performance-focused)
+- Contract: emit `response_start`, `stream_chunk{phase}`, `response_final` with `response_id`.
+- UI: group all interim messages by `response_id`; render `analysis` collapsed by default, `final` as the visible message; one “Show steps” toggle per response.
+- Benefit: fewer live nodes and markdown reparses; de‑dupe hidden intermediary content; simpler autoscroll behavior.
+
+### Profiling & Validation (Quick)
+- Pyinstrument quick path: profile one end‑to‑end response and open HTML.
+  - Example: `pyinstrument -r html -o tui_profile.html python -c "from penguin.cli.tui import TUI; TUI.run()"`
+- Micro‑metrics: log per-frame render time, stream flush time, and scroll debounce trigger counts; raise warnings when budgets exceeded.
+- Script: add `scripts/profile_tui_stream.py` to run a simple instrumented stream (no pytest required).
+- Textual lessons learned: precompute static queries/regexes; avoid expensive object creation (e.g., prefer `tuple` over `NamedTuple` in hot loops) as highlighted in Textual’s TextArea profiling write-up.
+
+### Targets & Budgets
+- Target ~8–10 FPS perceived streaming updates; coalesce scroll and status changes into that cadence.
+- Maintain baseline memory under ~200MB with long transcripts via trimming, stubbing, and lazy hydration.
+
+### References
+- Textual smooth scrolling (pixel reporting + pixel-size reporting; requires Textual ≥ 2.0 and supporting terminals such as Kitty, Ghostty).
+
+### Implementation Pointers
+- Module-level regexes and patterns: move `DETAILS_RE` and language-guess patterns to module scope for reuse.
+- Append-only streaming path: avoid parsing during streaming; perform parsing/formatting in `end_stream()`.
+- Cache widget references: store the first `TextualMarkdown` and any first `Expander`/fallback references; avoid `query_one` in hot loops.
+- Response-thread container: add a grouped container with a “Show steps” toggle; route phased events accordingly.
+- Feature detection: enable pixel-aware mouse reporting when supported to smooth deltas.
+
+### Configurable Runtime Switches (via /debug)
+- Stream throttle ms, scroll debounce ms, preview line count, linkify behavior, default reasoning/tool visibility; persist in TUI prefs.
+
+### Nice-to-haves in Hot Paths
+- Replace slow constructs in tight loops; reduce short‑lived allocations; prefer simple tuples over `NamedTuple` where applicable.
+
+---
+
+## Questions / Suggestions (for quick alignment)
+- Visibility defaults: should `analysis` stay collapsed even in detailed view, or only in compact?
+- Grouping affordance: single “Show steps” per response vs. small expanders inline per section?
+- Final marker vs. event: rely solely on `response_final` events or also parse an explicit `<final>` marker as a fallback?
+- Tool previews: keep a single global `tools_preview_lines`, or vary by view (compact vs detailed)?
+- Adaptive throttling: acceptable FPS floor/ceiling for auto‑tuning stream cadence (e.g., 6–14 FPS window)?
+- Pixel scrolling: OK to soft‑gate by capability and silently fall back to cell-based scrolling?

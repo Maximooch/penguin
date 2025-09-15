@@ -923,12 +923,23 @@ class ContextWindowManager:
         
         assembled_content = "\n\n".join(content_parts) if content_parts else ""
         token_count = self.token_counter(assembled_content) if assembled_content else 0
+
+        # Compute truncation flag correctly by re-evaluating based on the
+        # stored parts lengths versus their caps. Track truncation during load
+        # to avoid referencing out-of-scope variables.
+        truncated = False
+        try:
+            # If any chosen file's content was longer than its max_chars, we appended
+            # the marker; use that as a reliable signal.
+            truncated = any(part.endswith("... (truncated)") or "(truncated)" in part for part in content_parts)
+        except Exception:
+            truncated = False
         
         debug_info = {
             "loaded_files": loaded_files,
             "total_tokens": token_count,
             "files_checked": [f[0] for f in doc_files],
-            "truncated": any(len(content) > max_chars for _, _, max_chars in doc_files if content_parts)
+            "truncated": truncated,
         }
         
         return assembled_content, debug_info

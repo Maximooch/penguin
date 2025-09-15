@@ -105,6 +105,11 @@ penguin/codeact/
 # Ignore testing folder, nothing useful in there yet.
 /testing/
 
+# Ignore testing errors
+tests/errors_log/
+
+
+
 # CWM test files
 cwm_turns.csv
 cwm_turns.json

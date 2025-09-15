@@ -9,6 +9,9 @@ junkdrawer/
 __pycache__/
 *.py[cod]
 
+# Testing errors
+
+tests/errors_log/
 # Embeddings
 embeddings/
 
