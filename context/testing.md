@@ -54,3 +54,13 @@ This document outlines high‑value stress tests added to validate recent change
 - Atomic multi-file apply throughput (temp workspace, macOS, fast-startup):
   - ~300–350 files/second for create-only patches (500/1000/2000 files).
 - We’ll treat “300 files/sec” as a reasonable starting baseline — Penguin’s just warming up.
+
+## Three‑Way Merge Conflicts (Robust Backend)
+
+- Robust mode (git apply) is enabled via `PENGUIN_PATCH_ROBUST=1` inside a git repo.
+- With `PENGUIN_PATCH_THREEWAY=1` Penguin attempts a 3‑way merge on context drift.
+- If git reports conflicts, Penguin now:
+  - Returns a structured result with `status: "conflict"`, a `conflicted` file list, and a `message`.
+  - Leaves conflict markers in the worktree for the user (or a follow‑up tool) to resolve.
+  - Does not rollback in this case (by design), so the conflict is visible and actionable.
+- If the apply fails without conflicts, Penguin rolls back fully (atomic) and returns `status: "error"`.
