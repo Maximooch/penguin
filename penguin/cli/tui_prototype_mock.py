@@ -57,6 +57,7 @@ class PrototypePenguinApp(PenguinTextualApp):
         ("r", "stress_tools_heavy", "Stress tools"),
         ("b", "jump_bottom", "Bottom"),
         ("A", "toggle_autoscroll", "Autoscroll"),
+        ("m", "demo_threaded_group", "Steps+Final thread"),
     ]
 
     async def on_mount(self) -> None:  # type: ignore[override]
@@ -103,6 +104,13 @@ class PrototypePenguinApp(PenguinTextualApp):
         # Demo message with inline ActionTag, then emit a separate tool call/result
         # to mirror the typical duplication sequence seen in real runs.
         content = (
+            # Steps + Final demo (matches prompt clause)
+            "<details>\n<summary>Plan / Steps</summary>\n\n"
+            "1) Parse input\n\n"
+            "2) Select tool(s)\n\n"
+            "3) Summarize results\n\n"
+            "</details>\n\n"
+            "### Final\nUse endpoint X with key Y; fallback to cache on 404.\n\n"
             "Here is a short demo reply.\n\n"
             # Small inline code block
             "```python\nprint('hello from Penguin prototype')\n```\n\n"
@@ -132,6 +140,43 @@ class PrototypePenguinApp(PenguinTextualApp):
                 "status": "completed",
                 "id": "dup1",
             },
+        )
+
+    async def action_demo_threaded_group(self) -> None:
+        """Show a Final message with an expandable group of sub-messages beneath it.
+
+        Mimics Codex/Claude Code: prominent Final answer, with optional steps/drafts/tools
+        revealed via a single expander containing multiple sub-blocks.
+        """
+        # Final first (prominent)
+        final_md = (
+            "### Final\n"
+            "We will use the Auth service's `/v1/tokens/refresh` endpoint and cache misses to Redis.\n\n"
+            "- Endpoint: `POST /v1/tokens/refresh`\n"
+            "- Fallback: serve last-good token from Redis for ≤60s window\n"
+        )
+        await self.handle_core_event(
+            "message",
+            {"role": "assistant", "content": final_md, "category": "DIALOG"},
+        )
+
+        # Collapsed steps beneath final — multiple sub-messages rendered inside one details block
+        sub_msgs = (
+            "<details>\n<summary>Show steps (3)</summary>\n\n"
+            "#### Draft 1\n"
+            "> Explore token refresh flows; consider optimistic cache.\n\n"
+            "#### Tool: workspace_search\n"
+            "```json\n{\n  \"tool\": \"workspace_search\",\n  \"query\": \"auth refresh token\"\n}\n```\n\n"
+            "#### Notes\n"
+            "- Cache tokens in Redis with 60s TTL.\n"
+            "- On 5xx from Auth, serve cache and log warn.\n\n"
+            "#### Draft 2\n"
+            "> Confirm endpoint semantics; finalize fallback policy.\n\n"
+            "</details>\n"
+        )
+        await self.handle_core_event(
+            "message",
+            {"role": "assistant", "content": sub_msgs, "category": "DIALOG"},
         )
 
     async def action_stream_sample(self) -> None:

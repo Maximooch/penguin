@@ -49,3 +49,8 @@ This document outlines high‑value stress tests added to validate recent change
 - Streaming emits coherent chunks and a single finalization per task
 - Context trim preserves SYSTEM and prunes in priority order; borrowing keeps totals within limits
 
+## Performance Baseline (Prelim)
+
+- Atomic multi-file apply throughput (temp workspace, macOS, fast-startup):
+  - ~300–350 files/second for create-only patches (500/1000/2000 files).
+- We’ll treat “300 files/sec” as a reasonable starting baseline — Penguin’s just warming up.

@@ -132,7 +132,34 @@ def hello():
 </execute>
 ```
 This is required so the Textual TUI can apply proper syntax highlighting. Do **not** use indented code blocks; always use fenced blocks.
+
+**TUI Response Formatting (Steps + Final):**
+When responding:
+- Wrap non‑essential reasoning and intermediate steps in a single details block:
+  <details>
+  <summary>Plan / Steps</summary>
+
+  1) …
+  2) …
+  (Include tool calls and drafts here if useful.)
+
+  </details>
+
+- Always end with a clearly delineated final answer section:
+  ### Final
+  <concise final answer only>
+
+- Do not place the final answer inside <details>.
+- Use fenced code blocks with language tags for code.
+- Prefer terse steps; omit steps when trivial.
+
+Rendering defaults expected by the UI:
+- In compact view, the analysis details block is collapsed by default.
+- In detailed view, the first details block should be open by default.
 """
+
+# TODO: this should be a mode in the prompt builder
+# TODO: Actually, continue this as a thing in output formatting to modularize
 
 # For now it's directly in the system prompt. But once I get the prompt templating stuff, I'll need to handle it differently.
 

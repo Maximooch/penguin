@@ -55,7 +55,16 @@ if Expander is None:
             super().__init__()
             self._summary_text = summary.strip() or "Details"
             self._body_md = body_md
-            self.open_state = open
+            # Avoid mounting children before attachment; set initial flag and apply on mount
+            self._initial_open = bool(open)
+            self.open_state = False
+        def on_mount(self) -> None:  # type: ignore[override]
+            """Apply initial open state after the widget is attached."""
+            try:
+                if self._initial_open:
+                    self.open_state = True
+            except Exception:
+                pass
 
         # --------------------------- Compose ---------------------------
         def compose(self) -> ComposeResult:  # noqa: D401 – framework signature
@@ -117,6 +126,45 @@ from penguin.cli.widgets import ToolExecutionWidget, StreamingStateMachine, Stre
 from penguin.cli.widgets.unified_display import UnifiedExecution, ExecutionAdapter, ExecutionStatus
 from penguin.cli.command_registry import CommandRegistry
 
+
+# ------------------------------------------------------------------
+# Precompiled regexes and language guess cache (performance hot paths)
+# ------------------------------------------------------------------
+from functools import lru_cache
+
+# Convert HTML <details>/<summary> blocks into Textual Expanders (module-scope)
+DETAILS_RE = re.compile(r"<details(\s+[^>]*)?>\s*(<summary>(.*?)</summary>)?(.*?)</details>", re.S)
+
+# Language guess regexes (precompiled)
+_RE_PY = re.compile(r"^\s*(from\s+\w+\s+import|import\s+\w+|def\s+\w+\(|class\s+\w+|if __name__ == '__main__')", re.M)
+_RE_JS = re.compile(r"\bfunction\s+\w+\s*\(|console\.log\(|=>\s*\w*\(")
+_RE_JSON_START = re.compile(r"^\s*[\[{]")
+_RE_SHELL = re.compile(r"^\s*#\!/?\w*sh|\b(set -e|#!/bin/sh|#!/usr/bin/env bash)\b", re.M)
+_RE_TOML = re.compile(r"^\[.*\]\s*$", re.M)
+_RE_TOML_ASSIGN = re.compile(r"^\w+\s*=\s*", re.M)
+_RE_DIFF = re.compile(r"^(\+\+\+|---|@@) ", re.M)
+_RE_ACTIONXML = re.compile(r"<(/)?(execute|execute_command|apply_diff|enhanced_\w+|tool|action)[^>]*>")
+
+@lru_cache(maxsize=256)
+def _guess_lang_cached(s: str) -> str | None:
+    snippet = (s or "").strip()[:400]
+    if not snippet:
+        return None
+    if _RE_ACTIONXML.search(snippet):
+        return "actionxml"
+    if _RE_PY.search(snippet):
+        return "python"
+    if _RE_JS.search(snippet):
+        return "javascript"
+    if _RE_JSON_START.match(snippet):
+        return "json"
+    if _RE_SHELL.search(snippet):
+        return "sh"
+    if _RE_TOML.search(snippet) and _RE_TOML_ASSIGN.search(snippet):
+        return "toml"
+    if _RE_DIFF.search(snippet):
+        return "diff"
+    return None
 
 class StatusSidebar(Static):
     """Right-docked status sidebar with compact metrics."""
@@ -207,7 +255,7 @@ class ChatMessage(Static, can_focus=True):
         
         # PERFORMANCE: Chunk buffering for markdown optimization
         self._chunk_buffer: List[str] = []
-        self._buffer_size_limit = 500  # Characters before forcing update
+        self._buffer_size_limit = 1600  # Increased for fewer Markdown reparses
         self._last_buffer_flush = 0.0
         self._headline: Optional[str] = None
 
@@ -268,9 +316,32 @@ class ChatMessage(Static, can_focus=True):
         processed_content = re.sub(r"<thinking>(.*?)</thinking>", _convert_thinking, processed_content, flags=re.S)
         # ----------------------------------------------------------------
 
+        # Add small toolbar: "Show steps" next to Final when a details block exists
+        try:
+            if self.role == "assistant":
+                has_details = DETAILS_RE.search(processed_content) is not None
+                has_final = "\n### Final" in processed_content or processed_content.startswith("### Final")
+                if has_details and has_final:
+                    # Lightweight inline toggle button
+                    btn = Button("Show steps", id="steps-toggle")
+                    # Wire the button to toggle the first expander after mount
+                    def _bind_toggle():
+                        try:
+                            if Expander is not None:
+                                exp = self.query_one(Expander)  # type: ignore[arg-type]
+                                exp.open = not getattr(exp, "open", False)  # type: ignore[attr-defined]
+                            else:
+                                exp = self.query_one(SimpleExpander)
+                                exp.action_toggle()
+                        except Exception:
+                            pass
+                    btn.on_click = lambda *_: _bind_toggle()  # type: ignore[assignment]
+                    yield btn
+        except Exception:
+            pass
+
         # --- Convert HTML <details>/<summary> blocks into Textual Expanders ---
         # Accept optional attributes on <details>, e.g. <details open>
-        DETAILS_RE = re.compile(r"<details(\s+[^>]*)?>\s*(<summary>(.*?)</summary>)?(.*?)</details>", re.S)
 
         pos = 0
         for m in DETAILS_RE.finditer(processed_content):
@@ -289,11 +360,24 @@ class ChatMessage(Static, can_focus=True):
 
             if Expander is not None:
                 # Preferred rich interactive widget when available.
+                # Auto-open first details in detailed view
+                try:
+                    if getattr(self.app, "_view_mode", "compact") == "detailed" and not hasattr(self, "_opened_first_details"):
+                        is_open = True
+                        setattr(self, "_opened_first_details", True)
+                except Exception:
+                    pass
                 expander = Expander(summary_text, open=bool(is_open))  # type: ignore[call-arg]
                 expander.mount(TextualMarkdown(body_md))
                 yield expander
             else:
                 # Older Textual – use our minimal interactive fallback.
+                try:
+                    if getattr(self.app, "_view_mode", "compact") == "detailed" and not hasattr(self, "_opened_first_details"):
+                        is_open = True
+                        setattr(self, "_opened_first_details", True)
+                except Exception:
+                    pass
                 yield SimpleExpander(summary_text, body_md, open=bool(is_open))
 
             pos = m.end()
@@ -776,6 +860,19 @@ class ChatMessage(Static, can_focus=True):
             # No traditional expander found, try to toggle reasoning via content manipulation
             self._toggle_reasoning_content()
 
+        # Also support click on inline "Show steps" button to toggle the first expander
+        try:
+            btn = self.query_one("#steps-toggle", Button)
+            if btn:
+                if Expander is not None:
+                    exp = self.query_one(Expander)  # type: ignore[arg-type]
+                    exp.open = not exp.open  # type: ignore[attr-defined]
+                else:
+                    exp = self.query_one(SimpleExpander)
+                    exp.action_toggle()
+        except Exception:
+            pass
+
     # --------- Helpers ---------
     def _is_detailed(self) -> bool:
         """Return True if this message should render in detailed density.
@@ -957,8 +1054,8 @@ class PenguinTextualApp(App):
         # Scrolling performance controls
         self._autoscroll: bool = True
         self._scroll_request_task: Optional[asyncio.Task] = None
-        self._scroll_debounce_ms: int = 180  # ~5-8 FPS scroll updates
-        self._stream_update_min_interval: float = 0.22
+        self._scroll_debounce_ms: int = 220  # Slightly higher to reduce reflow
+        self._stream_update_min_interval: float = 0.3
         self._linkify_on_finalization: bool = True
         self._message_area_ref: Optional[VerticalScroll] = None
         self._status_bar_ref: Optional[Static] = None
@@ -1121,12 +1218,7 @@ class PenguinTextualApp(App):
         if view != "compact" and not compact_tools:
             # Detailed: full output with best-effort language fence
             def _guess_lang(s: str) -> str | None:
-                snippet = s.strip()[:400]
-                if re.search(r"^\s*(from\s+\w+\s+import|import\s+\w+|def\s+\w+\(|class\s+\w+|if __name__ == '__main__')", snippet, re.M):
-                    return "python"
-                if snippet.startswith("{") or snippet.startswith("["):
-                    return "json"
-                return None
+                return _guess_lang_cached(s)
             lang = _guess_lang(result_str)
             fence = f"```{lang}\n" if lang else "```\n"
             return f"{fence}{result_str}\n```"
@@ -1135,12 +1227,7 @@ class PenguinTextualApp(App):
         if len(lines) <= max_lines or not compact_tools:
             # Compact short block
             def _guess_lang(s: str) -> str | None:
-                snippet = s.strip()[:400]
-                if re.search(r"^\s*(from\s+\w+\s+import|import\s+\w+|def\s+\w+\(|class\s+\w+|if __name__ == '__main__')", snippet, re.M):
-                    return "python"
-                if snippet.startswith("{") or snippet.startswith("["):
-                    return "json"
-                return None
+                return _guess_lang_cached(s)
             lang = _guess_lang(result_str)
             fence = f"```{lang}\n" if lang else "```\n"
             return f"{fence}{result_str}\n```"
@@ -1148,23 +1235,7 @@ class PenguinTextualApp(App):
         preview = "\n".join(lines[:max_lines])
         remainder = "\n".join(lines[max_lines:])
         def _guess_lang(s: str) -> str | None:
-            snippet = s.strip()[:400]
-            # Custom ActionTag format
-            if re.search(r"<(/)?(execute|execute_command|apply_diff|enhanced_\w+|tool|action)[^>]*>", snippet):
-                return "actionxml"
-            if re.search(r"^\s*(from\s+\w+\s+import|import\s+\w+|def\s+\w+\(|class\s+\w+|if __name__ == '__main__')", snippet, re.M):
-                return "python"
-            if re.search(r"\bfunction\s+\w+\s*\(|console\.log\(|=>\s*\w*\(", snippet):
-                return "javascript"
-            if snippet.startswith("{") or snippet.startswith("["):
-                return "json"
-            if re.search(r"^\s*#\!/?\w*sh", snippet) or re.search(r"\b(set -e|#!/bin/sh|#!/usr/bin/env bash)\b", snippet):
-                return "sh"
-            if re.search(r"^\[.*\]\s*$", snippet, re.M) and re.search(r"^\w+\s*=\s*", snippet, re.M):
-                return "toml"
-            if re.search(r"^(\+\+\+|---|@@) ", snippet, re.M):
-                return "diff"
-            return None
+            return _guess_lang_cached(s)
         lang = _guess_lang(result_str)
         fence = f"```{lang}\n" if lang else "```\n"
         content = f"{fence}{preview}\n```\n\n"
@@ -1792,6 +1863,14 @@ class PenguinTextualApp(App):
                                     val = f'"{val}"'
                                 tokens.append(val)
                     built = cmd_obj.name + (" " + " ".join(tokens) if tokens else "")
+                    # Fast-path view commands even if registry mapping is incomplete
+                    if cmd_obj.name.startswith("view set") or cmd_obj.name == "view set":
+                        mode = str(args_dict.get("mode") or (tokens[0] if tokens else "")).strip()
+                        await self._handle_view_set({"mode": mode})
+                        return
+                    if cmd_obj.name in ("view get", "view"):
+                        await self._handle_view_get()
+                        return
                     if cmd_obj.name == "diff":
                         await self._handle_diff(args_dict)
                         return

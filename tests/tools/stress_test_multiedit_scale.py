@@ -5,8 +5,8 @@ Prints timing; exits 0 always unless an apply fails.
 Skips 2000 case if PENGUIN_SKIP_STRESS=1.
 """
 
-import os
 import time
+import os
 import tempfile
 from pathlib import Path
 
@@ -29,6 +29,8 @@ def build_new_file_patch(rel_path: str, content: str) -> str:
 def run_case(n: int) -> bool:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
+        # Treat the temp dir as the active project root for policy checks
+        os.environ["PENGUIN_CWD"] = str(root)
         patches = []
         for i in range(n):
             patches.append(build_new_file_patch(f"bulk/f_{i:05d}.txt", f"x{i}"))
@@ -46,6 +48,8 @@ def run_case(n: int) -> bool:
 
 def main() -> int:
     failures = 0
+    # Allow creating files under the temp directory treated as project root
+    os.environ["PENGUIN_WRITE_ROOT"] = "project"
     for n in (500, 1000):
         if not run_case(n):
             failures += 1
@@ -57,4 +61,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -902,6 +902,79 @@ def _strip_prefix(path_str: str) -> str:
         return path_str[2:]
     return path_str
 
+def _detect_git_conflicts(repo_base: Path) -> list[str]:
+    """Return a list of files with unmerged conflict status in the given repo.
+
+    Uses `git status --porcelain` and checks for unmerged XY codes:
+    DD, AU, UD, UA, DU, AA, UU.
+    """
+    try:
+        res = subprocess.run(["git", "-C", str(repo_base), "status", "--porcelain"], capture_output=True, text=True)
+        if res.returncode != 0:
+            return []
+        conflicted = []
+        for line in res.stdout.splitlines():
+            if not line:
+                continue
+            code = line[:2]
+            if code in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}:
+                # After code and space comes the path
+                path = line[3:].strip()
+                conflicted.append(path)
+        return conflicted
+    except Exception:
+        return []
+
+def _normalize_unified_patch_paths(file_patches: list[dict], base: Path) -> str:
+    """Rebuild a unified multi-file patch with paths relative to the git base.
+
+    Git expects paths in headers to be relative to the repository root. This
+    helper rewrites the '---' and '+++' headers for each file patch to use
+    a/<relpath> and b/<relpath> (or /dev/null for creations), preserving the
+    original hunk bodies.
+    """
+    normalized_parts: list[str] = []
+    for fp in file_patches:
+        raw_from = _strip_prefix(fp.get('from', ''))
+        raw_to = _strip_prefix(fp.get('to', ''))
+
+        # Compute rel paths against base when absolute
+        if raw_from in ('/dev/null', 'dev/null', ''):
+            from_hdr = '/dev/null'
+        else:
+            p_from = Path(raw_from)
+            try:
+                rel_from = str(p_from.relative_to(base)) if p_from.is_absolute() else raw_from
+            except Exception:
+                rel_from = raw_from
+            from_hdr = f"a/{rel_from}"
+
+        if raw_to in ('/dev/null', 'dev/null', ''):
+            to_hdr = '/dev/null'
+        else:
+            p_to = Path(raw_to)
+            try:
+                rel_to = str(p_to.relative_to(base)) if p_to.is_absolute() else raw_to
+            except Exception:
+                rel_to = raw_to
+            to_hdr = f"b/{rel_to}"
+
+        # Rewrite the first two header lines of this file patch
+        lines = fp['content'].splitlines()
+        out: list[str] = []
+        i = 0
+        if i < len(lines) and lines[i].startswith('--- '):
+            out.append(f"--- {from_hdr}")
+            i += 1
+        if i < len(lines) and lines[i].startswith('+++ '):
+            out.append(f"+++ {to_hdr}")
+            i += 1
+        # Append the rest unchanged
+        out.extend(lines[i:])
+        normalized_parts.append("\n".join(out) + "\n")
+
+    return "".join(normalized_parts)
+
 
 def apply_unified_patch(patch_text: str, workspace_path: Optional[str] = None, backup: bool = True, return_json: bool = False) -> str:
     """Apply a unified patch that may contain multiple files.
@@ -934,7 +1007,8 @@ def apply_unified_patch(patch_text: str, workspace_path: Optional[str] = None, b
                 target = (base / t).resolve()
                 root_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
                 root_pref = root_env if root_env in ('project', 'workspace') else get_default_write_root()
-                _ = enforce_allowed_path(target, root_pref=root_pref)
+                # Treat the provided workspace_path as the active CWD for policy
+                _ = enforce_allowed_path(target, root_pref=root_pref, cwd_override=str(base))
         except Exception:
             robust_ok = False
 
@@ -952,21 +1026,69 @@ def apply_unified_patch(patch_text: str, workspace_path: Optional[str] = None, b
                     bak = tgt.with_suffix(tgt.suffix + '.bak')
                     shutil.copy2(tgt, bak)
 
+            # Normalize patch paths to be relative to the git base
+            normalized_text = _normalize_unified_patch_paths(file_patches, base)
+
             # Write patch to temporary file
             with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as tf:
-                tf.write(patch_text)
+                tf.write(normalized_text)
                 tf.flush()
                 patch_file = tf.name
 
-            # Preflight check
+            # Preflight check – note: --check does not honor --3way. If it fails and
+            # three_way is requested, try direct apply with --3way before falling back.
             chk = subprocess.run(["git", "-C", str(base), "apply", "--check", patch_file], capture_output=True, text=True)
-            if chk.returncode != 0:
-                # Preflight failed; clean and fall back to internal engine
+            if chk.returncode != 0 and three_way:
+                # Attempt direct 3-way apply despite check failure
+                args = ["git", "-C", str(base), "apply", "--3way", patch_file]
+                app = subprocess.run(args, capture_output=True, text=True)
+                # Clean up patch file
                 try:
                     os.unlink(patch_file)
                 except Exception:
                     pass
-            else:
+                if app.returncode != 0:
+                    # If conflicts occurred, allow them and return structured info
+                    conflicts = _detect_git_conflicts(base)
+                    if conflicts:
+                        if return_json:
+                            import json
+                            return json.dumps({
+                                "status": "conflict",
+                                "conflicted": conflicts,
+                                "message": app.stderr.strip() or app.stdout.strip() or "git apply --3way produced conflicts"
+                            })
+                        return (
+                            "Conflict applying patch via git --3way. Conflicted files: "
+                            + ", ".join(conflicts)
+                        )
+                    # Restore from backups and delete created files
+                    for path_str, existed in existing_before.items():
+                        p = Path(path_str)
+                        if not existed and p.exists():
+                            try:
+                                p.unlink()
+                            except Exception:
+                                pass
+                        elif existed:
+                            bak = p.with_suffix(p.suffix + '.bak')
+                            if bak.exists():
+                                try:
+                                    shutil.copy2(bak, p)
+                                except Exception:
+                                    pass
+                    log_path = _log_diff_failure("<git-apply-3way>", patch_text, "", str(base))
+                    err = app.stderr.strip() or app.stdout.strip() or "git apply --3way failed"
+                    if return_json:
+                        import json
+                        return json.dumps({"status": "error", "error": err, "log": log_path})
+                    return f"Error applying diff: {err}{(' (' + log_path + ')') if log_path else ''}"
+                else:
+                    # Success via 3-way
+                    for path_str, existed in existing_before.items():
+                        p = Path(path_str)
+                        applied.append(str(p))
+            elif chk.returncode == 0:
                 # Apply (optionally with 3-way)
                 args = ["git", "-C", str(base), "apply"]
                 if three_way:
@@ -978,6 +1100,20 @@ def apply_unified_patch(patch_text: str, workspace_path: Optional[str] = None, b
                 except Exception:
                     pass
                 if app.returncode != 0:
+                    # If conflicts occurred, allow them and return structured info
+                    conflicts = _detect_git_conflicts(base)
+                    if conflicts:
+                        if return_json:
+                            import json
+                            return json.dumps({
+                                "status": "conflict",
+                                "conflicted": conflicts,
+                                "message": app.stderr.strip() or app.stdout.strip() or "git apply produced conflicts"
+                            })
+                        return (
+                            "Conflict applying patch via git apply. Conflicted files: "
+                            + ", ".join(conflicts)
+                        )
                     # Restore from backups and delete created files
                     for path_str, existed in existing_before.items():
                         p = Path(path_str)
@@ -1004,12 +1140,12 @@ def apply_unified_patch(patch_text: str, workspace_path: Optional[str] = None, b
                     for path_str, existed in existing_before.items():
                         p = Path(path_str)
                         applied.append(str(p))
-                        if not existed and p.exists():
-                            created.append(str(p))
-                    if return_json:
-                        import json
-                        return json.dumps({"status": "success", "files": applied, "created": created})
-                    return f"Successfully applied patch to {len(applied)} file(s)"
+            else:
+                # Preflight failed and no 3-way requested – fall back to internal engine
+                try:
+                    os.unlink(patch_file)
+                except Exception:
+                    pass
         except Exception:
             # Fall through to internal engine on any exception
             pass
@@ -1036,9 +1172,12 @@ def apply_unified_patch(patch_text: str, workspace_path: Optional[str] = None, b
                 subprocess.run(["git", "-C", str(shadow_root), "checkout", branch], check=False)
                 subprocess.run(["git", "-C", str(shadow_root), "pull", "--ff-only"], check=False)
 
+            # Normalize patch paths to be relative to the git base
+            normalized_text = _normalize_unified_patch_paths(file_patches, base)
+
             # Write patch
             with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as tf:
-                tf.write(patch_text)
+                tf.write(normalized_text)
                 tf.flush()
                 patch_file = tf.name
 
@@ -1112,7 +1251,7 @@ def apply_unified_patch(patch_text: str, workspace_path: Optional[str] = None, b
                 # Enforce write root policy
                 root_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
                 root_pref = root_env if root_env in ('project', 'workspace') else get_default_write_root()
-                target = enforce_allowed_path(target, root_pref=root_pref)
+                target = enforce_allowed_path(target, root_pref=root_pref, cwd_override=workspace_path)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 # Extract added lines from hunks
                 added_lines: list[str] = []
