@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Penguin AI Assistant Documentation
 
-Welcome to the Penguin AI Assistant documentation. Penguin v0.3.1 is a modular, extensible AI coding agent with advanced conversation management, real-time streaming, and comprehensive checkpoint capabilities.
+Welcome to the documentation for Penguin! Penguin v0.3.3.3.post1 is a modular, extensible AI coding agent with advanced conversation management, real-time streaming, comprehensive checkpoint/branching, and soon multi/sub-agent capabilities.
 
 ## Features
 
@@ -101,7 +101,7 @@ response = agent.chat("Help me debug this function")
 
 ## Architecture Overview
 
-Penguin v0.3.1 introduces an enhanced modular architecture with event-driven communication and advanced state management:
+Penguin v0.3.3.3.post1 introduces an enhanced modular architecture with event-driven communication and advanced state management:
 
 ### Core Components
 

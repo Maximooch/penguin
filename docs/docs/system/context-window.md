@@ -1,13 +1,13 @@
 # Context Window Manager
 
-The `ContextWindowManager` v0.3.1 handles advanced token budgeting and content trimming for conversation context with enhanced multimodal content handling and dynamic budget allocation.
+The `ContextWindowManager` v0.3.3.3.post1 handles advanced token budgeting and content trimming for conversation context with multimodal content handling and dynamic budget allocation.
 
 ## Overview
 
 The ContextWindowManager is responsible for:
 
 1. **Advanced Token Budgeting**: Dynamic allocation based on content type and priority
-2. **Enhanced Image Handling**: Intelligent trimming of multimodal content to preserve tokens
+2. **Image Handling**: Intelligent trimming of multimodal content to preserve tokens
 3. **Category-Based Management**: Fine-grained control over different message types
 4. **Real-time Usage Tracking**: Live monitoring of token consumption
 5. **Smart Trimming Strategies**: Context-aware content removal with recency preservation
@@ -24,7 +24,7 @@ Messages are categorized into five priority levels for intelligent trimming:
 4. **SYSTEM_OUTPUT**: Tool outputs, code execution results, and action responses (5% budget)
 5. **ERROR**: Error messages and debugging information (fallback 5% budget)
 
-### Enhanced Priority System
+### Priority System
 
 - **SYSTEM messages**: Guaranteed preservation with strict 10% minimum allocation
 - **Chronological trimming**: Within each category, oldest messages are trimmed first to preserve recency
@@ -33,7 +33,7 @@ Messages are categorized into five priority levels for intelligent trimming:
 - **Fallback categories**: Automatic handling of new message types with default budgets
 
 ```mermaid
-pie title Enhanced Token Budget Allocation v0.3.1
+pie title Token Budget Allocation v0.3.3.3.post1
     "SYSTEM" : 10
     "CONTEXT" : 35
     "DIALOG" : 50
@@ -115,7 +115,7 @@ flowchart LR
     style Placeholder3 fill:#eee,stroke:#333
 ```
 
-## Enhanced Initialization
+## Initialization
 
 ```python
 def __init__(
@@ -144,7 +144,7 @@ The system automatically selects the best available token counter:
 2. **Diagnostics Counter**: `diagnostics.count_tokens()` (tiktoken-based)
 3. **Fallback Counter**: Rough estimation (4 chars per token)
 
-### Enhanced Features
+### Features
 
 - **Dynamic Max Tokens**: Adapts to model capabilities automatically
 - **Multi-source Configuration**: Supports live config updates
@@ -219,7 +219,7 @@ Processes a session through token budgeting and trimming - main entry point for 
 def get_token_usage(self) -> Dict[str, int]
 ```
 
-Returns comprehensive token usage statistics with enhanced structure:
+Returns comprehensive token usage statistics with structure:
 
 ```python
 {
@@ -260,7 +260,7 @@ Returns current token usage for a specific category.
 
 ## Advanced Trimming Strategy
 
-The enhanced trimming strategy v0.3.1 follows a sophisticated multi-pass approach:
+The trimming strategy v0.3.3.3.post1 follows a sophisticated multi-pass approach:
 
 ### Phase 1: Image Optimization
 1. **Multi-image Detection**: Identify sessions with multiple images
@@ -284,7 +284,7 @@ The enhanced trimming strategy v0.3.1 follows a sophisticated multi-pass approac
 2. **Category Integrity**: Keep messages in their logical categories
 3. **Metadata Updates**: Update session statistics and metadata
 
-## Enhanced Image Handling
+## Image Handling
 
 The system includes specialized handling for multimodal content:
 
@@ -320,13 +320,13 @@ This ensures accurate token counting across all scenarios while maintaining perf
 
 ## Advanced Usage Examples
 
-### Basic Setup with Enhanced Configuration
+### Basic Setup with Configuration
 
 ```python
 from penguin.system.context_window import ContextWindowManager
 from penguin.llm.model_config import ModelConfig
 
-# Initialize with enhanced configuration
+# Initialize with configuration
 context_window = ContextWindowManager(
     model_config=model_config,
     api_client=api_client,
@@ -406,9 +406,9 @@ context_window.reset_usage()  # Reset all
 context_window.reset_usage(MessageCategory.DIALOG)  # Reset specific category
 ```
 
-## Enhanced Token Budgeting System
+## Token Budgeting System
 
-The dynamic token budget allocation system v0.3.1 includes:
+The dynamic token budget allocation system v0.3.3.3.post1 includes:
 
 ### Intelligent Budget Distribution
 - **SYSTEM**: 10% (guaranteed preservation, strict minimum enforcement)
@@ -429,4 +429,4 @@ The dynamic token budget allocation system v0.3.1 includes:
 - **Category-Aware Processing**: Different strategies for different content types
 - **Metadata Preservation**: Maintains conversation context during optimization
 
-This enhanced system ensures optimal token utilization while preserving conversation quality and system functionality. 
+This system ensures optimal token utilization while preserving conversation quality and system functionality. 

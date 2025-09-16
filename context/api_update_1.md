@@ -111,6 +111,8 @@ Implementation checklist
   <!-- Implemented: penguin/penguin/web/routes.py -->
 - [x] Add python-multipart to [project.optional-dependencies].web
   <!-- Implemented: penguin/pyproject.toml -->
+- [x] Add `on_chunk` callback + streaming helper to `PenguinAPI.chat` so Python clients can consume typed reasoning/assistant chunks.
+- [x] Surface `reasoning_supported`, `streaming_supported`, and server version via `/api/v1/capabilities` and the root index route.
 - [ ] (Optional) Add /api/v1/models and switch endpoint
 - [ ] Update docs: API reference, getting started, and examples
 

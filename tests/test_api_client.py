@@ -16,6 +16,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import AsyncGenerator
 
+from penguin import __version__ as PENGUIN_VERSION
 from penguin.api_client import (
     PenguinClient, 
     ChatOptions, 
@@ -88,7 +89,7 @@ def mock_core():
     
     # Mock system methods
     core.get_system_info = MagicMock(return_value={
-        "penguin_version": "0.3.1",
+        "penguin_version": PENGUIN_VERSION,
         "engine_available": True,
         "checkpoints_enabled": True
     })
@@ -238,12 +239,13 @@ class TestPenguinClientChatMethods:
     async def test_basic_chat(self, client):
         """Test basic chat functionality."""
         response = await client.chat("Hello, how are you?")
-        
+
         assert response == "Test response from AI"
         client._core.process_message.assert_called_once_with(
             message="Hello, how are you?",
             context=None,
             conversation_id=None,
+            agent_id=None,
             context_files=None,
             streaming=False
         )
@@ -256,15 +258,17 @@ class TestPenguinClientChatMethods:
             context={"project": "test"},
             context_files=["file1.py"],
             streaming=True,
-            image_path="/path/to/image.png"
+            image_path="/path/to/image.png",
+            agent_id="agent_007",
         )
-        
+
         response = await client.chat("Analyze this code", options)
-        
+
         client._core.process_message.assert_called_once_with(
             message="Analyze this code",
             context={"project": "test"},
             conversation_id="conv_123",
+            agent_id="agent_007",
             context_files=["file1.py"],
             streaming=True
         )
@@ -531,7 +535,7 @@ class TestPenguinClientSystemMethods:
         """Test getting system information."""
         info = await client.get_system_info()
         
-        assert info["penguin_version"] == "0.3.1"
+        assert info["penguin_version"] == PENGUIN_VERSION
         assert info["engine_available"] is True
         assert info["checkpoints_enabled"] is True
         client._core.get_system_info.assert_called_once()
@@ -632,7 +636,7 @@ class TestPenguinClientIntegrationScenarios:
         """Test a complete client workflow scenario."""
         # Step 1: Get system info
         info = await client.get_system_info()
-        assert info["penguin_version"] == "0.3.1"
+        assert info["penguin_version"] == PENGUIN_VERSION
         
         # Step 2: Create checkpoint
         checkpoint_id = await client.create_checkpoint("Before work")

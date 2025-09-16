@@ -29,7 +29,8 @@ class PenguinWebSocketServer:
             data = json.loads(message)
             if data["type"] == "message":
                 # Process the message through PenguinCore
-                response = await self.core.process_message(data["content"])
+                agent_id = data.get("agent_id")
+                response = await self.core.process_message(data["content"], agent_id=agent_id)
 
                 # Send response back to client
                 await websocket.send(

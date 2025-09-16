@@ -7,14 +7,23 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import re
 import shutil
 import uuid
 import websockets
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
+from penguin._version import __version__ as PENGUIN_VERSION
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_agent_id(agent_id: str) -> None:
+    if not agent_id or len(agent_id) > 32:
+        raise HTTPException(status_code=400, detail="agent_id must be 1-32 chars")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", agent_id):
+        raise HTTPException(status_code=400, detail="agent_id must be alphanumeric, dash or underscore")
 
 class MessageRequest(BaseModel):
     text: str
@@ -24,6 +33,7 @@ class MessageRequest(BaseModel):
     streaming: Optional[bool] = True
     max_iterations: Optional[int] = 5
     image_path: Optional[str] = None
+    agent_id: Optional[str] = None
 
 class StreamResponse(BaseModel):
     id: str
@@ -75,6 +85,9 @@ async def handle_chat_message(
 ):
     """Process a chat message, with optional conversation support."""
     try:
+        if request.agent_id:
+            _validate_agent_id(request.agent_id)
+
         # Create input data dictionary from request
         input_data = {
             "text": request.text
@@ -89,6 +102,7 @@ async def handle_chat_message(
             input_data=input_data,
             context=request.context,
             conversation_id=request.conversation_id,
+            agent_id=request.agent_id,
             max_iterations=request.max_iterations or 5,
             context_files=request.context_files,
             streaming=request.streaming
@@ -188,6 +202,9 @@ async def stream_chat(
             context = data.get("context")
             max_iterations = data.get("max_iterations", 5)
             image_path = data.get("image_path")
+            agent_id = data.get("agent_id")
+            if agent_id:
+                _validate_agent_id(agent_id)
 
             input_data = {"text": text}
             if image_path:
@@ -228,6 +245,7 @@ async def stream_chat(
                 process_task = asyncio.create_task(core.process(
                     input_data=input_data,
                     conversation_id=conversation_id,
+                    agent_id=agent_id,
                     max_iterations=max_iterations,
                     context_files=context_files,
                     context=context,
@@ -560,7 +578,7 @@ async def get_capabilities(core: PenguinCore = Depends(get_core)):
             "capabilities": capabilities,
             "current_model": current_model,
             "api_version": "v1",
-            "penguin_version": "0.3.1"
+            "penguin_version": PENGUIN_VERSION
         }
     except Exception as e:
         logger.error(f"Error getting capabilities: {str(e)}")

@@ -1,6 +1,6 @@
 # Conversation Manager
 
-The `ConversationManager` v0.3.1 is a high-level coordinator that manages conversation state, handles message exchanges, and provides advanced checkpoint and snapshot capabilities for conversation management.
+The `ConversationManager` v0.3.3.3.post1 is a high-level coordinator that manages conversation state, handles message exchanges, and provides advanced checkpoint and snapshot capabilities for conversation management.
 
 ## Overview
 

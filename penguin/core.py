@@ -171,6 +171,7 @@ from penguin.config import (
     TASK_COMPLETION_PHRASE,
     Config,
 )
+from penguin._version import __version__ as PENGUIN_VERSION
 
 # LLM and API
 from penguin.llm.api_client import APIClient
@@ -1102,6 +1103,7 @@ class PenguinCore:
         message: str,
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         context_files: Optional[List[str]] = None,
         streaming: bool = False
     ) -> str:
@@ -1112,17 +1114,36 @@ class PenguinCore:
             message: The user message to process
             context: Optional additional context for processing
             conversation_id: Optional ID to continue an existing conversation
+            agent_id: Optional agent identifier to scope the request
             context_files: Optional list of context files to load
             streaming: Whether to use streaming mode for responses
         """
         try:
+            # Resolve the active conversation manager for the agent (if provided)
+            conversation_manager = self.conversation_manager
+            if agent_id:
+                try:
+                    if hasattr(conversation_manager, "set_current_agent"):
+                        conversation_manager.set_current_agent(agent_id)
+                except Exception as agent_err:
+                    logger.warning(f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}")
+                if self.engine:
+                    try:
+                        candidate_cm = self.engine.get_conversation_manager(agent_id)
+                        if candidate_cm is not None:
+                            conversation_manager = candidate_cm
+                            if hasattr(candidate_cm, "set_current_agent"):
+                                candidate_cm.set_current_agent(agent_id)
+                    except Exception as engine_err:
+                        logger.warning(f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}")
+
             # Add context if provided
             if context:
                 for key, value in context.items():
-                    self.conversation_manager.add_context(f"{key}: {value}")
-                    
+                    conversation_manager.add_context(f"{key}: {value}")
+
             # Process through conversation manager (handles context files)
-            return await self.conversation_manager.process_message(
+            return await conversation_manager.process_message(
                 message=message,
                 conversation_id=conversation_id,
                 streaming=streaming,
@@ -1510,7 +1531,7 @@ class PenguinCore:
         """
         try:
             info = {
-                "penguin_version": "0.3.1",  # TODO: Extract from __init__.py
+                "penguin_version": PENGUIN_VERSION,
                 "engine_available": hasattr(self, 'engine') and self.engine is not None,
                 "checkpoints_enabled": self.get_checkpoint_stats().get('enabled', False),
                 "current_model": None,
@@ -1614,6 +1635,7 @@ class PenguinCore:
         input_data: Union[Dict[str, Any], str],
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
         max_iterations: int = 5,
         context_files: Optional[List[str]] = None,
         streaming: Optional[bool] = None,
@@ -1634,6 +1656,7 @@ class PenguinCore:
             input_data: Either a dictionary with a 'text' key or a string message directly
             context: Optional additional context for processing
             conversation_id: Optional ID for conversation continuity
+            agent_id: Optional agent identifier to scope the request
             max_iterations: Maximum reasoning-action cycles (default: 5)
             context_files: Optional list of context files to load
             streaming: Whether to use streaming mode for responses.
@@ -1653,29 +1676,48 @@ class PenguinCore:
             
         if not message and not image_path:
             return {"assistant_response": "No input provided", "action_results": []}
-            
+
+        conversation_manager = self.conversation_manager
+        if agent_id:
+            try:
+                if hasattr(conversation_manager, "set_current_agent"):
+                    conversation_manager.set_current_agent(agent_id)
+            except Exception as agent_err:
+                logger.warning(f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}")
+            if self.engine:
+                try:
+                    candidate_cm = self.engine.get_conversation_manager(agent_id)
+                    if candidate_cm is not None:
+                        conversation_manager = candidate_cm
+                        if hasattr(candidate_cm, "set_current_agent"):
+                            candidate_cm.set_current_agent(agent_id)
+                except Exception as engine_err:
+                    logger.warning(f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}")
+
         try:
             # Load conversation if ID provided
             if conversation_id:
-                if not self.conversation_manager.load(conversation_id):
+                if not conversation_manager.load(conversation_id):
                     logger.warning(f"Failed to load conversation {conversation_id}")
-                    
+
             # Load context files if specified
             if context_files:
                 for file_path in context_files:
-                    self.conversation_manager.load_context_file(file_path)
-            
+                    conversation_manager.load_context_file(file_path)
+
             # Add user message to conversation explicitly
             user_message_dict = {
                 "role": "user",
                 "content": message,
                 "category": MessageCategory.DIALOG
             }
-            
+            if agent_id:
+                user_message_dict["agent_id"] = agent_id
+
             # Emit user message event before processing
             logger.debug(f"Emitting user message event: {message[:30]}...")
             await self.emit_ui_event("message", user_message_dict)
-            
+
             # Use new Engine layer if available
             if self.engine:
                 # Build streaming callback for Engine that first updates internal streaming
@@ -1737,6 +1779,7 @@ class PenguinCore:
                             max_iterations=max_iterations,
                             task_context=context,
                             message_callback=engine_message_callback,
+                            agent_id=agent_id,
                         )
                     else:
                         # Use the new conversational multi-step engine
@@ -1745,24 +1788,26 @@ class PenguinCore:
                             image_path=image_path,
                             max_iterations=max_iterations,
                             streaming=streaming,
-                            stream_callback=engine_stream_callback
+                            stream_callback=engine_stream_callback,
+                            agent_id=agent_id,
                         )
                 else:
                     # Use the single-turn conversational engine
                     response = await self.engine.run_single_turn(
-                        message, 
-                        image_path=image_path, 
-                        streaming=streaming, 
-                        stream_callback=engine_stream_callback
+                        message,
+                        image_path=image_path,
+                        streaming=streaming,
+                        stream_callback=engine_stream_callback,
+                        agent_id=agent_id,
                     )
             else:
                 # ---------- Legacy path (fallback) ----------
                 # Prepare conversation and call get_response directly
-                self.conversation_manager.conversation.prepare_conversation(message, image_path)
+                conversation_manager.conversation.prepare_conversation(message, image_path)
 
                 # FIX: Set the callback for event-based streaming, even in legacy mode
                 internal_stream_callback = self._handle_stream_chunk if streaming else None
-                
+
                 response, _ = await self.get_response(
                     stream_callback=internal_stream_callback, # Pass the correct callback
                     streaming=streaming
@@ -1789,8 +1834,8 @@ class PenguinCore:
                     logger.warning(f"Non-streaming retry after empty response failed: {retry_err}")
 
             # Ensure conversation is saved after processing
-            self.conversation_manager.save()
-            
+            conversation_manager.save()
+
             # Emit assistant message event after processing (if not streamed)
             # When *streaming* was active we streamed the full message live and
             # `finalize_streaming_message` already handled persistence / UI
@@ -1811,11 +1856,12 @@ class PenguinCore:
                             "content": assistant_message,
                             "category": MessageCategory.DIALOG,
                             "metadata": {},
+                            **({"agent_id": agent_id} if agent_id else {}),
                         },
                     )
 
             # Ensure token usage is emitted after processing
-            token_data = self.conversation_manager.get_token_usage()
+            token_data = conversation_manager.get_token_usage()
             await self.emit_ui_event("token_update", token_data)
 
             return response

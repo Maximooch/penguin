@@ -61,12 +61,13 @@ Notes:
 
 ## Remaining Work Before Phase 3
 
-- Ensure all Engine and Core entry points accept and correctly route `agent_id`.
-- Add light smoke checks in CI to verify:
-  - Creating isolated sub-agents clamps child CWM when specified
-  - Partial share (SYSTEM + CONTEXT) is applied
-  - Engine routing executes with the correct agent’s conversation
-  - Guarded delete returns a warning for shared sessions when not forced
+- [ ] Ensure all Engine and Core entry points accept and correctly route `agent_id`.
+  - Pending: `PenguinCore.process_message` and `PenguinCore.process` remain single-agent wrappers around the default conversation.
+- [ ] Add light smoke checks in CI to verify multi-agent guarantees:
+  - [ ] Creating isolated sub-agents clamps child CWM when specified.
+  - [ ] Partial share (SYSTEM + CONTEXT) is applied to the child only once.
+  - [ ] Engine routing executes with the requested agent’s conversation/CWM.
+  - [ ] Guarded delete returns a warning for shared sessions when not forced.
 
 ## Phase 3 Dependencies and Considerations
 

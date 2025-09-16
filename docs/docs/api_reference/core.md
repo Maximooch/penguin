@@ -4,7 +4,7 @@ The `PenguinCore` class serves as the central coordinator for the entire Penguin
 
 ## Overview
 
-PenguinCore v0.3.1 acts as an integration point between:
+PenguinCore v0.3.3.3.post1 acts as an integration point between:
 - **Engine (Optional)**: A high-level coordinator for reasoning/action loops (used when available).
 - **ConversationManager**: Handles messages, context, conversation state, and checkpointing.
 - **ToolManager**: Provides access to available tools and actions with lazy initialization.

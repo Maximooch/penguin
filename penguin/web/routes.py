@@ -14,6 +14,7 @@ import httpx
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
+from penguin import __version__
 from penguin.utils.events import EventBus
 
 logger = logging.getLogger(__name__)
@@ -27,6 +28,7 @@ class MessageRequest(BaseModel):
     max_iterations: Optional[int] = 5
     image_path: Optional[str] = None
     include_reasoning: Optional[bool] = False
+    agent_id: Optional[str] = None
 
 class StreamResponse(BaseModel):
     id: str
@@ -485,6 +487,9 @@ async def handle_chat_message(
 ):
     """Process a chat message, with optional conversation support."""
     try:
+        if request.agent_id:
+            _validate_agent_id(request.agent_id)
+
         # Maybe?
         # # If no conversation_id is provided, try to use the most recent one
         # if not request.conversation_id:
@@ -522,6 +527,7 @@ async def handle_chat_message(
             input_data=input_data,
             context=request.context,
             conversation_id=request.conversation_id,
+            agent_id=request.agent_id,
             max_iterations=request.max_iterations or 5,
             context_files=request.context_files,
             streaming=effective_streaming,
@@ -643,6 +649,9 @@ async def stream_chat(
             max_iterations = data.get("max_iterations", 5)
             image_path = data.get("image_path")
             include_reasoning = bool(data.get("include_reasoning", False))
+            agent_id = data.get("agent_id")
+            if agent_id:
+                _validate_agent_id(agent_id)
 
             input_data = {"text": text}
             if image_path:
@@ -694,6 +703,7 @@ async def stream_chat(
                 process_task = asyncio.create_task(core.process(
                     input_data=input_data,
                     conversation_id=conversation_id,
+                    agent_id=agent_id,
                     max_iterations=max_iterations,
                     context_files=context_files,
                     context=context,
@@ -1370,18 +1380,30 @@ async def get_capabilities(core: PenguinCore = Depends(get_core)):
     """Get model capabilities like vision support."""
     try:
         capabilities = {
+            "version": __version__,
             "vision_enabled": False,
-            "streaming_enabled": True
+            "streaming_enabled": True,
+            "reasoning_supported": False,
+            "reasoning_enabled": False,
         }
-        
+
         # Check if the model supports vision
         if hasattr(core, "model_config") and hasattr(core.model_config, "vision_enabled"):
             capabilities["vision_enabled"] = core.model_config.vision_enabled
-            
+
         # Check streaming support
         if hasattr(core, "model_config") and hasattr(core.model_config, "streaming_enabled"):
             capabilities["streaming_enabled"] = core.model_config.streaming_enabled
-            
+
+        if hasattr(core, "model_config") and hasattr(core.model_config, "supports_reasoning"):
+            capabilities["reasoning_supported"] = bool(core.model_config.supports_reasoning)
+
+        if hasattr(core, "model_config") and hasattr(core.model_config, "reasoning_enabled"):
+            capabilities["reasoning_enabled"] = bool(core.model_config.reasoning_enabled)
+
+        if hasattr(core, "model_config") and hasattr(core.model_config, "model"):
+            capabilities.setdefault("model", getattr(core.model_config, "model"))
+
         return capabilities
     except Exception as e:
         logger.error(f"Error getting capabilities: {str(e)}")

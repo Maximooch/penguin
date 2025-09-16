@@ -58,6 +58,7 @@ class ChatOptions:
     streaming: bool = False
     max_iterations: int = 5
     image_path: Optional[str] = None
+    agent_id: Optional[str] = None
 
 
 @dataclass  
@@ -168,6 +169,7 @@ class PenguinClient:
             message=message,
             context=opts.context,
             conversation_id=opts.conversation_id,
+            agent_id=opts.agent_id,
             context_files=opts.context_files,
             streaming=opts.streaming
         )
@@ -202,6 +204,7 @@ class PenguinClient:
                 input_data={"text": message, **({"image_path": opts.image_path} if opts.image_path else {})},
                 context=opts.context,
                 conversation_id=opts.conversation_id,
+                agent_id=opts.agent_id,
                 max_iterations=opts.max_iterations,
                 context_files=opts.context_files,
                 streaming=True,

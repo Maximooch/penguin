@@ -6,8 +6,11 @@ factory and a programmatic API class for embedding Penguin in other applications
 
 import logging
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+import asyncio
+from contextlib import suppress
+from typing import Optional, Dict, Any, List, AsyncGenerator, Callable, Awaitable
 
+from penguin import __version__
 from penguin.config import config, Config
 from penguin.core import PenguinCore
 from penguin.llm.api_client import APIClient
@@ -67,7 +70,7 @@ def create_app() -> "FastAPI":
         from fastapi.responses import FileResponse
         from fastapi.staticfiles import StaticFiles
         from fastapi.middleware.cors import CORSMiddleware
-        from .routes import router
+        from .routes import router, get_capabilities
     except ImportError:
         raise ImportError(
             "FastAPI and related dependencies not available. "
@@ -77,7 +80,7 @@ def create_app() -> "FastAPI":
     app = FastAPI(
         title="Penguin AI",
         description="AI Assistant with reasoning, memory, and tool use capabilities",
-        version="0.3.1",
+        version=__version__,
         docs_url="/api/docs", 
         redoc_url="/api/redoc"
     )
@@ -114,9 +117,10 @@ def create_app() -> "FastAPI":
         @app.get("/")
         async def api_root():
             """API root endpoint with service information."""
+            capabilities = await get_capabilities(core)
             return {
                 "name": "Penguin AI API",
-                "version": "0.3.1",
+                "version": __version__,
                 "status": "running",
                 "description": "AI Assistant with reasoning, memory, and tool use capabilities",
                 "endpoints": {
@@ -128,11 +132,12 @@ def create_app() -> "FastAPI":
                 },
                 "features": [
                     "Multi-turn conversations",
-                    "Memory and context management", 
+                    "Memory and context management",
                     "Tool and action execution",
                     "Project and task management",
                     "WebSocket streaming"
-                ]
+                ],
+                "capabilities": capabilities,
             }
 
     return app
@@ -162,13 +167,15 @@ class PenguinAPI:
         logger.info("PenguinAPI interface initialized")
     
     async def chat(
-        self, 
-        message: str, 
+        self,
+        message: str,
         conversation_id: Optional[str] = None,
         image_path: Optional[str] = None,
         tools_enabled: bool = True,
         streaming: bool = False,
-        max_iterations: int = 10  # Add max_iterations
+        max_iterations: int = 10,
+        on_chunk: Optional[Callable[[str, str], Awaitable[None]]] = None,
+        include_reasoning: bool = False,
     ) -> Dict[str, Any]:
         """Send a chat message and get a response.
         
@@ -187,11 +194,6 @@ class PenguinAPI:
             Dictionary containing the response and any action results
         """
         try:
-            # Switch to conversation if specified
-            if conversation_id:
-                await self.core.conversation_manager.switch_conversation(conversation_id)
-
-            # Use the more capable run_response for conversational chat
             if not self.core.engine:
                 return {
                     "error": "Engine not available",
@@ -199,16 +201,47 @@ class PenguinAPI:
                     "action_results": []
                 }
 
-            response = await self.core.engine.run_response(
-                prompt=message,
-                image_path=image_path,
+            input_data: Dict[str, Any] = {"text": message}
+            if image_path:
+                input_data["image_path"] = image_path
+
+            effective_streaming = streaming or include_reasoning or on_chunk is not None
+            reasoning_chunks: List[str] = []
+            stream_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
+
+            if effective_streaming:
+                async def _forward_chunk(chunk: str, message_type: str = "assistant") -> None:
+                    if include_reasoning and message_type == "reasoning" and chunk:
+                        reasoning_chunks.append(chunk)
+                    if on_chunk:
+                        try:
+                            if asyncio.iscoroutinefunction(on_chunk):
+                                await on_chunk(chunk, message_type)
+                            else:
+                                await asyncio.to_thread(on_chunk, chunk, message_type)
+                        except TypeError:
+                            if asyncio.iscoroutinefunction(on_chunk):
+                                await on_chunk(chunk)  # type: ignore[misc]
+                            else:
+                                await asyncio.to_thread(on_chunk, chunk)
+                        except Exception as cb_err:  # pragma: no cover - defensive logging
+                            logger.warning("PenguinAPI chat on_chunk callback failed: %s", cb_err)
+
+                stream_callback = _forward_chunk
+
+            process_result = await self.core.process(
+                input_data=input_data,
+                conversation_id=conversation_id,
+                streaming=effective_streaming,
                 max_iterations=max_iterations,
-                streaming=streaming,
-                # stream_callback is not directly supported here; websockets should be used for streaming
+                stream_callback=stream_callback,
             )
-            
-            return response
-            
+
+            if include_reasoning:
+                process_result["reasoning"] = "".join(reasoning_chunks)
+
+            return process_result
+
         except Exception as e:
             logger.error(f"Error in chat API: {str(e)}")
             return {
@@ -216,6 +249,45 @@ class PenguinAPI:
                 "assistant_response": "",
                 "action_results": []
             }
+
+    async def stream_chat(
+        self,
+        message: str,
+        conversation_id: Optional[str] = None,
+        image_path: Optional[str] = None,
+        max_iterations: int = 10,
+    ) -> AsyncGenerator[tuple[str, str], None]:
+        """Stream chat responses as (message_type, chunk) tuples."""
+
+        queue: asyncio.Queue[tuple[Optional[str], Optional[str]]] = asyncio.Queue()
+
+        async def _on_chunk(chunk: str, message_type: str = "assistant") -> None:
+            await queue.put((message_type, chunk))
+
+        async def _runner() -> None:
+            try:
+                await self.chat(
+                    message,
+                    conversation_id=conversation_id,
+                    image_path=image_path,
+                    streaming=True,
+                    max_iterations=max_iterations,
+                    on_chunk=_on_chunk,
+                )
+            finally:
+                await queue.put((None, None))
+
+        runner_task = asyncio.create_task(_runner())
+        try:
+            while True:
+                message_type, chunk = await queue.get()
+                if message_type is None:
+                    break
+                yield message_type, chunk or ""
+        finally:
+            runner_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await runner_task
     
     async def create_conversation(self, name: Optional[str] = None) -> str:
         """Create a new conversation.

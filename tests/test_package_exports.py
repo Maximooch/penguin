@@ -11,9 +11,20 @@ penguin package are properly exported and importable, including:
 - Data classes and types
 """
 
-import pytest
 import sys
-from unittest.mock import patch, MagicMock
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover
+    import tomli as tomllib  # type: ignore
+
+PYPROJECT_VERSION = tomllib.loads(
+    (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]["version"]
 
 
 class TestCoreExports:
@@ -180,7 +191,8 @@ class TestAPIClientExports:
             assert hasattr(options, 'streaming')
             assert hasattr(options, 'max_iterations')
             assert hasattr(options, 'image_path')
-            
+            assert hasattr(options, 'agent_id')
+
             # Check default values
             assert options.conversation_id is None
             assert options.context is None
@@ -188,6 +200,7 @@ class TestAPIClientExports:
             assert options.streaming is False
             assert options.max_iterations == 5
             assert options.image_path is None
+            assert options.agent_id is None
             
         except ImportError:
             pytest.skip("ChatOptions not available")
@@ -306,7 +319,7 @@ class TestVersionInfo:
             assert __license__ is not None
             
             # Check expected values
-            assert __version__ == "0.3.1"
+            assert __version__ == PYPROJECT_VERSION
             assert __author__ == "Maximus Putnam"
             assert __email__ == "MaximusPutnam@gmail.com"
             assert __license__ == "AGPL-3.0-or-later"

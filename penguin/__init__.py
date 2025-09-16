@@ -63,6 +63,8 @@ from .engine import Engine, EngineSettings
 
 import warnings
 
+from ._version import __author__, __email__, __license__, __version__
+
 # The canonical package layout places ``penguin.agent`` as a *sibling* package
 # of this sub-package (``penguin.penguin``).  A simple relative import is all
 # that is required – tinkering with ``sys.path`` is both fragile and can mask
@@ -107,12 +109,6 @@ _system_exports = ["ConversationManager", "Session", "Message", "MessageCategory
 
 # API client exports - lazy load
 _api_client_exports = ["PenguinClient", "ChatOptions", "TaskOptions", "CheckpointInfo", "ModelInfo", "create_client"]
-
-# Version info
-__version__ = "0.3.3.3.post1"
-__author__ = "Maximus Putnam"
-__email__ = "MaximusPutnam@gmail.com"
-__license__ = "AGPL-3.0-or-later"
 
 # Public API surface - this is the contract we'll maintain
 __all__ = [
