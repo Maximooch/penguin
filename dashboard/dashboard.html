@@ -6,96 +6,176 @@
   <style>
     :root {
       color-scheme: light dark;
+      --ob-bg: #0b1726;             /* deep navy */
+      --ob-surface: #0f2139;        /* ocean night */
+      --ob-surface-2: #163154;      /* darker card */
+      --ob-accent: #4cc9f0;         /* bright aqua */
+      --ob-accent-2: #64dfdf;       /* mint aqua */
+      --ob-muted: #9fb3c8;          /* desaturated blue-gray */
+      --ob-text: #e6f2ff;           /* near-white */
+      --ob-good: #5ce1a6;           /* sea green */
+      --ob-warn: #ffd166;           /* sand */
+      --ob-bad: #ff6b6b;            /* coral */
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
+
+    /* Page */
     body {
-      margin: 2rem;
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ob-text);
+      background: linear-gradient(180deg, #0b1726 0%, #0e2036 60%, #12304f 100%);
       display: grid;
-      gap: 2rem;
+      grid-template-rows: auto 1fr auto;
     }
-    section {
-      border: 1px solid rgba(0,0,0,0.1);
-      border-radius: 8px;
-      padding: 1.5rem;
-    }
-    h2 {
-      margin-top: 0;
-    }
-    table {
+    .container {
+      padding: 24px;
+      max-width: 1200px;
       width: 100%;
-      border-collapse: collapse;
-    }
-    th, td {
-      text-align: left;
-      padding: 0.35rem 0.5rem;
-      border-bottom: 1px solid rgba(0,0,0,0.075);
-    }
-    .timestamp {
-      font-size: 0.85rem;
-      color: rgba(0,0,0,0.6);
-    }
-    .grid {
+      margin: 0 auto;
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 1rem;
+      gap: 24px;
     }
+
+    header .title {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 28px;
+      letter-spacing: 0.2px;
+    }
+    .timestamp { font-size: 12px; color: var(--ob-muted); margin: 0; }
+
+    /* Cards */
+    .section {
+      background: radial-gradient(120% 120% at 0% 0%, rgba(76, 201, 240, 0.12) 0%, rgba(22, 49, 84, 0.08) 40%, rgba(22, 49, 84, 0.18) 100%), var(--ob-surface);
+      border: 1px solid rgba(100, 223, 223, 0.15);
+      border-radius: 14px;
+      padding: 18px 18px 14px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    }
+    .section h2 { margin: 0 0 12px 0; font-size: 16px; font-weight: 600; color: #d6e7ff; }
+
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    @media (max-width: 900px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 520px) { .kpi-grid { grid-template-columns: 1fr; } }
+
+    .kpi {
+      background: linear-gradient(180deg, rgba(76,201,240,0.10), rgba(100,223,223,0.05));
+      border: 1px solid rgba(76, 201, 240, 0.25);
+      border-radius: 12px;
+      padding: 14px;
+      display: grid;
+      gap: 6px;
+    }
+    .kpi .label { font-size: 12px; color: var(--ob-muted); }
+    .kpi .value { font-size: 24px; font-weight: 700; letter-spacing: 0.3px; }
+    .badge { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 11px; border: 1px solid rgba(255,255,255,0.12); color: #dff8ff; }
+    .badge-aqua { background: rgba(76,201,240,0.15); border-color: rgba(76,201,240,0.35); }
+    .badge-green { background: rgba(92,225,166,0.18); border-color: rgba(92,225,166,0.45); }
+
+    /* Layout helpers */
+    .grid { display: grid; gap: 12px; }
+    .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    @media (max-width: 1024px) { .cols-3 { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 700px) { .cols-3, .cols-2 { grid-template-columns: 1fr; } }
+
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px dashed rgba(200, 230, 255, 0.12); }
+    thead th { font-size: 12px; color: var(--ob-muted); font-weight: 600; }
+    tbody tr:hover { background: rgba(76,201,240,0.07); }
+
+    ul.clean { list-style: none; padding: 0; margin: 0; }
+    ul.clean li { padding: 8px 0; border-bottom: 1px dashed rgba(200, 230, 255, 0.12); }
+    .empty { color: var(--ob-muted); font-style: italic; }
+
+    footer { padding: 12px 24px 24px; color: var(--ob-muted); }
   </style>
 </head>
 <body>
-  <header>
-    <h1>Penguin Telemetry Dashboard</h1>
-    <p class="timestamp" id="last-updated">Loading…</p>
-  </header>
+  <div class="container">
+    <header>
+      <div class="title">
+        <h1>Penguin Telemetry Dashboard</h1>
+        <p class="timestamp" id="last-updated">Loading…</p>
+      </div>
+    </header>
 
-  <section>
-    <h2>Message Summary</h2>
-    <div class="grid">
-      <div>
-        <strong>Total messages</strong>
-        <div id="total-messages">0</div>
+    <section class="section">
+      <h2>Message Summary</h2>
+      <div class="kpi-grid" id="kpi-grid">
+        <div class="kpi">
+          <div class="label">Total messages</div>
+          <div class="value" id="total-messages">0</div>
+          <span class="badge badge-aqua" id="kpi-rate">—/min</span>
+        </div>
+        <div class="kpi">
+          <div class="label">Active agents</div>
+          <div class="value" id="active-agents">0</div>
+          <span class="badge" id="kpi-top-agent">—</span>
+        </div>
+        <div class="kpi">
+          <div class="label">Channels</div>
+          <div class="value" id="kpi-channels">0</div>
+          <span class="badge" id="kpi-top-channel">—</span>
+        </div>
+        <div class="kpi">
+          <div class="label">Tasks</div>
+          <div class="value" id="kpi-tasks">0</div>
+          <span class="badge badge-green" id="kpi-task-status">—</span>
+        </div>
       </div>
-      <div>
-        <strong>By channel</strong>
-        <ul id="messages-by-channel"></ul>
+      <div class="grid cols-2">
+        <div class="section">
+          <h2>By channel</h2>
+          <ul class="clean" id="messages-by-channel"><li class="empty">No data</li></ul>
+        </div>
+        <div class="section">
+          <h2>By type</h2>
+          <ul class="clean" id="messages-by-type"><li class="empty">No data</li></ul>
+        </div>
       </div>
-      <div>
-        <strong>By type</strong>
-        <ul id="messages-by-type"></ul>
-      </div>
+    </section>
+
+    <section class="section">
+      <h2>Agents</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Sent</th>
+            <th>Received</th>
+            <th>Messages</th>
+            <th>Last activity</th>
+          </tr>
+        </thead>
+        <tbody id="agent-table"></tbody>
+      </table>
+    </section>
+
+    <div class="grid cols-2">
+      <section class="section">
+        <h2>Tasks</h2>
+        <ul class="clean" id="task-list"><li class="empty">No tasks</li></ul>
+      </section>
+      <section class="section">
+        <h2>Channels</h2>
+        <ul class="clean" id="channel-list"><li class="empty">No channels</li></ul>
+      </section>
     </div>
-  </section>
-
-  <section>
-    <h2>Agents</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Agent</th>
-          <th>Sent</th>
-          <th>Received</th>
-          <th>Messages</th>
-          <th>Last activity</th>
-        </tr>
-      </thead>
-      <tbody id="agent-table"></tbody>
-    </table>
-  </section>
-
-  <section>
-    <h2>Tasks</h2>
-    <ul id="task-list"></ul>
-  </section>
-
-  <section>
-    <h2>Channels</h2>
-    <ul id="channel-list"></ul>
-  </section>
-
+  </div>
   <footer class="timestamp">
     Auto-refreshing every 5 seconds
   </footer>
 
   <script>
+    let lastTotal = null;
+    let lastTs = null;
     async function refresh() {
       try {
         const response = await fetch('/telemetry');
@@ -112,7 +192,20 @@
       document.getElementById('last-updated').textContent = `Last updated: ${now}`;
 
       const messageSummary = data.messages || {};
-      document.getElementById('total-messages').textContent = messageSummary.total || 0;
+      const total = Number(messageSummary.total || 0);
+      document.getElementById('total-messages').textContent = total;
+
+      // compute messages per minute since last refresh
+      const rateEl = document.getElementById('kpi-rate');
+      if (lastTotal === null || lastTs === null) {
+        rateEl.textContent = '—/min';
+      } else {
+        const dtMin = (Date.now() - lastTs) / 60000;
+        const rpm = dtMin > 0 ? (total - lastTotal) / dtMin : 0;
+        rateEl.textContent = `${Math.max(0, rpm).toFixed(1)}/min`;
+      }
+      lastTotal = total;
+      lastTs = Date.now();
 
       fillList('messages-by-channel', messageSummary.by_channel);
       fillList('messages-by-type', messageSummary.by_type);
@@ -120,7 +213,8 @@
       const agents = data.agents || {};
       const tbody = document.getElementById('agent-table');
       tbody.innerHTML = '';
-      Object.entries(agents).forEach(([agent, stats]) => {
+      const agentEntries = Object.entries(agents);
+      agentEntries.forEach(([agent, stats]) => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td>${agent}</td>
@@ -131,20 +225,59 @@
         `;
         tbody.appendChild(tr);
       });
+      if (agentEntries.length === 0) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td colspan="5" class="empty">No agents</td>`;
+        tbody.appendChild(tr);
+      }
 
+      // KPI: active agents & top agent
+      document.getElementById('active-agents').textContent = agentEntries.length;
+      const topAgent = agentEntries
+        .map(([name, stats]) => [name, Number((stats && stats.total) || 0)])
+        .sort((a, b) => b[1] - a[1])[0];
+      document.getElementById('kpi-top-agent').textContent = topAgent ? `${topAgent[0]} • ${topAgent[1]}` : '—';
+
+      // KPI: channels + top channel
+      const rooms = data.rooms || {};
+      const channelCount = Object.keys(rooms).length;
+      document.getElementById('kpi-channels').textContent = channelCount;
+      const topChannel = entriesOrEmpty(messageSummary.by_channel)
+        .sort((a, b) => b[1] - a[1])[0];
+      document.getElementById('kpi-top-channel').textContent = topChannel ? `${topChannel[0]} • ${topChannel[1]}` : '—';
+
+      // Tasks
       fillList('task-list', data.tasks);
-      fillList('channel-list', data.rooms);
+      const taskCount = Object.keys(data.tasks || {}).length;
+      document.getElementById('kpi-tasks').textContent = taskCount;
+      document.getElementById('kpi-task-status').textContent = taskCount > 0 ? 'tracking' : 'idle';
+
+      // Channels list
+      fillList('channel-list', rooms);
     }
 
     function fillList(id, mapping) {
       const container = document.getElementById(id);
       container.innerHTML = '';
-      if (!mapping) return;
-      Object.entries(mapping).forEach(([key, value]) => {
+      const entries = entriesOrEmpty(mapping);
+      if (entries.length === 0) {
+        const li = document.createElement('li');
+        li.className = 'empty';
+        li.textContent = 'No data';
+        container.appendChild(li);
+        return;
+      }
+      entries.forEach(([key, value]) => {
         const li = document.createElement('li');
         li.textContent = `${key}: ${value}`;
         container.appendChild(li);
       });
+    }
+
+    function entriesOrEmpty(mapping) {
+      if (!mapping) return [];
+      if (Array.isArray(mapping)) return mapping.map(v => Array.isArray(v) ? v : [String(v), v]);
+      try { return Object.entries(mapping); } catch { return []; }
     }
 
     refresh();
