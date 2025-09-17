@@ -367,6 +367,53 @@ Enhanced browser control without WebDriver dependencies, better for sites with a
 -   Helps diagnose issues with selectors or page navigation
 -   Toggle with: `<pydoll_debug_toggle>on</pydoll_debug_toggle >` or `<pydoll_debug_toggle>off</pydoll_debug_toggle >`
 
+### Inter-Agent Messaging (`<send_message>`)
+
+Use this action when agents need to coordinate directly or broadcast updates to a shared room. The body must be valid JSON. Required fields:
+
+- `content`: The plain-text message
+- `target` **or** `targets`: A string recipient (`"planner"`, `"qa"`, etc.) or a list of recipients. Omit to reach the human operator.
+
+Optional fields:
+
+- `channel`: Logical room identifier (e.g. `"dev-room"`). Use this so other agents can filter transcripts.
+- `message_type`: Defaults to `"message"`; useful for `"status"`, `"action"`, etc.
+- `metadata`: Arbitrary key/value payload carried alongside the message.
+- `sender`: Custom sender label (defaults to the current agent).
+
+**Examples:**
+
+```actionxml
+<send_message>{
+  "target": "implementer",
+  "content": "Planner has prepared the remediation plan. See dev-room for details.",
+  "channel": "dev-room",
+  "metadata": {"plan_version": 2}
+}</send_message>
+```
+
+Broadcasting to multiple recipients:
+
+```actionxml
+<send_message>{
+  "targets": ["planner", "qa"],
+  "content": "Implementation complete. Please review.",
+  "channel": "dev-room",
+  "message_type": "status"
+}</send_message>
+```
+
+Ping the human operator when assistance is required:
+
+```actionxml
+<send_message>{
+  "content": "Need clarification on acceptance criteria for the telemetry dashboard.",
+  "channel": "dev-room"
+}</send_message>
+```
+
+The message is routed through the MessageBus, recorded in each agent's transcript with channel metadata, and surfaced in telemetry summaries.
+
 ---
 """
 
@@ -390,6 +437,8 @@ Description: Run code in the terminal, using iPython or shell/bash (depending on
 <process_list></process_list> - List processes
 <process_enter>name</process_enter> - Enter a process
 <process_send>name:message</process_send> - Send a message to a process
+<send_message>{"target": "planner", "content": "Update", "channel": "dev-room"}</send_message> - Send inter-agent messages (JSON body)
+<send_message>{"target": "planner", "content": "Update", "channel": "dev-room"}</send_message> - Send inter-agent messages (JSON body)
 
 # Enhanced File Operations (USE THESE INSTEAD OF RAW PYTHON FILE OPS)
 

@@ -6,6 +6,7 @@
 # CodeAct Github: https://github.com/xingyaoww/code-act
 
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime
@@ -86,6 +87,7 @@ class ActionType(Enum):
     DEPENDENCY_DISPLAY = "dependency_display"
     ANALYZE_CODEBASE = "analyze_codebase"
     REINDEX_WORKSPACE = "reindex_workspace"
+    SEND_MESSAGE = "send_message"
     # Browser actions
     BROWSER_NAVIGATE = "browser_navigate"
     BROWSER_INTERACT = "browser_interact"
@@ -270,6 +272,7 @@ class ActionExecutor:
             ActionType.DEPENDENCY_DISPLAY: self._dependency_display,
             ActionType.ANALYZE_CODEBASE: self._analyze_codebase,
             ActionType.REINDEX_WORKSPACE: self._reindex_workspace,
+            ActionType.SEND_MESSAGE: self._send_message,
             # Browser actions
             ActionType.BROWSER_NAVIGATE: self._browser_navigate,
             ActionType.BROWSER_INTERACT: self._browser_interact,
@@ -466,6 +469,58 @@ class ActionExecutor:
         result = await self.process_manager.exit_process(self.current_process)
         self.current_process = None
         return result
+
+    async def _send_message(self, params: str) -> str:
+        try:
+            payload = json.loads(params) if params.strip().startswith("{") else {"content": params}
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"send_message expects JSON payload: {exc}")
+
+        content = payload.get("content") or payload.get("message")
+        if not content:
+            raise ValueError("send_message requires 'content'")
+
+        channel = payload.get("channel")
+        message_type = payload.get("message_type", "message")
+        metadata = payload.get("metadata") or {}
+        sender = payload.get("sender")
+        raw_targets = payload.get("targets") or payload.get("target") or payload.get("recipient")
+
+        if raw_targets is None:
+            targets = ["human"]
+        elif isinstance(raw_targets, (list, tuple, set)):
+            targets = list(raw_targets)
+        else:
+            targets = [str(raw_targets)]
+
+        conversation = self.conversation_system
+        core = getattr(conversation, "core", None)
+        if core is None:
+            raise RuntimeError("Penguin core unavailable for send_message action")
+
+        results = []
+        for target in targets:
+            normalized = (target or "").strip()
+            if normalized in ("", "human", "user"):
+                await core.send_to_human(
+                    content,
+                    message_type=message_type,
+                    metadata=metadata,
+                    channel=channel,
+                )
+                results.append("human")
+            else:
+                await core.route_message(
+                    normalized,
+                    content,
+                    message_type=message_type,
+                    metadata=metadata,
+                    agent_id=sender,
+                    channel=channel,
+                )
+                results.append(normalized)
+
+        return f"Sent message to {', '.join(results)}"
 
     def _workspace_search(self, params: str) -> str:
         parts = params.split(":", 1)
