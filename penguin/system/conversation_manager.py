@@ -161,6 +161,9 @@ class ConversationManager:
         self.agent_checkpoint_managers: Dict[str, Optional[CheckpointManager]] = {"default": self.checkpoint_manager}
         # Separate context windows per agent (default shares existing)
         self.agent_context_windows: Dict[str, ContextWindowManager] = {"default": self.context_window}
+        # Track parent/sub-agent relationships
+        self.sub_agent_parent: Dict[str, str] = {}
+        self.parent_sub_agents: Dict[str, List[str]] = {}
 
     def _get_live_config(self):
         """Best-effort accessor for the live Config instance used by Core.
@@ -309,46 +312,77 @@ class ConversationManager:
         share_context_window: bool = True,
         shared_cw_max_tokens: Optional[int] = None,
     ) -> None:
-        """Create a sub-agent with isolated session and context window, then copy SYSTEM+CONTEXT.
-
-        Note: For compatibility the signature includes share_session/share_context_window,
-        but this implementation enforces isolation (no shared CWM or transcript).
-        """
-        # Ensure parent and child agents exist (child created if missing)
+        """Create a sub-agent, honoring session/context-window sharing preferences."""
         self._ensure_agent(parent_agent_id)
-        self._ensure_agent(agent_id)
 
-        # Configure child's CWM max_tokens from parent (optionally clamp)
-        try:
-            parent_cw = self.agent_context_windows[parent_agent_id]
-            child_cw = self.agent_context_windows[agent_id]
-            if parent_cw and child_cw and hasattr(parent_cw, 'max_tokens') and hasattr(child_cw, 'max_tokens'):
-                desired = parent_cw.max_tokens
-                if shared_cw_max_tokens is not None:
-                    desired = min(desired, int(shared_cw_max_tokens))
-                child_cw.max_tokens = desired
-                if shared_cw_max_tokens is not None and desired < parent_cw.max_tokens:
-                    # Inform parent of clamp difference
-                    self.add_system_note(
-                        parent_agent_id,
-                        content=(
-                            f"Note: Sub-agent '{agent_id}' uses isolated CWM with max_tokens={desired} (parent={parent_cw.max_tokens})."
-                        ),
-                        metadata={"type": "cw_clamp_notice", "sub_agent": agent_id, "child_max": desired, "parent_max": parent_cw.max_tokens},
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to configure sub-agent CWM: {e}")
-
-        # One-time partial share: copy SYSTEM + CONTEXT messages from parent
-        try:
-            self.partial_share_context(
-                parent_agent_id,
+        if share_session and not share_context_window:
+            logger.warning(
+                "Sub-agent '%s' requested share_session without share_context_window; forcing context window sharing.",
                 agent_id,
-                categories=[MessageCategory.SYSTEM, MessageCategory.CONTEXT],
-                replace_child_context=False,
             )
-        except Exception as e:
-            logger.warning(f"Failed partial context share to '{agent_id}': {e}")
+            share_context_window = True
+
+        if share_session:
+            parent_conv = self.agent_sessions[parent_agent_id]
+            self.agent_sessions[agent_id] = parent_conv
+            self.agent_session_managers[agent_id] = self.agent_session_managers[parent_agent_id]
+            self.agent_checkpoint_managers[agent_id] = self.agent_checkpoint_managers.get(parent_agent_id)
+        else:
+            self._ensure_agent(agent_id)
+
+        if share_context_window:
+            self.agent_context_windows[agent_id] = self.agent_context_windows[parent_agent_id]
+
+        # Configure child's CWM max_tokens from parent (optionally clamp) when not sharing the object
+        if not share_context_window:
+            try:
+                parent_cw = self.agent_context_windows[parent_agent_id]
+                child_cw = self.agent_context_windows[agent_id]
+                if parent_cw and child_cw and hasattr(parent_cw, "max_tokens") and hasattr(child_cw, "max_tokens"):
+                    desired = parent_cw.max_tokens
+                    if shared_cw_max_tokens is not None:
+                        desired = min(desired, int(shared_cw_max_tokens))
+                    child_cw.max_tokens = desired
+                    if shared_cw_max_tokens is not None and desired < parent_cw.max_tokens:
+                        self.add_system_note(
+                            parent_agent_id,
+                            content=(
+                                f"Note: Sub-agent '{agent_id}' uses isolated CWM with max_tokens={desired} (parent={parent_cw.max_tokens})."
+                            ),
+                            metadata={
+                                "type": "cw_clamp_notice",
+                                "sub_agent": agent_id,
+                                "child_max": desired,
+                                "parent_max": parent_cw.max_tokens,
+                            },
+                        )
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning(f"Failed to configure sub-agent CWM: {e}")
+
+        # When session is isolated, copy SYSTEM/CONTEXT messages for initial state
+        if not share_session:
+            try:
+                self.partial_share_context(
+                    parent_agent_id,
+                    agent_id,
+                    categories=[MessageCategory.SYSTEM, MessageCategory.CONTEXT],
+                    replace_child_context=False,
+                )
+            except Exception as e:
+                logger.warning(f"Failed partial context share to '{agent_id}': {e}")
+
+        # Track relationships
+        self.sub_agent_parent[agent_id] = parent_agent_id
+        subs = self.parent_sub_agents.setdefault(parent_agent_id, [])
+        if agent_id not in subs:
+            subs.append(agent_id)
+
+        # Ensure conversation metadata reflects agent_id
+        try:
+            conv = self.agent_sessions[agent_id]
+            conv.session.metadata.setdefault("agent_id", agent_id)
+        except Exception:  # pragma: no cover - defensive
+            pass
 
     def save_all(self) -> int:
         """Save all agent conversations. Returns count of successful saves."""
@@ -771,11 +805,11 @@ class ConversationManager:
         return self.conversation.load(conversation_id)
         
     def list_conversations(
-        self, 
-        limit: int = 100, # Why a limit of 100? Is it per page? 
+        self,
+        limit: int = 100,
         offset: int = 0,
-        search_term: Optional[str] = None
-    ) -> List[Dict]:
+        search_term: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         List available conversations with optional search.
         
@@ -793,6 +827,8 @@ class ConversationManager:
         # Enhance with meaningful titles
         for conversation in conversations:
             session_id = conversation.get("id")
+            if session_id:
+                conversation.setdefault("agent_id", conversation.get("agent_id") or conversation.get("metadata", {}).get("agent_id"))
             if session_id and not conversation.get("title"):
                 # Try to load just enough of the session to extract a title
                 try:
@@ -830,6 +866,15 @@ class ConversationManager:
                 except Exception as e:
                     logger.warning(f"Error extracting title for session {session_id}: {e}")
                     # Keep default title if extraction fails
+
+            # Ensure agent_id is populated even if index metadata lacked it
+            if session_id and not conversation.get("agent_id"):
+                try:
+                    session = self.session_manager.load_session(session_id)
+                    if session and session.metadata.get("agent_id"):
+                        conversation["agent_id"] = session.metadata.get("agent_id")
+                except Exception as e:
+                    logger.debug(f"Unable to load agent metadata for {session_id}: {e}")
         
         # Filter by search term if provided
         if search_term and search_term.strip():
@@ -848,6 +893,41 @@ class ConversationManager:
             conversations[0]["_metadata"] = {"total_count": total_count}
             
         return conversations
+
+    def get_conversation_history(
+        self,
+        session_id: str,
+        *,
+        include_system: bool = True,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return conversation messages annotated with agent metadata."""
+
+        session = self.session_manager.load_session(session_id)
+        if session is None:
+            return []
+
+        messages: List[Dict[str, Any]] = []
+        for message in session.messages:
+            if not include_system and message.role == "system":
+                continue
+            entry = {
+                "id": message.id,
+                "role": message.role,
+                "content": message.content,
+                "category": message.category.name if hasattr(message.category, "name") else message.category,
+                "timestamp": message.timestamp,
+                "agent_id": message.agent_id,
+                "recipient_id": message.recipient_id,
+                "message_type": message.message_type,
+                "metadata": message.metadata,
+            }
+            messages.append(entry)
+
+        if limit is not None and limit > 0:
+            messages = messages[-limit:]
+
+        return messages
         
     def get_current_session(self) -> Optional[Session]:
         """
@@ -980,6 +1060,59 @@ class ConversationManager:
         except Exception as e:
             logger.error(f"Failed to hydrate session from snapshot {snapshot_id}: {e}")
             return False
+
+    def list_agents(self) -> List[str]:
+        """Return all registered agent identifiers."""
+        return sorted(self.agent_sessions.keys())
+
+    def list_sub_agents(self, parent_agent_id: Optional[str] = None) -> Dict[str, List[str]]:
+        """Return mapping of parent agents to their sub-agents.
+
+        If ``parent_agent_id`` is provided, the mapping is filtered to that parent.
+        """
+        if parent_agent_id:
+            subs = self.parent_sub_agents.get(parent_agent_id, [])
+            return {parent_agent_id: list(subs)}
+        return {parent: list(children) for parent, children in self.parent_sub_agents.items()}
+
+    def remove_agent(self, agent_id: str) -> bool:
+        """Remove an agent and associated structures.
+
+        Returns True if the agent was removed, False when no action was taken.
+        """
+        if agent_id == "default":
+            raise ValueError("Cannot remove the default agent")
+
+        if agent_id not in self.agent_sessions:
+            return False
+
+        # Prevent removal when parent still has active sub-agents
+        children = self.parent_sub_agents.get(agent_id, [])
+        if children:
+            raise ValueError(f"Agent '{agent_id}' has active sub-agents: {children}")
+
+        parent = self.sub_agent_parent.pop(agent_id, None)
+        if parent:
+            subs = self.parent_sub_agents.get(parent)
+            if subs and agent_id in subs:
+                subs.remove(agent_id)
+                if not subs:
+                    self.parent_sub_agents.pop(parent, None)
+
+        self.agent_sessions.pop(agent_id, None)
+        self.agent_session_managers.pop(agent_id, None)
+        self.agent_checkpoint_managers.pop(agent_id, None)
+        self.agent_context_windows.pop(agent_id, None)
+        if getattr(self, "context_loader", None) and getattr(self.context_loader, "context_manager", None) is self.conversation:
+            # Ensure context loader still references active conversation
+            try:
+                self.context_loader.context_manager = self.conversation
+            except Exception:
+                pass
+        if self.current_agent_id == agent_id:
+            self.current_agent_id = "default"
+            self.conversation = self.agent_sessions["default"]
+        return True
 
     def branch_from_snapshot(self, snapshot_id: str, *, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Fork a snapshot & load the branched copy as current session."""

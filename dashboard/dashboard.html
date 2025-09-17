@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Penguin Telemetry Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      margin: 2rem;
+      display: grid;
+      gap: 2rem;
+    }
+    section {
+      border: 1px solid rgba(0,0,0,0.1);
+      border-radius: 8px;
+      padding: 1.5rem;
+    }
+    h2 {
+      margin-top: 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.35rem 0.5rem;
+      border-bottom: 1px solid rgba(0,0,0,0.075);
+    }
+    .timestamp {
+      font-size: 0.85rem;
+      color: rgba(0,0,0,0.6);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Penguin Telemetry Dashboard</h1>
+    <p class="timestamp" id="last-updated">Loading…</p>
+  </header>
+
+  <section>
+    <h2>Message Summary</h2>
+    <div class="grid">
+      <div>
+        <strong>Total messages</strong>
+        <div id="total-messages">0</div>
+      </div>
+      <div>
+        <strong>By channel</strong>
+        <ul id="messages-by-channel"></ul>
+      </div>
+      <div>
+        <strong>By type</strong>
+        <ul id="messages-by-type"></ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Agents</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Agent</th>
+          <th>Sent</th>
+          <th>Received</th>
+          <th>Messages</th>
+          <th>Last activity</th>
+        </tr>
+      </thead>
+      <tbody id="agent-table"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Tasks</h2>
+    <ul id="task-list"></ul>
+  </section>
+
+  <section>
+    <h2>Channels</h2>
+    <ul id="channel-list"></ul>
+  </section>
+
+  <footer class="timestamp">
+    Auto-refreshing every 5 seconds
+  </footer>
+
+  <script>
+    async function refresh() {
+      try {
+        const response = await fetch('/telemetry');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const { telemetry } = await response.json();
+        updateDashboard(telemetry || {});
+      } catch (err) {
+        console.error('Failed to load telemetry', err);
+      }
+    }
+
+    function updateDashboard(data) {
+      const now = new Date().toLocaleString();
+      document.getElementById('last-updated').textContent = `Last updated: ${now}`;
+
+      const messageSummary = data.messages || {};
+      document.getElementById('total-messages').textContent = messageSummary.total || 0;
+
+      fillList('messages-by-channel', messageSummary.by_channel);
+      fillList('messages-by-type', messageSummary.by_type);
+
+      const agents = data.agents || {};
+      const tbody = document.getElementById('agent-table');
+      tbody.innerHTML = '';
+      Object.entries(agents).forEach(([agent, stats]) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${agent}</td>
+          <td>${stats.sent || 0}</td>
+          <td>${stats.received || 0}</td>
+          <td>${stats.total || 0}</td>
+          <td>${stats.last_message_at || '—'}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      fillList('task-list', data.tasks);
+      fillList('channel-list', data.rooms);
+    }
+
+    function fillList(id, mapping) {
+      const container = document.getElementById(id);
+      container.innerHTML = '';
+      if (!mapping) return;
+      Object.entries(mapping).forEach(([key, value]) => {
+        const li = document.createElement('li');
+        li.textContent = `${key}: ${value}`;
+        container.appendChild(li);
+      });
+    }
+
+    refresh();
+    setInterval(refresh, 5000);
+  </script>
+</body>
+</html>

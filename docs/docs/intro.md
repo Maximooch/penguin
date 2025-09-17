@@ -91,6 +91,8 @@ response = agent.chat("Help me debug this function")
 - [Error Handling](advanced/error_handling.md)
 - [Diagnostics](advanced/diagnostics.md)
 - [Extending Penguin](advanced/extensibility.md)
+- [Multi-Agent Orchestration](advanced/multi_agents.md)
+- [Sub-Agent Delegation](advanced/sub_agents.md)
 
 ### API Reference
 - [Python API](api_reference/python_api_reference.md)
@@ -102,6 +104,16 @@ response = agent.chat("Help me debug this function")
 ## Architecture Overview
 
 Penguin v0.3.3.3.post1 introduces an enhanced modular architecture with event-driven communication and advanced state management:
+
+## Multi-Agent and Sub-Agent Workflows
+
+Penguin's orchestration layer now speaks to both primary agents and scoped sub-agents so complex requests can fan out to specialized workers while preserving a shared context. See [Multi-Agent Orchestration](advanced/multi_agents.md) and [Sub-Agent Delegation](advanced/sub_agents.md) for deep dives.
+
+- **Multi-Agent Conversations**: Every REST and WebSocket surface accepts an optional `agent_id` so callers can direct traffic to a specific persona or service partition. The coordinator keeps a per-agent conversation state while still exposing a unified system log and analytics feed.
+- **Sub-Agent Delegation**: The core pipeline can spawn delegated subtasks that inherit the parent's tools, memory, and checkpoints. Sub-agents can be restricted to read-only or analysis-only modes and publish partial results back to the parent stream for review.
+- **State Isolation with Shared Memory**: All agents share the same global memory store for recall, but runtime variables (current objective, active tools, run mode) are isolated per agent so experiments remain deterministic.
+- **Client Support**: The Python client, REST API, and websocket streaming helpers all accept `agent_id`, enabling automation scripts or UI layers to switch personas mid-conversation without reinitializing the core.
+- **Roadmap**: Upcoming iterations will add policy-based routing, automatic sub-agent scaling, and richer capability introspection so orchestration decisions can be data-driven.
 
 ### Core Components
 

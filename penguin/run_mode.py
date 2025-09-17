@@ -842,6 +842,8 @@ class RunMode:
             # Call Engine.run_task – streaming enabled via Engine.settings;
             # assistant chunks arrive through *message_callback* above.
             # ------------------------------------------------------------------
+            agent_override = context.get("agent_id") if context else None
+            agent_role = context.get("agent_role") if context else None
             result = await self.core.engine.run_task(
                 task_prompt=task_prompt,
                 max_iterations=self.max_iterations,
@@ -850,7 +852,9 @@ class RunMode:
                 task_name=name,
                 completion_phrases=completion_phrases,
                 enable_events=True,
-                message_callback=message_callback
+                message_callback=message_callback,
+                agent_id=agent_override,
+                agent_role=agent_role,
             )
             
             # Ensure any active streaming message is finalised so UI gets a single completed panel

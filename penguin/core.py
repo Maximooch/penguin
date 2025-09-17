@@ -200,9 +200,12 @@ from penguin.utils.parser import ActionExecutor, parse_action
 from penguin.utils.profiling import profile_startup_phase, profile_operation, profiler, print_startup_report
 try:
     from penguin.system.message_bus import MessageBus, ProtocolMessage
+    from penguin.telemetry.collector import ensure_telemetry
 except Exception:  # pragma: no cover
     MessageBus = None  # type: ignore
     ProtocolMessage = None  # type: ignore
+    def ensure_telemetry(_: Any):  # type: ignore[nested-alias]
+        return None
 
 # Add the EventHandler type for type hinting
 EventHandler = Callable[[str, Dict[str, Any]], Union[Awaitable[None], None]]
@@ -520,8 +523,14 @@ class PenguinCore:
             "human_message",
         }
 
+        # Telemetry collector
+        ensure_telemetry(self)
+
         # Set system prompt from import
         self.system_prompt = SYSTEM_PROMPT
+
+        # Track MessageBus handlers per agent for teardown
+        self._agent_bus_handlers: Dict[str, Any] = {}
 
         # Initialize streaming primitives immediately (before Engine/handlers can use them)
         self.current_stream = None
@@ -647,6 +656,11 @@ class PenguinCore:
                 self.action_executor,
                 stop_conditions=default_stops,
             )
+            try:
+                self.engine.coordinator = self.get_coordinator()
+                self.engine.telemetry = getattr(self, "telemetry", None)
+            except Exception as coord_err:  # pragma: no cover
+                logger.debug(f"Coordinator unavailable during engine init: {coord_err}")
         except Exception as e:
             logger.warning(f"Failed to initialize Engine layer (fallback to legacy core processing): {e}")
             self.engine = None
@@ -812,9 +826,15 @@ class PenguinCore:
             self.set_active_agent(agent_id)
 
         # Register MessageBus inbox for this agent (route messages to conversation)
-        try:
-            if MessageBus and ProtocolMessage:
+        if MessageBus and ProtocolMessage:
+            try:
                 bus = MessageBus.get_instance()
+
+                if agent_id in self._agent_bus_handlers:
+                    try:
+                        bus.unregister_handler(agent_id)
+                    except Exception:
+                        pass
 
                 async def _agent_inbox(msg: ProtocolMessage, *, _agent_id: str = agent_id):
                     try:
@@ -839,8 +859,9 @@ class PenguinCore:
                         logger.debug(f"Agent inbox handler failed: {e}")
 
                 bus.register_handler(agent_id, _agent_inbox)
-        except Exception as e:
-            logger.debug(f"MessageBus agent inbox not registered: {e}")
+                self._agent_bus_handlers[agent_id] = _agent_inbox
+            except Exception as e:
+                logger.debug(f"MessageBus agent inbox not registered: {e}")
 
     def set_active_agent(self, agent_id: str) -> None:
         """Switch the active agent across ConversationManager and Engine."""
@@ -900,6 +921,66 @@ class PenguinCore:
         ok = cm.delete_agent_conversation(agent_id, conversation_id)
         return {"success": ok, "warning": None}
 
+    def list_agents(self) -> List[str]:
+        """Return all registered agent identifiers."""
+        return self.conversation_manager.list_agents()
+
+    def list_sub_agents(self, parent_agent_id: Optional[str] = None) -> Dict[str, List[str]]:
+        """Return mapping of parent agents to sub-agents."""
+        return self.conversation_manager.list_sub_agents(parent_agent_id)
+
+    def create_sub_agent(
+        self,
+        agent_id: str,
+        *,
+        parent_agent_id: str,
+        system_prompt: Optional[str] = None,
+        share_session: bool = True,
+        share_context_window: bool = True,
+        shared_cw_max_tokens: Optional[int] = None,
+        model_max_tokens: Optional[int] = None,
+        activate: bool = False,
+    ) -> None:
+        """Convenience wrapper for registering a sub-agent."""
+        share_session_with = parent_agent_id if share_session else None
+        share_context_with = parent_agent_id if share_context_window else None
+        self.register_agent(
+            agent_id,
+            system_prompt=system_prompt,
+            activate=activate,
+            share_session_with=share_session_with,
+            share_context_window_with=share_context_with,
+            shared_cw_max_tokens=shared_cw_max_tokens,
+            model_max_tokens=model_max_tokens,
+        )
+
+    def unregister_agent(self, agent_id: str, *, preserve_conversation: bool = False) -> bool:
+        """Unregister an agent and clean up associated resources."""
+        if agent_id == "default":
+            raise ValueError("Cannot unregister the default agent")
+
+        removed = True
+        if not preserve_conversation:
+            removed = self.conversation_manager.remove_agent(agent_id)
+
+        if getattr(self, "engine", None):
+            try:
+                self.engine.unregister_agent(agent_id)
+            except Exception as e:
+                logger.debug(f"Engine unregister_agent failed for '{agent_id}': {e}")
+
+        if MessageBus and agent_id in self._agent_bus_handlers:
+            try:
+                MessageBus.get_instance().unregister_handler(agent_id)
+            except Exception:
+                pass
+            self._agent_bus_handlers.pop(agent_id, None)
+
+        if self.conversation_manager.current_agent_id == agent_id:
+            self.set_active_agent("default")
+
+        return removed
+
     # ------------------------------
     # Message routing via MessageBus
     # ------------------------------
@@ -911,6 +992,7 @@ class PenguinCore:
         message_type: str = "message",
         metadata: Optional[Dict[str, Any]] = None,
         agent_id: Optional[str] = None,
+        channel: Optional[str] = None,
     ) -> bool:
         try:
             if not (MessageBus and ProtocolMessage):
@@ -929,6 +1011,7 @@ class PenguinCore:
                 message_type=message_type,
                 metadata=metadata or {},
                 session_id=session_id,
+                channel=channel,
             )
             await MessageBus.get_instance().send(msg)
             return True
@@ -937,14 +1020,48 @@ class PenguinCore:
             return False
 
     # Convenience wrappers
-    async def send_to_agent(self, agent_id: str, content: Any, *, message_type: str = "message", metadata: Optional[Dict[str, Any]] = None) -> bool:
-        return await self.route_message(agent_id, content, message_type=message_type, metadata=metadata)
+    async def send_to_agent(
+        self,
+        agent_id: str,
+        content: Any,
+        *,
+        message_type: str = "message",
+        metadata: Optional[Dict[str, Any]] = None,
+        channel: Optional[str] = None,
+    ) -> bool:
+        return await self.route_message(
+            agent_id,
+            content,
+            message_type=message_type,
+            metadata=metadata,
+            channel=channel,
+        )
 
-    async def send_to_human(self, content: Any, *, message_type: str = "status", metadata: Optional[Dict[str, Any]] = None) -> bool:
-        # Sender defaults to current agent; recipient is "human"
-        return await self.route_message("human", content, message_type=message_type, metadata=metadata)
+    async def send_to_human(
+        self,
+        content: Any,
+        *,
+        message_type: str = "status",
+        metadata: Optional[Dict[str, Any]] = None,
+        channel: Optional[str] = None,
+    ) -> bool:
+        return await self.route_message(
+            "human",
+            content,
+            message_type=message_type,
+            metadata=metadata,
+            channel=channel,
+        )
 
-    async def human_reply(self, agent_id: str, content: Any, *, message_type: str = "message", metadata: Optional[Dict[str, Any]] = None) -> bool:
+    async def human_reply(
+        self,
+        agent_id: str,
+        content: Any,
+        *,
+        message_type: str = "message",
+        metadata: Optional[Dict[str, Any]] = None,
+        channel: Optional[str] = None,
+    ) -> bool:
         """Convenience wrapper for human → agent directed replies via MessageBus.
 
         Semantically the same as send_to_agent, but forces the sender identity to
@@ -984,12 +1101,19 @@ class PenguinCore:
                 message_type=message_type,
                 metadata=metadata or {},
                 session_id=session_id,
+                channel=channel,
             )
             await MessageBus.get_instance().send(msg)
             return True
         except Exception as e:
             logger.error(f"human_reply failed: {e}")
             return False
+
+    async def get_telemetry_summary(self) -> Dict[str, Any]:
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is None:
+            return {}
+        return await telemetry.snapshot()
 
     # ------------------------------------------------------------------
     # Diagnostics: Smoke test for agent wiring
@@ -1921,7 +2045,12 @@ class PenguinCore:
             multi_step=True,
         )
 
-    def list_conversations(self, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
+    def list_conversations(
+        self,
+        limit: int = 20,
+        offset: int = 0,
+        search_term: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         List available conversations.
         
@@ -1932,7 +2061,7 @@ class PenguinCore:
         Returns:
             List of conversations with metadata
         """
-        return self.conversation_manager.list_conversations(limit=limit, offset=offset)
+        return self.conversation_manager.list_conversations(limit=limit, offset=offset, search_term=search_term)
         
     def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -1955,7 +2084,11 @@ class PenguinCore:
                     {
                         "role": msg.role,
                         "content": msg.content,
-                        "timestamp": msg.timestamp
+                        "timestamp": msg.timestamp,
+                        "agent_id": msg.agent_id,
+                        "recipient_id": msg.recipient_id,
+                        "message_type": msg.message_type,
+                        "metadata": msg.metadata,
                     }
                     for msg in session.messages
                 ],
@@ -1964,6 +2097,19 @@ class PenguinCore:
                 "metadata": session.metadata
             }
         return None
+
+    def get_conversation_history(
+        self,
+        conversation_id: str,
+        *,
+        include_system: bool = True,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        return self.conversation_manager.get_conversation_history(
+            conversation_id,
+            include_system=include_system,
+            limit=limit,
+        )
         
     def create_conversation(self) -> str:
         """

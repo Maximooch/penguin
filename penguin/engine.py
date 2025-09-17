@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import asyncio
 import multiprocessing as mp
-from typing import Any, Callable, Coroutine, List, Optional, Sequence, Dict, Awaitable
+from typing import Any, Callable, Coroutine, List, Optional, Sequence, Dict, Awaitable, Tuple
 
 from penguin.system.conversation_manager import ConversationManager  # type: ignore
 from penguin.utils.parser import parse_action, CodeActAction, ActionExecutor  # type: ignore
@@ -188,6 +188,14 @@ class Engine:
             raise KeyError(f"Agent '{agent_id}' is not registered")
         self.default_agent_id = agent_id
 
+    def unregister_agent(self, agent_id: str) -> None:
+        """Remove an agent from the registry."""
+        if agent_id == self.default_agent_id:
+            raise ValueError("Cannot unregister the default agent")
+        self.agents.pop(agent_id, None)
+        if self.current_agent_id == agent_id:
+            self.current_agent_id = self.default_agent_id
+
     def get_conversation_manager(self, agent_id: Optional[str] = None) -> Optional[ConversationManager]:
         agent = self.get_agent(agent_id or self.current_agent_id)
         return agent.conversation_manager if agent else None
@@ -241,13 +249,16 @@ class Engine:
         streaming: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
         agent_id: Optional[str] = None,
+        agent_role: Optional[str] = None,
     ):
-        """Run a single reasoning → (optional) action → response cycle.
+        """Run a single reasoning cycle for the requested agent/role."""
+        selected, lite_output = await self._resolve_agent(agent_id=agent_id, agent_role=agent_role, prompt=prompt)
+        if lite_output is not None:
+            return lite_output
+        if selected is None:
+            return {"assistant_response": "", "action_results": [], "status": "no_agent"}
 
-        Returns the same structured dict that ``_llm_step`` emits so callers
-        may access both the assistant text **and** any action_results.
-        """
-        self.current_agent_id = agent_id or self.default_agent_id
+        self.current_agent_id = selected
         cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
         cm.conversation.prepare_conversation(prompt, image_path)
         response_data = await self._llm_step(
@@ -272,6 +283,7 @@ class Engine:
         streaming: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
         agent_id: Optional[str] = None,
+        agent_role: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Multi-step conversational loop that continues until no actions are taken.
@@ -295,7 +307,21 @@ class Engine:
         self.start_time = datetime.utcnow()
         
         # Prepare conversation with initial prompt for the selected agent
-        self.current_agent_id = agent_id or self.default_agent_id
+        selected, lite_output = await self._resolve_agent(agent_id=agent_id, agent_role=agent_role, prompt=prompt)
+        if lite_output is not None:
+            lite_output.setdefault("iterations", 0)
+            lite_output.setdefault("execution_time", 0.0)
+            return lite_output
+        if selected is None:
+            return {
+                "assistant_response": "",
+                "iterations": 0,
+                "action_results": [],
+                "status": "no_agent",
+                "execution_time": 0.0,
+            }
+
+        self.current_agent_id = selected
         cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
         cm.conversation.prepare_conversation(prompt, image_path=image_path)
         
@@ -381,6 +407,7 @@ class Engine:
         enable_events: bool = True,
         message_callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
         agent_id: Optional[str] = None,
+        agent_role: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Multi‑step reasoning loop with comprehensive task handling.
@@ -408,9 +435,25 @@ class Engine:
         self.current_iteration = 0
         self.start_time = datetime.utcnow()
         # Select agent and prepare its conversation
-        self.current_agent_id = agent_id or self.default_agent_id
+        selected, lite_output = await self._resolve_agent(
+            agent_id=agent_id,
+            agent_role=agent_role,
+            prompt=task_prompt,
+            context=task_context,
+        )
+        if lite_output is not None:
+            lite_output.setdefault("completion_type", "lite_agent")
+            return lite_output
+        if selected is None:
+            selected = self.default_agent_id
+
+        self.current_agent_id = selected
         cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
         cm.conversation.prepare_conversation(task_prompt, image_path=image_path)
+
+        telemetry = getattr(self, "telemetry", None)
+        if telemetry is not None:
+            await telemetry.record_task(self.current_agent_id, task_name)
         
         # Prepare task metadata
         task_metadata = {
@@ -575,6 +618,45 @@ class Engine:
                 logger.error(f"Error in completion callback: {str(e)}")
         
         return result
+
+    async def _execute_lite_agent(
+        self,
+        role: Optional[str],
+        prompt: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not role:
+            return None
+        coordinator = getattr(self, "coordinator", None)
+        if not coordinator:
+            return None
+        result = await coordinator.execute_lite_agents(role, prompt, metadata=metadata)
+        if result:
+            result.setdefault("iterations", 0)
+            result.setdefault("execution_time", 0.0)
+            result.setdefault("action_results", [])
+        return result
+
+    async def _resolve_agent(
+        self,
+        *,
+        agent_id: Optional[str],
+        agent_role: Optional[str],
+        prompt: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+        if agent_id:
+            return agent_id, None
+        coordinator = getattr(self, "coordinator", None)
+        if not coordinator or not agent_role:
+            return self.default_agent_id, None
+        selected = coordinator.select_agent(agent_role)
+        if selected:
+            return selected, None
+        lite = await self._execute_lite_agent(agent_role, prompt, metadata=context)
+        if lite is not None:
+            return None, lite
+        return self.default_agent_id, None
 
     # ------------------------------------------------------------------
     # Child‑engine spawning (stub – process mode)

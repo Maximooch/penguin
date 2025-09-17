@@ -104,7 +104,17 @@ class ModelConfig:
     def _uses_effort_style(self) -> bool:
         """Check if model uses effort-style reasoning configuration."""
         model_lower = self.model.lower()
-        return any(pattern in model_lower for pattern in ["o1", "o3", "grok", "openai/o"])
+        return any(
+            pattern in model_lower
+            for pattern in [
+                "o1",
+                "o3",
+                "grok",
+                "openai/o",
+                "gpt-5",
+                "gpt-6",
+            ]
+        )
     
     def _uses_max_tokens_style(self) -> bool:
         """Check if model uses max_tokens-style reasoning configuration."""

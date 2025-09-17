@@ -121,6 +121,16 @@ def mock_core():
     core.conversation_manager = MagicMock()
     core.conversation_manager.load_context_file = MagicMock()
     
+    # Agent orchestration mocks
+    core.register_agent = MagicMock()
+    core.create_sub_agent = MagicMock()
+    core.list_agents = MagicMock(return_value=["default", "planner"])
+    core.list_sub_agents = MagicMock(return_value={"default": ["planner"]})
+    core.unregister_agent = AsyncMock(return_value=True)
+    core.send_to_agent = AsyncMock(return_value=True)
+    core.send_to_human = AsyncMock(return_value=True)
+    core.human_reply = AsyncMock(return_value=True)
+
     return core
 
 
@@ -727,3 +737,78 @@ class TestPenguinClientIntegrationScenarios:
         # System should still be functional for other operations
         info = await client.get_system_info()
         assert "penguin_version" in info
+
+
+class TestPenguinClientAgents:
+    """Tests covering new agent management helpers on PenguinClient."""
+
+    def _make_client(self, mock_core) -> PenguinClient:
+        client = PenguinClient()
+        client._core = mock_core
+        client._initialized = True
+        return client
+
+    def test_create_agent_registers(self, mock_core):
+        client = self._make_client(mock_core)
+        client.create_agent(
+            "planner",
+            system_prompt="You are a planner",
+            share_session_with="default",
+            shared_cw_max_tokens=512,
+        )
+        mock_core.register_agent.assert_called_once_with(
+            "planner",
+            system_prompt="You are a planner",
+            activate=False,
+            share_session_with="default",
+            share_context_window_with=None,
+            shared_cw_max_tokens=512,
+            model_max_tokens=None,
+        )
+
+    def test_create_sub_agent(self, mock_core):
+        client = self._make_client(mock_core)
+        client.create_sub_agent(
+            "qa",
+            parent_agent_id="planner",
+            share_session=False,
+            share_context_window=False,
+            shared_cw_max_tokens=256,
+        )
+        mock_core.create_sub_agent.assert_called_once_with(
+            "qa",
+            parent_agent_id="planner",
+            system_prompt=None,
+            share_session=False,
+            share_context_window=False,
+            shared_cw_max_tokens=256,
+            model_max_tokens=None,
+            activate=False,
+        )
+
+    def test_list_agents(self, mock_core):
+        client = self._make_client(mock_core)
+        agents = client.list_agents()
+        assert agents == ["default", "planner"]
+
+    def test_list_sub_agents(self, mock_core):
+        client = self._make_client(mock_core)
+        subs = client.list_sub_agents("default")
+        assert subs == {"default": ["planner"]}
+
+    @pytest.mark.asyncio
+    async def test_unregister_agent(self, mock_core):
+        client = self._make_client(mock_core)
+        ok = await client.unregister_agent("planner")
+        assert ok is True
+        mock_core.unregister_agent.assert_awaited_once_with("planner", preserve_conversation=False)
+
+    @pytest.mark.asyncio
+    async def test_send_messages(self, mock_core):
+        client = self._make_client(mock_core)
+        await client.send_to_agent("planner", {"task": "plan"})
+        mock_core.send_to_agent.assert_awaited_once()
+        await client.send_to_human("status")
+        mock_core.send_to_human.assert_awaited_once()
+        await client.human_reply("planner", "ack")
+        mock_core.human_reply.assert_awaited_once()

@@ -35,6 +35,7 @@ Example Usage:
     result = await client.execute_task("Create a web scraper", continuous=False)
     ```
 """
+# Where's the workspace path?
 
 import asyncio
 import logging
@@ -94,7 +95,7 @@ class ModelInfo:
 
 
 class PenguinClient:
-    """High-level Python client for Penguin AI functionality."""
+    """High-level Python client for Penguin functionality."""
     
     def __init__(
         self,
@@ -481,6 +482,142 @@ class PenguinClient:
     async def list_context_files(self) -> List[str]:
         """List available context files."""
         return self.core.list_context_files()
+
+    # Agent management helpers
+    # ------------------------------------------------------------------
+
+    def create_agent(
+        self,
+        agent_id: str,
+        *,
+        system_prompt: Optional[str] = None,
+        activate: bool = False,
+        share_session_with: Optional[str] = None,
+        share_context_window_with: Optional[str] = None,
+        shared_cw_max_tokens: Optional[int] = None,
+        model_max_tokens: Optional[int] = None,
+    ) -> None:
+        """Register a new agent."""
+        self.core.register_agent(
+            agent_id,
+            system_prompt=system_prompt,
+            activate=activate,
+            share_session_with=share_session_with,
+            share_context_window_with=share_context_window_with,
+            shared_cw_max_tokens=shared_cw_max_tokens,
+            model_max_tokens=model_max_tokens,
+        )
+
+    def create_sub_agent(
+        self,
+        agent_id: str,
+        *,
+        parent_agent_id: str,
+        system_prompt: Optional[str] = None,
+        share_session: bool = True,
+        share_context_window: bool = True,
+        shared_cw_max_tokens: Optional[int] = None,
+        model_max_tokens: Optional[int] = None,
+        activate: bool = False,
+    ) -> None:
+        """Register a sub-agent bound to a parent agent."""
+        self.core.create_sub_agent(
+            agent_id,
+            parent_agent_id=parent_agent_id,
+            system_prompt=system_prompt,
+            share_session=share_session,
+            share_context_window=share_context_window,
+            shared_cw_max_tokens=shared_cw_max_tokens,
+            model_max_tokens=model_max_tokens,
+            activate=activate,
+        )
+
+    def list_agents(self) -> List[str]:
+        """List registered agent identifiers."""
+        return self.core.list_agents()
+
+    def list_sub_agents(self, parent_agent_id: Optional[str] = None) -> Dict[str, List[str]]:
+        """List sub-agents mapped to their parent agents."""
+        return self.core.list_sub_agents(parent_agent_id)
+
+    async def unregister_agent(self, agent_id: str, *, preserve_conversation: bool = False) -> bool:
+        """Unregister an agent and optionally remove its conversation state."""
+        result = self.core.unregister_agent(agent_id, preserve_conversation=preserve_conversation)
+        if asyncio.iscoroutine(result):
+            result = await result
+        return bool(result)
+
+    async def send_to_agent(
+        self,
+        agent_id: str,
+        content: Any,
+        *,
+        message_type: str = "message",
+        metadata: Optional[Dict[str, Any]] = None,
+        channel: Optional[str] = None,
+    ) -> bool:
+        """Forward a structured message to an agent via MessageBus."""
+        return await self.core.send_to_agent(
+            agent_id,
+            content,
+            message_type=message_type,
+            metadata=metadata,
+            channel=channel,
+        )
+
+    async def send_to_human(
+        self,
+        content: Any,
+        *,
+        message_type: str = "status",
+        metadata: Optional[Dict[str, Any]] = None,
+        channel: Optional[str] = None,
+    ) -> bool:
+        """Forward a structured message to the human recipient via MessageBus."""
+        return await self.core.send_to_human(
+            content,
+            message_type=message_type,
+            metadata=metadata,
+            channel=channel,
+        )
+
+    # What if there's multiple humans? @penguin_todo_multi_humans.md 
+    # I suppose we could just have a human_id and then we can have multiple humans that way for now.
+    async def human_reply(
+        self,
+        agent_id: str,
+        content: Any,
+        *,
+        message_type: str = "message",
+        metadata: Optional[Dict[str, Any]] = None,
+        channel: Optional[str] = None,
+    ) -> bool:
+        """Send a human-authored reply to an agent via MessageBus."""
+        return await self.core.human_reply(
+            agent_id,
+            content,
+            message_type=message_type,
+            metadata=metadata,
+            channel=channel,
+        )
+
+    async def get_telemetry_summary(self) -> Dict[str, Any]:
+        """Fetch aggregated telemetry summary."""
+        return await self.core.get_telemetry_summary()
+
+    def get_conversation_history(
+        self,
+        conversation_id: str,
+        *,
+        include_system: bool = True,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve detailed conversation history annotated with agent metadata."""
+        return self.core.get_conversation_history(
+            conversation_id,
+            include_system=include_system,
+            limit=limit,
+        )
     
     # Utility Methods
     # ------------------------------------------------------------------

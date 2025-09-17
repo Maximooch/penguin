@@ -25,6 +25,7 @@ class ProtocolMessage:
     content: Any
     message_type: str = "message"  # message|action|status|event
     metadata: Dict[str, Any] = field(default_factory=dict)
+    channel: Optional[str] = None  # Logical room/channel identifier
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     session_id: Optional[str] = None
     message_id: Optional[str] = None
@@ -48,13 +49,17 @@ class MessageBus:
         self,
         target_id: str,
         handler: Callable[[ProtocolMessage], Awaitable[None]] | Callable[[ProtocolMessage], None],
+        *,
+        channel: Optional[str] = None,
     ) -> None:
-        """Register a handler for messages addressed to `target_id` (agent_id or "human")."""
-        self._handlers[target_id] = handler
+        """Register a handler for messages addressed to `target_id` within an optional channel."""
+        key = self._handler_key(target_id, channel)
+        self._handlers[key] = handler
 
-    def unregister_handler(self, target_id: str) -> None:
-        if target_id in self._handlers:
-            del self._handlers[target_id]
+    def unregister_handler(self, target_id: str, *, channel: Optional[str] = None) -> None:
+        key = self._handler_key(target_id, channel)
+        if key in self._handlers:
+            del self._handlers[key]
 
     async def send(self, msg: ProtocolMessage) -> None:
         """Dispatch `msg` to a handler if one is registered, and fan-out via EventBus."""
@@ -67,7 +72,9 @@ class MessageBus:
 
         # Deliver to specific recipient when registered
         recipient = msg.recipient or "human"
-        handler = self._handlers.get(recipient)
+        handler = self._handlers.get(self._handler_key(recipient, msg.channel))
+        if handler is None and msg.channel:
+            handler = self._handlers.get(self._handler_key(recipient, None))
         if handler is None:
             return
         try:
@@ -78,3 +85,5 @@ class MessageBus:
         except Exception as e:
             logger.error(f"MessageBus handler error for recipient '{recipient}': {e}")
 
+    def _handler_key(self, target_id: str, channel: Optional[str]) -> str:
+        return f"{target_id}:::{channel or '*'}"

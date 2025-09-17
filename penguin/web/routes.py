@@ -114,16 +114,20 @@ class ToAgentRequest(BaseModel):
     content: Any
     message_type: Optional[str] = "message"
     metadata: Optional[Dict[str, Any]] = None
+    channel: Optional[str] = None
 
 class ToHumanRequest(BaseModel):
     content: Any
     message_type: Optional[str] = "status"
     metadata: Optional[Dict[str, Any]] = None
+    channel: Optional[str] = None
 
 class HumanReplyRequest(BaseModel):
     agent_id: str
     content: Any
     message_type: Optional[str] = "message"
+    metadata: Optional[Dict[str, Any]] = None
+    channel: Optional[str] = None
 
 class CoordRoleSend(BaseModel):
     role: str
@@ -157,6 +161,7 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
     params = websocket.query_params
     agent_filter = params.get("agent_id")
     type_filter = params.get("message_type")
+    channel_filter = params.get("channel")
     include_ui = (params.get("include_ui", "true").lower() != "false")
     include_bus = (params.get("include_bus", "true").lower() != "false")
 
@@ -167,9 +172,12 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
         try:
             a_id = payload.get("agent_id") or payload.get("sender")
             m_type = payload.get("message_type") or payload.get("type")
+            channel = payload.get("channel")
             if agent_filter and a_id != agent_filter:
                 return
             if type_filter and m_type != type_filter:
+                return
+            if channel_filter and channel != channel_filter:
                 return
             await websocket.send_json({"event": event, "data": payload})
         except Exception as e:
@@ -289,7 +297,13 @@ async def register_agent(agent_id: str, req: AgentRegister, core: PenguinCore = 
 async def api_to_agent(req: ToAgentRequest, core: PenguinCore = Depends(get_core)):
     _validate_agent_id(req.agent_id)
     try:
-        ok = await core.send_to_agent(req.agent_id, req.content, message_type=req.message_type or "message", metadata=req.metadata)
+        ok = await core.send_to_agent(
+            req.agent_id,
+            req.content,
+            message_type=req.message_type or "message",
+            metadata=req.metadata,
+            channel=req.channel,
+        )
         return {"ok": ok}
     except Exception as e:
         logger.error(f"to-agent error: {e}")
@@ -298,7 +312,12 @@ async def api_to_agent(req: ToAgentRequest, core: PenguinCore = Depends(get_core
 @router.post("/api/v1/messages/to-human")
 async def api_to_human(req: ToHumanRequest, core: PenguinCore = Depends(get_core)):
     try:
-        ok = await core.send_to_human(req.content, message_type=req.message_type or "status", metadata=req.metadata)
+        ok = await core.send_to_human(
+            req.content,
+            message_type=req.message_type or "status",
+            metadata=req.metadata,
+            channel=req.channel,
+        )
         return {"ok": ok}
     except Exception as e:
         logger.error(f"to-human error: {e}")
@@ -308,7 +327,13 @@ async def api_to_human(req: ToHumanRequest, core: PenguinCore = Depends(get_core
 async def api_human_reply(req: HumanReplyRequest, core: PenguinCore = Depends(get_core)):
     _validate_agent_id(req.agent_id)
     try:
-        ok = await core.human_reply(req.agent_id, req.content, message_type=req.message_type or "message")
+        ok = await core.human_reply(
+            req.agent_id,
+            req.content,
+            message_type=req.message_type or "message",
+            metadata=req.metadata,
+            channel=req.channel,
+        )
         return {"ok": ok}
     except Exception as e:
         logger.error(f"human-reply error: {e}")
@@ -363,6 +388,25 @@ async def api_coord_role_chain(req: CoordRoleChain, core: PenguinCore = Depends(
         raise HTTPException(status_code=500, detail="Failed role-chain")
 
 
+@router.get("/api/v1/conversations/{conversation_id}/history")
+async def api_conversation_history(
+    conversation_id: str,
+    include_system: bool = True,
+    limit: Optional[int] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    try:
+        history = core.get_conversation_history(
+            conversation_id,
+            include_system=include_system,
+            limit=limit,
+        )
+        return {"conversation_id": conversation_id, "messages": history}
+    except Exception as e:
+        logger.error(f"conversation history error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve conversation history")
+
+
 @router.get("/api/v1/health")
 async def health():
     """Basic health probe."""
@@ -377,6 +421,16 @@ async def system_info(core: PenguinCore = Depends(get_core)):
     except Exception as e:
         logger.error(f"system-info error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/telemetry")
+async def telemetry_summary(core: PenguinCore = Depends(get_core)):
+    try:
+        summary = await core.get_telemetry_summary()
+        return {"telemetry": summary}
+    except Exception as e:
+        logger.error(f"telemetry error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve telemetry")
 
 
 @router.get("/api/v1/models")
