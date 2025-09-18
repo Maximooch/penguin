@@ -191,12 +191,31 @@ class ActionExecutor:
         self.process_manager = ProcessManager()
         self.current_process = None
         self.conversation_system = conversation_system
+        try:
+            logger.info(
+                "ActionExecutor initialized with ToolManager id=%s file_root=%s mode=%s",
+                hex(id(tool_manager)) if tool_manager else None,
+                getattr(tool_manager, '_file_root', None) if tool_manager else None,
+                getattr(tool_manager, 'file_root_mode', None) if tool_manager else None,
+            )
+        except Exception:
+            pass
         self._ui_event_cb = ui_event_callback
         # No direct initialization of expensive tools, we'll use tool_manager's properties
 
     async def execute_action(self, action: CodeActAction) -> str:
         """Execute an action and emit UI events if a callback is provided."""
         logger.debug(f"Attempting to execute action: {action.action_type.value}")
+        try:
+            logger.info(
+                "ActionExecutor executing %s using ToolManager id=%s file_root=%s mode=%s",
+                action.action_type.value,
+                hex(id(self.tool_manager)) if self.tool_manager else None,
+                getattr(self.tool_manager, '_file_root', None) if self.tool_manager else None,
+                getattr(self.tool_manager, 'file_root_mode', None) if self.tool_manager else None,
+            )
+        except Exception:
+            pass
         import uuid
         action_id = str(uuid.uuid4())[:8]
         
@@ -495,30 +514,104 @@ class ActionExecutor:
 
         conversation = self.conversation_system
         core = getattr(conversation, "core", None)
-        if core is None:
+
+        add_message_fn = None
+        save_fn = None
+        if callable(getattr(conversation, "add_message", None)):
+            add_message_fn = conversation.add_message
+            save_fn = getattr(conversation, "save", None)
+        elif hasattr(conversation, "conversation") and callable(
+            getattr(conversation.conversation, "add_message", None)
+        ):
+            add_message_fn = conversation.conversation.add_message
+            save_fn = getattr(conversation, "save", None)
+
+        if add_message_fn is None and core is None:
             raise RuntimeError("Penguin core unavailable for send_message action")
 
         results = []
         for target in targets:
             normalized = (target or "").strip()
             if normalized in ("", "human", "user"):
-                await core.send_to_human(
-                    content,
-                    message_type=message_type,
-                    metadata=metadata,
-                    channel=channel,
-                )
-                results.append("human")
+                delivered = False
+                if core is not None:
+                    try:
+                        delivered = await core.send_to_human(
+                            content,
+                            message_type=message_type,
+                            metadata=metadata,
+                            channel=channel,
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive logging
+                        logger.warning("send_message core send_to_human failed: %s", exc)
+                        delivered = False
+                if not delivered and add_message_fn is not None:
+                    add_message_fn(
+                        role="assistant",
+                        content=content,
+                        category=MessageCategory.DIALOG,
+                        metadata={
+                            **metadata,
+                            "via": "send_message_fallback",
+                            "target": "human",
+                            "channel": channel,
+                            "message_type": message_type,
+                            "sender": sender,
+                        },
+                        message_type=message_type,
+                        agent_id=sender,
+                        recipient_id="human",
+                    )
+                    if callable(save_fn):
+                        try:
+                            save_fn()
+                        except Exception:  # pragma: no cover - best effort
+                            logger.debug("send_message fallback save failed", exc_info=True)
+                    results.append("human (logged)")
+                else:
+                    results.append("human")
             else:
-                await core.route_message(
-                    normalized,
-                    content,
-                    message_type=message_type,
-                    metadata=metadata,
-                    agent_id=sender,
-                    channel=channel,
-                )
-                results.append(normalized)
+                delivered = False
+                if core is not None:
+                    try:
+                        delivered = await core.route_message(
+                            normalized,
+                            content,
+                            message_type=message_type,
+                            metadata=metadata,
+                            agent_id=sender,
+                            channel=channel,
+                        )
+                    except Exception as exc:  # pragma: no cover - defensive logging
+                        logger.warning("send_message core route_message failed: %s", exc)
+                        delivered = False
+                if not delivered and add_message_fn is not None:
+                    add_message_fn(
+                        role="assistant",
+                        content=content,
+                        category=MessageCategory.DIALOG,
+                        metadata={
+                            **metadata,
+                            "via": "send_message_fallback",
+                            "target": normalized,
+                            "channel": channel,
+                            "message_type": message_type,
+                            "sender": sender,
+                        },
+                        message_type=message_type,
+                        agent_id=sender,
+                        recipient_id=normalized,
+                    )
+                    if callable(save_fn):
+                        try:
+                            save_fn()
+                        except Exception:  # pragma: no cover - best effort
+                            logger.debug("send_message fallback save failed", exc_info=True)
+                    results.append(f"{normalized} (logged)")
+                elif delivered:
+                    results.append(normalized)
+                else:
+                    results.append(f"{normalized} (failed)")
 
         return f"Sent message to {', '.join(results)}"
 
@@ -1150,14 +1243,26 @@ class ActionExecutor:
 
     def _apply_diff(self, params: str) -> str:
         """Apply a diff to edit a file. Format: file_path:diff_content:backup"""
-        parts = params.split(":", 2)
-        if len(parts) < 2:
+        first_sep = params.find(":")
+        if first_sep == -1:
             return "Error: Need file path and diff content"
-        
-        file_path = parts[0].strip()
-        diff_content = parts[1]  # Don't strip - diff content has important formatting
-        backup = parts[2].strip().lower() == "true" if len(parts) > 2 else True
-        
+
+        file_path = params[:first_sep].strip()
+        remainder = params[first_sep + 1 :]
+        if not file_path or not remainder:
+            return "Error: Need file path and diff content"
+
+        backup = True
+        diff_content = remainder
+
+        # Optional backup flag can be appended as :true or :false with no newline.
+        if ":" in remainder:
+            diff_part, flag = remainder.rsplit(":", 1)
+            flag_stripped = flag.strip().lower()
+            if flag_stripped in {"true", "false"} and "\n" not in flag and "\r" not in flag:
+                backup = flag_stripped == "true"
+                diff_content = diff_part
+
         return self.tool_manager.execute_tool("apply_diff", {
             "file_path": file_path,
             "diff_content": diff_content,

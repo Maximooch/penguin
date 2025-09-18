@@ -35,6 +35,15 @@ class PenguinInterface:
         
         # Initialize with safe defaults
         try:
+            logging.getLogger(__name__).info(
+                "PenguinInterface using ToolManager id=%s file_root=%s mode=%s",
+                hex(id(core.tool_manager)) if getattr(core, 'tool_manager', None) else None,
+                getattr(core.tool_manager, '_file_root', None) if getattr(core, 'tool_manager', None) else None,
+                getattr(core.tool_manager, 'file_root_mode', None) if getattr(core, 'tool_manager', None) else None,
+            )
+        except Exception:
+            pass
+        try:
             # Delay streaming setting initialisation until model_config is available
             if hasattr(self.core, 'model_config') and self.core.model_config is not None:
                 self._initialize_streaming_settings()

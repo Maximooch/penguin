@@ -11,6 +11,7 @@ __pycache__/
 
 # Testing errors
 
+errors_log/
 tests/errors_log/
 # Embeddings
 embeddings/

@@ -67,13 +67,22 @@ class ToolManager:
             self.config = config
             self.log_error = log_error_func
             self.fast_startup = fast_startup
-            # Resolve the active project root (prefer CWD/git-root) instead of workspace
-            try:
-                prj_root, _ws_root, *_ = get_allowed_roots()
-                self.project_root = str(prj_root)
-            except Exception:
-                # Fallback to current working directory
-                self.project_root = os.getcwd()
+            # Resolve the active project root (prefer env override, then git-root)
+            project_root_env = os.environ.get('PENGUIN_PROJECT_ROOT')
+            if project_root_env:
+                try:
+                    self.project_root = str(Path(project_root_env).expanduser().resolve())
+                    logger.info("ToolManager env override project_root=%s", self.project_root)
+                except Exception:
+                    logger.warning("Invalid PENGUIN_PROJECT_ROOT=%s; falling back to auto-detect", project_root_env)
+                    project_root_env = None
+            if not project_root_env:
+                try:
+                    prj_root, _ws_root, *_ = get_allowed_roots()
+                    self.project_root = str(prj_root)
+                except Exception:
+                    # Fallback to current working directory
+                    self.project_root = os.getcwd()
             # Determine active file root (project or workspace)
             self.workspace_root = str(WORKSPACE_PATH)
             root_pref_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
@@ -82,6 +91,13 @@ class ToolManager:
             else:
                 self.file_root_mode = get_default_write_root()
             self._file_root = self.project_root if self.file_root_mode == 'project' else self.workspace_root
+            logger.info(
+                "ToolManager init: project_root=%s workspace_root=%s mode=%s file_root=%s",
+                self.project_root,
+                self.workspace_root,
+                self.file_root_mode,
+                self._file_root,
+            )
             
             # Track what's been initialized - expanded for all tools
             self._lazy_initialized = {
@@ -1273,6 +1289,39 @@ class ToolManager:
         except Exception:
             return f"success={result.success}, edited={len(result.files_edited)}, failed={len(result.files_failed)}"
 
+    def set_project_root(self, project_root: Union[str, Path]) -> str:
+        """Point the "project" root at a new directory (e.g., workspace project)."""
+        try:
+            resolved = Path(project_root).expanduser().resolve()
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Invalid project root '{project_root}': {exc}") from exc
+
+        if not resolved.exists():
+            raise ValueError(f"Project root does not exist: {resolved}")
+        if not resolved.is_dir():
+            raise ValueError(f"Project root must be a directory: {resolved}")
+
+        self.project_root = str(resolved)
+        logger.info("ToolManager project root -> %s", self.project_root)
+        # Inform path_utils about the new logical cwd so security checks allow it.
+        try:
+            os.environ['PENGUIN_CWD'] = self.project_root
+        except Exception:  # pragma: no cover - best effort
+            pass
+
+        if self.file_root_mode == 'project':
+            self._file_root = self.project_root
+            logger.info("ToolManager file root now %s (mode=project)", self._file_root)
+
+        # Refresh file map so listings reflect the new root immediately.
+        try:
+            self._file_map = FileMap(self._file_root)
+            self._lazy_initialized['file_map'] = True
+        except Exception:  # pragma: no cover - lazily rebuild on first access
+            self._lazy_initialized['file_map'] = False
+
+        return f"Project root set to {self.project_root}"
+
     def set_execution_root(self, mode: str) -> str:
         """Switch active execution root between 'project' and 'workspace'."""
         mode_l = (mode or '').lower()
@@ -1280,9 +1329,15 @@ class ToolManager:
             return f"Invalid root mode '{mode}'. Use 'project' or 'workspace'."
         self.file_root_mode = mode_l
         self._file_root = self.project_root if mode_l == 'project' else self.workspace_root
+        logger.info(
+            "ToolManager execution root set to %s (@ %s)",
+            self.file_root_mode,
+            self._file_root,
+        )
         # Update process-wide default write root so support.create_file/create_folder honor policy
         try:
             os.environ['PENGUIN_WRITE_ROOT'] = mode_l
+            os.environ['PENGUIN_CWD'] = self._file_root
         except Exception:
             pass
         # Update notebook executor directory if loaded

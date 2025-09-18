@@ -1,5 +1,6 @@
 import base64
 import difflib
+import logging
 import subprocess
 import tempfile
 import io
@@ -198,6 +199,12 @@ def list_files_filtered(path=".", ignore_patterns=None, group_by_type=False, sho
         
         # Clear feedback about what path we're actually listing
         print(f"Listing files in: {target_path}")
+        try:
+            logging.getLogger(__name__).info(
+                "list_files_filtered root=%s path=%s", workspace_path, target_path
+            )
+        except Exception:
+            pass
         
         if not target_path.exists():
             return f"Error: Directory does not exist: {target_path}"
@@ -754,7 +761,7 @@ def _apply_unified_diff(original_content, diff_content):
             return {"error": f"Invalid hunk header: {header}"}
         o_start = int(m.group('o_start')) - 1
         o_cnt = int(m.group('o_cnt') or '1')
-        # new range not used for application, but parsed for completeness
+        n_cnt = int(m.group('n_cnt') or '1')
 
         idx += 1
         ops = []
@@ -781,32 +788,57 @@ def _apply_unified_diff(original_content, diff_content):
             else:
                 return {"error": f"Unexpected diff line: {line}"}
             idx += 1
-        hunks.append((o_start, o_cnt, ops))
+        hunks.append((o_start, o_cnt, n_cnt, ops))
 
     # Apply hunks
     result = list(orig_lines)
-    for o_start, o_cnt, ops in reversed(hunks):
+    for o_start, o_cnt, n_cnt, ops in reversed(hunks):
         # Compute expected original slice from ops (context + deletions only)
         expected_old = []
+        lines_needed = o_cnt
         for typ, txt in ops:
-            if typ in ('context', 'del'):
+            if typ in ('context', 'del') and lines_needed > 0:
                 # Re-add newline to align with keepends in orig_lines
                 expected_old.append(txt + '\n')
+                lines_needed -= 1
         # Slice from original
         old_slice = result[o_start:o_start + o_cnt]
         # Compare ignoring trailing newline differences which diffs sometimes elide
         def _norm(seq):
             return [s.rstrip('\r\n') for s in seq]
-        if _norm(old_slice) != _norm(expected_old):
-            return {"error": "Context mismatch while applying diff (file changed since diff was generated)"}
 
-        # Build replacement slice (context + additions)
+        expected_norm = _norm(expected_old)
+        old_norm = _norm(old_slice)
+        if old_norm != expected_norm:
+            # Fallback: search for the expected block elsewhere in the file in case
+            # the hunk header ranges are off by leading context lines.
+            norm_result = [line.rstrip('\r\n') for line in result]
+            block_len = len(expected_norm)
+            found_index = None
+            if block_len:
+                for idx in range(0, len(norm_result) - block_len + 1):
+                    if norm_result[idx:idx + block_len] == expected_norm:
+                        found_index = idx
+                        break
+            if found_index is not None:
+                o_start = found_index
+                old_slice = result[o_start:o_start + o_cnt]
+                old_norm = _norm(old_slice)
+            if old_norm != expected_norm:
+                return {"error": "Context mismatch while applying diff (file changed since diff was generated)"}
+
+        # Build replacement slice limited to the stated new range length
         replacement = []
+        new_lines_needed = n_cnt
         for typ, txt in ops:
+            if new_lines_needed <= 0:
+                break
             if typ == 'context':
                 replacement.append(txt + '\n')
+                new_lines_needed -= 1
             elif typ == 'add':
                 replacement.append(txt + '\n')
+                new_lines_needed -= 1
             # deletions are omitted
 
         result[o_start:o_start + o_cnt] = replacement

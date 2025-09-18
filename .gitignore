@@ -94,6 +94,7 @@ chroma_test/
 /logs/
 penguin/logs/
 penguin/error_log/
+errors_log/
 
 # Ignore the notes folder in penguin
 penguin/notes/

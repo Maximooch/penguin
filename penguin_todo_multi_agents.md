@@ -23,6 +23,8 @@ This document tracks the remaining work to reach robust multi-agent and sub-agen
 - [x] Implement coordinator strategies (round robin, role chain, plan-driven) as first-class, configurable options instead of demo methods only. *(Coordinator now exposes selection helpers, broadcasts, and lite-agent registration.)*
 - [x] Introduce "lite" agents that can be spawned as limited-capability tools (e.g., read-only analyzers) and invoked from the coordinator or tool manager. *(Lite agents can be registered with executable handlers and triggered when no full agent is available.)*
 - [ ] Clarify and document how parent ↔ sub-agent conversations progress: specify the message flow (synchronous vs. event-driven), ordering guarantees, and how results are merged.
+- [ ] Fix planner → implementer handoff so file paths and behavior specs stay consistent (e.g., live_agents_demo, empty-input policy).
+- [ ] Align planner, implementer, and QA task specs to prevent conflicting requirements within one run.
 
 ## Phase 3 – Communication Fabric & Persistence
 - [x] Decide on channel semantics for the MessageBus (rooms, topics, or per-agent queues) and implement channel identifiers if needed. *(MessageBus now supports channel-aware handlers and filtering.)*
@@ -30,6 +32,8 @@ This document tracks the remaining work to reach robust multi-agent and sub-agen
 - [x] Provide APIs to retrieve multi-agent conversation logs, including sub-agent contributions, for CLI/TUI/Web displays. *(Core, client, and REST now expose conversation history endpoints.)*
 - [x] Ensure message envelopes capture provenance for sub-agent-originated messages (who spawned them, delegated context, etc.). *(ProtocolMessage includes channel + metadata; history surfaces agent/recipient/message_type details.)*
 - [x] Instrument telemetry (conversation logs, runtime diagnostics, delegation events) and surface it through a local API/dashboard that Link or future web UIs can consume; real-time dashboards trump raw CLI output when feasible. *(Telemetry collector + `/api/v1/telemetry` ready; next step is rich visualization.)*
+- [x] Restore ActionXML `<send_message>` fallback when Penguin core is absent so agents can post status instead of raising.
+- [x] Make apply_diff tolerate absolute paths or enforce relative ones to stop context-mismatch failures.
 
 ## Phase 4 – UI/UX Surfaces
 - [ ] Update the TUI/CLI to list registered agents and sub-agents, with commands to inspect their state and switch personas interactively.

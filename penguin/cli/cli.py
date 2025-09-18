@@ -124,7 +124,7 @@ from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
 from penguin.utils.logs import setup_logger
 from penguin.cli.interface import PenguinInterface
-from penguin.config import Config # Import Config type for type hinting
+from penguin.config import Config, WORKSPACE_PATH # Import Config type for type hinting
 from penguin.project.manager import ProjectManager
 from penguin.project.spec_parser import parse_project_specification_from_markdown
 from penguin.project.workflow_orchestrator import WorkflowOrchestrator
@@ -516,7 +516,7 @@ def main_entry(
         except Exception:
             try:
                 # Add this directory to sys.path so `old_cli` can be imported as a sibling
-                import sys, os
+                import sys
                 sys.path.insert(0, os.path.dirname(__file__))
                 from old_cli import app as old_app  # sibling import
             except Exception:
@@ -535,6 +535,44 @@ def main_entry(
             pass
         old_app()
         raise typer.Exit()
+
+    # Preconfigure environment for root/project overrides so that even
+    # early-return paths (e.g. launching the TUI) honour the requested roots.
+    resolved_project_path: Optional[Path] = None
+    if project:
+        # Try as-is, then workspace/projects/<name>
+        candidates = []
+        try:
+            candidates.append(Path(project).expanduser())
+        except Exception:
+            pass
+        candidates.append(Path(WORKSPACE_PATH) / "projects" / project)
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_dir():
+                    resolved_project_path = candidate.resolve()
+                    os.environ['PENGUIN_PROJECT_ROOT'] = str(resolved_project_path)
+                    os.environ.setdefault('PENGUIN_CWD', str(resolved_project_path))
+                    logger.info("CLI env: PENGUIN_PROJECT_ROOT=%s", resolved_project_path)
+                    break
+            except Exception:
+                continue
+
+    if root:
+        root_mode = root.lower()
+        if root_mode in ('project', 'workspace'):
+            os.environ['PENGUIN_WRITE_ROOT'] = root_mode
+            if root_mode == 'workspace':
+                os.environ['PENGUIN_CWD'] = str(WORKSPACE_PATH)
+            elif root_mode == 'project' and resolved_project_path is not None:
+                os.environ['PENGUIN_CWD'] = str(resolved_project_path)
+            logger.info(
+                "CLI env: PENGUIN_WRITE_ROOT=%s PENGUIN_CWD=%s",
+                root_mode,
+                os.environ.get('PENGUIN_CWD'),
+            )
+        else:
+            console.print(f"[yellow]Warning: unknown root '{root}'. Expected 'project' or 'workspace'.[/yellow]")
 
     # Default-to-TUI behavior: if no headless flags/subcommands → launch TUI
     headless_flags = any([
@@ -609,14 +647,78 @@ def main_entry(
             console.print("Please check logs for more details.")
             raise typer.Exit(code=1)
 
-        # Apply execution root toggle if requested
         global _tool_manager
+
+        logger.info(
+            "CLI args resolved: root=%s project=%s prompt=%s run_task=%s",
+            root,
+            project,
+            bool(prompt),
+            run_task,
+        )
+        try:
+            console.print(
+                f"[dim]CLI args resolved root={root} project={project} prompt={'set' if prompt else 'none'} run={run_task}[/dim]"
+            )
+        except Exception:
+            pass
+
+        # Bind tool manager to the requested project workspace, if provided
+        if project:
+            try:
+                project_path_override: Optional[Path] = None
+                pm = getattr(_core, "project_manager", None)
+                if pm:
+                    try:
+                        project_obj = await pm.get_project_async(project)
+                    except Exception:
+                        project_obj = None
+                    if not project_obj:
+                        loop = asyncio.get_running_loop()
+                        project_obj = await loop.run_in_executor(None, pm.get_project_by_name, project)
+                    if not project_obj:
+                        loop = asyncio.get_running_loop()
+                        project_obj = await loop.run_in_executor(None, pm.get_project, project)
+                    if project_obj and getattr(project_obj, "workspace_path", None):
+                        project_path_override = Path(project_obj.workspace_path)
+
+                if project_path_override is None:
+                    candidate = Path(_tool_manager.workspace_root) / "projects" / project
+                    if candidate.exists():
+                        project_path_override = candidate
+                    else:
+                        direct = Path(project).expanduser()
+                        if direct.exists():
+                            project_path_override = direct
+
+                if project_path_override is not None:
+                    msg = _tool_manager.set_project_root(project_path_override)
+                    console.print(f"[dim]{msg}[/dim]")
+                else:
+                    console.print(f"[yellow]Warning: could not resolve project '{project}' workspace; using default root.[/yellow]")
+            except Exception as e:
+                console.print(f"[yellow]Warning: failed to configure project root '{project}': {e}[/yellow]")
+
+        # Apply execution root toggle if requested
         if root:
             try:
                 msg = _tool_manager.set_execution_root(root)
                 console.print(f"[dim]{msg}[/dim]")
             except Exception as e:
                 console.print(f"[yellow]Warning: failed to set execution root: {e}[/yellow]")
+
+        # Log the resolved roots for diagnostics
+        try:
+            logger.info(
+                "CLI ToolManager id=%s mode=%s file_root=%s project_root=%s workspace_root=%s",
+                hex(id(_tool_manager)) if _tool_manager else None,
+                getattr(_tool_manager, 'file_root_mode', None),
+                getattr(_tool_manager, '_file_root', None),
+                getattr(_tool_manager, 'project_root', None),
+                getattr(_tool_manager, 'workspace_root', None),
+            )
+        except Exception:
+            pass
 
         # Always show the current execution root for clarity
         try:
