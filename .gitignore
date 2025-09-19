@@ -99,6 +99,9 @@ errors_log/
 # Ignore the notes folder in penguin
 penguin/notes/
 
+# Ignore
+ignore/
+
 # Ignores the entire example folder, mostly for testing purposes
 penguin/example/
 penguin/codeact/ 

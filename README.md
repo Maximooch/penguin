@@ -1,11 +1,27 @@
-[![Penguin](https://img.shields.io/badge/🐧-Penguin-00A7E1?style=for-the-badge&logoColor=white)](https://github.com/maximooch/penguin)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+```
+ooooooooo.                                                 o8o              
+`888   `Y88.                                               `"'              
+ 888   .d88'  .ooooo.  ooo. .oo.    .oooooooo oooo  oooo  oooo  ooo. .oo.   
+ 888ooo88P'  d88' `88b `888P"Y88b  888' `88b  `888  `888  `888  `888P"Y88b  
+ 888         888ooo888  888   888  888   888   888   888   888   888   888  
+ 888         888    .o  888   888  `88bod8P'   888   888   888   888   888  
+o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o 
+                                   d"     YD                                
+                                   "Y88888P'                                
+                                         
+```
+
+<!-- [![Penguin](https://img.shields.io/badge/🐧-Penguin-00A7E1?style=for-the-badge&logoColor=white)](https://github.com/maximooch/penguin)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/) -->
 [![PyPI version](https://img.shields.io/pypi/v/penguin-ai.svg)](https://pypi.org/project/penguin-ai/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![GitHub Actions](https://img.shields.io/github/actions/workflow/status/Maximooch/penguin/publish.yml?branch=main)](https://github.com/Maximooch/penguin/actions)
 [![Documentation Status](https://img.shields.io/badge/docs-latest-brightgreen.svg)](https://penguin-rho.vercel.app)
 [![Downloads](https://img.shields.io/pypi/dm/penguin-ai.svg)](https://pypi.org/project/penguin-ai/)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
+
+
+To get a quick understanding of the codebase, DeepWiki is reccommended (note it's ~90% accurate):
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Maximooch/penguin)
 
@@ -26,7 +42,8 @@
 
 ## Overview
 
-Penguin is an autonomous software engineering agent that goes beyond code completion—it manages entire projects from planning to execution. Unlike other AI coding assistants that require constant supervision, Penguin features built-in project management, autonomous task execution, and a modular architecture that handles everything from writing code to coordinating complex development workflows. Think of it as your AI software engineer that can take a project spec and deliver working software, not just code snippets.
+Penguin is a modular, open-source AI software engineer that combines autonomous code generation with project management, task coordination, and multi-agent orchestration to take projects from spec to implementation.
+
 
 ## Quick Start
 ```bash
@@ -47,7 +64,10 @@ penguin              # Interactive CLI chat
 penguin-web          # Web API server (if [web] installed)
 ```
 
-## Development Status
+<!-- Actual roadmap is a #TODO: -->
+<!-- # TODO: Actual roadmap -->
+
+<!-- ## Development Status
 
 ### ✅ **Phase 2 Complete: Developer Preview (v0.2.x)**
 - **Core Architecture**: Modular namespaces (`penguin.cli`, `penguin.web`, `penguin.project`)
@@ -86,60 +106,90 @@ penguin-web          # Web API server (if [web] installed)
 - **Multi-Agent Systems**: Coordinated AI agents for complex projects  
 - **Plugin Ecosystem**: Third-party tool integration and marketplace
 
-[View Full Roadmap →](https://penguin-rho.vercel.app/docs/advanced/roadmap) • [Performance Tracking →](https://github.com/maximooch/penguin/blob/main/test_startup_performance.py)
+[View Full Roadmap →](https://penguin-rho.vercel.app/docs/advanced/roadmap) • [Performance Tracking →](https://github.com/maximooch/penguin/blob/main/test_startup_performance.py) -->
 
 <!-- For now link roadmap to future considerations, or the Penguin super roadmap file. Then later on have a github projects roadmap? -->
 
-# Penguin AI Assistant
+# Penguin
 
-Penguin is a modular, extensible AI coding assistant powered by LLMs, enabling support for multiple AI models thanks to LiteLLM. It functions as an intelligent software engineer that can assist with coding tasks while maintaining its own code execution, memory tools, and workspace environment.
+Penguin is a modular, extensible AI coding assistant powered by LLMs. It functions as an intelligent software engineer that can assist with coding tasks while maintaining its own code execution, memory tools, and workspace environment. 
+
+   It is designed for full-lifecycle software development. It goes beyond code generation by managing tasks, coordinating sub-agents, tracking project progress, and executing long-running objectives with minimal human oversight. Its architecture includes persistent memory, a rich toolchain, CLI and Web interfaces, and a SQLite-backed project management system. Penguin enables scalable, intelligent workflows across complex codebases and development environments, making it a serious upgrade from prompt-based coding assistants.
 
 ## Key Features
 
-### **Cognitive Architecture**
-Penguin implements a sophisticated multi-system cognitive architecture:
+### Core Orchestration
+- Multi-agent runtime with planner/implementer/QA personas, lightweight "lite" agents, and
+  per-agent routing through `agent_id`.
+- Scoped sub-agent delegation that inherits context, tools, and memory while enforcing token
+  and permission boundaries.
+- Engine-managed reasoning loop that powers chat and Run Mode with configurable iterations and
+  pluggable stop conditions (token budget, wall clock, external callbacks).
+- MessageBus and telemetry streams that tag every event with agent/channel metadata for CLI,
+  TUI, web, and dashboard consumers.
 
-- **Reasoning & Response Generation**: Advanced prompt engineering with context-aware decision making
-- **Persistent Memory Management**: Conversation history with cross-session knowledge retention  
-- **Pluggable Memory Providers**: Support for SQLite, FAISS, LanceDB, and ChromaDB backends
-- **Tool & Action Processing**: Modular system with 15+ built-in tools and extensible action handlers
-- **Task Coordination**: SQLite-backed project management with dependency tracking
-- **Performance Monitoring**: Built-in diagnostics, error tracking, and execution metrics
+### Conversation & Memory Systems
+- ConversationManager that blends session persistence, auto-save, context loading, checkpoints,
+  and snapshot/restore support.
+- ContextWindowManager with category-based token budgets, multimodal trimming, and live usage
+  reporting to keep histories within model limits. Allowing for theoretically infinite sessions.
+- Shared memory layer with declarative notes, summary notes, and retrieval backed by SQLite plus
+  pluggable vector providers (FAISS, LanceDB, Chroma, others).
 
-### **Development Capabilities**
-Comprehensive coding assistance and automation:
+### Development Tools & Workspace Automation
+- Workspace-aware toolchain that respects project/workspace roots for file edits, diffs,
+  pattern-based refactors, and repository operations.
+- LLM-driven scaffolding for code, documentation, tests, and refactoring guidance.
+- Analysis and execution utilities such as AST inspection, dependency mapping, linting,
+  notebook-based execution, grep/workspace search, and Perplexity/web search integrations.
+- Browser automation via headless navigator and PyDoll tools for scripted browsing and capture,
+  plus repository helpers to scaffold PRs, manage branches, and push changes.
 
-- **Code Execution**: IPython notebook integration for running, testing, and debugging code
-- **Project Scaffolding**: Automated project structure generation with best practices
-- **Code Generation**: Documentation, unit tests, and architectural recommendations
-- **File System Operations**: Complete file management (create, read, write, search, organize)
-- **Web Search Integration**: Real-time information retrieval during conversations
-- **Browser Use**: PyDoll integration for web interaction and Chrome debugging
-- **Debugging & Analysis**: Intelligent error detection and resolution suggestions
+### Project & Task Management
+- SQLite-backed ProjectManager with ACID transactions, dependency graphs, resource budgets,
+  execution tracking, and event bus integration.
+- CLI, Python, and web surfaces for project/task CRUD, status tracking, budgeting, and
+  autonomous execution via Run Mode.
 
-### **Project Management**
-Enterprise-grade project coordination:
+### Interfaces & Integrations
+- Rich CLI with interactive TUI, setup wizard, and >20 commands covering projects, memory, and
+  tooling.
+- Async Python client (`PenguinClient`) that offers streaming chat, checkpoint workflows, model
+  switching, and multi-agent routing.
+- FastAPI web server with REST + WebSocket streaming endpoints and an embeddable `PenguinAPI`
+  for custom applications.
+- Dashboard hooks and telemetry endpoints for observability integrations.
 
-- **SQLite-backed Storage**: ACID transactions for reliable project and task data
-- **Task Dependencies**: Complex workflow management with dependency graphs
-- **Progress Tracking**: Real-time status updates and detailed execution history
-- **Resource Management**: Token budgets, time limits, and tool constraints per task
-- **Workspace Organization**: Structured file and project management
-- **Memory Search**: Semantic search across conversations and project history
+### Model & Provider Support
+- Native and gateway adapters for OpenAI, Anthropic, OpenRouter, and LiteLLM-supported
+  backends (Azure, Bedrock, DeepSeek, Ollama, and more).
+- Runtime model/provider switching with layered configuration, capability detection, and
+  multimodal (vision/image) support.
+- Provider-aware token counting, cost reporting, and budgets exposed through the engine and
+  telemetry APIs.
 
-### **Multi-Interface Support**
-Flexible interaction methods:
+### Performance, Diagnostics & Governance
+- Fast-startup path with lazy tool loading, deferred memory indexing, and background workers to
+  reduce cold-start latency.
+- Structured diagnostics covering startup profiling, operation timing, token usage, and error
+  tracing.
+- Telemetry collector aggregating message, agent, task, and token metrics for dashboards and
+  alerting.
+- Configurable logging, retries, and graceful error recovery across subsystems.
 
-- **Interactive CLI**: Full-featured command-line with project/task management commands
-- **Web API**: Production-ready REST/WebSocket backend (FastAPI-powered)
-- **Python Library**: Rich programmatic API for integration and automation
-- **Multi-Model Support**: OpenAI, Anthropic, OpenRouter, and local models via LiteLLM
+### Data & Context Ingestion
+- Context loader and cataloguing pipeline for PDFs, docs, and workspace artifacts so agents can
+  ground responses in project materials.
+- Memory indexing with semantic search and declarative knowledge capture integrated into the
+  conversation loop.
 
-### **Advanced Features**
-- **Automatic Checkpoints**: Conversation branching and rollback capabilities *(planned)*
-- **Plugin Architecture**: Extensible tool system for third-party integrations *(in development)*
-- **Team Collaboration**: Multi-user workspaces and shared projects *(planned)*
-- **Rich Web UI**: Complete browser interface with real-time updates *(in development)*
+### Extensibility & Configuration
+- Tool registry and plugin architecture for declarative or dynamic tool registration without
+  patching core modules.
+- Comprehensive configuration surface through `config.yml`, environment variables, and CLI
+  helpers (project/workspace roots, model defaults, streaming controls).
+- Event bus and MessageBus hooks for integrating custom services with agent lifecycle events,
+  tool invocations, and telemetry streams.
 
 ## Prerequisites
 
@@ -249,59 +299,53 @@ $ penguin-web
 
 ## Architecture
 
-Penguin uses a modular architecture with these key systems:
-- **Core**: Central coordinator between systems
-- **Cognition**: Handles reasoning and response generation
-- **Memory**: Manages context and knowledge persistence
-- **Processor**: Controls tools and actions (ToolManager, Parser (ActionManager), and utils)
-- **Task**: Coordinates projects and tasks
-- **Diagnostic**: Monitors performance
+Penguin follows a layered architecture that keeps reasoning, memory, tooling, and delivery
+surfaces loosely coupled while sharing telemetry and configuration.
 
+### Runtime Flow
+1. **Interfaces** (CLI/TUI, Python client, web API) collect user prompts or task requests.
+2. **PenguinCore** coordinates global configuration, instantiates shared services, and routes
+   work into the **Engine**.
+3. The **Engine** runs the reasoning loop: it prepares conversation state, chooses the right
+   agent (planner, implementer, QA, lite agent, or sub-agent), requests completions through the
+   `APIClient`, and dispatches tool invocations via `ActionExecutor`.
+4. Results are persisted through the **Conversation layer** (ConversationManager, SessionManager,
+   ContextWindowManager, CheckpointManager, SnapshotManager) and written back to interfaces via
+   the MessageBus or streaming callbacks.
+5. Project/task updates, memory notes, telemetry, and diagnostics are propagated to their
+   dedicated subsystems for analytics and follow-up automation.
 
-### System Design
-- Core acts as coordinator between systems
-- Each system has clear responsibilities
-- State management through hierarchical state machines
-- Event-based communication between modules
-- Memory persistence across sessions
-- Tool extensibility through plugin architecture
+### Key Subsystems
+- **Conversation Layer**: ConversationManager manages sessions, context files, checkpoints, and
+  snapshots. ContextWindowManager enforces category-based token budgets and trimming, while
+  SessionManager persists conversations under the workspace. CheckpointManager/SnapshotManager
+  provide branch/restore support.
+- **Engine & Multi-Agent Runtime**: Engine orchestrates the reasoning loop, Run Mode, and stop
+  conditions. It registers multiple agents (planner/implementer/QA/lite/sub-agents) via
+  `EngineAgent`, integrates with `MultiAgentCoordinator`, and honors per-agent configuration.
+- **Tooling & Actions**: ToolManager exposes 15+ built-in tools and lazy-loads heavy resources.
+  ActionExecutor parses tool calls, NotebookExecutor runs code in an IPython kernel, and the
+  plugin/registry system allows declarative or dynamic tool additions.
+- **Memory & Knowledge**: Declarative notes, summary notes, and semantic search live in
+  `penguin.memory`. Providers (SQLite, FAISS, LanceDB, Chroma, etc.) can be swapped or combined,
+  and background indexers keep embeddings fresh.
+- **Project & Task Orchestration**: ProjectManager provides ACID-backed CRUD, dependency graphs,
+  budgeting, execution records, and event bus hooks. WorkflowOrchestrator, ProjectTaskExecutor,
+  and ValidationManager coordinate complex project flows and Run Mode automation.
+- **Model & Provider Access**: APIClient chooses the best adapter (native SDK, LiteLLM, OpenRouter)
+  based on configuration. ModelConfig centralizes provider details, token budgets, reasoning modes,
+  and streaming preferences.
+- **Interfaces**: The Typer-based CLI powers both quick commands and the Textual TUI. The Python
+  client (`PenguinClient`) wraps PenguinCore for async automation, and the FastAPI app exposes REST
+  + WebSocket APIs plus an embeddable `PenguinAPI` class.
+- **Diagnostics & Telemetry**: Profiling helpers, startup timing, message/agent telemetry, and the
+  event bus feed dashboards, logs, and alerting. Logging is standardized via `logging` with
+  subsystem-specific loggers.
+- **Configuration**: `config.yml`, environment variables, and CLI flags converge into the Config
+  object passed through PenguinCore. Execution roots, workspace overrides, model/provider choices,
+  and feature flags are resolved hierarchically.
 
-### Key Components
-1. **Cognition System**
-   - Reasoning and response generation
-   - Model integration via LiteLLM
-   - Context management
-
-2. **Memory System**
-   - Short-term conversation memory
-   - Long-term knowledge persistence
-   - Embeddings and vector storage
-   - Pluggable providers (SQLite, file, FAISS, LanceDB, Chroma)
-   - Backup and restore utilities
-
-3. **Processor System**
-   - ToolManager: Central registry and executor for available tools
-   - ActionExecutor: Parses and routes actions to appropriate handlers
-   - NotebookExecutor: Handles code execution in IPython environment
-
-4. **Task System**
-   - Project and task coordination
-   - Workspace management
-   - File operations
-
-5. **Diagnostic System**
-   - Performance monitoring
-   - Error tracking
-   - System health checks
-
-### Development Standards (Not implemented yet)
-- Comprehensive type annotations
-- Detailed docstrings
-- High test coverage (90%+)
-- Robust exception handling
-- Extensive logging
-
-For detailed technical documentation, visit our [docs](https://penguin-rho.vercel.app).
+For deeper technical diagrams and API references, explore the [documentation site](https://penguin-rho.vercel.app).
 
 ## Contributing
 
@@ -311,7 +355,7 @@ We welcome contributions! Penguin is open source and benefits from community inv
 
 ```bash
 # 1. Fork and clone the repository
-git clone https://github.com/YOUR_USERNAME/penguin.git
+git clone https://github.com/Maximooch/penguin.git
 cd penguin/penguin
 
 # 2. Set up development environment  
@@ -341,11 +385,11 @@ pytest tests/
 - Update documentation for user-facing changes
 - Use semantic commit messages
 
-### Community
+<!-- ### Community (right now it's just me :(
 
 - [GitHub Discussions](https://github.com/Maximooch/penguin/discussions) - Questions and ideas
-- [Issues](https://github.com/Maximooch/penguin/issues) - Bug reports and feature requests  
-- [Roadmap](https://github.com/Maximooch/penguin/projects) - Development progress
+- [Issues](https://github.com/Maximooch/penguin/issues) - Bug reports and feature requests   -->
+<!-- - [Roadmap](https://github.com/Maximooch/penguin/projects) - Development progress -->
 
 For major changes, please open an issue first to discuss your approach.
 
@@ -355,22 +399,24 @@ For major changes, please open an issue first to discuss your approach.
 - **[Official Documentation](https://penguin-rho.vercel.app)** - Complete user guide and API reference
 - **[GitHub Discussions](https://github.com/Maximooch/penguin/discussions)** - Community Q&A and ideas
 - **[Examples & Tutorials](https://penguin-rho.vercel.app/docs/usage/)** - Step-by-step guides
-- **[Roadmap](https://github.com/Maximooch/penguin/projects)** - Development progress and planned features
+<!-- - **[Roadmap](https://github.com/Maximooch/penguin/projects)** - Development progress and planned features -->
 
 ### Issues & Bug Reports
 - **[Report a Bug](https://github.com/Maximooch/penguin/issues/new?template=bug_report.md)** - Something not working?
 - **[Request a Feature](https://github.com/Maximooch/penguin/issues/new?template=feature_request.md)** - Ideas for improvements
-- **[Performance Issues](https://github.com/Maximooch/penguin/blob/main/test_startup_performance.py)** - Use our performance test script
+
+<!-- TODO: Do this -->
+<!-- - **[Performance Issues](https://github.com/Maximooch/penguin/blob/main/test_startup_performance.py)** - Use our performance test script -->
 
 ### Project Status
 - **Current Version**: v0.3.3.3.post1 (Phase 3 Complete)  
-- **Active Development**: Phase 3 - Performance & Benchmarking
+- **Active Development**: Phase 3 - Multi/Sub-agents, CLI/TUI refactor, GH integration, and achieving Claude Code parity then surpassing
 - **Stability**: Core features stable, performance optimization in progress
 - **Python Support**: 3.9+ (3.10+ recommended for best performance)
 
 ### Changelog & Releases
-- **[Release Notes](https://github.com/Maximooch/penguin/releases)** - What's new in each version
-- **[Development Blog](https://penguin-rho.vercel.app/blog)** - Technical deep-dives and progress updates
+- **[Release Notes](https://github.com/Maximooch/penguin/releases)** - What's new in each version (right now it's just tags)
+- (Soon) **[Development Blog](https://penguin-rho.vercel.app/blog)** - Technical deep-dives and progress updates
 
 ## License
 
@@ -398,7 +444,7 @@ An enterprise license without the copyleft requirements is under consideration f
 - Commercial redistribution rights
 - Priority support and consulting services
 
-**Interested in enterprise licensing?** Please contact the maintainer to discuss your requirements and explore available options.
+**Interested in enterprise licensing?** Please contact me at MaximusPutnam@gmail.com to discuss your requirements and explore available options.
 
 
 
@@ -409,4 +455,3 @@ Built upon insights from:
 - [Claude-Engineer](https://github.com/Doriandarko/claude-engineer)
 - [Aider](https://github.com/paul-gauthier/aider)
 - [RawDog](https://github.com/AbanteAI/rawdog)
-

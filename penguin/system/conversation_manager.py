@@ -486,6 +486,44 @@ class ConversationManager:
         except Exception as e:
             logger.warning(f"Failed to add system note to agent '{agent_id}': {e}")
 
+    def log_delegation_event(
+        self,
+        *,
+        delegation_id: str,
+        parent_agent_id: str,
+        child_agent_id: str,
+        event: str,
+        message: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        mirror_to_child: bool = True,
+    ) -> None:
+        """Record a delegation lifecycle event in the relevant conversations."""
+
+        base_meta = {
+            "type": "delegation_event",
+            "delegation_id": delegation_id,
+            "parent_agent_id": parent_agent_id,
+            "child_agent_id": child_agent_id,
+            "event": event,
+        }
+        if metadata:
+            base_meta.update(metadata)
+
+        content = message or f"Delegation {delegation_id} ({parent_agent_id} → {child_agent_id}): {event}"
+        self.add_system_note(parent_agent_id, content, metadata=dict(base_meta))
+
+        if mirror_to_child:
+            try:
+                meta_child = dict(base_meta)
+                meta_child["audience"] = "child"
+                self.add_system_note(
+                    child_agent_id,
+                    content,
+                    metadata=meta_child,
+                )
+            except Exception:
+                logger.debug("Failed to mirror delegation event to child '%s'", child_agent_id)
+
     def agents_sharing_session(self, agent_id: str) -> List[str]:
         """Return agent IDs that share the same ConversationSystem as agent_id (including itself).
 

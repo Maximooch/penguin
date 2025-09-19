@@ -164,6 +164,18 @@ except ImportError as e:
 
 app = typer.Typer(help="Penguin AI Assistant - Your command-line AI companion.\nRun with -p/--prompt for headless mode. Without headless flags/subcommands, Penguin launches the TUI by default.")
 console = RichConsole() # Use the renamed import
+
+PENGUIN_ASCII_BANNER = r"""
+ooooooooo.                                                 o8o              
+`888   `Y88.                                               `"'              
+ 888   .d88'  .ooooo.  ooo. .oo.    .oooooooo oooo  oooo  oooo  ooo. .oo.   
+ 888ooo88P'  d88' `88b `888P"Y88b  888' `88b  `888  `888  `888  `888P"Y88b  
+ 888         888ooo888  888   888  888   888   888   888   888   888   888  
+ 888         888    .o  888   888  `88bod8P'   888   888   888   888   888  
+o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o 
+                                   d"     YD                                
+                                   "Y88888P'                                
+          """
 logger = setup_logger("penguin_cli.log") # Setup a logger for the CLI module
 
 # Project management sub-application
@@ -648,6 +660,9 @@ def main_entry(
             raise typer.Exit(code=1)
 
         global _tool_manager
+
+        if isinstance(output_format, str) and output_format.lower() == "text":
+            console.print(PENGUIN_ASCII_BANNER, style="bold cyan")
 
         logger.info(
             "CLI args resolved: root=%s project=%s prompt=%s run_task=%s",

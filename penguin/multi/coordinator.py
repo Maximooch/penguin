@@ -2,10 +2,12 @@ from __future__ import annotations
 
 """MultiAgentCoordinator enhancements for multi-agent orchestration."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 import asyncio
 import logging
+import uuid
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +28,18 @@ class LiteAgent:
     description: Optional[str] = None
 
 
+@dataclass
+class DelegationRecord:
+    id: str
+    parent_agent_id: str
+    child_agent_id: str
+    status: str = "started"
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+    summary: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
 class MultiAgentCoordinator:
     """Coordinates top-level agents, sub-agents, and lightweight helpers."""
 
@@ -35,6 +49,7 @@ class MultiAgentCoordinator:
         self._rr_index: Dict[str, int] = {}
         self.lite_agents_by_role: Dict[str, List[LiteAgent]] = {}
         self._lite_counters: Dict[str, int] = {}
+        self._delegations: Dict[str, DelegationRecord] = {}
 
     # ------------------------------------------------------------------
     # Agent lifecycle
@@ -98,6 +113,98 @@ class MultiAgentCoordinator:
             self.lite_agents_by_role[role] = [a for a in agents if a.agent_id != agent_id]
             if not self.lite_agents_by_role[role]:
                 self.lite_agents_by_role.pop(role, None)
+
+    # ------------------------------------------------------------------
+    # Delegation tracking
+    # ------------------------------------------------------------------
+
+    def start_delegation(
+        self,
+        *,
+        parent_agent_id: str,
+        child_agent_id: str,
+        summary: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        delegation_id = uuid.uuid4().hex[:12]
+        record = DelegationRecord(
+            id=delegation_id,
+            parent_agent_id=parent_agent_id,
+            child_agent_id=child_agent_id,
+            summary=summary,
+            metadata=dict(metadata or {}),
+        )
+        self._delegations[delegation_id] = record
+        self.core.conversation_manager.log_delegation_event(
+            delegation_id=delegation_id,
+            parent_agent_id=parent_agent_id,
+            child_agent_id=child_agent_id,
+            event="started",
+            message=summary,
+        )
+        logger.info(
+            "Delegation %s started (%s -> %s)",
+            delegation_id,
+            parent_agent_id,
+            child_agent_id,
+        )
+        return delegation_id
+
+    def _update_delegation(
+        self,
+        delegation_id: str,
+        *,
+        event: str,
+        message: Optional[str] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        record = self._delegations.get(delegation_id)
+        if not record:
+            logger.warning("Delegation '%s' not found for event '%s'", delegation_id, event)
+            return
+        record.status = event
+        record.updated_at = datetime.utcnow()
+        if extra_metadata:
+            record.metadata.update(extra_metadata)
+        self.core.conversation_manager.log_delegation_event(
+            delegation_id=record.id,
+            parent_agent_id=record.parent_agent_id,
+            child_agent_id=record.child_agent_id,
+            event=event,
+            message=message,
+            metadata=extra_metadata,
+        )
+
+    def complete_delegation(
+        self,
+        delegation_id: str,
+        *,
+        result_summary: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._update_delegation(
+            delegation_id,
+            event="completed",
+            message=result_summary,
+            extra_metadata=metadata,
+        )
+
+    def fail_delegation(
+        self,
+        delegation_id: str,
+        *,
+        error: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self._update_delegation(
+            delegation_id,
+            event="failed",
+            message=error,
+            extra_metadata=metadata,
+        )
+
+    def get_delegation(self, delegation_id: str) -> Optional[DelegationRecord]:
+        return self._delegations.get(delegation_id)
 
     async def _invoke_lite_agent(
         self,
@@ -178,6 +285,69 @@ class MultiAgentCoordinator:
                 if lite:
                     sent_to.append("lite")
         return sent_to
+
+    async def delegate_message(
+        self,
+        *,
+        parent_agent_id: str,
+        child_agent_id: str,
+        content: Any,
+        delegation_id: Optional[str] = None,
+        message_type: str = "message",
+        channel: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        summary: Optional[str] = None,
+    ) -> str:
+        """Send a message to a sub-agent with delegation tracking metadata."""
+
+        if delegation_id is None:
+            delegation_id = self.start_delegation(
+                parent_agent_id=parent_agent_id,
+                child_agent_id=child_agent_id,
+                summary=summary,
+                metadata=metadata,
+            )
+
+        meta = {
+            "delegation_id": delegation_id,
+            "parent_agent_id": parent_agent_id,
+            "child_agent_id": child_agent_id,
+            "delegation_event": "request_sent",
+        }
+        if metadata:
+            meta.update(metadata)
+
+        await self.core.send_to_agent(
+            child_agent_id,
+            content,
+            message_type=message_type,
+            metadata=meta,
+            channel=channel,
+        )
+
+        self._update_delegation(
+            delegation_id,
+            event="request_sent",
+            message=summary,
+            extra_metadata=metadata,
+        )
+        return delegation_id
+
+    def record_child_response(
+        self,
+        delegation_id: str,
+        *,
+        response_summary: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Log that the delegated agent produced an update/response."""
+
+        self._update_delegation(
+            delegation_id,
+            event="response_received",
+            message=response_summary,
+            extra_metadata=metadata,
+        )
 
     # ------------------------------------------------------------------
     # Workflows

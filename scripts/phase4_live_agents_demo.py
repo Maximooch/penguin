@@ -57,42 +57,33 @@ def setup_demo_project(workspace_root: Path) -> List[str]:
     tests_dir = project_dir / "tests"
 
     readme = project_dir / "README.md"
-    module_file = src_dir / "numbers.py"
-    test_file = tests_dir / "test_numbers.md"
+    module_file = src_dir / "temperature.py"
+    test_file = tests_dir / "test_temperature.md"
 
     readme_content = (
         "# Live Agents Demo\n\n"
-        "This mini-project contains a bug in `summarize_numbers` within `src/numbers.py`.\n\n"
-        "- Expected behavior: Return a dict with `count`, `sum`, `mean` for a list of numbers.\n"
-        "- Bug: When given an empty list, it raises `ValueError` instead of returning a safe summary\n"
-        "  such as `{count: 0, sum: 0, mean: 0}`.\n\n"
+        "This mini-project contains a bug in `fahrenheit_to_celsius` within `src/temperature.py`.\n\n"
+        "- Expected behavior: Convert Fahrenheit degrees to Celsius using the exact formula.\n"
+        "- Bug: The current implementation uses an approximation that is wildly inaccurate.\n\n"
         "Your task: plan, implement, and validate a fix.\n"
     )
 
     module_content = (
         "from __future__ import annotations\n\n"
-        "from typing import Dict, List\n\n"
-        "def summarize_numbers(values: List[float]) -> Dict[str, float]:\n"
-        "    \"\"\"Summarize a list of numbers.\n\n"
-        "    Expected keys: count, sum, mean.\n"
-        "    BUG: Currently raises on empty input; should return zeros.\n"
+        "def fahrenheit_to_celsius(value_f: float) -> float:\n"
+        "    \"\"\"Convert Fahrenheit to Celsius.\n\n"
+        "    Should implement the exact formula `(F - 32) * 5/9`.\n"
+        "    BUG: Currently uses an old approximation that is off by several degrees.\n"
         "    \"\"\"\n"
-        "    if not isinstance(values, list):\n"
-        "        raise TypeError(\"values must be a list\")\n\n"
-        "    # Deliberate bug: raises on empty instead of returning zeros\n"
-        "    if len(values) == 0:\n"
-        "        raise ValueError(\"values must not be empty\")\n\n"
-        "    total = sum(values)\n"
-        "    count = float(len(values))\n"
-        "    mean = total / count\n"
-        "    return {\"count\": count, \"sum\": float(total), \"mean\": float(mean)}\n"
+        "    # Deliberate bug: legacy rule of thumb\n"
+        "    return (value_f - 30) / 2\n"
     )
 
     test_content = (
         "# Validation Notes for QA\n\n"
-        "- `summarize_numbers([1, 2, 3])` should yield `{count: 3, sum: 6, mean: 2}`.\n"
-        "- `summarize_numbers([])` should not raise; expect `{count: 0, sum: 0, mean: 0}`.\n"
-        "- Non-list input should raise `TypeError`.\n"
+        "- `fahrenheit_to_celsius(32)` should return `0`.\n"
+        "- `fahrenheit_to_celsius(212)` should return `100`.\n"
+        "- Check negative values (e.g., `-40` stays `-40`) and fractional inputs.\n"
     )
 
     _write_text(readme, readme_content)
@@ -138,7 +129,7 @@ async def main() -> None:
         # Set up a minimal demo project and load its files into context
         context_files = setup_demo_project(workspace)
         project_root = Path(context_files[0]).parent.parent  # projects/live_agents_demo
-        module_path = project_root / "src" / "numbers.py"
+        module_path = project_root / "src" / "temperature.py"
         readme_path = project_root / "README.md"
         print(f"Demo project base_dir: {project_root}")
         await client.load_context_files(context_files)
@@ -154,7 +145,7 @@ async def main() -> None:
             "planner",
             (
                 "We have a workspace project at projects/live_agents_demo. "
-                "In src/numbers.py, summarize_numbers([]) raises ValueError. "
+                "In src/temperature.py, fahrenheit_to_celsius uses an inaccurate shortcut. "
                 "Outline a concise remediation plan with steps (planning only)."
             ),
         )
@@ -175,10 +166,10 @@ async def main() -> None:
                 "You must produce ActionXML to make changes.\n\n"
                 f"Base directory (operate ONLY under this path): {project_root}\n"
                 f"Target file: {module_path}\n"
-                "Goal: empty list should return {count: 0, sum: 0, mean: 0} and not raise.\n\n"
+                "Goal: apply the exact conversion formula (F - 32) * 5/9 and add any guards if needed.\n\n"
                 "Steps:\n"
                 f"1) Read the file (use <enhanced_read>{module_path}:true:400</enhanced_read>).\n"
-                "2) Apply a minimal diff to implement the behavior (use <apply_diff>...</apply_diff> with a unified diff).\n"
+                "2) Apply a minimal diff to replace the approximation with the precise formula and update the docstring.\n"
                 f"3) Optionally add/update a small README note ({readme_path}) if needed.\n\n"
                 "Only communicate via ActionXML blocks so tools execute."
             ),
@@ -194,7 +185,7 @@ async def main() -> None:
             client,
             "qa",
             (
-                "Validate that summarize_numbers([]) now returns zeros and does not raise. "
+                "Validate that fahrenheit_to_celsius now matches the exact formula for typical test points. "
                 "List manual or automated checks you would run to confirm no regressions."
             ),
         )
