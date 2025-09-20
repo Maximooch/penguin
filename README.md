@@ -21,7 +21,7 @@ o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 
-To get a quick understanding of the codebase, DeepWiki is reccommended (note it's ~90% accurate):
+To get a quick understanding of the codebase, DeepWiki is recommended (note: it's ~90% accurate):
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Maximooch/penguin)
 
@@ -114,7 +114,7 @@ penguin-web          # Web API server (if [web] installed)
 
 Penguin is a modular, extensible AI coding assistant powered by LLMs. It functions as an intelligent software engineer that can assist with coding tasks while maintaining its own code execution, memory tools, and workspace environment. 
 
-   It is designed for full-lifecycle software development. It goes beyond code generation by managing tasks, coordinating sub-agents, tracking project progress, and executing long-running objectives with minimal human oversight. Its architecture includes persistent memory, a rich toolchain, CLI and Web interfaces, and a SQLite-backed project management system. Penguin enables scalable, intelligent workflows across complex codebases and development environments, making it a serious upgrade from prompt-based coding assistants.
+   It is designed for full-lifecycle software development. It goes beyond code generation by managing tasks, coordinating sub-agents, tracking project progress, and executing long-running objectives with minimal human oversight. Its architecture includes persistent memory, a rich toolchain, CLI and Web interfaces, and an SQLite-backed project management system. Penguin enables scalable, intelligent workflows across complex codebases and development environments, making it a serious upgrade from prompt-based coding assistants.
 
 ## Key Features
 
@@ -132,7 +132,7 @@ Penguin is a modular, extensible AI coding assistant powered by LLMs. It functio
 - ConversationManager that blends session persistence, auto-save, context loading, checkpoints,
   and snapshot/restore support.
 - ContextWindowManager with category-based token budgets, multimodal trimming, and live usage
-  reporting to keep histories within model limits. Allowing for theoretically infinite sessions.
+  reporting to keep histories within model limits, allowing for theoretically infinite sessions.
 - Shared memory layer with declarative notes, summary notes, and retrieval backed by SQLite plus
   pluggable vector providers (FAISS, LanceDB, Chroma, others).
 
@@ -410,7 +410,7 @@ For major changes, please open an issue first to discuss your approach.
 
 ### Project Status
 - **Current Version**: v0.3.3.3.post1 (Phase 3 Complete)  
-- **Active Development**: Phase 3 - Multi/Sub-agents, CLI/TUI refactor, GH integration, and achieving Claude Code parity then surpassing
+- **Active Development**: Phase 3 - Multi/Sub-agents, CLI/TUI refactor, GH integration, and achieving Claude Code parity, then surpassing it
 - **Stability**: Core features stable, performance optimization in progress
 - **Python Support**: 3.9+ (3.10+ recommended for best performance)
 
