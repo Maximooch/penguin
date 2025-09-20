@@ -2,10 +2,10 @@
 
 ## Overview
 
-PyDoll Browser Tools provide a webdriver-free alternative to browser automation in Penguin. Unlike traditional browser automation tools like Selenium or Playwright that require a separate WebDriver, PyDoll connects directly to browsers using their DevTools Protocol, providing several advantages:
+PyDoll Browser Tools provide a WebDriver-free alternative to browser automation in Penguin. Unlike traditional browser automation tools such as Selenium or Playwright that require a separate WebDriver, PyDoll connects directly to browsers using their DevTools Protocol, offering several advantages:
 
 1. **No WebDriver dependency**: Eliminates compatibility issues between browser versions and WebDrivers
-2. **Native Captcha Bypass**: Better handles Cloudflare Turnstile and reCAPTCHA v3 challenges
+2. **Native CAPTCHA bypass**: Better handles Cloudflare Turnstile and reCAPTCHA v3 challenges
 3. **Asynchronous performance**: Built with Python's asyncio for efficient operations
 4. **Human-like interactions**: More realistic browsing patterns that avoid detection
 5. **Simpler setup**: Less configuration and fewer external dependencies
@@ -18,7 +18,7 @@ PyDoll is automatically installed when you install Penguin. If you need to insta
 pip install pydoll-python
 ```
 
-PyDoll has minimal dependencies (websockets, aiohttp, aiofiles, bs4).
+PyDoll has minimal dependencies (`websockets`, `aiohttp`, `aiofiles`, `bs4`).
 
 ## Available Tools
 
@@ -58,7 +58,7 @@ result = await pydoll_browser_screenshot_tool.execute()
 
 ## Usage in Penguin Core
 
-When using these tools in Penguin, the tools are available through the ToolManager:
+When using these tools in Penguin, they are available through the `ToolManager`:
 
 ```python
 # Example inside a function
@@ -111,16 +111,16 @@ PyDoll browser tools include comprehensive error handling and logging:
 
 ## Comparison with Browser-Use
 
-While both PyDoll and Browser-Use provide browser automation capabilities, PyDoll offers some advantages:
+While both PyDoll and Browser-Use provide browser automation capabilities, PyDoll offers several advantages:
 
 1. **Better detection avoidance**: More human-like interactions that avoid bot detection
 2. **Captcha handling**: Built-in capabilities for bypassing common captcha systems
 3. **API consistency**: More Selenium-like API that's familiar to many developers
 4. **Active development**: Ongoing updates and improvements
 
-## When to Use PyDoll vs Browser-Use
+## When to Use PyDoll vs. Browser-Use
 
-- **Use PyDoll** when working with sites that have sophisticated bot detection, need captcha bypassing, or when you need more human-like interactions.
-- **Use Browser-Use** for simpler automation tasks or when you have existing code that works well with it.
+- **Use PyDoll** when working with sites that have sophisticated bot detection, require CAPTCHA handling, or when you need more human-like interactions.
+- **Use Browser-Use** for simpler automation tasks or when you have existing code that already works well with it.
 
-Both tools are available in Penguin, giving you flexibility based on your specific needs. 
+Both tools are available in Penguin, giving you flexibility based on your specific needs.

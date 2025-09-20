@@ -82,7 +82,7 @@ OPENROUTER_SITE_TITLE=your_app_name  # Optional for OpenRouter leaderboards
 
 ## Usage
 
-The `APIClient` will automatically use the appropriate gateway based on the `client_preference` setting:
+The `APIClient` automatically uses the appropriate gateway based on the `client_preference` setting:
 
 ```python
 from penguin.llm.model_config import ModelConfig

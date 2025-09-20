@@ -14,7 +14,7 @@ The Chrome debugger provides direct access to Chrome's debugging capabilities th
 google-chrome --remote-debugging-port=9222 --remote-allow-origins=*
 ```
 
-2. Import and use the ChromeDebugger class:
+2. Import and use the `ChromeDebugger` class:
 
 ```python
 from penguin.tools.chrome_debugger import ChromeDebugger
@@ -66,7 +66,7 @@ See the `examples.py` file for detailed examples of each feature.
 
 ## Enhanced Process Manager
 
-The EnhancedProcessManager provides improved process management with PTY support, structured communication, better buffer management, and process monitoring.
+The `EnhancedProcessManager` provides improved process management with PTY support, structured communication, better buffer management, and process monitoring.
 
 ### Key Features
 
