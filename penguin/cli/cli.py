@@ -190,6 +190,10 @@ app.add_typer(msg_app, name="msg")
 coord_app = typer.Typer(help="Multi-agent coordinator commands")
 app.add_typer(coord_app, name="coord")
 
+# Agent management sub-application
+agent_app = typer.Typer(help="Agent management commands")
+app.add_typer(agent_app, name="agent")
+
 # Define a type variable for better typing
 T = TypeVar('T')
 
@@ -1099,6 +1103,310 @@ def config_debug():
     
     console.print(f"\n[dim]Platform: {platform.system()} {platform.release()}[/dim]")
     console.print(f"[dim]Python: {sys.version}[/dim]")
+
+# Agent Management Commands
+@agent_app.command("personas")
+def agent_personas(
+    json_output: bool = typer.Option(False, "--json", help="Emit persona catalog as JSON"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """List configured agent personas."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        personas = _core.get_persona_catalog()
+        if json_output:
+            console.print(json.dumps(personas, indent=2))
+            return
+
+        if not personas:
+            console.print("[yellow]No personas defined. Add entries under 'agents:' in config.yml.[/yellow]")
+            return
+
+        from rich.table import Table
+
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Persona", style="cyan")
+        table.add_column("Description", style="white")
+        table.add_column("Model", style="green")
+        table.add_column("Tools", style="magenta")
+        table.add_column("Auto-Activate", style="yellow")
+
+        for entry in personas:
+            name = entry.get("name", "--")
+            description = entry.get("description") or ""
+            model_block = entry.get("model") or {}
+            model_label = model_block.get("model") or model_block.get("id") or "(default)"
+            tools = entry.get("default_tools") or entry.get("tools") or []
+            if isinstance(tools, str):
+                tools = [tools]
+            tools_label = ", ".join(tools) if tools else "--"
+            auto_activate = "yes" if entry.get("activate", False) else "no"
+            table.add_row(name, description, model_label, tools_label, auto_activate)
+
+        console.print(table)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("list")
+def agent_list(
+    json_output: bool = typer.Option(False, "--json", help="Emit agent roster as JSON"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """List registered agents and sub-agents."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        roster = _core.get_agent_roster()
+        if json_output:
+            console.print(json.dumps(roster, indent=2))
+            return
+
+        if not roster:
+            console.print("[yellow]No agents are currently registered.[/yellow]")
+            return
+
+        from rich.table import Table
+
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Agent", style="cyan")
+        table.add_column("Type", style="white")
+        table.add_column("Persona", style="green")
+        table.add_column("Model", style="white")
+        table.add_column("Parent", style="yellow")
+        table.add_column("Children", style="dim")
+        table.add_column("Tools", style="magenta")
+        table.add_column("Active", style="blue")
+
+        for entry in roster:
+            agent_id = entry.get("id", "--")
+            agent_type = "sub" if entry.get("is_sub_agent") else "primary"
+            persona_label = entry.get("persona") or "--"
+            model_info = entry.get("model") or {}
+            model_label = model_info.get("model") or "(default)"
+            parent = entry.get("parent") or "--"
+            children = entry.get("children") or []
+            children_label = ", ".join(children) if children else "--"
+            tools = entry.get("default_tools") or []
+            tools_label = ", ".join(tools[:3]) if tools else "--"
+            if len(tools) > 3:
+                tools_label += ", …"
+            active_label = "yes" if entry.get("active") else ""
+            style = "bold" if entry.get("active") else None
+            table.add_row(agent_id, agent_type, persona_label, model_label, parent, children_label, tools_label, active_label, style=style)
+
+        console.print(table)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("spawn")
+def agent_spawn(
+    agent_id: str = typer.Argument(..., help="New agent identifier"),
+    persona: Optional[str] = typer.Option(None, "--persona", "-p", help="Persona id from config to apply"),
+    system_prompt: Optional[str] = typer.Option(None, "--system-prompt", "-s", help="Override system prompt"),
+    parent_agent_id: Optional[str] = typer.Option(None, "--parent", "-P", help="Parent agent id to share session with"),
+    share_session: bool = typer.Option(True, "--share-session/--isolate-session", help="Share conversation session with parent"),
+    share_context_window: bool = typer.Option(True, "--share-context/--isolate-context", help="Share context window with parent"),
+    shared_cw_max_tokens: Optional[int] = typer.Option(None, "--shared-cw-max", help="Clamp shared context window tokens"),
+    model_max_tokens: Optional[int] = typer.Option(None, "--model-max-tokens", help="Clamp agent context window tokens"),
+    model_config_id: Optional[str] = typer.Option(None, "--model-id", help="Model config id override"),
+    default_tools: Optional[List[str]] = typer.Option(None, "--tool", "-t", help="Restrict tools available to the agent (repeatable)"),
+    activate: bool = typer.Option(False, "--activate/--no-activate", help="Make this agent active"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Register a new agent or sub-agent."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        personas = {entry.get("name"): entry for entry in _core.get_persona_catalog()}
+        if persona and persona not in personas:
+            console.print(f"[red]Persona '{persona}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+
+        model_configs = getattr(_core.config, "model_configs", {}) or {}
+        if model_config_id and model_config_id not in model_configs:
+            console.print(f"[red]Model id '{model_config_id}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+
+        tools_tuple = tuple(default_tools) if default_tools else None
+
+        try:
+            if parent_agent_id:
+                _core.create_sub_agent(
+                    agent_id,
+                    parent_agent_id=parent_agent_id,
+                    system_prompt=system_prompt,
+                    share_session=share_session,
+                    share_context_window=share_context_window,
+                    shared_cw_max_tokens=shared_cw_max_tokens,
+                    model_max_tokens=model_max_tokens,
+                    persona=persona,
+                    model_config_id=model_config_id,
+                    default_tools=tools_tuple,
+                    activate=activate,
+                )
+            else:
+                _core.register_agent(
+                    agent_id,
+                    system_prompt=system_prompt,
+                    activate=activate,
+                    model_max_tokens=model_max_tokens,
+                    persona=persona,
+                    model_config_id=model_config_id,
+                    default_tools=tools_tuple,
+                )
+            console.print(f"[green]Registered agent[/green] {agent_id}{f' using persona {persona}' if persona else ''}.")
+        except Exception as exc:
+            console.print(f"[red]Failed to register agent: {exc}[/red]")
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("set-persona")
+def agent_set_persona(
+    agent_id: str = typer.Argument(..., help="Existing agent identifier"),
+    persona: str = typer.Argument(..., help="Persona id to apply"),
+    activate: bool = typer.Option(False, "--activate/--no-activate", help="Make this agent active after switching"),
+    system_prompt: Optional[str] = typer.Option(None, "--system-prompt", "-s", help="Override system prompt"),
+    model_config_id: Optional[str] = typer.Option(None, "--model-id", help="Model config id override"),
+    default_tools: Optional[List[str]] = typer.Option(None, "--tool", "-t", help="Override default tools (repeatable)"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Apply a persona to an existing agent."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        personas = {entry.get("name"): entry for entry in _core.get_persona_catalog()}
+        if persona not in personas:
+            console.print(f"[red]Persona '{persona}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+
+        model_configs = getattr(_core.config, "model_configs", {}) or {}
+        if model_config_id and model_config_id not in model_configs:
+            console.print(f"[red]Model id '{model_config_id}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+
+        tools_tuple = tuple(default_tools) if default_tools else None
+
+        parent_map = getattr(_core.conversation_manager, "sub_agent_parent", {}) or {}
+        parent = parent_map.get(agent_id)
+
+        try:
+            if parent:
+                _core.create_sub_agent(
+                    agent_id,
+                    parent_agent_id=parent,
+                    system_prompt=system_prompt,
+                    persona=persona,
+                    model_config_id=model_config_id,
+                    default_tools=tools_tuple,
+                    activate=activate,
+                )
+            else:
+                _core.register_agent(
+                    agent_id,
+                    system_prompt=system_prompt,
+                    activate=activate,
+                    persona=persona,
+                    model_config_id=model_config_id,
+                    default_tools=tools_tuple,
+                )
+            console.print(f"[green]Applied persona[/green] {persona} to agent {agent_id}.")
+        except Exception as exc:
+            console.print(f"[red]Failed to apply persona: {exc}[/red]")
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("activate")
+def agent_activate(
+    agent_id: str = typer.Argument(..., help="Agent identifier"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Set the active agent for subsequent operations."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        try:
+            _core.set_active_agent(agent_id)
+            console.print(f"[green]Active agent set to[/green] {agent_id}")
+        except Exception as exc:
+            console.print(f"[red]Failed to activate agent: {exc}[/red]")
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("info")
+def agent_info(
+    agent_id: str = typer.Argument(..., help="Agent identifier"),
+    json_output: bool = typer.Option(False, "--json", help="Emit profile as JSON"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Show detailed information for an agent."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        profile = _core.get_agent_profile(agent_id)
+        if not profile:
+            console.print(f"[yellow]Agent '{agent_id}' not found.[/yellow]")
+            raise typer.Exit(code=1)
+
+        if json_output:
+            console.print(json.dumps(profile, indent=2))
+            return
+
+        from rich.table import Table
+
+        table = Table(show_header=False)
+        for key in ("id", "persona", "persona_description", "model", "parent", "children", "default_tools", "active", "is_sub_agent", "system_prompt_preview"):
+            value = profile.get(key)
+            if key == "model" and isinstance(value, dict):
+                value = ", ".join(f"{k}={v}" for k, v in value.items() if v is not None)
+            if key == "children" and isinstance(value, list):
+                value = ", ".join(value) if value else "--"
+            if key == "default_tools" and isinstance(value, list):
+                value = ", ".join(value) if value else "--"
+            if key == "active":
+                value = "yes" if value else "no"
+            if key == "is_sub_agent":
+                value = "yes" if value else "no"
+            if value is None or value == "":
+                value = "--"
+            table.add_row(key.replace("_", " ").title(), str(value))
+
+        console.print(table)
+
+    asyncio.run(_run())
+
 
 # Project Management Commands
 @project_app.command("create")
@@ -2891,13 +3199,36 @@ def coord_spawn(
     system_prompt: Optional[str] = typer.Option(None, "--system-prompt", "-s", help="Optional system prompt override"),
     model_max_tokens: Optional[int] = typer.Option(None, "--model-max-tokens", help="Clamp child CWM at this size"),
     activate: bool = typer.Option(False, "--activate/--no-activate", help="Make this agent active by default"),
+    persona: Optional[str] = typer.Option(None, "--persona", "-p", help="Persona id from config to apply"),
+    model_config_id: Optional[str] = typer.Option(None, "--model-id", help="Model config id override"),
+    default_tools: Optional[List[str]] = typer.Option(None, "--tool", "-t", help="Restrict tools available to the agent (repeatable)"),
+    shared_cw_max_tokens: Optional[int] = typer.Option(None, "--shared-cw-max", help="Clamp shared context window tokens"),
     workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
 ):
     async def _run():
         await _initialize_core_components_globally(workspace_override=workspace)
         assert _core is not None
         coord = _get_coordinator()
-        await coord.spawn_agent(agent_id, role=role, system_prompt=system_prompt, model_max_tokens=model_max_tokens, activate=activate)
+        personas = {entry.get("name") for entry in _core.get_persona_catalog()}
+        if persona and persona not in personas:
+            console.print(f"[red]Persona '{persona}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+        model_configs = getattr(_core.config, "model_configs", {}) or {}
+        if model_config_id and model_config_id not in model_configs:
+            console.print(f"[red]Model id '{model_config_id}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+        tools_tuple = tuple(default_tools) if default_tools else None
+        await coord.spawn_agent(
+            agent_id,
+            role=role,
+            system_prompt=system_prompt,
+            model_max_tokens=model_max_tokens,
+            activate=activate,
+            persona=persona,
+            model_config_id=model_config_id,
+            default_tools=tools_tuple,
+            shared_cw_max_tokens=shared_cw_max_tokens,
+        )
         console.print(f"[green]Spawned agent[/green] {agent_id} with role '{role}'")
     asyncio.run(_run())
 

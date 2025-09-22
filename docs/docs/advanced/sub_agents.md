@@ -79,6 +79,10 @@ asyncio.run(research_and_write("Compile highlights from the latest changelog."))
 
 Under the hood the conversation manager clones the parent's system and context state, optionally clamping context-window budgets so the delegated run cannot exceed agreed limits. Advanced setups can combine this with `PenguinCore.register_agent` to wire dedicated executors once the engine is running.
 
+Need repeatable personas? Define them in `config.yml` under the `agents:` section with system prompts, default tools, and model overrides (including alternate providers such as OpenRouter). Pass `persona="research"` to `PenguinCore.register_agent` or `client.create_sub_agent` to pull those defaults in without re-specifying each field.
+
+The CLI exposes these persona presets via `penguin agent personas`, and you can register or update agents with `penguin agent spawn` / `penguin agent set-persona`. The TUI mirrors the same affordances through `/agent …` commands so multi-agent rosters stay visible while you experiment.
+
 ### REST and WebSocket
 
 Today, REST and WebSocket interfaces expose the `agent_id` routing parameter. Sub-agent orchestration occurs through the core APIs shown above; API-level payloads for sub-agent creation are on the roadmap and will follow the same intent-but be explicit about that being future work.

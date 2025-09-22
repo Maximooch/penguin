@@ -16,7 +16,7 @@ This document tracks the remaining work to reach robust multi-agent and sub-agen
 - [x] Ensure `PenguinCore` exposes symmetric APIs for destroying/unregistering agents and sub-agents, not just registration (`penguin/core.py` currently lacks a destroy helper).
 - [x] Decide on and implement a public API for sub-agent creation (e.g., `PenguinCore.spawn_sub_agent(...)`), rather than relying on direct `conversation_manager.create_sub_agent` access.
 - [x] Support true shared-session and shared-context-window modes in `ConversationManager.create_sub_agent`; the current implementation forces isolation regardless of the flags.
-- [ ] Expose configuration surfaces for custom agent personas (per-agent prompts, default tools) so operators can register tailored agents beyond the defaults.
+- [x] Expose configuration surfaces for custom agent personas (per-agent prompts, default tools) so operators can register tailored agents beyond the defaults. *(Config accepts personas; CLI/TUI can list, spawn, and reconfigure agents using those templates.)*
 
 ## Phase 2 – Engine & Coordinator Enhancements
 - [x] Wire `engine.run_task`, `engine.run_response`, and Run Mode to accept and schedule multiple agents via the `MultiAgentCoordinator` when policy configuration dictates. *(Engine now accepts `agent_role` and falls back to lite agents through the coordinator.)*
@@ -36,7 +36,7 @@ This document tracks the remaining work to reach robust multi-agent and sub-agen
 - [x] Make apply_diff tolerate absolute paths or enforce relative ones to stop context-mismatch failures.
 
 ## Phase 4 – UI/UX Surfaces
-- [ ] Update the TUI/CLI to list registered agents and sub-agents, with commands to inspect their state and switch personas interactively.
+- [x] Update the TUI/CLI to list registered agents and sub-agents, with commands to inspect their state and switch personas interactively. *(New `/agent …` commands and persona tables surface roster details and allow persona switching.)*
 - [ ] Add multi-agent awareness to Link/web UI: visual agent roster, streaming indicators per agent, configurators for spawning/destroying agents, and access to agent-specific transcript views.
 - [ ] Provide CLI scripting helpers (e.g., `penguin agent spawn`, `penguin agent list`) that wrap the new client/core APIs.
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 """MultiAgentCoordinator enhancements for multi-agent orchestration."""
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Sequence
 import asyncio
 import logging
 import uuid
@@ -18,6 +18,9 @@ class AgentInfo:
     role: str
     system_prompt: Optional[str] = None
     model_max_tokens: Optional[int] = None
+    persona: Optional[str] = None
+    model_config_id: Optional[str] = None
+    default_tools: Optional[Sequence[str]] = None
 
 
 @dataclass
@@ -63,14 +66,36 @@ class MultiAgentCoordinator:
         system_prompt: Optional[str] = None,
         model_max_tokens: Optional[int] = None,
         activate: bool = False,
+        persona: Optional[str] = None,
+        model_config_id: Optional[str] = None,
+        model_overrides: Optional[Dict[str, Any]] = None,
+        default_tools: Optional[Sequence[str]] = None,
+        shared_cw_max_tokens: Optional[int] = None,
+        share_session_with: Optional[str] = None,
+        share_context_window_with: Optional[str] = None,
     ) -> None:
         self.core.register_agent(
             agent_id,
             system_prompt=system_prompt,
             activate=activate,
             model_max_tokens=model_max_tokens,
+            persona=persona,
+            model_config_id=model_config_id,
+            model_overrides=model_overrides,
+            default_tools=default_tools,
+            shared_cw_max_tokens=shared_cw_max_tokens,
+            share_session_with=share_session_with,
+            share_context_window_with=share_context_window_with,
         )
-        info = AgentInfo(agent_id=agent_id, role=role, system_prompt=system_prompt, model_max_tokens=model_max_tokens)
+        info = AgentInfo(
+            agent_id=agent_id,
+            role=role,
+            system_prompt=system_prompt,
+            model_max_tokens=model_max_tokens,
+            persona=persona,
+            model_config_id=model_config_id,
+            default_tools=tuple(default_tools) if default_tools else None,
+        )
         self.agents_by_role.setdefault(role, []).append(info)
         self._rr_index.setdefault(role, 0)
         logger.info("Spawned agent '%s' with role '%s'", agent_id, role)

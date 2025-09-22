@@ -2,7 +2,7 @@ import asyncio
 import traceback
 import httpx # Added for making async HTTP requests # type: ignore
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Callable, Tuple, Awaitable
+from typing import Any, Dict, Iterable, List, Optional, Callable, Tuple, Awaitable
 import json
 from pathlib import Path
 import os
@@ -387,6 +387,7 @@ class PenguinInterface:
             "stream": self._handle_stream_command,  # Added stream command handler
             "model": self._handle_model_command, # For /model set only
             "models": self._handle_models_command, # New simple interactive selector
+            "agent": self._handle_agent_command,
         }
         
         handler = handlers.get(cmd, self._invalid_command)
@@ -879,6 +880,220 @@ class PenguinInterface:
             # Show standard token usage
             return {"token_usage": self.get_token_usage()}
             
+    async def _handle_agent_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle agent management commands."""
+
+        if not args:
+            return {"error": "Missing agent subcommand"}
+
+        action = args[0].lower()
+        remainder = args[1] if len(args) > 1 else ""
+
+        import shlex
+
+        def _split_tokens(payload: str) -> List[str]:
+            if not payload:
+                return []
+            try:
+                return shlex.split(payload)
+            except ValueError:
+                return payload.split()
+
+        def _parse_option_tokens(option_tokens: Iterable[str]) -> Dict[str, Any]:
+            cfg: Dict[str, Any] = {
+                "persona": None,
+                "parent": None,
+                "activate": False,
+                "system_prompt": None,
+                "model_id": None,
+                "model_max": None,
+                "shared_cw_max": None,
+                "share_session": True,
+                "share_context": True,
+                "tools": [],
+            }
+
+            for raw_token in option_tokens:
+                if not raw_token:
+                    continue
+                key, separator, value = raw_token.partition("=")
+                key_lower = key.lower().strip()
+                if not separator:
+                    if key_lower in ("activate", "on"):
+                        cfg["activate"] = True
+                    elif key_lower in ("noactivate", "off"):
+                        cfg["activate"] = False
+                    elif key_lower in ("isolate", "isolate-session"):
+                        cfg["share_session"] = False
+                    elif key_lower == "isolate-context":
+                        cfg["share_context"] = False
+                    continue
+
+                value = value.strip()
+                if key_lower in ("persona", "profile"):
+                    cfg["persona"] = value
+                elif key_lower in ("parent", "parent_id"):
+                    cfg["parent"] = value
+                elif key_lower in ("system", "system_prompt"):
+                    cfg["system_prompt"] = value
+                elif key_lower in ("model", "model_id"):
+                    cfg["model_id"] = value
+                elif key_lower in ("tool", "tools"):
+                    parts = [item.strip() for item in value.split(",") if item.strip()]
+                    cfg["tools"].extend(parts)
+                elif key_lower in ("shared_cw_max", "shared-cw-max"):
+                    try:
+                        cfg["shared_cw_max"] = int(value)
+                    except ValueError:
+                        pass
+                elif key_lower in ("model_max", "model-max-tokens"):
+                    try:
+                        cfg["model_max"] = int(value)
+                    except ValueError:
+                        pass
+                elif key_lower in ("share_session", "share-session"):
+                    cfg["share_session"] = value.lower() not in ("false", "0", "no", "off")
+                elif key_lower in ("share_context", "share-context"):
+                    cfg["share_context"] = value.lower() not in ("false", "0", "no", "off")
+            return cfg
+
+        if action == "list":
+            roster = self.core.get_agent_roster()
+            return {
+                "status": f"{len(roster)} agent(s) registered",
+                "agents": roster,
+            }
+
+        if action == "personas":
+            personas = self.core.get_persona_catalog()
+            return {
+                "status": f"{len(personas)} persona(s) available",
+                "personas": personas,
+            }
+
+        if action == "spawn":
+            tokens = _split_tokens(remainder)
+            if not tokens:
+                return {"error": "Usage: /agent spawn <agent_id> [persona=name] [parent=id]"}
+
+            agent_id = tokens[0]
+            options = _parse_option_tokens(tokens[1:])
+            personas = {entry.get("name") for entry in self.core.get_persona_catalog()}
+            if options["persona"] and options["persona"] not in personas:
+                return {"error": f"Persona '{options['persona']}' not found"}
+
+            model_configs = getattr(self.core.config, "model_configs", {}) or {}
+            if options["model_id"] and options["model_id"] not in model_configs:
+                return {"error": f"Model id '{options['model_id']}' not found"}
+
+            tools_tuple = tuple(options["tools"]) if options["tools"] else None
+            try:
+                if options["parent"]:
+                    self.core.create_sub_agent(
+                        agent_id,
+                        parent_agent_id=options["parent"],
+                        system_prompt=options["system_prompt"],
+                        share_session=options["share_session"],
+                        share_context_window=options["share_context"],
+                        shared_cw_max_tokens=options["shared_cw_max"],
+                        model_max_tokens=options["model_max"],
+                        persona=options["persona"],
+                        model_config_id=options["model_id"],
+                        default_tools=tools_tuple,
+                        activate=options["activate"],
+                    )
+                else:
+                    self.core.register_agent(
+                        agent_id,
+                        system_prompt=options["system_prompt"],
+                        activate=options["activate"],
+                        model_max_tokens=options["model_max"],
+                        persona=options["persona"],
+                        model_config_id=options["model_id"],
+                        default_tools=tools_tuple,
+                    )
+                roster = self.core.get_agent_roster()
+                return {
+                    "status": f"Spawned agent {agent_id}",
+                    "agents": roster,
+                }
+            except Exception as exc:
+                return {"error": f"Failed to spawn agent: {exc}"}
+
+        if action in ("persona", "set", "set-persona"):
+            tokens = _split_tokens(remainder)
+            if len(tokens) < 2:
+                return {"error": "Usage: /agent persona <agent_id> <persona> [activate]"}
+
+            agent_id = tokens[0]
+            persona_name = tokens[1]
+            options = _parse_option_tokens(tokens[2:])
+            options["persona"] = persona_name
+
+            personas = {entry.get("name") for entry in self.core.get_persona_catalog()}
+            if persona_name not in personas:
+                return {"error": f"Persona '{persona_name}' not found"}
+
+            model_configs = getattr(self.core.config, "model_configs", {}) or {}
+            if options["model_id"] and options["model_id"] not in model_configs:
+                return {"error": f"Model id '{options['model_id']}' not found"}
+
+            tools_tuple = tuple(options["tools"]) if options["tools"] else None
+
+            parent_map = getattr(self.core.conversation_manager, "sub_agent_parent", {}) or {}
+            parent = parent_map.get(agent_id)
+
+            try:
+                if parent:
+                    self.core.create_sub_agent(
+                        agent_id,
+                        parent_agent_id=parent,
+                        system_prompt=options["system_prompt"],
+                        persona=persona_name,
+                        model_config_id=options["model_id"],
+                        default_tools=tools_tuple,
+                        activate=options["activate"],
+                    )
+                else:
+                    self.core.register_agent(
+                        agent_id,
+                        system_prompt=options["system_prompt"],
+                        activate=options["activate"],
+                        persona=persona_name,
+                        model_config_id=options["model_id"],
+                        default_tools=tools_tuple,
+                    )
+                roster = self.core.get_agent_roster()
+                return {
+                    "status": f"Applied persona {persona_name} to {agent_id}",
+                    "agents": roster,
+                }
+            except Exception as exc:
+                return {"error": f"Failed to apply persona: {exc}"}
+
+        if action == "activate":
+            tokens = _split_tokens(remainder)
+            if not tokens:
+                return {"error": "Usage: /agent activate <agent_id>"}
+            target = tokens[0]
+            try:
+                self.core.set_active_agent(target)
+            except Exception as exc:
+                return {"error": f"Failed to activate agent: {exc}"}
+            roster = self.core.get_agent_roster()
+            return {"status": f"Active agent set to {target}", "agents": roster}
+
+        if action == "info":
+            tokens = _split_tokens(remainder)
+            if not tokens:
+                return {"error": "Usage: /agent info <agent_id>"}
+            profile = self.core.get_agent_profile(tokens[0])
+            if not profile:
+                return {"error": f"Agent '{tokens[0]}' not found"}
+            return {"agent": profile}
+
+        return {"error": f"Unknown agent command: {action}"}
+
     async def _handle_context_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle context file commands"""
         try:

@@ -26,17 +26,23 @@ from penguin.api_client import ChatOptions, PenguinClient, create_client
 from penguin.config import WORKSPACE_PATH
 
 PLANNER_SYSTEM_PROMPT = (
-    "You are the Planner agent. Focus on analyzing requirements, outlining steps, and "
-    "delegating implementation tasks. Keep responses concise and structured."
+    "You are the Planner agent. Analyse requirements, outline steps, and delegate implementation tasks. "
+    "Maintain the shared charter at context/TASK_CHARTER.md by recording goal, normalized target paths, "
+    "acceptance criteria, and QA checklist. Before handing off, ensure paths are workspace-relative and "
+    "call out what QA must verify. Keep responses concise and structured."
 )
 
 IMPLEMENTER_SYSTEM_PROMPT = (
-    "You are the Implementer agent. Apply code changes, run tools, and report concrete "
-    "modifications. Prefer actionable commands over high-level discussion."
+    "You are the Implementer agent. Apply code changes, run tools, and report concrete modifications. "
+    "Read the shared charter before acting, refuse ambiguous paths, and update the charter (or status note) "
+    "with files touched, diffs produced, and verification performed so QA knows what to inspect. Prefer actionable "
+    "commands over high-level discussion."
 )
 
 QA_SYSTEM_PROMPT = (
-    "You are the QA agent. Verify fixes, design tests, and report validation results."
+    "You are the QA agent. Validate that implementation satisfies the charter. Confirm each acceptance criterion, "
+    "note any gaps back in the charter, and only give final approval when tests and manual checks pass. Escalate "
+    "misalignments to planner/implementer instead of silently failing."
 )
 
 ROOM = "dev-room"
@@ -115,6 +121,7 @@ async def chat(client: PenguinClient, agent_id: str, message: str) -> str:
 async def main() -> None:
     # Ensure we use the configured Penguin workspace
     workspace = WORKSPACE_PATH
+    os.environ.setdefault("PENGUIN_PROJECT_ROOT", str(workspace))
     print(f"Using Penguin workspace: {workspace}")
 
     async with await create_client(workspace_path=str(workspace)) as client:
@@ -131,8 +138,26 @@ async def main() -> None:
         project_root = Path(context_files[0]).parent.parent  # projects/live_agents_demo
         module_path = project_root / "src" / "temperature.py"
         readme_path = project_root / "README.md"
+        charter_path = workspace / "context" / "TASK_CHARTER.md"
+        charter_path.parent.mkdir(parents=True, exist_ok=True)
+        if not charter_path.exists():
+            charter_path.write_text(
+                """# Task Charter\n\n"
+                "## Goal\n- Pending\n\n"
+                "## Scope and Paths\n- Workspace root: .\n- Pending targets\n\n"
+                "## Acceptance Criteria\n- Pending\n\n"
+                "## QA Checklist\n- Pending\n\n"
+                "## Implementation Notes\n- Pending\n\n"
+                "## QA Verification\n- Pending\n""",
+                encoding="utf-8",
+            )
         print(f"Demo project base_dir: {project_root}")
-        await client.load_context_files(context_files)
+        await client.load_context_files(context_files + [str(charter_path)])
+
+        project_rel_root = project_root.relative_to(workspace)
+        module_rel_path = module_path.relative_to(workspace)
+        readme_rel_path = readme_path.relative_to(workspace)
+        charter_rel_path = charter_path.relative_to(workspace)
 
         # Register agents with tailored prompts
         client.create_agent("planner", system_prompt=PLANNER_SYSTEM_PROMPT, activate=True)
@@ -146,7 +171,9 @@ async def main() -> None:
             (
                 "We have a workspace project at projects/live_agents_demo. "
                 "In src/temperature.py, fahrenheit_to_celsius uses an inaccurate shortcut. "
-                "Outline a concise remediation plan with steps (planning only)."
+                "Outline a concise remediation plan with steps (planning only). "
+                f"Write the key details (goal, normalized target paths, acceptance criteria, QA checklist) into {charter_rel_path.as_posix()} so other roles can rely on it. "
+                f"Use workspace-relative paths such as {module_rel_path.as_posix()} and {readme_rel_path.as_posix()} when updating the charter."
             ),
         )
 
@@ -164,13 +191,14 @@ async def main() -> None:
             "implementer",
             (
                 "You must produce ActionXML to make changes.\n\n"
-                f"Base directory (operate ONLY under this path): {project_root}\n"
-                f"Target file: {module_path}\n"
+                f"Workspace-relative base directory: {project_rel_root.as_posix()}\n"
+                f"Target file: {module_rel_path.as_posix()}\n"
                 "Goal: apply the exact conversion formula (F - 32) * 5/9 and add any guards if needed.\n\n"
                 "Steps:\n"
-                f"1) Read the file (use <enhanced_read>{module_path}:true:400</enhanced_read>).\n"
+                f"1) Read the file (use <enhanced_read>{module_rel_path.as_posix()}:true:400</enhanced_read>).\n"
                 "2) Apply a minimal diff to replace the approximation with the precise formula and update the docstring.\n"
-                f"3) Optionally add/update a small README note ({readme_path}) if needed.\n\n"
+                f"3) Optionally add/update a small README note ({readme_rel_path.as_posix()}) if needed.\n\n"
+                f"Consult {charter_rel_path.as_posix()} before acting, reject ambiguous paths, and append a short summary of files changed plus verification steps under 'Implementation Notes' in {charter_rel_path.as_posix()} using apply_diff.\n\n"
                 "Only communicate via ActionXML blocks so tools execute."
             ),
         )
@@ -186,7 +214,9 @@ async def main() -> None:
             "qa",
             (
                 "Validate that fahrenheit_to_celsius now matches the exact formula for typical test points. "
-                "List manual or automated checks you would run to confirm no regressions."
+                "List manual or automated checks you would run to confirm no regressions. "
+                f"Confirm each acceptance criterion recorded in {charter_rel_path.as_posix()}. "
+                f"Record your findings under 'QA Verification' (using apply_diff) and, if anything is missing, document it there and route the issue back instead of approving."
             ),
         )
 

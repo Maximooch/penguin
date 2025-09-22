@@ -18,6 +18,10 @@ categories:
     description: "Task and project management"
     icon: "📋"
   
+  - name: agent
+    description: "Agent management"
+    icon: "🧠"
+  
   - name: debug
     description: "Debugging and diagnostics"
     icon: "🔍"
@@ -132,6 +136,63 @@ commands:
         type: string
         required: true
     handler: "_handle_task_complete"
+    
+  # Agent management
+  - name: "agent list"
+    category: agent
+    description: "List registered agents"
+    handler: "_handle_agent_command"
+
+  - name: "agent personas"
+    category: agent
+    description: "Show available personas"
+    handler: "_handle_agent_command"
+
+  - name: "agent spawn"
+    category: agent
+    description: "Spawn a new agent (options as key=value pairs)"
+    parameters:
+      - name: agent_id
+        type: string
+        required: true
+      - name: options
+        type: string
+        required: false
+        description: "Additional options (persona=, parent=, etc.)"
+    handler: "_handle_agent_command"
+
+  - name: "agent persona"
+    category: agent
+    description: "Apply a persona to an agent"
+    parameters:
+      - name: agent_id
+        type: string
+        required: true
+      - name: persona
+        type: string
+        required: true
+      - name: options
+        type: string
+        required: false
+    handler: "_handle_agent_command"
+
+  - name: "agent activate"
+    category: agent
+    description: "Set the active agent"
+    parameters:
+      - name: agent_id
+        type: string
+        required: true
+    handler: "_handle_agent_command"
+
+  - name: "agent info"
+    category: agent
+    description: "Show detailed information for an agent"
+    parameters:
+      - name: agent_id
+        type: string
+        required: true
+    handler: "_handle_agent_command"
     
   # Project management
   - name: "project create"

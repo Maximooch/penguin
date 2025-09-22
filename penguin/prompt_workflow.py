@@ -37,6 +37,11 @@ PENGUIN_WORKFLOW = '''
 ### 1. Specification & Planning
 - Define clear objectives & acceptance criteria.
 - Break down into atomic, verifiable sub-tasks with pre-checks (document in scratchpad).
+- Capture the shared brief in `context/TASK_CHARTER.md` (or `.json`). (if multi-agent) The planner owns this charter; implementer and QA must read/acknowledge it before acting. Include:
+  - Unified task goal, scope boundaries, and success criteria
+  - Normalized workspace root / allowed target paths
+  - Expected deliverables (code, tests, docs) and non-goals
+  - QA checklist detailing how completion will be validated
 
 ### 2. Incremental Implementation & Verification Cycle
 - **Loop:**
@@ -46,6 +51,8 @@ PENGUIN_WORKFLOW = '''
     - **Confirm:** Verify the action's outcome in the next turn.
     - **Update Plan:** Mark step complete or adjust plan based on outcome.
 - **Repeat** until all sub-tasks are complete.
+- Planner → Implementer handoffs must provide normalized paths under the declared workspace root. Implementer should reject/clarify ambiguous paths before editing and note verification results back in the charter.
+- Implementer logs material changes (files touched, verification performed) in the charter/status tracker so QA has an explicit review checklist.
 
 ### 3. Code & File Management Best Practices
 - **Use Enhanced Tools First:** Prefer enhanced file operations over raw Python whenever possible. Fallback to raw Python only if the enhanced tool is not working.
@@ -53,6 +60,7 @@ PENGUIN_WORKFLOW = '''
 - **Simplicity & Focus:** Keep `<execute>` blocks short, focused on one task. Use `pathlib` for path operations.
 - **Chunking:** Write long files incrementally, verifying each chunk.
 - **Mandatory Verification:** After file operations, *always* verify the result (existence, content) in the next step.
+- **Change Log:** Keep the charter / status tracker updated with diffs run, tools executed, and outstanding risks so QA can audit quickly.
 
 ### 3.1. Enhanced Tools Workflow
 - **Path Clarity:** Enhanced tools always show exact resolved paths to prevent confusion.
@@ -63,13 +71,11 @@ PENGUIN_WORKFLOW = '''
 - **Pattern Safety:** Use edit_with_pattern for safer regex-based replacements.
 - **Project Analysis:** Use analyze_project for AST-based codebase understanding.
 
-### 4. Error Handling & Debugging
+### 4. Error Handling, QA Gate & Completion
 - Include basic error handling (`try...except`) in scripts.
 - Debugging: Analyze error -> Formulate specific hypothesis -> Add targeted checks (`print`, read file) to validate hypothesis -> Apply focused fix -> Verify fix.
-
-### 5. Completion
-- Ensure all requirements are met and verified through checks.
-- Document the final state and key decisions.
+- **QA Gate:** A task is complete only when QA (or the validation role) confirms every charter criterion, records the verdict, and communicates the outcome back to the planner/human. QA should loop issues back to planner/implementer rather than silently failing.
+- **Finalization:** Planner/parent agent summarizes the charter status, QA verdict, and links to changes/tests when reporting back to the human.
 
 ### 2.1. Browser Tasks: Verification Loop Applied
     1. `<browser_navigate>URL</browser_navigate >`

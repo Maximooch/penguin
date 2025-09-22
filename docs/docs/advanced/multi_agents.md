@@ -93,6 +93,8 @@ Streaming endpoints accept the same field. This allows dashboards to multiplex m
 - **Coordinator policies**: The `MultiAgentCoordinator` now exposes explicit helpers for round-robin routing, role chains, broadcasts, and lite-agent fallbacks. Register role assignments up front so `Engine.run_task` and RunMode can pick the right persona automatically via `agent_role` context.
 - **Conversation telemetry**: Use `GET /api/v1/conversations/{id}/history` (or `PenguinClient.get_conversation_history`) to retrieve flat logs tagged with `agent_id`, `recipient_id`, and `message_type`. Pair with MessageBus `channel` filters to stream the portions relevant to a team room.
 - **Runtime metrics**: The telemetry collector aggregates message, agent, room, and task statistics. Call `GET /api/v1/telemetry` (or `PenguinClient.get_telemetry_summary`) to feed dashboards; the standalone app in `dashboard/app.py` shows a reference implementation.
+- **Shared charter:** Treat `context/TASK_CHARTER.md` (or `.json`) as the single source of truth for task goal, normalized paths, acceptance criteria, and QA checklist. Planner writes/updates it, implementer records what changed and how it was verified, and QA signs off against it. This keeps parent + sub-agents aligned without inventing new wires.
+- **QA gate:** A run finishes only after the QA persona (or equivalent validation agent) marks every charter item complete and sends the verdict back to the parent or human. If criteria are unmet, QA loops the issue back through the MessageBus rather than silently finishing.
 
 ## Roadmap
 

@@ -40,11 +40,12 @@ Example Usage:
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, Callable, AsyncGenerator
+from typing import Any, Dict, List, Optional, Sequence, Union, Callable, AsyncGenerator
 from dataclasses import dataclass
 
 from .core import PenguinCore
 from .config import config
+from .llm.model_config import ModelConfig
 from .system.checkpoint_manager import CheckpointType
 
 logger = logging.getLogger(__name__)
@@ -496,6 +497,11 @@ class PenguinClient:
         share_context_window_with: Optional[str] = None,
         shared_cw_max_tokens: Optional[int] = None,
         model_max_tokens: Optional[int] = None,
+        persona: Optional[str] = None,
+        model_config: Optional[ModelConfig] = None,
+        model_config_id: Optional[str] = None,
+        model_overrides: Optional[Dict[str, Any]] = None,
+        default_tools: Optional[Sequence[str]] = None,
     ) -> None:
         """Register a new agent."""
         self.core.register_agent(
@@ -506,6 +512,11 @@ class PenguinClient:
             share_context_window_with=share_context_window_with,
             shared_cw_max_tokens=shared_cw_max_tokens,
             model_max_tokens=model_max_tokens,
+            persona=persona,
+            model_config=model_config,
+            model_config_id=model_config_id,
+            model_overrides=model_overrides,
+            default_tools=default_tools,
         )
 
     def create_sub_agent(
@@ -519,6 +530,11 @@ class PenguinClient:
         shared_cw_max_tokens: Optional[int] = None,
         model_max_tokens: Optional[int] = None,
         activate: bool = False,
+        persona: Optional[str] = None,
+        model_config: Optional[ModelConfig] = None,
+        model_config_id: Optional[str] = None,
+        model_overrides: Optional[Dict[str, Any]] = None,
+        default_tools: Optional[Sequence[str]] = None,
     ) -> None:
         """Register a sub-agent bound to a parent agent."""
         self.core.create_sub_agent(
@@ -530,6 +546,11 @@ class PenguinClient:
             shared_cw_max_tokens=shared_cw_max_tokens,
             model_max_tokens=model_max_tokens,
             activate=activate,
+            persona=persona,
+            model_config=model_config,
+            model_config_id=model_config_id,
+            model_overrides=model_overrides,
+            default_tools=default_tools,
         )
 
     def list_agents(self) -> List[str]:

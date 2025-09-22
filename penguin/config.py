@@ -7,7 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # import logging
-from typing import Any, Dict, Optional, Literal
+from typing import Any, Dict, Optional, Literal, List
 
 import yaml  # type: ignore
 from dotenv import load_dotenv  # type: ignore
@@ -563,6 +563,124 @@ class DiagnosticsConfig:
 
 
 @dataclass
+class AgentModelSettings:
+    """Model override declaration for an agent persona."""
+
+    id: Optional[str] = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    client_preference: Optional[str] = None
+    api_base: Optional[str] = None
+    temperature: Optional[float] = None
+    max_tokens: Optional[int] = None
+    streaming_enabled: Optional[bool] = None
+    vision_enabled: Optional[bool] = None
+    use_assistants_api: Optional[bool] = None
+    reasoning: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentModelSettings":
+        """Create settings from raw config dictionary."""
+
+        return cls(
+            id=data.get("id") or data.get("name"),
+            model=data.get("model"),
+            provider=data.get("provider"),
+            client_preference=data.get("client_preference"),
+            api_base=data.get("api_base"),
+            temperature=data.get("temperature"),
+            max_tokens=data.get("max_tokens"),
+            streaming_enabled=data.get("streaming_enabled"),
+            vision_enabled=data.get("vision_enabled"),
+            use_assistants_api=data.get("use_assistants_api"),
+            reasoning=dict(data.get("reasoning", {})),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a serialisable copy of the settings."""
+
+        payload: Dict[str, Any] = {
+            "id": self.id,
+            "model": self.model,
+            "provider": self.provider,
+            "client_preference": self.client_preference,
+            "api_base": self.api_base,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "streaming_enabled": self.streaming_enabled,
+            "vision_enabled": self.vision_enabled,
+            "use_assistants_api": self.use_assistants_api,
+        }
+        if self.reasoning:
+            payload["reasoning"] = dict(self.reasoning)
+        return {k: v for k, v in payload.items() if v is not None}
+
+
+@dataclass
+class AgentPersonaConfig:
+    """Declarative configuration for a reusable agent persona."""
+
+    name: str
+    description: Optional[str] = None
+    system_prompt: Optional[str] = None
+    model: Optional[AgentModelSettings] = None
+    default_tools: Optional[List[str]] = None
+    share_session_with: Optional[str] = None
+    share_context_window_with: Optional[str] = None
+    shared_cw_max_tokens: Optional[int] = None
+    model_max_tokens: Optional[int] = None
+    activate_by_default: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, name: str, data: Dict[str, Any]) -> "AgentPersonaConfig":
+        """Build a persona config from raw configuration data."""
+
+        model_block = data.get("model") or {}
+        model_settings = None
+        if isinstance(model_block, dict) and model_block:
+            model_settings = AgentModelSettings.from_dict(model_block)
+
+        tools_block = data.get("default_tools")
+        if tools_block is None:
+            tools_block = data.get("tools")
+        default_tools = list(tools_block) if isinstance(tools_block, list) else None
+
+        return cls(
+            name=name,
+            description=data.get("description"),
+            system_prompt=data.get("system_prompt"),
+            model=model_settings,
+            default_tools=default_tools,
+            share_session_with=data.get("share_session_with"),
+            share_context_window_with=data.get("share_context_window_with"),
+            shared_cw_max_tokens=data.get("shared_cw_max_tokens"),
+            model_max_tokens=data.get("model_max_tokens"),
+            activate_by_default=bool(data.get("activate") or data.get("activate_by_default", False)),
+            metadata=dict(data.get("metadata", {})),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a serialisable mapping representing the persona."""
+
+        payload: Dict[str, Any] = {
+            "name": self.name,
+            "description": self.description,
+            "system_prompt": self.system_prompt,
+            "default_tools": list(self.default_tools) if self.default_tools else None,
+            "share_session_with": self.share_session_with,
+            "share_context_window_with": self.share_context_window_with,
+            "shared_cw_max_tokens": self.shared_cw_max_tokens,
+            "model_max_tokens": self.model_max_tokens,
+            "activate": self.activate_by_default,
+            "metadata": dict(self.metadata) if self.metadata else None,
+        }
+        if self.model:
+            payload["model"] = self.model.to_dict()
+        return {k: v for k, v in payload.items() if v is not None}
+
+
+@dataclass
 class APIConfig:
     base_url: Optional[str] = None
 
@@ -584,6 +702,8 @@ class Config:
     )
     # Fast startup configuration
     fast_startup: bool = field(default=False)
+    model_configs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    agent_personas: Dict[str, AgentPersonaConfig] = field(default_factory=dict)
     
     # Dictionary-like access to model settings
     @property
@@ -617,6 +737,10 @@ class Config:
             # Import inside the method to avoid circular imports
             from penguin.llm.model_config import ModelConfig as LLMModelConfig
             self.model_config = LLMModelConfig.from_env()
+        if self.model_configs is None:
+            self.model_configs = {}
+        if self.agent_personas is None:
+            self.agent_personas = {}
 
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "Config":
@@ -681,7 +805,11 @@ class Config:
         default_provider = default_model_settings.get("provider") or os.getenv("PENGUIN_DEFAULT_PROVIDER", "anthropic") 
         default_client_pref = default_model_settings.get("client_preference") or os.getenv("PENGUIN_CLIENT_PREFERENCE", "litellm")
 
-        specific_config = config_data.get("model_configs", {}).get(default_model_id, {})
+        model_configs_section = config_data.get("model_configs")
+        if not isinstance(model_configs_section, dict):
+            model_configs_section = {}
+
+        specific_config = model_configs_section.get(default_model_id, {})
 
         model_name_for_init = specific_config.get("model", default_model_id)
         provider_for_init = specific_config.get("provider", default_provider)
@@ -728,6 +856,21 @@ class Config:
             reasoning_exclude=bool(reasoning_exclude_val) if reasoning_exclude_val is not None else False,
         )
 
+        # Resolve agent personas (Phase 1+ configuration surface)
+        raw_personas = config_data.get("agents")
+        if raw_personas is None:
+            raw_personas = config_data.get("personas", {})
+        agent_personas: Dict[str, AgentPersonaConfig] = {}
+        if isinstance(raw_personas, dict):
+            for persona_name, persona_config in raw_personas.items():
+                if not isinstance(persona_config, dict):
+                    logger.warning("Skipping persona '%s': expected a mapping, got %s", persona_name, type(persona_config).__name__)
+                    continue
+                try:
+                    agent_personas[persona_name] = AgentPersonaConfig.from_dict(persona_name, persona_config)
+                except Exception as exc:  # pragma: no cover - defensive, config errors should surface in logs
+                    logger.warning("Failed to load agent persona '%s': %s", persona_name, exc)
+
         return cls(
             model_config=llm_model_config,
             api=APIConfig(base_url=config_data.get("api", {}).get("base_url")),
@@ -736,6 +879,8 @@ class Config:
             max_tokens=config_data.get("max_tokens", llm_model_config.max_tokens), # Use model max_tokens if global not set
             diagnostics=diagnostics_config,
             fast_startup=config_data.get("performance", {}).get("fast_startup", False),
+            model_configs=model_configs_section,
+            agent_personas=agent_personas,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -757,6 +902,8 @@ class Config:
             "workspace_dir": str(self.workspace_dir),
             "cache_dir": str(self.cache_dir),
             "workspace_path": str(self.workspace_path),
+            "model_configs": self.model_configs,
+            "agent_personas": {name: persona.to_dict() for name, persona in self.agent_personas.items()},
         }
 
 
