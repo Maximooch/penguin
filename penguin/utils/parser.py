@@ -99,6 +99,12 @@ class ActionType(Enum):
     # PyDoll debug toggle
     PYDOLL_DEBUG_TOGGLE = "pydoll_debug_toggle"
     
+    # Sub-agent tools (agents-as-tools)
+    SPAWN_SUB_AGENT = "spawn_sub_agent"
+    STOP_SUB_AGENT = "stop_sub_agent"
+    RESUME_SUB_AGENT = "resume_sub_agent"
+    DELEGATE = "delegate"
+    
     # Repository management actions
     GET_REPOSITORY_STATUS = "get_repository_status"
     CREATE_AND_SWITCH_BRANCH = "create_and_switch_branch"
@@ -302,6 +308,11 @@ class ActionExecutor:
             ActionType.PYDOLL_BROWSER_SCREENSHOT: self._pydoll_browser_screenshot,
             # PyDoll debug toggle
             ActionType.PYDOLL_DEBUG_TOGGLE: self._pydoll_debug_toggle,
+            # Sub-agent tools
+            ActionType.SPAWN_SUB_AGENT: self._spawn_sub_agent,
+            ActionType.STOP_SUB_AGENT: self._stop_sub_agent,
+            ActionType.RESUME_SUB_AGENT: self._resume_sub_agent,
+            ActionType.DELEGATE: self._delegate,
             # Enhanced file operations
             ActionType.LIST_FILES_FILTERED: self._list_files_filtered,
             ActionType.FIND_FILES_ENHANCED: self._find_files_enhanced,
@@ -614,6 +625,158 @@ class ActionExecutor:
                     results.append(f"{normalized} (failed)")
 
         return f"Sent message to {', '.join(results)}"
+
+    # --------------------------------------------------
+    # Sub-agent tools (agents-as-tools)
+    # --------------------------------------------------
+
+    async def _spawn_sub_agent(self, params: str) -> str:
+        """Spawn a sub-agent; defaults to isolated session and context-window.
+
+        JSON body:
+          - id (required), parent (optional, default current), persona/system_prompt (optional)
+          - share_session (bool, default False), share_context_window (bool, default False)
+          - shared_cw_max_tokens (int, optional), model_* overrides (optional), default_tools (optional)
+          - initial_prompt (optional)
+        """
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON for spawn_sub_agent: {e}"
+
+        agent_id = str(payload.get("id") or "").strip()
+        if not agent_id:
+            return "spawn_sub_agent requires 'id'"
+
+        conversation = self.conversation_system
+        core = getattr(conversation, "core", None)
+        if core is None:
+            return "Core unavailable for spawn_sub_agent"
+
+        parent_id = str(payload.get("parent") or getattr(conversation, "current_agent_id", None) or "default").strip()
+        share_session = bool(payload.get("share_session", False))
+        share_cw = bool(payload.get("share_context_window", False))
+        shared_cw_max_tokens = payload.get("shared_cw_max_tokens")
+        try:
+            shared_cw_max_tokens = int(shared_cw_max_tokens) if shared_cw_max_tokens is not None else None
+        except Exception:
+            shared_cw_max_tokens = None
+
+        kwargs: Dict[str, Any] = {}
+        for key in ("persona", "system_prompt", "model_config_id", "model_max_tokens", "default_tools"):
+            if key in payload:
+                kwargs[key] = payload[key]
+        if isinstance(payload.get("model_overrides"), dict):
+            kwargs["model_overrides"] = payload["model_overrides"]
+
+        try:
+            core.create_sub_agent(
+                agent_id,
+                parent_agent_id=parent_id,
+                share_session=share_session,
+                share_context_window=share_cw,
+                shared_cw_max_tokens=shared_cw_max_tokens,
+                **kwargs,
+            )
+        except Exception as e:
+            return f"Failed to spawn sub-agent '{agent_id}': {e}"
+
+        initial_prompt = payload.get("initial_prompt")
+        if initial_prompt:
+            try:
+                await core.send_to_agent(agent_id, initial_prompt)
+            except Exception:
+                pass
+
+        return f"Spawned sub-agent '{agent_id}' (parent='{parent_id}', share_session={share_session}, share_context_window={share_cw})"
+
+    async def _stop_sub_agent(self, params: str) -> str:
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON for stop_sub_agent: {e}"
+        agent_id = str(payload.get("id") or "").strip()
+        if not agent_id:
+            return "stop_sub_agent requires 'id'"
+        conversation = self.conversation_system
+        core = getattr(conversation, "core", None)
+        if core is None:
+            return "Core unavailable for stop_sub_agent"
+        try:
+            if hasattr(core, "set_agent_paused"):
+                core.set_agent_paused(agent_id, True)
+            return f"Paused sub-agent '{agent_id}'"
+        except Exception as e:
+            return f"Failed to pause sub-agent '{agent_id}': {e}"
+
+    async def _resume_sub_agent(self, params: str) -> str:
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON for resume_sub_agent: {e}"
+        agent_id = str(payload.get("id") or "").strip()
+        if not agent_id:
+            return "resume_sub_agent requires 'id'"
+        conversation = self.conversation_system
+        core = getattr(conversation, "core", None)
+        if core is None:
+            return "Core unavailable for resume_sub_agent"
+        try:
+            if hasattr(core, "set_agent_paused"):
+                core.set_agent_paused(agent_id, False)
+            return f"Resumed sub-agent '{agent_id}'"
+        except Exception as e:
+            return f"Failed to resume sub-agent '{agent_id}': {e}"
+
+    async def _delegate(self, params: str) -> str:
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON for delegate: {e}"
+
+        child = str(payload.get("child") or "").strip()
+        content = payload.get("content")
+        if not child or content is None:
+            return "delegate requires 'child' and 'content'"
+
+        conversation = self.conversation_system
+        core = getattr(conversation, "core", None)
+        if core is None:
+            return "Core unavailable for delegate"
+
+        parent = str(payload.get("parent") or getattr(conversation, "current_agent_id", None) or "default").strip()
+        channel = payload.get("channel")
+        metadata = payload.get("metadata") or {}
+
+        # Record delegation event in both parent and child logs (best-effort)
+        try:
+            cm = getattr(core, "conversation_manager", None)
+            if cm and hasattr(cm, "log_delegation_event"):
+                import uuid as _uuid
+                delegation_id = _uuid.uuid4().hex[:8]
+                cm.log_delegation_event(
+                    delegation_id=delegation_id,
+                    parent_agent_id=parent,
+                    child_agent_id=child,
+                    event="request_sent",
+                    message=str(content)[:140],
+                    metadata={**metadata, **({"channel": channel} if channel else {})},
+                )
+                metadata = {**metadata, "delegation_id": delegation_id}
+        except Exception:
+            pass
+
+        try:
+            await core.send_to_agent(
+                child,
+                content,
+                message_type="message",
+                metadata=metadata,
+                channel=channel,
+            )
+            return f"Delegated to '{child}' from '{parent}'"
+        except Exception as e:
+            return f"Failed to delegate to '{child}': {e}"
 
     def _workspace_search(self, params: str) -> str:
         parts = params.split(":", 1)

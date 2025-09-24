@@ -415,6 +415,63 @@ Ping the human operator when assistance is required:
 The message is routed through the MessageBus, recorded in each agent's transcript with channel metadata, and surfaced in telemetry summaries.
 
 ---
+
+### Sub-Agent Tools (Agents-as-Tools)
+
+Use these to manage child agents directly. Defaults are conservative: sub-agents are created with isolated session and isolated context-window. Initial SYSTEM/CONTEXT is copied once; subsequent turns diverge. No permission engine is enforced; any `default_tools` provided are recorded as metadata only.
+
+1) Spawn Sub-Agent (`<spawn_sub_agent>`)
+
+Body must be JSON. Fields:
+- `id` (required): child agent id
+- `parent` (optional): parent agent id (defaults to current)
+- `persona`, `system_prompt` (optional)
+- `share_session` (default false) – share parent session
+- `share_context_window` (default false) – share parent context window
+- `shared_cw_max_tokens` (optional int) – clamp when using isolated CW
+- `model_config_id`, `model_overrides`, `model_max_tokens` (optional)
+- `default_tools` (optional list) – recorded only; not enforced
+- `initial_prompt` (optional) – message sent to the child after spawn
+
+Example:
+```actionxml
+<spawn_sub_agent>{
+  "id": "researcher",
+  "parent": "primary",
+  "persona": "research",
+  "share_session": false,
+  "share_context_window": false,
+  "shared_cw_max_tokens": 512,
+  "initial_prompt": "Summarize docs in /docs"
+}</spawn_sub_agent>
+```
+
+2) Pause / Resume Sub-Agent
+
+```actionxml
+<stop_sub_agent>{"id": "researcher"}</stop_sub_agent>
+<resume_sub_agent>{"id": "researcher"}</resume_sub_agent>
+```
+
+3) Delegate Work to Existing Agent (`<delegate>`)
+
+Send a task to a specific agent and record a delegation event.
+
+```actionxml
+<delegate>{
+  "parent": "primary",
+  "child": "researcher",
+  "content": "Audit README for gaps",
+  "channel": "dev-room",
+  "metadata": {"priority": "high"}
+}</delegate>
+```
+
+Notes:
+- For general multi-agent chatter, use `<send_message>` with `target`/`targets` and optional `channel`.
+- Cross-parent channel rooms are a future consideration; prefer direct `target` for sub-agent flows today.
+
+---
 """
 
 

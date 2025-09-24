@@ -83,6 +83,56 @@ Need repeatable personas? Define them in `config.yml` under the `agents:` sectio
 
 The CLI exposes these persona presets via `penguin agent personas`, and you can register or update agents with `penguin agent spawn` / `penguin agent set-persona`. The TUI mirrors the same affordances through `/agent …` commands so multi-agent rosters stay visible while you experiment.
 
+### ActionXML (Agents-as-Tools)
+
+Sub-agents can also be managed directly from model output using ActionXML tags:
+
+- `<spawn_sub_agent>{...}</spawn_sub_agent>` – create a child (defaults to isolated session/CW). Supports `id`, `parent`, `persona`, `system_prompt`, `share_session`, `share_context_window`, `shared_cw_max_tokens`, `model_config_id` or `model_overrides`, `default_tools`, and an optional `initial_prompt`.
+- `<stop_sub_agent>{"id": "child"}</stop_sub_agent>` – pause a child (engine-driven loops should skip work).
+- `<resume_sub_agent>{"id": "child"}</resume_sub_agent>` – resume a paused child.
+- `<delegate>{"parent": "default", "child": "child", "content": "…", "channel": "dev-room"}</delegate>` – send a message to a child and record a delegation event (includes `channel`).
+
+See `penguin/prompt_actions.py` for the full syntax and examples.
+
+### CLI Quick Reference
+
+- List agents:
+  - `penguin agent list` (table)
+  - `penguin agent list --json` (script-friendly)
+- Spawn sub-agent:
+  - `penguin agent spawn child --parent default --isolate-session --isolate-context [--persona research] [--model-id kimi-lite]`
+- Pause/Resume:
+  - `penguin agent pause child`
+  - `penguin agent resume child`
+- Agent info:
+  - `penguin agent info child --json`
+- REST convenience:
+  - `POST /api/v1/agents` to spawn (parent optional)
+  - `POST /api/v1/agents/{id}/delegate` to route work with channel metadata
+  - `PATCH /api/v1/agents/{id}` with `{ "paused": true|false }`
+
+### Live Script Example
+
+The repository includes `scripts/phaseD_live_sub_agent_demo.py`, a Python client
+demo that spawns two sub-agents, runs focused prompts through the engine, and
+prints conversation summaries. Run it with:
+
+```bash
+uv run python scripts/phaseD_live_sub_agent_demo.py
+```
+
+It respects the same model requirements documented above (defaulting to the
+OpenRouter Moonshot model). Use this as a template for richer experiments or
+integration tests.
+
+## Message Flow & Ordering
+
+- **Shared transport**: Parent and sub-agents use the same MessageBus fabric as top-level personas. Registering a sub-agent wires an inbox handler for that `agent_id`; `core.send_to_agent(...)` simply enqueues events for that handler.
+- **Event-driven**: Delegates operate asynchronously. Parents send work, then consume events (stream chunks, action results, summaries) as they arrive. There is no blocking RPC; instead, the conversation manager records every message with `agent_id`, `recipient_id`, and timestamps so parents can reconstruct the full timeline.
+- **Ordering guarantees**: Each agent processes its own queue sequentially—tool output emitted by a delegate arrives in-order for that delegate. When multiple agents talk on the same room/channel, interleaving is determined by send time; rely on the recorded timestamps and `channel` metadata to understand flow.
+- **Result merging**: Parents typically read the delegate’s conversation history or listen on the shared channel to decide how to respond. For deterministic handoffs, write shared artifacts (e.g., `context/TASK_CHARTER.md`) so every participant reads the same source of truth before continuing.
+- **Synchronous needs**: When a parent must wait for a specific completion signal, have the delegate post a sentinel message (e.g., `status=ready`) or update the shared charter/status file—parents can watch for that condition before proceeding.
+
 ### REST and WebSocket
 
 Today, REST and WebSocket interfaces expose the `agent_id` routing parameter. Sub-agent orchestration occurs through the core APIs shown above; API-level payloads for sub-agent creation are on the roadmap and will follow the same intent-but be explicit about that being future work.

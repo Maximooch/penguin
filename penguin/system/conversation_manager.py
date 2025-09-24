@@ -343,19 +343,20 @@ class ConversationManager:
                     if shared_cw_max_tokens is not None:
                         desired = min(desired, int(shared_cw_max_tokens))
                     child_cw.max_tokens = desired
-                    if shared_cw_max_tokens is not None and desired < parent_cw.max_tokens:
-                        self.add_system_note(
-                            parent_agent_id,
-                            content=(
-                                f"Note: Sub-agent '{agent_id}' uses isolated CWM with max_tokens={desired} (parent={parent_cw.max_tokens})."
-                            ),
-                            metadata={
-                                "type": "cw_clamp_notice",
-                                "sub_agent": agent_id,
-                                "child_max": desired,
-                                "parent_max": parent_cw.max_tokens,
-                            },
+                    if shared_cw_max_tokens is not None:
+                        note = (
+                            f"Note: Sub-agent '{agent_id}' uses isolated CWM with max_tokens={desired} (parent={parent_cw.max_tokens})."
                         )
+                        meta = {
+                            "type": "cw_clamp_notice",
+                            "sub_agent": agent_id,
+                            "child_max": desired,
+                            "parent_max": parent_cw.max_tokens,
+                            "clamped": bool(desired < parent_cw.max_tokens),
+                        }
+                        # Record on parent and mirror to child for easier discovery
+                        self.add_system_note(parent_agent_id, content=note, metadata=dict(meta))
+                        self.add_system_note(agent_id, content=note, metadata={**meta, "audience": "child"})
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning(f"Failed to configure sub-agent CWM: {e}")
 

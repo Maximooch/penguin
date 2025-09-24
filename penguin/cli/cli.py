@@ -1186,6 +1186,7 @@ def agent_list(
         table.add_column("Children", style="dim")
         table.add_column("Tools", style="magenta")
         table.add_column("Active", style="blue")
+        table.add_column("Paused", style="yellow")
 
         for entry in roster:
             agent_id = entry.get("id", "--")
@@ -1201,8 +1202,20 @@ def agent_list(
             if len(tools) > 3:
                 tools_label += ", …"
             active_label = "yes" if entry.get("active") else ""
+            paused_label = "yes" if entry.get("paused") else ""
             style = "bold" if entry.get("active") else None
-            table.add_row(agent_id, agent_type, persona_label, model_label, parent, children_label, tools_label, active_label, style=style)
+            table.add_row(
+                agent_id,
+                agent_type,
+                persona_label,
+                model_label,
+                parent,
+                children_label,
+                tools_label,
+                active_label,
+                paused_label,
+                style=style,
+            )
 
         console.print(table)
 
@@ -1333,6 +1346,50 @@ def agent_set_persona(
             console.print(f"[green]Applied persona[/green] {persona} to agent {agent_id}.")
         except Exception as exc:
             console.print(f"[red]Failed to apply persona: {exc}[/red]")
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("pause")
+def agent_pause(
+    agent_id: str = typer.Argument(..., help="Agent identifier to pause"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Pause an agent (sub-agent) – stops engine-driven actions, messages still log."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+        try:
+            _core.set_agent_paused(agent_id, True)
+            console.print(f"[yellow]Paused[/yellow] agent {agent_id}.")
+        except Exception as exc:
+            console.print(f"[red]Failed to pause agent: {exc}[/red]")
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("resume")
+def agent_resume(
+    agent_id: str = typer.Argument(..., help="Agent identifier to resume"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Resume a paused agent."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+        try:
+            _core.set_agent_paused(agent_id, False)
+            console.print(f"[green]Resumed[/green] agent {agent_id}.")
+        except Exception as exc:
+            console.print(f"[red]Failed to resume agent: {exc}[/red]")
             raise typer.Exit(code=1)
 
     asyncio.run(_run())

@@ -5,6 +5,7 @@ factory and a programmatic API class for embedding Penguin in other applications
 """
 
 import logging
+import os
 from pathlib import Path
 import asyncio
 from contextlib import suppress
@@ -86,9 +87,11 @@ def create_app() -> "FastAPI":
     )
 
     # Configure CORS
+    origins_env = os.getenv("PENGUIN_CORS_ORIGINS", "").strip()
+    origins_list = [o.strip() for o in origins_env.split(",") if o.strip()] or ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # In production, specify allowed origins
+        allow_origins=origins_list,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -96,6 +99,10 @@ def create_app() -> "FastAPI":
 
     # Initialize core and attach to router
     core = get_or_create_core()
+    try:
+        logger.info("Model configs loaded: %s", list((getattr(core.config, "model_configs", {}) or {}).keys()))
+    except Exception:
+        logger.info("Model configs loaded: unknown")
     router.core = core
 
     # Include API routes

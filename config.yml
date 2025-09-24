@@ -6,6 +6,15 @@ model:
   provider: "openai"
   client_preference: "litellm"
 
+model_configs:
+  kimi-k2-0905:
+    model: "moonshotai/kimi-k2-0905"
+    provider: "openrouter"
+    client_preference: "openrouter"
+    max_tokens: 262000
+    temperature: 0.5
+    streaming_enabled: true
+
 api:
   base_url: "https://api.openai.com/v1"
 

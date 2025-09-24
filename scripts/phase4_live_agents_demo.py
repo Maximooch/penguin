@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from pathlib import Path
 from typing import List, Optional
 
@@ -28,21 +29,21 @@ from penguin.config import WORKSPACE_PATH
 PLANNER_SYSTEM_PROMPT = (
     "You are the Planner agent. Analyse requirements, outline steps, and delegate implementation tasks. "
     "Maintain the shared charter at context/TASK_CHARTER.md by recording goal, normalized target paths, "
-    "acceptance criteria, and QA checklist. Before handing off, ensure paths are workspace-relative and "
-    "call out what QA must verify. Keep responses concise and structured."
+    "acceptance criteria, and QA checklist. Replace any placeholder text such as 'Pending' before handing off. "
+    "If you cannot supply concrete paths or criteria, escalate instead of writing a vague plan. Keep responses concise and structured."
 )
 
 IMPLEMENTER_SYSTEM_PROMPT = (
     "You are the Implementer agent. Apply code changes, run tools, and report concrete modifications. "
-    "Read the shared charter before acting, refuse ambiguous paths, and update the charter (or status note) "
-    "with files touched, diffs produced, and verification performed so QA knows what to inspect. Prefer actionable "
-    "commands over high-level discussion."
+    "Read the shared charter before acting, and if it still contains placeholders (e.g., 'Pending') or ambiguous paths, "
+    "send a status update back to the planner rather than guessing. When you do make changes, update the charter (or status note) "
+    "with files touched, diffs produced, and verification performed so QA knows what to inspect. Prefer actionable commands over high-level discussion."
 )
 
 QA_SYSTEM_PROMPT = (
     "You are the QA agent. Validate that implementation satisfies the charter. Confirm each acceptance criterion, "
-    "note any gaps back in the charter, and only give final approval when tests and manual checks pass. Escalate "
-    "misalignments to planner/implementer instead of silently failing."
+    "note any gaps back in the charter, and only give final approval when tests and manual checks pass. If the charter still "
+    "contains placeholders or missing data, document the issue and route it back to planner/implementer instead of silently approving."
 )
 
 ROOM = "dev-room"
@@ -63,33 +64,37 @@ def setup_demo_project(workspace_root: Path) -> List[str]:
     tests_dir = project_dir / "tests"
 
     readme = project_dir / "README.md"
-    module_file = src_dir / "temperature.py"
-    test_file = tests_dir / "test_temperature.md"
+    module_file = src_dir / "text_utils.py"
+    test_file = tests_dir / "test_text_utils.md"
 
     readme_content = (
         "# Live Agents Demo\n\n"
-        "This mini-project contains a bug in `fahrenheit_to_celsius` within `src/temperature.py`.\n\n"
-        "- Expected behavior: Convert Fahrenheit degrees to Celsius using the exact formula.\n"
-        "- Bug: The current implementation uses an approximation that is wildly inaccurate.\n\n"
-        "Your task: plan, implement, and validate a fix.\n"
+        "This mini-project contains a bug in `count_words` within `src/text_utils.py`.\n\n"
+        "- Expected behavior: Return the number of words in a sentence regardless of extra whitespace or line breaks.\n"
+        "- Bug: The current implementation splits only on single spaces, so multiple spaces or newlines inflate counts.\n\n"
+        "Your task: plan, implement, and validate a robust fix.\n"
     )
 
     module_content = (
         "from __future__ import annotations\n\n"
-        "def fahrenheit_to_celsius(value_f: float) -> float:\n"
-        "    \"\"\"Convert Fahrenheit to Celsius.\n\n"
-        "    Should implement the exact formula `(F - 32) * 5/9`.\n"
-        "    BUG: Currently uses an old approximation that is off by several degrees.\n"
+        "def count_words(text: str) -> int:\n"
+        "    \"\"\"Return the number of words in *text*.\n\n"
+        "    Words should be separated by arbitrary whitespace (spaces, tabs, newlines).\n"
+        "    BUG: The current implementation splits only on a single space character,\n"
+        "    which produces empty tokens for consecutive spaces and ignores newlines.\n"
         "    \"\"\"\n"
-        "    # Deliberate bug: legacy rule of thumb\n"
-        "    return (value_f - 30) / 2\n"
+        "    if not text:\n"
+        "        return 0\n"
+        "    # Deliberate bug: split on a single space, producing empty tokens\n"
+        "    return len(text.split(" "))\n"
     )
 
     test_content = (
         "# Validation Notes for QA\n\n"
-        "- `fahrenheit_to_celsius(32)` should return `0`.\n"
-        "- `fahrenheit_to_celsius(212)` should return `100`.\n"
-        "- Check negative values (e.g., `-40` stays `-40`) and fractional inputs.\n"
+        "- `count_words(\"Hello world\")` should return 2.\n"
+        "- Multiple spaces `count_words(\"One   two\")` should still return 2.\n"
+        "- Newlines/tabs should be treated as separators.\n"
+        "- Empty strings or strings with only whitespace should return 0.\n"
     )
 
     _write_text(readme, readme_content)
@@ -135,29 +140,57 @@ async def main() -> None:
 
         # Set up a minimal demo project and load its files into context
         context_files = setup_demo_project(workspace)
-        project_root = Path(context_files[0]).parent.parent  # projects/live_agents_demo
-        module_path = project_root / "src" / "temperature.py"
+        project_root = Path(context_files[0]).parent  # projects/live_agents_demo
+        module_path = project_root / "src" / "text_utils.py"
         readme_path = project_root / "README.md"
         charter_path = workspace / "context" / "TASK_CHARTER.md"
         charter_path.parent.mkdir(parents=True, exist_ok=True)
-        if not charter_path.exists():
-            charter_path.write_text(
-                """# Task Charter\n\n"
-                "## Goal\n- Pending\n\n"
-                "## Scope and Paths\n- Workspace root: .\n- Pending targets\n\n"
-                "## Acceptance Criteria\n- Pending\n\n"
-                "## QA Checklist\n- Pending\n\n"
-                "## Implementation Notes\n- Pending\n\n"
-                "## QA Verification\n- Pending\n""",
-                encoding="utf-8",
-            )
-        print(f"Demo project base_dir: {project_root}")
-        await client.load_context_files(context_files + [str(charter_path)])
 
         project_rel_root = project_root.relative_to(workspace)
         module_rel_path = module_path.relative_to(workspace)
         readme_rel_path = readme_path.relative_to(workspace)
         charter_rel_path = charter_path.relative_to(workspace)
+
+        base_charter = """# Task Charter
+
+## Goal
+- Fix `count_words` in `src/text_utils.py` so it handles arbitrary whitespace (spaces, tabs, newlines) and returns accurate counts, including 0 for empty/whitespace-only strings.
+
+## Scope and Paths
+- Workspace root: {root}
+- Implementation file: {module}
+- Tests: {tests}
+- Documentation: {readme}
+
+## Acceptance Criteria
+- `count_words('Hello world') == 2`
+- `count_words('One   two') == 2` (multiple spaces collapsed)
+- `count_words('one\n two\tthree') == 3` (mixed whitespace)
+- `count_words('   ') == 0` and `count_words('') == 0`
+- Non-string inputs raise `TypeError`.
+- Function docstring documents whitespace handling and error behaviour.
+
+## QA Checklist
+- Run `pytest {tests}`
+- Manually spot-check the acceptance examples above.
+- Confirm README summarises behaviour changes.
+
+## Implementation Notes
+- To be filled by the implementer after changes (files touched, verification performed).
+
+## QA Verification
+- To be completed by QA after validation (include pass/fail notes and evidence).
+""".format(
+            root=project_rel_root.as_posix(),
+            module=module_rel_path.as_posix(),
+            tests=f"{project_rel_root.as_posix()}/tests/test_text_utils.py",
+            readme=readme_rel_path.as_posix(),
+        )
+
+        charter_path.write_text(base_charter, encoding="utf-8")
+
+        print(f"Demo project base_dir: {project_root}")
+        await client.load_context_files(context_files + [str(charter_path)])
 
         # Register agents with tailored prompts
         client.create_agent("planner", system_prompt=PLANNER_SYSTEM_PROMPT, activate=True)
@@ -170,12 +203,66 @@ async def main() -> None:
             "planner",
             (
                 "We have a workspace project at projects/live_agents_demo. "
-                "In src/temperature.py, fahrenheit_to_celsius uses an inaccurate shortcut. "
+                "In src/text_utils.py, count_words splits only on a single space which breaks when there are extra spaces or newlines. "
                 "Outline a concise remediation plan with steps (planning only). "
                 f"Write the key details (goal, normalized target paths, acceptance criteria, QA checklist) into {charter_rel_path.as_posix()} so other roles can rely on it. "
-                f"Use workspace-relative paths such as {module_rel_path.as_posix()} and {readme_rel_path.as_posix()} when updating the charter."
+                f"Use workspace-relative paths such as {module_rel_path.as_posix()}, {readme_rel_path.as_posix()}, and {project_rel_root.as_posix()}/tests when updating the charter."
             ),
         )
+
+        def charter_needs_revision(contents: str) -> bool:
+            stripped = contents.strip()
+            if not stripped:
+                return True
+            lowered = stripped.lower()
+            if lowered in {"goal", "pending", "# task charter"}:
+                return True
+            return bool(re.search(r"\\bpending\\b|\\btodo\\b", contents.lower()))
+
+        max_revision_attempts = 2
+        for attempt in range(max_revision_attempts + 1):
+            charter_contents = charter_path.read_text(encoding="utf-8")
+            if not charter_needs_revision(charter_contents):
+                break
+            if attempt == max_revision_attempts:
+                baseline_charter = f"""# Task Charter\n\n"""
+                baseline_charter += "## Goal\n" \
+                    "- Fix `count_words` in `src/text_utils.py` so it handles arbitrary whitespace and returns accurate counts.\\n\\n"
+                baseline_charter += "## Scope and Paths\n" \
+                    f"- Workspace root: {project_rel_root.as_posix()}\\n" \
+                    f"- Implementation file: {module_rel_path.as_posix()}\\n" \
+                    f"- Tests: {project_rel_root.as_posix()}/tests/test_text_utils.py\\n" \
+                    f"- Documentation: {readme_rel_path.as_posix()}\\n\\n"
+                baseline_charter += "## Acceptance Criteria\n" \
+                    "- `count_words('Hello world') == 2`\\n" \
+                    "- `count_words('One   two') == 2` (multiple spaces)\\n" \
+                    "- `count_words('line1\\nline2') == 2` (newlines)\\n" \
+                    "- `count_words('   ') == 0` (whitespace only)\\n" \
+                    "- Non-string inputs raise `TypeError`.\\n" \
+                    "- Function docstring documents whitespace handling and error behaviour.\\n\\n"
+                baseline_charter += "## QA Checklist\n" \
+                    f"- Run `pytest {project_rel_root.as_posix()}/tests/test_text_utils.py`\\n" \
+                    "- Manually spot-check the acceptance criteria examples.\\n" \
+                    "- Confirm README summarises behaviour.\\n\\n"
+                baseline_charter += "## Implementation Notes\n- Pending\\n\\n"
+                baseline_charter += "## QA Verification\n- Pending\\n"
+                charter_path.write_text(baseline_charter, encoding="utf-8")
+                await client.send_to_agent(
+                    "planner",
+                    "Baseline charter populated automatically; review and adjust if needed.",
+                    channel=ROOM,
+                    metadata={"from": "system"},
+                )
+                break
+            await chat(
+                client,
+                "planner",
+                (
+                    f"The charter at {charter_rel_path.as_posix()} still contains placeholders (e.g., 'Pending') or is incomplete. "
+                    "Replace the template with concrete details: list the goal, scope, normalized paths, acceptance criteria, QA checklist, and any planned tests. "
+                    "Use apply_diff to update each section so implementer and QA have actionable guidance."
+                ),
+            )
 
         # Share planner brief in the dev room
         await client.send_to_agent(
@@ -193,12 +280,13 @@ async def main() -> None:
                 "You must produce ActionXML to make changes.\n\n"
                 f"Workspace-relative base directory: {project_rel_root.as_posix()}\n"
                 f"Target file: {module_rel_path.as_posix()}\n"
-                "Goal: apply the exact conversion formula (F - 32) * 5/9 and add any guards if needed.\n\n"
+                "Goal: ensure count_words handles arbitrary whitespace (spaces, tabs, newlines, leading/trailing whitespace) and returns 0 for empty/whitespace-only strings.\n\n"
                 "Steps:\n"
                 f"1) Read the file (use <enhanced_read>{module_rel_path.as_posix()}:true:400</enhanced_read>).\n"
-                "2) Apply a minimal diff to replace the approximation with the precise formula and update the docstring.\n"
-                f"3) Optionally add/update a small README note ({readme_rel_path.as_posix()}) if needed.\n\n"
-                f"Consult {charter_rel_path.as_posix()} before acting, reject ambiguous paths, and append a short summary of files changed plus verification steps under 'Implementation Notes' in {charter_rel_path.as_posix()} using apply_diff.\n\n"
+                "2) Apply a minimal diff so word counting handles arbitrary whitespace (e.g., multiple spaces, tabs, newlines) and update the docstring with the new behavior.\n"
+                f"3) Update or create lightweight tests (e.g., {project_rel_root.as_posix()}/tests/test_text_utils.py) to cover multiple spaces, newlines, and empty strings, and refresh the README note ({readme_rel_path.as_posix()}) if helpful.\n\n"
+                f"Consult {charter_rel_path.as_posix()} before acting. If the charter still contains placeholders (e.g., 'Pending') or unclear paths, send a status message back to the planner instead of editing.\n"
+                f"When you do make changes, append a short summary of files changed plus verification steps under 'Implementation Notes' in {charter_rel_path.as_posix()} using apply_diff.\n\n"
                 "Only communicate via ActionXML blocks so tools execute."
             ),
         )
@@ -213,7 +301,7 @@ async def main() -> None:
             client,
             "qa",
             (
-                "Validate that fahrenheit_to_celsius now matches the exact formula for typical test points. "
+                "Validate that count_words handles arbitrary whitespace correctly (single/multiple spaces, tabs, newlines, leading/trailing whitespace) and that empty strings return 0. "
                 "List manual or automated checks you would run to confirm no regressions. "
                 f"Confirm each acceptance criterion recorded in {charter_rel_path.as_posix()}. "
                 f"Record your findings under 'QA Verification' (using apply_diff) and, if anything is missing, document it there and route the issue back instead of approving."

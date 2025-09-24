@@ -4,6 +4,8 @@ from pydantic import BaseModel # type: ignore
 from dataclasses import asdict # type: ignore
 from datetime import datetime # type: ignore
 import asyncio
+import copy
+import json
 import logging
 import os
 from pathlib import Path
@@ -93,18 +95,25 @@ def _get_coordinator(core: PenguinCore):
         raise HTTPException(status_code=500, detail=f"Coordinator not available: {e}")
 
 def _validate_agent_id(agent_id: str) -> None:
-    if not agent_id or len(agent_id) > 32:
-        raise HTTPException(status_code=400, detail="agent_id must be 1-32 chars")
+    if not agent_id or len(agent_id) > 64:
+        raise HTTPException(status_code=400, detail="agent_id must be 1-64 chars")
     import re
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", agent_id):
-        raise HTTPException(status_code=400, detail="agent_id must be alphanumeric, dash or underscore")
+    if not re.fullmatch(r"[a-z0-9_-]+", agent_id):
+        raise HTTPException(status_code=400, detail="agent_id must match ^[a-z0-9_-]+$")
 
-class AgentCreate(BaseModel):
-    agent_id: str
-    role: str
+class AgentSpawnRequest(BaseModel):
+    id: str
+    parent: Optional[str] = None
+    model_config_id: str
+    persona: Optional[str] = None
     system_prompt: Optional[str] = None
-    model_max_tokens: Optional[int] = None
+    share_session: bool = False
+    share_context_window: bool = False
+    shared_cw_max_tokens: Optional[int] = None
+    model_overrides: Optional[Dict[str, Any]] = None
+    default_tools: Optional[List[str]] = None
     activate: bool = False
+    initial_prompt: Optional[str] = None
 
 class AgentRegister(BaseModel):
     role: str
@@ -128,6 +137,22 @@ class HumanReplyRequest(BaseModel):
     message_type: Optional[str] = "message"
     metadata: Optional[Dict[str, Any]] = None
     channel: Optional[str] = None
+
+class AgentPatchRequest(BaseModel):
+    paused: Optional[bool] = None
+
+class AgentDelegateRequest(BaseModel):
+    content: Any
+    channel: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    parent: Optional[str] = None
+
+class MessageEnvelope(BaseModel):
+    recipient: str
+    content: Any
+    message_type: Optional[str] = "message"
+    channel: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 class CoordRoleSend(BaseModel):
     role: str
@@ -228,39 +253,224 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
             except Exception:
                 pass
 
-@router.get("/api/v1/agents")
-async def list_agents(core: PenguinCore = Depends(get_core)):
-    """List registered agents including current conversation ids."""
+@router.websocket("/api/v1/ws/messages")
+async def messages_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core)):
+    """Alias of /api/v1/events/ws for message streaming.
+
+    Supports the same query params as /api/v1/events/ws:
+      - agent_id, message_type, channel, include_ui, include_bus
+    """
+    await events_ws(websocket, core)  # Reuse the same handler
+
+@router.get("/api/v1/conversations/{conversation_id}/history")
+async def get_conversation_history(
+    conversation_id: str,
+    core: PenguinCore = Depends(get_core),
+    include_system: bool = True,
+    limit: Optional[int] = None,
+    agent_id: Optional[str] = None,
+    channel: Optional[str] = None,
+    message_type: Optional[str] = None,
+):
+    try:
+        items = core.get_conversation_history(conversation_id, include_system=include_system, limit=limit)
+        # Optional filtering
+        def _ok(m: Dict[str, Any]) -> bool:
+            if agent_id and m.get("agent_id") != agent_id:
+                return False
+            if channel and (m.get("metadata") or {}).get("channel") != channel:
+                return False
+            if message_type and m.get("message_type") != message_type:
+                return False
+            return True
+        return [m for m in items if _ok(m)]
+    except Exception as e:
+        logger.error(f"history error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch history")
+
+@router.get("/api/v1/agents/{agent_id}/history")
+async def get_agent_current_history(
+    agent_id: str,
+    core: PenguinCore = Depends(get_core),
+    include_system: bool = True,
+    limit: Optional[int] = None,
+):
+    _validate_agent_id(agent_id)
+    try:
+        conv = core.conversation_manager.get_agent_conversation(agent_id)
+        sid = getattr(conv.session, "id", None)
+        if not sid:
+            return []
+        return core.get_conversation_history(sid, include_system=include_system, limit=limit)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    except Exception as e:
+        logger.error(f"agent history error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch history")
+
+@router.get("/api/v1/agents/{agent_id}/sessions")
+async def list_agent_sessions(agent_id: str, core: PenguinCore = Depends(get_core)):
+    _validate_agent_id(agent_id)
     try:
         cm = core.conversation_manager
-        agents = []
-        agent_sessions = getattr(cm, 'agent_sessions', {}) or {}
-        for aid, conv in agent_sessions.items():
-            try:
-                agents.append({
-                    "agent_id": aid,
-                    "conversation_id": getattr(conv.session, 'id', None),
-                })
-            except Exception:
-                continue
-        return {"agents": agents}
+        cm._ensure_agent(agent_id)  # ensure structures
+        sm = cm.agent_session_managers[agent_id]
+        sessions = sm.list_sessions(limit=1000, offset=0)
+        return sessions
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    except Exception as e:
+        logger.error(f"list sessions error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to list sessions")
+
+@router.get("/api/v1/agents/{agent_id}/sessions/{session_id}/history")
+async def get_agent_session_history(
+    agent_id: str,
+    session_id: str,
+    core: PenguinCore = Depends(get_core),
+    include_system: bool = True,
+    limit: Optional[int] = None,
+):
+    _validate_agent_id(agent_id)
+    try:
+        cm = core.conversation_manager
+        cm._ensure_agent(agent_id)
+        # Don't enforce ownership strictly; fetch by session id directly
+        items = cm.get_conversation_history(session_id, include_system=include_system, limit=limit)
+        return items
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    except Exception as e:
+        logger.error(f"agent session history error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch session history")
+
+@router.get("/api/v1/telemetry")
+async def get_telemetry(core: PenguinCore = Depends(get_core)):
+    try:
+        data = await core.get_telemetry_summary()
+        return data
+    except Exception as e:
+        logger.error(f"telemetry error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch telemetry")
+
+
+@router.websocket("/api/v1/ws/telemetry")
+async def telemetry_ws(
+    websocket: WebSocket,
+    core: PenguinCore = Depends(get_core),
+):
+    await websocket.accept()
+    params = websocket.query_params
+    agent_filter = params.get("agent_id")
+    try:
+        interval = float(params.get("interval", "2"))
+    except ValueError:
+        interval = 2.0
+    try:
+        while True:
+            data = await core.get_telemetry_summary()
+            if agent_filter:
+                data = _filter_telemetry_snapshot(data, agent_filter)
+            await websocket.send_json(data)
+            await asyncio.sleep(interval)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.debug(f"telemetry ws closed: {e}")
+
+
+def _filter_telemetry_snapshot(snapshot: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
+    """Return a filtered copy focusing on a single agent."""
+    try:
+        data = copy.deepcopy(snapshot)
+    except Exception:
+        data = snapshot
+    if not isinstance(data, dict):
+        return data
+
+    agents = data.get("agents")
+    if isinstance(agents, dict):
+        agent_stats = agents.get(agent_id)
+        data["agents"] = {agent_id: agent_stats} if agent_stats else {}
+
+    tokens = data.get("tokens")
+    if isinstance(tokens, dict):
+        per_agent = tokens.get("per_agent")
+        if isinstance(per_agent, dict):
+            tokens["per_agent"] = {agent_id: per_agent.get(agent_id)} if agent_id in per_agent else {}
+
+    return data
+
+@router.get("/api/v1/agents")
+async def list_agents(core: PenguinCore = Depends(get_core), simple: Optional[bool] = None):
+    """List registered agents.
+
+    - Default: return full roster (JSON list) from core.get_agent_roster().
+    - When simple=true: return {"agents": [{agent_id, conversation_id}]} (legacy shape).
+    """
+    try:
+        if simple:
+            cm = core.conversation_manager
+            agents = []
+            for aid, conv in (getattr(cm, 'agent_sessions', {}) or {}).items():
+                try:
+                    agents.append({
+                        "agent_id": aid,
+                        "conversation_id": getattr(conv.session, 'id', None),
+                    })
+                except Exception:
+                    continue
+            return {"agents": agents}
+        return core.get_agent_roster()
     except Exception as e:
         logger.error(f"list_agents error: {e}")
         raise HTTPException(status_code=500, detail="Failed to list agents")
 
 @router.post("/api/v1/agents")
-async def create_agent(req: AgentCreate, core: PenguinCore = Depends(get_core)):
-    _validate_agent_id(req.agent_id)
+async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_core)):
+    _validate_agent_id(req.id)
     try:
-        coord = _get_coordinator(core)
-        await coord.spawn_agent(
-            req.agent_id,
-            role=req.role,
-            system_prompt=req.system_prompt,
-            model_max_tokens=req.model_max_tokens,
-            activate=req.activate,
-        )
-        return {"ok": True}
+        # Enforce model id presence; accept overrides only as fallback
+        model_id = (req.model_config_id or "").strip()
+        overrides = req.model_overrides if isinstance(req.model_overrides, dict) else None
+        if not model_id and not overrides:
+            raise HTTPException(status_code=400, detail="model_config_id is required (or model_overrides as fallback)")
+
+        parent = (req.parent or "").strip() or None
+        try:
+            if parent:
+                core.create_sub_agent(
+                    req.id,
+                    parent_agent_id=parent,
+                    system_prompt=req.system_prompt,
+                    share_session=bool(req.share_session),
+                    share_context_window=bool(req.share_context_window),
+                    shared_cw_max_tokens=req.shared_cw_max_tokens,
+                    persona=req.persona,
+                    model_config_id=model_id or None,
+                    model_overrides=overrides,
+                    default_tools=tuple(req.default_tools) if req.default_tools else None,
+                    activate=req.activate,
+                )
+            else:
+                core.register_agent(
+                    req.id,
+                    system_prompt=req.system_prompt,
+                    persona=req.persona,
+                    model_config_id=model_id or None,
+                    model_overrides=overrides,
+                    default_tools=tuple(req.default_tools) if req.default_tools else None,
+                    activate=req.activate,
+                )
+        except ValueError as ve:
+            available = list((getattr(core.config, "model_configs", {}) or {}).keys())
+            detail = f"{ve}. Available model ids: {available or 'none'}"
+            raise HTTPException(status_code=400, detail=detail)
+
+        if req.initial_prompt:
+            await core.send_to_agent(req.id, req.initial_prompt)
+
+        return core.get_agent_profile(req.id) or {"id": req.id}
     except HTTPException:
         raise
     except Exception as e:
@@ -268,17 +478,101 @@ async def create_agent(req: AgentCreate, core: PenguinCore = Depends(get_core)):
         raise HTTPException(status_code=500, detail="Failed to create agent")
 
 @router.delete("/api/v1/agents/{agent_id}")
-async def delete_agent(agent_id: str, core: PenguinCore = Depends(get_core)):
+async def delete_agent(agent_id: str, core: PenguinCore = Depends(get_core), preserve_conversation: bool = True):
     _validate_agent_id(agent_id)
     try:
-        coord = _get_coordinator(core)
-        await coord.destroy_agent(agent_id)
-        return {"ok": True}
-    except HTTPException:
-        raise
+        # Block removal if parent has children (core enforces)
+        removed = core.unregister_agent(agent_id, preserve_conversation=preserve_conversation)
+        if asyncio.iscoroutine(removed):
+            removed = await removed
+        return {"removed": bool(removed)}
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
         logger.error(f"delete_agent error: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete agent")
+
+@router.get("/api/v1/agents/{agent_id}")
+async def get_agent(agent_id: str, core: PenguinCore = Depends(get_core)):
+    _validate_agent_id(agent_id)
+    prof = core.get_agent_profile(agent_id)
+    if not prof:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return prof
+
+@router.patch("/api/v1/agents/{agent_id}")
+async def patch_agent(agent_id: str, req: AgentPatchRequest, core: PenguinCore = Depends(get_core)):
+    _validate_agent_id(agent_id)
+    if req.paused is None:
+        raise HTTPException(status_code=400, detail="No changes provided")
+    try:
+        core.set_agent_paused(agent_id, bool(req.paused))
+        return core.get_agent_profile(agent_id) or {"id": agent_id}
+    except Exception as e:
+        logger.error(f"patch_agent error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update agent")
+
+@router.post("/api/v1/agents/{agent_id}/delegate")
+async def delegate_to_agent(agent_id: str, req: AgentDelegateRequest, core: PenguinCore = Depends(get_core)):
+    """Convenience wrapper around POST /messages for parent→child delegation.
+
+    Records a delegation event on parent/child (best-effort) and routes the content to the child.
+    """
+    _validate_agent_id(agent_id)
+    if req.content is None:
+        raise HTTPException(status_code=400, detail="content is required")
+    parent = (req.parent or getattr(core.conversation_manager, "current_agent_id", None) or "default")
+    try:
+        # Record delegation event
+        cm = core.conversation_manager
+        try:
+            import uuid as _uuid
+            delegation_id = _uuid.uuid4().hex[:8]
+            meta = dict(req.metadata or {})
+            if req.channel:
+                meta["channel"] = req.channel
+            cm.log_delegation_event(
+                delegation_id=delegation_id,
+                parent_agent_id=str(parent),
+                child_agent_id=agent_id,
+                event="request_sent",
+                message=str(req.content)[:140],
+                metadata=meta,
+            )
+        except Exception:
+            pass
+
+        ok = await core.send_to_agent(
+            agent_id,
+            req.content,
+            message_type="message",
+            metadata=req.metadata,
+            channel=req.channel,
+        )
+        return {"ok": bool(ok), "delegated_to": agent_id, "parent": parent}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"delegate_to_agent error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delegate to agent")
+
+@router.post("/api/v1/messages")
+async def post_message(req: MessageEnvelope, core: PenguinCore = Depends(get_core)):
+    target = (req.recipient or "").strip().lower()
+    if not target:
+        raise HTTPException(status_code=400, detail="recipient is required")
+    try:
+        if target in ("human", "user"):
+            ok = await core.send_to_human(req.content, message_type=req.message_type or "message", metadata=req.metadata, channel=req.channel)
+        else:
+            _validate_agent_id(target)
+            ok = await core.send_to_agent(target, req.content, message_type=req.message_type or "message", metadata=req.metadata, channel=req.channel)
+        return {"sent": bool(ok)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"post_message error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send message")
 
 @router.post("/api/v1/agents/{agent_id}/register")
 async def register_agent(agent_id: str, req: AgentRegister, core: PenguinCore = Depends(get_core)):
@@ -2010,3 +2304,12 @@ async def get_memory_stats(core: PenguinCore = Depends(get_core)):
     except Exception as e:
         logger.error(f"Error getting memory stats: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+class AgentPatchRequest(BaseModel):
+    paused: Optional[bool] = None
+
+class MessageEnvelope(BaseModel):
+    recipient: str
+    content: Any
+    message_type: Optional[str] = "message"
+    channel: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None

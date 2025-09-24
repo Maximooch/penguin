@@ -64,6 +64,25 @@ penguin              # Interactive CLI chat
 penguin-web          # Web API server (if [web] installed)
 ```
 
+<!-- #TODO: double check if accurate.  -->
+
+### Quick Python Usage
+```python
+from penguin import PenguinAgent
+
+# PenguinAgent handles PenguinCore setup, workspace defaults, and project docs
+with PenguinAgent() as agent:
+    response = agent.chat("Summarise the current task charter")
+    print(response["assistant_response"])
+
+    # Register a specialised sub-agent if desired
+    agent.register_agent("qa", system_prompt="You are the QA reviewer.")
+```
+
+`PenguinAgent` wraps the full `PenguinCore` stack (conversation manager, tool manager,
+project docs autoloading) with a synchronous API so you can script multi-agent workflows
+without reimplementing orchestration.
+
 <!-- Actual roadmap is a #TODO: -->
 <!-- # TODO: Actual roadmap -->
 
@@ -157,7 +176,7 @@ Penguin is a modular, extensible AI coding assistant powered by LLMs. It functio
 - Async Python client (`PenguinClient`) that offers streaming chat, checkpoint workflows, model
   switching, and multi-agent routing.
 - FastAPI web server with REST + WebSocket streaming endpoints and an embeddable `PenguinAPI`
-  for custom applications.
+  for custom applications (agent spawn/pause/delegate, conversation history, telemetry).
 - Dashboard hooks and telemetry endpoints for observability integrations.
 
 ### Model & Provider Support

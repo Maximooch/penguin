@@ -22,9 +22,17 @@ This document tracks the remaining work to reach robust multi-agent and sub-agen
 - [x] Wire `engine.run_task`, `engine.run_response`, and Run Mode to accept and schedule multiple agents via the `MultiAgentCoordinator` when policy configuration dictates. *(Engine now accepts `agent_role` and falls back to lite agents through the coordinator.)*
 - [x] Implement coordinator strategies (round robin, role chain, plan-driven) as first-class, configurable options instead of demo methods only. *(Coordinator now exposes selection helpers, broadcasts, and lite-agent registration.)*
 - [x] Introduce "lite" agents that can be spawned as limited-capability tools (e.g., read-only analyzers) and invoked from the coordinator or tool manager. *(Lite agents can be registered with executable handlers and triggered when no full agent is available.)*
-- [ ] Clarify and document how parent ↔ sub-agent conversations progress: specify the message flow (synchronous vs. event-driven), ordering guarantees, and how results are merged.
-- [ ] Fix planner → implementer handoff so file paths and behavior specs stay consistent (e.g., live_agents_demo, empty-input policy).
-- [ ] Align planner, implementer, and QA task specs to prevent conflicting requirements within one run.
+- [x] Clarify and document how parent ↔ sub-agent conversations progress: specify the message flow (synchronous vs. event-driven), ordering guarantees, and how results are merged. *(Added MessageBus ordering guidance to sub-agent docs.)*
+- [x] Fix planner → implementer handoff so file paths and behavior specs stay consistent (e.g., live_agents_demo, empty-input policy). *(Handoffs now mandate workspace-relative paths, placeholder detection, and charter updates.)*
+- [x] Align planner, implementer, and QA task specs to prevent conflicting requirements within one run. *(Shared charter workflow updated; prompts require filling sections and QA refusal on placeholders.)*
+
+### Agents-as-Tools (implemented)
+- [x] ActionXML tags implemented and documented: `<spawn_sub_agent>`, `<stop_sub_agent>`, `<resume_sub_agent>`, `<delegate>`.
+- [x] Lite tools available via ToolManager (grep, perplexity web search, linter) and validated.
+- [x] Use `<send_message>` + `channel` for chatter; delegation events now preserve `channel` in metadata.
+- [x] Sub-agent spawn defaults to isolated session/CW; initial SYSTEM/CONTEXT copied once; optional `shared_cw_max_tokens` supported.
+- [x] Clamp notices recorded on parent and child with `type=cw_clamp_notice` and `clamped` flag.
+- [x] No runtime permission/budget engine; record persona/model/default_tools but do not enforce.
 
 ## Phase 3 – Communication Fabric & Persistence
 - [x] Decide on channel semantics for the MessageBus (rooms, topics, or per-agent queues) and implement channel identifiers if needed. *(MessageBus now supports channel-aware handlers and filtering.)*
@@ -35,17 +43,51 @@ This document tracks the remaining work to reach robust multi-agent and sub-agen
 - [x] Restore ActionXML `<send_message>` fallback when Penguin core is absent so agents can post status instead of raising.
 - [x] Make apply_diff tolerate absolute paths or enforce relative ones to stop context-mismatch failures.
 
+### Channels and Rooms (future)
+- [ ] Consider IRC-style room semantics over MessageBus for broader multi-agent conversations. Document guardrails to avoid cross-parent sub-agent confusion. For now, prefer direct `target` in `<send_message>` for parent↔sub-agent coordination.
+
 ## Phase 4 – UI/UX Surfaces
 - [x] Update the TUI/CLI to list registered agents and sub-agents, with commands to inspect their state and switch personas interactively. *(New `/agent …` commands and persona tables surface roster details and allow persona switching.)*
 - [ ] Add multi-agent awareness to Link/web UI: visual agent roster, streaming indicators per agent, configurators for spawning/destroying agents, and access to agent-specific transcript views.
 - [ ] Provide CLI scripting helpers (e.g., `penguin agent spawn`, `penguin agent list`) that wrap the new client/core APIs.
 
+### New UX for Sub-Agent Tools
+- [x] Surface sub-agent actions in CLI: spawn/stop/resume/delegate. Show paused state in rosters. Add `penguin agent list --json` for scripting.
+- [ ] Mirror in TUI with pause/resume bindings and channel badges in transcript.
+
 ## Phase 5 – Full-System Scenarios & Documentation
 - [ ] Document end-to-end workflows demonstrating multiple Penguins collaborating (parent + sub-agents, or several top-level agents sharing tasks).
 - [ ] Cover operational guidance: monitoring, logging, and troubleshooting multi-agent runs.
-- [ ] Revisit docs once API helpers land so examples no longer reach into private attributes.
+- [x] Sub-agent docs updated with ActionXML, CLI references, REST pointers, and live demo script (`docs/docs/advanced/sub_agents.md`).
+- [x] Context-window docs updated with clamp-notice behavior (`docs/docs/system/context-window.md`).
+- [x] Multi-agent overview refreshed with REST/WebSocket notes (`docs/docs/advanced/multi_agents.md`).
+- [ ] Revisit docs once API/REST helpers land so examples no longer reach into private attributes.
 
 ## Parking Lot / Open Questions
 - How should we represent hierarchical conversations (parent agent coordinating several sub-agents) within persistence and analytics? Tree vs. flat log?
 - What telemetry do we need to debug multi-agent handoffs (token usage per agent, context-window clamps, delegation outcomes), and how should dashboards/visualizers surface it?
 - How will "lite" tool-style agents be configured—through ToolManager, coordinator templates, or separate registries?
+- Should we introduce a permission/budget engine to enforce per-sub-agent tool and cost policies? For now, record user-provided defaults only; no enforcement.
+
+## Implementation Steps (current status)
+
+1) Agents-as-Tools core (DONE)
+   - Tags wired: spawn/pause/resume/delegate; channel metadata preserved; clamp-notice mirrored.
+   - Core pause/resume state with roster exposure; CLI pause/resume commands added.
+
+2) Scripting & Tests (DONE)
+   - Phase A smoke + CLI tests; Phase B scenario scripts (multi-child, persona/model, ActionXML robustness, channel provenance, context sharing/clamp, pause-during-delegate, lite tools sanity).
+
+3) CLI polish (PARTIAL)
+   - `agent list --json` shipped; Paused column added; spawn supports personas/model ids.
+   - TODO: `agent delegate` helper; improved onboarding hints in help output.
+
+4) API/REST (NEXT)
+   - Define endpoints for roster, profile, pause/resume, message routing, spawn sub-agent.
+   - Add conversation history filters (by agent_id, channel, message_type).
+
+5) TUI/Web (NEXT)
+   - Roster with paused indicator; spawn/pause/resume actions; per-agent transcript view with channel badges.
+
+6) Docs (IN PROGRESS)
+   - Sub-agents and context-window docs updated; remaining end-to-end and operational guidance pending API/REST finalization.

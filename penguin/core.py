@@ -630,6 +630,9 @@ class PenguinCore:
         )
         self.current_runmode_status_summary: str = "RunMode idle." # New attribute
 
+        # Track paused state for agents (sub-agents as tools)
+        self._agent_paused: Dict[str, bool] = {}
+
         # Register MessageBus human adapter to forward to UI
         try:
             if MessageBus and ProtocolMessage:
@@ -975,6 +978,7 @@ class PenguinCore:
                     "children": children,
                     "default_tools": default_tools,
                     "active": agent_id == active_agent,
+                    "paused": bool(getattr(self, "_agent_paused", {}).get(agent_id, False)),
                     "is_sub_agent": parent is not None,
                     "system_prompt_preview": preview,
                 }
@@ -1196,7 +1200,12 @@ class PenguinCore:
                             role="user",
                             content=msg.content,
                             category=MessageCategory.DIALOG,
-                            metadata={"via": "message_bus", "from": msg.sender, **(msg.metadata or {})},
+                            metadata={
+                                "via": "message_bus",
+                                "from": msg.sender,
+                                **({"channel": msg.channel} if getattr(msg, "channel", None) else {}),
+                                **(msg.metadata or {}),
+                            },
                             message_type=msg.message_type or "message",
                         )
                         self.conversation_manager.save()
@@ -1281,6 +1290,31 @@ class PenguinCore:
         """Return mapping of parent agents to sub-agents."""
         return self.conversation_manager.list_sub_agents(parent_agent_id)
 
+    # ------------------------------
+    # Sub-agent paused state helpers
+    # ------------------------------
+    def set_agent_paused(self, agent_id: str, paused: bool = True) -> None:
+        """Mark an agent as paused/resumed and add a system note."""
+        try:
+            self._agent_paused[agent_id] = bool(paused)
+        except Exception:
+            self._agent_paused = {agent_id: bool(paused)}
+        try:
+            note = "Paused" if paused else "Resumed"
+            self.conversation_manager.add_system_note(
+                agent_id,
+                f"Agent state: {note}",
+                metadata={"type": "agent_state", "paused": bool(paused)},
+            )
+        except Exception:
+            pass
+
+    def is_agent_paused(self, agent_id: str) -> bool:
+        try:
+            return bool(self._agent_paused.get(agent_id, False))
+        except Exception:
+            return False
+
     def create_sub_agent(
         self,
         agent_id: str,
@@ -1315,6 +1349,19 @@ class PenguinCore:
             model_overrides=model_overrides,
             default_tools=default_tools,
         )
+        # Ensure parent↔child mapping is recorded even when not sharing session/CW
+        try:
+            parent_map = getattr(self.conversation_manager, "sub_agent_parent", {}) or {}
+            if parent_map.get(agent_id) != parent_agent_id:
+                self.conversation_manager.create_sub_agent(
+                    agent_id,
+                    parent_agent_id=parent_agent_id,
+                    share_session=share_session,
+                    share_context_window=share_context_window,
+                    shared_cw_max_tokens=shared_cw_max_tokens,
+                )
+        except Exception as e:
+            logger.debug(f"create_sub_agent mapping ensure failed for '{agent_id}': {e}")
 
     def unregister_agent(self, agent_id: str, *, preserve_conversation: bool = False) -> bool:
         """Unregister an agent and clean up associated resources."""

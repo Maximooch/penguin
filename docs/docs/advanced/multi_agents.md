@@ -95,6 +95,8 @@ Streaming endpoints accept the same field. This allows dashboards to multiplex m
 - **Runtime metrics**: The telemetry collector aggregates message, agent, room, and task statistics. Call `GET /api/v1/telemetry` (or `PenguinClient.get_telemetry_summary`) to feed dashboards; the standalone app in `dashboard/app.py` shows a reference implementation.
 - **Shared charter:** Treat `context/TASK_CHARTER.md` (or `.json`) as the single source of truth for task goal, normalized paths, acceptance criteria, and QA checklist. Planner writes/updates it, implementer records what changed and how it was verified, and QA signs off against it. This keeps parent + sub-agents aligned without inventing new wires.
 - **QA gate:** A run finishes only after the QA persona (or equivalent validation agent) marks every charter item complete and sends the verdict back to the parent or human. If criteria are unmet, QA loops the issue back through the MessageBus rather than silently finishing.
+- **No placeholders:** If the charter still contains placeholder text ("Pending", missing paths, unclear goals), implementers/QA should halt and send a status message back instead of guessing. Escalations travel over the same MessageBus so the parent agent can tighten the spec before work continues.
+- **PenguinAgent helper:** When scripting or testing, `from penguin import PenguinAgent` provides a synchronous wrapper around `PenguinCore` that auto-loads project docs (`PENGUIN.md`, `AGENTS.md`, README), discovers charter files, and exposes helper methods for registering personas or sending MessageBus events.
 
 ## Roadmap
 
@@ -103,6 +105,9 @@ Upcoming milestones include:
 - Policy-based routing and fallback between agents
 - Dynamic registration APIs so agents can be created/removed at runtime
 - Enhanced diagnostics that tag token and latency metrics by `agent_id`
+- Public REST APIs (`/api/v1/agents`, `/api/v1/messages`, `/api/v1/telemetry`) plus
+  WebSocket streams (`/api/v1/ws/messages`, `/api/v1/ws/telemetry`) so external
+  services can orchestrate multi-agent workflows without the CLI.
 - UI affordances in the web console for monitoring multi-agent deployments
 
 Looking for finer-grained delegation patterns? Continue with [Sub-Agent Delegation](sub_agents.md).

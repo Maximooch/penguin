@@ -561,6 +561,28 @@ class PenguinClient:
         """List sub-agents mapped to their parent agents."""
         return self.core.list_sub_agents(parent_agent_id)
 
+    # Agent roster and profiles
+    # ------------------------------------------------------------------
+
+    def get_agent_roster(self) -> List[Dict[str, Any]]:
+        """Return detailed roster for all registered agents (JSON friendly)."""
+        return self.core.get_agent_roster()
+
+    def get_agent_profile(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Return roster information for a single agent."""
+        return self.core.get_agent_profile(agent_id)
+
+    # Agent pause/resume helpers
+    # ------------------------------------------------------------------
+
+    def pause_agent(self, agent_id: str) -> None:
+        """Mark an agent as paused (engine-driven actions should be skipped)."""
+        self.core.set_agent_paused(agent_id, True)
+
+    def resume_agent(self, agent_id: str) -> None:
+        """Mark an agent as resumed."""
+        self.core.set_agent_paused(agent_id, False)
+
     async def unregister_agent(self, agent_id: str, *, preserve_conversation: bool = False) -> bool:
         """Unregister an agent and optionally remove its conversation state."""
         result = self.core.unregister_agent(agent_id, preserve_conversation=preserve_conversation)

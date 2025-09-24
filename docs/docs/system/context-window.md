@@ -151,6 +151,15 @@ The system automatically selects the best available token counter:
 - **Provider-aware Tokenization**: Uses provider-specific token counting when available
 - **Robust Fallbacks**: Graceful degradation when components are unavailable
 
+### Clamp Notices (Sub-Agents)
+
+When a sub-agent is created with an isolated context window and a `shared_cw_max_tokens` value, the child's `ContextWindowManager.max_tokens` is set to the lower of the parent’s max and the provided clamp. A system note with metadata `type=cw_clamp_notice` is recorded on both the parent and child conversations to make this visible in transcripts and dashboards. The metadata includes:
+
+- `sub_agent`: child agent id
+- `child_max`: effective child max tokens
+- `parent_max`: parent’s max tokens at time of spawn
+- `clamped`: true if the child was reduced relative to parent
+
 ## Key Methods
 
 ### Token Management

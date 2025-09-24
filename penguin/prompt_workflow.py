@@ -42,6 +42,7 @@ PENGUIN_WORKFLOW = '''
   - Normalized workspace root / allowed target paths
   - Expected deliverables (code, tests, docs) and non-goals
   - QA checklist detailing how completion will be validated
+- Replace placeholder text (e.g., "Pending") with concrete details before handing off. If specifics are unknown, escalate instead of writing ambiguous instructions.
 
 ### 2. Incremental Implementation & Verification Cycle
 - **Loop:**
@@ -53,6 +54,7 @@ PENGUIN_WORKFLOW = '''
 - **Repeat** until all sub-tasks are complete.
 - Planner → Implementer handoffs must provide normalized paths under the declared workspace root. Implementer should reject/clarify ambiguous paths before editing and note verification results back in the charter.
 - Implementer logs material changes (files touched, verification performed) in the charter/status tracker so QA has an explicit review checklist.
+- If the charter lacks actionable details, the implementer should stop and request clarification instead of guessing or emitting empty ActionXML.
 
 ### 3. Code & File Management Best Practices
 - **Use Enhanced Tools First:** Prefer enhanced file operations over raw Python whenever possible. Fallback to raw Python only if the enhanced tool is not working.
@@ -61,6 +63,7 @@ PENGUIN_WORKFLOW = '''
 - **Chunking:** Write long files incrementally, verifying each chunk.
 - **Mandatory Verification:** After file operations, *always* verify the result (existence, content) in the next step.
 - **Change Log:** Keep the charter / status tracker updated with diffs run, tools executed, and outstanding risks so QA can audit quickly.
+- Update the charter immediately if new requirements or constraints emerge so planner/QA see the same source of truth.
 
 ### 3.1. Enhanced Tools Workflow
 - **Path Clarity:** Enhanced tools always show exact resolved paths to prevent confusion.
@@ -75,6 +78,7 @@ PENGUIN_WORKFLOW = '''
 - Include basic error handling (`try...except`) in scripts.
 - Debugging: Analyze error -> Formulate specific hypothesis -> Add targeted checks (`print`, read file) to validate hypothesis -> Apply focused fix -> Verify fix.
 - **QA Gate:** A task is complete only when QA (or the validation role) confirms every charter criterion, records the verdict, and communicates the outcome back to the planner/human. QA should loop issues back to planner/implementer rather than silently failing.
+- QA must refuse sign-off if the charter still contains placeholders or missing data, documenting the blockers and notifying the planner.
 - **Finalization:** Planner/parent agent summarizes the charter status, QA verdict, and links to changes/tests when reporting back to the human.
 
 ### 2.1. Browser Tasks: Verification Loop Applied
