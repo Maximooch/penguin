@@ -314,7 +314,39 @@ commands:
     category: debug
     description: "Show detailed token breakdown"
     handler: "_handle_tokens_detail"
-    
+
+  # Prompt mode commands
+  - name: "mode set"
+    category: system
+    description: "Set prompt mode (direct|review|implement|test|terse|explain|bench_minimal)"
+    parameters:
+      - name: name
+        type: string
+        required: true
+        description: "Mode name"
+    handler: "_handle_mode_set"
+
+  - name: "mode show"
+    category: system
+    description: "Show current prompt mode"
+    handler: "_handle_mode_show"
+
+  # Shortcuts for common modes
+  - name: review
+    category: system
+    description: "Shortcut: set prompt mode to 'review'"
+    handler: "_handle_mode_review"
+
+  - name: implement
+    category: system
+    description: "Shortcut: set prompt mode to 'implement'"
+    handler: "_handle_mode_implement"
+
+  - name: test
+    category: system
+    description: "Shortcut: set prompt mode to 'test'"
+    handler: "_handle_mode_test"
+
   # Context commands
   - name: "context list"
     category: chat
@@ -457,6 +489,22 @@ commands:
     category: system
     description: "Toggle status sidebar visibility"
     handler: "_handle_status_toggle"
+
+  # Output formatting commands
+  - name: "output style get"
+    category: system
+    description: "Show current output formatting style"
+    handler: "_handle_output_command"
+
+  - name: "output style set"
+    category: system
+    description: "Set output formatting style (steps_final|plain|json_guided)"
+    parameters:
+      - name: style
+        type: string
+        required: true
+        description: "Output style name"
+    handler: "_handle_output_command"
 
 # Plugin command extension points (future)
 plugins:

@@ -47,6 +47,18 @@ if Expander is None:
         • `Enter` key or mouse click toggles the body visibility.
         """
 
+        class SummaryLine(Static):
+            can_focus = True
+
+            def on_click(self, event) -> None:  # type: ignore[override]
+                # Handle clicks directly on the summary line to toggle
+                try:
+                    parent = getattr(self, "parent", None)
+                    if parent is not None:
+                        parent.action_toggle()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
         open_state = reactive(False)
 
         BINDINGS = [("enter", "toggle", "Toggle"), ("space", "toggle", "Toggle"), ("ctrl+r", "toggle", "Toggle")]
@@ -70,15 +82,34 @@ if Expander is None:
         def compose(self) -> ComposeResult:  # noqa: D401 – framework signature
             # Header line with arrow indicator
             arrow = "▼" if self.open_state else "▶"
-            yield Static(f"{arrow} {self._summary_text}", classes="expander-summary")
+            yield self.SummaryLine(f"{arrow} {self._summary_text}", classes="expander-summary")
 
             # Body (conditionally mounted)
             if self.open_state:
                 yield TextualMarkdown(self._body_md, classes="expander-body")
 
         # ---------------------------- Events ---------------------------
-        def on_click(self) -> None:  # Textual will provide the event arg implicitly
-            self.action_toggle()
+        def on_click(self, event) -> None:  # type: ignore[override]
+            """Toggle only when the summary line is clicked.
+
+            Older Textual versions may bubble click events from children.
+            Guard against accidental toggles while selecting text in the body
+            by requiring the click target to be the summary widget.
+            """
+            try:
+                target = getattr(event, "target", None)
+                # target may be a DOM node with a CSS classes attribute
+                classes = set()
+                if target is not None:
+                    try:
+                        classes = set(getattr(target, "classes", []) or [])
+                    except Exception:
+                        classes = set()
+                if "expander-summary" in classes:
+                    self.action_toggle()
+            except Exception:
+                # Fall back to safe: do nothing on unexpected event shapes
+                pass
 
         def action_toggle(self) -> None:  # noqa: D401 – Textual naming
             """Toggle the collapsed / expanded state."""
@@ -702,6 +733,33 @@ class ChatMessage(Static, can_focus=True):
         lines = content.split('\n')
         content = '\n'.join(line.rstrip() for line in lines)
         
+        # Heuristic fix: ensure a newline after common section headings like
+        # "### Final" when the model forgot a line break (e.g., "### FinalHere…").
+        # This keeps rendering tidy without being overly invasive.
+        content = re.sub(r'(?m)^(#{1,6}\s+Final)(?!\s*\n)', r"\1\n\n", content)
+
+        # Normalize chained inline bullets of the form " - a - b - c" into
+        # proper list items, but only for narrative lines (not code fences).
+        def _normalize_inline_bullets(text: str) -> str:
+            out = []
+            for ln in text.split('\n'):
+                s = ln.strip()
+                # Skip obvious code fence lines
+                if s.startswith('```'):
+                    out.append(ln)
+                    continue
+                # Convert only if there are at least two separators and line
+                # isn't already a list item
+                if ' - ' in ln and ln.count(' - ') >= 2 and not s.startswith('- '):
+                    parts = [p.strip() for p in ln.split(' - ') if p.strip()]
+                    if len(parts) >= 2:
+                        out.append('- ' + '\n- '.join(parts))
+                        continue
+                out.append(ln)
+            return '\n'.join(out)
+
+        content = _normalize_inline_bullets(content)
+
         return content.strip()
     
     def _process_details_tags(self, content: str) -> str:

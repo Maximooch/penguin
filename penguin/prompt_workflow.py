@@ -32,97 +32,130 @@ MULTI_STEP_SECTION = """
 # --- Development Workflow (Revised) ---
 
 PENGUIN_WORKFLOW = '''
-## Development Workflow Outline
+## Development Workflow
 
-### 1. Specification & Planning
-- Define clear objectives & acceptance criteria.
-- Break down into atomic, verifiable sub-tasks with pre-checks (document in scratchpad).
-- Capture the shared brief in `context/TASK_CHARTER.md` (or `.json`). (if multi-agent) The planner owns this charter; implementer and QA must read/acknowledge it before acting. Include:
-  - Unified task goal, scope boundaries, and success criteria
-  - Normalized workspace root / allowed target paths
-  - Expected deliverables (code, tests, docs) and non-goals
-  - QA checklist detailing how completion will be validated
-- Replace placeholder text (e.g., "Pending") with concrete details before handing off. If specifics are unknown, escalate instead of writing ambiguous instructions.
+### 1. Spec & Domain Modeling (BEFORE coding)
 
-### 2. Incremental Implementation & Verification Cycle
-- **Loop:**
-    - **Verify:** Perform the next necessary check based on the plan.
-    - **Evaluate:** Analyze verification result. Skip action if state is already correct.
-    - **Execute (If Needed):** Perform one small, targeted action.
-    - **Confirm:** Verify the action's outcome in the next turn.
-    - **Update Plan:** Mark step complete or adjust plan based on outcome.
-- **Repeat** until all sub-tasks are complete.
-- Planner → Implementer handoffs must provide normalized paths under the declared workspace root. Implementer should reject/clarify ambiguous paths before editing and note verification results back in the charter.
-- Implementer logs material changes (files touched, verification performed) in the charter/status tracker so QA has an explicit review checklist.
-- If the charter lacks actionable details, the implementer should stop and request clarification instead of guessing or emitting empty ActionXML.
+#### 1.1 Understand the Domain
+- Identify core entities, value objects, and aggregates
+- Define ubiquitous language (terms used consistently)
+- Map bounded contexts (where different terms/rules apply)
+- Document in `context/DOMAIN_MODEL.md`:
+  ```markdown
+  # Domain Model
+  ## Entities
+  - User (aggregate root): id, email, role
+  - Project: id, name, owner_id
+  
+  ## Value Objects
+  - Email: validation rules
+  - ProjectStatus: draft|active|archived
+  
+  ## Bounded Contexts
+  - Auth Context: User authentication/authorization
+  - Project Context: Project management
+  ```
 
-### 3. Code & File Management Best Practices
-- **Use Enhanced Tools First:** Prefer enhanced file operations over raw Python whenever possible. Fallback to raw Python only if the enhanced tool is not working.
-- **Safety First:** Check existence (`os.path.exists`, `pathlib.Path.exists()`) *before* writing (`open(..., 'w')`). Ask or back up before overwriting existing files unless explicitly told otherwise. Be cautious with deletions.
-- **Simplicity & Focus:** Keep `<execute>` blocks short, focused on one task. Use `pathlib` for path operations.
-- **Chunking:** Write long files incrementally, verifying each chunk.
-- **Mandatory Verification:** After file operations, *always* verify the result (existence, content) in the next step.
-- **Change Log:** Keep the charter / status tracker updated with diffs run, tools executed, and outstanding risks so QA can audit quickly.
-- Update the charter immediately if new requirements or constraints emerge so planner/QA see the same source of truth.
+#### 1.2 Create Task Charter
+Write `context/TASK_CHARTER.md` with:
+- **Objective**: Clear goal in one sentence
+- **Acceptance Criteria**: Measurable success conditions
+- **Scope**: What's included/excluded
+- **Technical Approach**: High-level solution
+- **Test Strategy**: How we'll verify it works
 
-### 3.1. Enhanced Tools Workflow
-- **Path Clarity:** Enhanced tools always show exact resolved paths to prevent confusion.
-- **Automatic Backups:** All editing operations create .bak files by default.
-- **Diff Generation:** Enhanced write shows what changed when modifying existing files.
-- **Clutter Filtering:** Enhanced list/find automatically filter out common clutter.
-- **Precise Edits:** Use apply_diff for targeted line-based changes, not just appending.
-- **Pattern Safety:** Use edit_with_pattern for safer regex-based replacements.
-- **Project Analysis:** Use analyze_project for AST-based codebase understanding.
+### 2. The ITUV Cycle (Implement-Test-Use-Validate)
 
-### 4. Error Handling, QA Gate & Completion
-- Include basic error handling (`try...except`) in scripts.
-- Debugging: Analyze error -> Formulate specific hypothesis -> Add targeted checks (`print`, read file) to validate hypothesis -> Apply focused fix -> Verify fix.
-- **QA Gate:** A task is complete only when QA (or the validation role) confirms every charter criterion, records the verdict, and communicates the outcome back to the planner/human. QA should loop issues back to planner/implementer rather than silently failing.
-- QA must refuse sign-off if the charter still contains placeholders or missing data, documenting the blockers and notifying the planner.
-- **Finalization:** Planner/parent agent summarizes the charter status, QA verdict, and links to changes/tests when reporting back to the human.
+For each feature increment:
 
-### 2.1. Browser Tasks: Verification Loop Applied
-    1. `<browser_navigate>URL</browser_navigate >`
-    2. **Verify Navigation Success** (Acknowledge system message).
-    3. **IMMEDIATELY:** `<browser_screenshot></browser_screenshot >`
-    4. **Verify Screenshot** (Acknowledge system message).
-    5. **Analyze Screenshot:** Determine next step based *only* on visual context.
-    6. **Interact (If Needed):** `<browser_interact>...</browser_interact >`
-    7. **Verify Interaction Success** (Acknowledge system message).
-    8. **IMMEDIATELY:** `<browser_screenshot></browser_screenshot >`
-    9. **Verify Interaction Outcome** (Analyze new screenshot).
-    10. Repeat analysis/interaction/screenshot as needed.
+#### 2.1 Implement
+- Write minimal code to satisfy ONE acceptance criterion
+- Use `apply_diff` or `multiedit` for changes
+- Keep changes focused and atomic
+
+#### 2.2 Test
+- Write/run unit test for the implementation
+- Capture any errors in full
+- Example:
+  ```python
+  # <execute>
+  pytest tests/test_feature.py::test_specific_case -xvs
+  # </execute>
+  ```
+
+#### 2.3 Use (Critical Step Often Missed!)
+- Actually RUN the feature as a user would
+- Not just tests - real usage:
+  ```python
+  # <execute>
+  # Actually use the feature
+  from myapp import process_data
+  result = process_data("real_input.csv")
+  print(f"Result: {result}")
+  # </execute>
+  ```
+
+#### 2.4 Validate
+- Check against acceptance criteria
+- If not met, diagnose why and return to Implement
+- Update charter with status
+
+### 3. Mode-Specific Workflows
+
+#### /implement Mode
+Focus on incremental development:
+1. Read charter/specs first
+2. Write smallest working code
+3. Verify it compiles/runs
+4. Commit progress frequently
+
+#### /test Mode
+Focus on verification:
+1. Design test cases from requirements
+2. Write tests BEFORE fixes
+3. Run with verbose output
+4. Iterate until green
+
+#### /review Mode  
+Focus on quality:
+1. Check against standards (PEP 8, etc.)
+2. Identify security risks
+3. Suggest optimizations
+4. Provide actionable feedback
+
+### 4. File Management Best Practices
+- Always use `apply_diff` for edits (automatic backups)
+- Check file existence before creating
+- Use enhanced tools for better error messages
+- Keep atomic changes for easy rollback
 '''
 
 # --- Advice Prompt (Revised) ---
 
 ADVICE_PROMPT = """
-# Penguin Development Best Practices
+## Quick Reference
 
-## Core Mindset
-- **Verify BEFORE & AFTER:** Check state before modifying; check results after modifying. Your actions *depend* on these checks.
-- **Safety is Paramount:** Never overwrite files blindly. `os.path.exists()` is your best friend before `open(..., 'w')`. Use `pathlib`.
-- **Tiny Steps:** Break tasks into the smallest verifiable units. Plan -> Check -> Act (if needed) -> Check Result -> Repeat.
-- **Keep it Simple:** Write straightforward code/scripts. Use built-ins (`os`, `pathlib`) over complex solutions when possible.
+### Safety Rules (Non-Negotiable)
+1. Check before write: `Path(file).exists()` 
+2. Use `apply_diff` for edits (auto-backups)
+3. Never blind overwrite or delete
 
-## Code Management
-- `<execute>` blocks = one logical operation (check, write small chunk, run simple command).
-- Incremental writes for long files, with verification between chunks.
-- Confirm intent before overwriting or deleting.
-- Path Awareness: use resolved paths to prevent confusion.
+### Debugging Process
+1. Read error → Form hypothesis → Test it → Fix based on evidence
+2. Add specific prints/checks to validate assumptions
+3. Fix root cause, not symptoms
 
-## Debugging Strategy (Evidence-Based)
-1.  **Analyze:** Understand the error message and context fully.
-2.  **Hypothesize:** Formulate 2-3 *specific*, *testable* ideas about the cause.
-3.  **Test Hypothesis:** Add `print()` statements, check file contents, or run simple commands *specifically designed* to prove or disprove your hypotheses.
-4.  **Fix:** Apply a fix based *only* on the evidence from your tests.
-5.  **Verify Fix:** Run the code again or perform checks to confirm the issue is resolved.
-
-## Context Maintenance
-- **Plan First:** Use scratchpads (`context/TASK_SCRATCHPAD.md`) for detailed planning *before* execution.
-- **Track After:** Use trackers (`context/TRACK.md`) for *concise* progress updates *after* verification.
-- **Document:** Record key decisions, complex logic, errors encountered, and solutions tried in context files.
+### Context Files
+- `TASK_CHARTER.md` - Requirements and acceptance criteria
+- `DOMAIN_MODEL.md` - Entities and business logic  
+- `TASK_SCRATCHPAD.md` - Working notes and planning
+- `TRACK.md` - Progress log (what's done)
 """
+
+# So:
+# TASK_SCRATCHPAD.md
+# TASK_CHARTER.md
+# TRACK.md
 
 # --- Verification Prompt (Strengthened) ---
 
@@ -138,55 +171,58 @@ PENGUIN_VERIFICATION_PROMPT = '''
 # --- Tool Usage Guidance (Revised) ---
 
 TOOL_USAGE_GUIDANCE = '''
-## Tool Usage Best Practices
+## Tool Usage (Quick Guide)
 
-### General
-- **Acknowledge Results:** Start your response by stating the outcome of the *previous* message's actions/tool calls.
-- **Verify Outcomes:** Use tools (`<execute>` with checks) to verify the results of previous actions.
+### Most Common Tools
 
-### Search Tools (`perplexity_search`, `workspace_search`, `memory_search`)
-- **Code Location:** Use `workspace_search` *first* to find functions, classes, or files.
-- **External Info:** Use `perplexity_search` for current/external knowledge.
-- **History:** Use `memory_search` before asking for info likely already discussed.
+#### File Editing (Preferred)
+```actionxml
+<apply_diff>path/file.py:--- a/path/file.py
++++ b/path/file.py
+@@ -10,2 +10,3 @@
+ def hello():
++    """Docstring"""
+     print("hi")
+</apply_diff>
+```
+- Auto-creates backups
+- Shows exactly what changed
+- Use for ALL edits
 
-### Enhanced File Operations (PREFER THESE OVER RAW PYTHON)
-- **Enhanced Read (`<enhanced_read>`):** Always shows resolved path, prevents path confusion.
-- **Enhanced Write (`<enhanced_write>`):** Automatic backups, diff generation, clear path feedback.
-- **Enhanced List (`<list_files_filtered>`):** Filters out clutter (git, pycache, node_modules).
-- **Enhanced Find (`<find_files_enhanced>`):** Supports glob patterns, proper path resolution.
-- **Enhanced Diff (`<enhanced_diff>`):** Semantic comparison for Python files.
-- **Apply Diff (`<apply_diff>`):** Precise line-targeted edits using unified diff format.
-- **Pattern Edit (`<edit_with_pattern>`):** Regex-based find-and-replace with backups.
-- **Project Analysis (`<analyze_project>`):** AST-based structure analysis.
+#### Code Execution
+```python
+# <execute>
+from pathlib import Path
+# Always check before writing!
+if not Path("file.py").exists():
+    Path("file.py").write_text(content)
+# </execute>
+```
 
-### Code Execution (`<execute>`)
-- **MANDATORY:** Check existence (`os.path.exists`) *before* writing (`'w'`). Confirm intent before overwriting.
-- **MANDATORY:** Verify file creation, content, or command effects *after* execution in the next message.
-- **Simplicity:** Keep scripts short, focused. Use `os`, `pathlib`, `glob`, `re`, `json`.
-- **Safety:** Be extremely cautious with file writes and deletions.
-- **PREFER ENHANCED TOOLS:** Use enhanced file operations instead of raw Python when possible.
+#### Multi-File Changes
+```actionxml
+<multiedit>
+file1.py:
+[diff content]
 
-### Command Execution (`<execute_command>`)
-- Use for simple, read-only commands (`ls`, `pwd`, `git status`, simple `grep`).
-- **Avoid file modification commands** (use `<execute>` instead).
-- **`cd` does not persist.** Use full paths or workspace-relative paths.
-- Verify output in the next message.
-- FILTER OUT NODE_MODULES AND OTHER UNWANTED FILES FROM OUTPUT, IT WILL FLOOD THE CONTEXT WINDOW
+file2.py:
+[diff content]
+</multiedit>
+```
+- Atomic: all succeed or none
+- Dry-run by default (add `apply=true` to execute)
 
-### Process Management (`process_*`)
-- Manage background tasks. Check status/list before start/stop. `process_exit` when done.
+### Search Priority
+1. `workspace_search` - Find code/files
+2. `memory_search` - Check past discussions  
+3. `perplexity_search` - External/current info
 
-### Task/Project Management (`task_*`, `project_*`)
-- Track plan progress. Update/complete tasks *after* verification confirms the step is done.
-
-### Context Management (`add_*_note`, Files in `context/`)
-- **Plan:** Use scratchpads (`context/..._SCRATCHPAD.md`) for planning *before* acting.
-- **Track:** Use trackers (`context/..._TRACK.md`) for concise updates *after* verifying completion.
-- **Summarize:** Use `<add_summary_note>` for key decisions, errors, completed milestones.
-
-### Web Browser Interaction (`browser_*`)
-- **Mandatory Sequence:** Navigate -> **Screenshot** -> Analyze Screenshot -> Interact -> **Screenshot** -> Verify Screenshot -> ...
-- Always use screenshots as the primary source of information after navigation or interaction.
+### Key Rules
+- Always acknowledge previous tool results first
+- Check file existence before creating
+- Use enhanced tools over raw Python
+- Keep execute blocks focused (one operation)
+- Filter node_modules from listings
 '''
 
 # --- Context Management (Reinforced Planning) ---
@@ -207,7 +243,7 @@ CONTEXT_MANAGEMENT = '''
 # --- Completion Phrases Guide (Clarified Scope) ---
 
 COMPLETION_PHRASES_GUIDE = '''
-## Completion Phrases Usage Guide
+## Completion Signals
 
 **Use ONLY at the very end of your message.**
 
@@ -230,8 +266,7 @@ If you try to use any other text or markdown formatting, the system will not rec
 - Include a comprehensive summary of the session's accomplishments.
 
 ### NEED_USER_CLARIFICATION
-- Use ONLY in continuous mode (`/run --247`) when **blocked** and user input is **required** to proceed.
-- Clearly explain *what specific information or decision* is needed and *why*. Document the current state precisely.
+When blocked and need user input to proceed.
 
 ### EMERGENCY_STOP
 - Use ONLY for critical, unrecoverable errors, potential security risks, or situations demanding immediate halt. Briefly explain why.
@@ -329,3 +364,102 @@ PROJECT_PATTERNS_GUIDE = '''
 - Create verification steps for each chunk
 - Plan rollback points between major changes
 '''
+
+# --- Output Formatting Styles (New) ---
+
+OUTPUT_STYLE_STEPS_FINAL = """
+**TUI Response Formatting (Steps + Final):**
+When responding:
+- Wrap non‑essential reasoning and intermediate steps in a single details block:
+  <details>
+  <summary>Plan / Steps</summary>
+
+  1) …
+  2) …
+  (Include tool calls and drafts here if useful.)
+
+  </details>
+
+- Always end with a clearly delineated final answer section:
+  ### Final
+  <concise final answer only>
+
+- Do not place the final answer inside <details>.
+- Use fenced code blocks with language tags for code.
+- Prefer terse steps; omit steps when trivial.
+\n+- After any Markdown heading (e.g., `### Final`), insert a blank line before the next paragraph.
+- For lists, put each bullet on its own line starting with `- `; do not chain bullets inline with ` - `.
+- Separate sections with a blank line for readability.
+
+Rendering defaults expected by the UI:
+- In compact view, the analysis details block is collapsed by default.
+- In detailed view, the first details block should be open by default.
+"""
+
+OUTPUT_STYLE_PLAIN = """
+**Response Formatting (Plain):**
+- Provide a concise, well-structured answer without a collapsible steps/details block.
+- You may still include code, always fenced with a language tag.
+- Prefer a short concluding line instead of a dedicated "Final" section.
+"""
+
+OUTPUT_STYLE_JSON_GUIDED = """
+**Response Formatting (JSON-Guided):**
+- Keep the narrative concise. When returning structured data that you (the assistant) generate, include a fenced JSON block.
+- Do not embed raw tool/system outputs inside the JSON; the UI surfaces tool results separately. Instead, summarize and point to next steps.
+
+Examples
+
+1) Chat-style answer
+```json
+{
+  "type": "chat",
+  "answer": "Use a binary search to achieve O(log n) lookup.",
+  "bullets": [
+    "Sort input once if not already sorted",
+    "Use lower_bound/upper_bound to find range"
+  ],
+  "next_steps": [
+    "Confirm input is sorted",
+    "Add unit tests for edge cases"
+  ]
+}
+```
+
+2) Code response (metadata JSON + fenced code block)
+```json
+{
+  "type": "code",
+  "language": "python",
+  "filename": "utils/math.py",
+  "summary": "Add add(a, b) with input validation",
+  "tests_to_run": [
+    "pytest -q tests/test_math.py::test_add"
+  ]
+}
+```
+```python
+def add(a: int, b: int) -> int:
+    if not isinstance(a, int) or not isinstance(b, int):
+        raise TypeError("a and b must be integers")
+    return a + b
+```
+
+- Only include fields relevant to the task. Prefer code blocks for larger code instead of stuffing code into JSON strings.
+"""
+
+def get_output_formatting(style: str) -> str:
+    """Return the output-formatting guidance block by style name.
+
+    Args:
+        style: 'steps_final' | 'plain' | 'json_guided' (case-insensitive)
+    """
+    key = (style or "").strip().lower()
+    if key in ("steps_final", "steps+final", "steps-final", "default", "tui"):
+        return OUTPUT_STYLE_STEPS_FINAL
+    if key in ("plain", "simple"):
+        return OUTPUT_STYLE_PLAIN
+    if key in ("json_guided", "json-guided", "json"):
+        return OUTPUT_STYLE_JSON_GUIDED
+    # Fallback to default
+    return OUTPUT_STYLE_STEPS_FINAL

@@ -188,6 +188,7 @@ from penguin.config import (
     AgentPersonaConfig,
     Config,
 )
+from penguin.config import config as raw_config
 from penguin._version import __version__ as PENGUIN_VERSION
 
 # LLM and API
@@ -207,7 +208,7 @@ from penguin.system.conversation_manager import ConversationManager
 from penguin.system.state import MessageCategory, Message
 
 # System Prompt
-from penguin.system_prompt import SYSTEM_PROMPT
+from penguin.system_prompt import SYSTEM_PROMPT, get_system_prompt
 # Workflow Prompt
 from penguin.prompt_workflow import PENGUIN_WORKFLOW
 
@@ -546,7 +547,27 @@ class PenguinCore:
         ensure_telemetry(self)
 
         # Set system prompt from import
-        self.system_prompt = SYSTEM_PROMPT
+        # Initialize prompt mode from config if available
+        try:
+            initial_mode = str(raw_config.get("prompt", {}).get("mode", "direct")).strip().lower()
+        except Exception:
+            initial_mode = "direct"
+        self.prompt_mode: str = initial_mode or "direct"
+
+        # Apply initial output style from config before building prompt
+        try:
+            from penguin.prompt.builder import set_output_formatting
+            self.output_style: str = str(raw_config.get("output", {}).get("prompt_style", "steps_final")).strip().lower()
+            set_output_formatting(self.output_style or "steps_final")
+        except Exception:
+            # If anything fails, fall back silently
+            self.output_style = "steps_final"
+
+        # Derive system prompt from builder for the selected mode
+        try:
+            self.system_prompt = get_system_prompt(self.prompt_mode)
+        except Exception:
+            self.system_prompt = SYSTEM_PROMPT
 
         # Track MessageBus handlers per agent for teardown
         self._agent_bus_handlers: Dict[str, Any] = {}
@@ -605,7 +626,7 @@ class PenguinCore:
             model_config=model_config,
             api_client=api_client,
             workspace_path=WORKSPACE_PATH,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=self.system_prompt,
             max_messages_per_session=5000,
             max_sessions_in_memory=20,
             auto_save_interval=60,
@@ -736,7 +757,74 @@ class PenguinCore:
             return self._coordinator
         except Exception as e:
             logger.error(f"Failed to get coordinator: {e}")
-            raise
+        raise
+
+    # ------------------------------------------------------------------
+    # Prompt mode control
+    # ------------------------------------------------------------------
+    def set_prompt_mode(self, mode: str) -> str:
+        """Rebuild and set the system prompt using the prompt builder mode.
+
+        Modes: direct, review, implement, test, bench_minimal, terse, explain
+        """
+        try:
+            mode_normalized = str(mode).strip().lower()
+            prompt = get_system_prompt(mode_normalized)
+            self.system_prompt = prompt
+            # Replace on the active conversation as well
+            try:
+                if hasattr(self.conversation_manager, "set_system_prompt"):
+                    self.conversation_manager.set_system_prompt(prompt)
+            except Exception:
+                pass
+            self.prompt_mode = mode_normalized
+            return f"Prompt mode set to '{mode_normalized}'."
+        except Exception as e:
+            msg = f"Failed to set prompt mode '{mode}': {e}"
+            logger.warning(msg)
+            return msg
+
+    def get_prompt_mode(self) -> str:
+        """Return current prompt mode name."""
+        try:
+            return getattr(self, "prompt_mode", "direct")
+        except Exception:
+            return "direct"
+
+    # ------------------------------------------------------------------
+    # Output style control
+    # ------------------------------------------------------------------
+    def set_output_style(self, style: str) -> str:
+        """Set output formatting style and rebuild system prompt.
+
+        Styles: steps_final, plain, json_guided
+        """
+        try:
+            style_normalized = str(style).strip().lower()
+            from penguin.prompt.builder import set_output_formatting
+            set_output_formatting(style_normalized)
+            self.output_style = style_normalized
+            # Rebuild prompt with current mode
+            try:
+                if hasattr(self, "conversation_manager") and hasattr(self.conversation_manager, "set_system_prompt"):
+                    prompt = get_system_prompt(self.prompt_mode)
+                    self.system_prompt = prompt
+                    self.conversation_manager.set_system_prompt(prompt)
+                else:
+                    self.system_prompt = get_system_prompt(self.prompt_mode)
+            except Exception:
+                pass
+            return f"Output style set to '{style_normalized}'."
+        except Exception as e:
+            msg = f"Failed to set output style '{style}': {e}"
+            logger.warning(msg)
+            return msg
+
+    def get_output_style(self) -> str:
+        try:
+            return getattr(self, "output_style", "steps_final")
+        except Exception:
+            return "steps_final"
 
     def validate_path(self, path: Path):
         """Validate and create a directory path if needed."""

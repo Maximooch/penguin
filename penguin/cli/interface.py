@@ -388,6 +388,12 @@ class PenguinInterface:
             "model": self._handle_model_command, # For /model set only
             "models": self._handle_models_command, # New simple interactive selector
             "agent": self._handle_agent_command,
+            "mode": self._handle_mode_command,
+            "output": self._handle_output_command,
+            # Shortcuts
+            "review": self._handle_mode_review,
+            "implement": self._handle_mode_implement,
+            "test": self._handle_mode_test,
         }
         
         handler = handlers.get(cmd, self._invalid_command)
@@ -405,6 +411,63 @@ class PenguinInterface:
             result["action_results"] = self._normalize_action_results(result["action_results"])
             
         return result
+
+    async def _handle_mode_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle prompt mode commands: set/show."""
+        if not args:
+            return {"status": f"Current prompt mode: {self.core.get_prompt_mode()}"}
+        action = args[0].lower()
+        if action == "set":
+            name = args[1] if len(args) > 1 else ""
+            if not name:
+                return {"error": "Usage: /mode set <name>"}
+            status = self.core.set_prompt_mode(name)
+            return {"status": status, "mode": self.core.get_prompt_mode()}
+        if action == "show":
+            return {"status": f"Current prompt mode: {self.core.get_prompt_mode()}"}
+        return {"error": f"Unknown mode subcommand: {action}"}
+
+    async def _handle_mode_review(self, args: List[str]) -> Dict[str, Any]:
+        status = self.core.set_prompt_mode("review")
+        return {"status": status, "mode": self.core.get_prompt_mode()}
+
+    async def _handle_mode_implement(self, args: List[str]) -> Dict[str, Any]:
+        status = self.core.set_prompt_mode("implement")
+        return {"status": status, "mode": self.core.get_prompt_mode()}
+
+    async def _handle_mode_test(self, args: List[str]) -> Dict[str, Any]:
+        status = self.core.set_prompt_mode("test")
+        return {"status": status, "mode": self.core.get_prompt_mode()}
+
+    async def _handle_output_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle output formatting commands: style get/set.
+
+        Examples:
+          /output style get
+          /output style set plain
+        """
+        if not args:
+            return {"error": "Usage: /output style get|set <name>"}
+
+        action = args[0].lower()
+        if action != "style":
+            return {"error": f"Unknown output subcommand: {action}"}
+
+        if len(args) == 1:
+            # default to get
+            return {"status": f"Current output style: {self.core.get_output_style()}"}
+
+        op = args[1].lower()
+        if op == "get":
+            return {"status": f"Current output style: {self.core.get_output_style()}"}
+        if op == "set":
+            name = args[2] if len(args) > 2 else ""
+            if not name:
+                return {"error": "Usage: /output style set <steps_final|plain|json_guided>"}
+            status = self.core.set_output_style(name)
+            return {"status": status, "style": self.core.get_output_style()}
+
+        return {"error": f"Unknown output style action: {op}"}
 
     async def _handle_chat_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle conversation management commands"""

@@ -195,6 +195,48 @@ paths:
   temp: ./temp
 ```
 
+## Output Formatting
+
+Penguin’s assistant reply style is configurable and separate from the CLI’s program output format. Use this to choose how the assistant structures its messages in the TUI and interactive sessions.
+
+### YAML (project or user config)
+
+```yaml
+output:
+  # One of: steps_final (default) | plain | json_guided
+  prompt_style: steps_final
+```
+
+Styles:
+- steps_final: Keeps the “Plan / Steps” collapsible details block and a clear “Final” section.
+- plain: Concise, well-structured answers without a collapsible steps block.
+- json_guided: Assistant includes a concise JSON summary for structure (e.g., fields like type, answer, next_steps), and places larger code snippets in fenced code blocks.
+
+Note: This controls the assistant’s reply style. It does not change the CLI non-interactive output, which is controlled by `--output-format` (see below).
+
+### TUI Commands
+
+- `/output style get` — show the current style
+- `/output style set steps_final|plain|json_guided` — change the style at runtime
+
+To persist as default:
+
+```text
+/config set output.prompt_style "plain"          # project-local
+/config --global set output.prompt_style "plain" # user config
+```
+
+### CLI Non-Interactive vs. Reply Style
+
+In non-interactive mode (`-p/--prompt`), you can select the program output format:
+
+```bash
+penguin -p "…" --output-format text|json|stream-json
+```
+
+- `--output-format` affects how the CLI prints its final response object (useful for scripting).
+- `output.prompt_style` affects how the assistant structures its messages (Steps + Final, plain, JSON-guided) during interactive sessions or when rendering assistant content.
+
 ## Model Provider Configuration
 
 ### OpenAI

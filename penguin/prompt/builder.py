@@ -11,6 +11,7 @@ class PromptComponents:
     base_prompt: str
     persistence_directive: str
     workflow_section: str
+    project_workflow: str
     action_syntax: str
     advice_section: str
     completion_phrases: str
@@ -26,11 +27,14 @@ class PromptBuilder:
     
     def __init__(self):
         self.components = None
+        # Output formatting guidance appended to prompts; defaults lazily
+        self.output_formatting: str = ""
         
     def load_components(self, 
                        base_prompt: str,
                        persistence_directive: str,
                        workflow_section: str,
+                       project_workflow: str,
                        action_syntax: str,
                        advice_section: str,
                        completion_phrases: str,
@@ -42,6 +46,7 @@ class PromptBuilder:
             base_prompt=base_prompt,
             persistence_directive=persistence_directive,
             workflow_section=workflow_section,
+            project_workflow=project_workflow,
             action_syntax=action_syntax,
             advice_section=advice_section,
             completion_phrases=completion_phrases,
@@ -63,6 +68,15 @@ class PromptBuilder:
         """
         if not self.components:
             raise ValueError("Components not loaded. Call load_components() first.")
+
+        # Ensure an output formatting section exists (default to steps+final)
+        if not self.output_formatting:
+            try:
+                from penguin.prompt_workflow import get_output_formatting
+                self.output_formatting = get_output_formatting("steps_final")
+            except Exception:
+                # Safe fallback: no additional formatting guidance
+                self.output_formatting = ""
             
         # Apply mode-specific deltas
         if mode == "bench_minimal":
@@ -75,6 +89,10 @@ class PromptBuilder:
             return self._build_explain()
         elif mode == "review":
             return self._build_review()
+        elif mode == "implement":
+            return self._build_implement()
+        elif mode == "test":
+            return self._build_test()
         else:
             # Default to direct mode
             return self._build_direct()
@@ -97,7 +115,9 @@ class PromptBuilder:
             self.components.base_prompt +
             self.components.persistence_directive + 
             self.components.workflow_section +
+            self.components.project_workflow +
             self.components.action_syntax +
+            self.output_formatting +
             self.components.advice_section +
             self.components.completion_phrases +
             self.components.large_codebase_guide +
@@ -111,6 +131,7 @@ class PromptBuilder:
             self.components.base_prompt +
             self.components.persistence_directive + 
             self.components.action_syntax +
+            self.output_formatting +
             "\n## Response Style\nBe concise. Minimal explanations unless asked."
         )
     
@@ -120,7 +141,9 @@ class PromptBuilder:
             self.components.base_prompt +
             self.components.persistence_directive + 
             self.components.workflow_section +
+            self.components.project_workflow +
             self.components.action_syntax +
+            self.output_formatting +
             self.components.advice_section +
             "\n## Response Style\nExplain your reasoning and provide educational context when helpful."
         )
@@ -131,8 +154,34 @@ class PromptBuilder:
             self.components.base_prompt +
             self.components.persistence_directive + 
             self.components.workflow_section +
+            self.components.project_workflow +
             self.components.action_syntax +
+            self.output_formatting +
             "\n## Review Focus\nPrioritize security, performance, and maintainability. Provide checklists and risk assessments."
+        )
+
+    def _build_implement(self) -> str:
+        """Build implementation-focused prompt (spec-first, incremental)."""
+        return (
+            self.components.base_prompt +
+            self.components.persistence_directive +
+            self.components.workflow_section +
+            self.components.project_workflow +
+            self.components.action_syntax +
+            self.output_formatting +
+            "\n## Implementation Focus\nFollow spec-first, domain-driven steps. Work in small, verifiable increments, updating tests and docs as you go."
+        )
+
+    def _build_test(self) -> str:
+        """Build testing/validation-focused prompt."""
+        return (
+            self.components.base_prompt +
+            self.components.persistence_directive +
+            self.components.workflow_section +
+            self.components.project_workflow +
+            self.components.action_syntax +
+            self.output_formatting +
+            "\n## Testing Focus\nDesign and run tests first when possible. Execute, observe, iterate until green; then validate against acceptance criteria."
         )
 
 # Global instance
@@ -154,3 +203,15 @@ def build_system_prompt(mode: str = "direct", **kwargs) -> str:
         Assembled system prompt
     """
     return _builder.build(mode=mode, **kwargs)
+
+def set_output_formatting(style: str = "steps_final") -> None:
+    """Set the global builder's output formatting style.
+
+    Args:
+        style: One of 'steps_final', 'plain', 'json_guided'
+    """
+    try:
+        from penguin.prompt_workflow import get_output_formatting
+        _builder.output_formatting = get_output_formatting(style)
+    except Exception:
+        _builder.output_formatting = ""

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union, AsyncGenerator, Callable
 
 from penguin.config import CONVERSATIONS_PATH, WORKSPACE_PATH
+from penguin.config import config as global_config
 from penguin.system.context_loader import SimpleContextLoader
 from penguin.system.context_window import ContextWindowManager
 from penguin.system.conversation import ConversationSystem
@@ -136,6 +137,21 @@ class ConversationManager:
                 logger.info(f"Loaded {len(loaded_files)} core context files")
         except Exception as e:
             logger.warning(f"Failed loading core context files: {e}")
+
+        # Auto-load project docs (PENGUIN.md/AGENTS.md/README.md) into CONTEXT if enabled
+        try:
+            autoload = bool(global_config.get('context', {}).get('autoload_project_docs', True))
+        except Exception:
+            autoload = True
+        if autoload and self.context_window:
+            try:
+                content, info = self.context_window.load_project_instructions(str(self.workspace_path))
+                if content:
+                    # Add project docs content as a CONTEXT message
+                    self.conversation.add_context(content, source="project_docs")
+                    logger.info(f"Project docs autoloaded: {', '.join(info.get('loaded_files', []))}")
+            except Exception as e:
+                logger.debug(f"Project docs autoload skipped due to error: {e}")
 
         # -----------------------------------------------------------
         # Snapshot / Restore support (Phase 3)
