@@ -114,6 +114,9 @@ class PyDollBrowserManager:
                 return True
             except Exception as e:
                 logging.error(f"Failed to initialize PyDoll browser: {str(e)}")
+                # Always show traceback for debugging
+                import traceback
+                logging.error(f"Full traceback:\n{traceback.format_exc()}")
                 if self.dev_mode:
                     # Show more detailed error info in dev mode
                     logging.error(f"Detailed error: {e}", exc_info=True)
