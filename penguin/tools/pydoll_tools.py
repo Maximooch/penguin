@@ -79,6 +79,22 @@ class PyDollBrowserManager:
                 
                 for arg in extra_args:
                     options.add_argument(arg)
+
+                # Performance-oriented flags (avoid when dev_mode enabled)
+                if not self.dev_mode:
+                    perf_args = [
+                        '--disable-extensions',
+                        '--disable-gpu',
+                        '--disable-dev-shm-usage',
+                        '--blink-settings=imagesEnabled=false',
+                        '--disable-background-timer-throttling',
+                        '--disable-renderer-backgrounding',
+                        '--disable-backgrounding-occluded-windows',
+                        '--mute-audio',
+                        '--window-size=1280,800',
+                    ]
+                    for arg in perf_args:
+                        options.add_argument(arg)
                 
                 # Create browser instance
                 self.browser = Chrome(options=options)
@@ -284,16 +300,78 @@ class PyDollBrowserInteractionTool:
         }
 
     async def execute(self, action: str, selector: str, selector_type: str = "css", text: Optional[str] = None) -> str:
-        from pydoll.constants import By # type: ignore
-        
+        """Perform an interaction with reliability improvements.
+
+        - Scrolls target into view (JS fallback) before clicking
+        - Uses wait_element when available; retries on transient failures
+        - Returns richer debug info in dev mode
+        """
+        try:
+            from pydoll.constants import By # type: ignore
+        except ModuleNotFoundError:
+            return (
+                "PyDoll is not installed. Install with 'uv pip install pydoll-python' "
+                "or 'pip install pydoll-python', then re-run."
+            )
+
+        async def _try_eval_js(page_obj: Any, script: str) -> bool:
+            """Attempt multiple JS-eval method names exposed by PyDoll; return True on success."""
+            candidates = [
+                "evaluate", "evaluate_script", "execute_javascript", "execute_script", "eval_js", "run_js"
+            ]
+            for name in candidates:
+                fn = getattr(page_obj, name, None)
+                if not fn:
+                    continue
+                try:
+                    if asyncio.iscoroutinefunction(fn):
+                        await fn(script)
+                    else:
+                        res = fn(script)
+                        if asyncio.iscoroutine(res):
+                            await res
+                    return True
+                except Exception:
+                    continue
+            return False
+
+        def _build_scroll_js(sel: str, sel_type: str) -> str:
+            s = sel.replace("\\", "\\\\").replace("\"", "\\\"")
+            if sel_type == "css":
+                return (
+                    f"(function(){{const el=document.querySelector(\"{s}\");"
+                    f"if(el){{el.scrollIntoView({{block:'center',behavior:'auto'}});}}}})();"
+                )
+            if sel_type == "id":
+                return (
+                    f"(function(){{const el=document.getElementById(\"{s}\");"
+                    f"if(el){{el.scrollIntoView({{block:'center',behavior:'auto'}});}}}})();"
+                )
+            if sel_type == "class_name":
+                return (
+                    f"(function(){{const el=document.getElementsByClassName(\"{s}\")[0];"
+                    f"if(el){{el.scrollIntoView({{block:'center',behavior:'auto'}});}}}})();"
+                )
+            if sel_type == "xpath":
+                return (
+                    "(function(){const x=\"" + s + "\";"
+                    "const r=document.evaluate(x,document,null,XPathResult.FIRST_ORDERED_NODE_TYPE,null);"
+                    "const el=r.singleNodeValue; if(el){el.scrollIntoView({block:'center',behavior:'auto'});} })();"
+                )
+            # default css
+            return (
+                f"(function(){{const el=document.querySelector(\"{s}\");"
+                f"if(el){{el.scrollIntoView({{block:'center',behavior:'auto'}});}}}})();"
+            )
+
         # Initialize with headless mode by default
         headless_mode = not pydoll_browser_manager.dev_mode
         if not await pydoll_browser_manager.initialize(headless=headless_mode):
             return "Failed to initialize browser"
-            
+
         try:
             page = await pydoll_browser_manager.get_page()
-            
+
             # Map selector type to By constant
             selector_map = {
                 "css": By.CSS_SELECTOR,
@@ -302,52 +380,99 @@ class PyDollBrowserInteractionTool:
                 "class_name": By.CLASS_NAME
             }
             by_selector = selector_map.get(selector_type, By.CSS_SELECTOR)
-            
+
             if pydoll_browser_manager.dev_mode:
                 logging.info(f"[PyDoll Dev] Executing {action} on {selector_type} selector: {selector}")
                 if text:
                     logging.info(f"[PyDoll Dev] Text to input: {text}")
-            
+
+            # Prefer wait_element if available, else fall back to find_element
+            get_element = getattr(page, "wait_element", None)
+            if not callable(get_element):
+                get_element = getattr(page, "find_element", None)
+
+            async def _fetch_element(timeout: float = 10.0):
+                return await asyncio.wait_for(get_element(by_selector, selector), timeout=timeout)  # type: ignore[arg-type]
+
+            # Pre-scroll into view (best-effort)
+            try:
+                await _try_eval_js(page, _build_scroll_js(selector, selector_type))
+            except Exception:
+                pass
+
             if action == "click":
-                element = await asyncio.wait_for(page.find_element(by_selector, selector), timeout=10.0)
-                await asyncio.wait_for(element.click(), timeout=5.0)
-                if pydoll_browser_manager.dev_mode:
-                    logging.info(f"[PyDoll Dev] Successfully clicked on element")
+                last_exc: Optional[Exception] = None
+                for attempt in range(3):
                     try:
-                        element_text = await asyncio.wait_for(element.get_text(), timeout=3.0)
-                        return f"Successfully clicked on {selector}\n[Dev Mode] Element text: {element_text}"
-                    except asyncio.TimeoutError:
-                        logging.warning("[PyDoll Dev] Timeout getting element text")
-                return f"Successfully clicked on {selector}"
-                
-            elif action == "input" and text:
-                element = await asyncio.wait_for(page.find_element(by_selector, selector), timeout=10.0)
-                await asyncio.wait_for(element.clear(), timeout=5.0)
-                await asyncio.wait_for(element.input(text), timeout=5.0)
+                        element = await _fetch_element(timeout=12.0 if attempt == 0 else 8.0)
+                        # Best-effort element-centered scroll
+                        try:
+                            await _try_eval_js(page, _build_scroll_js(selector, selector_type))
+                        except Exception:
+                            pass
+                        await asyncio.wait_for(element.click(), timeout=8.0)
+                        if pydoll_browser_manager.dev_mode:
+                            logging.info("[PyDoll Dev] Successfully clicked on element")
+                            try:
+                                element_text = await asyncio.wait_for(element.get_text(), timeout=3.0)
+                                return f"Successfully clicked on {selector}\n[Dev Mode] Element text: {element_text}"
+                            except asyncio.TimeoutError:
+                                logging.warning("[PyDoll Dev] Timeout getting element text")
+                        return f"Successfully clicked on {selector}"
+                    except Exception as e:
+                        last_exc = e
+                        # Retry after short delay and attempt another scroll
+                        await asyncio.sleep(0.6)
+                        try:
+                            await _try_eval_js(page, _build_scroll_js(selector, selector_type))
+                        except Exception:
+                            pass
+                # Exhausted retries
+                err = f"Interaction failed: click on {selector} - {last_exc}"
                 if pydoll_browser_manager.dev_mode:
-                    logging.info(f"[PyDoll Dev] Successfully input text into element")
+                    logging.error(f"[PyDoll Dev] {err}", exc_info=True)
+                return err
+
+            elif action == "input" and text is not None:
+                element = await _fetch_element(timeout=12.0)
+                # Ensure visible
+                try:
+                    await _try_eval_js(page, _build_scroll_js(selector, selector_type))
+                except Exception:
+                    pass
+                await asyncio.wait_for(element.clear(), timeout=6.0)
+                await asyncio.wait_for(element.input(text), timeout=8.0)
+                if pydoll_browser_manager.dev_mode:
+                    logging.info("[PyDoll Dev] Successfully input text into element")
                     return f"Successfully input text into {selector}\n[Dev Mode] Text entered: {text}"
                 return f"Successfully input text into {selector}"
-                
+
             elif action == "submit":
-                if selector_type == "css" and selector.lower().startswith("form"):
-                    # If selector is a form, find it and submit
-                    form = await asyncio.wait_for(page.find_element(by_selector, selector), timeout=10.0)
-                    await asyncio.wait_for(form.submit(), timeout=10.0)
-                else:
-                    # If not a form selector, find the element and its parent form
-                    element = await asyncio.wait_for(page.find_element(by_selector, selector), timeout=10.0)
+                # Try to submit the element or its form
+                element = await _fetch_element(timeout=12.0)
+                try:
                     await asyncio.wait_for(element.submit(), timeout=10.0)
-                
+                except Exception:
+                    # Fallback: attempt to submit via JS if it is a form or has a form parent
+                    js = (
+                        "(function(){const s=\"" + selector.replace("\\", "\\\\").replace("\"", "\\\"") + "\";"
+                        "let el=null;"
+                        + ("if('" + selector_type + "'=='css'){el=document.querySelector(s);}"
+                           "else if('" + selector_type + "'=='id'){el=document.getElementById(s);}"
+                           "else if('" + selector_type + "'=='class_name'){el=document.getElementsByClassName(s)[0];}"
+                           "else {el=document.evaluate(s,document,null,XPathResult.FIRST_ORDERED_NODE_TYPE,null).singleNodeValue;}") +
+                        "if(el){const f=el.tagName==='FORM'?el:el.form; if(f){f.submit();}}})();"
+                    )
+                    await _try_eval_js(page, js)
                 if pydoll_browser_manager.dev_mode:
-                    logging.info(f"[PyDoll Dev] Successfully submitted form")
+                    logging.info("[PyDoll Dev] Successfully submitted form")
                     try:
                         current_url = await asyncio.wait_for(page.get_url(), timeout=5.0)
                         return f"Successfully submitted {selector}\n[Dev Mode] Current URL after submit: {current_url}"
                     except asyncio.TimeoutError:
                         logging.warning("[PyDoll Dev] Timeout getting URL after submit")
                 return f"Successfully submitted {selector}"
-                
+
             return f"Successfully performed {action} on {selector}"
         except asyncio.TimeoutError:
             error_msg = f"Interaction timeout: {action} on {selector} took too long"
@@ -445,6 +570,150 @@ class PyDollBrowserScreenshotTool:
             if pydoll_browser_manager.dev_mode:
                 logging.error(f"[PyDoll Dev] {error_msg}", exc_info=True)
             return {"error": error_msg}
+
+class PyDollBrowserScrollTool:
+    def __init__(self):
+        self.metadata = {
+            "name": "pydoll_browser_scroll",
+            "description": "Scroll the page or an element using PyDoll with robust JS fallbacks.",
+            "parameters": {
+                "mode": {"type": "string", "enum": ["to", "by", "element", "page"]},
+                "to": {"type": "string", "enum": ["top", "bottom"], "optional": True},
+                "delta_y": {"type": "integer", "optional": True},
+                "delta_x": {"type": "integer", "optional": True},
+                "repeat": {"type": "integer", "optional": True},
+                "selector": {"type": "string", "optional": True},
+                "selector_type": {"type": "string", "enum": ["css", "xpath", "id", "class_name"], "optional": True},
+                "behavior": {"type": "string", "enum": ["auto", "smooth"], "optional": True}
+            }
+        }
+
+    async def execute(
+        self,
+        mode: str,
+        to: Optional[str] = None,
+        delta_y: Optional[int] = None,
+        delta_x: Optional[int] = None,
+        repeat: Optional[int] = None,
+        selector: Optional[str] = None,
+        selector_type: str = "css",
+        behavior: str = "auto",
+    ) -> str:
+        """Scroll the page or a specific element.
+
+        Args:
+            mode: One of "to", "by", "element", or "page".
+            to: When mode=="to", either "top" or "bottom".
+            delta_y: When mode=="by" or "page", pixels to scroll vertically (default 800 for page down / -800 up).
+            delta_x: Pixels to scroll horizontally (default 0).
+            repeat: Repeat count for incremental scrolls (default 1).
+            selector: When mode=="element", a selector to scroll into view.
+            selector_type: One of css, xpath, id, class_name.
+            behavior: "auto" or "smooth".
+        """
+
+        async def _try_eval_js(page_obj: Any, script: str) -> bool:
+            candidates = [
+                "evaluate", "evaluate_script", "execute_javascript", "execute_script", "eval_js", "run_js"
+            ]
+            for name in candidates:
+                fn = getattr(page_obj, name, None)
+                if not fn:
+                    continue
+                try:
+                    if asyncio.iscoroutinefunction(fn):
+                        await fn(script)
+                    else:
+                        res = fn(script)
+                        if asyncio.iscoroutine(res):
+                            await res
+                    return True
+                except Exception:
+                    continue
+            return False
+
+        # Initialize with headless mode by default
+        headless_mode = not pydoll_browser_manager.dev_mode
+        if not await pydoll_browser_manager.initialize(headless=headless_mode):
+            return "Failed to initialize browser"
+
+        page = await pydoll_browser_manager.get_page()
+        if not page:
+            return "No active browser page found"
+
+        try:
+            behavior_js = "'smooth'" if behavior == "smooth" else "'auto'"
+            if mode == "to":
+                if to not in ("top", "bottom"):
+                    return "Invalid 'to' value. Use 'top' or 'bottom'."
+                top_expr = "0" if to == "top" else "document.body.scrollHeight"
+                js = f"window.scrollTo({{top: {top_expr}, left: 0, behavior: {behavior_js}}});"
+                ok = await _try_eval_js(page, js)
+                return "Scrolled to bottom" if (ok and to == "bottom") else ("Scrolled to top" if ok else "Scroll failed")
+
+            if mode == "by":
+                dy = delta_y if isinstance(delta_y, int) else 800
+                dx = delta_x if isinstance(delta_x, int) else 0
+                times = repeat if isinstance(repeat, int) and repeat > 0 else 1
+                js = f"window.scrollBy({{top: {dy}, left: {dx}, behavior: {behavior_js}}});"
+                for _ in range(times):
+                    await _try_eval_js(page, js)
+                    await asyncio.sleep(0.05)
+                return f"Scrolled by (x={dx}, y={dy}) x{times}"
+
+            if mode == "page":
+                # Convenience for page up/down/end/home
+                direction = (to or "down").lower()
+                if direction in ("down", "pagedown"):
+                    dy = delta_y if isinstance(delta_y, int) else 800
+                    times = repeat if isinstance(repeat, int) and repeat > 0 else 1
+                    js = f"window.scrollBy({{top: {dy}, left: 0, behavior: {behavior_js}}});"
+                    for _ in range(times):
+                        await _try_eval_js(page, js)
+                        await asyncio.sleep(0.05)
+                    return f"Page scrolled down x{times}"
+                if direction in ("up", "pageup"):
+                    dy = -(delta_y if isinstance(delta_y, int) else 800)
+                    times = repeat if isinstance(repeat, int) and repeat > 0 else 1
+                    js = f"window.scrollBy({{top: {dy}, left: 0, behavior: {behavior_js}}});"
+                    for _ in range(times):
+                        await _try_eval_js(page, js)
+                        await asyncio.sleep(0.05)
+                    return f"Page scrolled up x{times}"
+                if direction in ("end", "bottom"):
+                    js = f"window.scrollTo({{top: document.body.scrollHeight, left: 0, behavior: {behavior_js}}});"
+                    await _try_eval_js(page, js)
+                    return "Scrolled to bottom"
+                if direction in ("home", "top"):
+                    js = f"window.scrollTo({{top: 0, left: 0, behavior: {behavior_js}}});"
+                    await _try_eval_js(page, js)
+                    return "Scrolled to top"
+                return "Invalid page scroll direction"
+
+            if mode == "element":
+                if not selector:
+                    return "Selector required for element scroll"
+                s = selector.replace("\\", "\\\\").replace("\"", "\\\"")
+                if selector_type == "css":
+                    js = f"(function(){{const el=document.querySelector(\"{s}\"); if(el){{el.scrollIntoView({{block:'center',behavior:{behavior_js}}});}}}})();"
+                elif selector_type == "id":
+                    js = f"(function(){{const el=document.getElementById(\"{s}\"); if(el){{el.scrollIntoView({{block:'center',behavior:{behavior_js}}});}}}})();"
+                elif selector_type == "class_name":
+                    js = f"(function(){{const el=document.getElementsByClassName(\"{s}\")[0]; if(el){{el.scrollIntoView({{block:'center',behavior:{behavior_js}}});}}}})();"
+                else:  # xpath
+                    js = (
+                        "(function(){const x=\"" + s + "\";"
+                        "const r=document.evaluate(x,document,null,XPathResult.FIRST_ORDERED_NODE_TYPE,null);"
+                        "const el=r.singleNodeValue; if(el){el.scrollIntoView({block:'center',behavior:" + behavior_js + "});} })();"
+                    )
+                ok = await _try_eval_js(page, js)
+                return "Scrolled element into view" if ok else "Element scroll failed"
+
+            return "Invalid scroll mode"
+        except Exception as e:
+            msg = f"Scroll failed: {str(e)}"
+            logging.error(msg, exc_info=True)
+            return msg
 
 async def pydoll_debug_toggle(enabled: Optional[bool] = None) -> bool:
     """

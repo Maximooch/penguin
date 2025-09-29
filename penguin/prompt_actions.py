@@ -344,6 +344,12 @@ Enhanced browser control without WebDriver dependencies, better for sites with a
 
 -   `<pydoll_browser_navigate>URL</pydoll_browser_navigate >`
 -   `<pydoll_browser_interact>action:selector[:selector_type][:text]</pydoll_browser_interact >` (actions: `click`, `input`, `submit`, selector_types: `css`, `xpath`, `id`, `class_name`)
+-   `<pydoll_browser_scroll>mode:args</pydoll_browser_scroll >` (modes: `to`, `by`, `page`, `element`)
+    - Examples:
+      - `<pydoll_browser_scroll>to:bottom</pydoll_browser_scroll>`
+      - `<pydoll_browser_scroll>page:down:2</pydoll_browser_scroll>`
+      - `<pydoll_browser_scroll>by:1200:0:1</pydoll_browser_scroll>`
+      - `<pydoll_browser_scroll>element:#results:css:smooth</pydoll_browser_scroll>`
 -   `<pydoll_browser_screenshot></pydoll_browser_screenshot >`
 -   `<pydoll_debug_toggle>[on|off]</pydoll_debug_toggle >` (Enable/disable detailed PyDoll logging and outputs)
 

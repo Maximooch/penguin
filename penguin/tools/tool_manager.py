@@ -32,7 +32,7 @@ from penguin.tools.browser_tools import (
     browser_manager, BrowserNavigationTool, BrowserInteractionTool, BrowserScreenshotTool
 )
 from penguin.tools.pydoll_tools import (
-    pydoll_browser_manager, PyDollBrowserNavigationTool, PyDollBrowserInteractionTool, PyDollBrowserScreenshotTool
+    pydoll_browser_manager, PyDollBrowserNavigationTool, PyDollBrowserInteractionTool, PyDollBrowserScreenshotTool, PyDollBrowserScrollTool
 )
 # from penguin.llm.model_manager import ModelManager
 from penguin.memory.provider import MemoryProvider
@@ -133,6 +133,7 @@ class ToolManager:
             self._pydoll_browser_navigation_tool = None
             self._pydoll_browser_interaction_tool = None
             self._pydoll_browser_screenshot_tool = None
+            self._pydoll_browser_scroll_tool = None
             
             # Tool registry - just map names to module paths, no actual loading
             self._tool_registry = {
@@ -163,6 +164,7 @@ class ToolManager:
                 'pydoll_browser_navigate': 'self.pydoll_browser_navigation_tool.execute',
                 'pydoll_browser_interact': 'self.pydoll_browser_interaction_tool.execute',
                 'pydoll_browser_screenshot': 'self.pydoll_browser_screenshot_tool.execute',
+                'pydoll_browser_scroll': 'self.pydoll_browser_scroll_tool.execute',
                 'analyze_codebase': 'self.analyze_codebase',
                 'reindex_workspace': 'self.reindex_workspace',
             }
@@ -579,6 +581,24 @@ class ToolManager:
                 "input_schema": {
                     "type": "object",
                     "properties": {}
+                }
+            },
+            {
+                "name": "pydoll_browser_scroll",
+                "description": "Scroll the page or an element using PyDoll.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "mode": {"type": "string", "enum": ["to", "by", "element", "page"]},
+                        "to": {"type": "string", "enum": ["top", "bottom", "up", "down", "home", "end", "pageup", "pagedown"]},
+                        "delta_y": {"type": "integer"},
+                        "delta_x": {"type": "integer"},
+                        "repeat": {"type": "integer"},
+                        "selector": {"type": "string"},
+                        "selector_type": {"type": "string", "enum": ["css", "xpath", "id", "class_name"]},
+                        "behavior": {"type": "string", "enum": ["auto", "smooth"]}
+                    },
+                    "required": ["mode"]
                 }
             },
             {
@@ -1097,6 +1117,7 @@ class ToolManager:
                 self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
                 self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
                 self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
+                self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
                 self._lazy_initialized['pydoll_tools'] = True
         return self._pydoll_browser_navigation_tool
     
@@ -1108,6 +1129,7 @@ class ToolManager:
                 self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
                 self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
                 self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
+                self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
                 self._lazy_initialized['pydoll_tools'] = True
         return self._pydoll_browser_interaction_tool
     
@@ -1119,6 +1141,7 @@ class ToolManager:
                 self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
                 self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
                 self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
+                self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
                 self._lazy_initialized['pydoll_tools'] = True
         return self._pydoll_browser_screenshot_tool
 

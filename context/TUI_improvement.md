@@ -6,6 +6,140 @@ This document outlines a comprehensive plan to enhance the Penguin TUI, bringing
 
 ---
 
+## Recent Changes (Sept 2025)
+
+### Minimal Mode & Claude Code–Inspired Features
+**Status: Completed (Option A polish pass)**
+
+#### What Was Implemented
+1. **Minimal Mode** - Message-only styling without affecting chrome
+   - Command: `/minimal on|off` or Ctrl+M
+   - Only changes message appearance (no header/footer/sidebar changes)
+   - CSS class: `.mode-minimal`
+
+2. **Whole-Message Collapsing** - Claude Code–like conversation density
+   - Command: `/collapse on|off [keep N] [whole|sections]`
+   - Two modes:
+     - `whole`: Collapses entire messages to single-line summaries
+     - `sections`: Collapses expandable sections within messages (default)
+   - Smart summaries: Extracts meaningful text, skips details/thinking/code blocks
+   - Click collapsed messages to expand
+
+3. **Optional Breadcrumb Bar** - Live status at top of center pane
+   - Command: `/crumb on|off` or `/crumb text <custom>`
+   - Auto-updates every 1s with: Model | tokens | elapsed
+   - Hidden by default; enables when needed
+
+4. **Style Variants** - Quick theme experiments
+   - Command: `/style soft|boxed|line`
+   - `soft`: Default with subtle left borders
+   - `boxed`: Cards with backgrounds
+   - `line`: Ultra-flat, no borders
+
+5. **Visual Polish (Option A completion)**
+   - Reduced padding/margins by ~35% across all components
+   - More muted color palette: #7dd3fc (softer blue), #9ca3af (grey text)
+   - Darker, subtler backgrounds: #0d1520 → #0a0f16 for code
+   - Collapsed messages: height 1 (was 2), lighter background
+
+#### Lessons Learned
+- **Avoid CSS pseudo-elements**: Textual doesn't support `::before`/`::after`
+- **Keep chrome separate**: Minimal mode should only affect message styling
+- **Smart summaries matter**: Extract meaningful text vs raw first-line
+- **Spacing is critical**: 30-40% reduction makes huge visual difference
+- **Color subtlety**: Muted accents (#7dd3fc vs #89cff0) feel more polished
+
+#### Technical Debt Addressed
+- ✅ Removed broken Plan/Steps wrapper special-case rendering
+- ✅ Added collapse summary widget system (programmatic vs CSS)
+- ✅ Unified style system (CSS classes on root)
+- ✅ Preference persistence for minimal/style/crumb modes
+
+#### Next Steps (Option B if needed)
+- Deep dive on one area:
+  - Collapsed message UX refinement (animations, better affordances)
+  - Tool/Action widget spacing and visual hierarchy
+  - Input box styling (remove heavy border, flatten)
+
+### Option B: Focused Refinement (Completed)
+**Status: Completed**
+
+#### Collapsed Message System Improvements
+1. **Click-to-toggle behavior**
+   - Added `on_click()` handler to ChatMessage widget
+   - Click collapsed message → expand (remove .collapsed class, rebuild content)
+   - Click expanded assistant message → collapse (add .collapsed class, create summary)
+   - Only assistant messages can be manually collapsed
+
+2. **Better visual feedback**
+   - Hover state: `0.08` alpha background (was `0.05`)
+   - Focus state: `0.10` alpha with lighter border (#bae6fd)
+   - Height: `auto` to accommodate summary text
+   - Collapse summary text color: #93c5fd (softer blue)
+
+3. **Plain output format**
+   - Removed "Steps + Final" pattern from demos
+   - Messages now use natural, conversational structure
+   - Reasoning blocks remain in collapsible <details>
+   - Cleaner, more readable flow
+
+4. **Reasoning sections added**
+   - All demo messages include `<details><summary>🧠 Click to show / hide internal reasoning</summary>`
+   - Realistic reasoning content that explains thought process
+   - Demonstrates how reasoning models will look in production
+
+5. **Markdown rendering fixes**
+   - Skip 🐧 emoji prefix in minimal mode (cleaner look)
+   - Better code fence spacing
+   - Removed redundant formatting artifacts
+
+#### Markdown Rendering Issues Identified
+- ✅ Emoji prefixes disabled in minimal mode
+- ✅ Code blocks have proper spacing
+- ⚠️ Still some minor issues with inline code vs fences (low priority)
+
+#### Testing
+- Shift+M demo now shows:
+  - 4 messages with reasoning blocks
+  - Plain conversational format
+  - Realistic token refresh implementation example
+  - Auto-collapse with keep=1 (latest message expanded)
+  - Click any message to toggle collapse/expand
+
+### Real-World Testing Findings (Sept 29, 2025)
+
+#### Issues Found & Fixed
+
+1. **Reasoning Wrapper Not Clickable** ✅ FIXED
+   - **Root cause**: `SimpleExpander.on_click()` and `action_toggle()` had incorrect indentation
+   - **Fix**: Corrected method indentation in SimpleExpander class
+   - **Result**: Reasoning blocks now expand/collapse properly on click or Enter/Space
+
+2. **Code Block Formatting** ✅ IMPROVED
+   - **Issue**: LLM output often concatenates lines: `import randomdef print_random_number()`
+   - **Fix**: Enhanced `format_execute_block()` with better auto-formatting:
+     - Adds newlines after `import` statements
+     - Separates `def`, `if`, `for`, `while`, `return` keywords
+     - Fixes concatenated functions and comments
+   - **Limitation**: Can't fix all formatting issues (would need full AST parsing)
+   - **Recommendation**: Update system prompts to emphasize proper code formatting
+
+3. **Multiple Executions Issue** ⚠️ NOT A BUG
+   - **Observation**: Model executed same task 4 times (random number generator)
+   - **Root cause**: Model behavior - failed to acknowledge previous results
+   - **Analysis**: Each execution was unique (different tool_call_id, different results)
+   - **TUI behavior**: Correctly displayed all 4 executions without duplication
+   - **Fix needed**: Strengthen `PENGUIN_VERIFICATION_PROMPT` in `prompt_workflow.py`
+   - **Current rule** (line 16): "Acknowledge & React: ALWAYS explicitly acknowledge the system output"
+   - **Recommendation**: Add more explicit examples of acknowledging tool results before next step
+
+#### Markdown Rendering Issues Identified
+- ✅ Code auto-formatting helps with concatenated keywords
+- ✅ Reasoning wrappers now interactive
+- ⚠️ Still can't fix severe formatting issues without AST parsing (acceptable trade-off)
+
+---
+
 ## Core Requirements
 
 ### 1. Tool/Action Display System

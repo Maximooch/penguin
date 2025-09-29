@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: penguin-web
+  namespace: penguin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: penguin
+  template:
+    metadata:
+      labels:
+        app: penguin
+    spec:
+      containers:
+        - name: penguin
+          image: penguin:web
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PENGUIN_CORS_ORIGINS
+              valueFrom:
+                configMapKeyRef:
+                  name: penguin-config
+                  key: PENGUIN_CORS_ORIGINS
+            - name: GITHUB_APP_ID
+              valueFrom:
+                secretKeyRef:
+                  name: penguin-secrets
+                  key: GITHUB_APP_ID
+            - name: GITHUB_APP_INSTALLATION_ID
+              valueFrom:
+                secretKeyRef:
+                  name: penguin-secrets
+                  key: GITHUB_APP_INSTALLATION_ID
+            - name: GITHUB_REPOSITORY
+              valueFrom:
+                secretKeyRef:
+                  name: penguin-secrets
+                  key: GITHUB_REPOSITORY
+            # Choose one of:
+            # - Use App PEM mounted as file and set GITHUB_APP_PRIVATE_KEY_PATH
+            # - Use operator-managed installation token as GITHUB_TOKEN
+            - name: GITHUB_APP_PRIVATE_KEY_PATH
+              value: "/secrets/github-app.pem"
+            # - name: GITHUB_TOKEN
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: penguin-installation-token
+            #       key: token
+          ports:
+            - containerPort: 8000
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: gh-app-key
+              mountPath: /secrets
+              readOnly: true
+      volumes:
+        - name: gh-app-key
+          secret:
+            secretName: penguin-github-app
+            items:
+              - key: github-app.pem
+                path: github-app.pem
+

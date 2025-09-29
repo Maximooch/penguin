@@ -1,0 +1,50 @@
+FROM python:3.12-slim
+
+# Security & performance env
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# System deps
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+       git ca-certificates curl build-essential pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Copy source (supports local build mode)
+COPY . .
+
+# Dual install modes:
+#   INSTALL_MODE=local   -> uv pip install --system .[web]
+#   INSTALL_MODE=release -> uv pip install --system penguin-ai
+ARG INSTALL_MODE=release
+RUN if [ "$INSTALL_MODE" = "local" ]; then \
+      uv pip install --system .[web]; \
+    else \
+      uv pip install --system penguin-ai; \
+    fi
+
+# Optional: remove build toolchain to slim image (artifacts remain)
+RUN apt-get purge -y --auto-remove build-essential pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user
+RUN useradd -m -u 10001 penguinuser \
+    && chown -R penguinuser:penguinuser /app
+USER penguinuser
+
+EXPOSE 8000
+
+# Optional healthcheck
+# HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:8000/api/v1/health || exit 1
+
+CMD ["python", "-m", "penguin.web.server"]
+
+

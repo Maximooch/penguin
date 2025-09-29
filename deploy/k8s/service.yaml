@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: penguin-web
+  namespace: penguin
+spec:
+  type: ClusterIP
+  selector:
+    app: penguin
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+

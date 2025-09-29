@@ -367,41 +367,153 @@ PROJECT_PATTERNS_GUIDE = '''
 
 # --- Output Formatting Styles (New) ---
 
-OUTPUT_STYLE_STEPS_FINAL = """
-**TUI Response Formatting (Steps + Final):**
-When responding:
-- Wrap non‑essential reasoning and intermediate steps in a single details block:
-  <details>
-  <summary>Plan / Steps</summary>
-
-  1) …
-  2) …
-  (Include tool calls and drafts here if useful.)
-
-  </details>
-
-- Always end with a clearly delineated final answer section:
-  ### Final
-  <concise final answer only>
-
-- Do not place the final answer inside <details>.
-- Use fenced code blocks with language tags for code.
-- Prefer terse steps; omit steps when trivial.
-\n+- After any Markdown heading (e.g., `### Final`), insert a blank line before the next paragraph.
-- For lists, put each bullet on its own line starting with `- `; do not chain bullets inline with ` - `.
-- Separate sections with a blank line for readability.
-
-Rendering defaults expected by the UI:
-- In compact view, the analysis details block is collapsed by default.
-- In detailed view, the first details block should be open by default.
 """
+Output formatting guidance used by Penguin prompts.
+
+This module defines a strict, compact contract that keeps the TUI rendering
+predictable and avoids duplicate or malformed blocks.
+"""
+
+# --- Output Formatting Styles (Strict) ---
+
+OUTPUT_STYLE_STEPS_FINAL = """
+**Response Formatting (Clean & Simple):**
+
+### General Structure
+Write naturally and conversationally. Skip unnecessary scaffolding like "Plan / Steps" or "Final" headings.
+
+### Code Execution
+When executing code, use properly formatted fenced blocks:
+
+```python
+# <execute>
+import random
+
+def print_random_number():
+    n = random.randint(1, 1_000_000)
+    print(n)
+    return n
+
+result = print_random_number()
+# </execute>
+```
+
+**Critical Rules:**
+1. Put language tag on its own line: ` ```python ` (with newline after)
+2. Put markers as comments on separate lines: `# <execute>` and `# </execute>`
+3. Proper spacing: blank line after imports, before function defs, between statements
+4. DO NOT concatenate keywords: write `import random\\ndef print` NOT `import randomdef print`
+
+### Tool Result Acknowledgment (MANDATORY)
+After EVERY tool/action execution, you MUST acknowledge the result BEFORE doing anything else:
+
+**Example:**
+- Tool returns: "389671"
+- You respond: "The random number is 389671." or "Got it: 389671"
+- Then continue with next step if needed
+
+**NEVER:**
+- Execute the same tool again without acknowledging previous result
+- Generate a new execute block when previous one succeeded
+- Ignore tool output and move to next step
+
+### Reasoning Blocks (Optional)
+For complex tasks, you MAY wrap your thinking in a collapsible block:
+
+<details>
+<summary>🧠 Click to show / hide internal reasoning</summary>
+
+Your internal thought process here...
+
+</details>
+
+Then provide your main response.
+
+**Keep reasoning concise** - a few sentences, not paragraphs.
+"""
+
 
 OUTPUT_STYLE_PLAIN = """
-**Response Formatting (Plain):**
-- Provide a concise, well-structured answer without a collapsible steps/details block.
-- You may still include code, always fenced with a language tag.
-- Prefer a short concluding line instead of a dedicated "Final" section.
+**Response Formatting (Plain & Direct):**
+
+Write naturally without special formatting scaffolding. Focus on clarity and directness.
+
+### Code Execution
+Use clean, properly formatted code blocks:
+
+```python
+# <execute>
+import random
+
+def print_random_number():
+    n = random.randint(1, 1_000_000)
+    print(n)
+    return n
+
+result = print_random_number()
+# </execute>
+```
+
+**Formatting Rules:**
+1. Language tag on separate line with newline: ` ```python ` then newline
+2. Execution markers as comments on own lines: `# <execute>` and `# </execute>`
+3. Proper Python formatting: blank lines after imports, proper indentation
+4. DO NOT concatenate: `import random\\ndef func` NOT `import randomdef func`
+
+### Tool Result Acknowledgment (CRITICAL)
+After tool execution completes, IMMEDIATELY acknowledge the result in your next message:
+
+**Good Example:**
+```
+User: "Write a function that prints random number and tell me result"
+Assistant: [executes code]
+Tool: "389671"
+Assistant: "The result is 389671."  ← STOPS HERE, doesn't re-execute
+```
+
+**Bad Example (DO NOT DO THIS):**
+```
+User: "Write a function that prints random number"
+Assistant: [executes code]
+Tool: "389671"  
+Assistant: [executes AGAIN instead of acknowledging]  ← WRONG!
+```
+
+### When Using Reasoning
+For complex tasks, optionally wrap thinking in collapsible block. Keep it brief (2-4 sentences):
+
+<details>
+<summary>🧠 Click to show / hide internal reasoning</summary>
+
+I'll search the codebase for auth logic, then check if caching exists.
+
+</details>
+
+Main response here.
+
+### Key Principles
+- Answer directly - skip "Plan", "Steps", "Final" headings
+- Acknowledge tool results immediately - never re-execute
+- Format code properly - with spacing and newlines
+- Keep reasoning brief - not long paragraphs
 """
+
+
+def get_output_formatting(style: str) -> str:
+    """Return the output-formatting guidance block by style name.
+
+    Args:
+        style: 'steps_final' | 'plain' (case-insensitive)
+    """
+    key = (style or "").strip().lower()
+    if key in ("steps_final", "steps+final", "steps-final", "default", "tui"):
+        return OUTPUT_STYLE_STEPS_FINAL
+    if key in ("plain", "simple"):
+        return OUTPUT_STYLE_PLAIN
+    return OUTPUT_STYLE_STEPS_FINAL
+
+
+
 
 OUTPUT_STYLE_JSON_GUIDED = """
 **Response Formatting (JSON-Guided):**

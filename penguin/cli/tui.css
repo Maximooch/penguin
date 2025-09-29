@@ -59,13 +59,23 @@ Footer .footer--highlight-key { background: #89cff0; color: #0c141f; }
     padding: 0 1;
 }
 
+/* Breadcrumb/status bar (Claude-like). Hidden unless enabled by app. */
+#crumb-bar {
+    height: 1;
+    background: #0f1826;
+    color: #89cff0;
+    padding: 0 1;
+    display: none;
+    layer: above;  /* keep above message area but below header */
+}
+
 /* ===============================================
    Chat Message Styling
    =============================================== */
 
-/* Boxed layout */
-.layout-boxed ChatMessage { padding: 1 2; margin: 1 0; background: #101c2c; border: round #334e68; width: 100%; height: auto; layout: vertical; }
-/* Flat layout */
+/* Boxed layout - tighter spacing */
+.layout-boxed ChatMessage { padding: 0 1; margin: 1 0; background: #101c2c; border: round #334e68; width: 100%; height: auto; layout: vertical; }
+/* Flat layout - minimal spacing */
 .layout-flat ChatMessage { padding: 0 1; margin: 0 0 1 0; background: transparent; border: none; width: 100%; height: auto; layout: vertical; }
 
 .message-label { display: none; height: 0; margin: 0; padding: 0; }
@@ -78,11 +88,11 @@ Footer .footer--highlight-key { background: #89cff0; color: #0c141f; }
 
 /* Role label colors removed to reduce noise (inherit screen color by default). */
 
-/* Role ribbons in flat layout */
-.layout-flat .message-content.assistant { border-left: solid #89cff0; }
-.layout-flat .message-content.user { border-left: solid #66bb6a; }
-.layout-flat .message-content.system { border-left: solid #ffd54f; }
-.layout-flat .message-content.error { border-left: solid #ef5350; background: rgba(239,83,80,0.12); }
+/* Role ribbons in flat layout - more subtle */
+.layout-flat .message-content.assistant { border-left: solid #7dd3fc; }
+.layout-flat .message-content.user { border-left: solid #86efac; }
+.layout-flat .message-content.system { border-left: solid #fcd34d; }
+.layout-flat .message-content.error { border-left: solid #fca5a5; background: rgba(239,83,80,0.08); }
 .layout-flat .message-content { padding-left: 1; margin-top: 0; }
 
 /* Tool chain gutter connector (compact) */
@@ -92,8 +102,8 @@ ChatMessage.tool-result .message-content { border-left: solid #57c7ff; }
 ChatMessage.tool-call .message-content,
 ChatMessage.tool-result .message-content { padding-left: 1; }
 
-/* Assistant headline (compact) */
-.msg-head { color: #a3bffa; text-style: bold; padding: 0 1 0 1; margin: 0; }
+/* Assistant headline (compact) - more subtle */
+.msg-head { color: #93c5fd; text-style: bold; padding: 0 1 0 1; margin: 0; }
 
 /* Streaming highlight */
 .layout-boxed ChatMessage.streaming { border: round #89cff0; background: #1a2a3f; }
@@ -102,14 +112,14 @@ ChatMessage.tool-result .message-content { padding-left: 1; }
 .layout-boxed ChatMessage:focus { border: round #89cff0; background: #162436; }
 .layout-flat ChatMessage:focus .message-content { background: #162436; }
 
-/* Code block inside messages */
-.code-block { padding: 0 1; margin-top: 0; margin-bottom: 0; background: #111a28; border: round #334e68; }
+/* Code block inside messages - tighter, subtler */
+.code-block { padding: 0 1; margin-top: 0; margin-bottom: 0; background: #0d1520; border: round #2a3f54; }
 
 /* ===============================================
    Tool Execution Widget Styles
    =============================================== */
 
-.tool-execution { margin: 1 0 0 0; padding: 1; background: #101c2c; border: round #334e68; }
+.tool-execution { margin: 1 0 0 0; padding: 0 1; background: #0d1520; border: round #2a3f54; }
 
 .tool-execution:focus { border: round #89cff0; background: #162436; }
 
@@ -120,11 +130,11 @@ ChatMessage.tool-result .message-content { padding-left: 1; }
 
 .tool-header { padding: 0; background: transparent; border: none; text-style: none; }
 
-.tool-params-section { margin: 1 0 0 0; background: #162436; border: round #334e68; padding: 0; }
+.tool-params-section { margin: 1 0 0 0; background: #0d1520; border: round #2a3f54; padding: 0; }
 
-.tool-params-content { padding: 0 1; color: #a0a0a0; min-height: 0; margin: 0; }
+.tool-params-content { padding: 0 1; color: #9ca3af; min-height: 0; margin: 0; }
 
-.tool-result-section { margin: 1 0 0 0; background: #162436; border: round #334e68; padding: 0; min-height: 0; }
+.tool-result-section { margin: 1 0 0 0; background: #0d1520; border: round #2a3f54; padding: 0; min-height: 0; }
 
 .tool-result-content { padding: 0 1; min-height: 0; margin: 0; }
 
@@ -152,15 +162,16 @@ ChatMessage.tool-result .message-content { padding-left: 1; }
    Collapsible Sections
    =============================================== */
 
-Collapsible { background: #101c2c; border: round #334e68; margin: 1 0; min-height: 0; }
+Collapsible { background: #0d1520; border: round #2a3f54; margin: 0; min-height: 0; }
 
-/* Inside tool cards, trim Collapsible bottom margin further */
-.tool-execution Collapsible {
-    margin: 1 0 0 0;
+/* Inside tool cards and messages, no extra margin */
+.tool-execution Collapsible,
+ChatMessage Collapsible {
+    margin: 0;
     min-height: 0;
 }
 
-Collapsible > .label { padding: 1; background: #1a2a3f; color: #89cff0; }
+Collapsible > .label { padding: 0 1; background: #0d1520; color: #7dd3fc; }
 
 Collapsible:focus > .label {
     background: #162436;
@@ -191,8 +202,8 @@ Collapsible:focus > .label {
     color: #ffd54f;
 }
 
-/* Reasoning / blockquote styling */
-Markdown BlockQuote { color: #a0a0a0; text-style: italic; border-left: thick #334e68; padding-left: 1; }
+/* Reasoning / blockquote styling - more muted */
+Markdown BlockQuote { color: #9ca3af; text-style: italic; border-left: thick #2a3f54; padding-left: 1; }
 
 /* ===============================================
    RunMode Output Styling
@@ -240,6 +251,63 @@ Markdown BlockQuote { color: #a0a0a0; text-style: italic; border-left: thick #33
 .theme-dracula .layout-flat .message-content.user { border-left: solid #50fa7b; }
 .theme-dracula .layout-flat .message-content.system { border-left: solid #f1fa8c; }
 .theme-dracula .layout-flat .message-content.error { border-left: solid #ff5555; background: rgba(255,85,85,0.12); }
+
+/* ===============================================
+   Minimal Mode (Claude Code–like, messages only)
+   Applies when root has class .mode-minimal
+   Does NOT alter input bar or sidebar
+   =============================================== */
+.mode-minimal .layout-flat ChatMessage { padding: 0 1; margin: 0 0 1 0; background: transparent; border: none; }
+.mode-minimal .layout-flat .message-content { border-left: none; }
+.mode-minimal .msg-head { color: #b3e5fc; }
+.mode-minimal .code-block { background: #0f1826; border: none; }
+
+/* Collapsed older messages: hide narrative, keep headline */
+ChatMessage.collapsed .message-content { display: none; }
+ChatMessage.collapsed .msg-head { display: block; }
+
+/* Whole-message collapsing: show only a compact summary line */
+ChatMessage.collapsed {
+    height: auto;
+    min-height: 1;
+    margin: 0 0 0 0;
+    padding: 0 1;
+    background: rgba(125, 211, 252, 0.03);
+    border-left: solid #7dd3fc;
+}
+
+/* Make collapsed messages clickable to expand */
+ChatMessage.collapsed:hover {
+    background: rgba(125, 211, 252, 0.08);
+}
+
+ChatMessage.collapsed:focus {
+    background: rgba(125, 211, 252, 0.10);
+    border-left: solid #bae6fd;
+}
+
+/* Style for collapse summary text - compact */
+.collapse-summary {
+    color: #93c5fd;
+    padding: 0;
+    margin: 0;
+    height: 1;
+}
+
+/* ===============================================
+   Message Style Variants (root classes):
+   .style-soft (default), .style-boxed, .style-line
+   =============================================== */
+.style-soft .layout-flat .message-content.assistant { border-left: solid #7dd3fc; }
+.style-soft .layout-flat .message-content.user { border-left: solid #86efac; }
+.style-soft .layout-flat .message-content.system { border-left: solid #fcd34d; }
+
+.style-boxed ChatMessage { background: #0d1520; border: round #2a3f54; padding: 0 1; margin: 1 0; }
+.style-boxed .code-block { background: #0a0f16; border: round #2a3f54; }
+
+.style-line .layout-flat .message-content { border-left: none; padding-left: 0; }
+.style-line ChatMessage { border: none; background: transparent; margin: 0; padding: 0 1; }
+.style-line .code-block { background: #0a0f16; border: none; }
 
 /* ===============================================
    Future Theme Templates

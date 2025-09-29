@@ -84,18 +84,13 @@ if Expander is None:
             arrow = "▼" if self.open_state else "▶"
             yield self.SummaryLine(f"{arrow} {self._summary_text}", classes="expander-summary")
 
-            # Body (conditionally mounted)
+            # Body mounts are handled in watch_open_state to support nested details
             if self.open_state:
-                yield TextualMarkdown(self._body_md, classes="expander-body")
+                pass
 
         # ---------------------------- Events ---------------------------
         def on_click(self, event) -> None:  # type: ignore[override]
-            """Toggle only when the summary line is clicked.
-
-            Older Textual versions may bubble click events from children.
-            Guard against accidental toggles while selecting text in the body
-            by requiring the click target to be the summary widget.
-            """
+            """Toggle expander on click."""
             try:
                 target = getattr(event, "target", None)
                 # target may be a DOM node with a CSS classes attribute
@@ -129,7 +124,30 @@ if Expander is None:
             if new_state:
                 # If body already present – nothing to do
                 if not self.query(".expander-body"):
-                    self.mount(TextualMarkdown(self._body_md, classes="expander-body"))
+                    try:
+                        body_text = self._body_md or ""
+                        if "<details" in body_text:
+                            # Parse and mount nested details directly to ensure proper nesting in Textual 5.x
+                            pos = 0
+                            for m in DETAILS_RE.finditer(body_text):
+                                before = body_text[pos:m.start()]
+                                if before.strip():
+                                    self.mount(TextualMarkdown(before, classes="expander-body"))
+                                attrs = m.group(1) or ""
+                                summary_text = m.group(3) or "Details"
+                                inner_md = (m.group(4) or "").strip()
+                                is_open = "open" in attrs if isinstance(attrs, str) else False
+                                sub = SimpleExpander(summary_text, inner_md, open=bool(is_open))
+                                sub.add_class("expander-body")
+                                self.mount(sub)
+                                pos = m.end()
+                            remainder = body_text[pos:]
+                            if remainder.strip():
+                                self.mount(TextualMarkdown(remainder, classes="expander-body"))
+                        else:
+                            self.mount(TextualMarkdown(body_text, classes="expander-body"))
+                    except Exception:
+                        self.mount(TextualMarkdown(self._body_md or "", classes="expander-body"))
             else:
                 for body in self.query(".expander-body"):
                     body.remove()
@@ -154,7 +172,7 @@ import shutil
 from penguin.core import PenguinCore
 from penguin.cli.interface import PenguinInterface
 from penguin.cli.widgets import ToolExecutionWidget, StreamingStateMachine, StreamState
-from penguin.cli.widgets.unified_display import UnifiedExecution, ExecutionAdapter, ExecutionStatus
+from penguin.cli.widgets.unified_display import UnifiedExecution, ExecutionAdapter, ExecutionStatus, ExecutionType
 from penguin.cli.command_registry import CommandRegistry
 
 
@@ -257,6 +275,23 @@ if not logger.handlers:
     except Exception:
         pass
 
+# Log Textual version as early as possible
+try:
+    import importlib.metadata as _md  # py3.8+
+    try:
+        _textual_version = _md.version("textual")
+    except Exception:
+        _textual_version = "<unknown>"
+    try:
+        import textual as _textual
+        _textual_path = getattr(_textual, "__file__", "<unknown>")
+    except Exception:
+        _textual_path = "<unimportable>"
+    logger.info("Textual runtime: version=%s path=%s", _textual_version, _textual_path)
+except Exception:
+    # Best-effort only; avoid breaking import on older envs
+    pass
+
 # --- Custom Widgets ---
 
 class ChatMessage(Static, can_focus=True):
@@ -273,6 +308,59 @@ class ChatMessage(Static, can_focus=True):
     # Also handle cases where there's no newline after the language identifier
     CODE_FENCE = re.compile(r"```([^\n`]*?)[\r\n]*(.*?)```", re.S)
     BINDINGS = [("c", "copy", "Copy to clipboard"), ("ctrl+r", "toggle_expander", "Toggle reasoning")]  # visible in footer
+
+    def on_click(self, event) -> None:  # type: ignore[override]
+        """Handle click on message - toggle collapse/expand."""
+        try:
+            # Toggle collapsed state
+            if self.has_class("collapsed"):
+                # Expand: remove collapsed class and summary
+                self.remove_class("collapsed")
+                if hasattr(self, '_collapse_summary'):
+                    try:
+                        self._collapse_summary.remove()
+                        delattr(self, '_collapse_summary')
+                    except Exception:
+                        pass
+                # Rebuild content to restore full message
+                try:
+                    self._rebuild_contents()
+                except Exception:
+                    pass
+            else:
+                # Collapse: add collapsed class and create summary
+                if self.role == "assistant":  # Only collapse assistant messages
+                    self.add_class("collapsed")
+                    # Create collapse summary
+                    try:
+                        content = (getattr(self, "content", "") or "").strip()
+                        # Extract meaningful summary (skip details/thinking blocks)
+                        import re
+                        clean = re.sub(r'<details[^>]*>.*?</details>', '', content, flags=re.S)
+                        clean = re.sub(r'<thinking>.*?</thinking>', '', clean, flags=re.S)
+                        clean = re.sub(r'```[^`]*```', '', clean, flags=re.S)
+                        # Also remove markdown headings for cleaner summary
+                        clean = re.sub(r'#{1,6}\s+\w+', '', clean)
+                        lines = [ln.strip() for ln in clean.strip().split('\n') if ln.strip() and not ln.strip().startswith(('#', '>', '-', '*', '🐧', '**'))]
+                        if lines:
+                            first = lines[0][:35]  # Shorter (was 60)
+                            if len(lines[0]) > 35:
+                                first += "…"
+                            summary = f"▶ {first}"
+                        else:
+                            first_line = content.split('\n')[0][:35]
+                            summary = f"▶ {first_line}…" if len(content.split('\n')[0]) > 35 else f"▶ {first_line}"
+                        
+                        if not hasattr(self, '_collapse_summary'):
+                            from textual.widgets import Static
+                            self._collapse_summary = Static(summary, classes="collapse-summary")
+                            self.mount(self._collapse_summary)
+                        else:
+                            self._collapse_summary.update(summary)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def __init__(self, content: str, role: str, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -299,7 +387,8 @@ class ChatMessage(Static, can_focus=True):
             if self.has_class("streaming"):
                 text = self._clean_final_content(self.content)
                 try:
-                    if self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not self._prefixed:
+                    minimal_active = getattr(self.app, "_minimal_mode", False)
+                    if not minimal_active and self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not self._prefixed:
                         text = ("🐧 " + text) if not text.startswith("🐧 ") else text
                         self._prefixed = True
                 except Exception:
@@ -319,14 +408,22 @@ class ChatMessage(Static, can_focus=True):
         # Try to handle both execute tags and already-formatted code blocks
         def format_execute_block(match):
             code = match.group(1)
-            # Try to detect and fix common formatting issues
+            # Try to detect and fix common formatting issues from LLM output
             # Fix missing spaces after imports
             code = re.sub(r'import(\w)', r'import \1', code)
             code = re.sub(r'from(\w)', r'from \1', code)
+            # Fix missing newlines after imports
+            code = re.sub(r'(import [^\n]+)([a-z])', r'\1\n\2', code, flags=re.I)
+            # Fix concatenated function definitions
+            code = re.sub(r'(\w+)def ', r'\1\ndef ', code)
+            code = re.sub(r'(\))def ', r')\n\ndef ', code)
+            # Fix missing newlines before common keywords
+            code = re.sub(r'(\w)if ', r'\1\nif ', code)
+            code = re.sub(r'(\w)for ', r'\1\nfor ', code)
+            code = re.sub(r'(\w)while ', r'\1\nwhile ', code)
+            code = re.sub(r'(\w)return ', r'\1\nreturn ', code)
             # Fix comments that got concatenated
             code = re.sub(r'([^#\n])#', r'\1\n#', code)
-            # Try to add newlines before common Python keywords if they're missing
-            code = re.sub(r'([;\}])([a-z])', r'\1\n\2', code)
             return f"```python\n{code}\n```"
         
         processed_content = re.sub(r"<execute(?:_command|_code)?>(.*?)</execute(?:_command|_code)?>", 
@@ -347,34 +444,20 @@ class ChatMessage(Static, can_focus=True):
         processed_content = re.sub(r"<thinking>(.*?)</thinking>", _convert_thinking, processed_content, flags=re.S)
         # ----------------------------------------------------------------
 
-        # Add small toolbar: "Show steps" next to Final when a details block exists
-        try:
-            if self.role == "assistant":
-                has_details = DETAILS_RE.search(processed_content) is not None
-                has_final = "\n### Final" in processed_content or processed_content.startswith("### Final")
-                if has_details and has_final:
-                    # Lightweight inline toggle button
-                    btn = Button("Show steps", id="steps-toggle")
-                    # Wire the button to toggle the first expander after mount
-                    def _bind_toggle():
-                        try:
-                            if Expander is not None:
-                                exp = self.query_one(Expander)  # type: ignore[arg-type]
-                                exp.open = not getattr(exp, "open", False)  # type: ignore[attr-defined]
-                            else:
-                                exp = self.query_one(SimpleExpander)
-                                exp.action_toggle()
-                        except Exception:
-                            pass
-                    btn.on_click = lambda *_: _bind_toggle()  # type: ignore[assignment]
-                    yield btn
-        except Exception:
-            pass
+        # Inline button removed: rely on the expander summary UI for toggling
 
         # --- Convert HTML <details>/<summary> blocks into Textual Expanders ---
         # Accept optional attributes on <details>, e.g. <details open>
 
         pos = 0
+        try:
+            logger.info(
+                "[details] parse begin expander_available=%s content_len=%s",
+                Expander is not None,
+                len(processed_content or "")
+            )
+        except Exception:
+            pass
         for m in DETAILS_RE.finditer(processed_content):
             before = processed_content[pos:m.start()]
             if before.strip():
@@ -389,6 +472,22 @@ class ChatMessage(Static, can_focus=True):
             body_md = m.group(4).strip()
             is_open = "open" in attrs if isinstance(attrs, str) else False
 
+            # Targeted diagnostics: estimate nesting depth at match position
+            try:
+                prefix = processed_content[: m.start()]
+                opens = len(re.findall(r"<details(\s+[^>]*)?>", prefix))
+                closes = len(re.findall(r"</details>", prefix))
+                depth = max(0, opens - closes)
+                logger.info(
+                    "[details] match summary=%r depth=%s body_len=%s is_open=%s",
+                    summary_text,
+                    depth,
+                    len(body_md or ""),
+                    bool(is_open),
+                )
+            except Exception:
+                pass
+
             if Expander is not None:
                 # Preferred rich interactive widget when available.
                 # Auto-open first details in detailed view
@@ -398,9 +497,25 @@ class ChatMessage(Static, can_focus=True):
                         setattr(self, "_opened_first_details", True)
                 except Exception:
                     pass
-                expander = Expander(summary_text, open=bool(is_open))  # type: ignore[call-arg]
-                expander.mount(TextualMarkdown(body_md))
-                yield expander
+                # Use compose DSL to guarantee children are nested under the Expander in Textual 5.x
+                try:
+                    with Expander(summary_text, open=bool(is_open)):  # type: ignore[call-arg]
+                        if "<details" in body_md:
+                            yield ChatMessage(body_md, role=self.role)
+                        else:
+                            yield TextualMarkdown(body_md)
+                except Exception:
+                    # Fallback to imperative mount if compose DSL context fails
+                    expander = Expander(summary_text, open=bool(is_open))  # type: ignore[call-arg]
+                    try:
+                        if "<details" in body_md:
+                            nested = ChatMessage(body_md, role=self.role)
+                            expander.mount(nested)
+                        else:
+                            expander.mount(TextualMarkdown(body_md))
+                    except Exception:
+                        expander.mount(TextualMarkdown(body_md))
+                    yield expander
             else:
                 # Older Textual – use our minimal interactive fallback.
                 try:
@@ -422,6 +537,10 @@ class ChatMessage(Static, can_focus=True):
 
         # If we already yielded widgets for details, and no remainder, return early
         if pos > 0:
+            try:
+                logger.info("[details] parse end remainder_len=%s", len(processed_content or ""))
+            except Exception:
+                pass
             if processed_content:
                 # There was some trailing text outside details block(s)
                 yield TextualMarkdown(
@@ -449,9 +568,10 @@ class ChatMessage(Static, can_focus=True):
         except Exception:
             pass
 
-        # Compact mode: prefix penguin emoji for assistant messages
+        # Skip penguin emoji prefix in minimal mode for cleaner look
         try:
-            if self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not processed_content.startswith("🐧 "):
+            minimal_active = getattr(self.app, "_minimal_mode", False)
+            if not minimal_active and self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not processed_content.startswith("🐧 "):
                 processed_content = f"🐧 {processed_content}"
         except Exception:
             pass
@@ -496,7 +616,41 @@ class ChatMessage(Static, can_focus=True):
                             # Map custom languages
                             actual_lang = (lang or "python").lower()
                             if actual_lang == "actionxml":
-                                actual_lang = "xml"
+                                # Heuristic extraction: many models emit a fence labeled
+                                # "actionxml" that actually contains Python preceded by the
+                                # word "python" or wrapped in <execute> tags. Extract it.
+                                import re as _re
+                                inner = code
+                                # Case 1: <execute>...</execute> inside the fence
+                                m = _re.search(r"<execute(?:_command|_code)?>([\s\S]*?)</execute(?:_command|_code)?>", inner)
+                                if m:
+                                    inner = m.group(1).strip()
+                                # Case 2: a leading "python" line
+                                inner = _re.sub(r"^\s*python\s*\n", "", inner, flags=_re.I)
+                                # Remove common stream artifacts
+                                inner = inner.replace("[Response may be incomplete - check logs]", "").strip()
+                                # Decide language by content
+                                if _RE_PY.search(inner):
+                                    actual_lang = "python"
+                                    code = inner
+                                else:
+                                    actual_lang = _guess_lang_cached(inner) or "text"
+                                    code = inner
+                            elif actual_lang == "action":
+                                # Treat generic <action> blocks similarly
+                                import re as _re
+                                inner = code
+                                m = _re.search(r"<action[^>]*>([\s\S]*?)</action>", inner)
+                                if m:
+                                    inner = m.group(1).strip()
+                                inner = _re.sub(r"^\s*python\s*\n", "", inner, flags=_re.I)
+                                inner = inner.replace("[Response may be incomplete - check logs]", "").strip()
+                                if _RE_PY.search(inner):
+                                    actual_lang = "python"
+                                    code = inner
+                                else:
+                                    actual_lang = _guess_lang_cached(inner) or "text"
+                                    code = inner
 
                             # Auto-collapse ActionTag/tool blocks in compact view (except diffs)
                             preview_lines = getattr(self.app, "_tools_preview_lines", 5)
@@ -544,9 +698,10 @@ class ChatMessage(Static, can_focus=True):
         # Clean up streaming artifacts before adding to content
         cleaned_chunk = self._clean_streaming_artifacts(chunk)
         
-        # Emit penguin prefix once in compact mode before first chunk
+        # Emit penguin prefix once in compact mode before first chunk (skip in minimal mode)
         try:
-            if self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not self._prefixed:
+            minimal_active = getattr(self.app, "_minimal_mode", False)
+            if not minimal_active and self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not self._prefixed:
                 md = self._get_markdown_widget()
                 if md is not None and hasattr(md, "get_stream"):
                     if self._md_stream is None:
@@ -735,8 +890,8 @@ class ChatMessage(Static, can_focus=True):
         
         # Heuristic fix: ensure a newline after common section headings like
         # "### Final" when the model forgot a line break (e.g., "### FinalHere…").
-        # This keeps rendering tidy without being overly invasive.
-        content = re.sub(r'(?m)^(#{1,6}\s+Final)(?!\s*\n)', r"\1\n\n", content)
+        # Insert the newlines without losing the following character.
+        content = re.sub(r'(?mi)^(#{1,6}\s+Final)(\S)', r"\1\n\n\2", content)
 
         # Normalize chained inline bullets of the form " - a - b - c" into
         # proper list items, but only for narrative lines (not code fences).
@@ -759,6 +914,29 @@ class ChatMessage(Static, can_focus=True):
             return '\n'.join(out)
 
         content = _normalize_inline_bullets(content)
+        
+        # --- Markdown seam fixes (narrow, safe) ---
+        # 1) Split a heading immediately followed by a code fence
+        content = re.sub(r"(?m)^(#{1,6}[^\n]*?)\s*```", r"\1\n\n```", content)
+
+        # 2) Normalize fenced code starts only at line start; keep stray text as first code line.
+        def _normalize_fence_start(match: re.Match) -> str:
+            raw = (match.group(1) or "").rstrip()
+            # Extract a plausible language token (letters, digits, dash, underscore, dot)
+            m = re.match(r"([A-Za-z0-9_.-]+)(.*)", raw)
+            if m:
+                lang = m.group(1)
+                trailing = m.group(2).strip()
+            else:
+                lang = raw
+                trailing = ""
+            body_prefix = (trailing + "\n") if trailing else ""
+            return f"```{lang}\n{body_prefix}"
+
+        content = re.sub(r"(?m)^```([^`\n]*)", _normalize_fence_start, content)
+
+        # 3) Ensure fences begin on their own line (insert a preceding newline if missing but avoid mid-word)
+        content = re.sub(r"(?<!\n)(?=```)", "\n", content)
 
         return content.strip()
     
@@ -903,8 +1081,13 @@ class ChatMessage(Static, can_focus=True):
     # Ctrl+R → toggle first expander
     # ------------------------------
     def action_toggle_expander(self) -> None:  # noqa: D401 – keybinding handler
-        """Toggle the first collapsible reasoning block (if any)."""
+        """Toggle the first collapsible reasoning block (if any), or toggle collapsed message."""
         try:
+            # First, check if we have a collapsed message that can be expanded
+            if self.has_class("collapsed"):
+                self.remove_class("collapsed")
+                return
+            
             # Try to find traditional expander widgets first
             if Expander is not None:
                 exp = self.query_one(Expander)  # type: ignore[arg-type]
@@ -1064,6 +1247,7 @@ class PenguinTextualApp(App):
         ("ctrl+q", "quit", "Quit"),
         ("ctrl+l", "clear_log", "Clear"),
         ("ctrl+d", "show_debug", "Debug"),
+        ("ctrl+m", "toggle_minimal", "Minimal"),
     ]
     
     status_text = reactive("Initializing...")
@@ -1105,6 +1289,7 @@ class PenguinTextualApp(App):
         self._theme_name: str = "ocean"  # ocean | nord | dracula
         self._layout_mode: str = "flat"   # flat | boxed
         self._view_mode: str = "compact"  # compact | detailed
+        self._minimal_mode: bool = False   # minimal UI chrome
         # Compact tool display controls
         self._tools_compact: bool = True
         self._tools_preview_lines: int = 10
@@ -1117,12 +1302,25 @@ class PenguinTextualApp(App):
         self._linkify_on_finalization: bool = True
         self._message_area_ref: Optional[VerticalScroll] = None
         self._status_bar_ref: Optional[Static] = None
+        self._crumb_ref: Optional[Static] = None
         self._trim_notice_added: bool = False
         self._older_messages_cache: list[dict] = []  # [{'role': str, 'content': str}]
         self._show_older_btn: Optional[Button] = None
 
         # Coalesced sidebar status
         self._last_status_payload: Optional[Dict[str, Any]] = None
+
+        # Claude Code-like options (off by default)
+        self._auto_collapse_assistant: bool = False
+        self._collapse_keep: int = 1  # Keep N latest assistant messages expanded
+        self._crumb_enabled: bool = False
+        self._crumb_text: str = ""
+
+        # Message style variants: soft | boxed | line (affects message/code visuals only)
+        self._message_style: str = "soft"
+        
+        # Whole-message collapsing (alternative to section-level collapse)
+        self._collapse_whole_messages: bool = False
 
     # -------------------------
     # Utilities
@@ -1161,9 +1359,15 @@ class PenguinTextualApp(App):
         self._load_prefs()
         self._apply_theme_class()
         self._apply_layout_class()
+        try:
+            self._apply_minimal_class()
+        except Exception:
+            pass
         yield Header()
         with Container(id="main-container"):
             with Container(id="center-pane"):
+                # Optional breadcrumb/status line at the very top of center-pane
+                yield Static("", id="crumb-bar")
                 yield VerticalScroll(id="message-area")
                 yield Input(
                     placeholder="Type your message... (/help for commands, Tab for autocomplete)", 
@@ -1176,9 +1380,32 @@ class PenguinTextualApp(App):
     async def on_mount(self) -> None:
         """Called when the app is mounted."""
         try:
+            # Log Textual version at app startup (also goes to tui_debug.log)
+            try:
+                import importlib.metadata as _md  # py3.8+
+                try:
+                    _v = _md.version("textual")
+                except Exception:
+                    _v = "<unknown>"
+                try:
+                    import textual as _textual
+                    _p = getattr(_textual, "__file__", "<unknown>")
+                except Exception:
+                    _p = "<unimportable>"
+                logger.info("[startup] Textual: version=%s path=%s", _v, _p)
+            except Exception:
+                pass
             self._status_bar_ref = self.query_one("#status-bar", Static)
             self._status_bar_ref.update(self.status_text)
             self._message_area_ref = self.query_one("#message-area", VerticalScroll)
+            # Breadcrumb bar ref (may be hidden by default)
+            try:
+                self._crumb_ref = self.query_one("#crumb-bar", Static)
+                if self._crumb_enabled and self._crumb_text:
+                    self._crumb_ref.update(self._crumb_text)
+                self._crumb_ref.display = self._crumb_enabled
+            except Exception:
+                pass
             # Mount a Show Older loader button at the top of the message area
             try:
                 self._show_older_btn = Button("Show older…", id="show-older")
@@ -1208,6 +1435,12 @@ class PenguinTextualApp(App):
         new_message = ChatMessage(content, role)
         # Append new messages at the end to keep chronological order (oldest at top, newest at bottom)
         area.mount(new_message)
+        # Optionally auto-collapse older assistant messages to keep latest focused
+        try:
+            if self._auto_collapse_assistant and role == "assistant":
+                self._collapse_older_assistant(area)
+        except Exception:
+            pass
         self._maybe_trim_messages(area)
         # Request a debounced scroll to bottom to avoid layout thrash
         self._request_scroll_to_bottom()
@@ -1260,6 +1493,76 @@ class PenguinTextualApp(App):
             pass
         return True
     
+    def _collapse_older_assistant(self, area: Optional[VerticalScroll] = None) -> None:
+        """Collapse older assistant messages, leaving the most recent N visible.
+
+        For whole-message collapsing: hides entire message content, shows only headline.
+        For section collapsing: works on expandable sections within messages.
+        """
+        try:
+            area_ref = area or self._message_area_ref or self.query_one("#message-area", VerticalScroll)
+            msgs = [w for w in area_ref.children if isinstance(w, ChatMessage) and getattr(w, "role", "") == "assistant"]
+            keep = max(1, int(getattr(self, "_collapse_keep", 1)))
+            to_collapse = msgs[:-keep]
+            
+            if getattr(self, "_collapse_whole_messages", False):
+                # Whole-message collapsing: add .collapsed class to entire ChatMessage
+                for w in to_collapse:
+                    try:
+                        w.add_class("collapsed")
+                        # Add expand indicator and smart summary text
+                        try:
+                            content = (getattr(w, "content", "") or "").strip()
+                            # Extract meaningful summary (skip details/thinking blocks)
+                            import re
+                            # Remove details blocks for summary
+                            clean = re.sub(r'<details[^>]*>.*?</details>', '', content, flags=re.S)
+                            # Remove thinking blocks
+                            clean = re.sub(r'<thinking>.*?</thinking>', '', clean, flags=re.S)
+                            # Remove code blocks
+                            clean = re.sub(r'```[^`]*```', '', clean, flags=re.S)
+                            # Get first meaningful line
+                            lines = [ln.strip() for ln in clean.strip().split('\n') if ln.strip() and not ln.strip().startswith(('#', '>', '-', '*', '🐧'))]
+                            if lines:
+                                first = lines[0][:35]  # Shorter summary (was 60)
+                                if len(lines[0]) > 35:
+                                    first += "…"
+                                summary = f"▶ {first}"
+                            else:
+                                # Fallback to raw first line
+                                first_line = content.split('\n')[0][:35]
+                                summary = f"▶ {first_line}…" if len(content.split('\n')[0]) > 35 else f"▶ {first_line}"
+                            
+                            # Create or update a summary widget
+                            if not hasattr(w, '_collapse_summary'):
+                                from textual.widgets import Static
+                                w._collapse_summary = Static(summary, classes="collapse-summary")
+                                w.mount(w._collapse_summary)
+                            else:
+                                w._collapse_summary.update(summary)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+            else:
+                # Section-level collapsing: collapse expandable sections within messages
+                for w in to_collapse:
+                    try:
+                        # Find and collapse expandable sections within this message
+                        if hasattr(w, 'query'):
+                            for exp in w.query("Expander, SimpleExpander"):
+                                try:
+                                    if hasattr(exp, 'open'):
+                                        exp.open = False
+                                    elif hasattr(exp, 'open_state'):
+                                        exp.open_state = False
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    
     def _format_system_output(self, action_name: str, result_str: str, max_lines: int = 20) -> str:
         """Format tool / action output.
 
@@ -1267,6 +1570,12 @@ class PenguinTextualApp(App):
           preview and a <details> block with the remainder. No extra headers.
         - Detailed view: show full output with a small header line.
         """
+        # Special compact formatting for Python execute outputs
+        try:
+            if str(action_name or "").lower() in ("execute", "execute_code"):
+                return self._format_execute_result(result_str, max_lines=max_lines)
+        except Exception:
+            pass
         view = getattr(self, "_view_mode", "compact")
         compact_tools = getattr(self, "_tools_compact", True)
         if compact_tools:
@@ -1303,6 +1612,113 @@ class PenguinTextualApp(App):
         content += f"{fence_full}{remainder}\n```\n\n"
         content += "</details>"
         return content
+
+    def _format_execute_result(self, result_str: str, max_lines: int = 20) -> str:
+        """Condense common execute() outputs (remove Out[n]: and duplicates).
+
+        Returns a compact fenced block when short; otherwise a preview + details
+        using the same style as _format_system_output.
+        """
+        try:
+            txt = str(result_str or "")
+            # Normalize newlines and trim
+            lines = [ln.rstrip() for ln in txt.splitlines()]
+            # Remove Jupyter-style echo lines and blanks
+            import re as _re
+            cleaned: list[str] = []
+            seen: set[str] = set()
+            for ln in lines:
+                if not ln.strip():
+                    continue
+                if _re.match(r"^Out\[[0-9]+\]:", ln):
+                    continue
+                # Drop obvious echo of code prompts like ">>> "
+                if ln.lstrip().startswith(">>> "):
+                    continue
+                # Collapse duplicate consecutive lines
+                key = ln.strip()
+                if key in seen:
+                    continue
+                seen.add(key)
+                cleaned.append(ln)
+            if not cleaned:
+                cleaned = [txt.strip()]
+
+            # If it's now short, show directly
+            shortlist = cleaned[:max_lines]
+            rendered = "\n".join(shortlist)
+            if len(cleaned) <= max_lines and len(rendered) <= 400:
+                return f"```text\n{rendered}\n```"
+
+            # Otherwise show preview + details
+            preview = "\n".join(cleaned[:max_lines])
+            remainder = "\n".join(cleaned[max_lines:])
+            content = f"```text\n{preview}\n```\n\n"
+            content += "<details>\n"
+            content += f"<summary>Show {max(0, len(cleaned) - max_lines)} more lines…</summary>\n\n"
+            content += f"```text\n{remainder}\n```\n\n"
+            content += "</details>"
+            return content
+        except Exception:
+            # Fallback to original path
+            return f"```text\n{str(result_str)}\n```"
+
+    # ---------------------------
+    # Dedup helpers (compress UI)
+    # ---------------------------
+    def _get_last_assistant_text(self) -> str:
+        try:
+            if self.last_finalized_content:
+                return str(self.last_finalized_content)
+            if self.current_streaming_widget and getattr(self.current_streaming_widget, "content", ""):
+                return str(self.current_streaming_widget.content)
+        except Exception:
+            pass
+        return ""
+
+    def _normalize_snippet(self, s: str) -> str:
+        try:
+            import re as _re
+            s = s or ""
+            # Drop code fences / tags common in our flow
+            s = _re.sub(r"```[a-zA-Z0-9_.-]*", "", s)
+            s = s.replace("```", "")
+            s = _re.sub(r"<execute(?:_command|_code)?>", "", s)
+            s = _re.sub(r"</execute(?:_command|_code)?>", "", s)
+            s = _re.sub(r"<action[^>]*>", "", s)
+            s = _re.sub(r"</action>", "", s)
+            s = _re.sub(r"\[Response may be incomplete[^\]]*\]", "", s)
+            # Remove whitespace for robust containment checks
+            s = "".join(ch for ch in s if not ch.isspace())
+            return s
+        except Exception:
+            return s
+
+    def _extract_code_from_event(self, name: str, payload: Any) -> str:
+        try:
+            # Common layouts: dict with 'code'|'script'|'command'; or string blob
+            if isinstance(payload, dict):
+                for key in ("code", "script", "body", "content", "command"):
+                    if key in payload and isinstance(payload[key], str):
+                        return payload[key]
+                return json.dumps(payload, ensure_ascii=False)
+            return str(payload)
+        except Exception:
+            return str(payload)
+
+    def _should_hide_call_as_duplicate(self, name: str, payload: Any) -> bool:
+        try:
+            last_txt = self._get_last_assistant_text()
+            if not last_txt:
+                return False
+            a = self._normalize_snippet(self._extract_code_from_event(name, payload))
+            b = self._normalize_snippet(last_txt)
+            if not a or not b:
+                return False
+            # Containment in either direction is enough to call it a dupe
+            return (a in b) or (b in a)
+        except Exception:
+            return False
 
     async def initialize_core(self) -> None:
         """Initialize the PenguinCore and interface."""
@@ -1386,6 +1802,22 @@ class PenguinTextualApp(App):
                     if payload != getattr(self, "_last_status_payload", None):
                         sidebar.update_status(payload)
                         self._last_status_payload = payload
+                    # Update crumb bar if enabled
+                    try:
+                        if getattr(self, "_crumb_enabled", False):
+                            txt = f"Model: {model or 'model?'} | tokens {cur:,} | {elapsed}s"
+                            if txt != getattr(self, "_crumb_text", ""):
+                                self._crumb_text = txt
+                                if self._crumb_ref is None:
+                                    try:
+                                        self._crumb_ref = self.query_one("#crumb-bar", Static)
+                                    except Exception:
+                                        self._crumb_ref = None
+                                if self._crumb_ref is not None:
+                                    self._crumb_ref.update(self._crumb_text)
+                                    self._crumb_ref.display = True
+                    except Exception:
+                        pass
             except Exception:
                 # keep loop resilient
                 pass
@@ -1585,15 +2017,24 @@ class PenguinTextualApp(App):
                     self._pending_response = False
 
             elif event_type == "action":
-                # Render action in XML-like tag form (compact look)
+                # If the next message already contains the same code, skip duplicate call block
                 action_name = data.get("type", "unknown")
-                params = str(data.get("params", ""))
-                md = f"```text\n<{action_name}>{params}</{action_name}>\n```"
-                self.add_message(md, "system")
+                params = data.get("params", {})
+                if self._should_hide_call_as_duplicate(action_name, params):
+                    return
+                # Keep a readable preview of parameters
+                args_s = json.dumps(params, indent=2, ensure_ascii=False) if isinstance(params, (dict, list)) else str(params)
+                md = f"```text\n<action name=\"{action_name}\">\n{args_s}\n</action>\n```"
+                msg = self.add_message(md, "system")
+                try:
+                    msg.add_class("tool-call")
+                except Exception:
+                    pass
 
             elif event_type == "action_result":
+                # Compact markdown result with auto-collapsed preview
                 result_str = data.get("result", "")
-                status = data.get("status", "completed")
+                status = str(data.get("status", "completed")).lower()
                 if status == "error":
                     self.add_message(f"```text\n{result_str}\n```", "system")
                 else:
@@ -1601,8 +2042,11 @@ class PenguinTextualApp(App):
                 self._prune_trailing_blank_messages()
 
             elif event_type == "tool_call":
+                # Skip duplicate tool call if assistant message already shows the same code
                 tool_name = data.get("name", "unknown")
                 tool_args = data.get("arguments", {})
+                if self._should_hide_call_as_duplicate(tool_name, tool_args):
+                    return
                 args_s = json.dumps(tool_args, indent=2, ensure_ascii=False) if isinstance(tool_args, (dict, list)) else str(tool_args)
                 md = f"```text\n<tool name=\"{tool_name}\">\n{args_s}\n</tool>\n```"
                 msg = self.add_message(md, "system")
@@ -1612,9 +2056,10 @@ class PenguinTextualApp(App):
                     pass
             
             elif event_type == "tool_result":
+                # Markdown render with preview + details
                 result_str = data.get("result", "")
-                action_name = data.get("action_name", "unknown")
-                status = data.get("status", "completed")
+                action_name = data.get("action_name", data.get("name", "unknown"))
+                status = str(data.get("status", "completed")).lower()
                 if status == "error":
                     msg = self.add_message(f"```text\n{result_str}\n```", "system")
                 else:
@@ -1784,6 +2229,14 @@ class PenguinTextualApp(App):
                 return
         
         event.input.value = ""
+        # Start waiting spinner immediately; it will be cleared on first stream chunk
+        try:
+            self._pending_response = True
+            self._spinner_index = 0
+            # Force sidebar to refresh promptly
+            self._last_status_payload = None
+        except Exception:
+            pass
         
         # Check if user typed a number to select a conversation
         if hasattr(self, '_conversation_list') and self._conversation_list and user_input.isdigit():
@@ -1851,6 +2304,12 @@ class PenguinTextualApp(App):
             error_msg = f"Error processing input: {e}"
             logger.error(error_msg, exc_info=True)
             self.add_message(error_msg, "error")
+        finally:
+            # Ensure spinner is not left running if an error occurs
+            try:
+                self._pending_response = False
+            except Exception:
+                pass
 
     def action_clear_log(self) -> None:
         """Clear the chat log."""
@@ -1975,6 +2434,91 @@ class PenguinTextualApp(App):
                     return
             if cmd == "help":
                 await self._show_enhanced_help()
+                return
+            if cmd == "collapse":
+                # /collapse on|off [keep N] [whole]
+                tokens = args.split()
+                if tokens:
+                    state = tokens[0].lower()
+                    if state in ("on", "off"):
+                        self._auto_collapse_assistant = state == "on"
+                    if len(tokens) > 1:
+                        try:
+                            self._collapse_keep = max(1, int(tokens[1]))
+                        except Exception:
+                            pass
+                    # Check for 'whole' flag to enable whole-message collapsing
+                    if "whole" in [t.lower() for t in tokens]:
+                        self._collapse_whole_messages = True
+                    elif "sections" in [t.lower() for t in tokens]:
+                        self._collapse_whole_messages = False
+                    
+                    if self._auto_collapse_assistant:
+                        self._collapse_older_assistant()
+                    
+                    mode = "whole messages" if self._collapse_whole_messages else "sections"
+                    self.add_message(f"Auto-collapse {'ON' if self._auto_collapse_assistant else 'OFF'} (keep {self._collapse_keep}, mode: {mode}).", "system")
+                else:
+                    self.add_message("Usage: /collapse on|off [keep N] [whole|sections]", "system")
+                return
+            if cmd == "crumb":
+                # /crumb on|off|text <value>
+                sub = (args.split(" ", 1)[0] if args else "").lower()
+                if sub in ("on", "off"):
+                    self._crumb_enabled = (sub == "on")
+                    try:
+                        self._crumb_ref = self.query_one("#crumb-bar", Static)
+                        if self._crumb_enabled and not self._crumb_text:
+                            self._crumb_text = "Model: mock-gpt | tokens 0 | 0.0s"
+                        if self._crumb_enabled:
+                            self._crumb_ref.update(self._crumb_text)
+                        self._crumb_ref.display = self._crumb_enabled
+                    except Exception:
+                        pass
+                    self.add_message(f"Crumb bar {'ON' if self._crumb_enabled else 'OFF'}.", "system")
+                    return
+            if cmd == "style":
+                # /style soft|boxed|line
+                val = (args.split(" ", 1)[0] if args else "").strip().lower()
+                if val in ("soft", "boxed", "line"):
+                    self._message_style = val
+                    try:
+                        target = getattr(self, "screen", None) or self
+                        for cls in ("style-soft", "style-boxed", "style-line"):
+                            try:
+                                target.remove_class(cls)  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
+                        target.add_class(f"style-{val}")  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                    self.add_message(f"Style set to {val}.", "system")
+                else:
+                    self.add_message("Usage: /style soft|boxed|line", "system")
+                return
+                if sub == "text":
+                    text = args.split(" ", 1)[1] if " " in args else ""
+                    try:
+                        self._crumb_ref = self.query_one("#crumb-bar", Static)
+                        self._crumb_text = text or self._crumb_text
+                        self._crumb_ref.update(self._crumb_text)
+                        self._crumb_ref.display = True
+                        self._crumb_enabled = True
+                    except Exception:
+                        pass
+                    return
+            # Minimal mode commands
+            if cmd in ("minimal", "mode"):
+                if cmd == "mode":
+                    target = args.strip().lower()
+                    if target in ("minimal", "mini"):
+                        await self._handle_minimal_set({"state": "on"})
+                        return
+                    if target in ("normal", "full", "default"):
+                        await self._handle_minimal_set({"state": "off"})
+                        return
+                state = (args.strip().split(" ", 1)[0] if args else "").lower()
+                await self._handle_minimal_set({"state": state})
                 return
             if cmd == "clear":
                 self.action_clear_log()
@@ -2269,6 +2813,7 @@ class PenguinTextualApp(App):
                 self._theme_name = str(data.get("theme", self._theme_name))
                 self._layout_mode = str(data.get("layout", self._layout_mode))
                 self._view_mode = str(data.get("view", self._view_mode))
+                self._minimal_mode = bool(data.get("minimal", self._minimal_mode))
         except Exception:
             pass
 
@@ -2277,7 +2822,12 @@ class PenguinTextualApp(App):
             import yaml  # type: ignore
             os.makedirs(os.path.dirname(self._prefs_path), exist_ok=True)
             with open(self._prefs_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump({"theme": self._theme_name, "layout": self._layout_mode, "view": self._view_mode}, f)
+                yaml.safe_dump({
+                    "theme": self._theme_name,
+                    "layout": self._layout_mode,
+                    "view": self._view_mode,
+                    "minimal": self._minimal_mode,
+                }, f)
         except Exception:
             pass
 
@@ -2318,6 +2868,16 @@ class PenguinTextualApp(App):
     def _apply_layout_class(self) -> None:
         try:
             target = getattr(self, "screen", None) or self
+            # Ensure a style class is always present (default soft)
+            try:
+                for cls in ("style-soft", "style-boxed", "style-line"):
+                    try:
+                        target.remove_class(cls)  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+                target.add_class(f"style-{getattr(self, '_message_style', 'soft')}")  # type: ignore[attr-defined]
+            except Exception:
+                pass
             for cls in ("layout-flat", "layout-boxed"):
                 try:
                     target.remove_class(cls)  # type: ignore[attr-defined]
@@ -2331,6 +2891,22 @@ class PenguinTextualApp(App):
             else:
                 try:
                     target.add_class("layout-flat")  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _apply_minimal_class(self) -> None:
+        """Apply or remove the minimal UI class on the root for CSS to use."""
+        try:
+            target = getattr(self, "screen", None) or self
+            try:
+                target.remove_class("mode-minimal")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+            if getattr(self, "_minimal_mode", False):
+                try:
+                    target.add_class("mode-minimal")  # type: ignore[attr-defined]
                 except Exception:
                     pass
         except Exception:
@@ -2384,6 +2960,46 @@ class PenguinTextualApp(App):
     def action_quit(self) -> None:
         """Quit the application."""
         self.exit()
+
+    # ---------------------------
+    # Minimal mode controls
+    # ---------------------------
+    def action_toggle_minimal(self) -> None:  # noqa: D401 – keybinding handler
+        """Toggle Minimal Mode: hides chrome and flattens visuals."""
+        try:
+            self._minimal_mode = not getattr(self, "_minimal_mode", False)
+            if self._minimal_mode:
+                self._layout_mode = "flat"
+                self._view_mode = "compact"
+                self._status_visible = False
+            else:
+                self._status_visible = True
+            self._apply_layout_class()
+            self._apply_minimal_class()
+            self._save_prefs()
+            self.add_message(f"Minimal mode {'ON' if self._minimal_mode else 'OFF' }.", "system")
+        except Exception:
+            pass
+
+    async def _handle_minimal_set(self, args: Dict[str, Any]) -> None:
+        """Set Minimal Mode explicitly with {'on'|'off'|'toggle'}."""
+        val = str(args.get("state", "")).strip().lower()
+        if val in ("on", "true", "1"):
+            self._minimal_mode = True
+        elif val in ("off", "false", "0"):
+            self._minimal_mode = False
+        else:
+            self._minimal_mode = not getattr(self, "_minimal_mode", False)
+        if self._minimal_mode:
+            self._layout_mode = "flat"
+            self._view_mode = "compact"
+            self._status_visible = False
+        else:
+            self._status_visible = True
+        self._apply_layout_class()
+        self._apply_minimal_class()
+        self._save_prefs()
+        self.add_message(f"Minimal mode {'ON' if self._minimal_mode else 'OFF' }.", "system")
 
     async def on_status_message(self, event: StatusMessage) -> None:  # Textual auto dispatch
         bar = self._status_bar_ref or self.query_one("#status-bar", Static)

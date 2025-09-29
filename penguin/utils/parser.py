@@ -96,6 +96,7 @@ class ActionType(Enum):
     PYDOLL_BROWSER_NAVIGATE = "pydoll_browser_navigate"
     PYDOLL_BROWSER_INTERACT = "pydoll_browser_interact"
     PYDOLL_BROWSER_SCREENSHOT = "pydoll_browser_screenshot"
+    PYDOLL_BROWSER_SCROLL = "pydoll_browser_scroll"
     # PyDoll debug toggle
     PYDOLL_DEBUG_TOGGLE = "pydoll_debug_toggle"
     
@@ -306,6 +307,7 @@ class ActionExecutor:
             ActionType.PYDOLL_BROWSER_NAVIGATE: self._pydoll_browser_navigate,
             ActionType.PYDOLL_BROWSER_INTERACT: self._pydoll_browser_interact,
             ActionType.PYDOLL_BROWSER_SCREENSHOT: self._pydoll_browser_screenshot,
+            ActionType.PYDOLL_BROWSER_SCROLL: self._pydoll_browser_scroll,
             # PyDoll debug toggle
             ActionType.PYDOLL_DEBUG_TOGGLE: self._pydoll_debug_toggle,
             # Sub-agent tools
@@ -1264,6 +1266,52 @@ class ActionExecutor:
         except Exception as e:
             error_message = f"Error taking PyDoll screenshot: {str(e)}"
             logger.error(error_message, exc_info=True)
+            return error_message
+
+    async def _pydoll_browser_scroll(self, params: str) -> str:
+        """Scroll the page or an element using PyDoll.
+        Formats:
+          - to:top|bottom
+          - page:down|up|end|home[:repeat]
+          - by:deltaY[:deltaX][:repeat]
+          - element:selector[:selector_type][:behavior]
+        Defaults: selector_type=css, behavior=auto, repeat=1
+        """
+        try:
+            from penguin.tools.pydoll_tools import PyDollBrowserScrollTool
+
+            parts = params.split(":") if params else []
+            if not parts:
+                return "Invalid scroll params"
+            mode = parts[0].strip().lower()
+
+            tool = PyDollBrowserScrollTool()
+
+            if mode == "to" and len(parts) >= 2:
+                to = parts[1].strip().lower()
+                return await tool.execute(mode="to", to=to)
+
+            if mode == "page":
+                direction = parts[1].strip().lower() if len(parts) >= 2 else "down"
+                repeat = int(parts[2]) if len(parts) >= 3 and parts[2].strip().isdigit() else 1
+                return await tool.execute(mode="page", to=direction, repeat=repeat)
+
+            if mode == "by":
+                dy = int(parts[1]) if len(parts) >= 2 and parts[1].strip().lstrip("-+").isdigit() else 800
+                dx = int(parts[2]) if len(parts) >= 3 and parts[2].strip().lstrip("-+").isdigit() else 0
+                repeat = int(parts[3]) if len(parts) >= 4 and parts[3].strip().isdigit() else 1
+                return await tool.execute(mode="by", delta_y=dy, delta_x=dx, repeat=repeat)
+
+            if mode == "element" and len(parts) >= 2:
+                selector = parts[1]
+                selector_type = parts[2].strip().lower() if len(parts) >= 3 and parts[2].strip() else "css"
+                behavior = parts[3].strip().lower() if len(parts) >= 4 and parts[3].strip() else "auto"
+                return await tool.execute(mode="element", selector=selector, selector_type=selector_type, behavior=behavior)
+
+            return "Invalid scroll command"
+        except Exception as e:
+            error_message = f"Error scrolling with PyDoll browser: {str(e)}"
+            logger.error(error_message)
             return error_message
 
     async def _pydoll_debug_toggle(self, params: str) -> str:

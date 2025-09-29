@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: penguin-config
+  namespace: penguin
+data:
+  PENGUIN_CORS_ORIGINS: "*"
+
