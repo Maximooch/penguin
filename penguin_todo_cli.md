@@ -333,13 +333,23 @@ uv run penguin --no-tui -p "Hello"
 - ✅ Fixed chronological ordering (buffer system outputs until streaming completes)
 - ✅ Changed "Penguin (Streaming)" to just "Penguin"
 
-**Critical Bug Found & Fixed:**
-- **Bug:** PromptBuilder was caching `output_formatting` and never refreshing it
-- **Location:** `penguin/prompt/builder.py` lines 72-82
-- **Impact:** Prompt changes NOW take effect immediately on fresh conversations
+**Round 5 Tasks (Duplication Fixes):**
+- ✅ Removed duplicate action result display (commented out lines 2344-2360)
+- ✅ Improved markdown stripping in reasoning (handles all bold/italic patterns)
+- ✅ Added user's exact duplicate execution pattern (Example 2) to prompts
 
-**Total Implementation Time:** ~80 minutes across all rounds  
-**Status:** ✅ ALL FIXES COMPLETED - READY FOR TESTING
+**Critical Bugs Found & Fixed:**
+1. **PromptBuilder caching:** Now refreshes output_formatting on every build()
+2. **Duplicate action results:** Event system displays them, removed redundant code
+3. **Markdown in reasoning:** Now strips **, ***, __, ___, _, and collapses whitespace
+
+**Remaining Issue:**
+- ⚠️ AI still executing twice (down from 3x, but not ideal)
+- Prompt rules are VERY explicit now
+- May need to test with different model or add post-processing guard
+
+**Total Implementation Time:** ~90 minutes across all rounds  
+**Status:** ✅ MAJOR IMPROVEMENTS DONE, one remaining issue to monitor
 
 **Verification (just ran):**
 ```bash

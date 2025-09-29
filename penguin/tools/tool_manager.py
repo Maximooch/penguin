@@ -31,9 +31,45 @@ from penguin.tools.core.perplexity_tool import PerplexityProvider
 from penguin.tools.browser_tools import (
     browser_manager, BrowserNavigationTool, BrowserInteractionTool, BrowserScreenshotTool
 )
-from penguin.tools.pydoll_tools import (
-    pydoll_browser_manager, PyDollBrowserNavigationTool, PyDollBrowserInteractionTool, PyDollBrowserScreenshotTool, PyDollBrowserScrollTool
-)
+
+# Lazy import for PyDoll to avoid breaking if pydoll-python is not installed
+_pydoll_tools_imported = False
+_pydoll_import_error = None
+
+def _ensure_pydoll_imports():
+    """Lazy import PyDoll tools only when needed."""
+    global _pydoll_tools_imported, _pydoll_import_error
+    global pydoll_browser_manager, PyDollBrowserNavigationTool, PyDollBrowserInteractionTool
+    global PyDollBrowserScreenshotTool, PyDollBrowserScrollTool
+    
+    if not _pydoll_tools_imported and _pydoll_import_error is None:
+        try:
+            from penguin.tools.pydoll_tools import (
+                pydoll_browser_manager as _pbm,
+                PyDollBrowserNavigationTool as _nav,
+                PyDollBrowserInteractionTool as _interact,
+                PyDollBrowserScreenshotTool as _screenshot,
+                PyDollBrowserScrollTool as _scroll,
+            )
+            pydoll_browser_manager = _pbm
+            PyDollBrowserNavigationTool = _nav
+            PyDollBrowserInteractionTool = _interact
+            PyDollBrowserScreenshotTool = _screenshot
+            PyDollBrowserScrollTool = _scroll
+            _pydoll_tools_imported = True
+        except Exception as e:
+            _pydoll_import_error = e
+            logger.warning(f"PyDoll tools not available: {e}")
+    
+    if _pydoll_import_error:
+        raise ImportError(f"PyDoll tools unavailable: {_pydoll_import_error}")
+
+# Initialize placeholders
+pydoll_browser_manager = None
+PyDollBrowserNavigationTool = None
+PyDollBrowserInteractionTool = None
+PyDollBrowserScreenshotTool = None
+PyDollBrowserScrollTool = None
 # from penguin.llm.model_manager import ModelManager
 from penguin.memory.provider import MemoryProvider
 
@@ -1114,6 +1150,7 @@ class ToolManager:
         if not self._lazy_initialized['pydoll_tools']:
             with profile_operation("ToolManager.lazy_load_pydoll_tools"):
                 logger.debug("Lazy-loading PyDoll browser tools")
+                _ensure_pydoll_imports()  # Lazy import PyDoll modules
                 self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
                 self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
                 self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
@@ -1126,6 +1163,7 @@ class ToolManager:
         if not self._lazy_initialized['pydoll_tools']:
             with profile_operation("ToolManager.lazy_load_pydoll_tools"):
                 logger.debug("Lazy-loading PyDoll browser tools")
+                _ensure_pydoll_imports()  # Lazy import PyDoll modules
                 self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
                 self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
                 self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
@@ -1138,12 +1176,26 @@ class ToolManager:
         if not self._lazy_initialized['pydoll_tools']:
             with profile_operation("ToolManager.lazy_load_pydoll_tools"):
                 logger.debug("Lazy-loading PyDoll browser tools")
+                _ensure_pydoll_imports()  # Lazy import PyDoll modules
                 self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
                 self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
                 self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
                 self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
                 self._lazy_initialized['pydoll_tools'] = True
         return self._pydoll_browser_screenshot_tool
+    
+    @property
+    def pydoll_browser_scroll_tool(self):
+        if not self._lazy_initialized['pydoll_tools']:
+            with profile_operation("ToolManager.lazy_load_pydoll_tools"):
+                logger.debug("Lazy-loading PyDoll browser tools")
+                _ensure_pydoll_imports()  # Lazy import PyDoll modules
+                self._pydoll_browser_navigation_tool = PyDollBrowserNavigationTool()
+                self._pydoll_browser_interaction_tool = PyDollBrowserInteractionTool()
+                self._pydoll_browser_screenshot_tool = PyDollBrowserScreenshotTool()
+                self._pydoll_browser_scroll_tool = PyDollBrowserScrollTool()
+                self._lazy_initialized['pydoll_tools'] = True
+        return self._pydoll_browser_scroll_tool
 
     def get_tools(self):
         """Get available tool schemas."""
@@ -1701,7 +1753,12 @@ class ToolManager:
 
     async def close_pydoll_browser(self):
         """Close the PyDoll browser instance if it exists"""
-        return await pydoll_browser_manager.close()
+        try:
+            _ensure_pydoll_imports()
+            return await pydoll_browser_manager.close()
+        except ImportError as e:
+            logger.warning(f"Cannot close PyDoll browser: {e}")
+            return False
 
     def perform_memory_search_sync(
         self, query: str, k: int = 5, memory_type: Optional[str] = None, categories: Optional[List[str]] = None

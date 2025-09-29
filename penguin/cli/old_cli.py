@@ -1604,9 +1604,13 @@ class PenguinCLI:
             reasoning_content = matches[0].strip()
             
             # Remove markdown formatting from reasoning (**, __, etc.)
-            reasoning_text = re.sub(r'\*\*(.*?)\*\*', r'\1', reasoning_content)  # Remove **bold**
+            # Handle all markdown bold/italic patterns
+            reasoning_text = re.sub(r'\*\*\*?(.*?)\*\*\*?', r'\1', reasoning_content)  # Remove **bold** and ***bold italic***
+            reasoning_text = re.sub(r'___(.*?)___', r'\1', reasoning_text)  # Remove ___bold italic___
             reasoning_text = re.sub(r'__(.*?)__', r'\1', reasoning_text)  # Remove __bold__
+            reasoning_text = re.sub(r'_(.*?)_', r'\1', reasoning_text)  # Remove _italic_
             reasoning_text = re.sub(r'\n+', ' ', reasoning_text)  # Collapse newlines to spaces
+            reasoning_text = re.sub(r'\s+', ' ', reasoning_text)  # Collapse multiple spaces
             reasoning_text = reasoning_text.strip()
             
             # Display reasoning in a compact gray panel
@@ -1683,7 +1687,7 @@ class PenguinCLI:
         emoji = emojis.get(role, "💬")
 
         # Special handling for welcome message
-        if role == "system" and "Welcome to Penguin AI Assistant!" in message:
+        if role == "system" and "Welcome to the Penguin CLI!" in message:
             header = f"{emoji} System (Welcome):"
         elif role == "user":
             # Format user messages in panels for better readability
@@ -2341,23 +2345,13 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     if hasattr(self, "_streaming_started") and self._streaming_started:
                         self._finalize_streaming()
                         
-                    # Display any action results returned by the interface/core.
-                    if isinstance(response, dict) and "action_results" in response:
-                            print(f"[DEBUG] Found {len(response['action_results'])} action result(s)")
-                            for i, result in enumerate(response["action_results"]):
-                                print(f"[DEBUG] Processing action result #{i}")
-                                if isinstance(result, dict):
-                                # Ensure required fields exist with sensible defaults
-                                    if "action" not in result:
-                                        result["action"] = "unknown"
-                                    if "result" not in result:
-                                        result["result"] = "(No output available)"
-                                    if "status" not in result:
-                                        result["status"] = "completed"
-                                    self.display_action_result(result)
-                                else:
-                                # Fallback for non-dict results
-                                    self.display_message(str(result), "system")
+                    # Action results are now handled via the event system (SYSTEM_OUTPUT category)
+                    # No need to display them here - that would cause duplication
+                    # Commenting out to prevent duplicate display:
+                    #
+                    # if isinstance(response, dict) and "action_results" in response:
+                    #     for result in response["action_results"]:
+                    #         self.display_action_result(result)
                 
                     # If the response itself is a string (unlikely but possible), display it.
                     elif isinstance(response, str):

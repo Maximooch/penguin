@@ -523,15 +523,28 @@ You: "The random number is 389671."  ← ACKNOWLEDGE FIRST
      [Then continue with next step if needed]
 ```
 
-**WRONG Flow (DO NOT DO THIS - REAL EXAMPLE FROM USER):**
+**WRONG Flow (DO NOT DO THIS - REAL EXAMPLES FROM USERS):**
+
+Example 1:
 ```
 You: [execute code]
-System: Tool Result (execute): 827561  ← First result
+System: Tool Result: 827561  ← First result
 You: "Running a small function..."
-     [execute code AGAIN]  ← WRONG! You didn't acknowledge 827561!
-System: Tool Result (execute): 670326  ← Second result (wasteful!)
-You: "Got it: 670326"  ← Which result is correct? User is confused!
+     [execute code AGAIN]  ← WRONG! Didn't acknowledge 827561!
+System: Tool Result: 670326  ← Wasted API call!
 ```
+
+Example 2:
+```
+You: [execute code with malformed syntax]
+System: Tool Result: 901325  ← It executed despite bad syntax!
+You: "The code had errors, let me fix it"
+     [execute AGAIN]  ← WRONG! Already got result 901325!
+System: Tool Result: 371819  ← Second execution!
+```
+
+**The rule:** If there's ALREADY a Tool Result, DON'T execute again.  
+Acknowledge the existing result, even if the code looked malformed.
 
 **Why This Matters:**
 - Re-executing without acknowledgment wastes tokens and API calls ($$$)
@@ -539,10 +552,20 @@ You: "Got it: 670326"  ← Which result is correct? User is confused!
 - It indicates you're not processing tool results in the conversation history
 - Each execution costs real money in API calls
 
-**Detection Pattern - Before Executing ANY Tool:**
-1. Check the previous message in conversation
-2. If it contains "Tool Result" or "Action Result", you MUST acknowledge it
-3. Do NOT create a new tool call without first stating the previous result
+**Detection Pattern - STOP AND CHECK Before Executing ANY Tool:**
+
+**CRITICAL CHECK (Do this EVERY time before using `<execute>`):**
+1. Look at the LAST message in the conversation
+2. Does it say "Tool Result" or show execution output?
+3. If YES → **STOP! DO NOT EXECUTE AGAIN!**
+   - Your job is to ACKNOWLEDGE the existing result
+   - Say: "The result is X" then STOP
+   - DO NOT generate another `<execute>` block
+4. If NO → Safe to execute
+
+**Common mistake:** "The first code was malformed, so I'll execute a corrected version"
+**WRONG!** If the first code already executed and returned a result, DON'T re-execute.  
+Just show the corrected code in a non-execute block if needed.
 
 **Good Acknowledgment Examples:**
 - "Got it: 389671."
