@@ -488,6 +488,10 @@ def main_entry(
         False, "--fast-startup", 
         help="Enable fast startup mode (defer memory indexing until first use)."
     ),
+    no_tui: bool = typer.Option(
+        False, "--no-tui",
+        help="Force headless mode (no TUI interface). Use for non-interactive or CLI-only operation."
+    ),
     # Add other global options from the plan here eventually
     # e.g., continue_session, resume_session_id, system_prompt_override, etc.
     version: Optional[bool] = typer.Option( # Example: adding a version flag
@@ -554,6 +558,17 @@ def main_entry(
             console.print("Please check logs for more details.")
             raise typer.Exit(code=1)
 
+        # Determine if we should run in headless mode
+        headless_mode = any([
+            no_tui,
+            prompt is not None,
+            continue_last,
+            resume_session,
+            run_task,
+            continuous,
+            ctx.invoked_subcommand is not None
+        ])
+        
         # Check for priority flags in order of precedence:
         # 1. Task execution (--run)
         if run_task is not None:
@@ -574,7 +589,10 @@ def main_entry(
         # 4. Continuous mode without task (just --247)
         elif continuous:
             await _handle_run_mode(None, continuous, time_limit, task_description)
-        # 5. Default: interactive chat session
+        # 5. No-TUI mode forces interactive CLI (not TUI)
+        elif no_tui and ctx.invoked_subcommand is None:
+            await _run_interactive_chat()
+        # 6. Default: interactive chat session
         elif ctx.invoked_subcommand is None:
             # No subcommand invoked, default to interactive chat
             await _run_interactive_chat()
@@ -1501,6 +1519,7 @@ class PenguinCLI:
         # Add streaming state tracking
         self.is_streaming = False
         self.streaming_buffer = ""
+        self.streaming_reasoning_buffer = ""  # Separate buffer for reasoning tokens
         self.streaming_role = "assistant"
 
         # Run mode state
@@ -1565,6 +1584,49 @@ class PenguinCLI:
         print("\nOperation interrupted by user.")
         raise KeyboardInterrupt
 
+    def _extract_and_display_reasoning(self, message: str) -> str:
+        """Extract <details> reasoning blocks and display them in a separate gray panel.
+        
+        Returns the message with reasoning blocks removed.
+        """
+        import re
+        
+        # Pattern to match <details> blocks with reasoning
+        details_pattern = r'<details>\s*<summary>🧠[^<]*</summary>\s*(.*?)</details>\s*'
+        
+        matches = re.findall(details_pattern, message, re.DOTALL | re.IGNORECASE)
+        
+        if matches:
+            # Extract reasoning content (everything between summary and </details>)
+            reasoning_content = matches[0].strip()
+            
+            # Remove markdown formatting from reasoning (**, __, etc.)
+            reasoning_text = re.sub(r'\*\*(.*?)\*\*', r'\1', reasoning_content)  # Remove **bold**
+            reasoning_text = re.sub(r'__(.*?)__', r'\1', reasoning_text)  # Remove __bold__
+            reasoning_text = re.sub(r'\n+', ' ', reasoning_text)  # Collapse newlines to spaces
+            reasoning_text = reasoning_text.strip()
+            
+            # Display reasoning in a compact gray panel
+            if reasoning_text:
+                from rich.text import Text
+                reasoning_display = Text(f"🧠 {reasoning_text}", style="dim")
+                reasoning_panel = Panel(
+                    reasoning_display,
+                    title="Internal Reasoning",
+                    title_align="left",
+                    border_style="dim",
+                    width=self.console.width - 8,
+                    box=rich.box.SIMPLE,  # Simpler box style
+                    padding=(0, 1),  # Minimal padding
+                )
+                self.console.print(reasoning_panel)
+            
+            # Remove the details block from the message
+            cleaned_message = re.sub(details_pattern, '', message, flags=re.DOTALL | re.IGNORECASE)
+            return cleaned_message.strip()
+        
+        return message
+
     def display_message(self, message: str, role: str = "assistant"):
         """Display a message with proper formatting"""
         # Skip if this is a duplicate of a recently processed message
@@ -1585,6 +1647,10 @@ class PenguinCLI:
             # Update last completed message for assistant messages
             if role == "assistant":
                 self.last_completed_message = message
+        
+        # Extract and display reasoning separately for assistant messages
+        if role == "assistant":
+            message = self._extract_and_display_reasoning(message)
 
         # If we're currently streaming and this is the same content, finalize the stream instead
         if role == "assistant" and hasattr(self, "_streaming_started") and self._streaming_started:
@@ -1613,8 +1679,11 @@ class PenguinCLI:
         emoji = emojis.get(role, "💬")
 
         # Special handling for welcome message
-        if role == "system" and "Welcome to the Penguin AI Assistant!" in message:
+        if role == "system" and "Welcome to Penguin AI Assistant!" in message:
             header = f"{emoji} System (Welcome):"
+        elif role == "user":
+            # Format user messages in panels for better readability
+            header = f"{emoji} You"
         else:
             display_role = "Penguin" if role == "assistant" else role.capitalize()
             header = f"{emoji} {display_role}"
@@ -2046,43 +2115,27 @@ class PenguinCLI:
         # Setup logging for this session
         session_logger = setup_logger(f"chat_{session_id}.log")
 
-        welcome_message = """Welcome to the Penguin AI Assistant!
+        # Display ASCII art banner
+        ascii_banner = """
+ooooooooo.                                                 o8o              
+`888   `Y88.                                               `"'              
+ 888   .d88'  .ooooo.  ooo. .oo.    .oooooooo oooo  oooo  oooo  ooo. .oo.   
+ 888ooo88P'  d88' `88b `888P"Y88b  888' `88b  `888  `888  `888  `888P"Y88b  
+ 888         888ooo888  888   888  888   888   888   888   888   888   888  
+ 888         888    .o  888   888  `88bod8P'   888   888   888   888   888  
+o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o 
+                                   d"     YD                                
+                                   "Y88888P'                                
+"""
+        self.console.print(f"[cyan]{ascii_banner}[/cyan]")
+        
+        welcome_message = """Welcome to Penguin AI Assistant!
 
-Available Commands:
+For help: /help  •  For information: /info  •  To exit: /exit
 
- • /chat: Conversation management
-   - list: Show available conversations
-   - load: Load a previous conversation
-   - summary: Show current conversation summary
-   
- • /list: Display all projects and tasks
-
- • /task: Task management commands
-   - create [name] [description]: Create a new task
-   - run [name]: Run a task
-   - status [name]: Check task status
-   
- • /project: Project management commands
-   - create [name] [description]: Create a new project
-   - run [name]: Run a project
-   - status [name]: Check project status
-   
- • /models: Interactive model selection (search with autocomplete)
- • /model set <id>: Manually set a specific model ID
-   
- • /exit or exit: End the conversation
-
- • /image: Include an image in your message
-   - image [image_path] [description]: Include an image in your message
-
- • /help or help: Show this help message
-
-Press Tab for command completion Use ↑↓ to navigate command history Press Ctrl+C to stop a running task"""
+TIP: Use Alt+Enter for new lines, Enter to submit"""
 
         self.display_message(welcome_message, "system")
-        self.display_message(
-            "TIP: Use Alt+Enter for new lines, Enter to submit", "system"
-        )
 
         while True:
             try:
@@ -2104,10 +2157,12 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                 # Reset streaming state
                 self.is_streaming = False
                 self.streaming_buffer = ""
+                self.streaming_reasoning_buffer = ""
                 self.last_completed_message = ""
 
-                # Show user input
-                self.display_message(user_input, "user")
+                # DON'T display user input here - let event system handle it
+                # (Prevents duplicate display: once here, once from Core event)
+                # self.display_message(user_input, "user")
 
                 # Add user message to processed messages to prevent duplication
                 user_msg_key = f"user:{user_input[:50]}"
@@ -2252,11 +2307,20 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
 
                 # Process normal message input through interface
                 try:
-                    # Process user message through interface
-                    response = await self.interface.process_input(
-                        {"text": user_input},
-                        stream_callback=None  # Events handle streaming display
-                    )
+                    # Show a subtle waiting indicator
+                    with Progress(
+                        SpinnerColumn(),
+                        TextColumn("[dim]Thinking...[/dim]"),
+                        console=self.console,
+                        transient=True  # Disappears when done
+                    ) as progress:
+                        thinking_task = progress.add_task("", total=None)
+                        
+                        # Process user message through interface
+                        response = await self.interface.process_input(
+                            {"text": user_input},
+                            stream_callback=None  # Events handle streaming display
+                        )
                     
                     # Assistant responses (streaming or not) are now delivered via Core events.
                     # Therefore, avoid printing them directly here to prevent duplicates.
@@ -2490,6 +2554,7 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     self._streaming_started = True
                     self.is_streaming = True  # Set streaming flag
                     self.streaming_buffer = ""
+                    self.streaming_reasoning_buffer = ""  # Reset reasoning buffer too
                     
                     # Clean up any previous Live panel
                     if getattr(self, "streaming_live", None):
@@ -2509,7 +2574,16 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
 
                 # Process chunk for display
                 if chunk:
-                    self.streaming_buffer += chunk
+                    # Check if this is reasoning content or regular content
+                    is_reasoning = data.get("is_reasoning", False)
+                    message_type = data.get("message_type", "assistant")
+                    
+                    if is_reasoning or message_type == "reasoning":
+                        # Add to reasoning buffer
+                        self.streaming_reasoning_buffer += chunk
+                    else:
+                        # Add to regular content buffer
+                        self.streaming_buffer += chunk
                     
                     # Update or create streaming panel
                     if not getattr(self, "streaming_live", None):
@@ -2545,14 +2619,25 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     # Final chunk received - display final message and clean up
                     self.is_streaming = False
                     
-                    # Display the final message as a regular panel (not streaming)
+                    # Display reasoning panel FIRST if we have reasoning content
+                    if self.streaming_reasoning_buffer.strip():
+                        reasoning_panel = Panel(
+                            Markdown(f"[dim]{self.streaming_reasoning_buffer}[/dim]"),
+                            title="🧠 Internal Reasoning",
+                            title_align="left",
+                            border_style="dim",
+                            width=self.console.width - 8,
+                            box=rich.box.ROUNDED,
+                        )
+                        self.console.print(reasoning_panel)
+                    
+                    # Then display the final message as a regular panel (not streaming)
                     if self.streaming_buffer.strip():
                         self.display_message(self.streaming_buffer, self.streaming_role)
                         # Store for deduplication
                         self.last_completed_message = self.streaming_buffer
 
-                    # Clean up streaming panel
-                    self._finalize_streaming()
+                    # Clear stream ID
                     self._active_stream_id = None
 
                     # Store completed message for deduplication
@@ -2561,8 +2646,9 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                         self.processed_messages.add(completed_msg_key)
                         self.message_turn_map[completed_msg_key] = self.current_conversation_turn
 
-                    # Reset buffer
+                    # Reset buffers
                     self.streaming_buffer = ""
+                    self.streaming_reasoning_buffer = ""
                     return
 
             elif event_type == "token_update":
@@ -2598,6 +2684,7 @@ Press Tab for command completion Use ↑↓ to navigate command history Press Ct
                     # Clear streaming state for new turn
                     self.is_streaming = False
                     self.streaming_buffer = ""
+                    self.streaming_reasoning_buffer = ""
                     self.last_completed_message = ""
 
                 # For assistant messages, check if this was already displayed via streaming

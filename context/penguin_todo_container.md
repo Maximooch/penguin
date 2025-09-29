@@ -308,6 +308,41 @@ Recommendation: publish `:sha` always; optionally promote to `:vX.Y.Z` and `:lat
 
 ---
 
+## Phase 7 — API Testing
+
+### Priority 1: Core Functionality (smoke tests)
+- ✅ GET `/api/v1/health` — basic health check (container test)
+- POST `/api/v1/chat/message` — send a chat message
+- GET `/api/v1/conversations` — list conversations
+- POST `/api/v1/conversations/create` — create conversation
+- GET `/api/v1/capabilities` — discover API capabilities
+- GET `/api/v1/system/status` — runtime status
+
+### Priority 2: Model & Discovery
+- GET `/api/v1/models` — list available models
+- GET `/api/v1/models/current` — current model info
+- GET `/api/v1/system/info` — detailed system info
+
+### Priority 3: Advanced Features
+- POST `/api/v1/checkpoints/create` — manual checkpoint
+- GET `/api/v1/checkpoints` — list checkpoints
+- POST `/api/v1/tasks/execute-sync` — synchronous task execution
+- POST `/api/v1/upload` — file upload (images)
+
+### Priority 4: WebSocket & Streaming
+- WebSocket `/api/v1/chat/stream` — streaming chat
+- WebSocket `/api/v1/tasks/stream` — streaming task updates
+
+### Test organization
+- `tests/docker/test_web_container.py` — Docker health & lifecycle
+- `tests/api/test_web_api_smoke.py` — Priority 1 endpoints (basic GET/POST)
+- `tests/api/test_web_api_chat.py` — Chat functionality (requires API keys)
+- `tests/api/test_web_api_models.py` — Model management & switching
+- `tests/api/test_web_api_checkpoints.py` — Checkpoint management
+- `tests/api/test_web_api_integration.py` — Full workflow integration tests
+
+---
+
 ## Quick Reference (env)
 - `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`
 - `GITHUB_REPOSITORY` (e.g., `owner/repo`)
