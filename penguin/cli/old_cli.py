@@ -1521,6 +1521,9 @@ class PenguinCLI:
         self.streaming_buffer = ""
         self.streaming_reasoning_buffer = ""  # Separate buffer for reasoning tokens
         self.streaming_role = "assistant"
+        
+        # Buffer for pending system messages (tool results) during streaming
+        self.pending_system_messages: List[Tuple[str, str]] = []  # List of (content, role)
 
         # Run mode state
         self.run_mode_active = False
@@ -1609,10 +1612,11 @@ class PenguinCLI:
             # Display reasoning in a compact gray panel
             if reasoning_text:
                 from rich.text import Text
-                reasoning_display = Text(f"🧠 {reasoning_text}", style="dim")
+                # Use dim styling for the entire panel content
+                reasoning_display = Text(f"🧠 {reasoning_text}", style="dim italic")
                 reasoning_panel = Panel(
                     reasoning_display,
-                    title="Internal Reasoning",
+                    title="[dim]Internal Reasoning[/dim]",
                     title_align="left",
                     border_style="dim",
                     width=self.console.width - 8,
@@ -2259,8 +2263,15 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                                 
                             # Handle help messages
                             elif "help" in response:
-                                help_text = response["help"] + "\n\n" + "\n".join(response.get("commands", []))
-                                self.display_message(help_text, "system")
+                                help_header = response.get("help", "Available Commands")
+                                commands = response.get("commands", [])
+                                # Display help without extra indentation
+                                self.console.print(Panel(
+                                    f"{help_header}\n\n" + "\n".join(commands),
+                                    title="🐧 Help",
+                                    border_style="blue",
+                                    padding=(1, 2)
+                                ))
                                 
                             # Handle conversation list
                             elif "conversations" in response:
@@ -2589,7 +2600,7 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     if not getattr(self, "streaming_live", None):
                         panel = Panel(
                             Markdown(self.streaming_buffer),
-                            title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
+                            title=f"{self.PENGUIN_EMOJI} Penguin",
                             title_align="left",
                             border_style=self.PENGUIN_COLOR,
                             width=self.console.width - 8,
@@ -2605,7 +2616,7 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                         try:
                             panel = Panel(
                                 Markdown(self.streaming_buffer),
-                                title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
+                                title=f"{self.PENGUIN_EMOJI} Penguin",
                                 title_align="left",
                                 border_style=self.PENGUIN_COLOR,
                                 width=self.console.width - 8,
@@ -2621,13 +2632,16 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     
                     # Display reasoning panel FIRST if we have reasoning content
                     if self.streaming_reasoning_buffer.strip():
+                        from rich.text import Text
+                        reasoning_display = Text(self.streaming_reasoning_buffer, style="dim italic")
                         reasoning_panel = Panel(
-                            Markdown(f"[dim]{self.streaming_reasoning_buffer}[/dim]"),
-                            title="🧠 Internal Reasoning",
+                            reasoning_display,
+                            title="[dim]🧠 Internal Reasoning[/dim]",
                             title_align="left",
                             border_style="dim",
                             width=self.console.width - 8,
-                            box=rich.box.ROUNDED,
+                            box=rich.box.SIMPLE,
+                            padding=(0, 1),
                         )
                         self.console.print(reasoning_panel)
                     
@@ -2636,6 +2650,12 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                         self.display_message(self.streaming_buffer, self.streaming_role)
                         # Store for deduplication
                         self.last_completed_message = self.streaming_buffer
+
+                    # NOW display any pending system messages (tool results) that arrived during streaming
+                    if self.pending_system_messages:
+                        for msg_content, msg_role in self.pending_system_messages:
+                            self.display_message(msg_content, msg_role)
+                        self.pending_system_messages.clear()
 
                     # Clear stream ID
                     self._active_stream_id = None
@@ -2661,11 +2681,16 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                 content = data.get("content", "")
                 category = data.get("category", MessageCategory.DIALOG)
 
-                # Allow system output messages (tool results) to be displayed
+                # Buffer system output messages (tool results) if streaming is active
                 if category == MessageCategory.SYSTEM_OUTPUT or category == "SYSTEM_OUTPUT":
-                    # Display tool results immediately
-                    self.display_message(content, "system")
-                    return
+                    if self.is_streaming or self._active_stream_id is not None:
+                        # Buffer for display after streaming completes
+                        self.pending_system_messages.append((content, "system"))
+                        return
+                    else:
+                        # Not streaming, display immediately
+                        self.display_message(content, "system")
+                        return
                     
                 # Skip other internal system messages
                 if category == MessageCategory.SYSTEM or category == "SYSTEM":

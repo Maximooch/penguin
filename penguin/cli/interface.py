@@ -380,6 +380,9 @@ class PenguinInterface:
             "config": self._handle_config_command,
             "list": self._handle_list_command,
             "help": self._handle_help_command,
+            "info": self._handle_info_command,  # Added info command
+            "reload-prompt": self._handle_reload_prompt_command,  # Reload system prompt
+            "reload": self._handle_reload_prompt_command,  # Alias
             "exit": self._handle_exit_command,
             "tokens": self._handle_tokens_command,
             "context": self._handle_context_command,
@@ -916,6 +919,86 @@ class PenguinInterface:
             "help": "Available Commands",
             "commands": self._get_command_suggestions()
         }
+    
+    async def _handle_info_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle info command - shows what Penguin is and how to use it"""
+        info_text = """**What is Penguin?**
+
+Penguin is an AI-powered coding assistant that helps you build, debug, and ship software faster. Think of it as having an experienced engineer pair-programming with you—one who's brutally honest, thinks from first principles, and focuses on what actually moves the needle.
+
+**How to Use Penguin:**
+
+Penguin works in two modes: **chat mode** (conversational back-and-forth) and **autonomous mode** (task execution). In chat mode, ask questions, request code, or work through problems interactively. In autonomous mode (using `/run`), Penguin tackles larger tasks independently, breaking them into steps and executing until completion.
+
+**Quick Start:**
+- Ask Penguin to help: "Refactor my auth module" or "Add tests for the calculator"
+- Run code safely: Penguin can execute Python snippets and show results
+- Manage projects: Use `/project` and `/task` commands for structured work
+- Get help anytime: `/help` shows all available commands
+
+**Documentation:** https://github.com/Maximooch/penguin
+
+**Current session:** {session_info}
+**Model:** {model_info}
+**Version:** {version_info}"""
+
+        # Get actual session info
+        try:
+            session = self.core.conversation_manager.get_current_session()
+            session_id = session.id[:8] if session else "Unknown"
+            message_count = len(session.messages) if session else 0
+            session_info = f"Session {session_id} ({message_count} messages)"
+        except Exception:
+            session_info = "Active"
+        
+        # Get model info
+        try:
+            current_model = self.core.get_current_model()
+            model_info = f"{current_model.get('model', 'Unknown')} via {current_model.get('provider', 'Unknown')}"
+        except Exception:
+            model_info = "Unknown"
+        
+        # Get version
+        try:
+            from penguin._version import __version__
+            version_info = __version__
+        except Exception:
+            version_info = "Unknown"
+        
+        formatted_info = info_text.format(
+            session_info=session_info,
+            model_info=model_info,
+            version_info=version_info
+        )
+        
+        return {"status": formatted_info}
+
+# TODO: move this to the core to be fixed later
+
+    async def _handle_reload_prompt_command(self, args: List[str]) -> Dict[str, Any]:
+        """Reload system prompt with latest formatting rules from prompt_workflow.py"""
+        try:
+            from penguin.system_prompt import get_system_prompt
+            
+            # Get current prompt mode
+            current_mode = self.core.get_prompt_mode()
+            
+            # Rebuild prompt with latest rules
+            new_prompt = get_system_prompt(current_mode)
+            
+            # Update in Core and ConversationManager
+            self.core.set_system_prompt(new_prompt)
+            
+            return {
+                "status": f"✅ System prompt reloaded with latest formatting rules.\n"
+                         f"Mode: {current_mode}\n"
+                         f"Prompt length: {len(new_prompt)} characters\n\n"
+                         f"**This affects NEW messages only.** Previous messages used the old prompt.\n"
+                         f"**Tip:** Start a fresh conversation (exit and restart) to fully apply new prompting."
+            }
+        except Exception as e:
+            logger.error(f"Error reloading prompt: {e}")
+            return {"error": f"Failed to reload prompt: {str(e)}"}
         
     async def _handle_exit_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle exit command"""

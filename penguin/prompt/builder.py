@@ -69,14 +69,17 @@ class PromptBuilder:
         if not self.components:
             raise ValueError("Components not loaded. Call load_components() first.")
 
-        # Ensure an output formatting section exists (default to steps+final)
-        if not self.output_formatting:
-            try:
-                from penguin.prompt_workflow import get_output_formatting
-                self.output_formatting = get_output_formatting("steps_final")
-            except Exception:
-                # Safe fallback: no additional formatting guidance
-                self.output_formatting = ""
+        # ALWAYS refresh output formatting to pick up latest changes from prompt_workflow.py
+        # Don't cache it - we want to get updates when prompt_workflow.py is modified
+        try:
+            from penguin.prompt_workflow import get_output_formatting
+            # Determine style from config or use default
+            from penguin.config import config as raw_config
+            style = str(raw_config.get("output", {}).get("prompt_style", "steps_final")).strip().lower()
+            self.output_formatting = get_output_formatting(style or "steps_final")
+        except Exception as e:
+            # Safe fallback: no additional formatting guidance
+            self.output_formatting = ""
             
         # Apply mode-specific deltas
         if mode == "bench_minimal":

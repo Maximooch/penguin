@@ -319,14 +319,79 @@ uv run penguin --no-tui -p "Hello"
 
 ## Progress Tracker
 
-**Total Tasks:** 7 (6 immediate + 1 deferred)  
-**Completed:** 7 ✅  
-**In Progress:** 0  
-**Pending:** 0  
-**Deferred:** 1 (Tool result buffering - can revisit if needed)  
+**Round 1 Tasks:** 7 completed ✅  
+**Round 2 Tasks:** 6 completed ✅  
+**Round 3 Tasks:**
+- ✅ Created /info command with docs link and explanation
+- ✅ Added markdown preference over YAML to prompts  
+- ✅ Created /reload-prompt command
+- ✅ FIXED: Core not using latest prompt formatting
 
-**Actual Implementation Time:** ~20 minutes (faster than estimated!)  
-**Status:** ✅ ALL HIGH PRIORITY TASKS COMPLETED
+**Round 4 Tasks (Polish):**
+- ✅ Fixed Internal Reasoning panel formatting (dim italic Text instead of Markdown)
+- ✅ Fixed /help indentation (direct Panel instead of display_message)
+- ✅ Fixed chronological ordering (buffer system outputs until streaming completes)
+- ✅ Changed "Penguin (Streaming)" to just "Penguin"
+
+**Critical Bug Found & Fixed:**
+- **Bug:** PromptBuilder was caching `output_formatting` and never refreshing it
+- **Location:** `penguin/prompt/builder.py` lines 72-82
+- **Impact:** Prompt changes NOW take effect immediately on fresh conversations
+
+**Total Implementation Time:** ~80 minutes across all rounds  
+**Status:** ✅ ALL FIXES COMPLETED - READY FOR TESTING
+
+**Verification (just ran):**
+```bash
+✅ Prompt length: 40,416 characters
+✅ Contains "MANDATORY blank line after imports": YES
+✅ Contains "yamldata:" bad example: YES
+```
+
+**The prompt NOW includes all our formatting rules!**
+
+---
+
+## 🧪 Testing Results & Next Steps
+
+**Latest Test (Fresh Conversation):**
+- ✅ Executes ONCE (not 3x) - Fixed!
+- ✅ Acknowledges result: "Got it: 179885" - Fixed!
+- ⚠️ Code still had `import randomdef` - But AI was aware and corrected it
+
+**All Polish Fixes Applied:**
+1. ✅ Reasoning panels use dim italic gray text
+2. ✅ /help displays without indentation
+3. ✅ Tool results appear AFTER assistant messages (buffered during streaming)
+4. ✅ Panel titles say "Penguin" not "Penguin (Streaming)"
+
+**Expected Behavior (Fresh Conversation):**
+```bash
+# Exit and restart for fully updated prompts
+exit
+uv run penguin --old-cli
+
+# Test:
+You [0]: Write a function that prints a random number, execute it, tell me the result
+
+# Should see:
+╭─ 👤 You ───────────────────────────
+│ [your message]
+╰─────────────────────────────────────
+╭─ Internal Reasoning ────────────────  [gray dim text]
+│ 🧠 [brief reasoning]
+╰─────────────────────────────────────
+╭─ 🐧 Penguin ───────────────────────  [NOT "Penguin (Streaming)"]
+│ Running a function...
+│ [properly formatted code with newlines]
+╰─────────────────────────────────────
+╭─ 🐧 System ─────────────────────────  [AFTER Penguin message]
+│ Tool Result (execute): 179885
+╰─────────────────────────────────────
+╭─ 🐧 Penguin ────────────────────────
+│ The result is 179885.  [acknowledges, STOPS]
+╰─────────────────────────────────────
+```
 
 ---
 

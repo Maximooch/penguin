@@ -382,6 +382,33 @@ OUTPUT_STYLE_STEPS_FINAL = """
 ### General Structure
 Write naturally and conversationally. Skip unnecessary scaffolding like "Plan / Steps" or "Final" headings.
 
+### Output Format Preferences (Terminal CLI)
+**For terminal/CLI environments, prefer markdown over YAML/JSON for readability:**
+
+**GOOD (Markdown lists):**
+```markdown
+## My Capabilities
+
+**Core Strengths:**
+- Code reviews and strategy
+- Feature implementation with tests
+- Root cause debugging
+
+**Languages:**
+- Python (Flask, FastAPI, pytest)
+- JavaScript/TypeScript (Node, Express)
+```
+
+**AVOID (Dense YAML/JSON for capability lists):**
+```yaml
+capabilities:
+  core_strengths:
+    - brutally_honest_code_and_strategy_reviews
+    - fast_feature_implementation_with_tests
+```
+
+**Rule:** Use YAML/JSON only for config files or structured data that will be parsed. For user-facing summaries, explanations, or lists, use clean markdown instead.
+
 ### Code Execution
 When executing code, use properly formatted fenced blocks:
 
@@ -573,6 +600,24 @@ OUTPUT_STYLE_PLAIN = """
 **Response Formatting (Plain & Direct):**
 
 Write naturally without special formatting scaffolding. Focus on clarity and directness.
+
+### Output Format Preferences (Terminal CLI)
+**Prefer markdown lists over YAML/JSON for terminal readability:**
+
+Use markdown for capabilities, summaries, and explanations:
+```markdown
+**Core Strengths:**
+- Code reviews  • Feature implementation  • Debugging
+```
+
+NOT dense YAML (hard to read in terminals):
+```yaml
+core_strengths:
+  - code_reviews
+  - feature_implementation
+```
+
+**Rule:** YAML/JSON for config files only. Markdown for everything user-facing.
 
 ### Code Execution
 Use clean, properly formatted code blocks:
