@@ -329,6 +329,23 @@ Track high-level plan progress.
 
 ---
 
+### Repository & GitHub Management
+
+Tools for Git operations and PR creation. Require GitHub App credentials to be configured.
+
+-   `<get_repository_status>repo_owner:repo_name</get_repository_status>` - Get repository status (branch, changes, GitHub config)
+-   `<create_and_switch_branch>repo_owner:repo_name:branch_name</create_and_switch_branch>` - Create and switch to a new git branch
+-   `<commit_and_push_changes>repo_owner:repo_name:commit_message</commit_and_push_changes>` - Commit and push current changes
+-   `<create_improvement_pr>repo_owner:repo_name:title:description:files_changed</create_improvement_pr>` - Create PR for improvements
+-   `<create_feature_pr>repo_owner:repo_name:feature_name:description:implementation_notes:files_modified</create_feature_pr>` - Create PR for new features
+-   `<create_bugfix_pr>repo_owner:repo_name:bug_description:fix_description:files_fixed</create_bugfix_pr>` - Create PR for bug fixes
+
+**Notes:** 
+- These tools use GitHub App authentication when configured (GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY_PATH)
+- Can clone/access repos, create branches, commit, push, and open PRs automatically
+- Branch names are auto-generated with timestamps for uniqueness
+
+---
 
 **Notes:**
 -   Navigate first. Use specific selectors.
