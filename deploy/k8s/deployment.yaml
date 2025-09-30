@@ -18,11 +18,56 @@ spec:
           image: penguin:web
           imagePullPolicy: IfNotPresent
           env:
+            # Model configuration
+            - name: PENGUIN_DEFAULT_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: penguin-config
+                  key: PENGUIN_DEFAULT_MODEL
+            - name: PENGUIN_DEFAULT_PROVIDER
+              valueFrom:
+                configMapKeyRef:
+                  name: penguin-config
+                  key: PENGUIN_DEFAULT_PROVIDER
+            - name: PENGUIN_CLIENT_PREFERENCE
+              valueFrom:
+                configMapKeyRef:
+                  name: penguin-config
+                  key: PENGUIN_CLIENT_PREFERENCE
             - name: PENGUIN_CORS_ORIGINS
               valueFrom:
                 configMapKeyRef:
                   name: penguin-config
                   key: PENGUIN_CORS_ORIGINS
+            - name: PENGUIN_WORKSPACE
+              valueFrom:
+                configMapKeyRef:
+                  name: penguin-config
+                  key: PENGUIN_WORKSPACE
+            # Logging/Debug
+            - name: PENGUIN_DEBUG
+              valueFrom:
+                configMapKeyRef:
+                  name: penguin-config
+                  key: PENGUIN_DEBUG
+            # LLM API Keys
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: penguin-secrets
+                  key: OPENROUTER_API_KEY
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: penguin-secrets
+                  key: OPENAI_API_KEY
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: penguin-secrets
+                  key: ANTHROPIC_API_KEY
+                  optional: true
+            # GitHub configuration
             - name: GITHUB_APP_ID
               valueFrom:
                 secretKeyRef:

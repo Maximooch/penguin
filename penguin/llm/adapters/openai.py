@@ -355,7 +355,8 @@ class OpenAIAdapter(BaseAdapter):
             "Authorization": f"Bearer {self.client.api_key}",
             "Content-Type": "application/json",
         }
-        url = (self.client.base_url or "https://api.openai.com/v1").rstrip("/") + "/responses"
+        base_url_str = str(self.client.base_url) if self.client.base_url else "https://api.openai.com/v1"
+        url = base_url_str.rstrip("/") + "/responses"
         payload = dict(request_params)
         payload["stream"] = True
 

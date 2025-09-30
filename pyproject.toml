@@ -114,7 +114,12 @@ llm_transformers = [
 ]
 llm_ollama = ["ollama>=0.1.7"]
 
-# Browser automation (currently using PyDoll, browser_use temporarily disabled)
+# PyDoll browser automation (optional - no WebDriver required)
+pydoll = [
+    "pydoll-python>=2.0.0; python_version>='3.10'",  # Requires Python 3.10+
+]
+
+# Browser automation (browser_use temporarily disabled)
 browser = [
     "browser_use>=0.1.0; python_version>='3.11'",  # Requires Python 3.11+
     "playwright>=1.40.0",
@@ -133,6 +138,7 @@ dev = [
     "wheel>=0.40.0",
     "setuptools>=76.1,<77",
     "pre-commit",
+    "pydoll-python>=2.0.0; python_version>='3.10'",  # For browser automation testing
 ]
 
 # Testing
@@ -144,7 +150,7 @@ test = [
 
 # Full installation (everything)
 all = [
-    "penguin-ai[web,memory_lance,memory_faiss,memory_chroma,llm_transformers,llm_ollama,browser]"
+    "penguin-ai[web,memory_lance,memory_faiss,memory_chroma,llm_transformers,llm_ollama,browser,pydoll]"
 ]
 
 [project.urls]

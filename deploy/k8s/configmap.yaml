@@ -5,4 +5,13 @@ metadata:
   namespace: penguin
 data:
   PENGUIN_CORS_ORIGINS: "*"
+  # Model configuration (September 2025 - latest models via OpenRouter)
+  # If you need images, use openai/gpt-5
+  PENGUIN_DEFAULT_MODEL: "deepseek/deepseek-v3.2-exp"
+  PENGUIN_DEFAULT_PROVIDER: "openrouter"
+  PENGUIN_CLIENT_PREFERENCE: "openrouter"
+  # Workspace path (must be writable by penguinuser)
+  PENGUIN_WORKSPACE: "/home/penguinuser/penguin_workspace"
+  # Logging (PENGUIN_DEBUG enables verbose LLM logging)
+  PENGUIN_DEBUG: "1"
 

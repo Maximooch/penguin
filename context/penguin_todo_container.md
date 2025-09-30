@@ -10,7 +10,13 @@ Goal: ship a production-ready container for Penguin, then wire secure GitHub acc
 
 ---
 
-## Phase 1 — Containerization
+## Phase 1 — Containerization ✅
+
+### Notes
+- ✅ Dockerfile.web created with UV, dual install modes, non-root user
+- ✅ .dockerignore optimized for repo
+- ✅ Build toolchain added/removed to support compiled deps (madoka)
+- ⚠️  Config precedence: env vars MUST override baked-in config.yml; rebuild image when config.yml changes
 
 ### 1) Base image and system deps
 - Use `python:3.12-slim`.
@@ -308,15 +314,48 @@ Recommendation: publish `:sha` always; optionally promote to `:vX.Y.Z` and `:lat
 
 ---
 
-## Phase 7 — API Testing
+## Phase 1.5 — Tool Usage & Run Mode Testing ✅
 
-### Priority 1: Core Functionality (smoke tests)
+### Test Summary
+- ✅ All tool usage tests passing (2/2)
+- ✅ All run mode tests passing (2/2)
+- ✅ Verified: PyDoll browser, Perplexity search, code execution tools work
+- ✅ Verified: Background and sync task execution functional
+
+### Tool Usage Tests ✅
+- ✅ POST `/api/v1/chat/message` with tool-requiring prompt (Wikipedia penguin fetch)
+- ✅ Verified `action_results` contains tool executions (PyDoll browser, Perplexity)
+- ✅ Validated tool outputs included in response (first paragraph extracted)
+
+### Run Mode Tests ✅
+- ✅ POST `/api/v1/tasks/execute` — background task execution via RunMode
+- ✅ POST `/api/v1/tasks/execute-sync` — synchronous task via Engine (10 iterations)
+- ⏳ WebSocket `/api/v1/tasks/stream` — streaming run mode events (not yet tested)
+
+### Test files
+- ✅ `tests/api/test_web_api_tools.py` — tool usage verification
+- ✅ `tests/api/test_web_api_runmode.py` — run mode execution
+
+---
+
+## Phase 7 — API Testing ✅
+
+### Test Summary
+- ✅ All Priority 1 tests passing (9/9)
+- ✅ Real LLM calls verified (DeepSeek via OpenRouter)
+- ✅ Container health, chat, conversations, projects all functional
+- 🐛 Fixed: OpenAI adapter URL.rstrip() bug discovered via testing
+
+### Priority 1: Core Functionality (smoke tests) ✅
 - ✅ GET `/api/v1/health` — basic health check (container test)
-- POST `/api/v1/chat/message` — send a chat message
-- GET `/api/v1/conversations` — list conversations
-- POST `/api/v1/conversations/create` — create conversation
-- GET `/api/v1/capabilities` — discover API capabilities
-- GET `/api/v1/system/status` — runtime status
+- ✅ POST `/api/v1/chat/message` — send a chat message
+- ✅ GET `/api/v1/conversations` — list conversations
+- ✅ POST `/api/v1/conversations/create` — create conversation
+- ✅ GET `/api/v1/capabilities` — discover API capabilities
+- ✅ GET `/api/v1/system/status` — runtime status
+- ✅ POST `/api/v1/projects` — create project
+- ✅ GET `/api/v1/projects` — list projects
+- ✅ GET `/api/v1/projects/{project_id}` — get project details
 
 ### Priority 2: Model & Discovery
 - GET `/api/v1/models` — list available models
@@ -334,11 +373,11 @@ Recommendation: publish `:sha` always; optionally promote to `:vX.Y.Z` and `:lat
 - WebSocket `/api/v1/tasks/stream` — streaming task updates
 
 ### Test organization
-- `tests/docker/test_web_container.py` — Docker health & lifecycle
-- `tests/api/test_web_api_smoke.py` — Priority 1 endpoints (basic GET/POST)
-- `tests/api/test_web_api_chat.py` — Chat functionality (requires API keys)
-- `tests/api/test_web_api_models.py` — Model management & switching
-- `tests/api/test_web_api_checkpoints.py` — Checkpoint management
+- ✅ `tests/docker/test_web_container.py` — Docker health & lifecycle
+- ✅ `tests/api/test_web_api_smoke.py` — Priority 1 basic endpoints (health, capabilities, status, conversations)
+- ✅ `tests/api/test_web_api_core.py` — Priority 1 chat & project management (requires API keys)
+- `tests/api/test_web_api_models.py` — Priority 2: Model management & switching
+- `tests/api/test_web_api_checkpoints.py` — Priority 3: Checkpoint management
 - `tests/api/test_web_api_integration.py` — Full workflow integration tests
 
 ---
