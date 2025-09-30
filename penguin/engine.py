@@ -515,6 +515,23 @@ class Engine:
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
                 
+                # CRITICAL FIX: Save assistant message to conversation history
+                # This ensures the response is persisted even in streaming mode
+                if last_response and last_response.strip():
+                    cm, _, _, _ = self._resolve_components(self.current_agent_id)
+                    # Only add if not already added by _llm_step (non-streaming case)
+                    # In streaming, finalize_streaming_message handles it, but we need to ensure it happens
+                    if self.settings.streaming_default:
+                        # Streaming mode: finalize now to persist
+                        if hasattr(cm, 'core') and cm.core:
+                            try:
+                                cm.core.finalize_streaming_message()
+                            except Exception as e:
+                                logger.warning(f"Failed to finalize streaming in run_task: {e}")
+                                # Fallback: add directly
+                                cm.conversation.add_assistant_message(last_response)
+                    # Message already saved in non-streaming case by _llm_step
+                
                 # Collect action results
                 if iteration_results:
                     all_action_results.extend(iteration_results)

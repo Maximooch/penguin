@@ -440,14 +440,19 @@ Recommendation: publish `:sha` always; optionally promote to `:vX.Y.Z` and `:lat
 
 ### Needs Attention ⚠️
 - WebSocket streaming callback needs RunMode integration (minor)
-- 🐛 **Conversation storage bug:** `Engine.run_task()` doesn't save assistant messages to conversation history (only tool results saved)
-- GitHub tools were in PLACEHOLDER section (now moved to ACTION_SYNTAX) - rebuild needed for CLI to see them
+- 🐛 **Local CLI issues:**
+  - Multiple flags don't work together (`--old-cli --root workspace` fails)
+  - CLI uses cwd instead of PENGUIN_WORKSPACE by default
+  - GitHub App credentials not loaded in CLI (exist in .env but need to be passed through)
 
-### Fixed ✅
+### Fixed ✅ (Image Rebuilt)
 - ~~Runtime model switching~~ → Fixed with `ModelConfig.for_model()` dynamic resolution
 - ~~Config precedence~~ → Fixed: env vars now properly override config.yml
 - ~~PR creation~~ → Working via `/api/v1/tasks/execute-sync` endpoint
 - ~~GitHub tools visibility~~ → Moved from PLACEHOLDER to ACTION_SYNTAX in prompt_actions.py
+- ~~Assistant message storage~~ → Fixed in `engine.py:518-533` (finalize_streaming_message)
+- ~~OpenAI URL bug~~ → Fixed `URL.rstrip()` TypeError
+- ~~Build toolchain~~ → Added build-essential for madoka compilation
 
 ### Phase 2.5 Next Steps (Bot Features)
 1. Implement webhook endpoint (`POST /api/v1/integrations/github/webhook`)
