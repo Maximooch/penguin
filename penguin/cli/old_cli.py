@@ -2059,7 +2059,17 @@ class PenguinCLI:
             is_code_output = True
             detected_lang = self._detect_language(result_text)
 
-        if is_code_output:
+        # Check if this is a diff output (from edit tools) - display as code, not markdown
+        is_diff_output = (
+            "Successfully edited" in result_text or
+            "---" in result_text[:100] and "+++" in result_text[:100]  # Unified diff header
+        )
+        
+        if is_diff_output:
+            # Display diffs as syntax-highlighted text to preserve formatting
+            content_renderable = Syntax(result_text, "diff", theme="monokai", word_wrap=False, line_numbers=False)
+            title_for_panel = f"{status_icon} Edit Result from {action_type}"
+        elif is_code_output:
             lang_display = self.LANGUAGE_DISPLAY_NAMES.get(detected_lang, detected_lang.capitalize())
             content_renderable = Syntax(result_text, detected_lang, theme="monokai", word_wrap=True, line_numbers=True)
             title_for_panel = f"{status_icon} {lang_display} Output from {action_type}"
@@ -2330,20 +2340,34 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
 
                 # Process normal message input through interface
                 try:
-                    # Show a subtle waiting indicator
-                    with Progress(
+                    # Show brief "Thinking..." - will be stopped by event system when streaming starts
+                    # Using transient Progress that auto-cleans up
+                    thinking_progress = Progress(
                         SpinnerColumn(),
                         TextColumn("[dim]Thinking...[/dim]"),
                         console=self.console,
-                        transient=True  # Disappears when done
-                    ) as progress:
-                        thinking_task = progress.add_task("", total=None)
-                        
+                        transient=True  # Auto-disappears
+                    )
+                    thinking_progress.start()
+                    thinking_task = thinking_progress.add_task("", total=None)
+                    
+                    # Store ref so event handler can stop it before streaming
+                    self._thinking_progress = thinking_progress
+                    
+                    try:
                         # Process user message through interface
                         response = await self.interface.process_input(
                             {"text": user_input},
                             stream_callback=None  # Events handle streaming display
                         )
+                    finally:
+                        # Always clean up thinking indicator
+                        if hasattr(self, '_thinking_progress'):
+                            try:
+                                self._thinking_progress.stop()
+                            except Exception:
+                                pass
+                            delattr(self, '_thinking_progress')
                     
                     # Assistant responses (streaming or not) are now delivered via Core events.
                     # Therefore, avoid printing them directly here to prevent duplicates.
@@ -2569,8 +2593,16 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     self.streaming_buffer = ""
                     self.streaming_reasoning_buffer = ""  # Reset reasoning buffer too
                     
-                    # CRITICAL: Stop any active progress display FIRST to prevent "Only one live display" error
+                    # CRITICAL: Stop ALL active progress displays FIRST to prevent "Only one live display" error
                     self._safely_stop_progress()
+                    
+                    # Also stop the "Thinking..." indicator from chat_loop
+                    if hasattr(self, '_thinking_progress'):
+                        try:
+                            self._thinking_progress.stop()
+                            delattr(self, '_thinking_progress')
+                        except Exception:
+                            pass
                     
                     # Clean up any previous Live panel
                     if getattr(self, "streaming_live", None):

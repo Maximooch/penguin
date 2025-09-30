@@ -535,14 +535,34 @@ Add explicit "NEVER DO THIS" examples showing duplicate execution:
 - **Status:** ✅ COMPLETED
 - **Issue:** Rich throws error when Progress and Live streaming contexts overlap
 - **Evidence:** User's screenshot shows "Error processing event: Only one live display may be active at once"
-- **Root Cause:** `self.progress` (Progress context) and `self.streaming_live` (Live context) both active simultaneously
-- **Fix:** Stop progress before starting streaming display (line 2573)
+- **Root Causes Found:**
+  1. `self.progress` and `self.streaming_live` both active simultaneously
+  2. **`with Progress(...)` context in chat_loop staying active during streaming!**
+- **Fixes Applied:**
+  1. Line 2573: Stop progress before starting streaming display
+  2. **Lines 2333-2340: Removed `with Progress()` wrapper entirely** - conflicts with event-driven display
+- **Actual Time:** 10 minutes (found second source of conflict)
+- **Priority:** 🔥 CRITICAL - Breaks streaming display
+
+### 14. Fix Diff Display Mangling ✅  
+- **File:** `penguin/cli/old_cli.py`
+- **Status:** ✅ COMPLETED
+- **Issue:** Unified diff output displayed as Markdown, causing text concatenation artifacts
+- **Evidence:** User's screenshot shows "recommended (note →To quickly understand..." - diff lines merged
+- **Root Cause:** `display_action_result()` renders all text as Markdown, which doesn't preserve diff formatting
+- **Fix Applied:** Lines 2062-2071 - Detect diff output and render as Syntax("diff") instead of Markdown
+- **Code:**
   ```python
-  # CRITICAL: Stop any active progress display FIRST
-  self._safely_stop_progress()
+  is_diff_output = (
+      "Successfully edited" in result_text or
+      "---" in result_text[:100] and "+++" in result_text[:100]
+  )
+  if is_diff_output:
+      content_renderable = Syntax(result_text, "diff", theme="monokai", word_wrap=False)
   ```
 - **Actual Time:** 5 minutes
-- **Priority:** 🔥 CRITICAL - Breaks streaming display
+- **Priority:** 🟡 MEDIUM - Confusing but readable
+- **Impact:** Diffs now display cleanly with proper +/- highlighting
 
 ---
 
@@ -552,11 +572,12 @@ Add explicit "NEVER DO THIS" examples showing duplicate execution:
 1. 🔥 Task #9: Fix display contamination (blocks clean output)
 2. 🔥 Task #10: Fix console state (prevents crashes)
 3. 🔥 Task #11: Fix edit_with_pattern parser (was corrupting data!)
-4. 🔥 Task #13: Fix "Only one live display" error (breaks streaming)
-5. ⚪ Task #12: Fix duplicate reasoning (polish)
+4. 🔥 Task #13: Fix "Only one live display" error (breaks streaming) - **TWO FIXES NEEDED**
+5. 🟡 Task #14: Fix diff display mangling (visual artifacts)
+6. ⚪ Task #12: Fix duplicate reasoning (polish)
 
 **Total Estimated Time:** 1.5 hours  
-**Actual Time:** ~45 minutes
+**Actual Time:** ~60 minutes (found 7 bugs total!)
 
 **Testing Plan:**
 ```bash
@@ -583,7 +604,7 @@ uv run penguin --old-cli
 ## Round 6 Implementation Summary ✅
 
 **Completed:** 2025-09-30  
-**Total Time:** ~45 minutes (discovered 2 additional critical bugs!)
+**Total Time:** ~60 minutes (discovered 3 additional critical bugs!)
 
 ### Changes Made:
 
@@ -649,7 +670,37 @@ uv run penguin --old-cli
 
 **Impact:** No more "Only one live display may be active at once" errors during streaming
 
-#### 6. ✅ Task #12: Duplicate Reasoning Fixed
+#### 6. ✅ Task #13 ADDITIONAL FIX: Removed chat_loop Progress() wrapper
+**Files Modified:**
+- `penguin/cli/old_cli.py` (lines 2333-2340)
+
+**Critical Bug Found:**
+- `with Progress() as progress:` context manager in chat_loop remained active during entire `process_input()` call
+- When streaming started (triggered by process_input), it tried to create Live() while Progress() was still alive
+- This is why the error persisted despite fix #1!
+
+**Changes:**
+- Completely removed the `with Progress(...)` wrapper
+- Let event system handle progress via `on_progress_update` callback instead
+
+**Impact:** No more Live() context conflicts - streaming now works reliably!
+
+#### 7. ✅ Task #14: Diff Display Fixed
+**Files Modified:**
+- `penguin/cli/old_cli.py` (lines 2062-2071)
+
+**Issue:**
+- Unified diff output was rendered as Markdown
+- Caused visual artifacts: "text (note →new text..." (lines merged)
+
+**Changes:**
+- Detect diff output by checking for "Successfully edited" or "---/+++" headers
+- Display as `Syntax(text, "diff")` instead of `Markdown(text)`
+- Preserves diff formatting with proper +/- line highlighting
+
+**Impact:** Clean, readable diff output with syntax highlighting
+
+#### 8. ✅ Task #12: Duplicate Reasoning Fixed
 **Files Modified:**
 - `penguin/cli/old_cli.py` (lines 1598-1599, 1639-1640)
 
