@@ -1594,6 +1594,10 @@ class PenguinCLI:
         """
         import re
         
+        # Guard against re-displaying already processed reasoning
+        if hasattr(self, '_last_reasoning_extracted') and message == self._last_reasoning_extracted:
+            return message
+        
         # Pattern to match <details> blocks with reasoning
         details_pattern = r'<details>\s*<summary>🧠[^<]*</summary>\s*(.*?)</details>\s*'
         
@@ -1631,6 +1635,10 @@ class PenguinCLI:
             
             # Remove the details block from the message
             cleaned_message = re.sub(details_pattern, '', message, flags=re.DOTALL | re.IGNORECASE)
+            
+            # Mark this message as processed to prevent re-display
+            self._last_reasoning_extracted = message
+            
             return cleaned_message.strip()
         
         return message
@@ -2560,6 +2568,9 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     self.is_streaming = True  # Set streaming flag
                     self.streaming_buffer = ""
                     self.streaming_reasoning_buffer = ""  # Reset reasoning buffer too
+                    
+                    # CRITICAL: Stop any active progress display FIRST to prevent "Only one live display" error
+                    self._safely_stop_progress()
                     
                     # Clean up any previous Live panel
                     if getattr(self, "streaming_live", None):

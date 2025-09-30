@@ -1417,7 +1417,21 @@ def edit_file_with_pattern(file_path, search_pattern, replacement, backup=True, 
         
         # Apply pattern replacement
         import re
-        modified_content = re.sub(search_pattern, replacement, original_content)
+        try:
+            # Validate regex pattern before applying
+            re.compile(search_pattern)
+            modified_content = re.sub(search_pattern, replacement, original_content)
+        except re.error as regex_err:
+            error_hint = (
+                f"Invalid regex pattern: {regex_err}\n\n"
+                f"Common fixes:\n"
+                f"- Escape special chars: . ^ $ * + ? {{ }} [ ] \\ | ( )\n"
+                f"- Use \\\\( to match literal parenthesis\n"
+                f"- Use \\\\. to match literal dot\n"
+                f"- Check for unbalanced parentheses or brackets\n\n"
+                f"Your pattern: {search_pattern}"
+            )
+            return f"Error editing file: {error_hint}"
         
         # Check if anything changed
         if modified_content == original_content:

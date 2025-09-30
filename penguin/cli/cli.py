@@ -2062,7 +2062,9 @@ class PenguinCLI:
         self.interface = PenguinInterface(core)
         self.in_247_mode = False
         self.message_count = 0
-        self.console = None
+        # Initialize a simple console for headless mode - no Rich formatting but prevents AttributeErrors
+        from rich.console import Console
+        self.console = Console(no_color=True, legacy_windows=False, force_terminal=False)
         self.conversation_menu = None
         self.core.register_progress_callback(self.on_progress_update)
 

@@ -1495,15 +1495,32 @@ class ActionExecutor:
         })
 
     def _edit_with_pattern(self, params: str) -> str:
-        """Edit file with pattern replacement. Format: file_path:search_pattern:replacement:backup"""
-        parts = params.split(":", 3)
+        """Edit file with pattern replacement. Format: file_path:search_pattern:replacement:backup
+        
+        Note: Uses reverse split to handle colons in replacement text.
+        """
+        # Split from the right to handle optional backup flag first
+        parts = params.rsplit(":", 1)
+        backup = False
+        content_parts = parts[0]
+        
+        # Check if last part is the backup flag (true/false)
+        if len(parts) == 2 and parts[1].strip().lower() in ("true", "false"):
+            backup = parts[1].strip().lower() == "true"
+        else:
+            # No backup flag, treat entire string as content
+            content_parts = params
+            backup = True  # Default to backup
+        
+        # Now split the content part into file_path:search_pattern:replacement
+        # Split only on first 2 colons to preserve colons in replacement text
+        parts = content_parts.split(":", 2)
         if len(parts) < 3:
-            return "Error: Need file path, search pattern, and replacement"
+            return "Error: Need file_path:search_pattern:replacement format"
         
         file_path = parts[0].strip()
         search_pattern = parts[1]  # Don't strip - regex patterns may need whitespace
-        replacement = parts[2]      # Don't strip - replacement may need whitespace
-        backup = parts[3].strip().lower() == "true" if len(parts) > 3 else True
+        replacement = parts[2]      # Don't strip - replacement may need whitespace (and may contain colons!)
         
         return self.tool_manager.execute_tool("edit_with_pattern", {
             "file_path": file_path,

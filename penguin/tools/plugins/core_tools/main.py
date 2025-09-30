@@ -372,12 +372,13 @@ class CoreToolsPlugin(BasePlugin):
                     default=False
                 )
             ],
-            handler=lambda file_path, pattern, replacement, regex=False: edit_file_with_pattern({
-                "file_path": file_path,
-                "pattern": pattern,
-                "replacement": replacement,
-                "regex": regex
-            }),
+            handler=lambda file_path, pattern, replacement, regex=False: edit_file_with_pattern(
+                file_path=file_path,
+                search_pattern=pattern,  # Function expects "search_pattern" not "pattern"
+                replacement=replacement,
+                backup=True,  # Default to creating backups
+                workspace_path=None  # Will be resolved by function
+            ),
             category="development",
             tags=["edit", "pattern", "regex", "replace"]
         )

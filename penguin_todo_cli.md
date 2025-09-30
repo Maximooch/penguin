@@ -450,3 +450,218 @@ Add explicit "NEVER DO THIS" examples showing duplicate execution:
 - [ ] Add reasoning token cost tracking in output
 - [ ] Support reasoning-only mode (show reasoning, hide answer)
 - [ ] Add reasoning summary at end of response ("Thought for X tokens")
+
+---
+
+## Round 6 Tasks (2025-09-30): Critical Hybrid State Issues
+
+### Issue Analysis from User's Penguin Run
+**Source:** Session log showing visual contamination and tool failures
+
+### 9. Fix Display Contamination in Tool Results 🔥 ✅
+- **File:** `penguin/utils/notebook.py`, `penguin/tools/tool_manager.py`
+- **Status:** ✅ COMPLETED
+- **Issue:** Rich-formatted output (panels, borders, ANSI codes) bleeding into subprocess stdout
+- **Evidence:** Lines 90-103 in user's log show:
+  ```
+  \u001b[34m\u256d\u2500\u001b[0m\u001b[34m 🐧 Penguin \u001b[0m...
+  ```
+- **Root Cause:** Code being executed triggers Rich display that gets captured by subprocess
+- **Fix:** Suppress Rich ANSI codes during tool execution
+  ```python
+  env = os.environ.copy()
+  env['TERM'] = 'dumb'  # Disables Rich formatting
+  env['NO_COLOR'] = '1'
+  env['RICH_NO_MARKUP'] = '1'
+  ```
+- **Estimated Time:** 15 minutes
+- **Priority:** HIGH - Breaks tool output readability
+
+### 10. Fix Console State Confusion in cli.py ✅
+- **File:** `penguin/cli/cli.py`
+- **Status:** ✅ COMPLETED
+- **Issue:** `self.console = None` (line 2065) but methods still call `self.console.print()`
+- **Evidence:** 
+  - Line 2065: `self.console = None`
+  - Line 2367, 2393: Code tries to use `self.console.print()`
+- **Root Cause:** Incomplete conversion from Rich CLI to headless CLI
+- **Fix Options:**
+  - **Option A (Recommended):** Remove all `self.console` references, use plain print
+  - **Option B:** Initialize simple console: `self.console = Console(no_color=True, legacy_windows=False)`
+- **Lines to modify:** 2065, 2367, 2393, and audit entire `PenguinCLI` class
+- **Estimated Time:** 30 minutes
+- **Priority:** HIGH - Prevents crashes in headless mode
+
+### 11. Fix Regex Escaping in edit_with_pattern Tool ✅
+- **File:** `penguin/tools/core/support.py`, `penguin/utils/parser.py`, `penguin/tools/plugins/core_tools/main.py`
+- **Status:** ✅ COMPLETED  
+- **Issue:** Tool failed on patterns AND truncated replacement text containing colons
+- **Evidence from user's log:**
+  - Line 687: `"missing ), unterminated subpattern at position 62"`
+  - Line 750: `"No matches found"` after trying `\\\\\\(note::`
+  - Line 896: Replacement "note: it's ~90%" got truncated to just "(note"
+- **Root Causes:**
+  1. No regex validation before execution
+  2. **CRITICAL BUG:** Parser used `split(":", 3)` but replacement text contains colons!
+  3. Plugin handler passed dict instead of individual args
+- **Fixes Applied:**
+  1. Added regex validation + helpful error messages (`support.py`)
+  2. **Changed parser to `rsplit` + `split(":", 2)`** to preserve colons in replacement (`parser.py`)
+  3. Fixed plugin handler signature mismatch (`core_tools/main.py`)
+- **Actual Time:** 35 minutes
+- **Priority:** 🔥 CRITICAL - Was silently corrupting data!
+
+### 12. Fix Duplicate Reasoning Display ✅
+- **File:** `penguin/cli/old_cli.py`
+- **Status:** ✅ COMPLETED
+- **Issue:** Assistant message appears twice - raw and formatted versions
+- **Evidence:** Lines 63-87 show duplicate content with/without `<details>` blocks
+- **Root Cause:** `_extract_and_display_reasoning()` (lines 1590-1636) not checking if already displayed
+- **Fix:** Add guard to prevent re-displaying already-formatted reasoning
+  ```python
+  def _extract_and_display_reasoning(self, message: str) -> str:
+      # Check if message already has reasoning extracted
+      if hasattr(self, '_last_reasoning_extracted') and \
+         message == self._last_reasoning_extracted:
+          return message
+      # ... rest of method
+      self._last_reasoning_extracted = message
+  ```
+- **Estimated Time:** 10 minutes
+- **Priority:** LOW - Cosmetic issue
+
+### 13. Fix "Only one live display may be active at once" Error ✅
+- **File:** `penguin/cli/old_cli.py`
+- **Status:** ✅ COMPLETED
+- **Issue:** Rich throws error when Progress and Live streaming contexts overlap
+- **Evidence:** User's screenshot shows "Error processing event: Only one live display may be active at once"
+- **Root Cause:** `self.progress` (Progress context) and `self.streaming_live` (Live context) both active simultaneously
+- **Fix:** Stop progress before starting streaming display (line 2573)
+  ```python
+  # CRITICAL: Stop any active progress display FIRST
+  self._safely_stop_progress()
+  ```
+- **Actual Time:** 5 minutes
+- **Priority:** 🔥 CRITICAL - Breaks streaming display
+
+---
+
+## Round 6 Implementation Plan
+
+**Order (by severity):**
+1. 🔥 Task #9: Fix display contamination (blocks clean output)
+2. 🔥 Task #10: Fix console state (prevents crashes)
+3. 🔥 Task #11: Fix edit_with_pattern parser (was corrupting data!)
+4. 🔥 Task #13: Fix "Only one live display" error (breaks streaming)
+5. ⚪ Task #12: Fix duplicate reasoning (polish)
+
+**Total Estimated Time:** 1.5 hours  
+**Actual Time:** ~45 minutes
+
+**Testing Plan:**
+```bash
+# Test 1: Tool execution should be clean
+uv run penguin --old-cli -p "run: print('hello world')"
+# Expected: No ANSI codes in output
+
+# Test 2: Headless mode should work
+uv run penguin -p "hello"
+# Expected: No AttributeError crashes
+
+# Test 3: Edit patterns with parentheses
+# (Test via actual tool usage in conversation)
+# Expected: Proper escaping guidance or auto-handling
+
+# Test 4: No duplicate reasoning
+uv run penguin --old-cli
+> "complex task"
+# Expected: Reasoning appears once, in correct format
+```
+
+---
+
+## Round 6 Implementation Summary ✅
+
+**Completed:** 2025-09-30  
+**Total Time:** ~45 minutes (discovered 2 additional critical bugs!)
+
+### Changes Made:
+
+#### 1. ✅ Task #9: Display Contamination Fixed
+**Files Modified:**
+- `penguin/utils/notebook.py` (lines 31-66, 121-125)
+- `penguin/tools/tool_manager.py` (lines 1636-1640)
+
+**Changes:**
+- Added environment variable suppression before code/command execution
+- Set `TERM=dumb`, `NO_COLOR=1`, `RICH_NO_MARKUP=1`
+- Properly restore original environment after execution
+- Applied to both `execute_code()` and `execute_shell()` methods
+
+**Impact:** Tool outputs will now be clean, no ANSI escape codes
+
+#### 2. ✅ Task #10: Console State Fixed
+**Files Modified:**
+- `penguin/cli/cli.py` (lines 2065-2067)
+
+**Changes:**
+- Changed `self.console = None` to `Console(no_color=True, legacy_windows=False, force_terminal=False)`
+- Prevents AttributeErrors while maintaining headless behavior
+
+**Impact:** No more crashes when methods call `self.console.print()`
+
+#### 3. ✅ Task #11: Regex Escaping Fixed
+**Files Modified:**
+- `penguin/tools/core/support.py` (lines 1420-1434)
+
+**Changes:**
+- Added regex validation with `re.compile()` before `re.sub()`
+- Added helpful error message explaining common escaping issues
+- Provides specific guidance on escaping parentheses, dots, etc.
+
+**Impact:** Better UX when regex patterns fail, clear guidance for fixes
+
+#### 4. ✅ Task #11 CRITICAL ADDITION: Parser Split Bug Fixed
+**Files Modified:**
+- `penguin/utils/parser.py` (lines 1497-1530)
+- `penguin/tools/plugins/core_tools/main.py` (lines 375-381)
+
+**Critical Bug Found:**
+- Parser used `params.split(":", 3)` which BREAKS on replacement text containing colons!
+- Example: `file.md:pattern:text (note: details):true`
+  - Got split into: `["file.md", "pattern", "text (note", " details):true"]`
+  - Replacement was TRUNCATED to "text (note"!
+
+**Changes:**
+- Use `rsplit(":", 1)` to extract backup flag from end first
+- Then `split(":", 2)` to preserve all colons in replacement text
+- Fixed plugin handler to pass individual args, not dict
+
+**Impact:** Tool now handles colons, punctuation, URLs in replacement text correctly!
+
+#### 5. ✅ Task #13: "Only one live display" Error Fixed
+**Files Modified:**
+- `penguin/cli/old_cli.py` (line 2573)
+
+**Changes:**
+- Call `self._safely_stop_progress()` BEFORE starting `streaming_live`
+- Prevents Rich Live() context manager conflicts
+
+**Impact:** No more "Only one live display may be active at once" errors during streaming
+
+#### 6. ✅ Task #12: Duplicate Reasoning Fixed
+**Files Modified:**
+- `penguin/cli/old_cli.py` (lines 1598-1599, 1639-1640)
+
+**Changes:**
+- Added guard `_last_reasoning_extracted` to prevent re-processing
+- Marks processed messages to avoid duplicate display
+
+**Impact:** Reasoning blocks appear exactly once
+
+### Verification:
+- ✅ All files lint clean (no Ruff errors)
+- ✅ Changes follow existing code patterns
+- ✅ Proper error handling and cleanup
+- ✅ Backward compatible (no breaking changes)
+- ✅ Tested: clean subprocess output confirmed

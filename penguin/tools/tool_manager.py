@@ -1633,12 +1633,19 @@ class ToolManager:
                 shell = False
                 command = ["bash", "-c", command]
 
+            # Prepare environment to suppress Rich formatting
+            env = os.environ.copy()
+            env['TERM'] = 'dumb'
+            env['NO_COLOR'] = '1'
+            env['RICH_NO_MARKUP'] = '1'
+
             result = subprocess.run(
                 command,
                 shell=shell,
                 capture_output=True,
                 text=True,
                 cwd=self._file_root,
+                env=env  # Use environment with Rich suppression
             )
 
             if result.returncode == 0:

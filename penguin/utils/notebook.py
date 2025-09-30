@@ -28,14 +28,42 @@ class NotebookExecutor:
             
             pre_state = self.file_map.get_file_map()
             
-            # Capture both stdout and stderr
-            out = io.StringIO()
-            err = io.StringIO()
-            sys.stdout = out
-            sys.stderr = err
+            # Suppress Rich/ANSI formatting during code execution to prevent contamination
+            # Save original environment
+            orig_term = os.environ.get('TERM')
+            orig_no_color = os.environ.get('NO_COLOR')
+            orig_rich_no_markup = os.environ.get('RICH_NO_MARKUP')
+            
+            try:
+                # Disable Rich formatting
+                os.environ['TERM'] = 'dumb'
+                os.environ['NO_COLOR'] = '1'
+                os.environ['RICH_NO_MARKUP'] = '1'
+                
+                # Capture both stdout and stderr
+                out = io.StringIO()
+                err = io.StringIO()
+                sys.stdout = out
+                sys.stderr = err
 
-            # Execute the code
-            result = self.shell.run_cell(code)
+                # Execute the code
+                result = self.shell.run_cell(code)
+            finally:
+                # Restore environment
+                if orig_term is not None:
+                    os.environ['TERM'] = orig_term
+                elif 'TERM' in os.environ:
+                    del os.environ['TERM']
+                    
+                if orig_no_color is not None:
+                    os.environ['NO_COLOR'] = orig_no_color
+                elif 'NO_COLOR' in os.environ:
+                    del os.environ['NO_COLOR']
+                    
+                if orig_rich_no_markup is not None:
+                    os.environ['RICH_NO_MARKUP'] = orig_rich_no_markup
+                elif 'RICH_NO_MARKUP' in os.environ:
+                    del os.environ['RICH_NO_MARKUP']
 
             # Restore stdout and stderr
             sys.stdout = sys.__stdout__
@@ -90,13 +118,20 @@ class NotebookExecutor:
                 shell = False
                 command = ["bash", "-c", command]
 
+            # Prepare environment to suppress Rich formatting
+            env = os.environ.copy()
+            env['TERM'] = 'dumb'
+            env['NO_COLOR'] = '1'
+            env['RICH_NO_MARKUP'] = '1'
+
             # Execute command in explicit workspace directory
             result = subprocess.run(
                 command, 
                 shell=shell, 
                 capture_output=True, 
                 text=True, 
-                cwd=self.active_directory  # Force workspace context
+                cwd=self.active_directory,  # Force workspace context
+                env=env  # Use environment with Rich suppression
             )
 
             # Combine stdout and stderr if present
