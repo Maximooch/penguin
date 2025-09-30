@@ -21,7 +21,7 @@ o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 
-To quickly understand the codebase, DeepWiki is recommended \(note:
+To quickly understand the codebase, DeepWiki is recommended (note
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Maximooch/penguin)
 
