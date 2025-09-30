@@ -21,7 +21,7 @@ o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 
-To get a quick understanding of the codebase, DeepWiki is reccommended (note it's ~90% accurate):
+To quickly understand the codebase, DeepWiki is recommended \(note:
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Maximooch/penguin)
 
@@ -72,10 +72,10 @@ from penguin import PenguinAgent
 
 # PenguinAgent handles PenguinCore setup, workspace defaults, and project docs
 with PenguinAgent() as agent:
-    response = agent.chat("Summarise the current task charter")
+    response = agent.chat("Summarize the current task charter")
     print(response["assistant_response"])
 
-    # Register a specialised sub-agent if desired
+    # Register a specialized sub-agent if desired
     agent.register_agent("qa", system_prompt="You are the QA reviewer.")
 ```
 
@@ -133,7 +133,7 @@ without reimplementing orchestration.
 
 Penguin is a modular, extensible AI coding assistant powered by LLMs. It functions as an intelligent software engineer that can assist with coding tasks while maintaining its own code execution, memory tools, and workspace environment. 
 
-   It is designed for full-lifecycle software development. It goes beyond code generation by managing tasks, coordinating sub-agents, tracking project progress, and executing long-running objectives with minimal human oversight. Its architecture includes persistent memory, a rich toolchain, CLI and Web interfaces, and a SQLite-backed project management system. Penguin enables scalable, intelligent workflows across complex codebases and development environments, making it a serious upgrade from prompt-based coding assistants.
+It is designed for full-lifecycle software development. It goes beyond code generation by managing tasks, coordinating sub-agents, tracking project progress, and executing long-running objectives with minimal human oversight. Its architecture includes persistent memory, a rich toolchain, CLI and Web interfaces, and an SQLite-backed project management system. Penguin enables scalable, intelligent workflows across complex codebases and development environments, making it a serious upgrade from prompt-based coding assistants.
 
 ## Key Features
 
@@ -151,7 +151,7 @@ Penguin is a modular, extensible AI coding assistant powered by LLMs. It functio
 - ConversationManager that blends session persistence, auto-save, context loading, checkpoints,
   and snapshot/restore support.
 - ContextWindowManager with category-based token budgets, multimodal trimming, and live usage
-  reporting to keep histories within model limits. Allowing for theoretically infinite sessions.
+  reporting to keep histories within model limits. This allows theoretically infinite sessions.
 - Shared memory layer with declarative notes, summary notes, and retrieval backed by SQLite plus
   pluggable vector providers (FAISS, LanceDB, Chroma, others).
 
@@ -197,7 +197,7 @@ Penguin is a modular, extensible AI coding assistant powered by LLMs. It functio
 - Configurable logging, retries, and graceful error recovery across subsystems.
 
 ### Data & Context Ingestion
-- Context loader and cataloguing pipeline for PDFs, docs, and workspace artifacts so agents can
+- Context loader and cataloging pipeline for PDFs, docs, and workspace artifacts so agents can
   ground responses in project materials.
 - Memory indexing with semantic search and declarative knowledge capture integrated into the
   conversation loop.
@@ -238,7 +238,7 @@ pip install penguin-ai[all]
 
 ### Development Installation
 
-For contributing or using latest features:
+For contributing or using the latest features:
 
 ```bash
 git clone https://github.com/maximooch/penguin.git
