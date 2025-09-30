@@ -2833,20 +2833,15 @@ class PenguinCore:
                 return False
 
             # -----------------------------------------------------------------
-            # 2. Build a fresh ModelConfig object from the dict
+            # 2. Build a fresh ModelConfig object dynamically from model_configs
             # -----------------------------------------------------------------
-            new_mc_kwargs = {
-                "model": model_conf.get("model", model_id),
-                "provider": provider,
-                "client_preference": model_conf.get("client_preference", "native"),
-                "api_base": model_conf.get("api_base"),
-                "max_tokens": model_conf.get("max_tokens"),
-                "temperature": model_conf.get("temperature", 0.7),
-                "use_assistants_api": model_conf.get("use_assistants_api", False),
-                "streaming_enabled": model_conf.get("streaming_enabled", True),
-                "vision_enabled": model_conf.get("vision_enabled"),
-            }
-            new_model_config = ModelConfig(**new_mc_kwargs)  # type: ignore[arg-type]
+            # Use the new for_model() method to properly resolve model-specific configs
+            new_model_config = ModelConfig.for_model(
+                model_name=model_id,
+                provider=provider,
+                client_preference=model_conf.get("client_preference"),
+                model_configs=self.config.model_configs if hasattr(self.config, 'model_configs') else None
+            )
 
             # -----------------------------------------------------------------
             # 3. Apply it to running components

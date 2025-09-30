@@ -211,3 +211,73 @@ class ModelConfig:
             reasoning_max_tokens=int(reasoning_max_tokens) if reasoning_max_tokens else None,
             reasoning_exclude=reasoning_exclude,
         )
+    
+    @classmethod
+    def for_model(
+        cls,
+        model_name: str,
+        provider: Optional[str] = None,
+        client_preference: Optional[str] = None,
+        model_configs: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
+        """Create ModelConfig for a specific model, dynamically resolving from model_configs.
+        
+        Args:
+            model_name: The model identifier (e.g., "openai/gpt-5")
+            provider: Provider override (if None, extracted from model_name or model_configs)
+            client_preference: Client preference override
+            model_configs: Dict of model-specific configs from config.yml
+        
+        Returns:
+            ModelConfig instance with model-specific settings applied
+        """
+        # Load model_configs from config if not provided
+        if model_configs is None:
+            from penguin.config import load_config
+            config_data = load_config()
+            model_configs = config_data.get("model_configs", {})
+        
+        # Look up model-specific config
+        model_specific = model_configs.get(model_name, {})
+        
+        # Extract provider from model name if not provided
+        if provider is None:
+            if "/" in model_name:
+                provider = model_name.split("/")[0]
+            else:
+                provider = model_specific.get("provider", "openrouter")
+        
+        # Determine client preference
+        if client_preference is None:
+            client_preference = model_specific.get("client_preference", provider)
+        
+        # Build ModelConfig with model-specific settings
+        return cls(
+            model=model_name,
+            provider=provider,
+            client_preference=client_preference,
+            api_base=model_specific.get("api_base") or os.getenv("PENGUIN_API_BASE"),
+            max_tokens=model_specific.get("max_tokens") or (
+                int(os.getenv("PENGUIN_MAX_TOKENS")) if os.getenv("PENGUIN_MAX_TOKENS") else None
+            ),
+            temperature=model_specific.get("temperature") or (
+                float(os.getenv("PENGUIN_TEMPERATURE")) if os.getenv("PENGUIN_TEMPERATURE") else 0.7
+            ),
+            streaming_enabled=model_specific.get("streaming_enabled", True),
+            vision_enabled=model_specific.get("vision_enabled"),
+            max_history_tokens=model_specific.get("max_history_tokens") or (
+                int(os.getenv("PENGUIN_MAX_HISTORY_TOKENS")) if os.getenv("PENGUIN_MAX_HISTORY_TOKENS") else None
+            ),
+            reasoning_enabled=model_specific.get("reasoning", {}).get("enabled", False)
+            if isinstance(model_specific.get("reasoning"), dict)
+            else False,
+            reasoning_effort=model_specific.get("reasoning", {}).get("effort")
+            if isinstance(model_specific.get("reasoning"), dict)
+            else None,
+            reasoning_max_tokens=model_specific.get("reasoning", {}).get("max_tokens")
+            if isinstance(model_specific.get("reasoning"), dict)
+            else None,
+            reasoning_exclude=model_specific.get("reasoning", {}).get("exclude", False)
+            if isinstance(model_specific.get("reasoning"), dict)
+            else False,
+        )

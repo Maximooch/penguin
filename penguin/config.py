@@ -800,60 +800,21 @@ class Config:
 
         # --- Determine Model Config --- #
         default_model_settings = config_data.get("model", {})
-        # Use model ID from config if present, else default from env/hardcoded
-        default_model_id = default_model_settings.get("default") or os.getenv("PENGUIN_DEFAULT_MODEL", "anthropic/claude-3-5-sonnet-20240620") # This may be why it defaulted to this model and didn't work earlier.
-        default_provider = default_model_settings.get("provider") or os.getenv("PENGUIN_DEFAULT_PROVIDER", "anthropic") 
-        default_client_pref = default_model_settings.get("client_preference") or os.getenv("PENGUIN_CLIENT_PREFERENCE", "litellm")
+        # ENV VARS TAKE PRECEDENCE over config.yml for container deployments
+        default_model_id = os.getenv("PENGUIN_DEFAULT_MODEL") or default_model_settings.get("default") or "anthropic/claude-3-5-sonnet-20240620"
+        default_provider = os.getenv("PENGUIN_DEFAULT_PROVIDER") or default_model_settings.get("provider") or "anthropic"
+        default_client_pref = os.getenv("PENGUIN_CLIENT_PREFERENCE") or default_model_settings.get("client_preference") or "litellm"
 
         model_configs_section = config_data.get("model_configs")
         if not isinstance(model_configs_section, dict):
             model_configs_section = {}
 
-        specific_config = model_configs_section.get(default_model_id, {})
-
-        model_name_for_init = specific_config.get("model", default_model_id)
-        provider_for_init = specific_config.get("provider", default_provider)
-        client_pref_for_init = specific_config.get("client_preference", default_client_pref)
-
-        # --- Reasoning configuration (supports global under model.reasoning and per‑model override) ---
-        reasoning_global = default_model_settings.get("reasoning", {}) if isinstance(default_model_settings.get("reasoning"), dict) else {}
-        reasoning_specific = specific_config.get("reasoning", {}) if isinstance(specific_config.get("reasoning"), dict) else {}
-
-        def _pick_reasoning(key, cast=None):
-            value = reasoning_specific.get(key, reasoning_global.get(key))
-            if value is None:
-                return None
-            try:
-                return cast(value) if cast else value
-            except Exception:
-                return None
-
-        reasoning_enabled_val = _pick_reasoning("enabled")
-        reasoning_effort_val = _pick_reasoning("effort")
-        if isinstance(reasoning_effort_val, str):
-            reasoning_effort_val = reasoning_effort_val.lower()
-            if reasoning_effort_val not in {"low", "medium", "high"}:
-                reasoning_effort_val = None
-        reasoning_max_tokens_val = _pick_reasoning("max_tokens", int)
-        reasoning_exclude_val = _pick_reasoning("exclude")
-
-        llm_model_config = LLMModelConfig(
-            model=model_name_for_init,
-            provider=provider_for_init,
-            client_preference=client_pref_for_init,
-            # Pull other settings from specific_config or defaults
-            api_base=specific_config.get("api_base", default_model_settings.get("api_base", os.getenv("PENGUIN_API_BASE"))),
-            max_tokens=specific_config.get("max_tokens", default_model_settings.get("max_tokens", int(os.getenv("PENGUIN_MAX_TOKENS")) if os.getenv("PENGUIN_MAX_TOKENS") else None)),
-            temperature=specific_config.get("temperature", default_model_settings.get("temperature", float(os.getenv("PENGUIN_TEMPERATURE")) if os.getenv("PENGUIN_TEMPERATURE") else 0.7)),
-            streaming_enabled=specific_config.get("streaming_enabled", default_model_settings.get("streaming_enabled", os.getenv("PENGUIN_STREAMING_ENABLED", "true").lower() == "true")),
-            vision_enabled=specific_config.get("vision_enabled", default_model_settings.get("vision_enabled", os.getenv("PENGUIN_VISION_ENABLED", "").lower() == "true" if os.getenv("PENGUIN_VISION_ENABLED") != "" else None)),
-            max_history_tokens=specific_config.get("max_history_tokens", default_model_settings.get("max_history_tokens", int(os.getenv("PENGUIN_MAX_HISTORY_TOKENS")) if os.getenv("PENGUIN_MAX_HISTORY_TOKENS") else None)),
-            api_version=specific_config.get("api_version", default_model_settings.get("api_version", os.getenv("API_VERSION"))), # Added API version
-            # Reasoning configuration (optional)
-            reasoning_enabled=bool(reasoning_enabled_val) if reasoning_enabled_val is not None else False,
-            reasoning_effort=reasoning_effort_val,
-            reasoning_max_tokens=reasoning_max_tokens_val,
-            reasoning_exclude=bool(reasoning_exclude_val) if reasoning_exclude_val is not None else False,
+        # Use the new for_model() method to dynamically resolve model-specific configs
+        llm_model_config = LLMModelConfig.for_model(
+            model_name=default_model_id,
+            provider=default_provider,
+            client_preference=default_client_pref,
+            model_configs=model_configs_section
         )
 
         # Resolve agent personas (Phase 1+ configuration surface)

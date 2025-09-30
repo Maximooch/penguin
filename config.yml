@@ -1,3 +1,5 @@
+# I think this is redundant
+
 workspace:
   path: "/tmp/penguin_workspace"
 

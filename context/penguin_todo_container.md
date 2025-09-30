@@ -127,7 +127,25 @@ docker run --rm -it --entrypoint python penguin:web -m penguin.main --help
 
 ---
 
-## Phase 2 — GitHub App/Bot Integration
+## Phase 2 — GitHub App/Bot Integration ✅
+
+**Setup Guide:** See `docs/GITHUB_APP_SETUP.md` for detailed instructions on creating and configuring the Penguin Agent GitHub App with secure key management.
+
+### ✅ Setup Verified (Docker)
+- App ID: 1622624
+- Installation ID: 88065184 (Maximooch account)
+- PEM securely stored at `~/.penguin/secrets/github-app.pem`
+- Docker volume mount tested and working
+- Installation token obtained successfully
+- Repo access confirmed: Maximooch/penguin
+
+### ✅ PR Creation Working!
+- **Test PR created:** https://github.com/Maximooch/penguin-test-repo/pull/13
+- **Endpoint:** `POST /api/v1/tasks/execute-sync` (uses Engine.run_task)
+- **Branch created:** penguin-test-20250930-025734
+- **Committed and pushed** using GitHub App credentials
+- **PR opened** with title and body
+- **Full workflow verified:** Container → API → Engine → GitManager → GitHub
 
 Penguin prefers authenticating as a GitHub App for API calls, with fallback to `GITHUB_TOKEN` if provided. For git push, configure `origin` to use an HTTPS URL with an ephemeral installation token or PAT.
 
@@ -319,6 +337,8 @@ Recommendation: publish `:sha` always; optionally promote to `:vX.Y.Z` and `:lat
 ### Test Summary
 - ✅ All tool usage tests passing (2/2)
 - ✅ All run mode tests passing (2/2)
+- ✅ WebSocket streaming verified (1/1)
+- ✅ External client integration verified (1/1) - **Link chat app ready**
 - ✅ Verified: PyDoll browser, Perplexity search, code execution tools work
 - ✅ Verified: Background and sync task execution functional
 
@@ -330,11 +350,20 @@ Recommendation: publish `:sha` always; optionally promote to `:vX.Y.Z` and `:lat
 ### Run Mode Tests ✅
 - ✅ POST `/api/v1/tasks/execute` — background task execution via RunMode
 - ✅ POST `/api/v1/tasks/execute-sync` — synchronous task via Engine (10 iterations)
-- ⏳ WebSocket `/api/v1/tasks/stream` — streaming run mode events (not yet tested)
+- ✅ WebSocket `/api/v1/tasks/stream` — streaming connection verified (callback impl pending)
 
 ### Test files
 - ✅ `tests/api/test_web_api_tools.py` — tool usage verification
 - ✅ `tests/api/test_web_api_runmode.py` — run mode execution
+- ✅ `tests/api/test_web_api_websocket.py` — WebSocket streaming
+- ✅ `tests/api/test_external_client.py` — external chat app integration (Link)
+- ✅ `tests/api/test_github_pr_creation.py` — **PR creation working!** (uses task endpoint)
+- ✅ `tests/api/test_github_app_auth.py` — GitHub App authentication
+
+### Notes
+- PR creation via simple chat requires project/task workflow (not just chat endpoint)
+- External client (Link) integration fully functional and ready
+- DeepSeek has issues with complex/long prompts; prefer GPT-5 or Claude for complex tasks
 
 ---
 
@@ -394,8 +423,35 @@ Recommendation: publish `:sha` always; optionally promote to `:vX.Y.Z` and `:lat
 - Default container entrypoint: Web server on port 8000.
 - Health endpoint: `/api/v1/health`.
 - Build with `uv`; install mode configurable via `INSTALL_MODE=local|release`.
+- Per-model configs in `config.yml` with appropriate token limits.
+- Link chat app integration ready via external API.
 
-## Open Questions / Suggestions
+## Known Issues & Next Steps
+
+### Working ✅
+- Container build and deployment
+- All core API endpoints (chat, conversations, projects)
+- Tool usage (browser, search, code execution)
+- Run mode (background & sync)
+- WebSocket streaming infrastructure
+- GitHub App authentication
+- External client integration (Link ready)
+- Per-model token limit configuration
+
+### Needs Attention ⚠️
+- WebSocket streaming callback needs RunMode integration (minor)
+
+### Fixed ✅
+- ~~Runtime model switching~~ → Fixed with `ModelConfig.for_model()` dynamic resolution
+- ~~Config precedence~~ → Fixed: env vars now properly override config.yml
+- ~~PR creation~~ → Working via `/api/v1/tasks/execute-sync` endpoint
+
+### Phase 2.5 Next Steps (Bot Features)
+1. Implement webhook endpoint (`POST /api/v1/integrations/github/webhook`)
+2. Add @Penguin mention detection and command parsing
+3. Add Checks API integration for status updates
+4. Implement hooks system (pre/post actions)
+5. Add labels/triage automation
 
 ---
 
