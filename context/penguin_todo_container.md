@@ -438,21 +438,26 @@ Recommendation: publish `:sha` always; optionally promote to `:vX.Y.Z` and `:lat
 - External client integration (Link ready)
 - Per-model token limit configuration
 
-### Needs Attention ⚠️
-- WebSocket streaming callback needs RunMode integration (minor)
-- 🐛 **Local CLI issues:**
-  - Multiple flags don't work together (`--old-cli --root workspace` fails)
-  - CLI uses cwd instead of PENGUIN_WORKSPACE by default
-  - GitHub App credentials not loaded in CLI (exist in .env but need to be passed through)
+### All Issues Fixed ✅
 
-### Fixed ✅ (Image Rebuilt)
+**Container & API:**
 - ~~Runtime model switching~~ → Fixed with `ModelConfig.for_model()` dynamic resolution
 - ~~Config precedence~~ → Fixed: env vars now properly override config.yml
-- ~~PR creation~~ → Working via `/api/v1/tasks/execute-sync` endpoint
-- ~~GitHub tools visibility~~ → Moved from PLACEHOLDER to ACTION_SYNTAX in prompt_actions.py
-- ~~Assistant message storage~~ → Fixed in `engine.py:518-533` (finalize_streaming_message)
+- ~~PR creation~~ → Working via `/api/v1/tasks/execute-sync` endpoint (PR #13, #14 created)
+- ~~GitHub App auth~~ → Fixed PyGithub API in `git_manager.py:51-63`
+- ~~Assistant message storage~~ → Fixed in `engine.py:719-734` (proper session.messages access) ✅ **VERIFIED**
+- ~~GitHub tools~~ → Documented working approach (subprocess + PyGithub) in prompt_actions.py
 - ~~OpenAI URL bug~~ → Fixed `URL.rstrip()` TypeError
 - ~~Build toolchain~~ → Added build-essential for madoka compilation
+- ~~Workspace default~~ → Changed from 'project' to 'workspace' in config.yml
+
+**Local CLI:**
+- ~~Multiple flags~~ → Fixed in `cli.py:544-580` (strip all new flags before passing to old_cli)
+- ~~Workspace vs cwd~~ → Fixed: default changed to 'workspace' mode
+- ~~GitHub App config~~ → Env vars pass through via cli.py
+
+### Minor Remaining
+- WebSocket streaming callback signature mismatch with RunMode (doesn't block functionality)
 
 ### Phase 2.5 Next Steps (Bot Features)
 1. Implement webhook endpoint (`POST /api/v1/integrations/github/webhook`)

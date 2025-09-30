@@ -541,13 +541,40 @@ def main_entry(
                     from penguin.penguin.cli.old_cli import app as old_app
                 except Exception:
                     from penguin.cli.old_cli import app as old_app
-        # Remove the --old-cli flag from argv before delegating to legacy CLI
-        # so the legacy parser doesn't reject an unknown global option
+        # Remove ALL new CLI flags from argv before delegating to legacy CLI
+        # so the legacy parser doesn't reject unknown options
         try:
             import sys as _sys
-            _args = [arg for arg in _sys.argv[1:] if arg != "--old-cli"]
+            # Flags to strip (both flag and its value if it takes one)
+            new_flags = {
+                '--old-cli', '--root', '--workspace', '-w', '--project',
+                '--no-tui', '--no-streaming', '--model', '--profile', '--perf'
+            }
+            _args = []
+            skip_next = False
+            for i, arg in enumerate(_sys.argv[1:]):
+                if skip_next:
+                    skip_next = False
+                    continue
+                if arg in new_flags:
+                    # Check if next arg is a value (doesn't start with -)
+                    if i + 1 < len(_sys.argv[1:]) and not _sys.argv[i + 2].startswith('-'):
+                        skip_next = True  # Skip the value too
+                    continue
+                # Also skip --flag=value format
+                if any(arg.startswith(f"{flag}=") for flag in new_flags):
+                    continue
+                _args.append(arg)
+            
+            # Set workspace via env var for old_cli to pick up
+            if workspace:
+                os.environ['PENGUIN_WORKSPACE'] = str(workspace)
+            if root:
+                os.environ['PENGUIN_EXEC_ROOT'] = root
+                
             _sys.argv = [_sys.argv[0]] + _args
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Error filtering args for old_cli: {e}")
             pass
         old_app()
         raise typer.Exit()
