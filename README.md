@@ -21,7 +21,7 @@ o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
 
-To quickly understand the codebase, DeepWiki is recommended (note
+To quickly understand the codebase, DeepWiki is recommended (note: it's ~90% accurate)
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Maximooch/penguin)
 
@@ -151,7 +151,7 @@ It is designed for full-lifecycle software development. It goes beyond code gene
 - ConversationManager that blends session persistence, auto-save, context loading, checkpoints,
   and snapshot/restore support.
 - ContextWindowManager with category-based token budgets, multimodal trimming, and live usage
-  reporting to keep histories within model limits. This allows theoretically infinite sessions.
+  reporting to keep histories within model limits. This allows for theoretically infinite sessions.
 - Shared memory layer with declarative notes, summary notes, and retrieval backed by SQLite plus
   pluggable vector providers (FAISS, LanceDB, Chroma, others).
 
