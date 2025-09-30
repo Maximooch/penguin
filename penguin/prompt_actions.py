@@ -329,21 +329,70 @@ Track high-level plan progress.
 
 ---
 
-### Repository & GitHub Management
+### Git & GitHub Operations
 
-Tools for Git operations and PR creation. Require GitHub App credentials to be configured.
+For Git operations and PR creation, use `<execute>` with Python code:
 
--   `<get_repository_status>repo_owner:repo_name</get_repository_status>` - Get repository status (branch, changes, GitHub config)
--   `<create_and_switch_branch>repo_owner:repo_name:branch_name</create_and_switch_branch>` - Create and switch to a new git branch
--   `<commit_and_push_changes>repo_owner:repo_name:commit_message</commit_and_push_changes>` - Commit and push current changes
--   `<create_improvement_pr>repo_owner:repo_name:title:description:files_changed</create_improvement_pr>` - Create PR for improvements
--   `<create_feature_pr>repo_owner:repo_name:feature_name:description:implementation_notes:files_modified</create_feature_pr>` - Create PR for new features
--   `<create_bugfix_pr>repo_owner:repo_name:bug_description:fix_description:files_fixed</create_bugfix_pr>` - Create PR for bug fixes
+**Available libraries and credentials:**
+- `git` command-line tool (subprocess)
+- `PyGithub` library for GitHub API operations
+- GitHub App authentication is configured when these env vars are set:
+  - `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`
+  - `GITHUB_REPOSITORY` (target repo, e.g., "owner/repo")
 
-**Notes:** 
-- These tools use GitHub App authentication when configured (GITHUB_APP_ID, GITHUB_APP_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY_PATH)
-- Can clone/access repos, create branches, commit, push, and open PRs automatically
-- Branch names are auto-generated with timestamps for uniqueness
+**Example PR creation workflow:**
+```python
+# <execute>
+import subprocess
+import jwt
+import time
+from github import Auth, Github, GithubIntegration
+import os
+
+# 1. Clone repo
+subprocess.run(['git', 'clone', 'https://github.com/owner/repo.git', 'repo-dir'])
+
+# 2. Create branch, make changes, commit
+os.chdir('repo-dir')
+subprocess.run(['git', 'checkout', '-b', 'feature-branch'])
+# ... make file changes ...
+subprocess.run(['git', 'add', '.'])
+subprocess.run(['git', 'commit', '-m', 'feat: add feature'])
+
+# 3. Get GitHub App installation token
+app_id = os.getenv('GITHUB_APP_ID')
+installation_id = os.getenv('GITHUB_APP_INSTALLATION_ID')
+key_path = os.getenv('GITHUB_APP_PRIVATE_KEY_PATH')
+
+with open(key_path) as f:
+    private_key = f.read()
+    
+auth = Auth.AppAuth(app_id, private_key)
+installation_auth = auth.get_installation_auth(int(installation_id))
+token = installation_auth.token
+
+# 4. Push with token
+remote_url = f"https://x-access-token:{token}@github.com/owner/repo.git"
+subprocess.run(['git', 'remote', 'set-url', 'origin', remote_url])
+subprocess.run(['git', 'push', 'origin', 'feature-branch'])
+
+# 5. Create PR via API
+github = Github(auth=installation_auth)
+repo = github.get_repo('owner/repo')
+pr = repo.create_pull(
+    title="PR Title",
+    body="PR Description",
+    head="feature-branch",
+    base="main"
+)
+print(f"PR created: {pr.html_url}")
+# </execute>
+```
+
+**Notes:**
+- This approach gives you full control and visibility into each step
+- Works with any Git hosting (GitHub, GitLab, etc.) by swapping the API client
+- All GitHub App credentials are automatically available via env vars
 
 ---
 

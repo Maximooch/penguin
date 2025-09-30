@@ -515,23 +515,6 @@ class Engine:
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
                 
-                # CRITICAL FIX: Save assistant message to conversation history
-                # This ensures the response is persisted even in streaming mode
-                if last_response and last_response.strip():
-                    cm, _, _, _ = self._resolve_components(self.current_agent_id)
-                    # Only add if not already added by _llm_step (non-streaming case)
-                    # In streaming, finalize_streaming_message handles it, but we need to ensure it happens
-                    if self.settings.streaming_default:
-                        # Streaming mode: finalize now to persist
-                        if hasattr(cm, 'core') and cm.core:
-                            try:
-                                cm.core.finalize_streaming_message()
-                            except Exception as e:
-                                logger.warning(f"Failed to finalize streaming in run_task: {e}")
-                                # Fallback: add directly
-                                cm.conversation.add_assistant_message(last_response)
-                    # Message already saved in non-streaming case by _llm_step
-                
                 # Collect action results
                 if iteration_results:
                     all_action_results.extend(iteration_results)
@@ -565,6 +548,11 @@ class Engine:
                         })
                     except (ImportError, AttributeError):
                         pass
+                
+                # CRITICAL FIX: Persist conversation after each iteration
+                # _llm_step saves after adding messages, but we need to ensure it persists
+                cm, _, _, _ = self._resolve_components(self.current_agent_id)
+                cm.save()
 
                 # Check for task completion via completion phrases only
                 if any(phrase in last_response for phrase in all_completion_phrases):
@@ -728,13 +716,22 @@ class Engine:
             logger.error("_llm_step received empty response after fallback attempt. Skipping message persistence.")
             assistant_response = ""  # Preserve empty for caller but avoid history entry.
         else:
-            # Persist assistant message only if we were NOT in streaming mode.
-            # In streaming mode the buffered content will be flushed into the
-            # conversation by `finalize_streaming_message` which we call just
-            # below, so adding it here would create a duplicate and break
-            # chronological ordering.
-            if not streaming:
+            # CRITICAL FIX: Always persist assistant message, regardless of streaming mode
+            # Check if message was already added to avoid duplicates
+            try:
+                session_messages = cm.conversation.session.messages if hasattr(cm.conversation, 'session') else []
+                last_msg = session_messages[-1] if session_messages else None
+                message_already_added = (
+                    last_msg and 
+                    last_msg.role == "assistant" and 
+                    last_msg.content == assistant_response
+                )
+            except Exception:
+                message_already_added = False
+            
+            if not message_already_added:
                 cm.conversation.add_assistant_message(assistant_response)
+                logger.debug(f"Added assistant message to conversation ({len(assistant_response)} chars)")
 
         # ------------------------------------------------------------------
         # Ensure any streaming content is finalised **before** we process and

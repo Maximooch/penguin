@@ -602,21 +602,21 @@ Now implementing the authentication flow...
 - NO HTML tags like <details> or <summary> (they don't render in terminals)
 - Place BEFORE your main response
 - Optional - only use for complex tasks, skip for simple ones
-
-**For TUI/Web Mode:**
-Use collapsible blocks with HTML:
-
-<details>
-<summary>🧠 Click to show / hide internal reasoning</summary>
-
-Your internal thought process here (2-4 sentences max)...
-
-</details>
-
-Then provide your main response.
-
-**General Rule:** Keep ALL reasoning concise. If it takes more than 3 lines in the output, it's too long.
 """
+# **For TUI/Web Mode:**
+# Use collapsible blocks with HTML:
+
+# <details>
+# <summary>🧠 Click to show / hide internal reasoning</summary>
+
+# Your internal thought process here (2-4 sentences max)...
+
+# </details>
+
+# Then provide your main response.
+
+# **General Rule:** Keep ALL reasoning concise. If it takes more than 3 lines in the output, it's too long.
+# """
 
 
 OUTPUT_STYLE_PLAIN = """

@@ -48,17 +48,16 @@ def _get_github_app_client(app_id: str, private_key_path: str, installation_id: 
             private_key = key_file.read()
         
         # Use the newer PyGithub authentication API
-        from github import Auth
+        from github import Auth, GithubIntegration
         
         # Create AppAuth instance
         auth = Auth.AppAuth(app_id, private_key)
         
-        # Create GitHub client with app authentication
-        github_client = Github(auth=auth)
+        # Create GitHub integration (replaces deprecated get_app().get_installation())
+        integration = GithubIntegration(auth=auth)
         
-        # Get the installation and create an installation auth
-        installation = github_client.get_app().get_installation(int(installation_id))
-        installation_auth = auth.get_installation_auth(installation.id)
+        # Get installation auth directly (no need to fetch installation object)
+        installation_auth = auth.get_installation_auth(int(installation_id))
         
         # Return client with installation auth
         return Github(auth=installation_auth)
