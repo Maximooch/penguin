@@ -2245,7 +2245,7 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                                 # normal streaming / action-result handling is reused
                                 response = await self.interface.process_input(
                                     {"text": description, "image_path": image_path},
-                                    stream_callback=self.stream_callback,
+                                    stream_callback=None,
                                 )
 
                                 # Finalise any streaming still active
