@@ -488,6 +488,36 @@ class RunMode:
                     task_data["context"]
                 )
                 
+                # Check if we got an LLM empty response error - should stop continuous mode
+                if task_result.get("completion_type") == "llm_empty_response_error":
+                    logger.warning("LLM empty response error in continuous mode, stopping")
+                    await self._emit_event({
+                        "type": "message",
+                        "role": "system",
+                        "content": task_result.get("message", "LLM returned empty response"),
+                        "category": MessageCategory.ERROR
+                    })
+                    await self._emit_event({
+                        "type": "status",
+                        "status_type": "continuous_mode_ending",
+                        "data": {"reason": "llm_empty_response"}
+                    })
+                    self._shutdown_requested = True
+                    break
+                
+                # Check for other errors
+                if task_result.get("status") == "error" and task_result.get("completion_type") == "error":
+                    logger.error(f"Error during task execution: {task_result.get('message')}")
+                    # For generic errors, emit event but continue (may be transient)
+                    await self._emit_event({
+                        "type": "message",
+                        "role": "system",
+                        "content": f"Task error: {task_result.get('message')}. Continuing with next task...",
+                        "category": MessageCategory.ERROR
+                    })
+                    # Small delay before continuing to avoid rapid error loops
+                    await asyncio.sleep(2)
+                
                 # Check if we should exit continuous mode based on the result
                 if task_result.get("completion_type") == "user_specified":
                     msg_content = "RunMode: User-specified task completed, waiting for further instructions."
@@ -882,7 +912,37 @@ class RunMode:
             }
                 
         except Exception as e:
-            # Handle execution errors
+            # Handle LLMEmptyResponseError with specific user guidance
+            from penguin.utils.errors import LLMEmptyResponseError
+            
+            if isinstance(e, LLMEmptyResponseError):
+                error_msg = str(e)
+                logger.error(f"LLM empty response error: {error_msg}")
+                
+                # Provide helpful guidance to the user
+                user_message = (
+                    f"🐧 Penguin: I encountered an error - the model returned empty responses.\n\n"
+                    f"This may indicate:\n"
+                    f"  1. Context window exceeded (conversation too long)\n"
+                    f"  2. API quota or rate limit reached\n"
+                    f"  3. Model refusing to respond\n\n"
+                    f"Try starting a new conversation or checking your API status."
+                )
+                
+                await self._emit_event({
+                    "type": "error",
+                    "source": "llm_empty_response",
+                    "message": user_message,
+                    "details": {"error": error_msg}
+                })
+                
+                return {
+                    "status": "error",
+                    "message": user_message,
+                    "completion_type": "llm_empty_response_error"
+                }
+            
+            # Handle other execution errors
             error_msg = f"Error executing task: {str(e)}"
             logger.error(error_msg)
             logger.exception("Traceback for task execution error:")

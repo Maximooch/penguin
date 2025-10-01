@@ -2,9 +2,7 @@ import datetime
 import os
 import platform
 
-
-import prompt_workflow 
-import prompt_actions
+from penguin import prompt_workflow, prompt_actions
 
 # Get OS info in a cross-platform way
 if platform.system() == 'Windows':
@@ -177,7 +175,7 @@ PERSISTENCE_PROMPT = """
 """
 
 # Initialize prompt builder with components
-from prompt.builder import get_builder
+from penguin.prompt.builder import get_builder
 
 # Load components into builder  
 _builder = get_builder()

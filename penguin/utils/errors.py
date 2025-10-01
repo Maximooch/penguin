@@ -9,6 +9,19 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
+# Custom exceptions for Penguin
+class LLMEmptyResponseError(Exception):
+    """Raised when LLM returns empty response after retries.
+    
+    This indicates a critical issue like:
+    - Context window exceeded
+    - API quota/rate limiting
+    - Model refusing to respond
+    - Network/timeout issues
+    """
+    pass
+
+
 class ErrorHandler:
     def __init__(self, log_dir: Path = Path("errors_log")):
         """Initialize error handler with logging directory"""
