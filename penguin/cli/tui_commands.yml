@@ -1,0 +1,112 @@
+# Penguin TUI-Specific Commands
+# Commands that only work in the Textual-based TUI (penguin-tui-proto)
+# For general commands, see commands.yml
+
+version: "2.0"
+
+# TUI-only command categories
+categories:
+  - name: ui
+    description: "UI configuration and appearance"
+    icon: "🎨"
+  
+  - name: layout
+    description: "Layout and display controls"
+    icon: "📐"
+
+# TUI-specific commands
+commands:
+  # Attachment management (TUI file picker specific)
+  - name: "attachments clear"
+    category: chat
+    description: "Clear pending image attachments for the next message"
+    handler: "_attachments_clear"
+    note: "Uses TUI file picker widget"
+    
+  # Theme commands (Textual CSS themes)
+  - name: "theme list"
+    category: ui
+    description: "List available Textual CSS themes"
+    handler: "_handle_theme_list"
+    enabled: true
+    
+  - name: "theme set"
+    category: ui
+    description: "Set TUI theme (requires tui.css)"
+    parameters:
+      - name: theme_name
+        type: string
+        required: true
+        description: "Theme name (ocean, nord, dracula, etc.)"
+    handler: "_handle_theme_set"
+    enabled: true
+
+  # Layout commands (TUI widget layout modes)
+  - name: "layout set"
+    category: layout
+    description: "Set chat layout style (TUI widget arrangement)"
+    parameters:
+      - name: mode
+        type: string
+        required: true
+        description: "Layout mode (flat or boxed)"
+    handler: "_handle_layout_set"
+
+  - name: "layout get"
+    category: layout
+    description: "Show current layout mode"
+    handler: "_handle_layout_get"
+
+  # View density commands (TUI rendering density)
+  - name: "view set"
+    category: layout
+    description: "Set view density for TUI widgets (compact or detailed)"
+    parameters:
+      - name: mode
+        type: string
+        required: true
+        description: "View mode (compact|detailed)"
+    handler: "_handle_view_set"
+
+  - name: "view get"
+    category: layout
+    description: "Show current view mode"
+    handler: "_handle_view_get"
+
+  # Status sidebar commands (TUI sidebar widget)
+  - name: "status show"
+    category: layout
+    description: "Show TUI status sidebar"
+    handler: "_handle_status_show"
+
+  - name: "status hide"
+    category: layout
+    description: "Hide TUI status sidebar"
+    handler: "_handle_status_hide"
+
+  - name: "status toggle"
+    category: layout
+    description: "Toggle TUI status sidebar visibility"
+    handler: "_handle_status_toggle"
+    
+  # Tools display controls (TUI collapsible widgets)
+  - name: "tools compact on"
+    category: layout
+    description: "Enable compact rendering for tool/action outputs (TUI Collapsible)"
+    handler: "_handle_tools_compact_on"
+
+  - name: "tools compact off"
+    category: layout
+    description: "Disable compact rendering for tool/action outputs"
+    handler: "_handle_tools_compact_off"
+
+  - name: "tools preview"
+    category: layout
+    description: "Set preview lines for compact tool outputs (TUI widget)"
+    parameters:
+      - name: lines
+        type: string
+        required: true
+        description: "Number of lines to show before collapsing"
+    handler: "_handle_tools_preview"
+

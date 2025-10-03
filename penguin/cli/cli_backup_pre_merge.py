@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import datetime
 import os
 import platform
@@ -24,6 +25,9 @@ try:
 except (AttributeError, OSError):
     # If wrapping fails, continue with existing streams
     pass
+
+# Allow setup wizard on import when launched via CLI entry point
+os.environ.setdefault("PENGUIN_SETUP_ON_IMPORT", "1")
 
 # Add import timing for profiling if enabled
 import time
@@ -52,12 +56,7 @@ if PROFILE_ENABLED:
     Syntax = time_import("rich.syntax").Syntax
     Live = time_import("rich.live").Live
     
-    prompt_toolkit_import = time_import("prompt_toolkit")
-    PromptSession = prompt_toolkit_import.PromptSession
-    KeyBindings = time_import("prompt_toolkit.key_binding").KeyBindings
-    Keys = time_import("prompt_toolkit.keys").Keys
-    Style = time_import("prompt_toolkit.styles").Style
-    HTML = time_import("prompt_toolkit.formatted_text").HTML
+    # Removed prompt_toolkit timing imports – legacy Rich CLI removed
     
     # Time internal imports
     config_module = time_import("penguin.config")
@@ -104,37 +103,38 @@ if PROFILE_ENABLED:
 else:
     # Standard imports without timing
     import typer  # type: ignore
-    from rich.console import Console as RichConsole # Renamed to avoid conflict # type: ignore
+    from rich.console import Console as RichConsole  # type: ignore
     from rich.markdown import Markdown  # type: ignore
     from rich.panel import Panel  # type: ignore
-    from rich.progress import Progress, SpinnerColumn, TextColumn  # type: ignore
-    from rich.syntax import Syntax  # type: ignore
-    from rich.live import Live  # type: ignore
-    import rich  # type: ignore
-    from prompt_toolkit import PromptSession  # type: ignore
-    from prompt_toolkit.key_binding import KeyBindings  # type: ignore
-    from prompt_toolkit.keys import Keys  # type: ignore
-    from prompt_toolkit.styles import Style  # type: ignore
-    from prompt_toolkit.formatted_text import HTML  # type: ignore
 
-    from penguin.config import config as penguin_config_global, DEFAULT_MODEL, DEFAULT_PROVIDER, WORKSPACE_PATH, GITHUB_REPOSITORY
+from penguin.config import (
+        config as penguin_config_global,
+        DEFAULT_MODEL,
+        DEFAULT_PROVIDER,
+        WORKSPACE_PATH,
+        GITHUB_REPOSITORY,
+    )
 from penguin.core import PenguinCore
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig
 from penguin.run_mode import RunMode # We will mock this but need the type for spec
-from penguin.system.state import parse_iso_datetime, MessageCategory
-from penguin.system.conversation_menu import ConversationMenu, ConversationSummary # Used by PenguinCLI class
+from penguin.system.state import MessageCategory
 from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
 from penguin.utils.logs import setup_logger
 from penguin.cli.interface import PenguinInterface
-from penguin.config import Config # Import Config type for type hinting
+from penguin.config import Config, WORKSPACE_PATH # Import Config type for type hinting
 from penguin.project.manager import ProjectManager
 from penguin.project.spec_parser import parse_project_specification_from_markdown
 from penguin.project.workflow_orchestrator import WorkflowOrchestrator
 from penguin.project.task_executor import ProjectTaskExecutor
 from penguin.project.validation_manager import ValidationManager
+try:
+    # Prefer relative import to support repo and installed layouts
+    from ..multi.coordinator import MultiAgentCoordinator  # type: ignore
+except Exception:
+    MultiAgentCoordinator = None  # type: ignore
 from penguin.project.git_manager import GitManager
 
 # Add better import error handling for setup functions
@@ -162,13 +162,40 @@ except ImportError as e:
         """Fallback: assume config is complete if setup unavailable"""
         return True
 
-app = typer.Typer(help="Penguin AI Assistant - Your command-line AI companion.\nRun with -p/--prompt for non-interactive mode, or with a subcommand (e.g., 'chat').\nIf no prompt or subcommand is given, starts an interactive chat session.")
+app = typer.Typer(help="Penguin AI Assistant - Your command-line AI companion.\n"
+                       "Run with -p/--prompt for non-interactive mode, or with a subcommand (e.g., 'chat').\n"
+                       "If no prompt or subcommand is given, starts an interactive CLI chat session.\n"
+                       "For experimental TUI, use: penguin-tui-proto")
 console = RichConsole() # Use the renamed import
+
+PENGUIN_ASCII_BANNER = r"""
+ooooooooo.                                                 o8o              
+`888   `Y88.                                               `"'              
+ 888   .d88'  .ooooo.  ooo. .oo.    .oooooooo oooo  oooo  oooo  ooo. .oo.   
+ 888ooo88P'  d88' `88b `888P"Y88b  888' `88b  `888  `888  `888  `888P"Y88b  
+ 888         888ooo888  888   888  888   888   888   888   888   888   888  
+ 888         888    .o  888   888  `88bod8P'   888   888   888   888   888  
+o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o 
+                                   d"     YD                                
+                                   "Y88888P'                                
+          """
 logger = setup_logger("penguin_cli.log") # Setup a logger for the CLI module
 
 # Project management sub-application
 project_app = typer.Typer(help="Project and task management commands")
 app.add_typer(project_app, name="project")
+
+# Messaging sub-application (Phase 3 demo)
+msg_app = typer.Typer(help="Message routing helpers: send to agents or human")
+app.add_typer(msg_app, name="msg")
+
+# Coordinator sub-application (Phase 4 preview)
+coord_app = typer.Typer(help="Multi-agent coordinator commands")
+app.add_typer(coord_app, name="coord")
+
+# Agent management sub-application
+agent_app = typer.Typer(help="Agent management commands")
+app.add_typer(agent_app, name="agent")
 
 # Define a type variable for better typing
 T = TypeVar('T')
@@ -414,22 +441,13 @@ async def _run_penguin_direct_prompt(prompt_text: str, output_format: str):
         raise typer.Exit(code=1)
 
 async def _run_interactive_chat():
-    global _core, _interface, _interactive_session_manager
-    if not _core or not _interface:
-        logger.error("Core or Interface not initialized for interactive chat.")
-        # Attempt to initialize if called directly
-        await _initialize_core_components_globally()
-        if not _core or not _interface:
-            console.print("[red]Error: Core components failed to initialize for interactive chat.[/red]")
-            raise typer.Exit(code=1)
-
-    if _interactive_session_manager is None:
-        # PenguinCLI class is defined later in this file.
-        # It takes `core` and its __init__ creates `PenguinInterface(core)`.
-        _interactive_session_manager = PenguinCLI(_core) 
-    
-    # The chat_loop should handle its own Rich Live context if needed.
-    await _interactive_session_manager.chat_loop()
+    """Launch the Textual TUI for interactive mode."""
+    try:
+        from penguin.cli.tui import TUI
+        TUI.run()
+    except Exception as e:
+        console.print(f"[red]Failed to launch TUI:[/red] {e}")
+        raise typer.Exit(code=1)
 
 # Store the original app.callback to restore if needed, or adjust for Typer's intended use.
 # Typer allows only one app.callback.
@@ -488,14 +506,16 @@ def main_entry(
         False, "--fast-startup", 
         help="Enable fast startup mode (defer memory indexing until first use)."
     ),
-    no_tui: bool = typer.Option(
-        False, "--no-tui",
-        help="Force headless mode (no TUI interface). Use for non-interactive or CLI-only operation."
-    ),
     # Add other global options from the plan here eventually
     # e.g., continue_session, resume_session_id, system_prompt_override, etc.
-    version: Optional[bool] = typer.Option( # Example: adding a version flag
-        None, "--version", "-v", help="Show Penguin version and exit.", is_eager=True
+    project: Optional[str] = typer.Option(
+        None, "--project", help="Route tasks to a project; if omitted, tasks are independent"
+    ),
+    root: Optional[str] = typer.Option(
+        None, "--root", help="Execution root for file ops and commands: 'project' or 'workspace'"
+    ),
+    version: Optional[bool] = typer.Option(
+        None, "--version", "-V", help="Show Penguin version and exit.", is_eager=True
     )
 ):
     """
@@ -506,9 +526,68 @@ def main_entry(
         console.print("Penguin AI Assistant v0.1.0 (Placeholder Version)") 
         raise typer.Exit()
 
-    # Skip heavy initialization for config commands and certain lightweight commands
-    if ctx.invoked_subcommand in ["config"]:
-        return  # Let the subcommand handle its own logic without core initialization
+    # Preconfigure environment for root/project overrides so that even
+    # early-return paths (e.g. launching the TUI) honour the requested roots.
+    resolved_project_path: Optional[Path] = None
+    if project:
+        # Try as-is, then workspace/projects/<name>
+        candidates = []
+        try:
+            candidates.append(Path(project).expanduser())
+        except Exception:
+            pass
+        candidates.append(Path(WORKSPACE_PATH) / "projects" / project)
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_dir():
+                    resolved_project_path = candidate.resolve()
+                    os.environ['PENGUIN_PROJECT_ROOT'] = str(resolved_project_path)
+                    os.environ.setdefault('PENGUIN_CWD', str(resolved_project_path))
+                    logger.info("CLI env: PENGUIN_PROJECT_ROOT=%s", resolved_project_path)
+                    break
+            except Exception:
+                continue
+
+    if root:
+        root_mode = root.lower()
+        if root_mode in ('project', 'workspace'):
+            os.environ['PENGUIN_WRITE_ROOT'] = root_mode
+            if root_mode == 'workspace':
+                os.environ['PENGUIN_CWD'] = str(WORKSPACE_PATH)
+            elif root_mode == 'project' and resolved_project_path is not None:
+                os.environ['PENGUIN_CWD'] = str(resolved_project_path)
+            logger.info(
+                "CLI env: PENGUIN_WRITE_ROOT=%s PENGUIN_CWD=%s",
+                root_mode,
+                os.environ.get('PENGUIN_CWD'),
+            )
+        else:
+            console.print(f"[yellow]Warning: unknown root '{root}'. Expected 'project' or 'workspace'.[/yellow]")
+
+    # Default-to-TUI behavior: if no headless flags/subcommands → launch TUI
+    headless_flags = any([
+        prompt is not None,
+        continue_last,
+        resume_session is not None,
+        run_task is not None,
+        continuous,
+        ctx.invoked_subcommand is not None,
+    ])
+
+    # If a subcommand is invoked (e.g., `penguin config setup`), do not
+    # pre-initialize core components here. Let the subcommand run first.
+    # Subcommands that need core components will initialize them explicitly.
+    if ctx.invoked_subcommand is not None:
+        return
+
+    if not headless_flags:
+        try:
+            from penguin.cli.tui import TUI
+            TUI.run()
+        except Exception as e:
+            console.print(f"[red]Failed to launch TUI:[/red] {e}")
+            raise typer.Exit(code=1)
+        raise typer.Exit()
 
     # Create a sync wrapper around our async code
     async def _async_init_and_run():
@@ -558,17 +637,92 @@ def main_entry(
             console.print("Please check logs for more details.")
             raise typer.Exit(code=1)
 
-        # Determine if we should run in headless mode
-        headless_mode = any([
-            no_tui,
-            prompt is not None,
-            continue_last,
-            resume_session,
+        global _tool_manager
+
+        if isinstance(output_format, str) and output_format.lower() == "text":
+            console.print(PENGUIN_ASCII_BANNER, style="bold cyan")
+
+        logger.info(
+            "CLI args resolved: root=%s project=%s prompt=%s run_task=%s",
+            root,
+            project,
+            bool(prompt),
             run_task,
-            continuous,
-            ctx.invoked_subcommand is not None
-        ])
-        
+        )
+        try:
+            console.print(
+                f"[dim]CLI args resolved root={root} project={project} prompt={'set' if prompt else 'none'} run={run_task}[/dim]"
+            )
+        except Exception:
+            pass
+
+        # Bind tool manager to the requested project workspace, if provided
+        if project:
+            try:
+                project_path_override: Optional[Path] = None
+                pm = getattr(_core, "project_manager", None)
+                if pm:
+                    try:
+                        project_obj = await pm.get_project_async(project)
+                    except Exception:
+                        project_obj = None
+                    if not project_obj:
+                        loop = asyncio.get_running_loop()
+                        project_obj = await loop.run_in_executor(None, pm.get_project_by_name, project)
+                    if not project_obj:
+                        loop = asyncio.get_running_loop()
+                        project_obj = await loop.run_in_executor(None, pm.get_project, project)
+                    if project_obj and getattr(project_obj, "workspace_path", None):
+                        project_path_override = Path(project_obj.workspace_path)
+
+                if project_path_override is None:
+                    candidate = Path(_tool_manager.workspace_root) / "projects" / project
+                    if candidate.exists():
+                        project_path_override = candidate
+                    else:
+                        direct = Path(project).expanduser()
+                        if direct.exists():
+                            project_path_override = direct
+
+                if project_path_override is not None:
+                    msg = _tool_manager.set_project_root(project_path_override)
+                    console.print(f"[dim]{msg}[/dim]")
+                else:
+                    console.print(f"[yellow]Warning: could not resolve project '{project}' workspace; using default root.[/yellow]")
+            except Exception as e:
+                console.print(f"[yellow]Warning: failed to configure project root '{project}': {e}[/yellow]")
+
+        # Apply execution root toggle if requested
+        if root:
+            try:
+                msg = _tool_manager.set_execution_root(root)
+                console.print(f"[dim]{msg}[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]Warning: failed to set execution root: {e}[/yellow]")
+
+        # Log the resolved roots for diagnostics
+        try:
+            logger.info(
+                "CLI ToolManager id=%s mode=%s file_root=%s project_root=%s workspace_root=%s",
+                hex(id(_tool_manager)) if _tool_manager else None,
+                getattr(_tool_manager, 'file_root_mode', None),
+                getattr(_tool_manager, '_file_root', None),
+                getattr(_tool_manager, 'project_root', None),
+                getattr(_tool_manager, 'workspace_root', None),
+            )
+        except Exception:
+            pass
+
+        # Always show the current execution root for clarity
+        try:
+            console.print(f"[dim]Execution root: {_tool_manager.file_root_mode} ({_tool_manager._file_root})[/dim]")
+        except Exception:
+            pass
+
+        # Record project flag for downstream commands
+        ctx.obj = ctx.obj or {}
+        ctx.obj["project"] = project
+
         # Check for priority flags in order of precedence:
         # 1. Task execution (--run)
         if run_task is not None:
@@ -589,10 +743,7 @@ def main_entry(
         # 4. Continuous mode without task (just --247)
         elif continuous:
             await _handle_run_mode(None, continuous, time_limit, task_description)
-        # 5. No-TUI mode forces interactive CLI (not TUI)
-        elif no_tui and ctx.invoked_subcommand is None:
-            await _run_interactive_chat()
-        # 6. Default: interactive chat session
+        # 5. Default: interactive chat session
         elif ctx.invoked_subcommand is None:
             # No subcommand invoked, default to interactive chat
             await _run_interactive_chat()
@@ -926,6 +1077,367 @@ def config_debug():
     
     console.print(f"\n[dim]Platform: {platform.system()} {platform.release()}[/dim]")
     console.print(f"[dim]Python: {sys.version}[/dim]")
+
+# Agent Management Commands
+@agent_app.command("personas")
+def agent_personas(
+    json_output: bool = typer.Option(False, "--json", help="Emit persona catalog as JSON"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """List configured agent personas."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        personas = _core.get_persona_catalog()
+        if json_output:
+            console.print(json.dumps(personas, indent=2))
+            return
+
+        if not personas:
+            console.print("[yellow]No personas defined. Add entries under 'agents:' in config.yml.[/yellow]")
+            return
+
+        from rich.table import Table
+
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Persona", style="cyan")
+        table.add_column("Description", style="white")
+        table.add_column("Model", style="green")
+        table.add_column("Tools", style="magenta")
+        table.add_column("Auto-Activate", style="yellow")
+
+        for entry in personas:
+            name = entry.get("name", "--")
+            description = entry.get("description") or ""
+            model_block = entry.get("model") or {}
+            model_label = model_block.get("model") or model_block.get("id") or "(default)"
+            tools = entry.get("default_tools") or entry.get("tools") or []
+            if isinstance(tools, str):
+                tools = [tools]
+            tools_label = ", ".join(tools) if tools else "--"
+            auto_activate = "yes" if entry.get("activate", False) else "no"
+            table.add_row(name, description, model_label, tools_label, auto_activate)
+
+        console.print(table)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("list")
+def agent_list(
+    json_output: bool = typer.Option(False, "--json", help="Emit agent roster as JSON"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """List registered agents and sub-agents."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        roster = _core.get_agent_roster()
+        if json_output:
+            console.print(json.dumps(roster, indent=2))
+            return
+
+        if not roster:
+            console.print("[yellow]No agents are currently registered.[/yellow]")
+            return
+
+        from rich.table import Table
+
+        table = Table(show_header=True, header_style="bold magenta")
+        table.add_column("Agent", style="cyan")
+        table.add_column("Type", style="white")
+        table.add_column("Persona", style="green")
+        table.add_column("Model", style="white")
+        table.add_column("Parent", style="yellow")
+        table.add_column("Children", style="dim")
+        table.add_column("Tools", style="magenta")
+        table.add_column("Active", style="blue")
+        table.add_column("Paused", style="yellow")
+
+        for entry in roster:
+            agent_id = entry.get("id", "--")
+            agent_type = "sub" if entry.get("is_sub_agent") else "primary"
+            persona_label = entry.get("persona") or "--"
+            model_info = entry.get("model") or {}
+            model_label = model_info.get("model") or "(default)"
+            parent = entry.get("parent") or "--"
+            children = entry.get("children") or []
+            children_label = ", ".join(children) if children else "--"
+            tools = entry.get("default_tools") or []
+            tools_label = ", ".join(tools[:3]) if tools else "--"
+            if len(tools) > 3:
+                tools_label += ", …"
+            active_label = "yes" if entry.get("active") else ""
+            paused_label = "yes" if entry.get("paused") else ""
+            style = "bold" if entry.get("active") else None
+            table.add_row(
+                agent_id,
+                agent_type,
+                persona_label,
+                model_label,
+                parent,
+                children_label,
+                tools_label,
+                active_label,
+                paused_label,
+                style=style,
+            )
+
+        console.print(table)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("spawn")
+def agent_spawn(
+    agent_id: str = typer.Argument(..., help="New agent identifier"),
+    persona: Optional[str] = typer.Option(None, "--persona", "-p", help="Persona id from config to apply"),
+    system_prompt: Optional[str] = typer.Option(None, "--system-prompt", "-s", help="Override system prompt"),
+    parent_agent_id: Optional[str] = typer.Option(None, "--parent", "-P", help="Parent agent id to share session with"),
+    share_session: bool = typer.Option(True, "--share-session/--isolate-session", help="Share conversation session with parent"),
+    share_context_window: bool = typer.Option(True, "--share-context/--isolate-context", help="Share context window with parent"),
+    shared_cw_max_tokens: Optional[int] = typer.Option(None, "--shared-cw-max", help="Clamp shared context window tokens"),
+    model_max_tokens: Optional[int] = typer.Option(None, "--model-max-tokens", help="Clamp agent context window tokens"),
+    model_config_id: Optional[str] = typer.Option(None, "--model-id", help="Model config id override"),
+    default_tools: Optional[List[str]] = typer.Option(None, "--tool", "-t", help="Restrict tools available to the agent (repeatable)"),
+    activate: bool = typer.Option(False, "--activate/--no-activate", help="Make this agent active"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Register a new agent or sub-agent."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        personas = {entry.get("name"): entry for entry in _core.get_persona_catalog()}
+        if persona and persona not in personas:
+            console.print(f"[red]Persona '{persona}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+
+        model_configs = getattr(_core.config, "model_configs", {}) or {}
+        if model_config_id and model_config_id not in model_configs:
+            console.print(f"[red]Model id '{model_config_id}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+
+        tools_tuple = tuple(default_tools) if default_tools else None
+
+        try:
+            if parent_agent_id:
+                _core.create_sub_agent(
+                    agent_id,
+                    parent_agent_id=parent_agent_id,
+                    system_prompt=system_prompt,
+                    share_session=share_session,
+                    share_context_window=share_context_window,
+                    shared_cw_max_tokens=shared_cw_max_tokens,
+                    model_max_tokens=model_max_tokens,
+                    persona=persona,
+                    model_config_id=model_config_id,
+                    default_tools=tools_tuple,
+                    activate=activate,
+                )
+            else:
+                _core.register_agent(
+                    agent_id,
+                    system_prompt=system_prompt,
+                    activate=activate,
+                    model_max_tokens=model_max_tokens,
+                    persona=persona,
+                    model_config_id=model_config_id,
+                    default_tools=tools_tuple,
+                )
+            console.print(f"[green]Registered agent[/green] {agent_id}{f' using persona {persona}' if persona else ''}.")
+        except Exception as exc:
+            console.print(f"[red]Failed to register agent: {exc}[/red]")
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("set-persona")
+def agent_set_persona(
+    agent_id: str = typer.Argument(..., help="Existing agent identifier"),
+    persona: str = typer.Argument(..., help="Persona id to apply"),
+    activate: bool = typer.Option(False, "--activate/--no-activate", help="Make this agent active after switching"),
+    system_prompt: Optional[str] = typer.Option(None, "--system-prompt", "-s", help="Override system prompt"),
+    model_config_id: Optional[str] = typer.Option(None, "--model-id", help="Model config id override"),
+    default_tools: Optional[List[str]] = typer.Option(None, "--tool", "-t", help="Override default tools (repeatable)"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Apply a persona to an existing agent."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        personas = {entry.get("name"): entry for entry in _core.get_persona_catalog()}
+        if persona not in personas:
+            console.print(f"[red]Persona '{persona}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+
+        model_configs = getattr(_core.config, "model_configs", {}) or {}
+        if model_config_id and model_config_id not in model_configs:
+            console.print(f"[red]Model id '{model_config_id}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+
+        tools_tuple = tuple(default_tools) if default_tools else None
+
+        parent_map = getattr(_core.conversation_manager, "sub_agent_parent", {}) or {}
+        parent = parent_map.get(agent_id)
+
+        try:
+            if parent:
+                _core.create_sub_agent(
+                    agent_id,
+                    parent_agent_id=parent,
+                    system_prompt=system_prompt,
+                    persona=persona,
+                    model_config_id=model_config_id,
+                    default_tools=tools_tuple,
+                    activate=activate,
+                )
+            else:
+                _core.register_agent(
+                    agent_id,
+                    system_prompt=system_prompt,
+                    activate=activate,
+                    persona=persona,
+                    model_config_id=model_config_id,
+                    default_tools=tools_tuple,
+                )
+            console.print(f"[green]Applied persona[/green] {persona} to agent {agent_id}.")
+        except Exception as exc:
+            console.print(f"[red]Failed to apply persona: {exc}[/red]")
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("pause")
+def agent_pause(
+    agent_id: str = typer.Argument(..., help="Agent identifier to pause"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Pause an agent (sub-agent) – stops engine-driven actions, messages still log."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+        try:
+            _core.set_agent_paused(agent_id, True)
+            console.print(f"[yellow]Paused[/yellow] agent {agent_id}.")
+        except Exception as exc:
+            console.print(f"[red]Failed to pause agent: {exc}[/red]")
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("resume")
+def agent_resume(
+    agent_id: str = typer.Argument(..., help="Agent identifier to resume"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Resume a paused agent."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+        try:
+            _core.set_agent_paused(agent_id, False)
+            console.print(f"[green]Resumed[/green] agent {agent_id}.")
+        except Exception as exc:
+            console.print(f"[red]Failed to resume agent: {exc}[/red]")
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("activate")
+def agent_activate(
+    agent_id: str = typer.Argument(..., help="Agent identifier"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Set the active agent for subsequent operations."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        try:
+            _core.set_active_agent(agent_id)
+            console.print(f"[green]Active agent set to[/green] {agent_id}")
+        except Exception as exc:
+            console.print(f"[red]Failed to activate agent: {exc}[/red]")
+            raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
+@agent_app.command("info")
+def agent_info(
+    agent_id: str = typer.Argument(..., help="Agent identifier"),
+    json_output: bool = typer.Option(False, "--json", help="Emit profile as JSON"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Show detailed information for an agent."""
+
+    async def _run() -> None:
+        await _initialize_core_components_globally(workspace_override=workspace)
+        if not _core:
+            console.print("[red]Core not initialized[/red]")
+            raise typer.Exit(code=1)
+
+        profile = _core.get_agent_profile(agent_id)
+        if not profile:
+            console.print(f"[yellow]Agent '{agent_id}' not found.[/yellow]")
+            raise typer.Exit(code=1)
+
+        if json_output:
+            console.print(json.dumps(profile, indent=2))
+            return
+
+        from rich.table import Table
+
+        table = Table(show_header=False)
+        for key in ("id", "persona", "persona_description", "model", "parent", "children", "default_tools", "active", "is_sub_agent", "system_prompt_preview"):
+            value = profile.get(key)
+            if key == "model" and isinstance(value, dict):
+                value = ", ".join(f"{k}={v}" for k, v in value.items() if v is not None)
+            if key == "children" and isinstance(value, list):
+                value = ", ".join(value) if value else "--"
+            if key == "default_tools" and isinstance(value, list):
+                value = ", ".join(value) if value else "--"
+            if key == "active":
+                value = "yes" if value else "no"
+            if key == "is_sub_agent":
+                value = "yes" if value else "no"
+            if value is None or value == "":
+                value = "--"
+            table.add_row(key.replace("_", " ").title(), str(value))
+
+        console.print(table)
+
+    asyncio.run(_run())
+
 
 # Project Management Commands
 @project_app.command("create")
@@ -1497,8 +2009,10 @@ class PenguinCLI:
         self.interface = PenguinInterface(core)
         self.in_247_mode = False
         self.message_count = 0
-        self.console = RichConsole()  # Use RichConsole instead of Console
-        self.conversation_menu = ConversationMenu(self.console)
+        # Initialize a simple console for headless mode - no Rich formatting but prevents AttributeErrors
+        from rich.console import Console
+        self.console = Console(no_color=True, legacy_windows=False, force_terminal=False)
+        self.conversation_menu = None
         self.core.register_progress_callback(self.on_progress_update)
 
         # Add direct Core event subscription for improved event flow
@@ -1519,11 +2033,7 @@ class PenguinCLI:
         # Add streaming state tracking
         self.is_streaming = False
         self.streaming_buffer = ""
-        self.streaming_reasoning_buffer = ""  # Separate buffer for reasoning tokens
         self.streaming_role = "assistant"
-        
-        # Buffer for pending system messages (tool results) during streaming
-        self.pending_system_messages: List[Tuple[str, str]] = []  # List of (content, role)
 
         # Run mode state
         self.run_mode_active = False
@@ -1545,103 +2055,13 @@ class PenguinCLI:
     def _create_prompt_session(self):
         """Create and configure a prompt_toolkit session with multi-line support"""
         # Define key bindings
-        kb = KeyBindings()
-
-        # Add keybinding for Alt+Enter to create a new line
-        @kb.add(Keys.Escape, Keys.Enter)
-        def _(event):
-            """Insert a new line when Alt (or Option) + Enter is pressed."""
-            event.current_buffer.insert_text("\n")
-
-        # Add keybinding for Enter to submit
-        @kb.add(Keys.Enter)
-        def _(event):
-            """Submit the input when Enter is pressed without modifiers."""
-            # If there's already text and cursor is at the end, submit
-            buffer = event.current_buffer
-            if buffer.text and buffer.cursor_position == len(buffer.text):
-                buffer.validate_and_handle()
-            else:
-                # Otherwise insert a new line
-                buffer.insert_text("\n")
-
-        # Add a custom style
-        style = Style.from_dict(
-            {
-                "prompt": f"bold {self.USER_COLOR}",
-            }
-        )
-
-        # Create the PromptSession
-        return PromptSession(
-            key_bindings=kb,
-            style=style,
-            multiline=True,  # Enable multi-line editing
-            vi_mode=False,  # Use Emacs keybindings by default
-            wrap_lines=True,  # Wrap long lines
-            complete_in_thread=True,
-        )
+        # Legacy prompt toolkit removed
+        return None
 
     def _handle_interrupt(self, sig, frame):
         self._safely_stop_progress()
         print("\nOperation interrupted by user.")
         raise KeyboardInterrupt
-
-    def _extract_and_display_reasoning(self, message: str) -> str:
-        """Extract <details> reasoning blocks and display them in a separate gray panel.
-        
-        Returns the message with reasoning blocks removed.
-        """
-        import re
-        
-        # Guard against re-displaying already processed reasoning
-        if hasattr(self, '_last_reasoning_extracted') and message == self._last_reasoning_extracted:
-            return message
-        
-        # Pattern to match <details> blocks with reasoning
-        details_pattern = r'<details>\s*<summary>🧠[^<]*</summary>\s*(.*?)</details>\s*'
-        
-        matches = re.findall(details_pattern, message, re.DOTALL | re.IGNORECASE)
-        
-        if matches:
-            # Extract reasoning content (everything between summary and </details>)
-            reasoning_content = matches[0].strip()
-            
-            # Remove markdown formatting from reasoning (**, __, etc.)
-            # Handle all markdown bold/italic patterns
-            reasoning_text = re.sub(r'\*\*\*?(.*?)\*\*\*?', r'\1', reasoning_content)  # Remove **bold** and ***bold italic***
-            reasoning_text = re.sub(r'___(.*?)___', r'\1', reasoning_text)  # Remove ___bold italic___
-            reasoning_text = re.sub(r'__(.*?)__', r'\1', reasoning_text)  # Remove __bold__
-            reasoning_text = re.sub(r'_(.*?)_', r'\1', reasoning_text)  # Remove _italic_
-            reasoning_text = re.sub(r'\n+', ' ', reasoning_text)  # Collapse newlines to spaces
-            reasoning_text = re.sub(r'\s+', ' ', reasoning_text)  # Collapse multiple spaces
-            reasoning_text = reasoning_text.strip()
-            
-            # Display reasoning in a compact gray panel
-            if reasoning_text:
-                from rich.text import Text
-                # Use dim styling for the entire panel content
-                reasoning_display = Text(f"🧠 {reasoning_text}", style="dim italic")
-                reasoning_panel = Panel(
-                    reasoning_display,
-                    title="[dim]Internal Reasoning[/dim]",
-                    title_align="left",
-                    border_style="dim",
-                    width=self.console.width - 8,
-                    box=rich.box.SIMPLE,  # Simpler box style
-                    padding=(0, 1),  # Minimal padding
-                )
-                self.console.print(reasoning_panel)
-            
-            # Remove the details block from the message
-            cleaned_message = re.sub(details_pattern, '', message, flags=re.DOTALL | re.IGNORECASE)
-            
-            # Mark this message as processed to prevent re-display
-            self._last_reasoning_extracted = message
-            
-            return cleaned_message.strip()
-        
-        return message
 
     def display_message(self, message: str, role: str = "assistant"):
         """Display a message with proper formatting"""
@@ -1663,10 +2083,6 @@ class PenguinCLI:
             # Update last completed message for assistant messages
             if role == "assistant":
                 self.last_completed_message = message
-        
-        # Extract and display reasoning separately for assistant messages
-        if role == "assistant":
-            message = self._extract_and_display_reasoning(message)
 
         # If we're currently streaming and this is the same content, finalize the stream instead
         if role == "assistant" and hasattr(self, "_streaming_started") and self._streaming_started:
@@ -1674,37 +2090,7 @@ class PenguinCLI:
                 self._finalize_streaming()
                 return
 
-        styles = {
-            "assistant": self.PENGUIN_COLOR,
-            "user": self.USER_COLOR,
-            "system": self.TOOL_COLOR,
-            "error": "red bold",
-            "output": self.RESULT_COLOR,
-            "code": self.CODE_COLOR,
-        }
-
-        emojis = {
-            "assistant": self.PENGUIN_EMOJI,
-            "user": "👤",
-            "system": "🐧",
-            "error": "⚠️",
-            "code": "💻",
-        }
-
-        style = styles.get(role, "white")
-        emoji = emojis.get(role, "💬")
-
-        # Special handling for welcome message
-        if role == "system" and "Welcome to the Penguin CLI!" in message:
-            header = f"{emoji} System (Welcome):"
-        elif role == "user":
-            # Format user messages in panels for better readability
-            header = f"{emoji} You"
-        else:
-            display_role = "Penguin" if role == "assistant" else role.capitalize()
-            header = f"{emoji} {display_role}"
-
-        # Enhanced code block formatting
+        # Simplified headless output
         processed_message = message or ""
         code_blocks_found = False
 
@@ -1806,23 +2192,8 @@ class PenguinCLI:
 
             # Display the detected code blocks
             for code_text, lang in code_block_lines:
-                lang_display = self.LANGUAGE_DISPLAY_NAMES.get(lang, lang.capitalize())
-                highlighted_code = Syntax(
-                    code_text.strip(),
-                    lang,
-                    theme="monokai",
-                    line_numbers=True,
-                    word_wrap=True,
-                )
-
-                code_panel = Panel(
-                    highlighted_code,
-                    title=f"📋 {lang_display} Code",
-                    title_align="left",
-                    border_style=self.CODE_COLOR,
-                    padding=(1, 2),
-                )
-                self.console.print(code_panel)
+                # Headless: print code plainly
+                print("\n```{}\n{}\n```\n".format(lang, code_text.strip()))
 
         # Handle code blocks in tool outputs (like execute results)
         if (
@@ -1845,27 +2216,11 @@ class PenguinCLI:
                     ):
                         # Detect language
                         language = self._detect_language(code_output)
-                        lang_display = self.LANGUAGE_DISPLAY_NAMES.get(
-                            language, language.capitalize()
-                        )
+                        print("\n```{}\n{}\n```\n".format(language, code_output))
 
-                        # Display output in a special panel
-                        self._display_code_output_panel(code_output, language, "Output")
-                        # Simplify the message to avoid duplication
-                        processed_message = message.replace(
-                            code_output, f"[{lang_display} output displayed above]"
-                        )
-
-        # Regular message display with markdown
-        panel = Panel(
-            Markdown(processed_message),
-            title=header,
-            title_align="left",
-            border_style=style,
-            width=self.console.width - 8,
-            box=rich.box.ROUNDED,
-        )
-        self.console.print(panel)
+        # Plain headless output
+        prefix = "You:" if role == "user" else ("Penguin:" if role == "assistant" else "System:")
+        print(f"{prefix} {processed_message}")
 
         # If message is suspiciously short, could provide visual indication
         if len(message.strip()) <= 1:
@@ -1886,40 +2241,9 @@ class PenguinCLI:
                     language, language.capitalize()
                 )
 
-        # Choose theme based on language
-        theme = "monokai"  # Default
-        if language in ["html", "xml"]:
-            theme = "github-dark"
-        elif language in ["bash", "shell"]:
-            theme = "native"
-
-        # Create a syntax highlighted version
-        highlighted_code = Syntax(
-            code.strip(),
-            language,
-            theme=theme,
-            line_numbers=True,
-            word_wrap=True,
-            code_width=min(
-                100, self.console.width - 20
-            ),  # Limit width for better readability
-        )
-
-        # Create a panel for the code
-        code_panel = Panel(
-            highlighted_code,
-            title=f"📋 {lang_display} Code",
-            title_align="left",
-            border_style=self.CODE_COLOR,
-            padding=(1, 2),
-        )
-
-        # Display the code block separately
-        self.console.print(code_panel)
-
-        # Replace in original message with a note
-        placeholder = f"[Code block displayed above ({lang_display})]"
-        return message.replace(original_block, placeholder)
+        # Headless code block output
+        print("\n```{}\n{}\n```\n".format(language, code.strip()))
+        return message.replace(original_block, "[Code block printed above]")
 
     def _detect_language(self, code):
         """Automatically detect the programming language of the code"""
@@ -1951,20 +2275,9 @@ class PenguinCLI:
 
     def _display_code_output_panel(self, code_output: str, language: str, title: str = "Output"):
         lang_display = self.LANGUAGE_DISPLAY_NAMES.get(language, language.capitalize())
-        output_panel = Panel(
-            Syntax(code_output, language, theme="monokai", word_wrap=True),
-            title=f"📤 {lang_display} {title}",
-            title_align="left",
-            border_style="green", # Or self.RESULT_COLOR
-            padding=(1, 2),
-            width=self.console.width - 8 if self.console else None
-        )
-        if self.console:
-            self.console.print(output_panel)
-        else: # Fallback if console not available (e.g. direct prompt mode context)
-            print(f"--- {lang_display} {title} ---")
-            print(code_output)
-            print(f"--- End {lang_display} {title} ---")
+        print(f"--- {lang_display} {title} ---")
+        print(code_output)
+        print(f"--- End {lang_display} {title} ---")
     
     def _display_list_response(self, response: Dict[str, Any]):
         """Display the /list command response in a nicely formatted way"""
@@ -2059,17 +2372,7 @@ class PenguinCLI:
             is_code_output = True
             detected_lang = self._detect_language(result_text)
 
-        # Check if this is a diff output (from edit tools) - display as code, not markdown
-        is_diff_output = (
-            "Successfully edited" in result_text or
-            "---" in result_text[:100] and "+++" in result_text[:100]  # Unified diff header
-        )
-        
-        if is_diff_output:
-            # Display diffs as syntax-highlighted text to preserve formatting
-            content_renderable = Syntax(result_text, "diff", theme="monokai", word_wrap=False, line_numbers=False)
-            title_for_panel = f"{status_icon} Edit Result from {action_type}"
-        elif is_code_output:
+        if is_code_output:
             lang_display = self.LANGUAGE_DISPLAY_NAMES.get(detected_lang, detected_lang.capitalize())
             content_renderable = Syntax(result_text, detected_lang, theme="monokai", word_wrap=True, line_numbers=True)
             title_for_panel = f"{status_icon} {lang_display} Output from {action_type}"
@@ -2141,27 +2444,43 @@ class PenguinCLI:
         # Setup logging for this session
         session_logger = setup_logger(f"chat_{session_id}.log")
 
-        # Display ASCII art banner
-        ascii_banner = """
-ooooooooo.                                                 o8o              
-`888   `Y88.                                               `"'              
- 888   .d88'  .ooooo.  ooo. .oo.    .oooooooo oooo  oooo  oooo  ooo. .oo.   
- 888ooo88P'  d88' `88b `888P"Y88b  888' `88b  `888  `888  `888  `888P"Y88b  
- 888         888ooo888  888   888  888   888   888   888   888   888   888  
- 888         888    .o  888   888  `88bod8P'   888   888   888   888   888  
-o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o 
-                                   d"     YD                                
-                                   "Y88888P'                                
-"""
-        self.console.print(f"[cyan]{ascii_banner}[/cyan]")
-        
-        welcome_message = """Welcome to Penguin AI Assistant!
+        welcome_message = """Welcome to the Penguin AI Assistant!
 
-For help: /help  •  For information: /info  •  To exit: /exit
+Available Commands:
 
-TIP: Use Alt+Enter for new lines, Enter to submit"""
+ • /chat: Conversation management
+   - list: Show available conversations
+   - load: Load a previous conversation
+   - summary: Show current conversation summary
+   
+ • /list: Display all projects and tasks
+
+ • /task: Task management commands
+   - create [name] [description]: Create a new task
+   - run [name]: Run a task
+   - status [name]: Check task status
+   
+ • /project: Project management commands
+   - create [name] [description]: Create a new project
+   - run [name]: Run a project
+   - status [name]: Check project status
+   
+ • /models: Interactive model selection (search with autocomplete)
+ • /model set <id>: Manually set a specific model ID
+   
+ • /exit or exit: End the conversation
+
+ • /image: Include an image in your message
+   - image [image_path] [description]: Include an image in your message
+
+ • /help or help: Show this help message
+
+Press Tab for command completion Use ↑↓ to navigate command history Press Ctrl+C to stop a running task"""
 
         self.display_message(welcome_message, "system")
+        self.display_message(
+            "TIP: Use Alt+Enter for new lines, Enter to submit", "system"
+        )
 
         while True:
             try:
@@ -2169,8 +2488,8 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                 self._ensure_progress_cleared()
 
                 # Use prompt_toolkit instead of input()
-                prompt_html = HTML(f"<prompt>You [{self.message_count}]: </prompt>")
-                user_input = await self.session.prompt_async(prompt_html)
+                # Legacy prompt_html removed in slim CLI
+                user_input = ""
 
                 if user_input.lower() in ["exit", "quit"]:
                     break
@@ -2183,12 +2502,10 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                 # Reset streaming state
                 self.is_streaming = False
                 self.streaming_buffer = ""
-                self.streaming_reasoning_buffer = ""
                 self.last_completed_message = ""
 
-                # DON'T display user input here - let event system handle it
-                # (Prevents duplicate display: once here, once from Core event)
-                # self.display_message(user_input, "user")
+                # Show user input
+                self.display_message(user_input, "user")
 
                 # Add user message to processed messages to prevent duplication
                 user_msg_key = f"user:{user_input[:50]}"
@@ -2245,7 +2562,7 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                                 # normal streaming / action-result handling is reused
                                 response = await self.interface.process_input(
                                     {"text": description, "image_path": image_path},
-                                    stream_callback=None,
+                                    stream_callback=None,  # Events handle streaming display
                                 )
 
                                 # Finalise any streaming still active
@@ -2285,15 +2602,8 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                                 
                             # Handle help messages
                             elif "help" in response:
-                                help_header = response.get("help", "Available Commands")
-                                commands = response.get("commands", [])
-                                # Display help without extra indentation
-                                self.console.print(Panel(
-                                    f"{help_header}\n\n" + "\n".join(commands),
-                                    title="🐧 Help",
-                                    border_style="blue",
-                                    padding=(1, 2)
-                                ))
+                                help_text = response["help"] + "\n\n" + "\n".join(response.get("commands", []))
+                                self.display_message(help_text, "system")
                                 
                             # Handle conversation list
                             elif "conversations" in response:
@@ -2340,34 +2650,11 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
 
                 # Process normal message input through interface
                 try:
-                    # Show brief "Thinking..." - will be stopped by event system when streaming starts
-                    # Using transient Progress that auto-cleans up
-                    thinking_progress = Progress(
-                        SpinnerColumn(),
-                        TextColumn("[dim]Thinking...[/dim]"),
-                        console=self.console,
-                        transient=True  # Auto-disappears
+                    # Process user message through interface
+                    response = await self.interface.process_input(
+                        {"text": user_input},
+                        stream_callback=None  # Events handle streaming display
                     )
-                    thinking_progress.start()
-                    thinking_task = thinking_progress.add_task("", total=None)
-                    
-                    # Store ref so event handler can stop it before streaming
-                    self._thinking_progress = thinking_progress
-                    
-                    try:
-                        # Process user message through interface
-                        response = await self.interface.process_input(
-                            {"text": user_input},
-                            stream_callback=None  # Events handle streaming display
-                        )
-                    finally:
-                        # Always clean up thinking indicator
-                        if hasattr(self, '_thinking_progress'):
-                            try:
-                                self._thinking_progress.stop()
-                            except Exception:
-                                pass
-                            delattr(self, '_thinking_progress')
                     
                     # Assistant responses (streaming or not) are now delivered via Core events.
                     # Therefore, avoid printing them directly here to prevent duplicates.
@@ -2377,13 +2664,23 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     if hasattr(self, "_streaming_started") and self._streaming_started:
                         self._finalize_streaming()
                         
-                    # Action results are now handled via the event system (SYSTEM_OUTPUT category)
-                    # No need to display them here - that would cause duplication
-                    # Commenting out to prevent duplicate display:
-                    #
-                    # if isinstance(response, dict) and "action_results" in response:
-                    #     for result in response["action_results"]:
-                    #         self.display_action_result(result)
+                    # Display any action results returned by the interface/core.
+                    if isinstance(response, dict) and "action_results" in response:
+                            print(f"[DEBUG] Found {len(response['action_results'])} action result(s)")
+                            for i, result in enumerate(response["action_results"]):
+                                print(f"[DEBUG] Processing action result #{i}")
+                                if isinstance(result, dict):
+                                # Ensure required fields exist with sensible defaults
+                                    if "action" not in result:
+                                        result["action"] = "unknown"
+                                    if "result" not in result:
+                                        result["result"] = "(No output available)"
+                                    if "status" not in result:
+                                        result["status"] = "completed"
+                                    self.display_action_result(result)
+                                else:
+                                # Fallback for non-dict results
+                                    self.display_message(str(result), "system")
                 
                     # If the response itself is a string (unlikely but possible), display it.
                     elif isinstance(response, str):
@@ -2496,22 +2793,8 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                 if not title or title.startswith("Session "):
                     title = f"Conversation {idx + 1}"
 
-                # Create the ConversationSummary with the extracted title
-                conversations.append(
-                    ConversationSummary(
-                        session_id=session_id,
-                        title=title,
-                        message_count=session.get("message_count", 0),
-                        # Format the datetime properly
-                        last_active=(
-                            parse_iso_datetime(session.get("last_active", "")).strftime(
-                                "%Y-%m-%d %H:%M"
-                            )
-                            if session.get("last_active")
-                            else "Unknown date"
-                        ),
-                    )
-                )
+                # Append tuple summary in slim CLI
+                conversations.append((session_id, title, session.get("message_count", 0)))
             # Let user select a conversation
             session_id = self.conversation_menu.select_conversation(conversations)
             if session_id:
@@ -2591,18 +2874,6 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     self._streaming_started = True
                     self.is_streaming = True  # Set streaming flag
                     self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""  # Reset reasoning buffer too
-                    
-                    # CRITICAL: Stop ALL active progress displays FIRST to prevent "Only one live display" error
-                    self._safely_stop_progress()
-                    
-                    # Also stop the "Thinking..." indicator from chat_loop
-                    if hasattr(self, '_thinking_progress'):
-                        try:
-                            self._thinking_progress.stop()
-                            delattr(self, '_thinking_progress')
-                        except Exception:
-                            pass
                     
                     # Clean up any previous Live panel
                     if getattr(self, "streaming_live", None):
@@ -2622,22 +2893,13 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
 
                 # Process chunk for display
                 if chunk:
-                    # Check if this is reasoning content or regular content
-                    is_reasoning = data.get("is_reasoning", False)
-                    message_type = data.get("message_type", "assistant")
-                    
-                    if is_reasoning or message_type == "reasoning":
-                        # Add to reasoning buffer
-                        self.streaming_reasoning_buffer += chunk
-                    else:
-                        # Add to regular content buffer
-                        self.streaming_buffer += chunk
+                    self.streaming_buffer += chunk
                     
                     # Update or create streaming panel
                     if not getattr(self, "streaming_live", None):
                         panel = Panel(
                             Markdown(self.streaming_buffer),
-                            title=f"{self.PENGUIN_EMOJI} Penguin",
+                            title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
                             title_align="left",
                             border_style=self.PENGUIN_COLOR,
                             width=self.console.width - 8,
@@ -2653,7 +2915,7 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                         try:
                             panel = Panel(
                                 Markdown(self.streaming_buffer),
-                                title=f"{self.PENGUIN_EMOJI} Penguin",
+                                title=f"{self.PENGUIN_EMOJI} Penguin (Streaming)",
                                 title_align="left",
                                 border_style=self.PENGUIN_COLOR,
                                 width=self.console.width - 8,
@@ -2667,34 +2929,14 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     # Final chunk received - display final message and clean up
                     self.is_streaming = False
                     
-                    # Display reasoning panel FIRST if we have reasoning content
-                    if self.streaming_reasoning_buffer.strip():
-                        from rich.text import Text
-                        reasoning_display = Text(self.streaming_reasoning_buffer, style="dim italic")
-                        reasoning_panel = Panel(
-                            reasoning_display,
-                            title="[dim]🧠 Internal Reasoning[/dim]",
-                            title_align="left",
-                            border_style="dim",
-                            width=self.console.width - 8,
-                            box=rich.box.SIMPLE,
-                            padding=(0, 1),
-                        )
-                        self.console.print(reasoning_panel)
-                    
-                    # Then display the final message as a regular panel (not streaming)
+                    # Display the final message as a regular panel (not streaming)
                     if self.streaming_buffer.strip():
                         self.display_message(self.streaming_buffer, self.streaming_role)
                         # Store for deduplication
                         self.last_completed_message = self.streaming_buffer
 
-                    # NOW display any pending system messages (tool results) that arrived during streaming
-                    if self.pending_system_messages:
-                        for msg_content, msg_role in self.pending_system_messages:
-                            self.display_message(msg_content, msg_role)
-                        self.pending_system_messages.clear()
-
-                    # Clear stream ID
+                    # Clean up streaming panel
+                    self._finalize_streaming()
                     self._active_stream_id = None
 
                     # Store completed message for deduplication
@@ -2703,9 +2945,8 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                         self.processed_messages.add(completed_msg_key)
                         self.message_turn_map[completed_msg_key] = self.current_conversation_turn
 
-                    # Reset buffers
+                    # Reset buffer
                     self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""
                     return
 
             elif event_type == "token_update":
@@ -2718,16 +2959,11 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                 content = data.get("content", "")
                 category = data.get("category", MessageCategory.DIALOG)
 
-                # Buffer system output messages (tool results) if streaming is active
+                # Allow system output messages (tool results) to be displayed
                 if category == MessageCategory.SYSTEM_OUTPUT or category == "SYSTEM_OUTPUT":
-                    if self.is_streaming or self._active_stream_id is not None:
-                        # Buffer for display after streaming completes
-                        self.pending_system_messages.append((content, "system"))
-                        return
-                    else:
-                        # Not streaming, display immediately
-                        self.display_message(content, "system")
-                        return
+                    # Display tool results immediately
+                    self.display_message(content, "system")
+                    return
                     
                 # Skip other internal system messages
                 if category == MessageCategory.SYSTEM or category == "SYSTEM":
@@ -2746,7 +2982,6 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     # Clear streaming state for new turn
                     self.is_streaming = False
                     self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""
                     self.last_completed_message = ""
 
                 # For assistant messages, check if this was already displayed via streaming
@@ -2862,25 +3097,8 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
 
 
 @app.command()
-async def chat(): # Removed model, workspace, no_streaming options
-    """Start an interactive chat session with Penguin."""
-    global _core # Ensure we're referring to the global
-    if not _core:
-        # This should ideally be caught by main_entry's initialization.
-        # If `penguin chat` is called directly, main_entry runs first.
-        logger.warning("Chat command invoked, but core components appear uninitialized. main_entry should handle this.")
-        # Attempting to initialize with defaults if somehow missed.
-        try:
-            await _initialize_core_components_globally()
-        except Exception as e:
-            logger.error(f"Error re-initializing core for chat command: {e}", exc_info=True)
-            console.print(f"[red]Error: Core components failed to initialize for chat: {e}[/red]")
-            raise typer.Exit(code=1)
-        
-        if not _core: # Still not initialized after attempt
-            console.print("[red]Critical Error: Core components could not be initialized.[/red]")
-            raise typer.Exit(code=1)
-            
+async def chat():
+    """Start the TUI interactive chat."""
     await _run_interactive_chat()
 
 # Profile command remains largely the same, ensure it uses `console` correctly
@@ -2982,6 +3200,187 @@ def perf_test(
     
     asyncio.run(_async_perf_test())
 
+@msg_app.command("to-agent")
+def msg_to_agent(
+    agent_id: str = typer.Argument(..., help="Target agent id"),
+    content: str = typer.Argument(..., help="Message content"),
+    message_type: str = typer.Option("message", "--type", help="Envelope message_type: message|action|status"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Send a directed message to an agent via MessageBus."""
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        assert _core is not None
+        ok = await _core.send_to_agent(agent_id, content, message_type=message_type)
+        console.print(f"[bold green]Sent[/bold green] to {agent_id}: {ok}")
+    asyncio.run(_run())
+
+
+# ---------------------------- Coordinator CLI ----------------------------
+
+def _get_coordinator() -> "MultiAgentCoordinator":  # type: ignore
+    if MultiAgentCoordinator is None:
+        raise RuntimeError("Coordinator not available")
+    assert _core is not None
+    return MultiAgentCoordinator(_core)
+
+
+@coord_app.command("spawn")
+def coord_spawn(
+    agent_id: str = typer.Argument(..., help="New agent id"),
+    role: str = typer.Option(..., "--role", "-r", help="Agent role (e.g., planner, researcher, implementer)"),
+    system_prompt: Optional[str] = typer.Option(None, "--system-prompt", "-s", help="Optional system prompt override"),
+    model_max_tokens: Optional[int] = typer.Option(None, "--model-max-tokens", help="Clamp child CWM at this size"),
+    activate: bool = typer.Option(False, "--activate/--no-activate", help="Make this agent active by default"),
+    persona: Optional[str] = typer.Option(None, "--persona", "-p", help="Persona id from config to apply"),
+    model_config_id: Optional[str] = typer.Option(None, "--model-id", help="Model config id override"),
+    default_tools: Optional[List[str]] = typer.Option(None, "--tool", "-t", help="Restrict tools available to the agent (repeatable)"),
+    shared_cw_max_tokens: Optional[int] = typer.Option(None, "--shared-cw-max", help="Clamp shared context window tokens"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        assert _core is not None
+        coord = _get_coordinator()
+        personas = {entry.get("name") for entry in _core.get_persona_catalog()}
+        if persona and persona not in personas:
+            console.print(f"[red]Persona '{persona}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+        model_configs = getattr(_core.config, "model_configs", {}) or {}
+        if model_config_id and model_config_id not in model_configs:
+            console.print(f"[red]Model id '{model_config_id}' not found in configuration.[/red]")
+            raise typer.Exit(code=1)
+        tools_tuple = tuple(default_tools) if default_tools else None
+        await coord.spawn_agent(
+            agent_id,
+            role=role,
+            system_prompt=system_prompt,
+            model_max_tokens=model_max_tokens,
+            activate=activate,
+            persona=persona,
+            model_config_id=model_config_id,
+            default_tools=tools_tuple,
+            shared_cw_max_tokens=shared_cw_max_tokens,
+        )
+        console.print(f"[green]Spawned agent[/green] {agent_id} with role '{role}'")
+    asyncio.run(_run())
+
+
+@coord_app.command("destroy")
+def coord_destroy(
+    agent_id: str = typer.Argument(..., help="Agent id to destroy"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        await coord.destroy_agent(agent_id)
+        console.print(f"[yellow]Destroyed agent[/yellow] {agent_id} (conversation persists)")
+    asyncio.run(_run())
+
+
+@coord_app.command("register")
+def coord_register(
+    agent_id: str = typer.Argument(..., help="Existing agent id"),
+    role: str = typer.Option(..., "--role", "-r", help="Role to register under"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        coord.register_existing(agent_id, role=role)
+        console.print(f"[green]Registered agent[/green] {agent_id} to role '{role}'")
+    asyncio.run(_run())
+
+
+@coord_app.command("send-role")
+def coord_send_role(
+    role: str = typer.Option(..., "--role", "-r", help="Target role"),
+    content: str = typer.Argument(..., help="Message content"),
+    message_type: str = typer.Option("message", "--type", help="Envelope message_type"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        target = await coord.send_to_role(role, content, message_type=message_type)
+        console.print(f"Sent to role '{role}' agent: [cyan]{target}[/cyan]")
+    asyncio.run(_run())
+
+
+@coord_app.command("broadcast")
+def coord_broadcast(
+    roles: str = typer.Option(..., "--roles", help="Comma-separated roles to broadcast to"),
+    content: str = typer.Argument(..., help="Message content"),
+    message_type: str = typer.Option("message", "--type", help="Envelope message_type"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        role_list = [r.strip() for r in roles.split(',') if r.strip()]
+        sent = await coord.broadcast(role_list, content, message_type=message_type)
+        console.print(f"Broadcast sent to: {', '.join(sent) if sent else '(none)'}")
+    asyncio.run(_run())
+
+
+@coord_app.command("rr-workflow")
+def coord_rr_workflow(
+    role: str = typer.Option(..., "--role", "-r", help="Role to round-robin"),
+    prompts: List[str] = typer.Argument(..., help="List of prompts"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        await coord.simple_round_robin_workflow(prompts, role=role)
+        console.print(f"[green]Round-robin workflow complete[/green]")
+    asyncio.run(_run())
+
+
+@coord_app.command("role-chain")
+def coord_role_chain(
+    roles: str = typer.Option(..., "--roles", help="Comma-separated role chain (e.g., planner,researcher,implementer)"),
+    content: str = typer.Argument(..., help="Initial content"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        coord = _get_coordinator()
+        role_chain = [r.strip() for r in roles.split(',') if r.strip()]
+        await coord.role_chain_workflow(content, roles=role_chain)
+        console.print(f"[green]Role-chain workflow complete[/green]")
+    asyncio.run(_run())
+
+@msg_app.command("to-human")
+def msg_to_human(
+    content: str = typer.Argument(..., help="Message content"),
+    message_type: str = typer.Option("status", "--type", help="Envelope message_type: message|action|status"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Send a message to the human recipient via MessageBus."""
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        assert _core is not None
+        ok = await _core.send_to_human(content, message_type=message_type)
+        console.print(f"[bold green]Sent[/bold green] to human: {ok}")
+    asyncio.run(_run())
+
+@msg_app.command("human-reply")
+def msg_human_reply(
+    agent_id: str = typer.Argument(..., help="Target agent id"),
+    content: str = typer.Argument(..., help="Reply content"),
+    message_type: str = typer.Option("message", "--type", help="Envelope message_type"),
+    workspace: Optional[Path] = typer.Option(None, "--workspace", help="Workspace path override"),
+):
+    """Send a human reply to a specific agent (sender set to 'human')."""
+    async def _run():
+        await _initialize_core_components_globally(workspace_override=workspace)
+        assert _core is not None
+        ok = await _core.human_reply(agent_id, content, message_type=message_type)
+        console.print(f"[bold green]Human reply sent[/bold green] to {agent_id}: {ok}")
+    asyncio.run(_run())
+
 @app.command()
 def profile(
     output_file: str = typer.Option("penguin_profile", "--output", "-o", help="Output file name for profile data (without extension)"),
@@ -3074,12 +3473,8 @@ def profile(
 # async def chat_duplicate_disabled():  # deprecated duplicate chat, kept for reference but unused
 
 if __name__ == "__main__":
-    # This makes Typer process the CLI arguments and call the appropriate function.
-    # For async callbacks, we need to wrap app() with asyncio.run
     try:
         asyncio.run(app())
-    except Exception as e: # Catch any unhandled exceptions from Typer/asyncio layers
-        logger.critical(f"Unhandled exception at CLI entry point: {e}", exc_info=True)
-        console.print(f"[bold red]Unhandled Critical Error:[/bold red] {e}")
-        console.print("This is unexpected. Please check logs or report this issue.")
+    except Exception as e:
+        print(f"Unhandled exception at CLI entry point: {e}", file=sys.stderr)
         sys.exit(1)

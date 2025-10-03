@@ -62,9 +62,14 @@ class MultiEdit:
         edits = []
         
         # Split by file sections (lines starting with filename and ending with colon)
-        # Support both start-of-string and newline-delimited headers.
-        # Be generous: allow filenames without extensions and dotfiles.
-        sections = re.split(r'(?:^|\n)([^\n:]+):\n', multiedit_content.strip())
+        # FIXED: Only match lines that look like file headers, not diff content lines
+        # File headers must:
+        # 1. Be at start of string or after a newline
+        # 2. NOT start with diff markers (+, -, @, space)
+        # 3. Look like a file path (alphanumeric, dots, slashes, underscores, dashes)
+        # 4. End with : and newline
+        # Use negative lookahead to exclude lines starting with diff markers
+        sections = re.split(r'(?:^|\n)(?![+\-@ ])([a-zA-Z0-9_./-]+):\n', multiedit_content.strip())
         
         # First section may be empty/header, then alternating filenames and diffs
         for i in range(1, len(sections), 2):

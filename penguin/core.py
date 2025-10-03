@@ -143,6 +143,7 @@ Example:
 """
 
 import asyncio
+import inspect
 import logging
 import time
 import traceback
@@ -594,6 +595,11 @@ class PenguinCore:
             "emit_buffer": "",
             "last_emit_ts": 0.0,
         }
+
+        # RunMode state for UI streaming bridges
+        self._runmode_stream_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
+        self._runmode_active: bool = False
+        self.run_mode = None
 
         # Initialize project manager with workspace path from config
         from penguin.config import WORKSPACE_PATH
@@ -2668,16 +2674,21 @@ class PenguinCore:
         """
         # Store UI update callback for _handle_run_mode_event to use
         self._ui_update_callback = ui_update_callback_for_cli
-        
+        self._runmode_stream_callback = self._prepare_runmode_stream_callback(
+            stream_callback_for_cli
+        )
+        self._runmode_active = True
+
         # Initialize status
         self.current_runmode_status_summary = "Starting RunMode..."
-        
+
         try:
             run_mode = RunMode(
                 self,  # core instance
                 time_limit=time_limit,
                 event_callback=self._handle_run_mode_event
             )
+            self.run_mode = run_mode
             self._continuous_mode = continuous
 
             if continuous:
@@ -2716,6 +2727,9 @@ class PenguinCore:
             raise # Re-raise the exception so the caller knows starting run_mode failed
         
         finally:
+            self._runmode_active = False
+            self._runmode_stream_callback = None
+            self.run_mode = None
             # Clear the UI update callback reference when finished
             self._ui_update_callback = None
             
@@ -3066,7 +3080,7 @@ class PenguinCore:
         should_emit = (len(buf) >= min_chars) or (last_ts == 0.0) or ((ts_now - last_ts) >= min_interval)
         if should_emit:
             # Emit buffered chunk
-            await self.emit_ui_event("stream_chunk", {
+            payload = {
                 "stream_id": self._streaming_state.get("id"),
                 "chunk": buf,
                 "is_final": False,
@@ -3076,7 +3090,9 @@ class PenguinCore:
                 "reasoning_so_far": self._streaming_state.get("reasoning_content", ""),
                 "metadata": self._streaming_state["metadata"],
                 "is_reasoning": False,
-            })
+            }
+            await self.emit_ui_event("stream_chunk", payload)
+            await self._invoke_runmode_stream_callback(buf, message_type)
             self._streaming_state["emit_buffer"] = ""
             self._streaming_state["last_emit_ts"] = ts_now
         else:
@@ -3175,6 +3191,7 @@ class PenguinCore:
         # doesn't miss the tail end of the message.
         try:
             pending = self._streaming_state.get("emit_buffer", "")
+            callback_ref = self._runmode_stream_callback
             if pending:
                 asyncio.create_task(self.emit_ui_event("stream_chunk", {
                     "stream_id": self._streaming_state.get("id"),
@@ -3186,10 +3203,17 @@ class PenguinCore:
                     "reasoning_so_far": reasoning_content,
                     "metadata": final_message["metadata"],
                 }))
+                if callback_ref:
+                    asyncio.create_task(
+                        self._invoke_runmode_stream_callback(
+                            pending, "assistant", callback_ref
+                        )
+                    )
         except Exception:
             pass
 
         # Emit final streaming event with is_final=True
+        callback_ref = self._runmode_stream_callback
         asyncio.create_task(self.emit_ui_event("stream_chunk", {
             "stream_id": self._streaming_state.get("id"),
             "chunk": "",
@@ -3200,6 +3224,12 @@ class PenguinCore:
             "reasoning": reasoning_content,
             "metadata": final_message["metadata"],
         }))
+        if callback_ref:
+            asyncio.create_task(
+                self._invoke_runmode_stream_callback(
+                    "", "assistant", callback_ref
+                )
+            )
         
         # Reset streaming state
         self._streaming_state = {
@@ -3216,8 +3246,62 @@ class PenguinCore:
             "emit_buffer": "",
             "last_emit_ts": 0.0,
         }
-        
+
         return final_message
+
+    def _prepare_runmode_stream_callback(
+        self,
+        callback: Optional[Callable[..., Any]],
+    ) -> Optional[Callable[[str, str], Awaitable[None]]]:
+        """Normalize run mode stream callbacks to a common async signature."""
+        if not callback:
+            return None
+
+        if asyncio.iscoroutinefunction(callback):
+            sig = inspect.signature(callback)
+            expects_message_type = len(sig.parameters) >= 2
+
+            async def async_cb(chunk: str, message_type: str) -> None:
+                try:
+                    if expects_message_type:
+                        await callback(chunk, message_type)
+                    else:
+                        await callback(chunk)
+                except Exception as exc:
+                    logger.debug(
+                        "RunMode stream callback raised: %s", exc, exc_info=True
+                    )
+
+            return async_cb
+
+        sig = inspect.signature(callback)
+        expects_message_type = len(sig.parameters) >= 2
+
+        async def async_wrapper(chunk: str, message_type: str) -> None:
+            loop = asyncio.get_running_loop()
+            try:
+                if expects_message_type:
+                    await loop.run_in_executor(None, callback, chunk, message_type)
+                else:
+                    await loop.run_in_executor(None, callback, chunk)
+            except Exception as exc:
+                logger.debug("RunMode stream callback raised: %s", exc, exc_info=True)
+
+        return async_wrapper
+
+    async def _invoke_runmode_stream_callback(
+        self,
+        chunk: str,
+        message_type: str,
+        callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
+    ) -> None:
+        cb = callback or self._runmode_stream_callback
+        if not cb:
+            return
+        try:
+            await cb(chunk, message_type)
+        except Exception as exc:
+            logger.debug("RunMode stream callback execution failed: %s", exc, exc_info=True)
 
     # Update token usage notification to use events
     def update_token_display(self) -> None:

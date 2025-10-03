@@ -1,0 +1,60 @@
+# Penguin CLI-Specific Commands
+# Commands that only work or behave differently in the Rich CLI
+# For general commands, see commands.yml
+
+version: "2.0"
+
+# CLI-only command categories
+categories:
+  - name: debug
+    description: "Debugging and diagnostics (CLI-specific)"
+    icon: "🔍"
+
+# CLI-specific commands
+commands:
+  # Debug commands (use Rich Console features)
+  - name: debug
+    category: debug
+    description: "Show debug information with Rich panels"
+    handler: "action_show_debug"
+    note: "Uses Rich Console for formatted output"
+    
+  - name: "debug tokens"
+    category: debug
+    description: "Debug token counting with detailed breakdown"
+    handler: "_handle_debug_tokens"
+    note: "CLI-specific formatting"
+    
+  - name: "debug stream"
+    category: debug
+    description: "Debug streaming state and buffers"
+    handler: "_handle_debug_stream"
+    note: "Shows CLI streaming internals"
+    
+  - name: "debug sample"
+    category: debug
+    description: "Show sample debug data"
+    handler: "_handle_debug_sample"
+    note: "CLI panel demonstration"
+    
+  - name: recover
+    category: debug
+    description: "Force recovery of stuck Rich Live streams"
+    handler: "_force_stream_recovery"
+    note: "CLI streaming recovery - fixes Rich Live display issues"
+
+  - name: diff
+    category: debug
+    description: "Show syntax-aware diff with Rich Syntax highlighting"
+    parameters:
+      - name: a
+        type: string
+        required: true
+        description: "Left file or git ref:path"
+      - name: b
+        type: string
+        required: true
+        description: "Right file or git ref:path"
+    handler: "_handle_diff"
+    note: "Uses Rich Syntax for colored diff output"
+
