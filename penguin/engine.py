@@ -713,8 +713,26 @@ class Engine:
 
         # Still empty? Give up but do NOT pollute the history with blank messages.
         if not assistant_response or not assistant_response.strip():
-            logger.error("_llm_step received empty response after fallback attempt. Skipping message persistence.")
-            assistant_response = ""  # Preserve empty for caller but avoid history entry.
+            # Add diagnostics to help debug why we're getting empty responses
+            try:
+                msg_count = len(messages)
+                total_tokens = sum(len(str(m.get('content', ''))) for m in messages) // 4  # Rough estimate
+                logger.error(
+                    f"_llm_step received empty response after fallback attempt. "
+                    f"Conversation state: {msg_count} messages, ~{total_tokens} tokens. "
+                    f"Possible causes: context window exceeded, API quota, rate limiting, or model refusing to respond."
+                )
+            except Exception as diag_err:
+                logger.error(f"_llm_step received empty response (diagnostics failed: {diag_err})")
+            
+            # CRITICAL: Raise exception instead of returning empty string
+            # This prevents infinite retry loops in RunMode/continuous mode
+            from penguin.utils.errors import LLMEmptyResponseError
+            raise LLMEmptyResponseError(
+                "Model returned empty response after retry. "
+                "This may indicate: (1) Context window exceeded, (2) API quota/rate limit, "
+                "(3) Model refusing to respond. Try starting a new conversation or checking API status."
+            )
         else:
             # CRITICAL FIX: Always persist assistant message, regardless of streaming mode
             # Check if message was already added to avoid duplicates
