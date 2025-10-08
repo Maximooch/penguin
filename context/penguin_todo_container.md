@@ -291,7 +291,7 @@ spec:
 
 ### E) Configuration
 - Add webhook secret and allowed repos/orgs in `.penguin/config.yml`.
-- Expose toggles for which triggers are enabled and which commands are allowed in PRs/issues.
+- Expose toggles for which triggers are enabled and which commands are allowed in PRs/issues. 
 
 ---
 

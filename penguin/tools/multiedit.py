@@ -69,13 +69,13 @@ class MultiEdit:
         # 3. Look like a file path (alphanumeric, dots, slashes, underscores, dashes)
         # 4. End with : and newline
         # Use negative lookahead to exclude lines starting with diff markers
-        sections = re.split(r'(?:^|\n)(?![+\-@ ])([a-zA-Z0-9_./-]+):\n', multiedit_content.strip())
+        sections = re.split(r'(?:^|\n)(?![+\-@ ])([a-zA-Z0-9_./-]+):\n', multiedit_content)
         
         # First section may be empty/header, then alternating filenames and diffs
         for i in range(1, len(sections), 2):
             if i + 1 < len(sections):
                 filename = sections[i].strip()
-                diff_content = sections[i + 1].strip()
+                diff_content = sections[i + 1].lstrip("\n")
                 
                 # Resolve file path relative to workspace
                 file_path = self.workspace_root / filename
@@ -212,9 +212,35 @@ class MultiEdit:
             from penguin.tools.core.support import apply_diff_to_file
             # Try per-file fallback with transactional semantics
             applied_paths: List[str] = []
+            created_paths: List[str] = []
             for e in edits:
-                r = apply_diff_to_file(e.file_path, e.diff_content, backup=True, workspace_path=None, return_json=False)
-                if isinstance(r, str) and r.startswith("Error applying diff"):
+                target_path = Path(e.file_path)
+                r = apply_diff_to_file(
+                    e.file_path,
+                    e.diff_content,
+                    backup=True,
+                    workspace_path=None,
+                    return_json=False,
+                )
+
+                # Handle new file creation – create empty file then re-run without backup
+                if isinstance(r, str) and "File does not exist" in r:
+                    try:
+                        if not target_path.exists():
+                            target_path.parent.mkdir(parents=True, exist_ok=True)
+                            target_path.touch()
+                            created_paths.append(str(target_path))
+                        r = apply_diff_to_file(
+                            e.file_path,
+                            e.diff_content,
+                            backup=False,
+                            workspace_path=None,
+                            return_json=False,
+                        )
+                    except Exception as create_err:
+                        r = f"Error creating file {target_path}: {create_err}"
+
+                if isinstance(r, str) and r.lower().startswith("error"):
                     # Rollback previously applied
                     for prev in applied_paths:
                         try:
@@ -222,6 +248,13 @@ class MultiEdit:
                             bak = p.with_suffix(p.suffix + '.bak')
                             if bak.exists():
                                 shutil.copy2(bak, p)
+                        except Exception:
+                            pass
+                    for created in created_paths:
+                        try:
+                            Path(created).unlink()
+                        except FileNotFoundError:
+                            pass
                         except Exception:
                             pass
                     files_failed = [e.file_path]

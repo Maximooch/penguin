@@ -1,42 +1,36 @@
 # Penguin CLI Enhancement To-Do List
 
 **Created:** 2025-09-29  
-**Goal:** Fix UX issues in `old_cli.py` and improve prompting for CLI environments
+**Goal:** Polish the unified CLI (`penguin/cli/cli.py`) tooling surface, keep prompting aligned with terminal UX
 
 ---
 
 ## High Priority Tasks
 
-### 0. Add ASCII Art at Startup 🎨 ✅
-- **File:** `penguin/cli/old_cli.py`
-- **Status:** ✅ COMPLETED
-- **Issue:** CLI lacks visual polish at startup
-- **Fix:** Display ASCII art from README.md at welcome (line 2049-2082)
-- **Actual Time:** 3 minutes
-- **Lines modified:** 2049-2061 (added ASCII banner)
-- **Art source:** Lines 1-11 from README.md
+### 0. Align Tool Result Events with New Renderer 
+- **File:** `penguin/cli/cli.py`, `penguin/engine.py`, `penguin/utils/parser.py`
+- **Status:** 🚧 IN PROGRESS (design)
+- **Issue:** Tool results arrive as plain strings tagged only with `action_name`; CLI must guess formatting, and diff/file-read hints fail when metadata is missing.
+- **Fix:** Emit structured payloads (e.g., `{type, summary, body, path}`) from the action executor, propagate via `emit_ui_event("tool_result")`, and teach the CLI/TUI to render through a shared `ToolResultRenderer`.
+- **Next Steps:**
+  - [ ] Define `ToolResultPayload` dataclass + serialization helpers
+  - [ ] Update tool implementations to return the new payload
+  - [ ] Adjust `PenguinCLI.handle_event` to consume `tool_result` events directly instead of system messages
+  - [ ] Write unit tests covering diff + file-read + command execution paths
 
-### 1. Remove Duplicate User Messages ✅
-- **File:** `penguin/cli/old_cli.py`
-- **Status:** ✅ COMPLETED
-- **Issue:** User messages appear twice - once at input, once via event system
-- **Fix:** Commented out direct display at line 2125, rely on event system only
-- **Actual Time:** 1 minute
-- **Lines modified:** 2125 (commented out display_message call)
+### 1. Reuse Interactive Diff Renderer in Prompt Mode
+- **File:** `penguin/cli/cli.py`
+- **Status:** ⏳ TODO
+- **Issue:** Direct prompt path (`-p/--prompt`) prints raw text panels, so diffs are monochrome and file previews overflow the terminal.
+- **Fix:** Share `_display_diff_result` / `_display_file_read_result` between interactive and headless output. Introduce a light-weight renderer that can operate against `Console` or plain stdout.
+- **Notes:** Should piggy-back on the structured payload from Task 0; otherwise refactor soon after.
 
-### 2. Implement Reasoning Token Separate Panel Rendering ✅
-- **File:** `penguin/cli/old_cli.py`
-- **Status:** ✅ COMPLETED
-- **Issue:** Reasoning tokens exist but aren't displayed differently from regular content
-- **Fix:** Check `is_reasoning` flag and create SEPARATE panel with 🧠 icon in gray
-- **Actual Time:** 15 minutes
-- **Lines modified:** 
-  - 1504: Added reasoning_buffer attribute
-  - 2509: Reset reasoning buffer on new stream
-  - 2530-2538: Route chunks to correct buffer based on is_reasoning flag
-  - 2574-2584: Display reasoning panel with gray dim styling
-  - 2604, 2122, 2640: Reset reasoning buffer at stream boundaries
-- **Result:** Two separate panels - reasoning in gray, content in regular styling
+### 2. Remove stdout Noise from Tool Implementations
+- **File:** `penguin/tools/core/support.py`, `penguin/tools/multiedit.py`, `penguin/tools/tool_manager.py`
+- **Status:** ⏳ TODO
+- **Issue:** Tools `print(...)` paths and diff previews directly to stdout, bypassing CLI suppression. Examples: `enhanced_read_file`, `enhanced_diff`, multiedit dry-run logging.
+- **Fix:** Replace prints with logging or metadata inside the structured payload, and ensure CLI decides what to surface.
+- **Extra:** Add regression tests to ensure no bare prints slip into tool results.
 
 ### 3. Strengthen Tool Acknowledgment Rules in Prompts ✅
 - **File:** `penguin/prompt_workflow.py`
@@ -60,15 +54,6 @@
 
 ## Medium Priority Tasks
 
-### 5. Add `--no-tui` Flag Support ✅
-- **File:** `penguin/cli/old_cli.py`
-- **Status:** ✅ COMPLETED
-- **Issue:** `--no-tui` flag exists in cli_new.py but not in old_cli.py (active CLI)
-- **Fix:** Added flag to main_entry() and headless detection logic
-- **Actual Time:** 5 minutes
-- **Lines modified:** 491-494 (parameter), 561-593 (headless detection)
-- **Result:** `uv run penguin --no-tui` now works without error
-
 ### 6. Add CLI-Specific Reasoning Format to Prompts ✅
 - **File:** `penguin/prompt_workflow.py`
 - **Status:** ✅ COMPLETED
@@ -91,14 +76,11 @@
 
 ## Lower Priority Tasks
 
-### 8. Buffer Tool Results for Proper Ordering
-- **File:** `penguin/cli/old_cli.py`
-- **Status:** Pending (OPTIONAL)
-- **Issue:** Tool results display before assistant message that triggered them
-- **Fix:** Buffer SYSTEM_OUTPUT messages until streaming completes
-- **Estimated Time:** 1 hour
-- **Lines to modify:** 2578-2582, 2450-2463, add pending_tool_results buffer
-- **Complexity:** Medium - requires careful async handling
+### 8. Verify Pending System Message Buffering
+- **File:** `penguin/cli/cli.py`
+- **Status:** 🔍 NEEDS REVIEW
+- **Issue:** Pending buffer exists (`pending_system_messages`) but still leaks file contents because metadata lacks `action_type`.
+- **Fix:** After Task 0, assert buffer only displays summaries, never full file content. Add state machine tests.
 
 ---
 
@@ -107,78 +89,58 @@
 **Before Starting:**
 - [x] Analyze current code and identify root causes
 - [x] Document all issues in CLI_ISSUES_ANALYSIS.md
-- [ ] Confirm implementation priorities with user
+- [ ] Confirm implementation priorities with user (esp. Task 0 vs 1 order)
 - [ ] Ask clarifying questions (see below)
 
 **During Implementation:**
 - [ ] Create feature branch for CLI improvements
-- [ ] Implement fixes in order of priority
-- [ ] Test each fix individually
+- [ ] Implement fixes in order of priority (0 → 1 → 2 → 8 clean-up)
+- [ ] Test each fix individually (unit + manual CLI)
 - [ ] Update this todo as tasks complete
 
 **After Implementation:**
-- [ ] Run manual test: `uv run penguin --old-cli`
-- [ ] Verify no duplicate messages
-- [ ] Verify reasoning appears in gray
-- [ ] Verify code blocks format correctly
-- [ ] Verify tools execute only once
-- [ ] Test `--no-tui` flag works
+- [ ] Run manual test matrix:
+  - `uv run penguin` (interactive)
+  - `uv run penguin -p "show diff"`
+  - `uv run penguin -p "read README.md" --output-format json`
+- [ ] Verify diff panels show colors in both modes
+- [ ] Confirm file-read summaries suppress body text
+- [ ] Ensure tools execute only once and metadata is present
+- [ ] Test `--no-tui` toggle still works
 - [ ] Clean up any debug logging added
-- [ ] Update documentation if needed
+- [ ] Update docs/help text if renderer signature changes
 
 ---
 
 ## Questions Before Implementation (RESOLVED ✅)
 
-### Q1: Reasoning Token Display Style ✅ RESOLVED
-**Decision:** Implemented Option A + C
-- ✅ Always render reasoning-like content (from prompts) in gray separate panel
-- ✅ Implemented with `is_reasoning` flag detection from API
-- ✅ Made configurable through system prompt formatting
-
-**Implementation:**
-- Lines 1504, 2509, 2530-2538, 2574-2584 in `old_cli.py`
-- Separate reasoning buffer with gray dim styling
-- Real reasoning tokens from API rendered differently from regular content
+### Q1: Tool Result Payload Contract ❓ OPEN
+**Decision Needed:** Agree on schema + backward compatibility plan (JSON string vs Python dict, version tag?).
+- Options on the table:
+  - A) Small dict with `version: 1`, `type`, `summary`, `body`, `metadata`
+  - B) Pydantic model shared between core + web + CLI layers
+- Blocker for Tasks 0, 1, 2.
 
 ---
 
-### Q2: Reasoning Display Format ✅ RESOLVED
+### Q2: Renderer Sharing Across Modes ❓ OPEN
+**Need:** Decide whether to:
+- A) Instantiate `PenguinCLI` renderer inside prompt mode
+- B) Extract a standalone `Renderer` utility consumed by both CLI + prompt paths
+- C) Generate textual fallback for CI usage (no Rich dependency)
 
-**Decision:** Implemented Option B (Separate Reasoning Section)
-- ✅ Uses "Internal Reasoning" panel with gray dim styling
-- ✅ Displays BEFORE main response panel for chronological ordering
-- ✅ Strips markdown formatting for cleaner gray text display
-
-**Current Implementation:**
-```
-╭─ Internal Reasoning ─────────────────────── [dim gray]
-│ 🧠 I'll search the codebase for auth logic...
-╰──────────────────────────────────────────────────────────
-╭─ 🐧 Penguin ─────────────────────────────────────────────
-│ Now implementing the authentication flow...
-╰──────────────────────────────────────────────────────────
-```
+Preference leaning toward B for reuse by TUI/web too.
 
 ---
 
-### Q3: Tool Result Buffering Priority ✅ COMPLETED
-
-**Decision:** Implemented (Round 4 & 6 fixes)
-- ✅ Tool results now buffer during streaming and display AFTER assistant response
-- ✅ Uses `pending_system_messages` list to hold SYSTEM_OUTPUT category messages
-- ✅ Proper chronological ordering: User → Reasoning → Assistant → Tools
-
-**Implementation:** Lines 2525-2526, 2691-2695 in `old_cli.py`
+### Q3: stdout vs Logging ❓ OPEN
+**Observation:** Several tools still call `print(...)` for status, but we want structured outputs only.
+- Decide acceptable logging level (INFO vs DEBUG)
+- Provide helper in ToolManager to attach breadcrumbs to payload instead of printing
 
 ---
 
 ### Q4: Prompt Style Auto-Detection ✅ RESOLVED
-
-**Decision:** Implemented Option B with awareness
-- ✅ Uses config setting via `output.prompt_style` in prompt_workflow.py
-- ✅ CLI-specific reasoning format added to prompts (gray text, no HTML)
-- ✅ TUI continues using collapsible `<details>` blocks
 
 **Current behavior:** Prompts include both CLI and TUI guidance based on mode
 
@@ -186,18 +148,13 @@
 
 ### Q5: Code Block Formatting Strictness ✅ RESOLVED
 
-**Decision:** Implemented Option A (Prompt-based enforcement)
-- ✅ Added 5 critical formatting rules to prompt_workflow.py
-- ✅ Includes BAD/GOOD examples showing exact user issues
-- ✅ "MANDATORY blank line after imports" rule with examples
-
 **Implementation:** Lines 401-450, 502-538 in `prompt_workflow.py`
 
 ---
 
 ### Q6: Implementation Order ✅ COMPLETED
 
-**All tasks completed:**
+**All tasks completed:** (historic reference retained for traceability)
 
 1. ✅ Remove duplicate user messages (2 min) - Line 2125
 2. ✅ Add `--no-tui` flag (10 min) - Lines 491-494, 561-593

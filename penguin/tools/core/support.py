@@ -1338,7 +1338,7 @@ def apply_unified_patch(patch_text: str, workspace_path: Optional[str] = None, b
             # Apply patch to existing file using robust single-file editor
             res = apply_diff_to_file(str(target), fp['content'], backup=backup, workspace_path=workspace_path, return_json=return_json)
             results.append(res)
-            if isinstance(res, str) and res.startswith("Error applying diff"):
+            if isinstance(res, str) and res.lower().startswith("error"):
                 # rollback previously applied files
                 for prev in applied:
                     try:
