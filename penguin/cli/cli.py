@@ -177,6 +177,13 @@ if PROFILE_ENABLED:
     PenguinInterface_module = time_import("penguin.cli.interface")
     PenguinInterface = PenguinInterface_module.PenguinInterface
 
+    # Import unified command system
+    CommandRegistry_module = time_import("penguin.cli.commands")
+    CommandRegistry = CommandRegistry_module.CommandRegistry
+    TyperBridge_module = time_import("penguin.cli.typer_bridge")
+    TyperBridge = TyperBridge_module.TyperBridge
+    integrate_with_existing_app = TyperBridge_module.integrate_with_existing_app
+
     total_end = time.time()
     total_import_time = (total_end - total_start) * 1000  # Convert to ms
 
@@ -227,6 +234,11 @@ from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
 from penguin.utils.logs import setup_logger
+
+# Import unified command system
+from penguin.cli.commands import CommandRegistry
+from penguin.cli.typer_bridge import TyperBridge, integrate_with_existing_app
+from penguin.cli.renderer import UnifiedRenderer, RenderStyle
 
 try:
     # Prefer relative import to support repo and installed layouts
@@ -322,6 +334,10 @@ _interface: Optional[PenguinInterface] = None
 _model_config: Optional[ModelConfig] = None
 _api_client: Optional[APIClient] = None
 _tool_manager: Optional[ToolManager] = None
+
+# Initialize command registry and integrate with app
+_command_registry = CommandRegistry.get_instance()
+integrate_with_existing_app(app)
 _loaded_config: Optional[Union[Dict[str, Any], Config]] = (
     None  # Global config can be dict or Config
 )
@@ -500,6 +516,9 @@ async def _initialize_core_components_globally(
     # PenguinCore would need to accept a workspace_path argument or have a setter.
 
     _interface = PenguinInterface(_core)
+
+    # Set core on command registry for unified command handling
+    _command_registry.set_core(_core)
 
     logger.info(
         f"Core components initialized globally in {time.time() - init_start_time:.2f}s"
@@ -2449,6 +2468,15 @@ class PenguinCLI:
         self.in_247_mode = False
         self.message_count = 0
         self.console = RichConsole()  # Use RichConsole instead of Console
+
+        # Initialize unified renderer
+        self.renderer = UnifiedRenderer(
+            console=self.console,
+            style=RenderStyle.STANDARD,
+            show_timestamps=True,
+            show_metadata=False
+        )
+
         self.conversation_menu = ConversationMenu(self.console)
         self.core.register_progress_callback(self.on_progress_update)
 
@@ -2462,6 +2490,7 @@ class PenguinCLI:
         # Message tracking to prevent duplication
         self.processed_messages = set()
         self.last_completed_message = ""
+        self.last_completed_message_normalized = ""
 
         # Conversation turn tracking
         self.current_conversation_turn = 0
@@ -2614,8 +2643,20 @@ class PenguinCLI:
 
         return message
 
+    def _normalize_message_content(self, content: str) -> str:
+        """Normalize assistant content for duplicate detection."""
+        if not content:
+            return ""
+        # Remove collapsible reasoning blocks before comparison
+        cleaned = re.sub(
+            r"<details>.*?</details>", "", content, flags=re.DOTALL | re.IGNORECASE
+        )
+        # Normalize whitespace to avoid false mismatches
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
+
     def display_message(self, message: str, role: str = "assistant"):
-        """Display a message with proper formatting"""
+        """Display a message using the unified renderer"""
         # Skip if this is a duplicate of a recently processed message
         message_key = f"{role}:{message[:50]}"
 
@@ -2635,220 +2676,13 @@ class PenguinCLI:
             if role == "assistant":
                 self.last_completed_message = message
 
-        # Extract and display reasoning separately for assistant messages
-        if role == "assistant":
-            message = self._extract_and_display_reasoning(message)
-
-        # If we're currently streaming and this is the same content, finalize the stream instead
-        if (
-            role == "assistant"
-            and hasattr(self, "_streaming_started")
-            and self._streaming_started
-        ):
-            if message == self.streaming_buffer:
-                self._finalize_streaming()
-                return
-
-        if role == "system" and self._render_diff_message(message):
-            return
-
-        styles = {
-            "assistant": self.PENGUIN_COLOR,
-            "user": self.USER_COLOR,
-            "system": self.TOOL_COLOR,
-            "error": "red bold",
-            "output": self.RESULT_COLOR,
-            "code": self.CODE_COLOR,
-        }
-
-        emojis = {
-            "assistant": self.PENGUIN_EMOJI,
-            "user": "👤",
-            "system": "🐧",
-            "error": "⚠️",
-            "code": "💻",
-        }
-
-        style = styles.get(role, "white")
-        emoji = emojis.get(role, "💬")
-
-        # Special handling for welcome message
-        if role == "system" and "Welcome to the Penguin CLI!" in message:
-            header = f"{emoji} System (Welcome):"
-        elif role == "user":
-            # Format user messages in panels for better readability
-            header = f"{emoji} You"
-        else:
-            display_role = "Penguin" if role == "assistant" else role.capitalize()
-            header = f"{emoji} {display_role}"
-
-        # Enhanced code block formatting
-        processed_message = message or ""
-        code_blocks_found = False
-
-        # Process all code block patterns
-        for pattern, default_lang in self.CODE_BLOCK_PATTERNS:
-            # Extract code blocks with this pattern
-            matches = re.findall(pattern, processed_message, re.DOTALL)
-            if not matches:
-                continue
-
-            # Process matches based on pattern type
-            if default_lang == "{}":  # Standard markdown code block
-                for lang, code in matches:
-                    if not lang:
-                        lang = "text"  # Default to plain text if no language specified
-                    code_blocks_found = True
-                    processed_message = self._format_code_block(
-                        processed_message, code, lang, f"```{lang}{code}```"
-                    )
-            else:  # Tag-based code block
-                for i, code_match in enumerate(matches):
-                    # Handle single group or multi-group regex results
-                    code = code_match if isinstance(code_match, str) else code_match[0]
-                    lang = default_lang
-
-                    tag_start = f"<{lang}>" if lang != "python" else "<execute>"
-                    tag_end = f"</{lang}>" if lang != "python" else "</execute>"
-                    original_block = f"{tag_start}{code}{tag_end}"
-
-                    code_blocks_found = True
-                    processed_message = self._format_code_block(
-                        processed_message, code, lang, original_block
-                    )
-
-        # Special case: Look for code-like content in non-tagged system messages
-        if role == "system" and not code_blocks_found:
-            # Try to find code-like blocks in the message
-            lines = processed_message.split("\n")
-            code_block_lines = []
-            in_code_block = False
-            start_line = 0
-
-            for i, line in enumerate(lines):
-                # Heuristics to detect code block starts:
-                # - Line starts with indentation followed by code-like content
-                # - Line contains common code elements like 'def', 'import', etc.
-                # - Line starts with a common programming construct
-                code_indicators = [
-                    re.match(r"\s{2,}[a-zA-Z0-9_]", line),  # Indented code
-                    re.search(
-                        r"(def|class|import|function|var|let|const)\s+", line
-                    ),  # Keywords
-                    re.match(r"[a-zA-Z0-9_\.]+\s*\(.*\)", line),  # Function calls
-                    re.search(r"=.*?;?\s*$", line),  # Assignments
-                ]
-
-                if any(code_indicators) and not in_code_block:
-                    # Start of a potential code block
-                    in_code_block = True
-                    start_line = i
-                elif in_code_block and (not line.strip() or not any(code_indicators)):
-                    # End of a code block
-                    if i - start_line > 1:  # At least 2 lines of code
-                        code_text = "\n".join(lines[start_line:i])
-                        lang = self._detect_language(code_text)
-
-                        # Only format if it looks like valid code
-                        if lang != "text":
-                            # Replace in the original message
-                            for j in range(start_line, i):
-                                lines[j] = ""
-                            lines[start_line] = (
-                                f"[Code block displayed below ({self.LANGUAGE_DISPLAY_NAMES.get(lang, lang.capitalize())})]"
-                            )
-
-                            # Add to code blocks
-                            code_block_lines.append((code_text, lang))
-
-                    in_code_block = False
-
-            # Handle a code block that goes to the end
-            if in_code_block and len(lines) - start_line > 1:
-                code_text = "\n".join(lines[start_line:])
-                lang = self._detect_language(code_text)
-
-                if lang != "text":
-                    # Replace in the original message
-                    for j in range(start_line, len(lines)):
-                        lines[j] = ""
-                    lines[start_line] = (
-                        f"[Code block displayed below ({self.LANGUAGE_DISPLAY_NAMES.get(lang, lang.capitalize())})]"
-                    )
-
-                    # Add to code blocks
-                    code_block_lines.append((code_text, lang))
-
-            # Reassemble the message
-            processed_message = "\n".join(lines)
-
-            # Display the detected code blocks
-            for code_text, lang in code_block_lines:
-                lang_display = self.LANGUAGE_DISPLAY_NAMES.get(lang, lang.capitalize())
-                highlighted_code = Syntax(
-                    code_text.strip(),
-                    lang,
-                    theme="monokai",
-                    line_numbers=True,
-                    word_wrap=True,
-                )
-
-                code_panel = Panel(
-                    highlighted_code,
-                    title=f"📋 {lang_display} Code",
-                    title_align="left",
-                    border_style=self.CODE_COLOR,
-                    padding=(1, 2),
-                )
-                self.console.print(code_panel)
-
-        # Handle code blocks in tool outputs (like execute results)
-        if (
-            role == "system"
-            and "action" in message.lower()
-            and "result" in message.lower()
-        ):
-            # Check if this is a code execution result
-            if "execute" in message.lower():
-                # Try to extract the code output
-                match = re.search(r"Result: (.*?)(?:Status:|$)", message, re.DOTALL)
-                if match:
-                    code_output = match.group(1).strip()
-                    # Detect if this contains code
-                    if code_output and (
-                        code_output.count("\n") > 0
-                        or "=" in code_output
-                        or "def " in code_output
-                        or "import " in code_output
-                    ):
-                        # Detect language
-                        language = self._detect_language(code_output)
-                        lang_display = self.LANGUAGE_DISPLAY_NAMES.get(
-                            language, language.capitalize()
-                        )
-
-                        # Display output in a special panel
-                        self._display_code_output_panel(code_output, language, "Output")
-                        # Simplify the message to avoid duplication
-                        processed_message = message.replace(
-                            code_output, f"[{lang_display} output displayed above]"
-                        )
-
-        # Regular message display with markdown
-        panel = Panel(
-            Markdown(processed_message),
-            title=header,
-            title_align="left",
-            border_style=style,
-            width=self.console.width - 8,
-            box=rich.box.ROUNDED,
+        # Use unified renderer for all message rendering
+        panel = self.renderer.render_message(
+            message,
+            role=role,
+            as_panel=True
         )
         self.console.print(panel)
-
-        # If message is suspiciously short, could provide visual indication
-        if len(message.strip()) <= 1:
-            # Add visual indicator that response was truncated
-            message = f"{message} [Response truncated due to context limitations]"
 
     def _format_code_block(self, message, code, language, original_block):
         """Format a code block with syntax highlighting and return updated message"""
@@ -3467,6 +3301,7 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                 self.streaming_buffer = ""
                 self.streaming_reasoning_buffer = ""
                 self.last_completed_message = ""
+                self.last_completed_message_normalized = ""
 
                 # DON'T display user input here - let event system handle it
                 # (Prevents duplicate display: once here, once from Core event)
@@ -3949,63 +3784,68 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                         # Add to regular content buffer
                         self.streaming_buffer += chunk
 
-                    # Update or create streaming panel
+                    # Update or create streaming panel using unified renderer
                     if not getattr(self, "streaming_live", None):
-                        panel = Panel(
-                            Markdown(self.streaming_buffer),
-                            title=f"{self.PENGUIN_EMOJI} Penguin",
-                            title_align="left",
-                            border_style=self.PENGUIN_COLOR,
-                            width=self.console.width - 8,
+                        # Use unified renderer for streaming message
+                        panel = self.renderer.render_streaming_message(
+                            self.streaming_buffer,
+                            role=self.streaming_role,
+                            show_cursor=True
                         )
                         self.streaming_live = Live(
                             panel,
                             refresh_per_second=10,
                             console=self.console,
-                            vertical_overflow="visible",
+                            auto_refresh=True,
+                            transient=False  # Keep visible after stop
                         )
                         self.streaming_live.start()
                     else:
                         try:
-                            panel = Panel(
-                                Markdown(self.streaming_buffer),
-                                title=f"{self.PENGUIN_EMOJI} Penguin",
-                                title_align="left",
-                                border_style=self.PENGUIN_COLOR,
-                                width=self.console.width - 8,
+                            # Update with unified renderer
+                            panel = self.renderer.render_streaming_message(
+                                self.streaming_buffer,
+                                role=self.streaming_role,
+                                show_cursor=True
                             )
                             self.streaming_live.update(panel)
-                        except Exception:
-                            # fallback
-                            print(chunk, end="", flush=True)
+                        except Exception as e:
+                            # Log the error and recreate Live display
+                            logger.error(f"Live.update() failed: {e}, recreating Live display")
+                            try:
+                                self.streaming_live.stop()
+                            except:
+                                pass
+                            self.streaming_live = None
+                            # Will be recreated on next chunk
 
                 if is_final:
-                    # Final chunk received - display final message and clean up
+                    # Final chunk received - clean up streaming state
                     self.is_streaming = False
+
+                    # IMPORTANT: Stop the streaming Live display (it will persist with transient=False)
+                    if getattr(self, "streaming_live", None):
+                        try:
+                            self.streaming_live.stop()
+                        except Exception:
+                            pass
+                        self.streaming_live = None
 
                     # Display reasoning panel FIRST if we have reasoning content
                     if self.streaming_reasoning_buffer.strip():
-                        from rich.text import Text
-
-                        reasoning_display = Text(
-                            self.streaming_reasoning_buffer, style="dim italic"
-                        )
-                        reasoning_panel = Panel(
-                            reasoning_display,
-                            title="[dim]🧠 Internal Reasoning[/dim]",
-                            title_align="left",
-                            border_style="dim",
-                            width=self.console.width - 8,
-                            box=rich.box.SIMPLE,
-                            padding=(0, 1),
+                        # Use unified renderer for reasoning
+                        reasoning_panel = self.renderer.render_reasoning(
+                            self.streaming_reasoning_buffer
                         )
                         self.console.print(reasoning_panel)
 
-                    # Then display the final message as a regular panel (not streaming)
+                    # DON'T print final message - Live display already shows it (transient=False keeps it visible)
+                    # Just store for deduplication
                     if self.streaming_buffer.strip():
-                        self.display_message(self.streaming_buffer, self.streaming_role)
-                        # Store for deduplication
                         self.last_completed_message = self.streaming_buffer
+                        self.last_completed_message_normalized = (
+                            self._normalize_message_content(self.streaming_buffer)
+                        )
 
                     # NOW display any pending system messages (tool results) that arrived during streaming
                     if self.pending_system_messages:
@@ -4073,6 +3913,11 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
 
                 # Generate a message key and check if we've already processed this message
                 msg_key = f"{role}:{content[:50]}"
+                incoming_normalized = (
+                    self._normalize_message_content(content)
+                    if role == "assistant"
+                    else ""
+                )
                 if msg_key in self.processed_messages:
                     return
 
@@ -4086,12 +3931,27 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     self.streaming_buffer = ""
                     self.streaming_reasoning_buffer = ""
                     self.last_completed_message = ""
+                    self.last_completed_message_normalized = ""
 
                 # For assistant messages, check if this was already displayed via streaming
                 if role == "assistant":
                     # Skip if this message was already displayed via streaming
-                    if content == self.last_completed_message:
+                    # Use startswith to handle minor formatting differences
+                    if self.last_completed_message and (
+                        content == self.last_completed_message or
+                        content.startswith(self.last_completed_message[:50]) or
+                        self.last_completed_message.startswith(content[:50])
+                    ):
                         # Add to processed messages to avoid future duplicates
+                        self.processed_messages.add(msg_key)
+                        self.message_turn_map[msg_key] = self.current_conversation_turn
+                        return
+
+                    if (
+                        self.last_completed_message_normalized
+                        and incoming_normalized
+                        and incoming_normalized == self.last_completed_message_normalized
+                    ):
                         self.processed_messages.add(msg_key)
                         self.message_turn_map[msg_key] = self.current_conversation_turn
                         return
@@ -4102,6 +3962,10 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
 
                 # Display the message
                 self.display_message(content, role)
+
+                if role == "assistant":
+                    self.last_completed_message = content
+                    self.last_completed_message_normalized = incoming_normalized
 
             elif event_type == "status":
                 # Handle status events like RunMode updates

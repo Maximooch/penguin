@@ -72,6 +72,7 @@ def create_app() -> "FastAPI":
         from fastapi.staticfiles import StaticFiles
         from fastapi.middleware.cors import CORSMiddleware
         from .routes import router, get_capabilities
+        from .integrations.github_webhook import router as github_webhook_router
     except ImportError:
         raise ImportError(
             "FastAPI and related dependencies not available. "
@@ -104,9 +105,11 @@ def create_app() -> "FastAPI":
     except Exception:
         logger.info("Model configs loaded: unknown")
     router.core = core
+    github_webhook_router.core = core
 
     # Include API routes
     app.include_router(router)
+    app.include_router(github_webhook_router)
 
     # Mount static files for web UI
     static_dir = Path(__file__).parent / "static"

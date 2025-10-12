@@ -524,25 +524,15 @@ class PenguinCore:
         self.progress_callbacks = []
         self.token_callbacks = []
         self._active_contexts = set()  # Track active execution contexts
-        
-        # Add event system
+
+        # Initialize unified event system
+        from penguin.cli.events import EventBus, EventType
+        self.event_bus = EventBus.get_sync()
+
+        # Legacy UI subscribers for backward compatibility
+        # Will forward to event bus
         self.ui_subscribers: List[EventHandler] = []
-        # Allowed UI event types – expanded to include action/tool events emitted
-        # by the Engine/RunMode so the TUI can consume them without warnings.
-        self.event_types: Set[str] = {
-            "stream_chunk",
-            "token_update",
-            "message",
-            "status",
-            "error",
-            # Additional structured events used across the app
-            "action",
-            "action_result",
-            "tool_call",
-            "tool_result",
-            # Human-in-the-loop adapter events
-            "human_message",
-        }
+        self.event_types = {e.value for e in EventType}
 
         # Telemetry collector
         ensure_telemetry(self)
@@ -2950,17 +2940,16 @@ class PenguinCore:
             logger.debug(f"Unregistered UI event handler: {handler.__qualname__ if hasattr(handler, '__qualname__') else str(handler)}")
     
     async def emit_ui_event(self, event_type: str, data: Dict[str, Any]) -> None:
-        logger.debug(f"Core emit_ui_event {event_type} keys={list(data.keys())}")
         """
-        Emit an event to all registered UI subscribers.
-        
+        Emit an event through the unified event bus.
+        Also maintains backward compatibility with legacy subscribers.
+
         Args:
             event_type: Type of event (e.g., "stream_chunk", "token_update", etc.)
             data: Event data relevant to the event type
         """
-        if event_type not in self.event_types:
-            logger.warning(f"Emitting event of unknown type: {event_type}")
-            
+        logger.debug(f"Core emit_ui_event {event_type} keys={list(data.keys())}")
+
         # Tag with agent_id when available so UI can label sources
         try:
             if isinstance(data, dict):
@@ -2973,12 +2962,12 @@ class PenguinCore:
         except Exception:
             pass
 
-        logger.debug(f"Emitting UI event: {event_type} with data keys: {list(data.keys())}")
-        
+        # Emit through unified event bus
+        await self.event_bus.emit(event_type, data)
+
+        # Backward compatibility: call legacy subscribers
         for handler in self.ui_subscribers:
             try:
-                # CRITICAL FIX: Make event emission fire-and-forget to prevent blocking streaming
-                # Check if the handler is a coroutine function and call it appropriately
                 if asyncio.iscoroutinefunction(handler):
                     # Don't await - let it run in background to prevent stalling streaming
                     asyncio.create_task(self._handle_ui_event_safe(handler, event_type, data))
@@ -2986,7 +2975,7 @@ class PenguinCore:
                     # Call synchronous handler directly (these are typically fast)
                     handler(event_type, data)
             except Exception as e:
-                logger.error(f"Error in UI event handler during {event_type} event: {e}", exc_info=True)
+                logger.error(f"Error in legacy UI event handler during {event_type} event: {e}", exc_info=True)
 
     async def _handle_ui_event_safe(self, handler: Callable, event_type: str, data: Dict[str, Any]) -> None:
         """

@@ -19,6 +19,9 @@ import rich.box # Added for table box style
 from rich.live import Live # type: ignore
 from rich.layout import Layout
 
+# Import unified renderer
+from penguin.cli.renderer import UnifiedRenderer, RenderStyle
+
 # Add project root to sys.path - This might not be needed if ui.py is part of the package
 # and imported correctly by the main CLI. For now, let's assume direct imports work
 # or the main CLI handles path adjustments.
@@ -118,7 +121,7 @@ class CLIRenderer:
         """
         Initialize the renderer with a console object and a core instance.
         Subscribes to Core events for UI updates.
-        
+
         Args:
             console: Rich console for rendering
             core: PenguinCore instance to subscribe to
@@ -126,6 +129,14 @@ class CLIRenderer:
         logger.debug("Initializing CLIRenderer")
         self.console = console
         self.core = core
+
+        # Initialize unified renderer
+        self.renderer = UnifiedRenderer(
+            console=self.console,
+            style=RenderStyle.STANDARD,
+            show_timestamps=True,
+            show_metadata=False
+        )
         
         # Streaming state - simplified
         self.streaming_message_data = {}
@@ -169,11 +180,19 @@ class CLIRenderer:
         # Messages cache from conversation manager
         self.conversation_messages: List[Dict[str, Any]] = []
         
-        # Register with Core for events
+        # Register with unified event bus for all events
+        from penguin.cli.events import EventBus, EventType
+        event_bus = EventBus.get_sync()
+
+        # Subscribe to relevant event types
+        for event_type in EventType:
+            event_bus.subscribe(event_type.value, self.handle_event)
+        logger.debug("Subscribed to unified event bus for all UI events")
+
+        # Also register with Core for backward compatibility
         if self.core:
-            # Register the synchronous wrapper instead of the async method
-            self.core.register_ui(self.handle_event_sync)
-            logger.debug("Registered with Core for UI events")
+            self.core.register_ui(self.handle_event)
+            logger.debug("Also registered with Core for backward compatibility")
         
         # Call update once to build initial state
         self.update_token_stats(None)
@@ -371,71 +390,12 @@ class CLIRenderer:
         return layout
 
     def _render_text_segment(self, text_content: str) -> List[Any]:
-        # This new helper contains the original logic for processing a string
-        # (finding code blocks, rendering markdown for parts)
-        renderables = []
-        last_end = 0
-
-        for match in CODE_BLOCK_PATTERNS.finditer(text_content):
-            start, end = match.span()
-            lang = match.group(1)
-            code = match.group(2)
-
-            if start > last_end:
-                preceding_text = text_content[last_end:start].strip()
-                if preceding_text:
-                    renderables.append(Markdown(preceding_text))
-            
-            display_lang = LANGUAGE_DISPLAY_NAMES.get(lang, lang.capitalize() if lang else "Code")
-            syntax = Syntax(code, lexer=lang if lang else "text", theme="default", line_numbers=True, word_wrap=True)
-            code_panel = Panel(syntax, title=display_lang, border_style=THEME_COLORS.get("code_border", "dim blue"), padding=(0, 1), expand=False)
-            renderables.append(code_panel)
-            last_end = end
-
-        if last_end < len(text_content):
-            remaining_text = text_content[last_end:].strip()
-            if remaining_text:
-                renderables.append(Markdown(remaining_text))
-
-        if not renderables and text_content: # Whole thing is markdown (no code blocks)
-             renderables.append(Markdown(text_content.strip()))
-        # Removed the empty text segment case as _render_message_content handles overall empty/waiting states
-
-        return renderables
+        """Use unified renderer for text segment rendering"""
+        return self.renderer._render_text_segment(text_content)
 
     def _render_message_content(self, content: Any, role_for_theme: str = "default") -> Group:
-        """Renders message content, handling Markdown, code blocks, and multimodal list content."""
-        overall_renderables = []
-
-        if isinstance(content, list): # Multimodal content
-            for item in content:
-                item_type = item.get("type")
-                if item_type == "text":
-                    text_segment = item.get("text", "")
-                    if text_segment: 
-                        segment_renderables = self._render_text_segment(text_segment)
-                        overall_renderables.extend(segment_renderables)
-                elif item_type == "image_url":
-                    image_path = item.get("image_path", "unknown image")
-                    overall_renderables.append(Text(f"[Image: {image_path}]", style="dim italic"))
-                # else: handle other future multimodal types like audio, video etc.
-            if not overall_renderables: 
-                overall_renderables.append(Text("(Empty or unrenderable multimodal content)", style="dim italic"))
-        elif isinstance(content, str): # Existing string content
-            string_renderables = self._render_text_segment(content)
-            overall_renderables.extend(string_renderables)
-            if not overall_renderables and not content: # String content was empty
-                 overall_renderables.append(Text("(Waiting for response...)", style="dim italic"))
-            elif not overall_renderables and content: # String content not empty but _render_text_segment returned nothing (e.g. just whitespace)
-                 overall_renderables.append(Markdown(content.strip())) # Try rendering the stripped original as Markdown
-
-        else: # Fallback for unexpected content type or if content is None/empty after processing
-            if not content and not overall_renderables: # Specifically if initial content was None or empty string
-                overall_renderables.append(Text("(Waiting for response...)", style="dim italic"))
-            elif not overall_renderables: # Content was of an unsupported type, or other empty case
-                overall_renderables.append(Text(f"(Unsupported or empty content: type {type(content)})", style="dim italic error"))
-            
-        return Group(*overall_renderables)
+        """Use unified renderer for message content"""
+        return self.renderer.render_content(content, role_for_theme)
 
     def _build_conversation_area_content(self) -> Group:
         """
@@ -625,62 +585,10 @@ class CLIRenderer:
         return self.get_layout_renderable()
 
     def render_message_panel(self, message_data: Dict[str, Any]) -> Panel:
-        """
-        Renders a single message into a Rich Panel.
-        Handles different roles and formats content with Markdown/code blocks.
-        """
-        logger.debug(f"Rendering message panel for role: {message_data.get('role', 'unknown')}")
-        
-        # Extract message data
-        role = message_data.get("role", "unknown").lower()
-        content = message_data.get("content", "")
-        category_name = message_data.get("category", MessageCategory.UNKNOWN.name) # Get category name
-        if isinstance(category_name, MessageCategory):
-            category_name = category_name.name
-        timestamp_str = message_data.get("timestamp", "")
-        metadata = message_data.get("metadata", {})
-
-        # Determine panel title and style based on role and category
-        panel_title_text = role.capitalize()
-        if role == "system" and category_name:
-            panel_title_text = f"System ({category_name.replace('_', ' ').title()})"
-        elif role == "assistant":
-            panel_title_text = "Penguin"
-            if metadata.get("tool_name"):
-                panel_title_text = f"Penguin (Tool: {metadata.get('tool_name')})"
-            elif metadata.get("is_streaming"):
-                panel_title_text = "Penguin (streaming)"
-
-        panel_border_style = THEME_COLORS.get(f"message_panel_{role}", THEME_COLORS.get("message_panel_default", "white"))
-        if role == "system" and category_name == MessageCategory.ERROR.name:
-            panel_border_style = THEME_COLORS.get("error", "bold red")
-        
-        # Special handling for streaming assistant message
-        is_streaming = metadata.get("is_streaming", False)
-        text_to_render = content
-        if is_streaming and role == "assistant":
-            if not text_to_render.strip():
-                text_to_render = "Waiting for response... 🐧"
-            elif not text_to_render.endswith("🐧"):
-                text_to_render += " 🐧"
-
-        rendered_content_group = self._render_message_content(text_to_render, role_for_theme=role)
-
-        # Add timestamp to title if available
-        if timestamp_str:
-            formatted_time = self._safe_format_timestamp(timestamp_str)
-            if formatted_time:
-                panel_title_text += f" @ {formatted_time}"
-
-        # Add logging for panels
-        logger.debug(f"Creating panel with title: {panel_title_text}, role: {role}, category: {category_name}")
-
-        return Panel(
-            rendered_content_group,
-            title=panel_title_text,
-            border_style=panel_border_style,
-            padding=(0,1), # Minimal vertical padding
-            expand=True # Allow panel to expand horizontally
+        """Use unified renderer for message panels"""
+        return self.renderer.render_message(
+            message_data,
+            as_panel=True
         )
 
     def render_message_list(self, messages: List[Dict[str, Any]], title: str = "Conversation History") -> Panel:
@@ -737,18 +645,8 @@ class CLIRenderer:
         return table
         
     def render_error(self, error_message: str, details: Optional[str] = None) -> Panel:
-        """Renders an error message in a styled panel."""
-        error_text = Text(error_message, style=THEME_COLORS.get("error", "bold red"))
-        if details:
-            error_text.append("\n\nDetails:\n", style="bold")
-            error_text.append(details, style="") # Default style for details
-            
-        return Panel(
-            error_text, 
-            title="❌ Error", 
-            border_style=THEME_COLORS.get("error", "bold red"),
-            padding=(1,1) # Add some padding for errors
-        )
+        """Use unified renderer for error messages"""
+        return self.renderer.render_error(error_message, details=details)
 
     def reset_response_area(self) -> None:
         """Reset streaming state and other UI state."""
