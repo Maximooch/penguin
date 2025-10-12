@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 class RenderStyle(Enum):
     """Rendering style presets"""
+    MINIMAL = "minimal"      # No panels, just headers (best for copy/paste)
     COMPACT = "compact"      # Minimal borders, less padding
     STANDARD = "standard"    # Default Rich styling
     DETAILED = "detailed"    # Extra metadata, timestamps
@@ -264,13 +265,20 @@ class UnifiedRenderer:
         # Create final group
         message_group = Group(*renderables) if len(renderables) > 1 else renderables[0]
 
-        # Wrap in panel if requested
-        if as_panel:
+        # Wrap in panel if requested AND not in MINIMAL mode
+        if as_panel and self.style != RenderStyle.MINIMAL:
             return self.create_message_panel(
                 message_group,
                 role=role,
                 timestamp=timestamp,
                 metadata=metadata
+            )
+        elif as_panel and self.style == RenderStyle.MINIMAL:
+            # MINIMAL mode: just add a simple header instead of panel
+            return self.create_minimal_message(
+                message_group,
+                role=role,
+                timestamp=timestamp
             )
 
         return message_group
@@ -356,9 +364,10 @@ class UnifiedRenderer:
                 if preceding_text:
                     renderables.append(Markdown(preceding_text))
 
-            # Render code block
-            code_panel = self.render_code_block(code, language)
-            renderables.append(code_panel)
+            # Render code block (skip if empty)
+            if code.strip():
+                code_panel = self.render_code_block(code, language)
+                renderables.append(code_panel)
             last_end = end
 
         # Add remaining text
@@ -509,13 +518,20 @@ class UnifiedRenderer:
         # Use Markdown rendering for reasoning content for proper formatting
         from rich.markdown import Markdown
 
-        return Panel(
-            Markdown(reasoning.strip()),
-            title="🧠 Reasoning",
-            title_align="left",
-            border_style=THEME_COLORS["reasoning"],
-            padding=(0, 1) if self.style == RenderStyle.COMPACT else (1, 2)
-        )
+        if self.style == RenderStyle.MINIMAL:
+            # MINIMAL mode: just header + content (gray/dim text), no panel
+            header = Text("🧠 Reasoning:", style="bold dim")
+            content = Text(reasoning.strip(), style="dim")  # Gray dim text
+            return Group(header, content, Text(""))
+        else:
+            # Panel mode for other styles
+            return Panel(
+                Markdown(reasoning.strip()),
+                title="🧠 Reasoning",
+                title_align="left",
+                border_style=THEME_COLORS["reasoning"],
+                padding=(0, 1) if self.style == RenderStyle.COMPACT else (1, 2)
+            )
 
     def render_tool_result(self, result: Dict) -> List[Any]:
         """
@@ -671,6 +687,47 @@ class UnifiedRenderer:
             box=box_style,
             padding=(0, 1) if self.style == RenderStyle.COMPACT else (1, 2)
         )
+
+    def create_minimal_message(self,
+                              content: Any,
+                              role: str = "assistant",
+                              timestamp: Optional[Union[str, datetime]] = None) -> Group:
+        """
+        Create a minimal message with just a header (no panel borders).
+
+        Args:
+            content: Content to display
+            role: Message role
+            timestamp: Optional timestamp
+
+        Returns:
+            Group with header + content
+        """
+        # Role emojis and names
+        role_info = {
+            "user": ("👤", "You"),
+            "assistant": ("🐧", "Penguin"),
+            "system": ("⚙️", "System"),
+            "error": ("❌", "Error"),
+            "tool": ("🔧", "Tool"),
+        }
+        emoji, display_name = role_info.get(role, ("💬", role.capitalize()))
+
+        # Build header
+        header_parts = [f"{emoji} {display_name}:"]
+        if self.show_timestamps and timestamp:
+            formatted_time = self.format_timestamp(timestamp)
+            if formatted_time:
+                header_parts.append(f"[{formatted_time}]")
+
+        header_text = " ".join(header_parts)
+
+        # Create header with color
+        border_style = THEME_COLORS.get(role, "white")
+        header = Text(header_text, style=f"bold {border_style}")
+
+        # Return header + content
+        return Group(header, content, Text(""))  # Empty text for spacing
 
     def format_timestamp(self, timestamp: Union[str, datetime, None]) -> str:
         """

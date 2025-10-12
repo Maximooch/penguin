@@ -2469,11 +2469,11 @@ class PenguinCLI:
         self.message_count = 0
         self.console = RichConsole()  # Use RichConsole instead of Console
 
-        # Initialize unified renderer
+        # Initialize unified renderer with MINIMAL style (no panels for easier copy/paste)
         self.renderer = UnifiedRenderer(
             console=self.console,
-            style=RenderStyle.STANDARD,
-            show_timestamps=True,
+            style=RenderStyle.MINIMAL,
+            show_timestamps=False,
             show_metadata=False
         )
 
@@ -2677,12 +2677,17 @@ class PenguinCLI:
                 self.last_completed_message = message
 
         # Use unified renderer for all message rendering
-        panel = self.renderer.render_message(
-            message,
-            role=role,
-            as_panel=True
-        )
-        self.console.print(panel)
+        # Special case: Welcome message always uses panel even in MINIMAL mode
+        if role == "system" and "Welcome to Penguin" in message:
+            # Temporarily switch to STANDARD for welcome message
+            original_style = self.renderer.style
+            self.renderer.style = RenderStyle.STANDARD
+            panel = self.renderer.render_message(message, role=role, as_panel=True)
+            self.console.print(panel)
+            self.renderer.style = original_style
+        else:
+            panel = self.renderer.render_message(message, role=role, as_panel=True)
+            self.console.print(panel)
 
     def _format_code_block(self, message, code, language, original_block):
         """Format a code block with syntax highlighting and return updated message"""
@@ -2741,6 +2746,44 @@ class PenguinCLI:
         # Replace in original message with a note
         placeholder = f"[Code block displayed above ({lang_display})]"
         return message.replace(original_block, placeholder)
+
+    def _create_tool_summary(self, tool_name: str, content: str, metadata: Dict) -> str:
+        """
+        Create a compact summary for tool results instead of showing full output.
+
+        Args:
+            tool_name: Name of the tool
+            content: Full tool output
+            metadata: Tool metadata
+
+        Returns:
+            Compact summary string
+        """
+        # Extract key info from content
+        if "list_files" in tool_name:
+            # Count files and directories
+            dirs = content.count("DIRECTORIES:")
+            files_count = content.count(" bytes)")
+            return f"✓ Listed {files_count} files" + (f", {dirs} directories" if dirs > 0 else "")
+
+        elif "read" in tool_name or "enhanced_read" in tool_name:
+            # Show file path and size
+            import re
+            match = re.search(r'(\d+) characters', content)
+            if match:
+                size = match.group(1)
+                file_path = metadata.get("file_path", "file")
+                return f"✓ Read {file_path} ({size} chars)"
+            return f"✓ Read file"
+
+        elif "write" in tool_name or "enhanced_write" in tool_name:
+            # Show file written
+            file_path = metadata.get("file_path", "file")
+            lines = content.count('\n')
+            return f"✓ Wrote {file_path}" + (f" ({lines} lines)" if lines > 0 else "")
+
+        # For other tools, show nothing (will use default display)
+        return ""
 
     def _detect_language(self, code):
         """Automatically detect the programming language of the code"""
@@ -3823,6 +3866,13 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     # Final chunk received - clean up streaming state
                     self.is_streaming = False
 
+                    # Display reasoning panel FIRST (above the Penguin message)
+                    if self.streaming_reasoning_buffer.strip():
+                        reasoning_panel = self.renderer.render_reasoning(
+                            self.streaming_reasoning_buffer
+                        )
+                        self.console.print(reasoning_panel)
+
                     # Strip reasoning tags from content before final display
                     import re
                     content_without_reasoning = re.sub(r'<reasoning>.*?</reasoning>', '', self.streaming_buffer, flags=re.DOTALL).strip()
@@ -3842,13 +3892,6 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                         except Exception as e:
                             logger.error(f"Failed to update final Live display: {e}")
                         self.streaming_live = None
-
-                    # Display reasoning panel AFTER the formatted message
-                    if self.streaming_reasoning_buffer.strip():
-                        reasoning_panel = self.renderer.render_reasoning(
-                            self.streaming_reasoning_buffer
-                        )
-                        self.console.print(reasoning_panel)
 
                     # Store for deduplication
                     if self.streaming_buffer.strip():
@@ -3897,6 +3940,27 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     category == MessageCategory.SYSTEM_OUTPUT
                     or category == "SYSTEM_OUTPUT"
                 ):
+                    # Check if this is a verbose tool result that should be suppressed
+                    tool_name = metadata.get("tool_name", "")
+                    action_type = metadata.get("action_type", "")
+
+                    # Suppress verbose tool output (reads, lists, writes)
+                    SUPPRESS_VERBOSE_TOOLS = {
+                        "read_file", "enhanced_read", "list_files_filtered",
+                        "write_file", "enhanced_write", "list_files"
+                    }
+
+                    if tool_name in SUPPRESS_VERBOSE_TOOLS or action_type in SUPPRESS_VERBOSE_TOOLS:
+                        # Show compact summary instead of full output
+                        summary = self._create_tool_summary(tool_name or action_type, content, metadata)
+                        if summary:
+                            if self.is_streaming or self._active_stream_id is not None:
+                                self.pending_system_messages.append((summary, "system"))
+                            else:
+                                self.display_message(summary, "system")
+                        return
+
+                    # Show full output for important tools (execute, diff, etc.)
                     if self.is_streaming or self._active_stream_id is not None:
                         # Buffer for display after streaming completes
                         self.pending_system_messages.append((content, "system"))
