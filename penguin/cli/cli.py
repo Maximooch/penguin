@@ -3823,24 +3823,34 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     # Final chunk received - clean up streaming state
                     self.is_streaming = False
 
-                    # IMPORTANT: Stop the streaming Live display (it will persist with transient=False)
-                    if getattr(self, "streaming_live", None):
+                    # Strip reasoning tags from content before final display
+                    import re
+                    content_without_reasoning = re.sub(r'<reasoning>.*?</reasoning>', '', self.streaming_buffer, flags=re.DOTALL).strip()
+
+                    # Update Live display ONE LAST TIME with final formatted version
+                    if getattr(self, "streaming_live", None) and content_without_reasoning:
                         try:
+                            # Replace plain text streaming panel with fully formatted final panel
+                            final_panel = self.renderer.render_message(
+                                content_without_reasoning,
+                                role=self.streaming_role,
+                                as_panel=True
+                            )
+                            self.streaming_live.update(final_panel)
+                            # Stop Live - content persists (transient=False)
                             self.streaming_live.stop()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.error(f"Failed to update final Live display: {e}")
                         self.streaming_live = None
 
-                    # Display reasoning panel FIRST if we have reasoning content
+                    # Display reasoning panel AFTER the formatted message
                     if self.streaming_reasoning_buffer.strip():
-                        # Use unified renderer for reasoning
                         reasoning_panel = self.renderer.render_reasoning(
                             self.streaming_reasoning_buffer
                         )
                         self.console.print(reasoning_panel)
 
-                    # DON'T print final message - Live display already shows it (transient=False keeps it visible)
-                    # Just store for deduplication
+                    # Store for deduplication
                     if self.streaming_buffer.strip():
                         self.last_completed_message = self.streaming_buffer
                         self.last_completed_message_normalized = (

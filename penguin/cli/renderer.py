@@ -582,9 +582,8 @@ class UnifiedRenderer:
         else:
             display_content = content or "..."
 
-        # For streaming, use simple Markdown rendering (no code panels to avoid nesting issues with Live)
-        from rich.markdown import Markdown
-        content_renderable = Markdown(display_content) if display_content.strip() else Text("Thinking... 🐧", style="dim italic")
+        # For streaming, use plain Text (no Markdown to avoid broken formatting of incomplete code blocks)
+        content_renderable = Text(display_content) if display_content.strip() else Text("Thinking... 🐧", style="dim italic")
 
         # Create panel with streaming indicator
         return self.create_message_panel(

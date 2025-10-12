@@ -260,17 +260,13 @@ async def handle_issue_comment(payload: Dict[str, Any], core: Any) -> None:
 
     logger.info(f"@Penguin command detected: {command} {args}")
 
-    # Validate command is enabled
-    enabled_commands = os.getenv("PENGUIN_ENABLED_COMMANDS", "review,fix,plan,summarize").split(",")
-    if command not in enabled_commands:
-        logger.warning(f"Command '{command}' not in enabled commands: {enabled_commands}")
-        # TODO: Post comment saying command is not enabled
-        return
-
     # Generate conversation ID for this PR/issue (for persistent context)
     # Format: github-{repo_name}-{pr/issue}-{number}
     conversation_id = f"github-{repo_name.replace('/', '-')}-{'pr' if is_pr else 'issue'}-{issue_number}"
     logger.info(f"Using conversation ID: {conversation_id}")
+
+    # Check if it's a known command or a follow-up question
+    enabled_commands = ["review", "fix", "plan", "summarize"]
 
     # Route to appropriate handler (pass conversation_id for persistence)
     if command == "review":
@@ -283,6 +279,7 @@ async def handle_issue_comment(payload: Dict[str, Any], core: Any) -> None:
         await handle_summarize_command(payload, core, is_pr, issue_number, repo_name, conversation_id)
     else:
         # Handle as general follow-up question in context of the PR/issue
+        # This includes: explain, how, why, what, etc.
         logger.info(f"Handling as follow-up question: {command} {args}")
         await handle_followup_question(payload, core, comment_body, is_pr, issue_number, repo_name, conversation_id)
 
@@ -364,6 +361,21 @@ async def handle_review_command(
 
         # Construct review prompt
         review_prompt = await _build_review_prompt(pr, files)
+
+        # Load or create conversation for this PR
+        # Try to load existing conversation first
+        loaded = core.conversation_manager.load(conversation_id)
+        if loaded:
+            logger.info(f"Loaded existing conversation: {conversation_id}")
+        else:
+            # Create new session with specific ID
+            logger.info(f"Creating new conversation: {conversation_id}")
+            session = core.conversation_manager.session_manager.create_session()
+            session.id = conversation_id  # Override with our custom ID
+            core.conversation_manager.conversation.session = session
+            core.conversation_manager.conversation.system_prompt_sent = False
+            core.conversation_manager.save()
+            logger.info(f"Created new conversation: {conversation_id}")
 
         # Feed to Penguin's LLM with persistent conversation
         logger.info(f"Sending {len(files)} files to Penguin for review (conversation: {conversation_id})")
@@ -502,6 +514,20 @@ async def handle_followup_question(
             )
             return
 
+        # Ensure conversation exists (should have been created by review command)
+        loaded = core.conversation_manager.load(conversation_id)
+        if loaded:
+            logger.info(f"Loaded existing conversation for follow-up: {conversation_id}")
+        else:
+            # Conversation doesn't exist yet (user asked question before review)
+            logger.warning(f"Conversation {conversation_id} doesn't exist, creating for follow-up")
+            session = core.conversation_manager.session_manager.create_session()
+            session.id = conversation_id
+            core.conversation_manager.conversation.session = session
+            core.conversation_manager.conversation.system_prompt_sent = False
+            core.conversation_manager.save()
+            logger.info(f"Created new conversation for follow-up: {conversation_id}")
+
         # Process in context of existing conversation
         result = await core.process(
             input_data={"text": question},
@@ -509,6 +535,8 @@ async def handle_followup_question(
             max_iterations=3,
             streaming=False
         )
+
+        logger.info(f"Follow-up question processed, conversation saved to: {conversation_id}")
 
         response = result.get("assistant_response", "I'm not sure how to answer that.")
 

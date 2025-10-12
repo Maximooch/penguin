@@ -4,25 +4,29 @@ sidebar_position: 1
 
 # Penguin AI Assistant Documentation
 
-Welcome to the documentation for Penguin! Penguin v0.3.3.3.post1 is a modular, extensible AI coding agent with advanced conversation management, real-time streaming, comprehensive checkpoint/branching, and soon multi/sub-agent capabilities.
+Welcome to the documentation for Penguin! Penguin v0.3.3.3.post1 is a modular, extensible AI coding agent with advanced conversation management, real-time streaming, comprehensive checkpoint/branching, and multi/sub-agent capabilities with coordinated orchestration.
 
 ## Features
 
-- **Advanced Conversation Management**: Checkpoint and snapshot system for conversation state management
-- **Real-time Streaming**: Enhanced streaming with event-driven architecture and UI coordination
+- **Advanced Conversation Management**: Checkpoint and snapshot system with branching and rollback
+- **Multi-Agent Architecture**: Per-agent conversations, model configs, tool defaults, and state isolation
+- **Real-time Streaming**: Enhanced streaming with event-driven architecture, reasoning support, and UI coordination
 - **Token Management**: Context window management with category-based budgets and image handling
 - **Runtime Model Switching**: Dynamic model switching with automatic configuration updates
-- **Fast Startup**: Optional deferred initialization for improved performance
-- **Comprehensive Diagnostics**: Performance monitoring and startup reporting
-- **Event-Driven Architecture**: Real-time UI updates via comprehensive event system
+- **Fast Startup**: Deferred initialization for improved performance (fast_startup mode)
+- **Comprehensive Diagnostics**: Performance monitoring, telemetry tracking, and startup reporting
+- **Event-Driven Architecture**: Real-time UI updates via unified EventBus system
+- **GitHub Integration**: Webhook support for automated workflows and CI/CD pipelines
+- **Memory System**: Pluggable memory providers with vector search and semantic retrieval
+- **Message Routing**: MessageBus protocol for agent-to-agent and human-to-agent communication
+- **Agent Management**: Pause/resume controls, delegation patterns, and persona configurations
 - **File manipulation and code generation**
 - **Web searches for up-to-date information**
-- **Automated task execution with Run Mode**
+- **Automated task execution with Engine and Run Mode**
 - **Project management with SQLite persistence**
-- **Custom tool integration**
+- **Custom tool integration with lazy loading**
 - **PyDoll browser automation**
-- **Memory search across conversations**
-- **Pluggable memory providers with vector search**
+- **REST API and WebSocket streaming**
 - **Diagnostic logging and error handling**
 
 ## Quick Start
@@ -117,24 +121,32 @@ Penguin's orchestration layer now speaks to both primary agents and scoped sub-a
 
 ### Core Components
 
-- **`penguin.core`** - Central coordinator with event system and real-time streaming
-- **`penguin.system`** - Advanced conversation management with checkpoints and snapshots
-- **`penguin.llm`** - Enhanced API client with streaming and provider abstraction
-- **`penguin.cli`** - Command-line interface with TUI and performance monitoring
-- **`penguin.web`** - Web interface and REST API with programmatic access
-- **`penguin.project`** - SQLite-backed project and task management
-- **`penguin.tools`** - Extensible tool ecosystem with lazy initialization
-- **`penguin.memory`** - Conversation and knowledge persistence
+- **`penguin.core`** - Central coordinator with multi-agent registry, event system, and streaming
+- **`penguin.engine`** - High-level reasoning loop with multi-step task execution and stop conditions
+- **`penguin.system`** - Advanced conversation management with per-agent sessions and checkpoints
+- **`penguin.llm`** - Enhanced API client with streaming, reasoning models, and provider abstraction
+- **`penguin.cli`** - Command-line interface with TUI, EventBus integration, and performance monitoring
+- **`penguin.web`** - FastAPI server with REST API, WebSocket streaming, and GitHub webhooks
+- **`penguin.multi`** - Multi-agent coordinator with role-based routing and delegation
+- **`penguin.project`** - SQLite-backed project and task management with Engine integration
+- **`penguin.tools`** - Extensible tool ecosystem with lazy loading and fast startup
+- **`penguin.memory`** - Pluggable memory providers with vector search and persistence
+- **`penguin.telemetry`** - Performance tracking, token usage, and diagnostics collection
 
 ### Key Architecture Improvements
 
-- **Event-Driven Communication**: Real-time UI updates via comprehensive event system
-- **Checkpoint System**: Advanced conversation state management with branching
-- **Enhanced Streaming**: Real-time response streaming with callback compatibility
-- **Token Management**: Category-based budgeting with image optimization
-- **Fast Startup**: Deferred initialization for improved performance
-- **Provider Abstraction**: Multiple client handlers (native, LiteLLM, OpenRouter)
-- **Configuration Management**: Enhanced config resolution with live updates
+- **Event-Driven Communication**: Unified EventBus for real-time UI updates and system coordination
+- **Multi-Agent Support**: Per-agent conversations, API clients, model configs, and tool defaults
+- **Checkpoint System**: Advanced conversation state management with branching and rollback
+- **Enhanced Streaming**: Real-time response streaming with reasoning support and callback compatibility
+- **Token Management**: Category-based budgeting with image optimization and per-agent tracking
+- **Fast Startup**: Deferred memory indexing and lazy tool initialization (~2-3x faster)
+- **Provider Abstraction**: Multiple client handlers (native, LiteLLM, OpenRouter) with auto-fallback
+- **Configuration Management**: Enhanced config resolution with live updates and persona support
+- **MessageBus Protocol**: Structured agent-to-agent and human-to-agent communication
+- **GitHub Integration**: Webhook handlers for CI/CD, issue tracking, and automated workflows
+- **Telemetry System**: Comprehensive performance tracking, token usage, and diagnostics
+- **Engine Layer**: High-level task orchestration with stop conditions and iteration control
 
 ## Contributing
 
