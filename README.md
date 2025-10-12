@@ -404,6 +404,8 @@ pytest tests/
 - Update documentation for user-facing changes
 - Use semantic commit messages
 
+<!-- Simple test -->
+
 <!-- ### Community (right now it's just me :(
 
 - [GitHub Discussions](https://github.com/Maximooch/penguin/discussions) - Questions and ideas
@@ -436,6 +438,8 @@ For major changes, please open an issue first to discuss your approach.
 ### Changelog & Releases
 - **[Release Notes](https://github.com/Maximooch/penguin/releases)** - What's new in each version (right now it's just tags)
 - (Soon) **[Development Blog](https://penguin-rho.vercel.app/blog)** - Technical deep-dives and progress updates
+
+
 
 ## License
 
