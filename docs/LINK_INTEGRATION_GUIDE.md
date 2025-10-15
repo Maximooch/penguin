@@ -220,7 +220,7 @@ ws.onmessage = (event) => {
   
   if (data.event === 'token') {
     // Stream individual tokens to UI
-    appendToChat(data.data.content);
+    appendToChat(data.data.token);
   } else if (data.event === 'complete') {
     // Response finished
     console.log('Complete:', data.data);

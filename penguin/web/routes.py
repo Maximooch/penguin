@@ -18,8 +18,31 @@ from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
 from penguin import __version__
 from penguin.utils.events import EventBus
+from penguin.web.health import get_health_monitor
+from penguin.utils.errors import AgentNotFoundError, PenguinError
 
 logger = logging.getLogger(__name__)
+
+
+def _format_error_response(error: Exception, status_code: int = 500) -> HTTPException:
+    """Format error as HTTPException with structured error detail."""
+    if isinstance(error, PenguinError):
+        return HTTPException(
+            status_code=status_code,
+            detail={"error": error.to_dict()}
+        )
+    else:
+        # Wrap non-Penguin errors
+        penguin_error = PenguinError(
+            message=str(error),
+            code="INTERNAL_ERROR",
+            recoverable=False,
+            suggested_action="contact_support"
+        )
+        return HTTPException(
+            status_code=status_code,
+            detail={"error": penguin_error.to_dict()}
+        )
 
 class MessageRequest(BaseModel):
     text: str
@@ -263,18 +286,29 @@ async def messages_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core
     await events_ws(websocket, core)  # Reuse the same handler
 
 @router.get("/api/v1/conversations/{conversation_id}/history")
-async def get_conversation_history(
+async def api_conversation_history(
     conversation_id: str,
-    core: PenguinCore = Depends(get_core),
     include_system: bool = True,
     limit: Optional[int] = None,
+    core: PenguinCore = Depends(get_core),
+    # Optional filters (kept for backwards compatibility)
     agent_id: Optional[str] = None,
     channel: Optional[str] = None,
     message_type: Optional[str] = None,
 ):
+    """Get conversation history with an explicit envelope and optional filters.
+
+    Returns an object with the conversation_id and filtered messages to provide a
+    stable shape for API consumers. Optional filters (agent_id, channel,
+    message_type) are supported for compatibility with earlier versions.
+    """
     try:
-        items = core.get_conversation_history(conversation_id, include_system=include_system, limit=limit)
-        # Optional filtering
+        history = core.get_conversation_history(
+            conversation_id,
+            include_system=include_system,
+            limit=limit,
+        )
+
         def _ok(m: Dict[str, Any]) -> bool:
             if agent_id and m.get("agent_id") != agent_id:
                 return False
@@ -283,10 +317,12 @@ async def get_conversation_history(
             if message_type and m.get("message_type") != message_type:
                 return False
             return True
-        return [m for m in items if _ok(m)]
+
+        filtered = [m for m in history if _ok(m)]
+        return {"conversation_id": conversation_id, "messages": filtered}
     except Exception as e:
-        logger.error(f"history error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch history")
+        logger.error(f"conversation history error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve conversation history")
 
 @router.get("/api/v1/agents/{agent_id}/history")
 async def get_agent_current_history(
@@ -323,7 +359,6 @@ async def list_agent_sessions(agent_id: str, core: PenguinCore = Depends(get_cor
         logger.error(f"list sessions error: {e}")
         raise HTTPException(status_code=500, detail="Failed to list sessions")
 
-@router.get("/api/v1/agents/{agent_id}/sessions/{session_id}/history")
 async def get_agent_session_history(
     agent_id: str,
     session_id: str,
@@ -497,7 +532,7 @@ async def get_agent(agent_id: str, core: PenguinCore = Depends(get_core)):
     _validate_agent_id(agent_id)
     prof = core.get_agent_profile(agent_id)
     if not prof:
-        raise HTTPException(status_code=404, detail="Agent not found")
+        raise _format_error_response(AgentNotFoundError(agent_id), 404)
     return prof
 
 @router.patch("/api/v1/agents/{agent_id}")
@@ -682,29 +717,23 @@ async def api_coord_role_chain(req: CoordRoleChain, core: PenguinCore = Depends(
         raise HTTPException(status_code=500, detail="Failed role-chain")
 
 
-@router.get("/api/v1/conversations/{conversation_id}/history")
-async def api_conversation_history(
-    conversation_id: str,
-    include_system: bool = True,
-    limit: Optional[int] = None,
-    core: PenguinCore = Depends(get_core),
-):
-    try:
-        history = core.get_conversation_history(
-            conversation_id,
-            include_system=include_system,
-            limit=limit,
-        )
-        return {"conversation_id": conversation_id, "messages": history}
-    except Exception as e:
-        logger.error(f"conversation history error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve conversation history")
+## (removed duplicate conversation history route; unified earlier definition)
 
 
 @router.get("/api/v1/health")
-async def health():
-    """Basic health probe."""
-    return {"status": "healthy"}
+async def health(core: PenguinCore = Depends(get_core)):
+    """Comprehensive health status for container monitoring and Link integration.
+
+    Returns detailed health information including:
+    - Overall status (healthy, degraded, at_capacity)
+    - Uptime and timestamp
+    - Resource usage (CPU, memory, threads)
+    - Agent capacity and utilization
+    - Performance metrics (latency, success rate, P95/P99)
+    - Component health status
+    """
+    monitor = get_health_monitor()
+    return await monitor.get_comprehensive_health(core)
 
 
 @router.get("/api/v1/system-info")
@@ -717,14 +746,7 @@ async def system_info(core: PenguinCore = Depends(get_core)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/api/v1/telemetry")
-async def telemetry_summary(core: PenguinCore = Depends(get_core)):
-    try:
-        summary = await core.get_telemetry_summary()
-        return {"telemetry": summary}
-    except Exception as e:
-        logger.error(f"telemetry error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve telemetry")
+# Note: unified telemetry endpoint above returns the summary directly
 
 
 @router.get("/api/v1/models")
@@ -2034,18 +2056,7 @@ async def cleanup_old_checkpoints(core: PenguinCore = Depends(get_core)):
 
 # --- Model Management Endpoints ---
 
-@router.get("/api/v1/models")
-async def list_models(core: PenguinCore = Depends(get_core)):
-    """List all available models."""
-    try:
-        models = core.list_available_models()
-        return {"models": models}
-    except Exception as e:
-        logger.error(f"Error listing models: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error listing models: {str(e)}"
-        )
+# Note: unified models listing endpoint defined earlier (returns {"models": [...]})
 
 @router.post("/api/v1/models/load")
 async def load_model(

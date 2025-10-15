@@ -73,6 +73,7 @@ def create_app() -> "FastAPI":
         from fastapi.middleware.cors import CORSMiddleware
         from .routes import router, get_capabilities
         from .integrations.github_webhook import router as github_webhook_router
+        from .middleware.auth import AuthenticationMiddleware, AuthConfig
     except ImportError:
         raise ImportError(
             "FastAPI and related dependencies not available. "
@@ -83,7 +84,7 @@ def create_app() -> "FastAPI":
         title="Penguin AI",
         description="AI Assistant with reasoning, memory, and tool use capabilities",
         version=__version__,
-        docs_url="/api/docs", 
+        docs_url="/api/docs",
         redoc_url="/api/redoc"
     )
 
@@ -97,6 +98,10 @@ def create_app() -> "FastAPI":
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Add authentication middleware (applies after CORS)
+    auth_config = AuthConfig()
+    app.add_middleware(AuthenticationMiddleware, config=auth_config)
 
     # Initialize core and attach to router
     core = get_or_create_core()

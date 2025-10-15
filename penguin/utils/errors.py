@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 # Custom exceptions for Penguin
 class LLMEmptyResponseError(Exception):
     """Raised when LLM returns empty response after retries.
-    
+
     This indicates a critical issue like:
     - Context window exceeded
     - API quota/rate limiting
@@ -20,6 +20,84 @@ class LLMEmptyResponseError(Exception):
     - Network/timeout issues
     """
     pass
+
+
+class PenguinError(Exception):
+    """Base exception for all Penguin errors with structured error information."""
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "PENGUIN_ERROR",
+        recoverable: bool = True,
+        suggested_action: str = "retry",
+        details: Optional[Dict[str, Any]] = None
+    ):
+        super().__init__(message)
+        self.code = code
+        self.recoverable = recoverable
+        self.suggested_action = suggested_action
+        self.details = details or {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert error to dictionary for API responses."""
+        return {
+            "code": self.code,
+            "message": str(self),
+            "recoverable": self.recoverable,
+            "suggested_action": self.suggested_action,
+            "details": self.details
+        }
+
+
+# Specific error types for better categorization
+class ContextWindowExceededError(PenguinError):
+    """Context window exceeded."""
+    def __init__(self, message: str, **kwargs):
+        super().__init__(
+            message,
+            code="CONTEXT_WINDOW_EXCEEDED",
+            recoverable=True,
+            suggested_action="start_new_conversation",
+            **kwargs
+        )
+
+
+class ResourceExhaustedError(PenguinError):
+    """System resources exhausted."""
+    def __init__(self, message: str, **kwargs):
+        super().__init__(
+            message,
+            code="RESOURCE_EXHAUSTED",
+            recoverable=True,
+            suggested_action="retry_later",
+            **kwargs
+        )
+
+
+class AgentNotFoundError(PenguinError):
+    """Agent not found."""
+    def __init__(self, agent_id: str, **kwargs):
+        super().__init__(
+            f"Agent '{agent_id}' not found",
+            code="AGENT_NOT_FOUND",
+            recoverable=False,
+            suggested_action="check_agent_id",
+            details={"agent_id": agent_id},
+            **kwargs
+        )
+
+
+class TaskExecutionError(PenguinError):
+    """Task execution failed."""
+    def __init__(self, message: str, **kwargs):
+        super().__init__(
+            message,
+            code="TASK_EXECUTION_ERROR",
+            recoverable=True,
+            suggested_action="retry_or_modify_task",
+            **kwargs
+        )
 
 
 class ErrorHandler:
