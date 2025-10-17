@@ -748,12 +748,34 @@ class ConversationManager:
             cat.name: self.context_window.get_usage(cat) for cat in MessageCategory
         }
 
+        # Get truncation stats from context window manager
+        truncation_tracker = self.context_window.truncation_tracker
+        truncation_stats = {
+            "total_truncations": truncation_tracker.session_total_truncations,
+            "messages_removed": truncation_tracker.session_total_messages_removed,
+            "tokens_freed": truncation_tracker.session_total_tokens_freed,
+            "by_category": {
+                cat.name: truncation_tracker.get_category_truncations(cat)
+                for cat in MessageCategory
+            },
+            "recent_events": [
+                {
+                    "category": event.category.name,
+                    "messages_removed": event.messages_removed,
+                    "tokens_freed": event.tokens_freed,
+                    "timestamp": event.timestamp
+                }
+                for event in truncation_tracker.get_recent_events(limit=5)
+            ]
+        }
+
         standardized_usage: Dict[str, Any] = {
             "current_total_tokens": cw_usage.get("total", 0),
             "max_tokens": cw_usage.get("max", self.context_window.max_tokens),
             "available_tokens": cw_usage.get("available", self.context_window.available_tokens),
             "percentage": cw_usage.get("usage_percentage", 0),
             "categories": categories_current,
+            "truncations": truncation_stats,
         }
 
         # ------------------------------------------------------------------

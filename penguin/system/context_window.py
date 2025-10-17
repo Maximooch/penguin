@@ -47,6 +47,7 @@ in terms of short/long term memory.
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Dict, List, Optional, Union, Any, Callable, Tuple
 
 from penguin.system.state import Message, MessageCategory, Session
@@ -62,12 +63,84 @@ class TokenBudget:
     max_tokens: int
     # Current tokens used by this category
     current_tokens: int = 0
-    
+
     def __post_init__(self):
         # Ensure min_tokens <= max_tokens
         if self.min_tokens > self.max_tokens:
             logger.warning(f"min_tokens ({self.min_tokens}) > max_tokens ({self.max_tokens}). Setting min_tokens = max_tokens")
             self.min_tokens = self.max_tokens
+
+
+@dataclass
+class TruncationEvent:
+    """Record of a context window truncation event"""
+    category: MessageCategory
+    messages_removed: int
+    tokens_freed: int
+    timestamp: str
+    total_messages_before: int
+    total_messages_after: int
+
+
+class TruncationTracker:
+    """Tracks context window truncation events for UI display"""
+
+    def __init__(self):
+        self.events: List[TruncationEvent] = []
+        self.per_category: Dict[MessageCategory, List[TruncationEvent]] = {
+            cat: [] for cat in MessageCategory
+        }
+        self.session_total_truncations = 0
+        self.session_total_messages_removed = 0
+        self.session_total_tokens_freed = 0
+
+    def record_truncation(
+        self,
+        category: MessageCategory,
+        messages_removed: int,
+        tokens_freed: int,
+        total_messages_before: int,
+        total_messages_after: int
+    ) -> TruncationEvent:
+        """Record a truncation event and return it"""
+        event = TruncationEvent(
+            category=category,
+            messages_removed=messages_removed,
+            tokens_freed=tokens_freed,
+            timestamp=datetime.now().isoformat(),
+            total_messages_before=total_messages_before,
+            total_messages_after=total_messages_after
+        )
+
+        self.events.append(event)
+        self.per_category[category].append(event)
+        self.session_total_truncations += 1
+        self.session_total_messages_removed += messages_removed
+        self.session_total_tokens_freed += tokens_freed
+
+        logger.info(
+            f"Truncation recorded: {category.name} - "
+            f"{messages_removed} messages, {tokens_freed} tokens freed"
+        )
+
+        return event
+
+    def get_category_truncations(self, category: MessageCategory) -> int:
+        """Get total number of messages truncated for a category"""
+        return sum(e.messages_removed for e in self.per_category[category])
+
+    def get_recent_events(self, limit: int = 10) -> List[TruncationEvent]:
+        """Get most recent truncation events"""
+        return self.events[-limit:] if self.events else []
+
+    def reset(self):
+        """Reset all truncation tracking"""
+        self.events.clear()
+        for cat_list in self.per_category.values():
+            cat_list.clear()
+        self.session_total_truncations = 0
+        self.session_total_messages_removed = 0
+        self.session_total_tokens_freed = 0
 
 class ContextWindowManager:
     """Manages token budgeting and content trimming for conversation context"""
@@ -81,12 +154,15 @@ class ContextWindowManager:
     ):
         """
         Initialize the context window manager.
-        
+
         Args:
             model_config: Optional model configuration with max_tokens
             token_counter: Function to count tokens for content
             api_client: API client for token counting
         """
+        # Initialize truncation tracker
+        self.truncation_tracker = TruncationTracker()
+
         # Get max_tokens from model_config / config context_window when available
         self.max_tokens = 150000  # Default fallback
         
@@ -393,7 +469,7 @@ class ContextWindowManager:
                 msgs_to_keep = []
                 for msg in category_msgs:
                     msg_tokens = msg.tokens or self.token_counter(msg.content)
-                    
+
                     if tokens_removed < category_excess:
                         # Remove this message (oldest first)
                         tokens_removed += msg_tokens
@@ -404,17 +480,33 @@ class ContextWindowManager:
                     else:
                         # Keep this message
                         msgs_to_keep.append(msg)
-                
+
                 # Replace the category's messages with trimmed version
                 categorized[category] = msgs_to_keep
-                
+
                 # Update statistics for next category
                 stats["per_category"][category] = category_tokens - tokens_removed
                 stats["total_tokens"] -= tokens_removed
-                
+
+                # Calculate messages removed count
+                messages_removed_count = len(category_msgs) - len(msgs_to_keep)
+
                 # Log the trimming operation
-                logger.debug(f"Trimmed {category.name}: removed {tokens_removed} tokens " + 
-                            f"({len(category_msgs) - len(msgs_to_keep)} messages)")
+                logger.debug(f"Trimmed {category.name}: removed {tokens_removed} tokens " +
+                            f"({messages_removed_count} messages)")
+
+                # Record truncation event if messages were actually removed
+                if messages_removed_count > 0:
+                    total_messages_before = len(session.messages)
+                    total_messages_after = total_messages_before - messages_removed_count
+
+                    self.truncation_tracker.record_truncation(
+                        category=category,
+                        messages_removed=messages_removed_count,
+                        tokens_freed=tokens_removed,
+                        total_messages_before=total_messages_before,
+                        total_messages_after=total_messages_after
+                    )
                 
                 # Check if we've trimmed enough overall
                 if tokens_to_trim <= 0:

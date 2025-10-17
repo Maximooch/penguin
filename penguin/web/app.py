@@ -116,6 +116,43 @@ def create_app() -> "FastAPI":
     app.include_router(router)
     app.include_router(github_webhook_router)
 
+    # Optionally include MCP HTTP router when enabled
+    try:
+        from penguin.integrations.mcp.server import MCPServer  # type: ignore
+        from penguin.integrations.mcp.http_server import get_router as get_mcp_router  # type: ignore
+
+        mcp_conf: Dict[str, Any] = config.get("mcp", {}) if isinstance(config, dict) else {}
+        srv_conf: Dict[str, Any] = mcp_conf.get("server", {}) if isinstance(mcp_conf, dict) else {}
+        http_conf: Dict[str, Any] = srv_conf.get("http", {}) if isinstance(srv_conf, dict) else {}
+        # Register remote MCP servers as virtual tools (client bridge)
+        servers_conf = mcp_conf.get("servers") if isinstance(mcp_conf, dict) else None
+        if isinstance(servers_conf, list) and servers_conf:
+            try:
+                from penguin.integrations.mcp.client import MCPClientBridge  # type: ignore
+
+                MCPClientBridge(servers_conf).register_remote_tools(core.tool_manager)
+            except Exception:
+                pass
+
+        if bool(http_conf.get("enabled", False)):
+            allow_patterns = srv_conf.get("allow_tools") or ["*"]
+            deny_patterns = srv_conf.get("deny_tools") or [
+                "browser_*",
+                "pydoll_*",
+                "reindex_workspace",
+            ]
+            mcp_server = MCPServer(
+                core.tool_manager,
+                allow=allow_patterns,
+                deny=deny_patterns,
+                confirm_required_write=True,
+            )
+            oauth2_conf = http_conf.get("oauth2") if isinstance(http_conf.get("oauth2"), dict) else None
+            app.include_router(get_mcp_router(mcp_server, oauth2=oauth2_conf))
+    except Exception:
+        # MCP is optional; proceed silently if unavailable
+        pass
+
     # Mount static files for web UI
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
