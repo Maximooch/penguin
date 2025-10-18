@@ -2677,16 +2677,9 @@ class PenguinCLI:
                 self.last_completed_message = message
 
         # Use unified renderer for all message rendering
-        # Special case: Welcome message always uses panel even in MINIMAL mode
-        if role == "system" and "Welcome to Penguin" in message:
-            # Temporarily switch to STANDARD for welcome message
-            original_style = self.renderer.style
-            self.renderer.style = RenderStyle.STANDARD
-            panel = self.renderer.render_message(message, role=role, as_panel=True)
-            self.console.print(panel)
-            self.renderer.style = original_style
-        else:
-            panel = self.renderer.render_message(message, role=role, as_panel=True)
+        # Render with current style (no special case for welcome message)
+        panel = self.renderer.render_message(message, role=role, as_panel=True)
+        if panel:  # Only print if not filtered as duplicate
             self.console.print(panel)
 
     def _format_code_block(self, message, code, language, original_block):

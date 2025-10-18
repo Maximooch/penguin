@@ -4,28 +4,32 @@ workspace:
   path: "/tmp/penguin_workspace"
 
 model:
-  default: "gpt-4o-mini"
-  provider: "openai"
-  client_preference: "litellm"
-
-model_configs:
-  kimi-k2-0905:
-    model: "moonshotai/kimi-k2-0905"
-    provider: "openrouter"
-    client_preference: "openrouter"
-    max_tokens: 262000
-    temperature: 0.5
-    streaming_enabled: true
-
+  default: openai/gpt-5-codex
+  provider: openrouter
+  client_preference: openrouter
+  streaming_enabled: true
+  temperature: 0.3
+  context_window: 272000
+  max_tokens: null
 api:
-  base_url: "https://api.openai.com/v1"
-
-memory:
-  enabled: false
-
-performance:
-  fast_startup: true
-  profiling: true
-
+  base_url: null
+tools:
+  enabled: true
+  allow_web_access: true
+  allow_file_operations: true
+  allow_code_execution: true
 diagnostics:
-  enabled: false
+  enabled: true
+  verbose_logging: true
+
+# CLI Display Settings
+cli:
+  display:
+    style: "minimal"  # Options: minimal, compact, standard, detailed, streaming
+    consolidate_system_messages: true  # Batch consecutive system messages to reduce blank lines
+    hide_internal_markers: true  # Filter <execute>, <system-reminder>, etc. from output
+    hide_tool_results: true  # Hide "Tool Result (execute)" system messages for clean output
+    max_blank_lines: 2  # Maximum consecutive blank lines allowed in output
+    deduplicate_messages: true  # Skip rendering duplicate messages
+    show_timestamps: true  # Show timestamps in message headers
+    show_metadata: false  # Show token counts and other metadata in message headers

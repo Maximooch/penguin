@@ -16,6 +16,7 @@ Key Features:
 """
 
 import re
+import hashlib
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 from enum import Enum
@@ -164,6 +165,26 @@ CODE_BLOCK_PATTERN = re.compile(r'```(\w+)?\n(.*?)```', re.DOTALL)
 REASONING_PATTERN = re.compile(r'<reasoning>(.*?)</reasoning>', re.DOTALL)
 DIFF_MARKERS = re.compile(r'^(diff --git|---|\+\+\+|@@|\+|-)', re.MULTILINE)
 
+# Regex patterns for internal markers to filter
+INTERNAL_MARKERS_PATTERNS = [
+    re.compile(r'<execute>.*?</execute>', re.DOTALL),
+    re.compile(r'<system-reminder>.*?</system-reminder>', re.DOTALL),
+    re.compile(r'<internal>.*?</internal>', re.DOTALL),
+    re.compile(r'<enhanced_read>.*?</enhanced_read>', re.DOTALL),
+    re.compile(r'<enhanced_write>.*?</enhanced_write>', re.DOTALL),
+    # Filter tool result output that appears in assistant messages
+    re.compile(r'^enhanced_read: \[Tool Result\].*?(?=\n\n|\Z)', re.MULTILINE | re.DOTALL),
+    re.compile(r'^execute: \[Tool Result\].*?(?=\n\n|\Z)', re.MULTILINE | re.DOTALL),
+    re.compile(r'^[a-z_]+: \[Tool Result\].*?(?=\n\n|\Z)', re.MULTILINE | re.DOTALL),  # Generic tool results
+    # Filter standalone action format markers (actionxml, python on own lines)
+    re.compile(r'^actionxml\s*$', re.MULTILINE),
+    re.compile(r'^python\s*$', re.MULTILINE),
+    # Filter decorative elements that LLM adds to its own responses
+    re.compile(r'^[─━]{20,}$', re.MULTILINE),  # Horizontal rules (long lines of ─ or ━)
+    re.compile(r'^[┏┗┃━\s]+$', re.MULTILINE),  # Box drawing lines (top/bottom borders)
+    re.compile(r'┃\s*┃', re.DOTALL),  # Empty box content (just side borders)
+]
+
 # Syntax themes for different languages
 SYNTAX_THEMES = {
     "default": "monokai",
@@ -194,7 +215,10 @@ class UnifiedRenderer:
                  style: RenderStyle = RenderStyle.STANDARD,
                  show_timestamps: bool = True,
                  show_metadata: bool = False,
-                 width: Optional[int] = None):
+                 width: Optional[int] = None,
+                 filter_internal_markers: bool = True,
+                 deduplicate_messages: bool = True,
+                 max_blank_lines: int = 2):
         """
         Initialize the unified renderer.
 
@@ -204,15 +228,25 @@ class UnifiedRenderer:
             show_timestamps: Whether to show timestamps in messages
             show_metadata: Whether to show message metadata
             width: Maximum width for panels (uses console width if None)
+            filter_internal_markers: Whether to filter internal implementation markers
+            deduplicate_messages: Whether to detect and skip duplicate messages
+            max_blank_lines: Maximum consecutive blank lines allowed
         """
         self.console = console or Console()
         self.style = style
         self.show_timestamps = show_timestamps
         self.show_metadata = show_metadata
         self.width = width or (self.console.width - 8)
+        self.filter_internal_markers = filter_internal_markers
+        self.deduplicate_messages = deduplicate_messages
+        self.max_blank_lines = max_blank_lines
 
         # Cache for language detection
         self._lang_cache = {}
+
+        # Deduplication tracking
+        self._last_message_hash = None
+        self._message_history = []  # Store last N message hashes
 
     # =========================================================================
     # MAIN RENDERING METHODS
@@ -223,7 +257,7 @@ class UnifiedRenderer:
                       role: str = "assistant",
                       timestamp: Optional[Union[str, datetime]] = None,
                       metadata: Optional[Dict] = None,
-                      as_panel: bool = True) -> Union[Panel, Group]:
+                      as_panel: bool = True) -> Union[Panel, Group, None]:
         """
         Render a complete message with proper formatting.
 
@@ -235,8 +269,12 @@ class UnifiedRenderer:
             as_panel: Whether to wrap in a Panel
 
         Returns:
-            Rendered Panel or Group of renderables
+            Rendered Panel or Group of renderables, or None if duplicate
         """
+        # Check for duplicates first
+        if self.is_duplicate(content):
+            return None
+
         # Handle different content types
         if isinstance(content, dict):
             # Extract from dict format
@@ -247,6 +285,10 @@ class UnifiedRenderer:
         else:
             actual_content = content
             metadata = metadata or {}
+
+        # Filter internal markers if string content
+        if isinstance(actual_content, str):
+            actual_content = self.filter_content(actual_content)
 
         # Process reasoning blocks if present
         actual_content, reasoning = self.extract_reasoning(actual_content)
@@ -364,8 +406,9 @@ class UnifiedRenderer:
                 if preceding_text:
                     renderables.append(Markdown(preceding_text))
 
-            # Render code block (skip if empty)
-            if code.strip():
+            # Render code block (skip if empty or just comments/whitespace)
+            stripped_code = code.strip()
+            if stripped_code and not self._is_trivial_code(stripped_code):
                 code_panel = self.render_code_block(code, language)
                 renderables.append(code_panel)
             last_end = end
@@ -390,7 +433,7 @@ class UnifiedRenderer:
                          code: str,
                          language: str = "",
                          title: Optional[str] = None,
-                         line_numbers: bool = True) -> Panel:
+                         line_numbers: bool = True) -> Union[Panel, Group]:
         """
         Render a code block with syntax highlighting.
 
@@ -401,11 +444,13 @@ class UnifiedRenderer:
             line_numbers: Whether to show line numbers
 
         Returns:
-            Panel containing highlighted code
+            Panel containing highlighted code, or Group for MINIMAL mode
         """
         # Clean up code
         code = code.strip()
         if not code:
+            if self.style == RenderStyle.MINIMAL:
+                return Text("(Empty code block)", style="dim italic")
             return Panel(Text("(Empty code block)", style="dim italic"))
 
         # Auto-detect language if needed
@@ -431,7 +476,13 @@ class UnifiedRenderer:
             word_wrap=True
         )
 
-        # Create panel
+        # MINIMAL mode: no panel, just simple header + code (no extra spacing)
+        if self.style == RenderStyle.MINIMAL:
+            # Simple one-line header for code blocks
+            header = Text(f"[{display_name}]", style="dim")
+            return Group(header, syntax)
+
+        # Panel mode for other styles
         panel_title = title or f"📋 {display_name}"
         return Panel(
             syntax,
@@ -501,11 +552,30 @@ class UnifiedRenderer:
         """
         return bool(DIFF_MARKERS.search(text))
 
+    def _is_trivial_code(self, code: str) -> bool:
+        """
+        Check if code block is trivial (just comments, empty, or placeholder).
+
+        Args:
+            code: Code to check
+
+        Returns:
+            True if code is trivial and should be skipped
+        """
+        # Remove all whitespace and common comment patterns
+        cleaned = re.sub(r'#.*$', '', code, flags=re.MULTILINE)  # Python/shell comments
+        cleaned = re.sub(r'//.*$', '', cleaned, flags=re.MULTILINE)  # C-style comments
+        cleaned = re.sub(r'/\*.*?\*/', '', cleaned, flags=re.DOTALL)  # Block comments
+        cleaned = cleaned.strip()
+
+        # If nothing left, it's trivial
+        return len(cleaned) == 0
+
     # =========================================================================
     # SPECIAL CONTENT RENDERING
     # =========================================================================
 
-    def render_reasoning(self, reasoning: str) -> Panel:
+    def render_reasoning(self, reasoning: str) -> Union[Panel, Group]:
         """
         Render reasoning content in a special panel.
 
@@ -513,16 +583,15 @@ class UnifiedRenderer:
             reasoning: Reasoning text
 
         Returns:
-            Panel with formatted reasoning
+            Panel with formatted reasoning, or Group for MINIMAL mode
         """
         # Use Markdown rendering for reasoning content for proper formatting
         from rich.markdown import Markdown
 
         if self.style == RenderStyle.MINIMAL:
-            # MINIMAL mode: just header + content (gray/dim text), no panel
-            header = Text("🧠 Reasoning:", style="bold dim")
+            # MINIMAL mode: just content (gray/dim text), no header or panel
             content = Text(reasoning.strip(), style="dim")  # Gray dim text
-            return Group(header, content, Text(""))
+            return content
         else:
             # Panel mode for other styles
             return Panel(
@@ -726,8 +795,8 @@ class UnifiedRenderer:
         border_style = THEME_COLORS.get(role, "white")
         header = Text(header_text, style=f"bold {border_style}")
 
-        # Return header + content
-        return Group(header, content, Text(""))  # Empty text for spacing
+        # Return header + content WITHOUT extra blank line spacing
+        return Group(header, content)
 
     def format_timestamp(self, timestamp: Union[str, datetime, None]) -> str:
         """
@@ -780,6 +849,140 @@ class UnifiedRenderer:
             return content_without_reasoning, reasoning
 
         return content, None
+
+    # =========================================================================
+    # CONTENT FILTERING AND DEDUPLICATION
+    # =========================================================================
+
+    def filter_content(self, content: str) -> str:
+        """
+        Filter internal implementation markers from content.
+
+        Args:
+            content: Content to filter
+
+        Returns:
+            Filtered content with internal markers removed
+        """
+        if not self.filter_internal_markers or not isinstance(content, str):
+            return content
+
+        filtered = content
+
+        # First pass: Remove complete box structures with titles
+        # Pattern: ┏━━━┓ with title in ┃ ┃ and ┗━━━┛
+        filtered = re.sub(
+            r'┏[━]+┓\n┃[^\n]*┃\n┗[━]+┛\n?',
+            '',
+            filtered
+        )
+
+        # Second pass: Apply all other patterns
+        for pattern in INTERNAL_MARKERS_PATTERNS:
+            filtered = pattern.sub('', filtered)
+
+        # Clean up excessive whitespace left by filtering
+        # Replace multiple consecutive newlines with max allowed
+        filtered = re.sub(r'\n{3,}', '\n' * (self.max_blank_lines + 1), filtered)
+
+        return filtered.strip()
+
+    def get_content_hash(self, content: Union[str, Any]) -> str:
+        """
+        Generate a hash for content to detect duplicates.
+
+        Args:
+            content: Content to hash
+
+        Returns:
+            MD5 hash of content
+        """
+        import hashlib
+
+        # Convert content to string representation
+        if isinstance(content, str):
+            content_str = content
+        elif isinstance(content, dict):
+            content_str = str(content.get("content", ""))
+        elif isinstance(content, list):
+            content_str = "".join(str(item) for item in content)
+        else:
+            content_str = str(content)
+
+        # Aggressive normalization to catch near-duplicates
+        normalized = content_str.lower()  # Case-insensitive
+        normalized = re.sub(r'[^\w\s]', '', normalized)  # Remove punctuation
+        normalized = re.sub(r'\s+', ' ', normalized).strip()  # Normalize whitespace
+
+        return hashlib.md5(normalized.encode()).hexdigest()
+
+    def is_duplicate(self, content: Union[str, Any]) -> bool:
+        """
+        Check if content is a duplicate of recently rendered messages.
+
+        Args:
+            content: Content to check
+
+        Returns:
+            True if content is a duplicate
+        """
+        if not self.deduplicate_messages:
+            return False
+
+        content_hash = self.get_content_hash(content)
+
+        # Check against ALL recent history (expanded from 5 to 20 messages for better detection)
+        if content_hash in self._message_history:
+            logger.debug(f"Skipping duplicate message (hash: {content_hash[:8]}...)")
+            return True
+
+        # Update history
+        self._message_history.append(content_hash)
+        self._last_message_hash = content_hash
+
+        # Keep history bounded (increased from 10 to 50 for better duplicate detection)
+        if len(self._message_history) > 50:
+            self._message_history = self._message_history[-50:]
+
+        return False
+
+    def should_add_separator(self, prev_role: Optional[str], curr_role: str) -> bool:
+        """
+        Determine if a blank line separator is needed between messages.
+
+        Args:
+            prev_role: Role of previous message (None if no previous message)
+            curr_role: Role of current message
+
+        Returns:
+            True if separator should be added
+        """
+        if prev_role is None:
+            return False
+
+        # Add separator on major transitions
+        # Don't add separator between consecutive system messages
+        if prev_role == "system" and curr_role == "system":
+            return False
+
+        # Don't add separator between consecutive tool messages
+        if prev_role == "tool" and curr_role == "tool":
+            return False
+
+        # Add separator when transitioning from assistant to system
+        if prev_role == "assistant" and curr_role == "system":
+            return True
+
+        # Add separator when transitioning from system to user
+        if prev_role == "system" and curr_role == "user":
+            return True
+
+        # Add separator when transitioning from assistant to user
+        if prev_role == "assistant" and curr_role == "user":
+            return True
+
+        # Default: no separator for compact display
+        return False
 
     # =========================================================================
     # UTILITY RENDERING METHODS

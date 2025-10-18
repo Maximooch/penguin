@@ -45,8 +45,8 @@ def create_folder(path):
 
 def create_file(path: str, content: str = "") -> str:
     try:
-        print(f"Attempting to create file at: {os.path.abspath(path)}")
-        print(f"Current working directory: {os.getcwd()}")
+        logging.getLogger(__name__).debug(f"Attempting to create file at: {os.path.abspath(path)}")
+        logging.getLogger(__name__).debug(f"Current working directory: {os.getcwd()}")
 
         dir_name = os.path.dirname(path)
         if dir_name:
@@ -63,7 +63,7 @@ def create_file(path: str, content: str = "") -> str:
 
 
 def generate_and_apply_diff(original_content, new_content, full_path, encoding):
-    print(f"Applying diff to {full_path} with encoding {encoding}")
+    logging.getLogger(__name__).debug(f"Applying diff to {full_path} with encoding {encoding}")
     diff = list(
         difflib.unified_diff(
             original_content.splitlines(keepends=True),
@@ -115,7 +115,7 @@ def write_to_file(path, content):
         except (UnicodeEncodeError, UnicodeDecodeError):
             continue
         except Exception as e:
-            print(f"Error with encoding '{encoding}': {str(e)}")
+            logging.getLogger(__name__).debug(f"Error with encoding '{encoding}': {str(e)}")
             continue
     return f"Error writing to file: Unable to encode with encodings: {', '.join(encodings)}"
 
@@ -197,8 +197,8 @@ def list_files_filtered(path=".", ignore_patterns=None, group_by_type=False, sho
         
         target_path = target_path.resolve()
         
-        # Clear feedback about what path we're actually listing
-        print(f"Listing files in: {target_path}")
+        # Log for debugging (not shown to user)
+        logging.getLogger(__name__).debug(f"Listing files in: {target_path}")
         try:
             logging.getLogger(__name__).info(
                 "list_files_filtered root=%s path=%s", workspace_path, target_path
@@ -294,10 +294,8 @@ def enhanced_diff(file1, file2, context_lines=3, semantic=True):
         path1 = Path(file1).resolve()
         path2 = Path(file2).resolve()
         
-        # Clear feedback about what files we're comparing
-        print(f"Comparing files:")
-        print(f"  File 1: {path1}")
-        print(f"  File 2: {path2}")
+        # Log for debugging (not shown to user)
+        logging.getLogger(__name__).debug(f"Comparing files: {path1} vs {path2}")
         
         # Check if files exist
         if not path1.exists():
@@ -398,8 +396,8 @@ def find_files_enhanced(pattern, search_path=".", include_hidden=False, file_typ
         
         target_path = target_path.resolve()
         
-        # Clear feedback about what we're searching
-        print(f"Searching for '{pattern}' in: {target_path}")
+        # Log for debugging (not shown to user)
+        logging.getLogger(__name__).debug(f"Searching for '{pattern}' in: {target_path}")
         
         if not target_path.exists():
             return f"Error: Search path does not exist: {target_path}"
@@ -475,8 +473,8 @@ def analyze_project_structure(directory=".", include_external=False, workspace_p
         
         target_path = target_path.resolve()
         
-        # Clear feedback about what we're analyzing
-        print(f"Analyzing project structure in: {target_path}")
+        # Log for debugging (not shown to user)
+        logging.getLogger(__name__).debug(f"Analyzing project structure in: {target_path}")
         
         if not target_path.exists():
             return f"Error: Directory does not exist: {target_path}"
@@ -617,17 +615,17 @@ def apply_diff_to_file(file_path, diff_content, backup=True, workspace_path=None
         
         target_path = target_path.resolve()
         
-        # Clear feedback about what file we're editing
-        print(f"Applying diff to file: {target_path}")
-        
+        # Log for debugging (not shown to user)
+        logging.getLogger(__name__).debug(f"Applying diff to file: {target_path}")
+
         if not target_path.exists():
             return f"Error: File does not exist: {target_path}"
-        
+
         # Create backup if requested
         if backup:
             backup_path = target_path.with_suffix(target_path.suffix + '.bak')
             shutil.copy2(target_path, backup_path)
-            print(f"Backup created: {backup_path}")
+            logging.getLogger(__name__).debug(f"Backup created: {backup_path}")
         
         # Read original content without newline translation to detect CRLF
         try:
@@ -687,7 +685,7 @@ def apply_diff_to_file(file_path, diff_content, backup=True, workspace_path=None
             else:
                 target_path.write_text(modified_content, encoding='utf-8')
 
-            print(f"Diff applied successfully to: {target_path}")
+            logging.getLogger(__name__).debug(f"Diff applied successfully to: {target_path}")
             if return_json:
                 import json
                 analysis = _analyze_diff(diff_content)
@@ -1390,17 +1388,17 @@ def edit_file_with_pattern(file_path, search_pattern, replacement, backup=True, 
         
         target_path = target_path.resolve()
         
-        # Clear feedback about what file we're editing
-        print(f"Editing file with pattern replacement: {target_path}")
-        
+        # Log for debugging (not shown to user)
+        logging.getLogger(__name__).debug(f"Editing file with pattern replacement: {target_path}")
+
         if not target_path.exists():
             return f"Error: File does not exist: {target_path}"
-        
+
         # Create backup if requested
         if backup:
             backup_path = target_path.with_suffix(target_path.suffix + '.bak')
             shutil.copy2(target_path, backup_path)
-            print(f"Backup created: {backup_path}")
+            logging.getLogger(__name__).debug(f"Backup created: {backup_path}")
         
         # Read, modify, and write content
         try:
@@ -1435,13 +1433,13 @@ def edit_file_with_pattern(file_path, search_pattern, replacement, backup=True, 
         
         # Check if anything changed
         if modified_content == original_content:
-            print(f"No changes made to: {target_path}")
+            logging.getLogger(__name__).debug(f"No changes made to: {target_path}")
             return f"No matches found for pattern in {target_path}"
-        
+
         # Write modified content back
         target_path.write_text(modified_content, encoding='utf-8')
-        
-        print(f"Pattern replacement applied to: {target_path}")
+
+        logging.getLogger(__name__).debug(f"Pattern replacement applied to: {target_path}")
         
         # Generate diff to show what changed
         diff = generate_diff_patch(original_content, modified_content, str(target_path))
@@ -1474,17 +1472,17 @@ def edit_file_at_line(file_path, line_number, new_content, operation="replace", 
         
         target_path = target_path.resolve()
         
-        # Clear feedback about what file we're editing
-        print(f"Editing file at line {line_number}: {target_path}")
-        
+        # Log for debugging (not shown to user)
+        logging.getLogger(__name__).debug(f"Editing file at line {line_number}: {target_path}")
+
         if not target_path.exists():
             return f"Error: File does not exist: {target_path}"
-        
+
         # Create backup if requested
         if backup:
             backup_path = target_path.with_suffix(target_path.suffix + '.bak')
             shutil.copy2(target_path, backup_path)
-            print(f"Backup created: {backup_path}")
+            logging.getLogger(__name__).debug(f"Backup created: {backup_path}")
         
         # Read original content
         try:
@@ -1525,8 +1523,8 @@ def edit_file_at_line(file_path, line_number, new_content, operation="replace", 
         # Write modified content back
         modified_content = '\n'.join(modified_lines)
         target_path.write_text(modified_content, encoding='utf-8')
-        
-        print(f"Line {line_number} operation '{operation}' applied to: {target_path}")
+
+        logging.getLogger(__name__).debug(f"Line {line_number} operation '{operation}' applied to: {target_path}")
         
         # Generate diff to show what changed
         diff = generate_diff_patch(original_content, modified_content, str(target_path))
@@ -1550,17 +1548,17 @@ def enhanced_write_to_file(path, content, backup=True, workspace_path=None):
         
         target_path = target_path.resolve()
         
-        # Clear feedback about what file we're writing to
-        print(f"Writing to file: {target_path}")
-        
+        # Log for debugging (not shown to user)
+        logging.getLogger(__name__).debug(f"Writing to file: {target_path}")
+
         # Create parent directories if needed
         target_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # Check if file exists and create backup if requested
         if target_path.exists() and backup:
             backup_path = target_path.with_suffix(target_path.suffix + '.bak')
             backup_path.write_text(target_path.read_text())
-            print(f"Backup created: {backup_path}")
+            logging.getLogger(__name__).debug(f"Backup created: {backup_path}")
         
         # Try different encodings
         encodings = ["utf-8", "latin-1", "utf-16"]
@@ -1574,20 +1572,20 @@ def enhanced_write_to_file(path, content, backup=True, workspace_path=None):
                         result = generate_and_apply_diff(
                             original_content, content, str(target_path), encoding
                         )
-                        print(f"File updated: {target_path}")
+                        logging.getLogger(__name__).debug(f"File updated: {target_path}")
                         return result
                     except UnicodeDecodeError:
                         continue
                 else:
                     # Create new file
                     target_path.write_text(content, encoding=encoding)
-                    print(f"New file created: {target_path}")
+                    logging.getLogger(__name__).debug(f"New file created: {target_path}")
                     return f"New file created: {target_path}"
                     
             except (UnicodeEncodeError, UnicodeDecodeError):
                 continue
             except Exception as e:
-                print(f"Error with encoding '{encoding}': {str(e)}")
+                logging.getLogger(__name__).debug(f"Error with encoding '{encoding}': {str(e)}")
                 continue
         
         return f"Error writing to file: Unable to encode with encodings: {', '.join(encodings)}"
@@ -1608,9 +1606,9 @@ def enhanced_read_file(path, show_line_numbers=False, max_lines=None, workspace_
             target_path = Path(path)
         
         target_path = target_path.resolve()
-        
-        # Clear feedback about what file we're reading
-        print(f"Reading file: {target_path}")
+
+        # Log file reading for debugging (not shown to user)
+        logging.getLogger(__name__).debug(f"Reading file: {target_path}")
         
         if not target_path.exists():
             return f"Error: File does not exist: {target_path}"
@@ -1639,8 +1637,8 @@ def enhanced_read_file(path, show_line_numbers=False, max_lines=None, workspace_
                     for i, line in enumerate(lines, 1):
                         numbered_lines.append(f"{i:4d}: {line}")
                     content = '\n'.join(numbered_lines)
-                
-                print(f"File read successfully: {target_path} ({len(content)} characters)")
+
+                logging.getLogger(__name__).debug(f"File read successfully: {target_path} ({len(content)} characters)")
                 return content
                 
             except UnicodeDecodeError:

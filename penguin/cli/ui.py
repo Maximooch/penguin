@@ -116,7 +116,19 @@ ROLE_THEME_MAP = {
 
 class CLIRenderer:
     """Handles all Rich-based rendering for the CLI"""
-    
+
+    def _load_cli_display_config(self) -> Dict[str, Any]:
+        """Load CLI display configuration from config file."""
+        try:
+            from penguin.config import config
+            cli_config = config.get('cli', {}) if isinstance(config, dict) else {}
+            display_config = cli_config.get('display', {})
+            logger.debug(f"Loaded CLI display config: {display_config}")
+            return display_config
+        except Exception as e:
+            logger.warning(f"Failed to load CLI display config: {e}, using defaults")
+            return {}
+
     def __init__(self, console: Console, core: "PenguinCore"):
         """
         Initialize the renderer with a console object and a core instance.
@@ -130,17 +142,28 @@ class CLIRenderer:
         self.console = console
         self.core = core
 
-        # Initialize unified renderer
+        # Load CLI display settings from config
+        cli_config = self._load_cli_display_config()
+
+        # Initialize unified renderer with settings from config
         self.renderer = UnifiedRenderer(
             console=self.console,
-            style=RenderStyle.STANDARD,
-            show_timestamps=True,
-            show_metadata=False
+            style=RenderStyle[cli_config.get('style', 'MINIMAL').upper()],
+            show_timestamps=cli_config.get('show_timestamps', True),
+            show_metadata=cli_config.get('show_metadata', False),
+            filter_internal_markers=cli_config.get('hide_internal_markers', True),
+            deduplicate_messages=cli_config.get('deduplicate_messages', True),
+            max_blank_lines=cli_config.get('max_blank_lines', 2)
         )
-        
+
         # Streaming state - simplified
         self.streaming_message_data = {}
         self.is_streaming = False
+
+        # Event buffering for system messages (to consolidate consecutive system outputs)
+        self._pending_system_events: List[Dict[str, Any]] = []
+        self._system_event_timer: Optional[asyncio.Task] = None
+        self._last_message_role: Optional[str] = None
         
         # UI display controls
         self.show_context_messages: bool = False
@@ -298,10 +321,73 @@ class CLIRenderer:
             logger.error(f"Error handling token event: {e}", exc_info=True)
 
     async def _handle_message_event(self, data: Dict[str, Any]) -> None:
-        """Handle new message events."""
-        # Messages are added to conversation manager by Core
-        # Just refresh our local cache
-        self._refresh_message_cache()
+        """Handle new message events with buffering for system messages."""
+        message_role = data.get("role", "")
+        category = data.get("category", "")
+
+        # Check if this is a system output message that should be buffered
+        if self._should_buffer_message(message_role, category):
+            await self._buffer_system_event(data)
+        else:
+            # Flush any pending system events first
+            await self._flush_system_events()
+            # Then refresh cache for this message
+            self._refresh_message_cache()
+            # Track this message role for separator logic
+            self._last_message_role = message_role
+
+    async def _buffer_system_event(self, data: Dict[str, Any]) -> None:
+        """
+        Buffer a system message event to potentially consolidate with others.
+
+        Args:
+            data: Message event data
+        """
+        self._pending_system_events.append(data)
+
+        # Cancel existing timer if any
+        if self._system_event_timer and not self._system_event_timer.done():
+            self._system_event_timer.cancel()
+
+        # Set new timer to flush after 100ms of no new system messages
+        self._system_event_timer = asyncio.create_task(self._delayed_flush_system_events())
+
+    async def _delayed_flush_system_events(self) -> None:
+        """Wait 100ms then flush pending system events."""
+        try:
+            await asyncio.sleep(0.1)  # 100ms delay
+            await self._flush_system_events()
+        except asyncio.CancelledError:
+            # Timer was cancelled, which is fine
+            pass
+
+    async def _flush_system_events(self) -> None:
+        """Flush all pending system events and refresh message cache."""
+        if self._pending_system_events:
+            logger.debug(f"Flushing {len(self._pending_system_events)} buffered system events")
+            self._pending_system_events.clear()
+            self._refresh_message_cache()
+
+    def _should_buffer_message(self, role: str, category: Any) -> bool:
+        """
+        Determine if a message should be buffered.
+
+        Args:
+            role: Message role
+            category: Message category
+
+        Returns:
+            True if message should be buffered
+        """
+        # Buffer consecutive system output messages
+        if role == "system":
+            # Check category (handle both enum and string forms)
+            if isinstance(category, MessageCategory):
+                return category == MessageCategory.SYSTEM_OUTPUT
+            elif isinstance(category, str):
+                return category == "SYSTEM_OUTPUT"
+
+        return False
 
     async def _handle_status_event(self, data: Dict[str, Any]) -> None:
         """Handle status update events."""
@@ -405,27 +491,24 @@ class CLIRenderer:
         logger.debug("Building conversation area content")
         
         rendered_panels = []
-        
+
         # Filter system/context messages if needed
-        # IMPORTANT: System output (tool results) should always be shown!
+        # MINIMAL MODE: Hide ALL system output (tool results) for clean output
         filtered_messages = self.conversation_messages
         if not self.show_context_messages:
             filtered_messages = [
                 msg for msg in filtered_messages
-                if (isinstance(msg.get("category"), MessageCategory) and 
-                    msg.get("category") not in [MessageCategory.SYSTEM, MessageCategory.CONTEXT]) or
-                   (isinstance(msg.get("category"), str) and 
-                    msg.get("category") not in ["SYSTEM", "CONTEXT"]) or
-                   # Always show system output messages (tool results)
-                   (isinstance(msg.get("category"), MessageCategory) and 
-                    msg.get("category") == MessageCategory.SYSTEM_OUTPUT) or
-                   (isinstance(msg.get("category"), str) and 
-                    msg.get("category") == "SYSTEM_OUTPUT")
+                if (isinstance(msg.get("category"), MessageCategory) and
+                    msg.get("category") not in [MessageCategory.SYSTEM, MessageCategory.CONTEXT, MessageCategory.SYSTEM_OUTPUT]) or
+                   (isinstance(msg.get("category"), str) and
+                    msg.get("category") not in ["SYSTEM", "CONTEXT", "SYSTEM_OUTPUT"])
             ]
         
-        # Render each message as a panel
+        # Render each message as a panel (skip duplicates)
         for msg in filtered_messages:
-            rendered_panels.append(self.render_message_panel(msg))
+            rendered = self.render_message_panel(msg)
+            if rendered is not None:  # Skip duplicates
+                rendered_panels.append(rendered)
         
         # Add streaming message if active
         if self.is_streaming and self.streaming_message_data:
@@ -584,12 +667,26 @@ class CLIRenderer:
         """Returns the main renderable for the Live display."""
         return self.get_layout_renderable()
 
-    def render_message_panel(self, message_data: Dict[str, Any]) -> Panel:
-        """Use unified renderer for message panels"""
-        return self.renderer.render_message(
+    def render_message_panel(self, message_data: Dict[str, Any]) -> Union[Panel, Group, None]:
+        """
+        Use unified renderer for message panels with deduplication.
+
+        Args:
+            message_data: Message data dict
+
+        Returns:
+            Rendered panel, group, or None if duplicate
+        """
+        rendered = self.renderer.render_message(
             message_data,
             as_panel=True
         )
+
+        # Update last message role for separator logic
+        if rendered is not None:
+            self._last_message_role = message_data.get("role")
+
+        return rendered
 
     def render_message_list(self, messages: List[Dict[str, Any]], title: str = "Conversation History") -> Panel:
         """Renders a list of messages into a single panel (less used now with live updates)."""

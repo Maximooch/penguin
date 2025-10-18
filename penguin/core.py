@@ -2944,11 +2944,17 @@ class PenguinCore:
         Emit an event through the unified event bus.
         Also maintains backward compatibility with legacy subscribers.
 
+        Filters internal markers from content before emitting to UI.
+
         Args:
             event_type: Type of event (e.g., "stream_chunk", "token_update", etc.)
             data: Event data relevant to the event type
         """
         logger.debug(f"Core emit_ui_event {event_type} keys={list(data.keys())}")
+
+        # Filter internal markers from content before emitting
+        if isinstance(data, dict):
+            data = self._filter_internal_markers_from_event(data)
 
         # Tag with agent_id when available so UI can label sources
         try:
@@ -2977,10 +2983,55 @@ class PenguinCore:
             except Exception as e:
                 logger.error(f"Error in legacy UI event handler during {event_type} event: {e}", exc_info=True)
 
+    def _filter_internal_markers_from_event(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Filter internal implementation markers from event data.
+
+        Removes tags like <execute>, <system-reminder>, <internal> from content fields.
+
+        Args:
+            data: Event data dictionary
+
+        Returns:
+            Filtered event data (shallow copy if modified)
+        """
+        import re
+
+        # Patterns for internal markers
+        internal_patterns = [
+            r'<execute>.*?</execute>',
+            r'<system-reminder>.*?</system-reminder>',
+            r'<internal>.*?</internal>',
+        ]
+
+        # Fields that may contain content to filter
+        content_fields = ['content', 'chunk', 'content_so_far', 'message']
+
+        modified = False
+        filtered_data = data
+
+        for field in content_fields:
+            if field in data and isinstance(data[field], str):
+                original_content = data[field]
+                filtered_content = original_content
+
+                # Apply all filter patterns
+                for pattern in internal_patterns:
+                    filtered_content = re.sub(pattern, '', filtered_content, flags=re.DOTALL)
+
+                # Only create copy if content changed
+                if filtered_content != original_content:
+                    if not modified:
+                        filtered_data = dict(data)  # Shallow copy
+                        modified = True
+                    filtered_data[field] = filtered_content.strip()
+
+        return filtered_data
+
     async def _handle_ui_event_safe(self, handler: Callable, event_type: str, data: Dict[str, Any]) -> None:
         """
         Safely handle UI events in background without blocking streaming.
-        
+
         This wrapper ensures that slow or failing UI handlers don't stall
         the core streaming process.
         """

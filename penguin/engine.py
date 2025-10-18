@@ -784,17 +784,27 @@ class Engine:
                 )
                 logger.debug(f"Added action result to conversation: {action_result['action_name']}")
 
-                # Emit UI event immediately for real-time display
+                # Emit UI event immediately for real-time display (unless hidden by config)
                 if hasattr(cm, 'core') and cm.core:
                     try:
-                        await cm.core.emit_ui_event("message", {
-                            "role": "system", 
-                            "content": f"Tool Result ({action_result['action_name']}):\n{action_result['output']}",
-                            "category": MessageCategory.SYSTEM_OUTPUT.name,  # Convert enum to string
-                            "message_type": "action",
-                            "metadata": {"action_name": action_result['action_name']}
-                        })
-                        await asyncio.sleep(0.01)  # Yield control to allow UI to render
+                        # Check config to see if tool results should be hidden
+                        from penguin.config import config
+                        hide_tool_results = False
+                        if isinstance(config, dict):
+                            cli_config = config.get('cli', {})
+                            display_config = cli_config.get('display', {})
+                            hide_tool_results = display_config.get('hide_tool_results', False)
+
+                        # Only emit if not hidden
+                        if not hide_tool_results:
+                            await cm.core.emit_ui_event("message", {
+                                "role": "system",
+                                "content": f"Tool Result ({action_result['action_name']}):\n{action_result['output']}",
+                                "category": MessageCategory.SYSTEM_OUTPUT.name,  # Convert enum to string
+                                "message_type": "action",
+                                "metadata": {"action_name": action_result['action_name']}
+                            })
+                            await asyncio.sleep(0.01)  # Yield control to allow UI to render
                     except Exception as e:
                         logger.warning(f"Failed to emit tool result UI event: {e}")
 
