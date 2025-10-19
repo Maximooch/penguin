@@ -69,12 +69,12 @@ export class StreamProcessor {
   complete(): void {
     console.log(`[StreamProcessor] complete() called. Buffer size: ${this.buffer.length}, content: "${this.buffer.substring(0, 50)}..."`);
     this.flush();
-    console.log('[StreamProcessor] flush() completed, scheduling onComplete callback in 10ms');
-    // Small delay to ensure flush state update completes before onComplete
+    console.log('[StreamProcessor] flush() completed, scheduling onComplete callback in 100ms');
+    // Delay to ensure flush state update completes and all tokens are processed
     setTimeout(() => {
       console.log('[StreamProcessor] Calling onComplete callback');
       this.callbacks.onComplete?.();
-    }, 10);
+    }, 100);
   }
 
   /**

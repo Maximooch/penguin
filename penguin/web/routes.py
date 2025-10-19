@@ -1090,6 +1090,11 @@ async def stream_chat(
                 process_result = await process_task
                 logger.info(f"core.process finished. Result keys: {list(process_result.keys())}")
 
+                # Finalize streaming message (adds to conversation with reasoning)
+                if hasattr(core, 'finalize_streaming_message'):
+                    core.finalize_streaming_message()
+                    logger.debug("Finalized streaming message with reasoning")
+
                 # Signal sender task to finish *after* core.process is done
                 logger.debug("Putting stop signal (None) on queue for sender task.")
                 await response_queue.put(None)

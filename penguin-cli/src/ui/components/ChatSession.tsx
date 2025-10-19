@@ -47,10 +47,12 @@ export function ChatSession() {
     if (!client) return;
 
     client.callbacks.onToken = (token: string) => {
+      console.log(`[ChatSession] Received token, length: ${token.length}, preview: "${token.substring(0, 50)}..."`);
       processToken(token);
     };
 
     client.callbacks.onReasoning = (token: string) => {
+      console.log(`[ChatSession] Received reasoning token, length: ${token.length}`);
       setReasoningText((prev) => prev + token);
     };
 

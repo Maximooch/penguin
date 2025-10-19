@@ -736,20 +736,23 @@ class Engine:
         else:
             # CRITICAL FIX: Always persist assistant message, regardless of streaming mode
             # Check if message was already added to avoid duplicates
-            try:
-                session_messages = cm.conversation.session.messages if hasattr(cm.conversation, 'session') else []
-                last_msg = session_messages[-1] if session_messages else None
-                message_already_added = (
-                    last_msg and 
-                    last_msg.role == "assistant" and 
-                    last_msg.content == assistant_response
-                )
-            except Exception:
-                message_already_added = False
-            
-            if not message_already_added:
-                cm.conversation.add_assistant_message(assistant_response)
-                logger.debug(f"Added assistant message to conversation ({len(assistant_response)} chars)")
+            # When streaming, finalize_streaming_message() adds the message with reasoning
+            # Only add manually when NOT streaming
+            if not streaming:
+                try:
+                    session_messages = cm.conversation.session.messages if hasattr(cm.conversation, 'session') else []
+                    last_msg = session_messages[-1] if session_messages else None
+                    message_already_added = (
+                        last_msg and
+                        last_msg.role == "assistant" and
+                        last_msg.content == assistant_response
+                    )
+                except Exception:
+                    message_already_added = False
+
+                if not message_already_added:
+                    cm.conversation.add_assistant_message(assistant_response)
+                    logger.debug(f"Added assistant message to conversation ({len(assistant_response)} chars)")
 
         # ------------------------------------------------------------------
         # Ensure any streaming content is finalised **before** we process and
@@ -757,11 +760,12 @@ class Engine:
         #   assistant → tool-output, matching real conversational flow.
         # ------------------------------------------------------------------
         if streaming and hasattr(cm, "core") and cm.core:
-            # This is a no-op when streaming was disabled or already finalised.
+            # Finalize streaming message (adds to conversation with reasoning)
             try:
                 cm.core.finalize_streaming_message()
+                logger.debug("Finalized streaming message with reasoning")
             except Exception as _fin_err:
-                logger.warning("Failed to finalise streaming message early: %s", _fin_err)
+                logger.warning("Failed to finalise streaming message: %s", _fin_err)
 
         action_results = []
         if tools_enabled:

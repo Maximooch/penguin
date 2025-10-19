@@ -75,10 +75,10 @@ class ConversationSystem:
         self.system_prompt_sent = False
 
     def add_message(
-        self, 
-        role: str, 
+        self,
+        role: str,
         content: Any,
-        category: MessageCategory = None, 
+        category: MessageCategory = None,
         metadata: Optional[Dict[str, Any]] = None,
         *,
         agent_id: Optional[str] = None,
@@ -87,16 +87,23 @@ class ConversationSystem:
     ) -> Message:
         """
         Add a message to the current session.
-        
+
         Args:
             role: Message role (system, user, assistant)
             content: Message content (string, list, or dict)
             category: Message category for token budgeting
             metadata: Optional metadata for the message
-            
+
         Returns:
             The created Message object
         """
+        # Debug: log when assistant messages are added
+        if role == "assistant":
+            import traceback
+            print(f"[DEBUG] add_message() called for assistant. content_length={len(str(content))}, has_reasoning={metadata.get('has_reasoning') if metadata else False}", flush=True)
+            print(f"[DEBUG] Stack trace:", flush=True)
+            for line in traceback.format_stack()[-5:-1]:
+                print(line.strip(), flush=True)
         # Set default category based on role if not specified
         if category is None:
             if role == "system":

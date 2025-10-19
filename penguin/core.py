@@ -3233,6 +3233,7 @@ class PenguinCore:
                 final_metadata["reasoning_length"] = self.api_client.count_tokens(reasoning_content) if self.api_client else len(reasoning_content) // 4
                 
             if hasattr(self, "conversation_manager") and self.conversation_manager:
+                print(f"[DEBUG] finalize_streaming_message() adding message. has_reasoning={bool(reasoning_content)}, content_length={len(content_to_add)}", flush=True)
                 self.conversation_manager.conversation.add_message(
                     role=final_message["role"],
                     content=content_to_add,
