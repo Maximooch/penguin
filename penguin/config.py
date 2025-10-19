@@ -3,6 +3,7 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 import logging
+from logging.handlers import RotatingFileHandler
 
 logger = logging.getLogger(__name__)
 
@@ -818,13 +819,8 @@ class Config:
 
         if diagnostics_config.enabled:
             log_level = logging.DEBUG if os.getenv("PENGUIN_DEBUG") else logging.INFO
-            log_kwargs = {"level": log_level, "format": '%(asctime)s - %(name)s - %(levelname)s - %(message)s'}
-            if diagnostics_config.log_to_file and diagnostics_config.log_path:
-                diagnostics_config.log_path.parent.mkdir(parents=True, exist_ok=True)
-                log_kwargs["filename"] = str(diagnostics_config.log_path)
-                log_kwargs["filemode"] = 'a'
-            logging.basicConfig(**log_kwargs)
-            logging.info("Diagnostics enabled via config.yml.")
+            _configure_diagnostics_logging(diagnostics_config, log_level)
+            logging.getLogger(__name__).info("Diagnostics enabled via config.yml.")
             
         # Initialize diagnostics using the loaded config
         init_diagnostics(config_data)
@@ -921,3 +917,55 @@ CONVERSATION_CONFIG = {
 # class BrowserConfig:
 #     preferred_browser: str = 'chromium'  # 'chrome' or 'chromium'
 #     suppress_popups: bool = True
+
+def _configure_diagnostics_logging(diagnostics_config: "DiagnosticsConfig", log_level: int) -> None:
+    """Route diagnostics logs to a managed file instead of stdout."""
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+
+    # Determine target log file
+    if diagnostics_config.log_to_file and diagnostics_config.log_path:
+        target_path = diagnostics_config.log_path
+    else:
+        log_dir = WORKSPACE_PATH / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        target_path = log_dir / "diagnostics.log"
+        diagnostics_config.log_to_file = True
+        diagnostics_config.log_path = target_path
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    handler_flag = "_penguin_diagnostics_handler"
+    existing_handler = None
+    for handler in list(root_logger.handlers):
+        if getattr(handler, handler_flag, False):
+            existing_handler = handler
+            break
+
+    if existing_handler:
+        existing_path = Path(getattr(existing_handler, "baseFilename", ""))
+        if existing_path != target_path:
+            root_logger.removeHandler(existing_handler)
+            existing_handler.close()
+            existing_handler = None
+
+    if not existing_handler:
+        diagnostics_handler = RotatingFileHandler(
+            target_path,
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        diagnostics_handler.setLevel(log_level)
+        diagnostics_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            )
+        )
+        setattr(diagnostics_handler, handler_flag, True)
+        root_logger.addHandler(diagnostics_handler)
+
+    # Ensure existing stdout/stderr handlers don't spam interactive sessions
+    for handler in root_logger.handlers:
+        if isinstance(handler, logging.StreamHandler):
+            handler.setLevel(max(handler.level, logging.WARNING))

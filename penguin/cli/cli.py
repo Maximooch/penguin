@@ -143,6 +143,7 @@ if PROFILE_ENABLED:
     TextColumn = time_import("rich.progress").TextColumn
     Syntax = time_import("rich.syntax").Syntax
     Live = time_import("rich.live").Live
+    Text = time_import("rich.text").Text
 
     # Removed prompt_toolkit timing imports – legacy Rich CLI removed
 
@@ -204,6 +205,7 @@ else:
     from rich.progress import Progress, SpinnerColumn, TextColumn  # type: ignore
     from rich.syntax import Syntax  # type: ignore
     from rich.live import Live  # type: ignore
+    from rich.text import Text  # type: ignore
     import rich  # type: ignore
     from prompt_toolkit import PromptSession  # type: ignore
     from prompt_toolkit.key_binding import KeyBindings  # type: ignore
@@ -2360,6 +2362,7 @@ class PenguinCLI:
     CODE_COLOR = "bright_blue"
     PENGUIN_EMOJI = "🐧"
     FILE_READ_ACTIONS = {"read_file", "read", "cat", "view", "enhanced_read"}
+    LARGE_STREAM_RENDER_THRESHOLD = 6000  # characters
 
     # Language detection and mapping
     CODE_BLOCK_PATTERNS = [
@@ -3871,17 +3874,37 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     # Strip reasoning tags from content before final display
                     import re
                     content_without_reasoning = re.sub(r'<reasoning>.*?</reasoning>', '', self.streaming_buffer, flags=re.DOTALL).strip()
+                    filtered_content = (
+                        self.renderer.filter_content(content_without_reasoning)
+                        if content_without_reasoning
+                        else ""
+                    )
 
                     # Update Live display ONE LAST TIME with final formatted version
-                    if getattr(self, "streaming_live", None) and content_without_reasoning:
+                    if getattr(self, "streaming_live", None) and filtered_content:
                         try:
-                            # Replace plain text streaming panel with fully formatted final panel
-                            final_panel = self.renderer.render_message(
-                                content_without_reasoning,
-                                role=self.streaming_role,
-                                as_panel=True
-                            )
-                            self.streaming_live.update(final_panel)
+                            final_renderable = None
+                            if len(filtered_content) > self.LARGE_STREAM_RENDER_THRESHOLD:
+                                simplified = Text(filtered_content)
+                                if self.renderer.style == RenderStyle.MINIMAL:
+                                    final_renderable = self.renderer.create_minimal_message(
+                                        simplified,
+                                        role=self.streaming_role,
+                                    )
+                                else:
+                                    final_renderable = self.renderer.create_message_panel(
+                                        simplified,
+                                        role=self.streaming_role,
+                                    )
+                            else:
+                                final_renderable = self.renderer.render_message(
+                                    filtered_content,
+                                    role=self.streaming_role,
+                                    as_panel=True
+                                )
+
+                            if final_renderable is not None:
+                                self.streaming_live.update(final_renderable)
                             # Stop Live - content persists (transient=False)
                             self.streaming_live.stop()
                         except Exception as e:
