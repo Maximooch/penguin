@@ -8,11 +8,30 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: number;
+  toolCalls?: ToolCall[];
+  reasoning?: string; // Internal reasoning from the model (if available)
+}
+
+export interface ToolCall {
+  id: string;
+  action: string;
+  status: 'pending' | 'running' | 'completed' | 'error';
+  result?: string;
+  error?: string;
+  startTime?: number;
+  endTime?: number;
 }
 
 export interface StreamEvent {
-  event: 'token' | 'tool_start' | 'tool_end' | 'complete' | 'error';
+  event: 'start' | 'token' | 'reasoning' | 'progress' | 'complete' | 'error';
   data: any;
+}
+
+export interface ActionResult {
+  action: string;
+  result: string;
+  status: 'completed' | 'error' | 'interrupted';
+  timestamp?: number;
 }
 
 export interface Session {

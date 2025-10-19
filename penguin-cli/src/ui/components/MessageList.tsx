@@ -6,6 +6,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import type { Message } from '../../core/types';
+import { Markdown } from './Markdown';
 
 export interface MessageListProps {
   messages: Message[];
@@ -21,14 +22,14 @@ export function MessageList({ messages, streamingText }: MessageListProps) {
 
       {/* Streaming assistant response */}
       {streamingText && (
-        <Box flexDirection="row">
+        <Box flexDirection="column">
           <Text color="blue" bold>
-            Assistant:{' '}
+            Assistant:
           </Text>
-          <Text>
-            {streamingText}
+          <Box marginLeft={2}>
+            <Markdown content={streamingText} />
             <Text color="gray">▊</Text>
-          </Text>
+          </Box>
         </Box>
       )}
     </Box>
@@ -45,11 +46,30 @@ function MessageItem({ message }: MessageItemProps) {
   const label = isUser ? 'You' : 'Assistant';
 
   return (
-    <Box flexDirection="row">
+    <Box flexDirection="column">
       <Text color={color} bold>
-        {label}:{' '}
+        {label}:
       </Text>
-      <Text>{message.content}</Text>
+      <Box marginLeft={2} flexDirection="column">
+        {/* Display reasoning if present (for assistant messages) */}
+        {!isUser && message.reasoning && (
+          <Box flexDirection="column" marginBottom={1} borderStyle="round" borderColor="gray" paddingX={1}>
+            <Text color="gray" dimColor italic>
+              🧠 Internal Reasoning
+            </Text>
+            <Text color="gray" dimColor>
+              {message.reasoning}
+            </Text>
+          </Box>
+        )}
+
+        {/* Main message content */}
+        {isUser ? (
+          <Text>{message.content}</Text>
+        ) : (
+          <Markdown content={message.content} />
+        )}
+      </Box>
     </Box>
   );
 }

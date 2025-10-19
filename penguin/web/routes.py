@@ -1020,6 +1020,11 @@ async def stream_chat(
             image_path = data.get("image_path")
             include_reasoning = bool(data.get("include_reasoning", False))
             agent_id = data.get("agent_id")
+
+            # Log conversation ID for debugging
+            print(f"[DEBUG] Processing message for conversation_id: {conversation_id}", flush=True)
+            logger.info(f"Processing message for conversation_id: {conversation_id}")
+
             if agent_id:
                 _validate_agent_id(agent_id)
 

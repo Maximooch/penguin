@@ -13,8 +13,14 @@ export interface Message {
 }
 
 export interface StreamEvent {
-  event: 'token' | 'tool_start' | 'tool_end' | 'complete' | 'error';
+  event: 'start' | 'token' | 'reasoning' | 'progress' | 'complete' | 'error';
   data: any;
+}
+
+export interface ActionResult {
+  action: string;
+  result: string;
+  status: 'completed' | 'error' | 'interrupted';
 }
 
 export interface ChatClientOptions {
@@ -22,9 +28,9 @@ export interface ChatClientOptions {
   conversationId?: string;
   agentId?: string;
   onToken?: (token: string) => void;
-  onToolStart?: (tool: string, args: any) => void;
-  onToolEnd?: (tool: string, result: any) => void;
-  onComplete?: () => void;
+  onReasoning?: (token: string) => void;
+  onProgress?: (iteration: number, maxIterations: number, message?: string) => void;
+  onComplete?: (actionResults?: ActionResult[]) => void;
   onError?: (error: Error) => void;
   onConnect?: () => void;
   onDisconnect?: (code: number, reason: string) => void;
@@ -47,8 +53,8 @@ export class ChatClient {
     // Set up callbacks with no-op defaults
     this.callbacks = {
       onToken: options.onToken || (() => {}),
-      onToolStart: options.onToolStart || (() => {}),
-      onToolEnd: options.onToolEnd || (() => {}),
+      onReasoning: options.onReasoning || (() => {}),
+      onProgress: options.onProgress || (() => {}),
       onComplete: options.onComplete || (() => {}),
       onError: options.onError || (() => {}),
       onConnect: options.onConnect || (() => {}),
@@ -103,16 +109,24 @@ export class ChatClient {
           }
           break;
 
-        case 'tool_start':
-          this.callbacks.onToolStart(eventData.tool, eventData.args);
+        case 'reasoning':
+          if (eventData.token) {
+            this.callbacks.onReasoning(eventData.token);
+          }
           break;
 
-        case 'tool_end':
-          this.callbacks.onToolEnd(eventData.tool, eventData.result);
+        case 'progress':
+          this.callbacks.onProgress(
+            eventData.iteration,
+            eventData.max_iterations,
+            eventData.message
+          );
           break;
 
         case 'complete':
-          this.callbacks.onComplete();
+          // Extract action_results from complete event
+          const actionResults = eventData.action_results as ActionResult[] | undefined;
+          this.callbacks.onComplete(actionResults);
           break;
 
         case 'error':
@@ -133,6 +147,7 @@ export class ChatClient {
       text,
       conversation_id: this.conversationId,
       agent_id: this.agentId,
+      include_reasoning: true, // Enable reasoning tokens from backend
     };
 
     this.ws.send(JSON.stringify(payload));

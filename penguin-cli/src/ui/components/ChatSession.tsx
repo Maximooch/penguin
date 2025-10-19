@@ -12,24 +12,32 @@ import { useConnection } from '../contexts/ConnectionContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useMessageHistory } from '../hooks/useMessageHistory';
 import { useStreaming } from '../hooks/useStreaming';
+import { useToolExecution } from '../hooks/useToolExecution';
+import { useProgress } from '../hooks/useProgress';
 import { MessageList } from './MessageList';
 import { ConnectionStatus } from './ConnectionStatus';
+import { ToolExecutionList } from './ToolExecution';
+import { ProgressIndicator } from './ProgressIndicator';
 
 export function ChatSession() {
   const { exit } = useApp();
   const [inputKey, setInputKey] = useState(0);
   const [isExiting, setIsExiting] = useState(false);
+  const [reasoningText, setReasoningText] = useState('');
 
   // Hooks (separated by concern)
   const { isConnected, error, client } = useConnection();
   const { sendMessage } = useWebSocket();
   const { messages, addUserMessage, addAssistantMessage } = useMessageHistory();
+  const { activeTool, completedTools, clearTools, addActionResults } = useToolExecution();
+  const { progress, updateProgress, resetProgress, completeProgress } = useProgress();
   const { streamingText, isStreaming, processToken, complete, reset } = useStreaming({
-    onComplete: () => {
-      // Add completed streaming message to history
-      if (streamingText) {
-        addAssistantMessage(streamingText);
+    onComplete: (finalText) => {
+      // Add completed streaming message to history with reasoning if present
+      if (finalText) {
+        addAssistantMessage(finalText, reasoningText || undefined);
         reset();
+        setReasoningText(''); // Clear reasoning for next message
       }
     },
   });
@@ -42,10 +50,30 @@ export function ChatSession() {
       processToken(token);
     };
 
-    client.callbacks.onComplete = () => {
-      complete();
+    client.callbacks.onReasoning = (token: string) => {
+      setReasoningText((prev) => prev + token);
     };
-  }, [client, processToken, complete]);
+
+    client.callbacks.onProgress = (iteration: number, maxIterations: number, message?: string) => {
+      updateProgress(iteration, maxIterations, message);
+    };
+
+    client.callbacks.onComplete = (actionResults) => {
+      // Complete progress tracking
+      completeProgress();
+
+      // Process any action results first
+      if (actionResults && actionResults.length > 0) {
+        addActionResults(actionResults);
+      }
+
+      // Then complete streaming
+      complete();
+
+      // Reset progress after a delay
+      setTimeout(() => resetProgress(), 1000);
+    };
+  }, [client, processToken, complete, addActionResults, updateProgress, completeProgress, resetProgress]);
 
   // Handle Ctrl+C and Ctrl+D to exit
   useInput((input, key) => {
@@ -61,11 +89,12 @@ export function ChatSession() {
     // Only allow sending if connected and not already streaming
     if (value.trim() && isConnected && !isStreaming) {
       addUserMessage(value.trim());
+      clearTools(); // Clear previous tool executions
       sendMessage(value.trim());
       // Force TextInput to remount and clear by changing its key
       setInputKey((prev) => prev + 1);
     }
-  }, [isConnected, isStreaming, addUserMessage, sendMessage]);
+  }, [isConnected, isStreaming, addUserMessage, sendMessage, clearTools]);
 
   return (
     <Box flexDirection="column" gap={1}>
@@ -74,6 +103,25 @@ export function ChatSession() {
 
       {/* Message history */}
       <MessageList messages={messages} streamingText={streamingText} />
+
+      {/* Progress indicator for multi-step execution */}
+      {progress.isActive && progress.maxIterations > 1 && (
+        <Box marginY={0}>
+          <ProgressIndicator
+            iteration={progress.iteration}
+            maxIterations={progress.maxIterations}
+            message={progress.message}
+            isActive={progress.isActive}
+          />
+        </Box>
+      )}
+
+      {/* Tool execution display (inline during streaming) */}
+      {(activeTool || completedTools.length > 0) && (
+        <Box flexDirection="column" marginY={0}>
+          <ToolExecutionList tools={[...completedTools, ...(activeTool ? [activeTool] : [])]} />
+        </Box>
+      )}
 
       {/* Input prompt */}
       <Box borderStyle="single" borderColor={!isConnected ? 'gray' : isStreaming ? 'yellow' : 'green'} paddingX={1} flexDirection="row">

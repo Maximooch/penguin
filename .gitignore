@@ -80,6 +80,9 @@ node_modules/
 # Crush local cache
 .crush/
 
+# Claude local cache
+.claude/
+
 # ct1
 ct1/
 

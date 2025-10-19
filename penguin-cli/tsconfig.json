@@ -16,6 +16,7 @@
     "declarationMap": true,
     "sourceMap": true,
     "allowSyntheticDefaultImports": true,
+    "allowImportingTsExtensions": false,
     "types": ["node"]
   },
   "include": ["src/**/*"],

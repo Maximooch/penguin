@@ -10,7 +10,7 @@ import type { StreamConfig } from '../../core/types';
 export interface UseStreamingOptions {
   batchSize?: number;
   batchDelay?: number;
-  onComplete?: () => void;
+  onComplete?: (finalText: string) => void;
 }
 
 export function useStreaming(options: UseStreamingOptions = {}) {
@@ -23,15 +23,19 @@ export function useStreaming(options: UseStreamingOptions = {}) {
   const [streamingText, setStreamingText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
   const processorRef = useRef<StreamProcessor | null>(null);
+  const textRef = useRef(''); // Keep track of accumulated text
 
   useEffect(() => {
     const config: StreamConfig = { batchSize, batchDelay };
 
     processorRef.current = new StreamProcessor(config, {
-      onBatch: (batch) => setStreamingText((prev) => prev + batch),
+      onBatch: (batch) => {
+        textRef.current += batch;
+        setStreamingText(textRef.current);
+      },
       onComplete: () => {
         setIsStreaming(false);
-        onComplete?.();
+        onComplete?.(textRef.current); // Pass final text to callback
       },
     });
 
@@ -48,10 +52,12 @@ export function useStreaming(options: UseStreamingOptions = {}) {
   }, [isStreaming]);
 
   const complete = useCallback(() => {
+    console.log(`[useStreaming] complete() called. textRef.current length: ${textRef.current.length}`);
     processorRef.current?.complete();
   }, []);
 
   const reset = useCallback(() => {
+    textRef.current = ''; // Clear the ref too
     setStreamingText('');
     setIsStreaming(false);
   }, []);

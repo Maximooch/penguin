@@ -240,7 +240,12 @@ class SessionManager:
         primary_path = self.base_path / f"{session_id}.{self.format}"
         backup_path = self.base_path / f"{session_id}.{self.format}.bak"
         primary_error: Optional[Exception] = None
-        
+
+        # Check if this is a new session (neither file exists)
+        if not primary_path.exists() and not backup_path.exists():
+            logger.debug(f"Session {session_id} does not exist - this appears to be a new session")
+            return None  # Return None so caller can create a new session
+
         try:
             # Try loading from primary file
             session = self._load_from_file(primary_path)
@@ -249,27 +254,35 @@ class SessionManager:
                 self.current_session = session
                 logger.debug(f"Loaded session from primary file: {session_id}")
                 return session
+            elif primary_path.exists():
+                # File exists but failed to load/validate - actual error
+                raise ValueError(f"Session file exists but failed to load or validate: {primary_path}")
         except Exception as e:
             primary_error = e
-            logger.error(f"Error loading session {session_id} from primary file: {str(e)}", exc_info=True)
-            
+            logger.error(f"Error loading session {session_id} from primary file ({primary_path}): {str(e)}", exc_info=True)
+
             # Try backup file
             try:
                 if backup_path.exists():
+                    logger.info(f"Attempting to restore session {session_id} from backup")
                     session = self._load_from_file(backup_path)
                     if session and session.validate():
                         self._add_to_session_cache(session_id, session)
                         self.current_session = session
-                        
+
                         # Restore from backup
                         shutil.copy2(backup_path, primary_path)
-                        logger.warning(f"Restored session {session_id} from backup")
+                        logger.warning(f"Successfully restored session {session_id} from backup")
                         return session
             except Exception as backup_error:
-                logger.error(f"Error loading backup for session {session_id}: {str(backup_error)}", exc_info=True)
-        
-        # If we get here, both primary and backup loading failed
-        logger.warning(f"Could not load session {session_id}, creating recovery session. Primary error: {primary_error!r}", exc_info=True)
+                logger.error(f"Error loading backup for session {session_id} ({backup_path}): {str(backup_error)}", exc_info=True)
+
+        # If we get here, loading failed despite files existing - create recovery session
+        logger.warning(
+            f"Could not load session {session_id} despite files existing. "
+            f"Primary file: {primary_path.exists()}, Backup file: {backup_path.exists()}. "
+            f"Primary error: {type(primary_error).__name__}: {str(primary_error)}"
+        )
         return self._create_recovery_session(session_id)
     
     def _add_to_session_cache(self, session_id: str, session: Session) -> None:

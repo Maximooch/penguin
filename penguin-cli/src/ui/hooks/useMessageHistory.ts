@@ -24,12 +24,13 @@ export function useMessageHistory() {
     return message;
   }, []);
 
-  const addAssistantMessage = useCallback((content: string): Message => {
+  const addAssistantMessage = useCallback((content: string, reasoning?: string): Message => {
     const message: Message = {
       id: `assistant-${Date.now()}`,
       role: 'assistant',
       content,
       timestamp: Date.now(),
+      reasoning,
     };
     setMessages((prev) => [...prev, message]);
     return message;

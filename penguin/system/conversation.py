@@ -468,30 +468,36 @@ class ConversationSystem:
         
     def load(self, session_id: str) -> bool:
         """
-        Load a session by ID via session manager.
-        
+        Load a session by ID via session manager, or create a new one if it doesn't exist.
+
         Args:
             session_id: ID of the session to load
-            
+
         Returns:
-            True if successful, False otherwise
+            True if successful (loaded or created), False on error
         """
         if not self.session_manager:
             logger.error("Cannot load: No session manager available")
             return False
-            
+
         loaded_session = self.session_manager.load_session(session_id)
         if loaded_session:
             self.session = loaded_session
             self._modified = False
             # Update sent status
             self.system_prompt_sent = any(
-                msg.category == MessageCategory.SYSTEM 
+                msg.category == MessageCategory.SYSTEM
                 for msg in self.session.messages
             )
+            logger.debug(f"Loaded existing session: {session_id}")
             return True
-            
-        return False
+        else:
+            # Session doesn't exist - create a new one with this ID
+            logger.info(f"Session {session_id} not found, creating new session")
+            self.session = Session(id=session_id)
+            self._modified = True  # Mark as modified so it gets saved
+            self.system_prompt_sent = False
+            return True
         
     def load_context_file(self, file_path: str) -> bool:
         """
