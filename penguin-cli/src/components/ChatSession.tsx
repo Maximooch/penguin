@@ -5,9 +5,9 @@
 
 import React, { useState } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
+import { TextInput } from '@inkjs/ui';
 import { useChat } from '../hooks/useChat';
 import { MessageList } from './MessageList';
-import { InputPrompt } from './InputPrompt';
 import { ConnectionStatus } from './ConnectionStatus';
 
 export interface ChatSessionProps {
@@ -17,7 +17,7 @@ export interface ChatSessionProps {
 
 export function ChatSession({ conversationId, agentId }: ChatSessionProps) {
   const { exit } = useApp();
-  const [inputValue, setInputValue] = useState('');
+  const [inputKey, setInputKey] = useState(0);
 
   const {
     messages,
@@ -28,32 +28,21 @@ export function ChatSession({ conversationId, agentId }: ChatSessionProps) {
     sendMessage,
   } = useChat({ conversationId, agentId });
 
-  // Handle keyboard input
+  // Handle Ctrl+C and Ctrl+D to exit
   useInput((input, key) => {
-    // Ctrl+C or Ctrl+D to exit
     if (key.ctrl && (input === 'c' || input === 'd')) {
       exit();
-      return;
-    }
-
-    // Enter to send message (if not streaming)
-    if (key.return && !isStreaming && inputValue.trim()) {
-      sendMessage(inputValue.trim());
-      setInputValue('');
-      return;
-    }
-
-    // Backspace
-    if (key.backspace || key.delete) {
-      setInputValue((prev) => prev.slice(0, -1));
-      return;
-    }
-
-    // Regular character input (not streaming and not special keys)
-    if (!isStreaming && !key.ctrl && !key.meta && input.length === 1) {
-      setInputValue((prev) => prev + input);
     }
   });
+
+  const handleSubmit = (value: string) => {
+    // Only allow sending if connected and not already streaming
+    if (value.trim() && isConnected && !isStreaming) {
+      sendMessage(value.trim());
+      // Force TextInput to remount and clear by changing its key
+      setInputKey((prev) => prev + 1);
+    }
+  };
 
   return (
     <Box flexDirection="column" gap={1}>
@@ -64,16 +53,29 @@ export function ChatSession({ conversationId, agentId }: ChatSessionProps) {
       <MessageList messages={messages} streamingText={streamingText} />
 
       {/* Input prompt */}
-      <InputPrompt
-        value={inputValue}
-        isStreaming={isStreaming}
-        isConnected={isConnected}
-      />
+      <Box borderStyle="single" borderColor={!isConnected ? 'gray' : isStreaming ? 'yellow' : 'green'} paddingX={1} flexDirection="row">
+        <Box marginRight={1}>
+          <Text color={!isConnected ? 'gray' : isStreaming ? 'yellow' : 'green'} bold>
+            {'>'}
+          </Text>
+        </Box>
+        <Box flexGrow={1}>
+          <TextInput
+            key={inputKey}
+            placeholder={isStreaming ? "Waiting for response..." : "Type your message..."}
+            defaultValue=""
+            isDisabled={!isConnected}
+            onSubmit={handleSubmit}
+          />
+        </Box>
+      </Box>
 
       {/* Help text */}
       <Box marginTop={1}>
         <Text dimColor>
-          Press Enter to send • Ctrl+C to exit
+          {isStreaming
+            ? 'Waiting for response... • Ctrl+C to exit'
+            : 'Press Enter to send • Ctrl+C to exit'}
         </Text>
       </Box>
     </Box>

@@ -21,12 +21,14 @@ export function MessageList({ messages, streamingText }: MessageListProps) {
 
       {/* Streaming assistant response */}
       {streamingText && (
-        <Box>
+        <Box flexDirection="row">
           <Text color="blue" bold>
             Assistant:{' '}
           </Text>
-          <Text>{streamingText}</Text>
-          <Text color="gray">▊</Text> {/* Cursor */}
+          <Text>
+            {streamingText}
+            <Text color="gray">▊</Text>
+          </Text>
         </Box>
       )}
     </Box>
@@ -43,7 +45,7 @@ function MessageItem({ message }: MessageItemProps) {
   const label = isUser ? 'You' : 'Assistant';
 
   return (
-    <Box>
+    <Box flexDirection="row">
       <Text color={color} bold>
         {label}:{' '}
       </Text>

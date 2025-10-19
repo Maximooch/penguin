@@ -14,26 +14,13 @@ const args = process.argv.slice(2);
 const conversationId = args.find(arg => arg.startsWith('--conversation='))?.split('=')[1];
 const agentId = args.find(arg => arg.startsWith('--agent='))?.split('=')[1];
 
-// Render the app
-const { unmount, waitUntilExit } = render(
+// Render the app with proper exit handling
+const { waitUntilExit } = render(
   <App conversationId={conversationId} agentId={agentId} />
 );
 
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-  unmount();
-  process.exit(0);
-});
-
-process.on('SIGTERM', () => {
-  unmount();
-  process.exit(0);
-});
-
-// Wait for app to exit
-waitUntilExit().then(() => {
-  process.exit(0);
-}).catch((error) => {
+// Wait for app to exit naturally (Ink handles Ctrl+C internally)
+waitUntilExit().catch((error) => {
   console.error('Fatal error:', error);
   process.exit(1);
 });

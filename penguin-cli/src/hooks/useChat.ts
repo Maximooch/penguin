@@ -75,22 +75,25 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
 
   const handleComplete = useCallback(() => {
     flushTokenBuffer(); // Flush any remaining tokens
-    setIsStreaming(false);
 
-    // Add assistant message to history
-    if (streamingText) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
-          role: 'assistant',
-          content: streamingText,
-          timestamp: Date.now(),
-        },
-      ]);
-      setStreamingText('');
-    }
-  }, [streamingText, flushTokenBuffer]);
+    // Use functional update to get current streamingText
+    setStreamingText((currentStreamingText) => {
+      if (currentStreamingText) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString(),
+            role: 'assistant',
+            content: currentStreamingText,
+            timestamp: Date.now(),
+          },
+        ]);
+      }
+      return ''; // Clear streaming text
+    });
+
+    setIsStreaming(false);
+  }, [flushTokenBuffer]);
 
   const handleError = useCallback((err: Error) => {
     setError(err);
@@ -98,7 +101,7 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
     flushTokenBuffer();
   }, [flushTokenBuffer]);
 
-  // Initialize WebSocket client
+  // Initialize WebSocket client (only on mount or when connection params change)
   useEffect(() => {
     const client = new ChatClient({
       url,
@@ -128,7 +131,9 @@ export function useChat(options: UseChatOptions = {}): UseChatReturn {
         clearTimeout(flushTimeoutRef.current);
       }
     };
-  }, [url, conversationId, agentId, handleToken, handleComplete, handleError]);
+    // Only recreate client when connection params change, NOT when callbacks change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url, conversationId, agentId]);
 
   const sendMessage = useCallback((text: string) => {
     if (!clientRef.current?.isConnected()) {

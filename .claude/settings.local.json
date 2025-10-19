@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from penguin.web.app import create_app; print(''Success'')\")",
+      "Bash(python -c \"import sys; print(''\\n''.join(sys.path))\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
