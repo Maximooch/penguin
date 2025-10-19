@@ -12,9 +12,11 @@ export interface ConnectionStatusProps {
 }
 
 export function ConnectionStatus({ isConnected, error }: ConnectionStatusProps) {
+  // Only show status when there's an error or connecting
+  // Once connected, hide to reduce clutter
   if (error) {
     return (
-      <Box borderStyle="round" borderColor="red" padding={1}>
+      <Box borderStyle="round" borderColor="red" padding={1} marginBottom={1}>
         <Text color="red">
           ❌ Error: {error.message}
         </Text>
@@ -24,7 +26,7 @@ export function ConnectionStatus({ isConnected, error }: ConnectionStatusProps) 
 
   if (!isConnected) {
     return (
-      <Box borderStyle="round" borderColor="yellow" padding={1}>
+      <Box borderStyle="round" borderColor="yellow" padding={1} marginBottom={1}>
         <Text color="yellow">
           ⏳ Connecting to Penguin backend...
         </Text>
@@ -32,11 +34,6 @@ export function ConnectionStatus({ isConnected, error }: ConnectionStatusProps) 
     );
   }
 
-  return (
-    <Box>
-      <Text color="green">
-        ✓ Connected
-      </Text>
-    </Box>
-  );
+  // Connected - don't show anything
+  return null;
 }

@@ -9,6 +9,9 @@ import React from 'react';
 import { render } from 'ink';
 import { App } from './components/App';
 
+// Clear the terminal on startup
+console.clear();
+
 // Parse command line arguments
 const args = process.argv.slice(2);
 const conversationId = args.find(arg => arg.startsWith('--conversation='))?.split('=')[1];

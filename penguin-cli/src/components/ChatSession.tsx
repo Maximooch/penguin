@@ -3,7 +3,7 @@
  * Handles user input and displays conversation history
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import { TextInput } from '@inkjs/ui';
 import { useChat } from '../hooks/useChat';
@@ -18,6 +18,7 @@ export interface ChatSessionProps {
 export function ChatSession({ conversationId, agentId }: ChatSessionProps) {
   const { exit } = useApp();
   const [inputKey, setInputKey] = useState(0);
+  const [isExiting, setIsExiting] = useState(false);
 
   const {
     messages,
@@ -31,7 +32,10 @@ export function ChatSession({ conversationId, agentId }: ChatSessionProps) {
   // Handle Ctrl+C and Ctrl+D to exit
   useInput((input, key) => {
     if (key.ctrl && (input === 'c' || input === 'd')) {
-      exit();
+      if (!isExiting) {
+        setIsExiting(true);
+        exit();
+      }
     }
   });
 

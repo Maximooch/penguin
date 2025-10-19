@@ -1003,13 +1003,13 @@ async def stream_chat(
     # (per-request stream_callback is defined inside the loop to capture include_reasoning)
 
     try:
-        # Start the sender task
-        sender_task = asyncio.create_task(sender(response_queue))
-        logger.info("Sender task started.")
-
         while True: # Keep handling incoming client messages
             data = await websocket.receive_json() # Wait for a request from client
             logger.info(f"Received request from client: {data.get('text', '')[:50]}...")
+
+            # Start a new sender task for this message
+            sender_task = asyncio.create_task(sender(response_queue))
+            logger.info("Sender task started for this message.")
 
             # Extract parameters
             text = data.get("text", "")
