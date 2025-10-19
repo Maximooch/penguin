@@ -1,33 +1,51 @@
 /**
  * Chat session component with streaming message display
  * Handles user input and displays conversation history
+ *
+ * REFACTORED: Now uses context-based hooks instead of monolithic useChat
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import { TextInput } from '@inkjs/ui';
-import { useChat } from '../hooks/useChat';
+import { useConnection } from '../contexts/ConnectionContext';
+import { useWebSocket } from '../hooks/useWebSocket';
+import { useMessageHistory } from '../hooks/useMessageHistory';
+import { useStreaming } from '../hooks/useStreaming';
 import { MessageList } from './MessageList';
 import { ConnectionStatus } from './ConnectionStatus';
 
-export interface ChatSessionProps {
-  conversationId?: string;
-  agentId?: string;
-}
-
-export function ChatSession({ conversationId, agentId }: ChatSessionProps) {
+export function ChatSession() {
   const { exit } = useApp();
   const [inputKey, setInputKey] = useState(0);
   const [isExiting, setIsExiting] = useState(false);
 
-  const {
-    messages,
-    streamingText,
-    isStreaming,
-    isConnected,
-    error,
-    sendMessage,
-  } = useChat({ conversationId, agentId });
+  // Hooks (separated by concern)
+  const { isConnected, error, client } = useConnection();
+  const { sendMessage } = useWebSocket();
+  const { messages, addUserMessage, addAssistantMessage } = useMessageHistory();
+  const { streamingText, isStreaming, processToken, complete, reset } = useStreaming({
+    onComplete: () => {
+      // Add completed streaming message to history
+      if (streamingText) {
+        addAssistantMessage(streamingText);
+        reset();
+      }
+    },
+  });
+
+  // Set up WebSocket event handlers
+  useEffect(() => {
+    if (!client) return;
+
+    client.callbacks.onToken = (token: string) => {
+      processToken(token);
+    };
+
+    client.callbacks.onComplete = () => {
+      complete();
+    };
+  }, [client, processToken, complete]);
 
   // Handle Ctrl+C and Ctrl+D to exit
   useInput((input, key) => {
@@ -39,14 +57,15 @@ export function ChatSession({ conversationId, agentId }: ChatSessionProps) {
     }
   });
 
-  const handleSubmit = (value: string) => {
+  const handleSubmit = useCallback((value: string) => {
     // Only allow sending if connected and not already streaming
     if (value.trim() && isConnected && !isStreaming) {
+      addUserMessage(value.trim());
       sendMessage(value.trim());
       // Force TextInput to remount and clear by changing its key
       setInputKey((prev) => prev + 1);
     }
-  };
+  }, [isConnected, isStreaming, addUserMessage, sendMessage]);
 
   return (
     <Box flexDirection="column" gap={1}>

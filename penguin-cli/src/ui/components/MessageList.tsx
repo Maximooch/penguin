@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { Box, Text } from 'ink';
-import { Message } from '../api/client';
+import type { Message } from '../../core/types';
 
 export interface MessageListProps {
   messages: Message[];

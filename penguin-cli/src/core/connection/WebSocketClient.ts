@@ -35,7 +35,7 @@ export class ChatClient {
   private url: string;
   private conversationId?: string;
   private agentId?: string;
-  private callbacks: Required<Omit<ChatClientOptions, 'url' | 'conversationId' | 'agentId'>>;
+  public callbacks: Required<Omit<ChatClientOptions, 'url' | 'conversationId' | 'agentId'>>;  // Made public for ConnectionContext
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
 
