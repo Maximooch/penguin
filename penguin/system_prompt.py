@@ -241,19 +241,22 @@ PERSISTENCE_PROMPT = """
 # Initialize prompt builder with components
 from penguin.prompt.builder import get_builder
 
-# Load components into builder  
+# Load components into builder
 _builder = get_builder()
 _builder.load_components(
     base_prompt=BASE_PROMPT,
-    persistence_directive=PERSISTENCE_PROMPT, 
+    empirical_first=prompt_workflow.EMPIRICAL_FIRST,
+    persistence_directive=PERSISTENCE_PROMPT,
     workflow_section=prompt_workflow.MULTI_STEP_SECTION,
     project_workflow=prompt_workflow.PENGUIN_WORKFLOW,
+    multi_turn_investigation=prompt_workflow.MULTI_TURN_INVESTIGATION,
     action_syntax=prompt_actions.ACTION_SYNTAX,
     advice_section=prompt_workflow.ADVICE_PROMPT,
     completion_phrases=prompt_workflow.COMPLETION_PHRASES_GUIDE,
     large_codebase_guide=prompt_workflow.LARGE_CODEBASE_GUIDE,
     tool_learning_guide=prompt_workflow.TOOL_LEARNING_GUIDE,
-    code_analysis_guide=prompt_workflow.CODE_ANALYSIS_GUIDE
+    code_analysis_guide=prompt_workflow.CODE_ANALYSIS_GUIDE,
+    python_guide=prompt_workflow.PYTHON_SPECIFIC_GUIDE
 )
 
 # Default system prompt (direct mode)

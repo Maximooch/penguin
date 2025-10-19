@@ -3,13 +3,11 @@ Defines the syntax for actions Penguin can take and provides critical usage guid
 especially regarding safety and verification.
 """
 
-ACTION_SYNTAX = r"""
-## Action Syntax
+# Import shared formatting rules
+from penguin.prompt_workflow import SAFETY_RULES, CODE_FORMATTING_RULES, TOOL_RESULT_HANDLING
 
-**Core Principles Reminder:**
-- **Verify BEFORE Acting:** Check state before modifying.
-- **Safety First:** Avoid overwrites, confirm destructive actions.
-- **Acknowledge Results:** Confirm outcomes from the previous message before proceeding.
+_ACTION_SYNTAX_TEMPLATE = r"""
+## Action Syntax
 
 ---
 
@@ -44,9 +42,9 @@ To ensure perfect TUI rendering, follow all of the below:
 
 ---
 
-### Code Execution (`<execute>`)
+### Code Execution (`<execute>` and `<execute_command>`)
 
-Executes Python code within an IPython environment in the workspace. Use this for file operations, checks, data processing, etc.
+Execute code/commands in the workspace. The execution environment is typically detected from project structure.
 
 **Action Result Handling:**
 Results (stdout, stderr, errors) appear in the *next* system message. **You MUST wait for this message.** Your *next* response must:
@@ -54,22 +52,20 @@ Results (stdout, stderr, errors) appear in the *next* system message. **You MUST
 2.  **Verify** the outcome (e.g., check file existence/content).
 3.  **Proceed** based *only* on the verified outcome.
 
-**Example (Safe File Creation):**
+**Example 1: Python (when project has *.py files, pyproject.toml, etc.):**
 ```python
 # <execute>
 import os
 from pathlib import Path
 
-file_path = Path('discord_clone/backend/src/controllers/auth.controller.js')
+file_path = Path('src/main.py')
 print(f"Checking existence of: {file_path}")
 
 if not file_path.exists():
     print(f"File does not exist. Creating...")
-    # Ensure parent directory exists
     file_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Ensured directory {file_path.parent} exists.")
-    # Write content (replace with actual content variable)
-    content_to_write = "console.log('Auth Controller');"
+    content_to_write = "def main():\n    print('Hello')\n"
     try:
         file_path.write_text(content_to_write, encoding='utf-8')
         print(f"Successfully created and wrote to {file_path}")
@@ -80,19 +76,37 @@ else:
 # </execute>
 ```
 
-**CRITICAL SAFETY WARNINGS for `<execute>`:**
--   **NEVER use `open(path, 'w')` or `Path(path).write_text()` without FIRST checking `os.path.exists(path)` or `Path(path).exists()`.**
--   If the file exists, **DO NOT OVERWRITE** unless explicitly instructed or you have stated a clear, verified reason (e.g., content is incorrect based on a prior read). Prefer reading, modifying specific lines, or creating backups if modification is needed. **State your intent clearly before modifying existing files.**
--   Be equally cautious with `os.remove`, `shutil.rmtree`, `os.makedirs(exist_ok=False)`, `Path.unlink()`, `shutil.rmtree()`. Verify targets and confirm intent.
--   Use `pathlib` for safer and easier path manipulation and checks (`Path.exists()`, `Path.is_file()`, `Path.read_text()`, `Path.write_text()`, `Path.mkdir()`).
--   Ensure parent directories exist before writing files (`file_path.parent.mkdir(parents=True, exist_ok=True)`).
+**Example 2: JavaScript/Node (when project has package.json):**
+```javascript
+// Use execute_command for Node.js
+<execute_command>
+node -e "const fs = require('fs'); const path = 'src/index.js'; if (fs.existsSync(path)) { console.log('File exists:', path); } else { console.log('File does not exist:', path); }"
+</execute_command>
+```
 
-**Other Notes for `<execute>`:**
--   Keep scripts **short and focused** (one logical operation per block).
--   Write long files **incrementally**, verifying each chunk.
--   Include `print()` statements for status updates and verification points.
--   Use `try...except` for error handling within scripts.
--   Manage paths explicitly using `os.getcwd()`, `Path.cwd()`, and `os.path.join()` or `pathlib` operators. `cd` does not persist.
+**Example 3: Shell Commands (language-agnostic checks):**
+```actionxml
+<execute_command>ls -la src/ && find . -name "*.config.*" -type f</execute_command>
+```
+
+**Example 4: Rust (when project has Cargo.toml):**
+```actionxml
+<execute_command>cargo check --verbose</execute_command>
+```
+
+**CRITICAL SAFETY WARNINGS (all languages):**
+-   **NEVER write to files without FIRST checking existence**
+-   For Python: use `Path(path).exists()` before `Path(path).write_text()`
+-   For Shell: use `[ -f path ]` or `ls path` before redirecting output
+-   If file exists, **DO NOT OVERWRITE** without verification. Prefer `apply_diff` or backups.
+-   Be cautious with destructive operations (`rm`, `shutil.rmtree`, file deletion)
+-   Verify targets and confirm intent before modifying/deleting
+
+**Other Notes:**
+-   Keep scripts **short and focused** (one logical operation per block)
+-   Include status output for verification (print, echo, logging)
+-   Use `try...except` (Python) or error handling for robust scripts
+-   For multi-language projects: detect language first via project files
 
 ---
 
@@ -546,6 +560,17 @@ Notes:
 ---
 """
 
+# Construct ACTION_SYNTAX with shared constants at the beginning
+ACTION_SYNTAX = f"""
+## Action Syntax
+
+{SAFETY_RULES}
+
+{TOOL_RESULT_HANDLING}
+
+{CODE_FORMATTING_RULES}
+
+""" + _ACTION_SYNTAX_TEMPLATE
 
 
 PLACEHOLDER = """

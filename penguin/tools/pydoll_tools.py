@@ -106,9 +106,7 @@ class PyDollBrowserManager:
                 # Debug info only shown in dev mode
                 if self.dev_mode:
                     logging.debug(f"Browser methods: {[m for m in dir(self.browser) if not m.startswith('_')]}")
-                    print(f"Browser methods: {[m for m in dir(self.browser) if not m.startswith('_')]}")
                     logging.debug(f"Page methods: {[m for m in dir(self.page) if not m.startswith('_')]}")
-                    print(f"Page methods: {[m for m in dir(self.page) if not m.startswith('_')]}")
                 
                 self.initialized = True
                 return True

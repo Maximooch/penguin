@@ -537,6 +537,21 @@ class PenguinCore:
         # Telemetry collector
         ensure_telemetry(self)
 
+        output_config = getattr(self.config, "output", None)
+        self.show_tool_results = True
+        if output_config and hasattr(output_config, "show_tool_results"):
+            self.show_tool_results = bool(output_config.show_tool_results)
+        else:
+            try:
+                raw_output_config = raw_config.get("output", {}) if isinstance(raw_config, dict) else {}
+                show_tool_value = raw_output_config.get("show_tool_results", True)
+                if isinstance(show_tool_value, str):
+                    self.show_tool_results = show_tool_value.strip().lower() in {"1", "true", "yes", "on"}
+                else:
+                    self.show_tool_results = bool(show_tool_value)
+            except Exception:
+                self.show_tool_results = True
+
         # Set system prompt from import
         # Initialize prompt mode from config if available
         try:
@@ -548,7 +563,11 @@ class PenguinCore:
         # Apply initial output style from config before building prompt
         try:
             from penguin.prompt.builder import set_output_formatting
-            self.output_style: str = str(raw_config.get("output", {}).get("prompt_style", "steps_final")).strip().lower()
+            if output_config and getattr(output_config, "prompt_style", None):
+                prompt_style = str(output_config.prompt_style).strip().lower()
+            else:
+                prompt_style = str(raw_config.get("output", {}).get("prompt_style", "steps_final")).strip().lower()
+            self.output_style = prompt_style or "steps_final"
             set_output_formatting(self.output_style or "steps_final")
         except Exception:
             # If anything fails, fall back silently

@@ -147,6 +147,23 @@ def test_load_config_parses_agent_personas(tmp_path) -> None:
     assert persona.model.temperature == 0.1
 
 
+def test_load_config_respects_output_section(tmp_path) -> None:
+    config_body = textwrap.dedent(
+        """
+        output:
+          prompt_style: plain
+          show_tool_results: false
+        """
+    )
+    cfg_path = tmp_path / "config.yml"
+    cfg_path.write_text(config_body, encoding="utf-8")
+
+    cfg = Config.load_config(config_path=cfg_path)
+
+    assert cfg.output.prompt_style == "plain"
+    assert cfg.output.show_tool_results is False
+
+
 def test_register_agent_applies_persona_model(monkeypatch: pytest.MonkeyPatch) -> None:
     from penguin.core import PenguinCore
 

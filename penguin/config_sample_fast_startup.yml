@@ -38,6 +38,11 @@ diagnostics:
   log_to_file: false
   log_path: "${paths.logs}/diagnostics.log"
 
+# Output rendering configuration
+output:
+  prompt_style: steps_final
+  show_tool_results: true
+
 # Workspace configuration
 workspace:
   path: "~/penguin_workspace"

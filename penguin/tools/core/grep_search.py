@@ -75,7 +75,7 @@ class GrepSearch:
                                                 }
                                             )
                         except Exception as e:
-                            print(f"Error reading file {file_path}: {str(e)}")
+                            logging.getLogger(__name__).debug(f"Error reading file {file_path}: {str(e)}")
 
         # Sort matches by relevance (you might want to implement a more sophisticated sorting method)
         # For now, we'll just put file matches first, then message matches

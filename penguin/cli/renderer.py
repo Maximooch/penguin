@@ -185,6 +185,13 @@ INTERNAL_MARKERS_PATTERNS = [
     re.compile(r'┃\s*┃', re.DOTALL),  # Empty box content (just side borders)
 ]
 
+TOOL_RESULT_MARKERS_PATTERNS = [
+    re.compile(
+        r'<list_files_filtered>.*?(?:</list_files_filtered>|</>)',
+        re.DOTALL,
+    ),
+]
+
 # Syntax themes for different languages
 SYNTAX_THEMES = {
     "default": "monokai",
@@ -215,6 +222,7 @@ class UnifiedRenderer:
                  style: RenderStyle = RenderStyle.STANDARD,
                  show_timestamps: bool = True,
                  show_metadata: bool = False,
+                 show_tool_results: bool = True,
                  width: Optional[int] = None,
                  filter_internal_markers: bool = True,
                  deduplicate_messages: bool = True,
@@ -236,6 +244,7 @@ class UnifiedRenderer:
         self.style = style
         self.show_timestamps = show_timestamps
         self.show_metadata = show_metadata
+        self.show_tool_results = bool(show_tool_results)
         self.width = width or (self.console.width - 8)
         self.filter_internal_markers = filter_internal_markers
         self.deduplicate_messages = deduplicate_messages
@@ -247,6 +256,10 @@ class UnifiedRenderer:
         # Deduplication tracking
         self._last_message_hash = None
         self._message_history = []  # Store last N message hashes
+
+    def set_show_tool_results(self, enabled: bool) -> None:
+        """Toggle rendering of tool result blocks."""
+        self.show_tool_results = bool(enabled)
 
     # =========================================================================
     # MAIN RENDERING METHODS
@@ -880,6 +893,10 @@ class UnifiedRenderer:
         # Second pass: Apply all other patterns
         for pattern in INTERNAL_MARKERS_PATTERNS:
             filtered = pattern.sub('', filtered)
+
+        if not self.show_tool_results:
+            for pattern in TOOL_RESULT_MARKERS_PATTERNS:
+                filtered = pattern.sub('', filtered)
 
         # Clean up excessive whitespace left by filtering
         # Replace multiple consecutive newlines with max allowed

@@ -9,15 +9,18 @@ from dataclasses import dataclass
 class PromptComponents:
     """Container for prompt components"""
     base_prompt: str
+    empirical_first: str
     persistence_directive: str
     workflow_section: str
     project_workflow: str
+    multi_turn_investigation: str
     action_syntax: str
     advice_section: str
     completion_phrases: str
     large_codebase_guide: str
     tool_learning_guide: str
     code_analysis_guide: str
+    python_guide: str
 
 class PromptBuilder:
     """
@@ -30,29 +33,35 @@ class PromptBuilder:
         # Output formatting guidance appended to prompts; defaults lazily
         self.output_formatting: str = ""
         
-    def load_components(self, 
+    def load_components(self,
                        base_prompt: str,
+                       empirical_first: str,
                        persistence_directive: str,
                        workflow_section: str,
                        project_workflow: str,
+                       multi_turn_investigation: str,
                        action_syntax: str,
                        advice_section: str,
                        completion_phrases: str,
                        large_codebase_guide: str,
                        tool_learning_guide: str,
-                       code_analysis_guide: str) -> None:
+                       code_analysis_guide: str,
+                       python_guide: str) -> None:
         """Load all prompt components"""
         self.components = PromptComponents(
             base_prompt=base_prompt,
+            empirical_first=empirical_first,
             persistence_directive=persistence_directive,
             workflow_section=workflow_section,
             project_workflow=project_workflow,
+            multi_turn_investigation=multi_turn_investigation,
             action_syntax=action_syntax,
             advice_section=advice_section,
             completion_phrases=completion_phrases,
             large_codebase_guide=large_codebase_guide,
             tool_learning_guide=tool_learning_guide,
-            code_analysis_guide=code_analysis_guide
+            code_analysis_guide=code_analysis_guide,
+            python_guide=python_guide
         )
     
     def build(self, mode: str = "direct", **kwargs) -> str:
@@ -116,16 +125,19 @@ class PromptBuilder:
         """Build standard direct mode prompt"""
         return (
             self.components.base_prompt +
-            self.components.persistence_directive + 
+            self.components.empirical_first +
+            self.components.persistence_directive +
             self.components.workflow_section +
             self.components.project_workflow +
+            self.components.multi_turn_investigation +
             self.components.action_syntax +
             self.output_formatting +
             self.components.advice_section +
             self.components.completion_phrases +
             self.components.large_codebase_guide +
             self.components.tool_learning_guide +
-            self.components.code_analysis_guide
+            self.components.code_analysis_guide +
+            self.components.python_guide
         )
     
     def _build_terse(self) -> str:

@@ -555,6 +555,12 @@ class Config:
 
 
 @dataclass
+class OutputConfig:
+    prompt_style: str = field(default="steps_final")
+    show_tool_results: bool = field(default=True)
+
+
+@dataclass
 class DiagnosticsConfig:
     enabled: bool = field(default=False)
     max_context_tokens: int = field(default=200000)
@@ -694,6 +700,7 @@ class Config:
     temperature: float = field(default=0.7)
     max_tokens: Optional[int] = field(default=None)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
+    output: OutputConfig = field(default_factory=OutputConfig)
     workspace_dir: Path = field(default_factory=Path.cwd)
     cache_dir: Path = field(
         default_factory=lambda: Path(
@@ -741,6 +748,8 @@ class Config:
             self.model_configs = {}
         if self.agent_personas is None:
             self.agent_personas = {}
+        if self.output is None:
+            self.output = OutputConfig()
 
     @classmethod
     def load_config(cls, config_path: Optional[Path] = None) -> "Config":
@@ -783,6 +792,28 @@ class Config:
             ),
             log_to_file=config_data.get("diagnostics", {}).get("log_to_file", False),
             log_path=Path(config_data["diagnostics"]["log_path"]) if config_data.get("diagnostics", {}).get("log_path") else None
+        )
+
+        output_settings = config_data.get("output", {})
+        if not isinstance(output_settings, dict):
+            output_settings = {}
+
+        prompt_style_value = output_settings.get("prompt_style", "steps_final")
+        if prompt_style_value is None:
+            prompt_style_value = "steps_final"
+        prompt_style = str(prompt_style_value).strip()
+        if not prompt_style:
+            prompt_style = "steps_final"
+
+        show_tool_results_value = output_settings.get("show_tool_results", True)
+        if isinstance(show_tool_results_value, str):
+            show_tool_results = show_tool_results_value.strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            show_tool_results = bool(show_tool_results_value)
+
+        output_config = OutputConfig(
+            prompt_style=prompt_style,
+            show_tool_results=show_tool_results,
         )
 
         if diagnostics_config.enabled:
@@ -839,6 +870,7 @@ class Config:
             temperature=config_data.get("temperature", llm_model_config.temperature), # Use model temp if global not set
             max_tokens=config_data.get("max_tokens", llm_model_config.max_tokens), # Use model max_tokens if global not set
             diagnostics=diagnostics_config,
+            output=output_config,
             fast_startup=config_data.get("performance", {}).get("fast_startup", False),
             model_configs=model_configs_section,
             agent_personas=agent_personas,
@@ -859,6 +891,10 @@ class Config:
                 "log_path": str(self.diagnostics.log_path)
                 if self.diagnostics.log_path
                 else None,
+            },
+            "output": {
+                "prompt_style": getattr(self.output, "prompt_style", "steps_final"),
+                "show_tool_results": getattr(self.output, "show_tool_results", True),
             },
             "workspace_dir": str(self.workspace_dir),
             "cache_dir": str(self.cache_dir),

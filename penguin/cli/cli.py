@@ -2464,6 +2464,7 @@ class PenguinCLI:
 
     def __init__(self, core):
         self.core = core
+        self.show_tool_results: bool = bool(getattr(core, "show_tool_results", True))
         self.interface = PenguinInterface(core)
         self.in_247_mode = False
         self.message_count = 0
@@ -2474,7 +2475,8 @@ class PenguinCLI:
             console=self.console,
             style=RenderStyle.MINIMAL,
             show_timestamps=False,
-            show_metadata=False
+            show_metadata=False,
+            show_tool_results=self.show_tool_results,
         )
 
         self.conversation_menu = ConversationMenu(self.console)
@@ -3933,6 +3935,8 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     category == MessageCategory.SYSTEM_OUTPUT
                     or category == "SYSTEM_OUTPUT"
                 ):
+                    if not self.show_tool_results:
+                        return
                     # Check if this is a verbose tool result that should be suppressed
                     tool_name = metadata.get("tool_name", "")
                     action_type = metadata.get("action_type", "")

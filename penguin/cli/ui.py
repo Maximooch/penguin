@@ -151,6 +151,7 @@ class CLIRenderer:
             style=RenderStyle[cli_config.get('style', 'MINIMAL').upper()],
             show_timestamps=cli_config.get('show_timestamps', True),
             show_metadata=cli_config.get('show_metadata', False),
+            show_tool_results=getattr(core, "show_tool_results", True),
             filter_internal_markers=cli_config.get('hide_internal_markers', True),
             deduplicate_messages=cli_config.get('deduplicate_messages', True),
             max_blank_lines=cli_config.get('max_blank_lines', 2)
