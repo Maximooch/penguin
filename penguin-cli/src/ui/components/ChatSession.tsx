@@ -7,7 +7,6 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
-import { TextInput } from '@inkjs/ui';
 import { useConnection } from '../contexts/ConnectionContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useMessageHistory } from '../hooks/useMessageHistory';
@@ -18,6 +17,7 @@ import { MessageList } from './MessageList';
 import { ConnectionStatus } from './ConnectionStatus';
 import { ToolExecutionList } from './ToolExecution';
 import { ProgressIndicator } from './ProgressIndicator';
+import { MultiLineInput } from './MultiLineInput';
 
 export function ChatSession() {
   const { exit } = useApp();
@@ -32,18 +32,16 @@ export function ChatSession() {
   const { activeTool, completedTools, clearTools, addActionResults } = useToolExecution();
   const { progress, updateProgress, resetProgress, completeProgress } = useProgress();
 
-  // Wrap onComplete in useCallback to prevent StreamProcessor from resetting
-  const handleStreamComplete = useCallback((finalText: string) => {
-    // Add completed streaming message to history with reasoning if present
-    if (finalText) {
-      console.error(`[ChatSession] onComplete - finalText length: ${finalText.length}, starts with: "${finalText.substring(0, 100)}"`);
-      addAssistantMessage(finalText, reasoningRef.current || undefined);
-      reasoningRef.current = ''; // Clear reasoning for next message
-    }
-  }, [addAssistantMessage]);
-
   const { streamingText, isStreaming, processToken, complete, reset } = useStreaming({
-    onComplete: handleStreamComplete,
+    onComplete: (finalText: string) => {
+      // Add completed streaming message to history with reasoning if present
+      if (finalText) {
+        console.error(`[ChatSession] onComplete - finalText length: ${finalText.length}, starts with: "${finalText.substring(0, 100)}"`);
+        addAssistantMessage(finalText, reasoningRef.current || undefined);
+        reasoningRef.current = ''; // Clear reasoning for next message
+        reset(); // Clear streaming text immediately after adding to history
+      }
+    },
   });
 
   // Set up WebSocket event handlers
@@ -129,23 +127,13 @@ export function ChatSession() {
         </Box>
       )}
 
-      {/* Input prompt */}
-      <Box borderStyle="single" borderColor={!isConnected ? 'gray' : isStreaming ? 'yellow' : 'green'} paddingX={1} flexDirection="row">
-        <Box marginRight={1}>
-          <Text color={!isConnected ? 'gray' : isStreaming ? 'yellow' : 'green'} bold>
-            {'>'}
-          </Text>
-        </Box>
-        <Box flexGrow={1}>
-          <TextInput
-            key={inputKey}
-            placeholder={isStreaming ? "Waiting for response..." : "Type your message..."}
-            defaultValue=""
-            isDisabled={!isConnected}
-            onSubmit={handleSubmit}
-          />
-        </Box>
-      </Box>
+      {/* Input prompt - Multi-line */}
+      <MultiLineInput
+        key={inputKey}
+        placeholder={isStreaming ? "Waiting for response..." : "Type your message..."}
+        isDisabled={!isConnected || isStreaming}
+        onSubmit={handleSubmit}
+      />
 
       {/* Help text */}
       <Box marginTop={1}>

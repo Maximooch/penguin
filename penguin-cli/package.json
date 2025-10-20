@@ -9,10 +9,12 @@
   },
   "scripts": {
     "dev": "npm run build && npm run fix-imports && node dist/index.js",
+    "dev:mock": "npm run build && npm run fix-imports && node dist/prototype-mock.js",
     "dev:watch": "tsc --watch",
     "build": "tsc && npm run fix-imports",
     "fix-imports": "node scripts/fix-imports.js",
     "start": "node dist/index.js",
+    "mock": "node dist/prototype-mock.js",
     "lint": "eslint src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

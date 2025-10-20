@@ -24,6 +24,12 @@ export function useStreaming(options: UseStreamingOptions = {}) {
   const [isStreaming, setIsStreaming] = useState(false);
   const processorRef = useRef<StreamProcessor | null>(null);
   const textRef = useRef(''); // Keep track of accumulated text
+  const onCompleteRef = useRef(onComplete); // Store callback in ref to avoid recreating processor
+
+  // Update the callback ref when it changes
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
 
   useEffect(() => {
     const config: StreamConfig = { batchSize, batchDelay };
@@ -35,14 +41,14 @@ export function useStreaming(options: UseStreamingOptions = {}) {
       },
       onComplete: () => {
         setIsStreaming(false);
-        onComplete?.(textRef.current); // Pass final text to callback
+        onCompleteRef.current?.(textRef.current); // Use ref to get latest callback
       },
     });
 
     return () => {
       processorRef.current?.cleanup();
     };
-  }, [batchSize, batchDelay, onComplete]);
+  }, [batchSize, batchDelay]); // Remove onComplete from dependencies
 
   const processToken = useCallback((token: string) => {
     if (!isStreaming) {
