@@ -142,7 +142,7 @@ export function ChatSession() {
       case '?':
         // Show help as a system message
         addAssistantMessage(
-          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands coming soon!`
+          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n\n### ⚙️ System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands available! See commands.yml for full list.`
         );
         break;
 
@@ -165,11 +165,40 @@ export function ChatSession() {
         }
         break;
 
+      // Workflow prompt commands - send structured prompts to backend
+      case 'init':
+        if (isConnected) {
+          const initPrompt = `🚀 **Project Initialization**\n\nPlease help me initialize this project:\n\n1. Analyze the current project structure and codebase\n2. Identify the main technologies, frameworks, and patterns used\n3. Suggest improvements to architecture, organization, or setup\n4. Recommend next steps for development\n5. Identify any potential issues or missing components\n\nWorkspace: ${process.cwd()}`;
+          addUserMessage('/init');
+          sendMessage(initPrompt);
+          clearTools();
+        }
+        break;
+
+      case 'review':
+        if (isConnected) {
+          const reviewPrompt = `🔍 **Code Review Request**\n\nPlease review recent changes in this project:\n\n1. Analyze code quality, patterns, and best practices\n2. Check for potential bugs, security issues, or performance problems\n3. Suggest improvements to readability and maintainability\n4. Verify test coverage and documentation\n5. Provide specific, actionable feedback\n\nWorkspace: ${process.cwd()}\n\n*Tip: Use \`git diff\` or provide specific files to review.*`;
+          addUserMessage('/review');
+          sendMessage(reviewPrompt);
+          clearTools();
+        }
+        break;
+
+      case 'plan':
+        if (isConnected) {
+          const feature = args.feature || 'the requested feature';
+          const planPrompt = `📋 **Implementation Plan**\n\nCreate a detailed implementation plan for: **${feature}**\n\n1. Break down the feature into concrete tasks\n2. Identify dependencies and prerequisites\n3. Suggest file structure and code organization\n4. List potential challenges and solutions\n5. Estimate complexity and provide implementation order\n6. Include testing strategy\n\nWorkspace: ${process.cwd()}`;
+          addUserMessage(`/plan ${feature}`);
+          sendMessage(planPrompt);
+          clearTools();
+        }
+        break;
+
       default:
         // Unknown command
         addAssistantMessage(`Unknown command: /${commandName}. Type \`/help\` for available commands.`);
     }
-  }, [addAssistantMessage, clearMessages, clearTools, resetProgress, exit, isExiting]);
+  }, [addAssistantMessage, addUserMessage, clearMessages, clearTools, resetProgress, exit, isExiting, isConnected, sendMessage]);
 
   return (
     <Box flexDirection="column" gap={1}>

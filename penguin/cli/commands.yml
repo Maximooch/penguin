@@ -285,11 +285,26 @@ commands:
     description: "Show current prompt mode"
     handler: "_handle_mode_show"
 
-  # Shortcuts for common modes
+  # Workflow prompt commands
+  - name: init
+    category: system
+    description: "Initialize project with AI assistance"
+    handler: "_handle_workflow_init"
+
   - name: review
     category: system
-    description: "Shortcut: set prompt mode to 'review'"
-    handler: "_handle_mode_review"
+    description: "Review code changes and suggest improvements"
+    handler: "_handle_workflow_review"
+
+  - name: plan
+    category: system
+    description: "Create implementation plan for a feature"
+    parameters:
+      - name: feature
+        type: string
+        required: false
+        description: "Feature to plan"
+    handler: "_handle_workflow_plan"
 
   - name: implement
     category: system
