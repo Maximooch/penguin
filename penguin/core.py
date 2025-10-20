@@ -3241,7 +3241,7 @@ class PenguinCore:
                     "role": self._streaming_state["role"],
                     "content_so_far": self._streaming_state["content"],
                     "reasoning_so_far": reasoning_content,
-                    "metadata": final_message["metadata"],
+                    "metadata": final_metadata,
                 }))
                 if callback_ref:
                     asyncio.create_task(
@@ -3287,7 +3287,12 @@ class PenguinCore:
             "last_emit_ts": 0.0,
         }
 
-        return final_message
+        # Return message info for caller
+        return {
+            "role": "assistant",
+            "content": content_to_add if content_to_add.strip() else "",
+            "metadata": final_metadata,
+        }
 
     def _prepare_runmode_stream_callback(
         self,

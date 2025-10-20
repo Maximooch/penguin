@@ -5,7 +5,7 @@
  * REFACTORED: Now uses context-based hooks instead of monolithic useChat
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import { TextInput } from '@inkjs/ui';
 import { useConnection } from '../contexts/ConnectionContext';
@@ -23,7 +23,7 @@ export function ChatSession() {
   const { exit } = useApp();
   const [inputKey, setInputKey] = useState(0);
   const [isExiting, setIsExiting] = useState(false);
-  const [reasoningText, setReasoningText] = useState('');
+  const reasoningRef = useRef(''); // Use ref instead of state to avoid re-renders
 
   // Hooks (separated by concern)
   const { isConnected, error, client } = useConnection();
@@ -31,16 +31,19 @@ export function ChatSession() {
   const { messages, addUserMessage, addAssistantMessage } = useMessageHistory();
   const { activeTool, completedTools, clearTools, addActionResults } = useToolExecution();
   const { progress, updateProgress, resetProgress, completeProgress } = useProgress();
+
+  // Wrap onComplete in useCallback to prevent StreamProcessor from resetting
+  const handleStreamComplete = useCallback((finalText: string) => {
+    // Add completed streaming message to history with reasoning if present
+    if (finalText) {
+      console.error(`[ChatSession] onComplete - finalText length: ${finalText.length}, starts with: "${finalText.substring(0, 100)}"`);
+      addAssistantMessage(finalText, reasoningRef.current || undefined);
+      reasoningRef.current = ''; // Clear reasoning for next message
+    }
+  }, [addAssistantMessage]);
+
   const { streamingText, isStreaming, processToken, complete, reset } = useStreaming({
-    onComplete: (finalText) => {
-      // Add completed streaming message to history with reasoning if present
-      if (finalText) {
-        console.error(`[ChatSession] onComplete - finalText length: ${finalText.length}, starts with: "${finalText.substring(0, 100)}"`);
-        addAssistantMessage(finalText, reasoningText || undefined);
-        reset();
-        setReasoningText(''); // Clear reasoning for next message
-      }
-    },
+    onComplete: handleStreamComplete,
   });
 
   // Set up WebSocket event handlers
@@ -54,7 +57,7 @@ export function ChatSession() {
 
     client.callbacks.onReasoning = (token: string) => {
       console.log(`[ChatSession] Received reasoning token, length: ${token.length}`);
-      setReasoningText((prev) => prev + token);
+      reasoningRef.current += token;
     };
 
     client.callbacks.onProgress = (iteration: number, maxIterations: number, message?: string) => {
