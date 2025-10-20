@@ -88,7 +88,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     onComplete: (finalText: string) => {
       // Add completed streaming message to history with reasoning if present
       if (finalText) {
-        console.error(`[ChatSession] onComplete - finalText length: ${finalText.length}, starts with: "${finalText.substring(0, 100)}"`);
+        // console.error(`[ChatSession] onComplete - finalText length: ${finalText.length}, starts with: "${finalText.substring(0, 100)}"`);
         addAssistantMessage(finalText, reasoningRef.current || undefined);
         reasoningRef.current = ''; // Clear reasoning for next message
         reset(); // Clear streaming text immediately after adding to history
@@ -102,12 +102,12 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     if (!client) return;
 
     client.callbacks.onToken = (token: string) => {
-      console.log(`[ChatSession ${propConversationId}] Received token, length: ${token.length}`);
+      // console.log(`[ChatSession ${propConversationId}] Received token, length: ${token.length}`);
       processToken(token);
     };
 
     client.callbacks.onReasoning = (token: string) => {
-      console.log(`[ChatSession ${propConversationId}] Received reasoning token`);
+      // console.log(`[ChatSession ${propConversationId}] Received reasoning token`);
       reasoningRef.current += token;
     };
 
@@ -152,7 +152,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
             setIsLoadingSessions(false);
           })
           .catch((err) => {
-            console.error('Failed to load sessions:', err);
+            // console.error('Failed to load sessions:', err);
             setIsLoadingSessions(false);
             setShowSessionPicker(false);
           });
@@ -323,15 +323,15 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     // Check if this is a command (starts with /)
     if (trimmed.startsWith('/')) {
       const parsed = parseInput(trimmed);
-      console.error(`[ChatSession] Parsed command: ${trimmed} -> ${parsed ? parsed.command.name : 'null'}`);
+      // console.error(`[ChatSession] Parsed command: ${trimmed} -> ${parsed ? parsed.command.name : 'null'}`);
       if (parsed) {
         // Handle command
-        console.error(`[ChatSession] Handling command: ${parsed.command.name} with args:`, parsed.args);
+        // console.error(`[ChatSession] Handling command: ${parsed.command.name} with args:`, parsed.args);
         handleCommand(parsed.command.name, parsed.args);
         setInputKey((prev) => prev + 1);
         return;
       } else {
-        console.error(`[ChatSession] Command not recognized, falling through to send as message`);
+        // console.error(`[ChatSession] Command not recognized, falling through to send as message`);
       }
     }
 
@@ -366,7 +366,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
         setSessions(sessionList);
       })
       .catch((err) => {
-        console.error('Failed to delete session:', err);
+        // console.error('Failed to delete session:', err);
       });
   }, []);
 
@@ -401,14 +401,16 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
       )}
 
       {/* Input prompt - Multi-line with autocomplete */}
-      <MultiLineInput
-        key={inputKey}
-        placeholder={isStreaming ? "Waiting for response..." : "Type your message..."}
-        isDisabled={!isConnected || isStreaming}
-        onSubmit={handleSubmit}
-        onTextChange={handleTextChange}
-        suggestions={suggestions}
-      />
+      <Box minHeight={8}>
+        <MultiLineInput
+          key={inputKey}
+          placeholder={isStreaming ? "Waiting for response..." : "Type your message..."}
+          isDisabled={!isConnected || isStreaming}
+          onSubmit={handleSubmit}
+          onTextChange={handleTextChange}
+          suggestions={suggestions}
+        />
+      </Box>
 
           {/* Help text */}
           <Box marginTop={1}>

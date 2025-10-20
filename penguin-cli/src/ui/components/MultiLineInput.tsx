@@ -186,14 +186,14 @@ export function MultiLineInput({
   const isEmpty = lines.length === 1 && lines[0] === '';
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width="100%">
       {/* Autocomplete suggestions */}
       {showSuggestions && suggestions.length > 0 && (
         <CommandAutocomplete suggestions={suggestions} selectedIndex={selectedSuggestion} />
       )}
 
       {/* Input box */}
-      <Box flexDirection="column" borderStyle="round" borderColor={isDisabled ? 'gray' : 'cyan'} paddingX={1}>
+      <Box flexDirection="column" borderStyle="round" borderColor={isDisabled ? 'gray' : 'cyan'} paddingX={1} paddingY={1} minHeight={5} width="100%">
         {isEmpty && (
           <Text dimColor>{placeholder}</Text>
         )}

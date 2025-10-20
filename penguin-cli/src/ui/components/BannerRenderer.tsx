@@ -107,7 +107,7 @@ export function BannerRenderer({ version = '0.1.0', workspace, forceLayout }: Ba
         <Text color="cyan">{layout === 'compact' ? COMPACT_TEXT : FIGLET_TEXT}</Text>
         <Box marginTop={1}>
           <Text dimColor>
-            v{version} • AI-Powered Development Assistant
+            v{version} • Software Engineer Agent
           </Text>
         </Box>
         {workspace && (
@@ -140,7 +140,7 @@ export function BannerRenderer({ version = '0.1.0', workspace, forceLayout }: Ba
       </Box>
       <Box marginTop={1}>
         <Text dimColor>
-          v{version} • AI-Powered Development Assistant
+          v{version} • Software Engineer Agent
         </Text>
       </Box>
       {workspace && (
@@ -201,7 +201,7 @@ function SideBySideBanner({
 
   // Add footer
   lines.push('');
-  lines.push(`${dim}v${version} • AI-Powered Development Assistant${reset}`);
+  lines.push(`${dim}v${version} • Software Engineer Agent${reset}`);
 
   if (workspace) {
     lines.push(`${dim}📁 Workspace: ${yellow}${workspace}${reset}${dim} • Type ${cyan}/help${reset}${dim} for commands${reset}`);

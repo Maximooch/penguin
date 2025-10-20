@@ -28,13 +28,13 @@ export function TabBar() {
         return (
           <Box key={tab.id} marginRight={1}>
             <Text
-              color={isActive ? 'cyan' : 'gray'}
+              color={isActive ? 'cyan' : undefined}
               bold={isActive}
-              inverse={isActive}
+              dimColor={!isActive}
             >
               {' '}
               {tabNumber}:{icon} {tab.title}
-              {isActive ? '*' : ''}{' '}
+              {isActive ? ' *' : ''}{' '}
             </Text>
             {index < tabs.length - 1 && (
               <Text dimColor> │ </Text>

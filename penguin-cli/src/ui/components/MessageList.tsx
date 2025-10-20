@@ -24,7 +24,7 @@ export function MessageList({ messages, streamingText }: MessageListProps) {
       {streamingText && (
         <Box flexDirection="column">
           <Text color="blue" bold>
-            Assistant:
+            Penguin:
           </Text>
           <Box marginLeft={2}>
             <Markdown content={streamingText} />
@@ -43,7 +43,7 @@ interface MessageItemProps {
 function MessageItem({ message }: MessageItemProps) {
   const isUser = message.role === 'user';
   const color = isUser ? 'green' : 'blue';
-  const label = isUser ? 'You' : 'Assistant';
+  const label = isUser ? 'You' : 'Penguin';
 
   return (
     <Box flexDirection="column">
