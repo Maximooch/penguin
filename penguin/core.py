@@ -3074,8 +3074,8 @@ class PenguinCore:
         if message_type is None:
             message_type = "assistant"
             
-        if not chunk or not chunk.strip():
-            # Don't initialize streaming or emit events for empty chunks
+        if not chunk:
+            # Don't initialize streaming or emit events for truly empty chunks
             # Only track empty chunks if streaming is already active
             if self._streaming_state["active"]:
                 self._streaming_state["empty_response_count"] += 1
@@ -3083,6 +3083,12 @@ class PenguinCore:
                     if not self._streaming_state["error"]:
                         self._streaming_state["error"] = "Multiple empty responses received"
                     logger.warning(f"PenguinCore: Multiple empty responses ({self._streaming_state['empty_response_count']}) received during streaming")
+            return
+
+        # Allow whitespace-only chunks (like spaces) if streaming is already active
+        # This fixes word merging where spaces between words were being dropped
+        if not chunk.strip() and not self._streaming_state["active"]:
+            # Only skip whitespace chunks if we haven't started streaming yet
             return
         
         # Reset empty counter if we got actual content
@@ -3175,43 +3181,23 @@ class PenguinCore:
         reasoning_content = self._streaming_state.get("reasoning_content", "")
         
         # --- Build final assistant content ---------------------------------
-        # We embed internal reasoning as a <details> block so the UI can render
-        # a collapsible section **without** duplicating the content in the
-        # visible answer.  This is safe because Markdown renders <details>
-        # natively in modern terminals with our Expander / fallback widget.
+        # Store reasoning separately in metadata instead of embedding in content
+        # This is cleaner and allows each UI to display reasoning however it wants
 
         assistant_visible = self._streaming_state["content"]
 
-        if reasoning_content:
-            details_block = (
-                "<details>\n"
-                "<summary>🧠  Click to show / hide internal reasoning</summary>\n\n"
-                + reasoning_content.strip("\n")
-                + "\n\n</details>\n\n"
-            )
-            merged_content = details_block + assistant_visible
-        else:
-            merged_content = assistant_visible
+        # Don't merge reasoning into content - store it separately in metadata
+        content_to_add = assistant_visible
 
-        # Construct the assistant message for storage (collapsed reasoning)
-        final_message = {
-            "role": self._streaming_state["role"],
-            "content": merged_content,
-            "type": self._streaming_state["message_type"],  # keep original for storage
-            "metadata": {
-                **self._streaming_state["metadata"],
-                "has_reasoning": bool(reasoning_content),
-                "reasoning_length": self.api_client.count_tokens(reasoning_content) if reasoning_content and self.api_client else len(reasoning_content) // 4,
-            }
+        # Construct metadata with reasoning stored separately
+        final_metadata = {
+            **self._streaming_state["metadata"],
+            "has_reasoning": bool(reasoning_content),
         }
-        
-        # Content to add to the conversation is *only* the assistant visible text.
-        # The TUI has already streamed reasoning tokens live; re-injecting would duplicate them.
-        content_to_add = merged_content
-        if reasoning_content and not self.model_config.reasoning_exclude:
-            # Do NOT merge reasoning back into the assistant text; UI already rendered
-            # it live during streaming and adding it again leads to duplication.
-            pass
+
+        if reasoning_content:
+            final_metadata["reasoning"] = reasoning_content
+            final_metadata["reasoning_length"] = self.api_client.count_tokens(reasoning_content) if reasoning_content and self.api_client else len(reasoning_content) // 4
         
         if content_to_add.strip():
             # Add to conversation manager
@@ -3221,21 +3207,15 @@ class PenguinCore:
                 category = MessageCategory.SYSTEM
             else:
                 category = MessageCategory.DIALOG
-                
+
             # Remove streaming flag from metadata for final version
-            final_metadata = final_message["metadata"].copy()
             if "is_streaming" in final_metadata:
                 del final_metadata["is_streaming"]
-            
-            # Add reasoning metadata if present
-            if reasoning_content:
-                final_metadata["has_reasoning"] = True
-                final_metadata["reasoning_length"] = self.api_client.count_tokens(reasoning_content) if self.api_client else len(reasoning_content) // 4
-                
+
             if hasattr(self, "conversation_manager") and self.conversation_manager:
                 print(f"[DEBUG] finalize_streaming_message() adding message. has_reasoning={bool(reasoning_content)}, content_length={len(content_to_add)}", flush=True)
                 self.conversation_manager.conversation.add_message(
-                    role=final_message["role"],
+                    role=self._streaming_state["role"],
                     content=content_to_add,
                     category=category,
                     metadata=final_metadata
@@ -3282,7 +3262,7 @@ class PenguinCore:
             "role": self._streaming_state["role"],
             "content": self._streaming_state["content"],
             "reasoning": reasoning_content,
-            "metadata": final_message["metadata"],
+            "metadata": final_metadata,
         }))
         if callback_ref:
             asyncio.create_task(

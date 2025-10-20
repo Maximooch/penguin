@@ -35,6 +35,7 @@ export function ChatSession() {
     onComplete: (finalText) => {
       // Add completed streaming message to history with reasoning if present
       if (finalText) {
+        console.error(`[ChatSession] onComplete - finalText length: ${finalText.length}, starts with: "${finalText.substring(0, 100)}"`);
         addAssistantMessage(finalText, reasoningText || undefined);
         reset();
         setReasoningText(''); // Clear reasoning for next message

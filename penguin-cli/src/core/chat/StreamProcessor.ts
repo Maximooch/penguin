@@ -28,6 +28,11 @@ export class StreamProcessor {
   processToken(token: string): void {
     this.buffer += token;
 
+    // Debug: Log first few tokens
+    if (this.buffer.length < 200) {
+      console.error(`[StreamProcessor] token: "${token}", buffer: "${this.buffer}"`);
+    }
+
     // Flush if buffer reaches batch size
     if (this.buffer.length >= this.config.batchSize) {
       this.flush();
