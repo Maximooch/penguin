@@ -37,7 +37,7 @@ export class CommandRegistry {
    */
   private loadCommands(): void {
     if (!this.configPath || !fs.existsSync(this.configPath)) {
-      console.warn(`Commands config not found: ${this.configPath}`);
+      console.error(`[CommandRegistry] Commands config not found: ${this.configPath}`);
       this.registerBuiltinCommands();
       return;
     }
@@ -57,15 +57,18 @@ export class CommandRegistry {
       if (config.commands) {
         for (const cmdDef of config.commands) {
           const command = this.createCommand(cmdDef);
-          if (command.enabled) {
+          if (command.enabled !== false) {  // Changed from command.enabled to handle undefined
             this.register(command);
           }
         }
       }
 
-      console.log(`Loaded ${this.commands.size} commands from ${this.configPath}`);
+      console.error(`[CommandRegistry] Loaded ${this.commands.size} commands from ${this.configPath}`);
+      // Debug: Show first few commands
+      const commandNames = Array.from(this.commands.keys()).slice(0, 10);
+      console.error(`[CommandRegistry] Sample commands: ${commandNames.join(', ')}`);
     } catch (error) {
-      console.error(`Error loading commands config:`, error);
+      console.error(`[CommandRegistry] Error loading commands config:`, error);
       this.registerBuiltinCommands();
     }
   }

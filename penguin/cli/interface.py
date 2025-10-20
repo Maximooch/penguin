@@ -476,7 +476,7 @@ class PenguinInterface:
         """Handle conversation management commands"""
         if not args:
             return {"error": "Missing chat subcommand"}
-            
+
         subcmd = args[0].lower()
         if subcmd == "list":
             raw_conversations = self.core.list_conversations() # This should come from ConversationManager
@@ -496,10 +496,10 @@ class PenguinInterface:
                     title = conv_data["metadata"].get("title")
                 if not title:
                     title = f"Conversation {session_id[:8]}" # Fallback title
-                
+
                 message_count = conv_data.get("message_count", 0)
                 last_active_str = conv_data.get("last_active", datetime.now().isoformat())
-                
+
                 try:
                     # Use parse_iso_datetime for robustness if it's available and handles the format
                     last_active_dt = parse_iso_datetime(last_active_str)
@@ -514,10 +514,37 @@ class PenguinInterface:
                     last_active=last_active_formatted # Use formatted string
                 )
                 summaries.append(summary)
-                
+
             return {"conversations": summaries}
         elif subcmd == "load" and len(args) > 1:
             return await self._load_conversation(args[1])
+        elif subcmd == "delete" and len(args) > 1:
+            session_id = args[1]
+            try:
+                success = self.core.conversation_manager.delete_conversation(session_id)
+                if success:
+                    return {
+                        "status": f"Deleted conversation: {session_id[:8]}...",
+                        "session_id": session_id
+                    }
+                else:
+                    return {"error": f"Failed to delete conversation: {session_id}"}
+            except Exception as e:
+                return {"error": f"Error deleting conversation: {str(e)}"}
+        elif subcmd == "new":
+            # Start a fresh conversation (reset current session)
+            try:
+                self.core.conversation_manager.reset()
+                new_session = self.core.conversation_manager.conversation.session
+                if new_session:
+                    return {
+                        "status": "Started new conversation",
+                        "session_id": new_session.id
+                    }
+                else:
+                    return {"error": "Failed to create new session"}
+            except Exception as e:
+                return {"error": f"Error creating new conversation: {str(e)}"}
         elif subcmd == "summary":
             return {"summary": self.core.conversation_manager.conversation.get_history()}
         return {"error": f"Unknown chat command: {subcmd}"}

@@ -62,13 +62,28 @@ commands:
         required: true
         description: "Session ID to load"
     handler: "_handle_chat_load"
-    
+
+  - name: "chat delete"
+    category: chat
+    description: "Delete a conversation by ID"
+    parameters:
+      - name: session_id
+        type: string
+        required: true
+        description: "Session ID to delete"
+    handler: "_handle_chat_delete"
+
+  - name: "chat new"
+    category: chat
+    description: "Start a new conversation"
+    handler: "_handle_chat_new"
+
   - name: "chat save"
     category: chat
     description: "Save current conversation"
     handler: "_handle_chat_save"
     enabled: false
-    
+
   - name: "chat summary"
     category: chat
     description: "Show conversation summary"

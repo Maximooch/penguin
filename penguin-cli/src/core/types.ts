@@ -40,6 +40,9 @@ export interface Session {
   agentId?: string;
   createdAt: number;
   updatedAt: number;
+  title?: string;
+  message_count?: number;
+  last_active?: string;
 }
 
 export interface ChatConfig {

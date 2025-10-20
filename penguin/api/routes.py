@@ -460,6 +460,23 @@ async def create_conversation(core: PenguinCore = Depends(get_core)):
         )
 
 
+@router.delete("/api/v1/conversations/{conversation_id}")
+async def delete_conversation(conversation_id: str, core: PenguinCore = Depends(get_core)):
+    """Delete a conversation by ID."""
+    try:
+        success = core.conversation_manager.delete_conversation(conversation_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Conversation {conversation_id} not found or could not be deleted")
+        return {"status": "deleted", "conversation_id": conversation_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error deleting conversation {conversation_id}: {str(e)}"
+        )
+
+
 @router.get("/api/v1/context-files")
 async def list_context_files(core: PenguinCore = Depends(get_core)):
     """List all available context files."""

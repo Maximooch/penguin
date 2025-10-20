@@ -19,6 +19,10 @@ import { ConnectionStatus } from './ConnectionStatus';
 import { ToolExecutionList } from './ToolExecution';
 import { ProgressIndicator } from './ProgressIndicator';
 import { MultiLineInput } from './MultiLineInput';
+import { SessionList } from './SessionList';
+import { SessionPickerModal } from './SessionPickerModal';
+import { SessionAPI } from '../../core/api/SessionAPI.js';
+import type { Session } from '../../core/types.js';
 
 export function ChatSession() {
   const { exit } = useApp();
@@ -26,10 +30,15 @@ export function ChatSession() {
   const [isExiting, setIsExiting] = useState(false);
   const [currentInput, setCurrentInput] = useState('');
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [showingSessionList, setShowingSessionList] = useState(false);
+  const [showSessionPicker, setShowSessionPicker] = useState(false);
+  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const reasoningRef = useRef(''); // Use ref instead of state to avoid re-renders
+  const sessionAPI = useRef(new SessionAPI('http://localhost:8000'));
 
   // Hooks (separated by concern)
-  const { isConnected, error, client } = useConnection();
+  const { isConnected, error, client, switchConversation, currentConversationId } = useConnection();
   const { parseInput, getSuggestions } = useCommand();
   const { sendMessage } = useWebSocket();
   const { messages, addUserMessage, addAssistantMessage, clearMessages } = useMessageHistory();
@@ -83,12 +92,31 @@ export function ChatSession() {
     };
   }, [client, processToken, complete, addActionResults, updateProgress, completeProgress, resetProgress]);
 
-  // Handle Ctrl+C and Ctrl+D to exit
+  // Handle global hotkeys
   useInput((input, key) => {
+    // Ctrl+C and Ctrl+D to exit
     if (key.ctrl && (input === 'c' || input === 'd')) {
       if (!isExiting) {
         setIsExiting(true);
         exit();
+      }
+    }
+    // Ctrl+O to open session picker
+    else if (key.ctrl && input === 'o') {
+      if (!showSessionPicker) {
+        setIsLoadingSessions(true);
+        setShowSessionPicker(true);
+        sessionAPI.current
+          .listSessions()
+          .then((sessionList) => {
+            setSessions(sessionList);
+            setIsLoadingSessions(false);
+          })
+          .catch((err) => {
+            console.error('Failed to load sessions:', err);
+            setIsLoadingSessions(false);
+            setShowSessionPicker(false);
+          });
       }
     }
   });
@@ -105,35 +133,6 @@ export function ChatSession() {
     }
   }, [getSuggestions]);
 
-  const handleSubmit = useCallback((value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-
-    // Reset suggestions
-    setSuggestions([]);
-    setCurrentInput('');
-
-    // Check if this is a command (starts with /)
-    if (trimmed.startsWith('/')) {
-      const parsed = parseInput(trimmed);
-      if (parsed) {
-        // Handle command
-        handleCommand(parsed.command.name, parsed.args);
-        setInputKey((prev) => prev + 1);
-        return;
-      }
-    }
-
-    // Only allow sending regular messages if connected and not already streaming
-    if (isConnected && !isStreaming) {
-      addUserMessage(trimmed);
-      clearTools(); // Clear previous tool executions
-      sendMessage(trimmed);
-      // Force input to remount and clear by changing its key
-      setInputKey((prev) => prev + 1);
-    }
-  }, [isConnected, isStreaming, addUserMessage, sendMessage, clearTools, parseInput, getSuggestions]);
-
   const handleCommand = useCallback((commandName: string, args: Record<string, any>) => {
     // Built-in command handlers
     switch (commandName) {
@@ -142,7 +141,7 @@ export function ChatSession() {
       case '?':
         // Show help as a system message
         addAssistantMessage(
-          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n\n### ⚙️ System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands available! See commands.yml for full list.`
+          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/chat list\` - List all conversations\n- \`/chat load <id>\` - Load a conversation\n- \`/chat delete <id>\` - Delete a conversation\n- \`/chat new\` - Start a new conversation\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n\n### ⚙️ System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands available! See commands.yml for full list.`
         );
         break;
 
@@ -163,6 +162,94 @@ export function ChatSession() {
           setIsExiting(true);
           exit();
         }
+        break;
+
+      // Session management commands - use REST API
+      case 'chat list':
+        addUserMessage('/chat list');
+        sessionAPI.current.listSessions()
+          .then(sessionList => {
+            setSessions(sessionList);
+            setShowingSessionList(true);
+            // Also show as formatted message
+            if (sessionList.length === 0) {
+              addAssistantMessage('No conversations found.');
+            } else {
+              const formatted = `📋 Found ${sessionList.length} conversation(s):\n\n` +
+                sessionList.slice(0, 10).map(s =>
+                  `• ${s.id.slice(0, 8)}: ${s.title || 'Untitled'} (${s.message_count || 0} messages)`
+                ).join('\n');
+              addAssistantMessage(formatted);
+            }
+          })
+          .catch(err => {
+            addAssistantMessage(`Error listing sessions: ${err.message}`);
+          });
+        break;
+
+      case 'chat load':
+        if (args.session_id) {
+          addUserMessage(`/chat load ${args.session_id}`);
+
+          // Clear current UI
+          clearMessages();
+          clearTools();
+          resetProgress();
+
+          // Switch to new conversation
+          switchConversation(args.session_id)
+            .then(() => {
+              addAssistantMessage(`✓ Switched to session: ${args.session_id.slice(0, 8)}\n\nLoading conversation history...`);
+
+              // Fetch and display conversation details
+              return sessionAPI.current.getSession(args.session_id);
+            })
+            .then(session => {
+              addAssistantMessage(`Session loaded: ${session.title || 'Untitled'}\n${session.message_count || 0} messages in history.`);
+            })
+            .catch(err => {
+              addAssistantMessage(`Error loading session: ${err.message}`);
+            });
+        } else {
+          addAssistantMessage('Error: Missing session ID. Usage: `/chat load <session_id>`');
+        }
+        break;
+
+      case 'chat delete':
+        if (args.session_id) {
+          addUserMessage(`/chat delete ${args.session_id}`);
+          sessionAPI.current.deleteSession(args.session_id)
+            .then(success => {
+              if (success) {
+                addAssistantMessage(`✓ Deleted session: ${args.session_id.slice(0, 8)}`);
+                // Refresh the session list if showing
+                if (showingSessionList) {
+                  sessionAPI.current.listSessions().then(setSessions);
+                }
+              } else {
+                addAssistantMessage(`Error: Session ${args.session_id} not found.`);
+              }
+            })
+            .catch(err => {
+              addAssistantMessage(`Error deleting session: ${err.message}`);
+            });
+        } else {
+          addAssistantMessage('Error: Missing session ID. Usage: `/chat delete <session_id>`');
+        }
+        break;
+
+      case 'chat new':
+        addUserMessage('/chat new');
+        sessionAPI.current.createSession()
+          .then(newSessionId => {
+            clearMessages(); // Clear current messages
+            clearTools();
+            resetProgress();
+            addAssistantMessage(`✓ Created new session: ${newSessionId}\n\nNote: You'll need to reconnect with --conversation=${newSessionId}`);
+          })
+          .catch(err => {
+            addAssistantMessage(`Error creating session: ${err.message}`);
+          });
         break;
 
       // Workflow prompt commands - send structured prompts to backend
@@ -200,10 +287,81 @@ export function ChatSession() {
     }
   }, [addAssistantMessage, addUserMessage, clearMessages, clearTools, resetProgress, exit, isExiting, isConnected, sendMessage]);
 
+  const handleSubmit = useCallback((value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+
+    // Reset suggestions
+    setSuggestions([]);
+    setCurrentInput('');
+
+    // Check if this is a command (starts with /)
+    if (trimmed.startsWith('/')) {
+      const parsed = parseInput(trimmed);
+      console.error(`[ChatSession] Parsed command: ${trimmed} -> ${parsed ? parsed.command.name : 'null'}`);
+      if (parsed) {
+        // Handle command
+        console.error(`[ChatSession] Handling command: ${parsed.command.name} with args:`, parsed.args);
+        handleCommand(parsed.command.name, parsed.args);
+        setInputKey((prev) => prev + 1);
+        return;
+      } else {
+        console.error(`[ChatSession] Command not recognized, falling through to send as message`);
+      }
+    }
+
+    // Only allow sending regular messages if connected and not already streaming
+    if (isConnected && !isStreaming) {
+      addUserMessage(trimmed);
+      clearTools(); // Clear previous tool executions
+      sendMessage(trimmed);
+      // Force input to remount and clear by changing its key
+      setInputKey((prev) => prev + 1);
+    }
+  }, [isConnected, isStreaming, addUserMessage, sendMessage, clearTools, parseInput, handleCommand]);
+
+  // Handle session selection from modal
+  const handleSessionSelect = useCallback((session: Session) => {
+    setShowSessionPicker(false);
+
+    // Clear current UI
+    clearMessages();
+    clearTools();
+    resetProgress();
+
+    // Switch to selected conversation
+    switchConversation(session.id)
+      .then(() => {
+        addAssistantMessage(`✓ Switched to: ${session.title || session.id.slice(0, 8)}\n${session.message_count || 0} messages in history.`);
+      })
+      .catch((err) => {
+        addAssistantMessage(`Error switching session: ${err.message}`);
+      });
+  }, [switchConversation, clearMessages, clearTools, resetProgress, addAssistantMessage]);
+
+  // Handle session deletion from modal
+  const handleSessionDelete = useCallback((sessionId: string) => {
+    sessionAPI.current
+      .deleteSession(sessionId)
+      .then(() => {
+        // Refresh session list
+        return sessionAPI.current.listSessions();
+      })
+      .then((sessionList) => {
+        setSessions(sessionList);
+      })
+      .catch((err) => {
+        console.error('Failed to delete session:', err);
+      });
+  }, []);
+
   return (
     <Box flexDirection="column" gap={1}>
-      {/* Connection status */}
-      <ConnectionStatus isConnected={isConnected} error={error} />
+      {/* Main content */}
+      {!showSessionPicker && (
+        <>
+          {/* Connection status */}
+          <ConnectionStatus isConnected={isConnected} error={error} />
 
       {/* Message history */}
       <MessageList messages={messages} streamingText={streamingText} />
@@ -237,14 +395,30 @@ export function ChatSession() {
         suggestions={suggestions}
       />
 
-      {/* Help text */}
-      <Box marginTop={1}>
-        <Text dimColor>
-          {isStreaming
-            ? 'Waiting for response... • Ctrl+C to exit'
-            : 'Press Enter to send • Ctrl+C to exit'}
-        </Text>
-      </Box>
+          {/* Help text */}
+          <Box marginTop={1}>
+            <Text dimColor>
+              {isStreaming
+                ? 'Waiting for response... • Ctrl+C to exit'
+                : 'Enter: Send • Ctrl+O: Sessions • Ctrl+C: Exit'}
+            </Text>
+          </Box>
+        </>
+      )}
+
+      {/* Session Picker Modal (full screen overlay) */}
+      {showSessionPicker && (
+        <Box flexDirection="column" width="100%" height="100%" justifyContent="center" alignItems="center">
+          <SessionPickerModal
+            sessions={sessions}
+            currentSessionId={currentConversationId}
+            onSelect={handleSessionSelect}
+            onDelete={handleSessionDelete}
+            onClose={() => setShowSessionPicker(false)}
+            isLoading={isLoadingSessions}
+          />
+        </Box>
+      )}
     </Box>
   );
 }

@@ -41,12 +41,12 @@ export function BannerRenderer({ version = '0.1.0', workspace, forceLayout }: Ba
   const [renderedImage, setRenderedImage] = useState<string | null>(null);
   const [layout, setLayout] = useState<'side-by-side' | 'vertical' | 'compact'>('vertical');
   const [imageSupported, setImageSupported] = useState(false);
+  const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
     async function loadImage() {
       // Detect terminal capabilities
       const terminalWidth = process.stdout.columns || 80;
-      const isTTY = process.stdout.isTTY;
 
       // Determine layout
       let chosenLayout: 'side-by-side' | 'vertical' | 'compact';
@@ -80,16 +80,25 @@ export function BannerRenderer({ version = '0.1.0', workspace, forceLayout }: Ba
 
           setRenderedImage(rendered);
           setImageSupported(true);
+        } else {
+          setImageSupported(false);
         }
       } catch (error) {
         // Terminal doesn't support images, use text-only
-        console.error('[Banner] Terminal images not supported:', error);
         setImageSupported(false);
+      } finally {
+        // Always set ready, even if image loading failed
+        setIsReady(true);
       }
     }
 
     loadImage();
   }, [forceLayout]);
+
+  // Don't render until fully loaded to prevent duplicates
+  if (!isReady) {
+    return null;
+  }
 
   // Fallback: Text-only if images not supported
   if (!imageSupported || !renderedImage) {
@@ -153,6 +162,8 @@ export function BannerRenderer({ version = '0.1.0', workspace, forceLayout }: Ba
 /**
  * Side-by-side layout component
  * Image on left, text on right
+ *
+ * Note: Renders as a single string with ANSI codes to avoid Ink layout issues
  */
 function SideBySideBanner({
   image,
@@ -167,34 +178,41 @@ function SideBySideBanner({
   const textLines = FIGLET_TEXT.split('\n');
   const maxLines = Math.max(imageLines.length, textLines.length);
 
+  // ANSI color codes
+  const cyan = '\x1b[36m';
+  const yellow = '\x1b[33m';
+  const dim = '\x1b[2m';
+  const reset = '\x1b[0m';
+
+  // Build the combined output
+  const lines: string[] = [];
+
+  // Render each line with image + text side by side
+  for (let i = 0; i < maxLines; i++) {
+    const imageLine = imageLines[i] || '';
+    const textLine = textLines[i] || '';
+
+    // Add spacing between image and text
+    const spacing = '  ';
+    const coloredText = textLine ? `${cyan}${textLine}${reset}` : '';
+
+    lines.push(imageLine + spacing + coloredText);
+  }
+
+  // Add footer
+  lines.push('');
+  lines.push(`${dim}v${version} • AI-Powered Development Assistant${reset}`);
+
+  if (workspace) {
+    lines.push(`${dim}📁 Workspace: ${yellow}${workspace}${reset}${dim} • Type ${cyan}/help${reset}${dim} for commands${reset}`);
+  }
+
+  // Join all lines and render as a single Text component
+  const combined = lines.join('\n');
+
   return (
     <Box flexDirection="column" marginBottom={1}>
-      {/* Render line by line */}
-      {Array.from({ length: maxLines }).map((_, i) => {
-        const imageLine = imageLines[i] || '';
-        const textLine = textLines[i] || '';
-
-        return (
-          <Box key={i}>
-            <Text>{imageLine}</Text>
-            <Text color="cyan">{textLine ? `  ${textLine}` : ''}</Text>
-          </Box>
-        );
-      })}
-
-      {/* Footer */}
-      <Box marginTop={1}>
-        <Text dimColor>
-          v{version} • AI-Powered Development Assistant
-        </Text>
-      </Box>
-      {workspace && (
-        <Box marginTop={0}>
-          <Text dimColor>
-            📁 Workspace: <Text color="yellow">{workspace}</Text> • Type <Text color="cyan">/help</Text> for commands
-          </Text>
-        </Box>
-      )}
+      <Text>{combined}</Text>
     </Box>
   );
 }

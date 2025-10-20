@@ -9,6 +9,8 @@ import type { ConnectionState } from '../../core/types';
 
 interface ConnectionContextValue extends ConnectionState {
   client: ChatClient | null;
+  switchConversation: (newConversationId: string) => Promise<void>;
+  currentConversationId: string | undefined;
 }
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
@@ -23,15 +25,18 @@ export interface ConnectionProviderProps {
 export function ConnectionProvider({
   children,
   url = 'ws://localhost:8000/api/v1/chat/stream',
-  conversationId,
+  conversationId: initialConversationId,
   agentId,
 }: ConnectionProviderProps) {
+  const [conversationId, setConversationId] = useState(initialConversationId);
   const [state, setState] = useState<ConnectionContextValue>({
     isConnected: false,
     isConnecting: true,
     error: null,
     reconnectAttempts: 0,
     client: null,
+    currentConversationId: conversationId,
+    switchConversation: async () => {}, // Will be set properly below
   });
 
   useEffect(() => {
@@ -46,6 +51,7 @@ export function ConnectionProvider({
           isConnecting: false,
           error: null,
           reconnectAttempts: 0,
+          currentConversationId: conversationId,
         }));
       },
       onDisconnect: (code, reason) => {
@@ -66,7 +72,17 @@ export function ConnectionProvider({
       },
     });
 
-    setState((s) => ({ ...s, client, isConnecting: true }));
+    const switchConversation = async (newConversationId: string) => {
+      // Disconnect current client
+      if (state.client) {
+        state.client.disconnect();
+      }
+
+      // Update conversation ID which will trigger reconnection
+      setConversationId(newConversationId);
+    };
+
+    setState((s) => ({ ...s, client, isConnecting: true, switchConversation }));
 
     client.connect().catch((error) => {
       setState((s) => ({
