@@ -636,8 +636,7 @@ const { sendMessage } = useWebSocket();
 
 **Refactoring Complete!** All phases finished successfully.
 
-### Phase 2: Core Features (IN PROGRESS - 60% Complete)
-Per [penguin_todo_ink_cli.md](../.conductor/curitiba/context/penguin_todo_ink_cli.md):
+### Phase 2: Core Features (IN PROGRESS - 70% Complete)
 
 1. ✅ **Tool execution display** - Inline + expandable results with spinner (DONE)
    - Created `ToolExecution` and `ToolExecutionList` components
@@ -645,10 +644,11 @@ Per [penguin_todo_ink_cli.md](../.conductor/curitiba/context/penguin_todo_ink_cl
    - WebSocket client parses `action_results` from backend
    - Shows action name, status (running/completed/error), duration, and results
 
-2. ✅ **Markdown rendering** - Using `ink-markdown` for syntax highlighting (DONE)
-   - Created `Markdown` component wrapping `ink-markdown`
-   - Updated `MessageList` to render assistant messages with markdown
-   - Code blocks, lists, headers all render properly in terminal
+2. ✅ **Markdown rendering** - Custom parser with GFM tables (DONE)
+   - Created `Markdown` component with custom parser
+   - Supports headers, bold, inline code, lists, code blocks, **tables**
+   - Full GFM table support with bordered layout
+   - Inline code formatting with background colors
 
 3. ✅ **Progress indicators** - Multi-step iteration progress (DONE)
    - Created `ProgressIndicator` component with progress bar
@@ -656,12 +656,83 @@ Per [penguin_todo_ink_cli.md](../.conductor/curitiba/context/penguin_todo_ink_cl
    - WebSocket client handles `progress` events from backend
    - Shows iteration count, percentage, and visual progress bar
 
-4. 📋 **Session management** - List/switch/delete conversations (NEXT)
-5. 📋 **Multi-line input** - Full editing experience (TODO)
+4. ✅ **Multi-line input** - Full editing experience (DONE)
+   - Created `MultiLineInput` component
+   - Enter for new lines, Esc to submit (vim-like)
+   - Full cursor navigation with arrow keys
+   - Backspace line merging
 
-### Later Phases
-- **Phase 3:** Advanced features (subcommands, multi-agent UI, checkpoints)
-- **Phase 4:** Distribution & polish (bundling, cross-platform testing)
+5. 🚧 **Command system** - Slash commands with YAML registry (IN PROGRESS)
+   - Port command registry from Python CLI
+   - Load commands from `commands.yml`
+   - Command parser and autocomplete
+   - Integration with ChatSession
+
+6. 📋 **Session management** - List/switch/delete conversations (TODO)
+   - Session list UI component
+   - Session persistence and loading
+   - Session metadata display
+
+### Phase 3: Advanced UI Features (PLANNED)
+Priority order based on user feedback:
+
+1. 🎯 **Tab system** - Multiple view navigation (HIGH PRIORITY)
+   - Chat tab (default, already working)
+   - Sessions tab (conversation history)
+   - Projects tab (task management)
+   - Agents tab (multi-agent roster)
+   - Tab navigation with keyboard shortcuts
+
+2. 🎯 **Subcommands** - Structured command palette (HIGH PRIORITY)
+   - `/chat list`, `/chat load <id>`, `/chat save`, `/chat clear`
+   - `/session list`, `/session switch <id>`, `/session delete <id>`, `/session new`
+   - `/project list`, `/project create <name>`, `/project tasks`, `/project status`
+   - `/agent list`, `/agent spawn <type>`, `/agent activate <id>`, `/agent message <id>`
+
+3. **Checkpoints** - Save/restore conversation state
+   - Checkpoint creation UI
+   - Checkpoint list and restore
+   - Diff between checkpoints
+   - Custom directive: `:::checkpoint Save point here :::`
+
+4. **Multi-agent UI** - Agent roster and messaging
+   - Agent list sidebar
+   - Agent status indicators (idle/thinking/working)
+   - Inter-agent message visualization
+   - Agent spawn/kill controls
+
+5. **Project management** - Task tracking
+   - Project task list view
+   - Task status (pending/in_progress/completed)
+   - Progress tracking across tasks
+   - Dependencies visualization
+
+### Phase 4: Advanced Markdown (Remark Migration) (DEFERRED)
+**Status:** Custom parser working well for current needs. Remark migration deferred until more advanced features needed.
+
+**Benefits of remark/unified:**
+- Mermaid diagrams (`remark-mermaidjs` or custom ASCII renderer)
+- Math equations (`remark-math` + `rehype-katex`)
+- Emoji shortcodes (`remark-emoji`)
+- Syntax highlighting (`rehype-highlight`)
+- Custom directives (`remark-directive`) for:
+  - `:::checkpoint Save point here :::`
+  - `:::tool bash Output from commands :::`
+  - `:::agent alice Message from sub-agent :::`
+
+**Documentation created:**
+- `MARKDOWN_LIBRARY_COMPARISON.md` - Comparison of marked, markdown-it, remark
+- `REMARK_MIGRATION_PLAN.md` - 8-12 hour implementation plan
+- `RENDERING_CAPABILITIES.md` - Current capabilities and future plans
+
+**Recommended plugins:** 20+ plugins documented for future use
+
+### Phase 5: Polish & Distribution
+- Cross-platform testing (macOS, Linux, Windows)
+- Bundle optimization
+- Configuration file support
+- Themes and color customization
+- Error recovery and graceful degradation
 
 ---
 

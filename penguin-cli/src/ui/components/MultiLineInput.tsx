@@ -12,25 +12,85 @@
  * Note: Ctrl+Enter doesn't work reliably in Ink, so we use Esc instead
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
+import { CommandAutocomplete } from './CommandAutocomplete';
 
 interface MultiLineInputProps {
   onSubmit: (value: string) => void;
   placeholder?: string;
   isDisabled?: boolean;
+  onTextChange?: (text: string) => void;
+  suggestions?: string[];
 }
 
-export function MultiLineInput({ onSubmit, placeholder = 'Type your message...', isDisabled = false }: MultiLineInputProps) {
+export function MultiLineInput({
+  onSubmit,
+  placeholder = 'Type your message...',
+  isDisabled = false,
+  onTextChange,
+  suggestions = []
+}: MultiLineInputProps) {
   const [lines, setLines] = useState<string[]>(['']);
   const [cursorLine, setCursorLine] = useState(0);
   const [cursorCol, setCursorCol] = useState(0);
+  const [selectedSuggestion, setSelectedSuggestion] = useState(0);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  // Notify parent of text changes
+  useEffect(() => {
+    const fullText = lines.join('\n');
+    onTextChange?.(fullText);
+
+    // Show autocomplete if text starts with /
+    if (fullText.startsWith('/') && suggestions.length > 0) {
+      setShowSuggestions(true);
+      setSelectedSuggestion(0);
+    } else {
+      setShowSuggestions(false);
+    }
+  }, [lines, onTextChange, suggestions.length]);
 
   useInput((input, key) => {
     if (isDisabled) return;
 
+    // Handle autocomplete navigation
+    if (showSuggestions && suggestions.length > 0) {
+      // Tab to cycle through suggestions
+      if (key.tab) {
+        setSelectedSuggestion(prev => (prev + 1) % suggestions.length);
+        return;
+      }
+
+      // Up/Down arrows to navigate suggestions
+      if (key.upArrow) {
+        setSelectedSuggestion(prev => (prev - 1 + suggestions.length) % suggestions.length);
+        return;
+      }
+
+      if (key.downArrow) {
+        setSelectedSuggestion(prev => (prev + 1) % suggestions.length);
+        return;
+      }
+
+      // Enter to accept suggestion
+      if (key.return && cursorLine === 0) {
+        const selected = suggestions[selectedSuggestion];
+        setLines([selected + ' ']);
+        setCursorCol(selected.length + 1);
+        setShowSuggestions(false);
+        return;
+      }
+    }
+
     // Submit on Escape key (more reliable than Ctrl+Enter)
     if (key.escape) {
+      // Dismiss autocomplete first if showing
+      if (showSuggestions) {
+        setShowSuggestions(false);
+        return;
+      }
+
       const fullText = lines.join('\n').trim();
       if (fullText) {
         onSubmit(fullText);
@@ -41,7 +101,7 @@ export function MultiLineInput({ onSubmit, placeholder = 'Type your message...',
       return;
     }
 
-    // New line on Enter
+    // New line on Enter (only if not handling autocomplete)
     if (key.return) {
       setLines(prev => {
         const newLines = [...prev];
@@ -126,34 +186,44 @@ export function MultiLineInput({ onSubmit, placeholder = 'Type your message...',
   const isEmpty = lines.length === 1 && lines[0] === '';
 
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={isDisabled ? 'gray' : 'cyan'} paddingX={1}>
-      {isEmpty && (
-        <Text dimColor>{placeholder}</Text>
+    <Box flexDirection="column">
+      {/* Autocomplete suggestions */}
+      {showSuggestions && suggestions.length > 0 && (
+        <CommandAutocomplete suggestions={suggestions} selectedIndex={selectedSuggestion} />
       )}
 
-      {!isEmpty && lines.map((line, lineIndex) => {
-        if (lineIndex === cursorLine) {
-          // Show cursor on current line
-          const before = line.substring(0, cursorCol);
-          const cursor = line[cursorCol] || ' ';
-          const after = line.substring(cursorCol + 1);
+      {/* Input box */}
+      <Box flexDirection="column" borderStyle="round" borderColor={isDisabled ? 'gray' : 'cyan'} paddingX={1}>
+        {isEmpty && (
+          <Text dimColor>{placeholder}</Text>
+        )}
 
-          return (
-            <Box key={lineIndex}>
-              <Text>{before}</Text>
-              <Text inverse>{cursor}</Text>
-              <Text>{after}</Text>
-            </Box>
-          );
-        }
+        {!isEmpty && lines.map((line, lineIndex) => {
+          if (lineIndex === cursorLine) {
+            // Show cursor on current line
+            const before = line.substring(0, cursorCol);
+            const cursor = line[cursorCol] || ' ';
+            const after = line.substring(cursorCol + 1);
 
-        return <Text key={lineIndex}>{line || ' '}</Text>;
-      })}
+            return (
+              <Box key={lineIndex}>
+                <Text>{before}</Text>
+                <Text inverse>{cursor}</Text>
+                <Text>{after}</Text>
+              </Box>
+            );
+          }
 
-      <Box marginTop={1}>
-        <Text dimColor color="gray">
-          Enter: New line • Esc: Send message
-        </Text>
+          return <Text key={lineIndex}>{line || ' '}</Text>;
+        })}
+
+        <Box marginTop={1}>
+          <Text dimColor color="gray">
+            {showSuggestions
+              ? 'Tab/↑↓: Navigate • Enter: Select • Esc: Dismiss'
+              : 'Enter: New line • Esc: Send message'}
+          </Text>
+        </Box>
       </Box>
     </Box>
   );

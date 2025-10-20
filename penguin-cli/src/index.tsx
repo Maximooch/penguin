@@ -12,6 +12,7 @@ import { render } from 'ink';
 import { App } from './ui/components/App';
 import { ConnectionProvider } from './ui/contexts/ConnectionContext';
 import { SessionProvider } from './ui/contexts/SessionContext';
+import { CommandProvider } from './ui/contexts/CommandContext';
 
 // Clear the terminal on startup
 console.clear();
@@ -41,11 +42,13 @@ const conversationId = providedConversationId || generateConversationId();
 
 // Render the app with context providers
 const { waitUntilExit } = render(
-  <ConnectionProvider url={url} conversationId={conversationId} agentId={agentId}>
-    <SessionProvider initialSession={{ conversationId, agentId }}>
-      <App />
-    </SessionProvider>
-  </ConnectionProvider>
+  <CommandProvider>
+    <ConnectionProvider url={url} conversationId={conversationId} agentId={agentId}>
+      <SessionProvider initialSession={{ conversationId, agentId }}>
+        <App />
+      </SessionProvider>
+    </ConnectionProvider>
+  </CommandProvider>
 );
 
 // Wait for app to exit naturally (Ink handles Ctrl+C internally)

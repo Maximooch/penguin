@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import { useConnection } from '../contexts/ConnectionContext';
+import { useCommand } from '../contexts/CommandContext';
 import { useWebSocket } from '../hooks/useWebSocket';
 import { useMessageHistory } from '../hooks/useMessageHistory';
 import { useStreaming } from '../hooks/useStreaming';
@@ -23,12 +24,15 @@ export function ChatSession() {
   const { exit } = useApp();
   const [inputKey, setInputKey] = useState(0);
   const [isExiting, setIsExiting] = useState(false);
+  const [currentInput, setCurrentInput] = useState('');
+  const [suggestions, setSuggestions] = useState<string[]>([]);
   const reasoningRef = useRef(''); // Use ref instead of state to avoid re-renders
 
   // Hooks (separated by concern)
   const { isConnected, error, client } = useConnection();
+  const { parseInput, getSuggestions } = useCommand();
   const { sendMessage } = useWebSocket();
-  const { messages, addUserMessage, addAssistantMessage } = useMessageHistory();
+  const { messages, addUserMessage, addAssistantMessage, clearMessages } = useMessageHistory();
   const { activeTool, completedTools, clearTools, addActionResults } = useToolExecution();
   const { progress, updateProgress, resetProgress, completeProgress } = useProgress();
 
@@ -89,16 +93,83 @@ export function ChatSession() {
     }
   });
 
+  const handleTextChange = useCallback((text: string) => {
+    setCurrentInput(text);
+
+    // Get autocomplete suggestions if text starts with /
+    if (text.startsWith('/')) {
+      const sugs = getSuggestions(text);
+      setSuggestions(sugs);
+    } else {
+      setSuggestions([]);
+    }
+  }, [getSuggestions]);
+
   const handleSubmit = useCallback((value: string) => {
-    // Only allow sending if connected and not already streaming
-    if (value.trim() && isConnected && !isStreaming) {
-      addUserMessage(value.trim());
+    const trimmed = value.trim();
+    if (!trimmed) return;
+
+    // Reset suggestions
+    setSuggestions([]);
+    setCurrentInput('');
+
+    // Check if this is a command (starts with /)
+    if (trimmed.startsWith('/')) {
+      const parsed = parseInput(trimmed);
+      if (parsed) {
+        // Handle command
+        handleCommand(parsed.command.name, parsed.args);
+        setInputKey((prev) => prev + 1);
+        return;
+      }
+    }
+
+    // Only allow sending regular messages if connected and not already streaming
+    if (isConnected && !isStreaming) {
+      addUserMessage(trimmed);
       clearTools(); // Clear previous tool executions
-      sendMessage(value.trim());
-      // Force TextInput to remount and clear by changing its key
+      sendMessage(trimmed);
+      // Force input to remount and clear by changing its key
       setInputKey((prev) => prev + 1);
     }
-  }, [isConnected, isStreaming, addUserMessage, sendMessage, clearTools]);
+  }, [isConnected, isStreaming, addUserMessage, sendMessage, clearTools, parseInput, getSuggestions]);
+
+  const handleCommand = useCallback((commandName: string, args: Record<string, any>) => {
+    // Built-in command handlers
+    switch (commandName) {
+      case 'help':
+      case 'h':
+      case '?':
+        // Show help as a system message
+        addAssistantMessage(
+          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands coming soon!`
+        );
+        break;
+
+      case 'clear':
+      case 'cls':
+      case 'reset':
+        // Clear all messages and tool executions
+        clearMessages();
+        clearTools();
+        resetProgress();
+        break;
+
+      case 'quit':
+      case 'exit':
+      case 'q':
+        // Exit the application
+        if (!isExiting) {
+          setIsExiting(true);
+          exit();
+        }
+        break;
+
+      default:
+        // Unknown command
+        addAssistantMessage(`Unknown command: /${commandName}. Type \`/help\` for available commands.`);
+    }
+  }, [addAssistantMessage, clearMessages, clearTools, resetProgress, exit, isExiting]);
 
   return (
     <Box flexDirection="column" gap={1}>
@@ -127,12 +198,14 @@ export function ChatSession() {
         </Box>
       )}
 
-      {/* Input prompt - Multi-line */}
+      {/* Input prompt - Multi-line with autocomplete */}
       <MultiLineInput
         key={inputKey}
         placeholder={isStreaming ? "Waiting for response..." : "Type your message..."}
         isDisabled={!isConnected || isStreaming}
         onSubmit={handleSubmit}
+        onTextChange={handleTextChange}
+        suggestions={suggestions}
       />
 
       {/* Help text */}
