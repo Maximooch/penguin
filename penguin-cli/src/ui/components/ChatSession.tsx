@@ -28,10 +28,9 @@ import { ChatClient } from '../../core/connection/WebSocketClient.js';
 
 interface ChatSessionProps {
   conversationId?: string;
-  isActive?: boolean;
 }
 
-export function ChatSession({ conversationId: propConversationId, isActive = true }: ChatSessionProps) {
+export function ChatSession({ conversationId: propConversationId }: ChatSessionProps) {
   const { exit } = useApp();
   const [inputKey, setInputKey] = useState(0);
   const [isExiting, setIsExiting] = useState(false);
@@ -126,12 +125,10 @@ export function ChatSession({ conversationId: propConversationId, isActive = tru
     };
   }, [propConversationId, processToken, complete, addActionResults, updateProgress, completeProgress, resetProgress]);
 
-  const { prevTab, openChatTab, closeTab, activeTab } = useTab();
+  const { switchToDashboard, switchConversation } = useTab();
 
-  // Handle global hotkeys (only when this tab is active)
+  // Handle global hotkeys
   useInput((input, key) => {
-    if (!isActive) return; // Ignore input if this tab is not active
-
     // Ctrl+C and Ctrl+D to exit
     if (key.ctrl && (input === 'c' || input === 'd')) {
       if (!isExiting) {
@@ -139,15 +136,9 @@ export function ChatSession({ conversationId: propConversationId, isActive = tru
         exit();
       }
     }
-    // Ctrl+W to close current tab
-    else if (key.ctrl && input === 'w') {
-      if (activeTab?.type === 'chat') {
-        closeTab(activeTab.id);
-      }
-    }
-    // Ctrl+P to toggle between tabs (previous tab)
+    // Ctrl+P to switch to dashboard
     else if (key.ctrl && input === 'p') {
-      prevTab();
+      switchToDashboard();
     }
     // Ctrl+O to open session picker
     else if (key.ctrl && input === 'o') {
@@ -238,13 +229,11 @@ export function ChatSession({ conversationId: propConversationId, isActive = tru
       case 'chat load':
         if (args.session_id) {
           addUserMessage(`/chat load ${args.session_id}`);
-          sessionAPI.current.getSession(args.session_id)
-            .then(session => {
-              openChatTab(session.id, session.title || `Chat ${session.id.slice(0, 8)}`);
-            })
-            .catch((err: any) => {
-              addAssistantMessage(`Error loading session: ${err.message}`);
-            });
+          clearMessages();
+          clearTools();
+          resetProgress();
+          switchConversation(args.session_id);
+          addAssistantMessage(`✓ Switched to session: ${args.session_id.slice(0, 8)}`);
         } else {
           addAssistantMessage('Error: Missing session ID. Usage: `/chat load <session_id>`');
         }
@@ -277,8 +266,11 @@ export function ChatSession({ conversationId: propConversationId, isActive = tru
         addUserMessage('/chat new');
         sessionAPI.current.createSession()
           .then(newSessionId => {
-            // Open new session in a new tab
-            openChatTab(newSessionId, `New Chat ${newSessionId.slice(0, 8)}`);
+            clearMessages();
+            clearTools();
+            resetProgress();
+            switchConversation(newSessionId);
+            addAssistantMessage(`✓ Created and switched to new session: ${newSessionId.slice(0, 8)}`);
           })
           .catch((err: any) => {
             addAssistantMessage(`Error creating session: ${err.message}`);
@@ -356,8 +348,11 @@ export function ChatSession({ conversationId: propConversationId, isActive = tru
   // Handle session selection from modal
   const handleSessionSelect = useCallback((session: Session) => {
     setShowSessionPicker(false);
-    openChatTab(session.id, session.title || `Chat ${session.id.slice(0, 8)}`);
-  }, [openChatTab]);
+    clearMessages();
+    clearTools();
+    resetProgress();
+    switchConversation(session.id);
+  }, [switchConversation, clearMessages, clearTools, resetProgress]);
 
   // Handle session deletion from modal
   const handleSessionDelete = useCallback((sessionId: string) => {
@@ -420,7 +415,7 @@ export function ChatSession({ conversationId: propConversationId, isActive = tru
             <Text dimColor>
               {isStreaming
                 ? 'Waiting for response... • Ctrl+C to exit'
-                : 'Enter: Send • Ctrl+P: Switch • Ctrl+W: Close Tab • Ctrl+O: Sessions • Ctrl+C: Exit'}
+                : 'Enter: Send • Ctrl+P: Dashboard • Ctrl+O: Sessions • Ctrl+C: Exit'}
             </Text>
           </Box>
         </>

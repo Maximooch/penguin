@@ -15,7 +15,7 @@ export function SessionsTab() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const sessionAPI = useRef(new SessionAPI('http://localhost:8000'));
-  const { openChatTab, prevTab, activeTab } = useTab();
+  const { switchConversation, switchToChat, currentConversationId } = useTab();
 
   useEffect(() => {
     // Load sessions when tab mounts
@@ -32,9 +32,9 @@ export function SessionsTab() {
   }, []);
 
   const handleSessionSelect = useCallback((session: Session) => {
-    // Open or switch to chat tab for this conversation
-    openChatTab(session.id, session.title || `Chat ${session.id.slice(0, 8)}`);
-  }, [openChatTab]);
+    // Switch conversation and go back to chat tab
+    switchConversation(session.id);
+  }, [switchConversation]);
 
   const handleSessionDelete = useCallback((sessionId: string) => {
     sessionAPI.current
@@ -52,12 +52,9 @@ export function SessionsTab() {
   }, []);
 
   const handleClose = useCallback(() => {
-    // Use Ctrl+P functionality to go to previous tab
-    prevTab();
-  }, [prevTab]);
-
-  // Get current conversation ID from active chat tab
-  const currentConversationId = activeTab?.type === 'chat' ? activeTab.conversationId : undefined;
+    // Go back to chat tab
+    switchToChat();
+  }, [switchToChat]);
 
   return (
     <Box flexDirection="column" width="100%" height="100%">

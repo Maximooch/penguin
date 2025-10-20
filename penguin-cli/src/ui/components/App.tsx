@@ -9,47 +9,36 @@ import React, { useState } from 'react';
 import { Box } from 'ink';
 import { useTab } from '../contexts/TabContext.js';
 import { ChatSession } from './ChatSession.js';
-import { SessionsTab } from './SessionsTab.js';
+import { Dashboard } from './Dashboard.js';
 import { TabBar } from './TabBar.js';
 import { BannerRenderer } from './BannerRenderer.js';
 
 export function App() {
   const [showBanner] = useState(true);
-  const { activeTab, tabs, activeTabId } = useTab();
+  const [bannerRendered] = useState(true); // Only render banner once
+  const { activeTab, currentConversationId } = useTab();
 
   // Get workspace from current directory
   const workspace = process.cwd().split('/').pop() || process.cwd();
 
-  // Render all tabs but only show the active one
-  // This preserves state when switching tabs
-  const renderAllTabs = () => {
-    return (
-      <>
-        {tabs.map((tab) => {
-          const isActive = tab.id === activeTabId;
+  // Render active tab content
+  const renderTabContent = () => {
+    if (!activeTab) return null;
 
-          return (
-            <Box key={tab.id} display={isActive ? 'flex' : 'none'} flexDirection="column">
-              {tab.type === 'chat' && (
-                <ChatSession conversationId={tab.conversationId} isActive={isActive} />
-              )}
-              {tab.type === 'dashboard' && <SessionsTab />}
-              {tab.type === 'tasks' && (
-                <Box padding={2}>📋 Tasks tab - Coming soon!</Box>
-              )}
-              {tab.type === 'agents' && (
-                <Box padding={2}>🤖 Agents tab - Coming soon!</Box>
-              )}
-            </Box>
-          );
-        })}
-      </>
-    );
+    switch (activeTab.type) {
+      case 'chat':
+        return <ChatSession conversationId={currentConversationId} />;
+      case 'dashboard':
+        return <Dashboard />;
+      default:
+        return null;
+    }
   };
 
   return (
     <Box flexDirection="column" padding={1}>
-      {showBanner && (
+      {/* Only show banner on chat tab to avoid duplication when switching */}
+      {showBanner && activeTab?.type === 'chat' && (
         <BannerRenderer
           version="0.1.0"
           workspace={workspace}
@@ -59,9 +48,9 @@ export function App() {
       {/* Tab bar */}
       <TabBar />
 
-      {/* All tabs (only active one visible) */}
+      {/* Active tab content */}
       <Box marginTop={1}>
-        {renderAllTabs()}
+        {renderTabContent()}
       </Box>
     </Box>
   );

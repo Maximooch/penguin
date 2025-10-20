@@ -6,13 +6,12 @@
 
 import React, { createContext, useContext, useState, ReactNode } from 'react';
 
-export type TabType = 'chat' | 'dashboard' | 'tasks' | 'agents';
+export type TabType = 'chat' | 'dashboard';
 
 export interface Tab {
   id: string;
   type: TabType;
   title: string;
-  conversationId?: string; // For chat tabs
 }
 
 interface TabContextValue {
@@ -20,11 +19,10 @@ interface TabContextValue {
   activeTabId: string;
   activeTab: Tab | undefined;
   switchTab: (tabId: string) => void;
-  nextTab: () => void;
-  prevTab: () => void;
-  addTab: (tab: Tab) => void;
-  closeTab: (tabId: string) => void;
-  openChatTab: (conversationId: string, title?: string) => void;
+  switchToDashboard: () => void;
+  switchToChat: () => void;
+  currentConversationId: string | undefined;
+  switchConversation: (conversationId: string) => void;
 }
 
 const TabContext = createContext<TabContextValue | null>(null);
@@ -35,22 +33,22 @@ interface TabProviderProps {
 }
 
 export function TabProvider({ children, initialConversationId }: TabProviderProps) {
-  // Initialize with default tabs: Dashboard first, then initial chat
-  const [tabs, setTabs] = useState<Tab[]>([
+  // Simple two-tab system: Dashboard and Chat
+  const [tabs] = useState<Tab[]>([
     {
       id: 'dashboard',
       type: 'dashboard',
       title: 'Dashboard',
     },
     {
-      id: `chat-${initialConversationId}`,
+      id: 'chat',
       type: 'chat',
       title: 'Chat',
-      conversationId: initialConversationId,
     },
   ]);
 
-  const [activeTabId, setActiveTabId] = useState(`chat-${initialConversationId}`);
+  const [activeTabId, setActiveTabId] = useState('chat');
+  const [conversationId, setConversationId] = useState(initialConversationId);
 
   const activeTab = tabs.find((t) => t.id === activeTabId);
 
@@ -60,62 +58,17 @@ export function TabProvider({ children, initialConversationId }: TabProviderProp
     }
   };
 
-  const nextTab = () => {
-    const currentIndex = tabs.findIndex((t) => t.id === activeTabId);
-    const nextIndex = (currentIndex + 1) % tabs.length;
-    setActiveTabId(tabs[nextIndex].id);
+  const switchToDashboard = () => {
+    setActiveTabId('dashboard');
   };
 
-  const prevTab = () => {
-    const currentIndex = tabs.findIndex((t) => t.id === activeTabId);
-    const prevIndex = currentIndex === 0 ? tabs.length - 1 : currentIndex - 1;
-    setActiveTabId(tabs[prevIndex].id);
+  const switchToChat = () => {
+    setActiveTabId('chat');
   };
 
-  const addTab = (tab: Tab) => {
-    setTabs((prev) => [...prev, tab]);
-    setActiveTabId(tab.id);
-  };
-
-  const closeTab = (tabId: string) => {
-    // Don't allow closing dashboard or the last tab
-    const tab = tabs.find((t) => t.id === tabId);
-    if (tab?.type === 'dashboard' || tabs.length === 1) return;
-
-    setTabs((prev) => {
-      const filtered = prev.filter((t) => t.id !== tabId);
-
-      // If closing active tab, switch to previous tab
-      if (activeTabId === tabId && filtered.length > 0) {
-        const currentIndex = prev.findIndex((t) => t.id === tabId);
-        const newIndex = currentIndex > 0 ? currentIndex - 1 : 0;
-        setActiveTabId(filtered[newIndex].id);
-      }
-
-      return filtered;
-    });
-  };
-
-  const openChatTab = (conversationId: string, title?: string) => {
-    // Check if tab for this conversation already exists
-    const existingTab = tabs.find(
-      (t) => t.type === 'chat' && t.conversationId === conversationId
-    );
-
-    if (existingTab) {
-      // Switch to existing tab
-      setActiveTabId(existingTab.id);
-    } else {
-      // Create new chat tab
-      const newTab: Tab = {
-        id: `chat-${conversationId}`,
-        type: 'chat',
-        title: title || `Chat ${conversationId.slice(0, 8)}`,
-        conversationId,
-      };
-      setTabs((prev) => [...prev, newTab]);
-      setActiveTabId(newTab.id);
-    }
+  const switchConversation = (newConversationId: string) => {
+    setConversationId(newConversationId);
+    setActiveTabId('chat'); // Switch to chat tab when loading a conversation
   };
 
   return (
@@ -125,11 +78,10 @@ export function TabProvider({ children, initialConversationId }: TabProviderProp
         activeTabId,
         activeTab,
         switchTab,
-        nextTab,
-        prevTab,
-        addTab,
-        closeTab,
-        openChatTab,
+        switchToDashboard,
+        switchToChat,
+        currentConversationId: conversationId,
+        switchConversation,
       }}
     >
       {children}
