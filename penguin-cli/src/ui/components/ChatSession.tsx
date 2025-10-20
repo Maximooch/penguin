@@ -118,7 +118,14 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     client.callbacks.onComplete = (actionResults: any) => {
       completeProgress();
       if (actionResults && actionResults.length > 0) {
-        addActionResults(actionResults);
+        // Map backend format to frontend ActionResult format
+        const mappedResults = actionResults.map((ar: any) => ({
+          action: ar.action_name || ar.action,
+          result: ar.output || ar.result,
+          status: ar.status,
+          timestamp: ar.timestamp || Date.now(),
+        }));
+        addActionResults(mappedResults);
       }
       complete();
       setTimeout(() => resetProgress(), 1000);
