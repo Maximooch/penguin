@@ -24,8 +24,14 @@ import { SessionPickerModal } from './SessionPickerModal';
 import { SessionAPI } from '../../core/api/SessionAPI.js';
 import type { Session } from '../../core/types.js';
 import { useTab } from '../contexts/TabContext.js';
+import { ChatClient } from '../../core/connection/WebSocketClient.js';
 
-export function ChatSession() {
+interface ChatSessionProps {
+  conversationId?: string;
+  isActive?: boolean;
+}
+
+export function ChatSession({ conversationId: propConversationId, isActive = true }: ChatSessionProps) {
   const { exit } = useApp();
   const [inputKey, setInputKey] = useState(0);
   const [isExiting, setIsExiting] = useState(false);
@@ -37,11 +43,44 @@ export function ChatSession() {
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
   const reasoningRef = useRef(''); // Use ref instead of state to avoid re-renders
   const sessionAPI = useRef(new SessionAPI('http://localhost:8000'));
+  const clientRef = useRef<any>(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
 
-  // Hooks (separated by concern)
-  const { isConnected, error, client, switchConversation, currentConversationId } = useConnection();
+  // Each ChatSession creates its own WebSocket client
+  useEffect(() => {
+    const client = new ChatClient({
+      url: 'ws://localhost:8000/api/v1/chat/stream',
+      conversationId: propConversationId,
+      onConnect: () => {
+        setIsConnected(true);
+        setError(null);
+      },
+      onDisconnect: () => {
+        setIsConnected(false);
+      },
+      onError: (err: Error) => {
+        setError(err);
+        setIsConnected(false);
+      },
+    });
+
+    client.connect();
+    clientRef.current = client;
+
+    return () => {
+      client.disconnect();
+      clientRef.current = null;
+    };
+  }, [propConversationId]);
+
   const { parseInput, getSuggestions } = useCommand();
-  const { sendMessage } = useWebSocket();
+
+  const sendMessage = (message: string) => {
+    if (clientRef.current && isConnected) {
+      clientRef.current.sendMessage(message);
+    }
+  };
   const { messages, addUserMessage, addAssistantMessage, clearMessages } = useMessageHistory();
   const { activeTool, completedTools, clearTools, addActionResults } = useToolExecution();
   const { progress, updateProgress, resetProgress, completeProgress } = useProgress();
@@ -60,15 +99,16 @@ export function ChatSession() {
 
   // Set up WebSocket event handlers
   useEffect(() => {
+    const client = clientRef.current;
     if (!client) return;
 
     client.callbacks.onToken = (token: string) => {
-      console.log(`[ChatSession] Received token, length: ${token.length}, preview: "${token.substring(0, 50)}..."`);
+      console.log(`[ChatSession ${propConversationId}] Received token, length: ${token.length}`);
       processToken(token);
     };
 
     client.callbacks.onReasoning = (token: string) => {
-      console.log(`[ChatSession] Received reasoning token, length: ${token.length}`);
+      console.log(`[ChatSession ${propConversationId}] Received reasoning token`);
       reasoningRef.current += token;
     };
 
@@ -76,32 +116,33 @@ export function ChatSession() {
       updateProgress(iteration, maxIterations, message);
     };
 
-    client.callbacks.onComplete = (actionResults) => {
-      // Complete progress tracking
+    client.callbacks.onComplete = (actionResults: any) => {
       completeProgress();
-
-      // Process any action results first
       if (actionResults && actionResults.length > 0) {
         addActionResults(actionResults);
       }
-
-      // Then complete streaming
       complete();
-
-      // Reset progress after a delay
       setTimeout(() => resetProgress(), 1000);
     };
-  }, [client, processToken, complete, addActionResults, updateProgress, completeProgress, resetProgress]);
+  }, [propConversationId, processToken, complete, addActionResults, updateProgress, completeProgress, resetProgress]);
 
-  const { prevTab } = useTab();
+  const { prevTab, openChatTab, closeTab, activeTab } = useTab();
 
-  // Handle global hotkeys
+  // Handle global hotkeys (only when this tab is active)
   useInput((input, key) => {
+    if (!isActive) return; // Ignore input if this tab is not active
+
     // Ctrl+C and Ctrl+D to exit
     if (key.ctrl && (input === 'c' || input === 'd')) {
       if (!isExiting) {
         setIsExiting(true);
         exit();
+      }
+    }
+    // Ctrl+W to close current tab
+    else if (key.ctrl && input === 'w') {
+      if (activeTab?.type === 'chat') {
+        closeTab(activeTab.id);
       }
     }
     // Ctrl+P to toggle between tabs (previous tab)
@@ -197,24 +238,11 @@ export function ChatSession() {
       case 'chat load':
         if (args.session_id) {
           addUserMessage(`/chat load ${args.session_id}`);
-
-          // Clear current UI
-          clearMessages();
-          clearTools();
-          resetProgress();
-
-          // Switch to new conversation
-          switchConversation(args.session_id)
-            .then(() => {
-              addAssistantMessage(`✓ Switched to session: ${args.session_id.slice(0, 8)}\n\nLoading conversation history...`);
-
-              // Fetch and display conversation details
-              return sessionAPI.current.getSession(args.session_id);
-            })
+          sessionAPI.current.getSession(args.session_id)
             .then(session => {
-              addAssistantMessage(`Session loaded: ${session.title || 'Untitled'}\n${session.message_count || 0} messages in history.`);
+              openChatTab(session.id, session.title || `Chat ${session.id.slice(0, 8)}`);
             })
-            .catch(err => {
+            .catch((err: any) => {
               addAssistantMessage(`Error loading session: ${err.message}`);
             });
         } else {
@@ -249,12 +277,10 @@ export function ChatSession() {
         addUserMessage('/chat new');
         sessionAPI.current.createSession()
           .then(newSessionId => {
-            clearMessages(); // Clear current messages
-            clearTools();
-            resetProgress();
-            addAssistantMessage(`✓ Created new session: ${newSessionId}\n\nNote: You'll need to reconnect with --conversation=${newSessionId}`);
+            // Open new session in a new tab
+            openChatTab(newSessionId, `New Chat ${newSessionId.slice(0, 8)}`);
           })
-          .catch(err => {
+          .catch((err: any) => {
             addAssistantMessage(`Error creating session: ${err.message}`);
           });
         break;
@@ -330,21 +356,8 @@ export function ChatSession() {
   // Handle session selection from modal
   const handleSessionSelect = useCallback((session: Session) => {
     setShowSessionPicker(false);
-
-    // Clear current UI
-    clearMessages();
-    clearTools();
-    resetProgress();
-
-    // Switch to selected conversation
-    switchConversation(session.id)
-      .then(() => {
-        addAssistantMessage(`✓ Switched to: ${session.title || session.id.slice(0, 8)}\n${session.message_count || 0} messages in history.`);
-      })
-      .catch((err) => {
-        addAssistantMessage(`Error switching session: ${err.message}`);
-      });
-  }, [switchConversation, clearMessages, clearTools, resetProgress, addAssistantMessage]);
+    openChatTab(session.id, session.title || `Chat ${session.id.slice(0, 8)}`);
+  }, [openChatTab]);
 
   // Handle session deletion from modal
   const handleSessionDelete = useCallback((sessionId: string) => {
@@ -407,7 +420,7 @@ export function ChatSession() {
             <Text dimColor>
               {isStreaming
                 ? 'Waiting for response... • Ctrl+C to exit'
-                : 'Enter: Send • Ctrl+P: Switch Tab • Ctrl+O: Sessions • Ctrl+C: Exit'}
+                : 'Enter: Send • Ctrl+P: Switch • Ctrl+W: Close Tab • Ctrl+O: Sessions • Ctrl+C: Exit'}
             </Text>
           </Box>
         </>
@@ -418,7 +431,7 @@ export function ChatSession() {
         <Box flexDirection="column" width="100%" height="100%" justifyContent="center" alignItems="center">
           <SessionPickerModal
             sessions={sessions}
-            currentSessionId={currentConversationId}
+            currentSessionId={propConversationId}
             onSelect={handleSessionSelect}
             onDelete={handleSessionDelete}
             onClose={() => setShowSessionPicker(false)}

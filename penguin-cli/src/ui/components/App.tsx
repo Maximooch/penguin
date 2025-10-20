@@ -15,35 +15,36 @@ import { BannerRenderer } from './BannerRenderer.js';
 
 export function App() {
   const [showBanner] = useState(true);
-  const { activeTab } = useTab();
+  const { activeTab, tabs, activeTabId } = useTab();
 
   // Get workspace from current directory
   const workspace = process.cwd().split('/').pop() || process.cwd();
 
-  // Render the active tab content
-  const renderTabContent = () => {
-    if (!activeTab) return null;
+  // Render all tabs but only show the active one
+  // This preserves state when switching tabs
+  const renderAllTabs = () => {
+    return (
+      <>
+        {tabs.map((tab) => {
+          const isActive = tab.id === activeTabId;
 
-    switch (activeTab.type) {
-      case 'chat':
-        return <ChatSession />;
-      case 'sessions':
-        return <SessionsTab />;
-      case 'tasks':
-        return (
-          <Box padding={2}>
-            <Box>📋 Tasks tab - Coming soon!</Box>
-          </Box>
-        );
-      case 'agents':
-        return (
-          <Box padding={2}>
-            <Box>🤖 Agents tab - Coming soon!</Box>
-          </Box>
-        );
-      default:
-        return null;
-    }
+          return (
+            <Box key={tab.id} display={isActive ? 'flex' : 'none'} flexDirection="column">
+              {tab.type === 'chat' && (
+                <ChatSession conversationId={tab.conversationId} isActive={isActive} />
+              )}
+              {tab.type === 'dashboard' && <SessionsTab />}
+              {tab.type === 'tasks' && (
+                <Box padding={2}>📋 Tasks tab - Coming soon!</Box>
+              )}
+              {tab.type === 'agents' && (
+                <Box padding={2}>🤖 Agents tab - Coming soon!</Box>
+              )}
+            </Box>
+          );
+        })}
+      </>
+    );
   };
 
   return (
@@ -58,9 +59,9 @@ export function App() {
       {/* Tab bar */}
       <TabBar />
 
-      {/* Active tab content */}
+      {/* All tabs (only active one visible) */}
       <Box marginTop={1}>
-        {renderTabContent()}
+        {renderAllTabs()}
       </Box>
     </Box>
   );

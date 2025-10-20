@@ -10,7 +10,7 @@ import { useTab } from '../contexts/TabContext.js';
 
 const TAB_ICONS: Record<string, string> = {
   chat: '💬',
-  sessions: '📂',
+  dashboard: '🏠',
   tasks: '📋',
   agents: '🤖',
 };

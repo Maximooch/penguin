@@ -8,7 +8,6 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Box } from 'ink';
 import { SessionPickerModal } from './SessionPickerModal.js';
 import { SessionAPI } from '../../core/api/SessionAPI.js';
-import { useConnection } from '../contexts/ConnectionContext.js';
 import { useTab } from '../contexts/TabContext.js';
 import type { Session } from '../../core/types.js';
 
@@ -16,8 +15,7 @@ export function SessionsTab() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const sessionAPI = useRef(new SessionAPI('http://localhost:8000'));
-  const { currentConversationId, switchConversation } = useConnection();
-  const { switchTab, tabs } = useTab();
+  const { openChatTab, prevTab, activeTab } = useTab();
 
   useEffect(() => {
     // Load sessions when tab mounts
@@ -34,19 +32,9 @@ export function SessionsTab() {
   }, []);
 
   const handleSessionSelect = useCallback((session: Session) => {
-    // Switch to selected conversation
-    switchConversation(session.id)
-      .then(() => {
-        // Switch back to chat tab after selection
-        const chatTab = tabs.find(t => t.type === 'chat');
-        if (chatTab) {
-          switchTab(chatTab.id);
-        }
-      })
-      .catch((err) => {
-        console.error('Error switching session:', err);
-      });
-  }, [switchConversation, switchTab, tabs]);
+    // Open or switch to chat tab for this conversation
+    openChatTab(session.id, session.title || `Chat ${session.id.slice(0, 8)}`);
+  }, [openChatTab]);
 
   const handleSessionDelete = useCallback((sessionId: string) => {
     sessionAPI.current
@@ -64,12 +52,12 @@ export function SessionsTab() {
   }, []);
 
   const handleClose = useCallback(() => {
-    // Switch back to chat tab
-    const chatTab = tabs.find(t => t.type === 'chat');
-    if (chatTab) {
-      switchTab(chatTab.id);
-    }
-  }, [switchTab, tabs]);
+    // Use Ctrl+P functionality to go to previous tab
+    prevTab();
+  }, [prevTab]);
+
+  // Get current conversation ID from active chat tab
+  const currentConversationId = activeTab?.type === 'chat' ? activeTab.conversationId : undefined;
 
   return (
     <Box flexDirection="column" width="100%" height="100%">
