@@ -13,6 +13,7 @@ import { App } from './ui/components/App';
 import { ConnectionProvider } from './ui/contexts/ConnectionContext';
 import { SessionProvider } from './ui/contexts/SessionContext';
 import { CommandProvider } from './ui/contexts/CommandContext';
+import { TabProvider } from './ui/contexts/TabContext';
 
 // Clear the terminal on startup
 console.clear();
@@ -43,11 +44,13 @@ const conversationId = providedConversationId || generateConversationId();
 // Render the app with context providers
 const { waitUntilExit } = render(
   <CommandProvider>
-    <ConnectionProvider url={url} conversationId={conversationId} agentId={agentId}>
-      <SessionProvider initialSession={{ conversationId, agentId }}>
-        <App />
-      </SessionProvider>
-    </ConnectionProvider>
+    <TabProvider initialConversationId={conversationId}>
+      <ConnectionProvider url={url} conversationId={conversationId} agentId={agentId}>
+        <SessionProvider initialSession={{ conversationId, agentId }}>
+          <App />
+        </SessionProvider>
+      </ConnectionProvider>
+    </TabProvider>
   </CommandProvider>
 );
 

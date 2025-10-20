@@ -23,6 +23,7 @@ import { SessionList } from './SessionList';
 import { SessionPickerModal } from './SessionPickerModal';
 import { SessionAPI } from '../../core/api/SessionAPI.js';
 import type { Session } from '../../core/types.js';
+import { useTab } from '../contexts/TabContext.js';
 
 export function ChatSession() {
   const { exit } = useApp();
@@ -92,6 +93,8 @@ export function ChatSession() {
     };
   }, [client, processToken, complete, addActionResults, updateProgress, completeProgress, resetProgress]);
 
+  const { prevTab } = useTab();
+
   // Handle global hotkeys
   useInput((input, key) => {
     // Ctrl+C and Ctrl+D to exit
@@ -100,6 +103,10 @@ export function ChatSession() {
         setIsExiting(true);
         exit();
       }
+    }
+    // Ctrl+P to toggle between tabs (previous tab)
+    else if (key.ctrl && input === 'p') {
+      prevTab();
     }
     // Ctrl+O to open session picker
     else if (key.ctrl && input === 'o') {
@@ -400,7 +407,7 @@ export function ChatSession() {
             <Text dimColor>
               {isStreaming
                 ? 'Waiting for response... • Ctrl+C to exit'
-                : 'Enter: Send • Ctrl+O: Sessions • Ctrl+C: Exit'}
+                : 'Enter: Send • Ctrl+P: Switch Tab • Ctrl+O: Sessions • Ctrl+C: Exit'}
             </Text>
           </Box>
         </>
