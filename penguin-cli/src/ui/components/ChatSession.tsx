@@ -21,8 +21,12 @@ import { ProgressIndicator } from './ProgressIndicator';
 import { MultiLineInput } from './MultiLineInput';
 import { SessionList } from './SessionList';
 import { SessionPickerModal } from './SessionPickerModal';
+import { ProjectList } from './ProjectList';
+import { TaskList } from './TaskList';
 import { SessionAPI } from '../../core/api/SessionAPI.js';
+import { ProjectAPI } from '../../core/api/ProjectAPI.js';
 import type { Session } from '../../core/types.js';
+import type { Project, Task } from '../../core/api/ProjectAPI.js';
 import { useTab } from '../contexts/TabContext.js';
 import { ChatClient } from '../../core/connection/WebSocketClient.js';
 import { getConfigPath, validateConfig, getConfigDiagnostics } from '../../config/loader.js';
@@ -44,8 +48,13 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
   const [showingSessionList, setShowingSessionList] = useState(false);
   const [showSessionPicker, setShowSessionPicker] = useState(false);
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [showingProjectList, setShowingProjectList] = useState(false);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [showingTaskList, setShowingTaskList] = useState(false);
   const reasoningRef = useRef(''); // Use ref instead of state to avoid re-renders
   const sessionAPI = useRef(new SessionAPI('http://localhost:8000'));
+  const projectAPI = useRef(new ProjectAPI('http://localhost:8000'));
   const clientRef = useRef<any>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<Error | null>(null);
@@ -140,6 +149,13 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
 
   // Handle global hotkeys
   useInput((input, key) => {
+    // Dismiss project/task lists on any key
+    if (showingProjectList || showingTaskList) {
+      setShowingProjectList(false);
+      setShowingTaskList(false);
+      return;
+    }
+
     // Ctrl+C and Ctrl+D to exit
     if (key.ctrl && (input === 'c' || input === 'd')) {
       if (!isExiting) {
@@ -440,6 +456,80 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
         }
         break;
 
+      // Project management commands
+      case 'project create':
+        addUserMessage(`/project create ${args.name}`);
+        if (!args.name) {
+          addAssistantMessage('❌ Project name is required. Usage: `/project create <name> [description]`');
+          break;
+        }
+        projectAPI.current.createProject(args.name, args.description)
+          .then(project => {
+            addAssistantMessage(`✅ Created project: **${project.name}**\n\n${project.description ? `_${project.description}_\n\n` : ''}Project ID: \`${project.id}\``);
+          })
+          .catch((err: any) => {
+            addAssistantMessage(`❌ Failed to create project: ${err.message}`);
+          });
+        break;
+
+      case 'project list':
+        addUserMessage('/project list');
+        projectAPI.current.listProjects()
+          .then(projectList => {
+            setProjects(projectList);
+            setShowingProjectList(true);
+          })
+          .catch((err: any) => {
+            addAssistantMessage(`❌ ${err.message}`);
+          });
+        break;
+
+      case 'task create':
+        addUserMessage(`/task create ${args.name}`);
+        if (!args.name) {
+          addAssistantMessage('❌ Task name and project required. Usage: `/task create <name> --project <project_id> [description]`');
+          break;
+        }
+        if (!args.project) {
+          // If no project specified, try to get the first project
+          projectAPI.current.listProjects()
+            .then(projects => {
+              if (projects.length === 0) {
+                addAssistantMessage('❌ No projects found. Create a project first with `/project create <name>`');
+              } else {
+                const firstProject = projects[0];
+                return projectAPI.current.createTask(args.name, firstProject.id, args.description)
+                  .then(task => {
+                    addAssistantMessage(`✅ Created task: **${task.title}**\n\nProject: ${firstProject.name}\n${task.description ? `Description: _${task.description}_\n\n` : ''}Task ID: \`${task.id}\`\nStatus: ${task.status}`);
+                  });
+              }
+            })
+            .catch((err: any) => {
+              addAssistantMessage(`❌ Failed to create task: ${err.message}`);
+            });
+        } else {
+          projectAPI.current.createTask(args.name, args.project, args.description)
+            .then(task => {
+              addAssistantMessage(`✅ Created task: **${task.title}**\n\n${task.description ? `_${task.description}_\n\n` : ''}Task ID: \`${task.id}\`\nStatus: ${task.status}`);
+            })
+            .catch((err: any) => {
+              addAssistantMessage(`❌ Failed to create task: ${err.message}`);
+            });
+        }
+        break;
+
+      case 'task list':
+        addUserMessage('/task list');
+        projectAPI.current.listTasks()
+          .then(taskList => {
+            setTasks(taskList);
+            setShowingTaskList(true);
+          })
+          .catch((err: any) => {
+            addAssistantMessage(`❌ ${err.message}`);
+          });
+        break;
+
       default:
         // Unknown command
         addAssistantMessage(`Unknown command: /${commandName}. Type \`/help\` for available commands.`);
@@ -607,6 +697,26 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
             </Text>
           </Box>
         </>
+      )}
+
+      {/* Project List Modal */}
+      {showingProjectList && !showSessionPicker && (
+        <Box flexDirection="column" width="100%" paddingX={2}>
+          <ProjectList projects={projects} />
+          <Box marginTop={1}>
+            <Text dimColor>Press any key to continue...</Text>
+          </Box>
+        </Box>
+      )}
+
+      {/* Task List Modal */}
+      {showingTaskList && !showSessionPicker && !showingProjectList && (
+        <Box flexDirection="column" width="100%" paddingX={2}>
+          <TaskList tasks={tasks} />
+          <Box marginTop={1}>
+            <Text dimColor>Press any key to continue...</Text>
+          </Box>
+        </Box>
       )}
 
       {/* Session Picker Modal (full screen overlay) */}
