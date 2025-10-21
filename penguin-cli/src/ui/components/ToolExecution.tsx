@@ -49,14 +49,14 @@ export function ToolExecution({ tool, expanded: initialExpanded = false }: ToolE
     tool.startTime && tool.endTime ? `${((tool.endTime - tool.startTime) / 1000).toFixed(2)}s` : '';
 
   // Truncate long results for inline display
-  const truncateResult = (text: string, maxLength: number = 100): string => {
+  const truncateResult = (text: string, maxLength: number = 200): string => {
     if (text.length <= maxLength) return text;
     return text.slice(0, maxLength) + '...';
   };
 
-  const hasLongResult = (tool.result && tool.result.length > 100) || (tool.error && tool.error.length > 100);
   const resultText = tool.result || tool.error || '';
-  const displayResult = isExpanded ? resultText : truncateResult(resultText);
+  const displayResult = truncateResult(resultText);
+  const hasMoreContent = resultText.length > 200;
 
   return (
     <Box flexDirection="column" marginLeft={2} marginY={0}>
@@ -85,11 +85,11 @@ export function ToolExecution({ tool, expanded: initialExpanded = false }: ToolE
             </Text>
           </Box>
 
-          {/* Expand/collapse toggle for long results */}
-          {hasLongResult && (
+          {/* Indicator for truncated content */}
+          {hasMoreContent && (
             <Box marginTop={0}>
-              <Text color="blue" dimColor>
-                {isExpanded ? '▼ Show less (press Space to toggle)' : '▶ Show more (press Space to toggle)'}
+              <Text color="gray" dimColor italic>
+                ... ({resultText.length} chars total)
               </Text>
             </Box>
           )}

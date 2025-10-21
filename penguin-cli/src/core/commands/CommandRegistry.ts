@@ -36,9 +36,11 @@ export class CommandRegistry {
    * Load commands from YAML configuration file.
    */
   private loadCommands(): void {
+    // Always register builtin commands first
+    this.registerBuiltinCommands();
+
     if (!this.configPath || !fs.existsSync(this.configPath)) {
       console.error(`[CommandRegistry] Commands config not found: ${this.configPath}`);
-      this.registerBuiltinCommands();
       return;
     }
 
@@ -53,7 +55,7 @@ export class CommandRegistry {
         }
       }
 
-      // Process commands
+      // Process commands (these can override builtins)
       if (config.commands) {
         for (const cmdDef of config.commands) {
           const command = this.createCommand(cmdDef);
@@ -63,13 +65,12 @@ export class CommandRegistry {
         }
       }
 
-      console.error(`[CommandRegistry] Loaded ${this.commands.size} commands from ${this.configPath}`);
+      console.error(`[CommandRegistry] Loaded ${this.commands.size} commands (including builtins)`);
       // Debug: Show first few commands
-      const commandNames = Array.from(this.commands.keys()).slice(0, 10);
+      const commandNames = Array.from(this.commands.keys()).slice(0, 15);
       console.error(`[CommandRegistry] Sample commands: ${commandNames.join(', ')}`);
     } catch (error) {
       console.error(`[CommandRegistry] Error loading commands config:`, error);
-      this.registerBuiltinCommands();
     }
   }
 
@@ -360,6 +361,33 @@ export class CommandRegistry {
         description: 'Exit',
         handler: 'action_quit',
         aliases: ['exit', 'q'],
+        parameters: [],
+        enabled: true,
+      },
+      {
+        name: 'config edit',
+        category: 'configuration',
+        description: 'Open config file in $EDITOR',
+        handler: 'config_edit',
+        aliases: [],
+        parameters: [],
+        enabled: true,
+      },
+      {
+        name: 'config check',
+        category: 'configuration',
+        description: 'Validate configuration',
+        handler: 'config_check',
+        aliases: [],
+        parameters: [],
+        enabled: true,
+      },
+      {
+        name: 'config debug',
+        category: 'configuration',
+        description: 'Show diagnostic information',
+        handler: 'config_debug',
+        aliases: [],
         parameters: [],
         enabled: true,
       },

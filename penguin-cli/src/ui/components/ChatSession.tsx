@@ -25,6 +25,8 @@ import { SessionAPI } from '../../core/api/SessionAPI.js';
 import type { Session } from '../../core/types.js';
 import { useTab } from '../contexts/TabContext.js';
 import { ChatClient } from '../../core/connection/WebSocketClient.js';
+import { getConfigPath, validateConfig, getConfigDiagnostics } from '../../config/loader.js';
+import { exec } from 'child_process';
 
 interface ChatSessionProps {
   conversationId?: string;
@@ -187,8 +189,94 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
       case '?':
         // Show help as a system message
         addAssistantMessage(
-          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/chat list\` - List all conversations\n- \`/chat load <id>\` - Load a conversation\n- \`/chat delete <id>\` - Delete a conversation\n- \`/chat new\` - Start a new conversation\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n\n### ⚙️ System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands available! See commands.yml for full list.`
+          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/chat list\` - List all conversations\n- \`/chat load <id>\` - Load a conversation\n- \`/chat delete <id>\` - Delete a conversation\n- \`/chat new\` - Start a new conversation\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n\n### ⚙️ Configuration\n- \`/setup\` - Run setup wizard (must exit chat first)\n- \`/config edit\` - Open config file in $EDITOR\n- \`/config check\` - Validate current configuration\n- \`/config debug\` - Show diagnostic information\n\n### 🔧 System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands available! See commands.yml for full list.`
         );
+        break;
+
+      case 'setup':
+        // Show message that setup needs to be run outside of chat
+        addUserMessage('/setup');
+        addAssistantMessage(
+          '⚠️ Setup wizard must be run outside of the interactive chat.\n\n' +
+          'Please exit the chat (Ctrl+C) and run:\n\n' +
+          '```\ncd penguin-cli && npm run setup\n```\n\n' +
+          'This will launch the interactive configuration wizard.'
+        );
+        break;
+
+      case 'config edit':
+        addUserMessage('/config edit');
+        {
+          const configPath = getConfigPath();
+
+          addAssistantMessage(`Opening config file in external editor...\n\nFile: \`${configPath}\``);
+
+          // Build command based on platform
+          let command: string;
+          if (process.platform === 'darwin') {
+            // macOS: Use 'open -t' to open in default text editor
+            command = `open -t "${configPath}"`;
+          } else if (process.platform === 'win32') {
+            // Windows
+            command = `start "" "${configPath}"`;
+          } else {
+            // Linux
+            command = `xdg-open "${configPath}"`;
+          }
+
+          // Execute command
+          exec(command, (error, stdout, stderr) => {
+            if (error) {
+              addAssistantMessage(`❌ Failed to open editor: ${error.message}\n\n${stderr}\n\nYou can manually edit: \`${configPath}\``);
+            } else {
+              addAssistantMessage('✅ Config file opened in external editor.\n\n_Save and close the editor, then reload this CLI to apply changes._');
+            }
+          });
+        }
+        break;
+
+      case 'config check':
+        addUserMessage('/config check');
+        {
+          validateConfig().then(result => {
+            if (result.valid) {
+              let message = '✅ Configuration is valid!\n\n';
+              if (result.warnings.length > 0) {
+                message += '⚠️  Warnings:\n';
+                result.warnings.forEach(warn => {
+                  message += `  - ${warn}\n`;
+                });
+              }
+              addAssistantMessage(message);
+            } else {
+              let message = '❌ Configuration has errors:\n\n';
+              result.errors.forEach(err => {
+                message += `  - ${err}\n`;
+              });
+              if (result.warnings.length > 0) {
+                message += '\n⚠️  Warnings:\n';
+                result.warnings.forEach(warn => {
+                  message += `  - ${warn}\n`;
+                });
+              }
+              message += '\nRun `/config edit` to fix these issues or `/setup` to reconfigure.';
+              addAssistantMessage(message);
+            }
+          }).catch(error => {
+            addAssistantMessage(`❌ Failed to validate config: ${error}`);
+          });
+        }
+        break;
+
+      case 'config debug':
+        addUserMessage('/config debug');
+        {
+          getConfigDiagnostics().then(diagnostics => {
+            addAssistantMessage(diagnostics);
+          }).catch(error => {
+            addAssistantMessage(`❌ Failed to get diagnostics: ${error}`);
+          });
+        }
         break;
 
       case 'clear':
@@ -330,15 +418,15 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     // Check if this is a command (starts with /)
     if (trimmed.startsWith('/')) {
       const parsed = parseInput(trimmed);
-      // console.error(`[ChatSession] Parsed command: ${trimmed} -> ${parsed ? parsed.command.name : 'null'}`);
+      console.error(`[ChatSession] Parsed command: ${trimmed} -> ${parsed ? parsed.command.name : 'null'}`);
       if (parsed) {
         // Handle command
-        // console.error(`[ChatSession] Handling command: ${parsed.command.name} with args:`, parsed.args);
+        console.error(`[ChatSession] Handling command: ${parsed.command.name} with args:`, parsed.args);
         handleCommand(parsed.command.name, parsed.args);
         setInputKey((prev) => prev + 1);
         return;
       } else {
-        // console.error(`[ChatSession] Command not recognized, falling through to send as message`);
+        console.error(`[ChatSession] Command not recognized, falling through to send as message`);
       }
     }
 
