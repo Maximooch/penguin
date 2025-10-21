@@ -27,6 +27,8 @@ import { useTab } from '../contexts/TabContext.js';
 import { ChatClient } from '../../core/connection/WebSocketClient.js';
 import { getConfigPath, validateConfig, getConfigDiagnostics } from '../../config/loader.js';
 import { exec } from 'child_process';
+import { existsSync } from 'fs';
+import { homedir } from 'os';
 
 interface ChatSessionProps {
   conversationId?: string;
@@ -77,9 +79,9 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
 
   const { parseInput, getSuggestions } = useCommand();
 
-  const sendMessage = (message: string) => {
+  const sendMessage = (message: string, options?: { image_path?: string }) => {
     if (clientRef.current && isConnected) {
-      clientRef.current.sendMessage(message);
+      clientRef.current.sendMessage(message, options);
     }
   };
   const { messages, addUserMessage, addAssistantMessage, clearMessages } = useMessageHistory();
@@ -189,7 +191,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
       case '?':
         // Show help as a system message
         addAssistantMessage(
-          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/chat list\` - List all conversations\n- \`/chat load <id>\` - Load a conversation\n- \`/chat delete <id>\` - Delete a conversation\n- \`/chat new\` - Start a new conversation\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n\n### ⚙️ Configuration\n- \`/setup\` - Run setup wizard (must exit chat first)\n- \`/config edit\` - Open config file in $EDITOR\n- \`/config check\` - Validate current configuration\n- \`/config debug\` - Show diagnostic information\n\n### 🔧 System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands available! See commands.yml for full list.`
+          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/chat list\` - List all conversations\n- \`/chat load <id>\` - Load a conversation\n- \`/chat delete <id>\` - Delete a conversation\n- \`/chat new\` - Start a new conversation\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n- \`/image <path> [message]\` - Attach image for vision analysis\n\n### ⚙️ Configuration\n- \`/setup\` - Run setup wizard (must exit chat first)\n- \`/config edit\` - Open config file in $EDITOR\n- \`/config check\` - Validate current configuration\n- \`/config debug\` - Show diagnostic information\n\n### 🔧 System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands available! See commands.yml for full list.`
         );
         break;
 
@@ -276,6 +278,43 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
           }).catch(error => {
             addAssistantMessage(`❌ Failed to get diagnostics: ${error}`);
           });
+        }
+        break;
+
+      case 'image':
+      case 'img':
+        {
+          // Get the raw path - might have quotes
+          let imagePath = args.path || '';
+
+          // Strip surrounding quotes if present
+          imagePath = imagePath.replace(/^['"]|['"]$/g, '');
+
+          // Get everything after the path as the message
+          const message = args.message || 'What do you see in this image?';
+
+          addUserMessage(`/image ${imagePath} ${message}`);
+
+          if (!imagePath) {
+            addAssistantMessage('❌ Please provide an image path: `/image <path> [optional message]`');
+            break;
+          }
+
+          // Expand ~ to home directory
+          if (imagePath.startsWith('~')) {
+            imagePath = imagePath.replace('~', require('os').homedir());
+          }
+
+          // Check if file exists
+          if (!existsSync(imagePath)) {
+            addAssistantMessage(`❌ Image file not found: \`${imagePath}\`\n\nMake sure the path is correct and the file exists.`);
+            break;
+          }
+
+          // Send message with image path to backend
+          addAssistantMessage(`📎 Sending image: \`${imagePath}\`\n\n_Analyzing image with vision model..._`);
+          clearTools();
+          sendMessage(message, { image_path: imagePath });
         }
         break;
 
@@ -414,6 +453,58 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     // Reset suggestions
     setSuggestions([]);
     setCurrentInput('');
+
+    // Auto-detect image file paths (when dragged into terminal or typed)
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
+
+    // Check for multimodal input: text + image path on separate lines
+    const lines = trimmed.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    let imagePath: string | null = null;
+    let messageText: string | null = null;
+
+    // Look for image paths in any line
+    for (const line of lines) {
+      const cleanedLine = line.replace(/^['"]|['"]$/g, '');
+      const lowerLine = cleanedLine.toLowerCase();
+      const isImage = imageExtensions.some(ext => lowerLine.endsWith(ext)) &&
+                     (cleanedLine.startsWith('/') || cleanedLine.startsWith('~') || cleanedLine.startsWith('.'));
+
+      if (isImage) {
+        // Expand ~ to home directory
+        let expandedPath = cleanedLine.startsWith('~')
+          ? cleanedLine.replace('~', homedir())
+          : cleanedLine;
+
+        // Check if file exists
+        if (existsSync(expandedPath)) {
+          imagePath = expandedPath;
+        }
+      } else {
+        // This line is text
+        messageText = messageText ? `${messageText}\n${line}` : line;
+      }
+    }
+
+    // Handle multimodal message (text + image)
+    if (imagePath && messageText) {
+      console.error('[ChatSession] Multimodal message detected:', { imagePath, messageText });
+      addUserMessage(`${messageText}\n\n📎 ${imagePath}`);
+      clearTools();
+      sendMessage(messageText, { image_path: imagePath });
+      setInputKey((prev) => prev + 1);
+      return;
+    }
+
+    // Handle image-only message
+    if (imagePath && !messageText) {
+      console.error('[ChatSession] Auto-detected image file:', imagePath);
+      addUserMessage(`📎 ${imagePath}`);
+      addAssistantMessage(`📎 Attached image: \`${imagePath}\`\n\n_What would you like to know about this image?_`);
+      clearTools();
+      sendMessage('What do you see in this image?', { image_path: imagePath });
+      setInputKey((prev) => prev + 1);
+      return;
+    }
 
     // Check if this is a command (starts with /)
     if (trimmed.startsWith('/')) {

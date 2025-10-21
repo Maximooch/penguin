@@ -391,6 +391,28 @@ export class CommandRegistry {
         parameters: [],
         enabled: true,
       },
+      {
+        name: 'image',
+        category: 'workflow',
+        description: 'Attach an image to your message',
+        handler: 'attach_image',
+        aliases: ['img'],
+        parameters: [
+          {
+            name: 'path',
+            type: 'string',
+            required: true,
+            description: 'Path to the image file',
+          },
+          {
+            name: 'message',
+            type: 'string',
+            required: false,
+            description: 'Optional message about the image',
+          },
+        ],
+        enabled: true,
+      },
     ];
 
     for (const command of builtins) {

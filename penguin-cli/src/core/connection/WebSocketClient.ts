@@ -138,17 +138,22 @@ export class ChatClient {
     }
   }
 
-  sendMessage(text: string): void {
+  sendMessage(text: string, options?: { image_path?: string }): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket is not connected');
     }
 
-    const payload = {
+    const payload: any = {
       text,
       conversation_id: this.conversationId,
       agent_id: this.agentId,
       include_reasoning: true, // Enable reasoning tokens from backend
     };
+
+    // Add image path if provided
+    if (options?.image_path) {
+      payload.image_path = options.image_path;
+    }
 
     this.ws.send(JSON.stringify(payload));
   }
