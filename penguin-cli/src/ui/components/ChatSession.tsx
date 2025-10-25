@@ -154,7 +154,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     };
   }, [propConversationId, processToken, complete, addActionResults, updateProgress, completeProgress, resetProgress]);
 
-  const { switchToDashboard, switchConversation } = useTab();
+  const { switchToDashboard, switchConversation, tabs, activeTabId, switchTab } = useTab();
 
   // Handle global hotkeys
   useInput((input, key) => {
@@ -172,9 +172,11 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
         exit();
       }
     }
-    // Ctrl+P to switch to dashboard
+    // Ctrl+P to cycle through tabs
     else if (key.ctrl && input === 'p') {
-      switchToDashboard();
+      const currentIndex = tabs.findIndex(t => t.id === activeTabId);
+      const nextIndex = (currentIndex + 1) % tabs.length;
+      switchTab(tabs[nextIndex].id);
     }
     // Ctrl+O to open session picker
     else if (key.ctrl && input === 'o') {

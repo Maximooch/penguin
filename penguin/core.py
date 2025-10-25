@@ -3224,7 +3224,6 @@ class PenguinCore:
                 # For WebSocket streaming (RunMode), emit a message event
                 # so the TypeScript CLI can display the complete assistant response
                 if hasattr(self, '_temp_ws_callback') and self._temp_ws_callback:
-                    import asyncio
                     asyncio.create_task(self._temp_ws_callback({
                         "type": "message",
                         "role": self._streaming_state["role"],

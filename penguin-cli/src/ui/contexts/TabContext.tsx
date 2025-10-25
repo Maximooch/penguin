@@ -6,7 +6,7 @@
 
 import React, { createContext, useContext, useState, ReactNode } from 'react';
 
-export type TabType = 'chat' | 'dashboard';
+export type TabType = 'chat' | 'dashboard' | 'agents';
 
 export interface Tab {
   id: string;
@@ -21,6 +21,7 @@ interface TabContextValue {
   switchTab: (tabId: string) => void;
   switchToDashboard: () => void;
   switchToChat: () => void;
+  switchToAgents: () => void;
   currentConversationId: string | undefined;
   switchConversation: (conversationId: string) => void;
 }
@@ -33,7 +34,7 @@ interface TabProviderProps {
 }
 
 export function TabProvider({ children, initialConversationId }: TabProviderProps) {
-  // Simple two-tab system: Dashboard and Chat
+  // Three-tab system: Dashboard, Chat, and Agents
   const [tabs] = useState<Tab[]>([
     {
       id: 'dashboard',
@@ -44,6 +45,11 @@ export function TabProvider({ children, initialConversationId }: TabProviderProp
       id: 'chat',
       type: 'chat',
       title: 'Chat',
+    },
+    {
+      id: 'agents',
+      type: 'agents',
+      title: 'Agents',
     },
   ]);
 
@@ -66,6 +72,10 @@ export function TabProvider({ children, initialConversationId }: TabProviderProp
     setActiveTabId('chat');
   };
 
+  const switchToAgents = () => {
+    setActiveTabId('agents');
+  };
+
   const switchConversation = (newConversationId: string) => {
     setConversationId(newConversationId);
     setActiveTabId('chat'); // Switch to chat tab when loading a conversation
@@ -80,6 +90,7 @@ export function TabProvider({ children, initialConversationId }: TabProviderProp
         switchTab,
         switchToDashboard,
         switchToChat,
+        switchToAgents,
         currentConversationId: conversationId,
         switchConversation,
       }}

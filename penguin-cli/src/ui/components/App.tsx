@@ -10,6 +10,7 @@ import { Box } from 'ink';
 import { useTab } from '../contexts/TabContext.js';
 import { ChatSession } from './ChatSession.js';
 import { Dashboard } from './Dashboard.js';
+import { MultiAgentLayout } from './MultiAgentLayout.js';
 import { TabBar } from './TabBar.js';
 import { BannerRenderer } from './BannerRenderer.js';
 
@@ -30,6 +31,8 @@ export function App() {
         return <ChatSession conversationId={currentConversationId} />;
       case 'dashboard':
         return <Dashboard />;
+      case 'agents':
+        return <MultiAgentLayout />;
       default:
         return null;
     }

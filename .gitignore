@@ -102,6 +102,9 @@ errors_log/
 # Ignore the notes folder in penguin
 penguin/notes/
 
+# Reference
+reference/
+
 # Ignore
 ignore/
 

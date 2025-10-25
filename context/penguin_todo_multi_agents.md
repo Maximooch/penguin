@@ -82,11 +82,26 @@ This document tracks the remaining work to reach robust multi-agent and sub-agen
    - `agent list --json` shipped; Paused column added; spawn supports personas/model ids.
    - TODO: `agent delegate` helper; improved onboarding hints in help output.
 
-4) API/REST (NEXT)
-   - Define endpoints for roster, profile, pause/resume, message routing, spawn sub-agent.
+4) API/REST (PARTIAL)
+   - ✅ Endpoints for roster (`GET /api/v1/agents`), profile, message routing exist
+   - ✅ MessageBus WebSocket streaming (`/api/v1/ws/messages`) implemented
+   - ❌ **CRITICAL LIMITATION DISCOVERED**: Agents don't auto-respond to MessageBus messages
+     - Messages sent via `/api/v1/messages` or `/api/v1/messages/human-reply` only route to MessageBus
+     - No agent listener subscribes to MessageBus and triggers `core.process_message()`
+     - For agent responses, must use `/api/v1/chat/stream` WebSocket (chat mode only)
+   - TODO: Implement Agent Message Listener that:
+     - Subscribes to MessageBus for each agent
+     - Triggers `core.process_message()` when messages arrive
+     - Publishes responses back to MessageBus
    - Add conversation history filters (by agent_id, channel, message_type).
 
-5) TUI/Web (NEXT)
+5) TUI/Web (IN PROGRESS - 2025-10-25)
+   - ✅ **Penguin CLI Multi-Agent UI Complete** (Phase 2):
+     - Full UI implementation with AgentRoster, ChannelList, MessageThread, ChannelInputBar
+     - Tab cycling (Ctrl+P), WebSocket connections, @mention autocomplete
+     - TypeScript compilation successful, all tests passing
+   - ❌ **Agent auto-response blocked by backend limitation** (see API/REST section above)
+   - ⚠️ **UI displays "Under Development" notice** until backend agent listener is implemented
    - Roster with paused indicator; spawn/pause/resume actions; per-agent transcript view with channel badges.
 
 6) Docs (IN PROGRESS)

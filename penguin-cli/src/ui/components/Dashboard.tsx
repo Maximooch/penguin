@@ -16,12 +16,18 @@ type DashboardView = 'overview' | 'projects' | 'settings' | 'stats';
 
 export function Dashboard() {
   const [selectedView, setSelectedView] = useState<DashboardView>('overview');
-  const { switchToChat } = useTab();
+  const { switchToChat, tabs, activeTabId, switchTab } = useTab();
 
   useInput((input, key) => {
     // Esc to return to chat
     if (key.escape) {
       switchToChat();
+    }
+    // Ctrl+P to cycle through tabs
+    else if (key.ctrl && input === 'p') {
+      const currentIndex = tabs.findIndex(t => t.id === activeTabId);
+      const nextIndex = (currentIndex + 1) % tabs.length;
+      switchTab(tabs[nextIndex].id);
     }
     // Number keys to switch views
     else if (input === '1') setSelectedView('overview');
