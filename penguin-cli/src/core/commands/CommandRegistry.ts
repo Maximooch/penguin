@@ -213,9 +213,11 @@ export class CommandRegistry {
 
     for (let i = 0; i < command.parameters.length; i++) {
       const param = command.parameters[i];
+      const isLastParam = i === command.parameters.length - 1;
 
       if (i < parts.length) {
-        const raw = parts[i];
+        // For the last parameter, capture all remaining text
+        const raw = isLastParam ? parts.slice(i).join(' ') : parts[i];
 
         // Type conversion
         switch (param.type) {

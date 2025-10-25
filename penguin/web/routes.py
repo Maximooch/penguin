@@ -1519,19 +1519,18 @@ async def execute_task_from_project(
 
 @router.post("/api/v1/tasks/execute")
 async def execute_task(
-    request: TaskRequest, 
+    request: TaskRequest,
     background_tasks: BackgroundTasks,
     core: PenguinCore = Depends(get_core)
 ):
     """Execute a task in the background."""
     # Use background tasks to execute long-running tasks
     background_tasks.add_task(
-        core.start_run_mode, # This now accepts the callback
+        core.start_run_mode,
         name=request.name,
         description=request.description,
         continuous=request.continuous,
         time_limit=request.time_limit,
-        stream_event_callback=None # Pass None for the non-streaming endpoint
     )
     return {"status": "started"}
 
@@ -1830,23 +1829,81 @@ async def stream_task(
             continuous = data.get("continuous", False)
             time_limit = data.get("time_limit")
             context = data.get("context") # Allow passing context
+            conversation_id = data.get("conversation_id") # Get conversation ID from client
 
             if not name:
                 await websocket.send_json({"event": "error", "data": {"message": "Task name is required."}})
                 await websocket.close(code=1008) # Policy violation
                 return # Exit after closing
 
+            # Load or create the session if conversation_id is provided
+            if conversation_id and hasattr(core, 'conversation_manager'):
+                logger.info(f"Loading/creating session for RunMode: {conversation_id}")
+                session = core.conversation_manager.session_manager.load_session(conversation_id)
+                if session:
+                    logger.info(f"Loaded existing session: {conversation_id}")
+                    core.conversation_manager.conversation.session = session
+                else:
+                    logger.info(f"Creating new session: {conversation_id}")
+                    # Create a new session with the specified ID
+                    from penguin.system.state import Session
+                    new_session = Session(id=conversation_id)
+                    core.conversation_manager.session_manager.sessions[conversation_id] = (new_session, True)
+                    core.conversation_manager.session_manager.current_session = new_session
+                    core.conversation_manager.conversation.session = new_session
+
             # Start the run mode task in the background using core.start_run_mode
-            # Pass the WebSocket callback function
             logger.info(f"Starting streaming run mode for task: {name}")
+
+            # Create callback to send events to WebSocket
+            async def send_event_to_websocket(event: Dict[str, Any]):
+                try:
+                    from penguin.system.state import MessageCategory
+
+                    # Serialize event data, converting enums to strings
+                    def serialize_value(val):
+                        if isinstance(val, MessageCategory):
+                            return val.name
+                        elif isinstance(val, dict):
+                            return {k: serialize_value(v) for k, v in val.items()}
+                        elif isinstance(val, list):
+                            return [serialize_value(item) for item in val]
+                        return val
+
+                    event_type = event.get("type", "unknown")
+
+                    # For message events, send the whole event with serialization
+                    if event_type == "message":
+                        serialized_event = serialize_value(event)
+                        await websocket.send_json({
+                            "event": "message",
+                            "data": {
+                                "content": serialized_event.get("content", ""),
+                                "role": serialized_event.get("role", "system"),
+                                "category": serialized_event.get("category", "SYSTEM")
+                            }
+                        })
+                    # For status events, use status_type
+                    else:
+                        status_type = event.get("status_type", event_type)
+                        serialized_data = serialize_value(event.get("data", event))
+                        await websocket.send_json({
+                            "event": status_type,
+                            "data": serialized_data
+                        })
+                except Exception as e:
+                    logger.error(f"Error sending event to WebSocket: {e}", exc_info=True)
+
+            # Store callback temporarily so Core._handle_run_mode_event can use it
+            core._temp_ws_callback = send_event_to_websocket
+
             task_execution = asyncio.create_task(
                 core.start_run_mode(
                     name=name,
                     description=description,
                     continuous=continuous,
                     time_limit=time_limit,
-                    context=context,
-                    stream_event_callback=run_mode_event_callback
+                    context=context
                 )
             )
 
@@ -1861,6 +1918,10 @@ async def stream_task(
                 # Send error via websocket if possible
                 if websocket.client_state == websocket.client_state.CONNECTED:
                      await websocket.send_json({"event": "error", "data": {"message": f"Task execution failed: {task_err}"}})
+            finally:
+                # Clean up temporary callback
+                if hasattr(core, '_temp_ws_callback'):
+                    delattr(core, '_temp_ws_callback')
 
             # Once the task is done (completed, errored, interrupted), we can break the loop
             # Assuming one task per connection.

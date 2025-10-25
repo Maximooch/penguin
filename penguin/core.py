@@ -3220,8 +3220,20 @@ class PenguinCore:
                     category=category,
                     metadata=final_metadata
                 )
-                
-                # Skip emitting a separate 'message' event – the UI has been
+
+                # For WebSocket streaming (RunMode), emit a message event
+                # so the TypeScript CLI can display the complete assistant response
+                if hasattr(self, '_temp_ws_callback') and self._temp_ws_callback:
+                    import asyncio
+                    asyncio.create_task(self._temp_ws_callback({
+                        "type": "message",
+                        "role": self._streaming_state["role"],
+                        "content": content_to_add,
+                        "category": category,
+                        "metadata": final_metadata
+                    }))
+
+                # Skip emitting a separate 'message' event for regular UI – the UI has been
                 # streaming content live. Emitting again causes a duplicated
                 # assistant block.  Conversation persistence is already
                 # handled above; UI just needs the final `stream_chunk` with
@@ -3445,7 +3457,14 @@ class PenguinCore:
                     await self._ui_update_callback()
                 except Exception as e:
                     logger.error(f"Error in UI update callback: {e}", exc_info=True)
-        
+
+            # Also send to WebSocket if temporary callback exists (for streaming)
+            if hasattr(self, '_temp_ws_callback') and self._temp_ws_callback:
+                try:
+                    await self._temp_ws_callback(event)
+                except Exception as e:
+                    logger.error(f"Error in WebSocket callback: {e}", exc_info=True)
+
         except Exception as e:
             logger.error(f"Error in PenguinCore._handle_run_mode_event: {str(e)}", exc_info=True)
 

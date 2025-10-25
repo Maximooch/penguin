@@ -27,6 +27,9 @@ import { SessionAPI } from '../../core/api/SessionAPI.js';
 import { ProjectAPI } from '../../core/api/ProjectAPI.js';
 import type { Session } from '../../core/types.js';
 import type { Project, Task } from '../../core/api/ProjectAPI.js';
+import type { RunModeStatus as RunStatus, TaskStreamMessage } from '../../core/api/RunAPI.js';
+import { RunAPI } from '../../core/api/RunAPI.js';
+import { RunModeStatus } from './RunModeStatus.js';
 import { useTab } from '../contexts/TabContext.js';
 import { ChatClient } from '../../core/connection/WebSocketClient.js';
 import { getConfigPath, validateConfig, getConfigDiagnostics } from '../../config/loader.js';
@@ -52,9 +55,15 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
   const [showingProjectList, setShowingProjectList] = useState(false);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [showingTaskList, setShowingTaskList] = useState(false);
+  const [runModeStatus, setRunModeStatus] = useState<RunStatus>({ status: 'idle' });
+  const [showingRunMode, setShowingRunMode] = useState(false);
+  const [runModeMessage, setRunModeMessage] = useState<string>('');
+  const [runModeProgress, setRunModeProgress] = useState<number>(0);
   const reasoningRef = useRef(''); // Use ref instead of state to avoid re-renders
   const sessionAPI = useRef(new SessionAPI('http://localhost:8000'));
   const projectAPI = useRef(new ProjectAPI('http://localhost:8000'));
+  const runAPI = useRef(new RunAPI('http://localhost:8000'));
+  const runStreamWS = useRef<WebSocket | null>(null);
   const clientRef = useRef<any>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<Error | null>(null);
@@ -530,6 +539,186 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
           });
         break;
 
+      // RunMode autonomous execution commands
+      case 'run continuous':
+      case 'run 247':
+        addUserMessage(commandName === 'run 247' ? '/run 247' : '/run continuous');
+        {
+          const taskName = args.task || undefined;
+          const description = args.description || undefined;
+
+          addAssistantMessage(`🚀 Starting continuous autonomous execution...\n\n${taskName ? `Task: ${taskName}` : 'Running next available task'}`);
+
+          // Connect to WebSocket stream and execute task
+          if (!runStreamWS.current) {
+            setRunModeStatus({ status: 'running', current_task: taskName });
+            setShowingRunMode(true);
+
+            runStreamWS.current = runAPI.current.connectStreamAndExecute(
+              taskName || 'Autonomous Task',
+              description,
+              true, // continuous mode
+              propConversationId,
+                  (message: TaskStreamMessage) => {
+                    console.error('[RunMode] Received event:', message.type, message);
+
+                    // Handle stream messages
+                    switch (message.type) {
+                      case 'task_started':
+                        setRunModeMessage(`Started: ${message.task_name}`);
+                        setRunModeProgress(0);
+                        addAssistantMessage(`▶ Task started: **${message.task_name}**`);
+                        break;
+                      case 'task_progress':
+                        setRunModeMessage(message.content || '');
+                        setRunModeProgress(message.progress || 0);
+                        break;
+                      case 'task_completed_eventbus':
+                      case 'task_completed':
+                        setRunModeMessage(`Completed`);
+                        setRunModeProgress(100);
+                        addAssistantMessage(`✅ Task completed!`);
+                        break;
+                      case 'task_failed':
+                        setRunModeMessage(`Failed: ${message.error}`);
+                        addAssistantMessage(`❌ Task failed: ${message.error}`);
+                        break;
+                      case 'message':
+                        // Display message content from assistant, tool, or system
+                        const content = (message as any).data?.content || (message as any).content;
+                        const role = (message as any).data?.role || (message as any).role || 'system';
+                        const category = (message as any).data?.category || (message as any).category || 'SYSTEM';
+
+                        console.error(`[RunMode] Processing message: role=${role}, category=${category}, contentLength=${content?.length}`);
+
+                        if (content) {
+                          // Main assistant responses (DIALOG category)
+                          if (role === 'assistant' && category === 'DIALOG') {
+                            console.error('[RunMode] Displaying assistant DIALOG message');
+                            addAssistantMessage(content);
+                          }
+                          // Tool outputs and system messages - show dimmed
+                          else if (category === 'SYSTEM_OUTPUT' || category === 'SYSTEM') {
+                            console.error('[RunMode] Displaying system/tool message (dimmed)');
+                            addAssistantMessage(`_${content}_`);
+                          } else {
+                            console.error(`[RunMode] Unhandled message type: role=${role}, category=${category}`);
+                          }
+                        }
+                        break;
+                      case 'error':
+                        addAssistantMessage(`❌ Error: ${message.error}`);
+                        break;
+                      case 'shutdown_completed':
+                      case 'run_mode_ended':
+                        setShowingRunMode(false);
+                        setRunModeStatus({ status: 'idle' });
+                        break;
+                    }
+                  },
+                  (error) => {
+                    addAssistantMessage(`❌ Stream error: ${error.message}`);
+                  },
+                  () => {
+                    // Stream closed
+                    setShowingRunMode(false);
+                    runStreamWS.current = null;
+                }
+              );
+          } else {
+            addAssistantMessage('⚠️ RunMode is already running. Use `/run stop` first.');
+          }
+        }
+        break;
+
+      case 'run task':
+        addUserMessage(`/run task ${args.name}`);
+        {
+          const taskName = args.name;
+          const description = args.description || undefined;
+
+          if (!taskName) {
+            addAssistantMessage('❌ Task name is required. Usage: `/run task <name> [description]`');
+            break;
+          }
+
+          addAssistantMessage(`🚀 Starting task: **${taskName}**`);
+          setShowingRunMode(true);
+          setRunModeStatus({ status: 'running', current_task: taskName });
+
+          // Connect to stream and execute task
+          if (!runStreamWS.current) {
+            runStreamWS.current = runAPI.current.connectStreamAndExecute(
+              taskName,
+              description,
+              false, // not continuous
+              propConversationId,
+              (message: TaskStreamMessage) => {
+                switch (message.type) {
+                  case 'task_started':
+                    setRunModeMessage(`Started: ${message.task_name}`);
+                    break;
+                  case 'task_progress':
+                    setRunModeMessage(message.content || '');
+                    setRunModeProgress(message.progress || 0);
+                    break;
+                  case 'task_completed':
+                    setRunModeMessage(`Completed`);
+                    setRunModeProgress(100);
+                    addAssistantMessage(`✅ Task completed!\n\n${message.result ? JSON.stringify(message.result, null, 2) : ''}`);
+                    setShowingRunMode(false);
+                    setRunModeStatus({ status: 'idle' });
+                    break;
+                  case 'task_failed':
+                    addAssistantMessage(`❌ Task failed: ${message.error}`);
+                    setShowingRunMode(false);
+                    setRunModeStatus({ status: 'idle' });
+                    break;
+                  case 'message':
+                    if (message.content) {
+                      addAssistantMessage(message.content);
+                    }
+                    break;
+                }
+              },
+              (error) => {
+                addAssistantMessage(`❌ Stream error: ${error.message}`);
+                setShowingRunMode(false);
+                setRunModeStatus({ status: 'idle' });
+              },
+              () => {
+                // Stream closed
+                setShowingRunMode(false);
+                setRunModeStatus({ status: 'idle' });
+                runStreamWS.current = null;
+              }
+            );
+          } else {
+            addAssistantMessage('⚠️ A task is already running. Use `/run stop` first.');
+          }
+        }
+        break;
+
+      case 'run stop':
+        addUserMessage('/run stop');
+        addAssistantMessage('⏸ Stopping autonomous execution...');
+        runAPI.current.stop()
+          .then(() => {
+            setRunModeStatus({ status: 'stopped' });
+            setShowingRunMode(false);
+            addAssistantMessage('✅ Execution stopped');
+
+            // Close WebSocket stream
+            if (runStreamWS.current) {
+              runStreamWS.current.close();
+              runStreamWS.current = null;
+            }
+          })
+          .catch((err: any) => {
+            addAssistantMessage(`❌ Failed to stop: ${err.message}`);
+          });
+        break;
+
       default:
         // Unknown command
         addAssistantMessage(`Unknown command: /${commandName}. Type \`/help\` for available commands.`);
@@ -697,6 +886,17 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
             </Text>
           </Box>
         </>
+      )}
+
+      {/* RunMode Status Display */}
+      {showingRunMode && !showSessionPicker && (
+        <Box flexDirection="column" width="100%" paddingX={2}>
+          <RunModeStatus
+            status={runModeStatus}
+            currentMessage={runModeMessage}
+            progress={runModeProgress}
+          />
+        </Box>
       )}
 
       {/* Project List Modal */}

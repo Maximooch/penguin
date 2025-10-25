@@ -16,8 +16,8 @@ export interface MessageListProps {
 export function MessageList({ messages, streamingText }: MessageListProps) {
   return (
     <Box flexDirection="column" gap={1}>
-      {messages.map((message) => (
-        <MessageItem key={message.id} message={message} />
+      {messages.map((message, index) => (
+        <MessageItem key={message.id} message={message} index={index + 1} />
       ))}
 
       {/* Streaming assistant response */}
@@ -38,9 +38,10 @@ export function MessageList({ messages, streamingText }: MessageListProps) {
 
 interface MessageItemProps {
   message: Message;
+  index: number;
 }
 
-function MessageItem({ message }: MessageItemProps) {
+function MessageItem({ message, index }: MessageItemProps) {
   const isUser = message.role === 'user';
   const color = isUser ? 'green' : 'blue';
   const label = isUser ? 'You' : 'Penguin';
@@ -48,7 +49,7 @@ function MessageItem({ message }: MessageItemProps) {
   return (
     <Box flexDirection="column">
       <Text color={color} bold>
-        {label}:
+        <Text dimColor>[{index}]</Text> {label}:
       </Text>
       <Box marginLeft={2} flexDirection="column">
         {/* Display reasoning if present (for assistant messages) */}
