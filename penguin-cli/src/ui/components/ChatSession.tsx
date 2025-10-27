@@ -23,8 +23,10 @@ import { SessionList } from './SessionList';
 import { SessionPickerModal } from './SessionPickerModal';
 import { ProjectList } from './ProjectList';
 import { TaskList } from './TaskList';
+import { ModelSelectorModal } from './ModelSelectorModal';
 import { SessionAPI } from '../../core/api/SessionAPI.js';
 import { ProjectAPI } from '../../core/api/ProjectAPI.js';
+import { ModelAPI } from '../../core/api/ModelAPI.js';
 import type { Session } from '../../core/types.js';
 import type { Project, Task } from '../../core/api/ProjectAPI.js';
 import type { RunModeStatus as RunStatus, TaskStreamMessage } from '../../core/api/RunAPI.js';
@@ -59,10 +61,12 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
   const [showingRunMode, setShowingRunMode] = useState(false);
   const [runModeMessage, setRunModeMessage] = useState<string>('');
   const [runModeProgress, setRunModeProgress] = useState<number>(0);
+  const [showModelSelector, setShowModelSelector] = useState(false);
   const reasoningRef = useRef(''); // Use ref instead of state to avoid re-renders
   const sessionAPI = useRef(new SessionAPI('http://localhost:8000'));
   const projectAPI = useRef(new ProjectAPI('http://localhost:8000'));
   const runAPI = useRef(new RunAPI('http://localhost:8000'));
+  const modelAPI = useRef(new ModelAPI('http://localhost:8000'));
   const runStreamWS = useRef<WebSocket | null>(null);
   const clientRef = useRef<any>(null);
   const [isConnected, setIsConnected] = useState(false);
@@ -218,8 +222,15 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
       case '?':
         // Show help as a system message
         addAssistantMessage(
-          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/chat list\` - List all conversations\n- \`/chat load <id>\` - Load a conversation\n- \`/chat delete <id>\` - Delete a conversation\n- \`/chat new\` - Start a new conversation\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n- \`/image <path> [message]\` - Attach image for vision analysis\n\n### ⚙️ Configuration\n- \`/setup\` - Run setup wizard (must exit chat first)\n- \`/config edit\` - Open config file in $EDITOR\n- \`/config check\` - Validate current configuration\n- \`/config debug\` - Show diagnostic information\n\n### 🔧 System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands available! See commands.yml for full list.`
+          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/chat list\` - List all conversations\n- \`/chat load <id>\` - Load a conversation\n- \`/chat delete <id>\` - Delete a conversation\n- \`/chat new\` - Start a new conversation\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n- \`/image <path> [message]\` - Attach image for vision analysis\n\n### ⚙️ Configuration\n- \`/models\` (alias: /model) - Select AI model\n- \`/setup\` - Run setup wizard (must exit chat first)\n- \`/config edit\` - Open config file in $EDITOR\n- \`/config check\` - Validate current configuration\n- \`/config debug\` - Show diagnostic information\n\n### 🔧 System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands available! See commands.yml for full list.`
         );
+        break;
+
+      case 'models':
+      case 'model':
+        // Show model selector modal
+        addUserMessage('/models');
+        setShowModelSelector(true);
         break;
 
       case 'setup':
@@ -837,6 +848,36 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
       });
   }, []);
 
+  // Handle model selection from modal
+  const handleModelSelect = useCallback(async (modelId: string) => {
+    setShowModelSelector(false);
+    
+    // Update the model via API
+    const success = await modelAPI.current.setModel(modelId);
+    
+    if (success) {
+      // Determine model capabilities for the message
+      const modelLower = modelId.toLowerCase();
+      const hasReasoning = modelLower.includes('gpt-5') || modelLower.includes('gpt5') ||
+                          modelLower.includes('/o1') || modelLower.includes('/o3') ||
+                          (modelLower.includes('gemini') && (modelLower.includes('2.5') || modelLower.includes('2-5')));
+      const hasVision = modelLower.includes('vision') || modelLower.includes('gpt-4o') ||
+                       modelLower.includes('claude') || modelLower.includes('gemini');
+      
+      let capabilities = [];
+      if (hasReasoning) capabilities.push('🧠 Advanced Reasoning');
+      if (hasVision) capabilities.push('👁️ Vision Support');
+      
+      const capabilitiesText = capabilities.length > 0 
+        ? `\n\n**Capabilities:** ${capabilities.join(', ')}`
+        : '';
+      
+      addAssistantMessage(`✅ Model changed to: **${modelId}**${capabilitiesText}\n\nThe new model will be used for all future messages.`);
+    } else {
+      addAssistantMessage(`❌ Failed to change model. Please try again or check your configuration.`);
+    }
+  }, [addAssistantMessage, propConversationId, processToken, updateProgress, completeProgress, addActionResults]);
+
   return (
     <Box flexDirection="column" gap={1}>
       {/* Main content */}
@@ -931,6 +972,16 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
             onDelete={handleSessionDelete}
             onClose={() => setShowSessionPicker(false)}
             isLoading={isLoadingSessions}
+          />
+        </Box>
+      )}
+
+      {/* Model Selector Modal */}
+      {showModelSelector && (
+        <Box flexDirection="column" width="100%" height="100%" justifyContent="center" alignItems="center">
+          <ModelSelectorModal
+            onSelect={handleModelSelect}
+            onClose={() => setShowModelSelector(false)}
           />
         </Box>
       )}

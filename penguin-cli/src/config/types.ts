@@ -16,6 +16,8 @@ export interface ModelConfig {
   temperature: number;
   max_tokens?: number;
   context_window?: number;
+  reasoning_enabled?: boolean;
+  reasoning_effort?: 'low' | 'medium' | 'high';
 }
 
 export interface ApiConfig {

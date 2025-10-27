@@ -1,8 +1,21 @@
 # Penguin CLI Refactoring Plan (Gemini-Inspired)
 
-**Date:** 2025-10-19
-**Status:** ✅ COMPLETE - Refactoring finished, all tests passing, CLI working
+**Date:** 2025-10-19 (Refactoring) | 2025-10-26 (Feature Updates)
+**Status:** ✅ REFACTORING COMPLETE | 🟡 PHASE 3 FEATURES IN PROGRESS
 **Reference:** [gemini_cli_analysis.md](./gemini_cli_analysis.md)
+
+### Recent Progress (2025-10-25)
+
+**Major Features Completed:**
+- ✅ **Image Support** - Full drag-and-drop and `/image` command implementation
+- ✅ **RunMode** - Basic autonomous task execution with WebSocket streaming
+- ✅ **Project Management** - ProjectList/TaskList components with API integration
+- 🟡 **Multi-Agent UI** - Complete UI with Agents tab, awaiting backend auto-response
+
+**Current Status:**
+- Multi-Agent UI is fully implemented but blocked on backend agent listener implementation
+- See [penguin_todo_multi_agents.md](./penguin_todo_multi_agents.md) for backend requirements
+- Development notice displayed in Agents tab until resolved
 
 ---
 
@@ -714,34 +727,44 @@ const { sendMessage } = useWebSocket();
    - ✅ **Auto-setup prompt** - Interactive prompt on first run
    - 📋 TODO: Python CLI router for `penguin config edit` from shell
 
-2. 📋 **Image Support** - Vision model integration (HIGH PRIORITY)
-   - `/image <path>` command to attach images
-   - Drag-and-drop support (if Ink supports)
-   - File upload via REST API endpoint
-   - Base64 encoding for vision-enabled models
-   - Image preview in terminal (using terminal image protocols or placeholder)
+2. ✅ **Image Support** - Vision model integration (COMPLETE)
+   - ✅ `/image <path>` command to attach images
+   - ✅ Drag-and-drop support in terminal
+   - ✅ File upload via REST API endpoint
+   - ✅ Base64 encoding for vision-enabled models
+   - ✅ Image preview/display in terminal
 
-3. 📋 **RunMode** - Autonomous task execution (HIGH PRIORITY)
-   - Integration with `/api/v1/tasks/stream` WebSocket endpoint
-   - Task creation and management UI
-   - Continuous execution mode
-   - Progress tracking and task status
-   - Commands: `/task create`, `/task list`, `/task run`, `/task stop`
+3. ✅ **RunMode** - Autonomous task execution (BASIC COMPLETE)
+   - ✅ Integration with `/api/v1/tasks/stream` WebSocket endpoint
+   - ✅ Basic task execution via `/run` command
+   - ✅ RunModeStatus component for progress display
+   - ✅ WebSocket streaming for task updates
+   - 📋 TODO: Full task management UI (create/list/stop)
+   - 📋 TODO: Continuous execution mode
+   - 📋 TODO: Commands: `/task create`, `/task list`, `/task stop`
 
-4. 📋 **Project Management** - Task and project tracking (MEDIUM PRIORITY)
-   - Dashboard integration (Projects section already has placeholder)
-   - REST API integration (`/api/v1/projects/*` endpoints)
-   - Project CRUD operations
-   - Task creation and listing
-   - Commands: `/project create`, `/project list`, `/project tasks`, `/project delete`
+4. ✅ **Project Management** - Task and project tracking (BASIC COMPLETE)
+   - ✅ Dashboard integration (Projects section with placeholder)
+   - ✅ REST API integration (`/api/v1/projects/*` endpoints)
+   - ✅ ProjectList and TaskList components
+   - ✅ Commands: `/project`, `/task` (basic functionality)
+   - 📋 TODO: Full CRUD operations (create/delete)
+   - 📋 TODO: Enhanced task management UI
+   - 📋 TODO: Commands: `/project create`, `/project delete`
 
-5. 📋 **Multi-Agent System** - Agent roster and control (MEDIUM PRIORITY)
-   - Agent list display (Dashboard Agents section or separate tab)
-   - Agent spawning with persona selection
-   - Agent activation/pause/resume
-   - Sub-agent messaging
-   - REST API: `/api/v1/agents/*`
-   - Commands: `/agent spawn`, `/agent list`, `/agent activate`, `/agent pause`, `/agent message`
+5. 🟡 **Multi-Agent System** - Agent roster and control (UI COMPLETE, BACKEND PARTIAL)
+   - ✅ Agent list display (Agents tab with AgentRoster component)
+   - ✅ Full Multi-Agent UI (MultiAgentLayout with ChannelList, MessageThread)
+   - ✅ @mention autocomplete in ChannelInputBar
+   - ✅ REST API integration (`/api/v1/agents/*` endpoints)
+   - ✅ WebSocket MessageBus connection for real-time updates
+   - ✅ Tab cycling with Ctrl+P to access Agents tab
+   - ❌ **BLOCKED**: Agent auto-response not implemented in backend
+   - ⚠️ Development notice displayed until backend limitation resolved
+   - 📋 TODO: Agent spawning with persona selection UI
+   - 📋 TODO: Agent activation/pause/resume controls
+   - 📋 TODO: Sub-agents in same chat tab (currently separate tab)
+   - 📋 TODO: Commands: `/agent spawn`, `/agent activate`, `/agent pause`
 
 6. 📋 **Context Management** - File and note tracking (LOW PRIORITY)
    - Context file list display
