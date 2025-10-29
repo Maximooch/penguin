@@ -29,7 +29,7 @@ export class ModelAPI {
         return data.data.map((model: any) => ({
           id: model.id,
           context_length: model.context_length,
-          max_output_tokens: model.max_output_tokens,
+          max_output_tokens: model.top_provider?.max_completion_tokens || model.max_output_tokens,
           pricing: model.pricing,
         }));
       }
@@ -99,13 +99,13 @@ export class ModelAPI {
           if (modelInfo) {
             config.model.context_window = modelInfo.context_length;
             
-            // Calculate max_tokens as 90% of the smaller value
-            if (modelInfo.max_output_tokens && modelInfo.context_length) {
-              config.model.max_tokens = Math.floor(Math.min(
-                modelInfo.context_length,
-                modelInfo.max_output_tokens
-              ) * 0.9);
+            // Calculate max_tokens conservatively to avoid exceeding limits
+            if (modelInfo.max_output_tokens) {
+              // Use 90% of max_output_tokens
+              config.model.max_tokens = Math.floor(modelInfo.max_output_tokens * 0.9);
             } else if (modelInfo.context_length) {
+              // If no max_output specified, use 90% of context window
+              // This leaves 10% for input which should be sufficient for most cases
               config.model.max_tokens = Math.floor(modelInfo.context_length * 0.9);
             }
             
@@ -146,11 +146,12 @@ export class ModelAPI {
           
           if (modelInfo) {
             config.model.context_window = modelInfo.context_length;
+            
+            // Use same calculation as above
             if (modelInfo.max_output_tokens) {
-              config.model.max_tokens = Math.floor(Math.min(
-                modelInfo.context_length || 100000,
-                modelInfo.max_output_tokens
-              ) * 0.9);
+              config.model.max_tokens = Math.floor(modelInfo.max_output_tokens * 0.9);
+            } else if (modelInfo.context_length) {
+              config.model.max_tokens = Math.floor(modelInfo.context_length * 0.9);
             }
           }
           

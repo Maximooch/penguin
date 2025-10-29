@@ -24,6 +24,7 @@ import { SessionPickerModal } from './SessionPickerModal';
 import { ProjectList } from './ProjectList';
 import { TaskList } from './TaskList';
 import { ModelSelectorModal } from './ModelSelectorModal';
+import { SettingsModal } from './SettingsModal';
 import { SessionAPI } from '../../core/api/SessionAPI.js';
 import { ProjectAPI } from '../../core/api/ProjectAPI.js';
 import { ModelAPI } from '../../core/api/ModelAPI.js';
@@ -62,6 +63,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
   const [runModeMessage, setRunModeMessage] = useState<string>('');
   const [runModeProgress, setRunModeProgress] = useState<number>(0);
   const [showModelSelector, setShowModelSelector] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const reasoningRef = useRef(''); // Use ref instead of state to avoid re-renders
   const sessionAPI = useRef(new SessionAPI('http://localhost:8000'));
   const projectAPI = useRef(new ProjectAPI('http://localhost:8000'));
@@ -162,10 +164,21 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
 
   // Handle global hotkeys
   useInput((input, key) => {
+    // Don't process other inputs when settings modal is open
+    if (showSettings) {
+      return;
+    }
+
     // Dismiss project/task lists on any key
     if (showingProjectList || showingTaskList) {
       setShowingProjectList(false);
       setShowingTaskList(false);
+      return;
+    }
+
+    // Ctrl+S to open settings
+    if (key.ctrl && input === 's') {
+      setShowSettings(true);
       return;
     }
 
@@ -222,15 +235,69 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
       case '?':
         // Show help as a system message
         addAssistantMessage(
-          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/chat list\` - List all conversations\n- \`/chat load <id>\` - Load a conversation\n- \`/chat delete <id>\` - Delete a conversation\n- \`/chat new\` - Start a new conversation\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n- \`/image <path> [message]\` - Attach image for vision analysis\n\n### ⚙️ Configuration\n- \`/models\` (alias: /model) - Select AI model\n- \`/setup\` - Run setup wizard (must exit chat first)\n- \`/config edit\` - Open config file in $EDITOR\n- \`/config check\` - Validate current configuration\n- \`/config debug\` - Show diagnostic information\n\n### 🔧 System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\nMore commands available! See commands.yml for full list.`
+          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/chat list\` - List all conversations\n- \`/chat load <id>\` - Load a conversation\n- \`/chat delete <id>\` - Delete a conversation\n- \`/chat new\` - Start a new conversation\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n- \`/image <path> [message]\` - Attach image for vision analysis\n\n### ⚙️ Configuration\n- \`/models\` - Select AI model\n- \`/model info\` - Show current model information\n- \`/setup\` - Run setup wizard (must exit chat first)\n- \`/config edit\` - Open config file in $EDITOR\n- \`/config check\` - Validate current configuration\n- \`/config debug\` - Show diagnostic information\n\n### 🔧 System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\n### ⌨️ Hotkeys\n- \`Ctrl+S\` - Open Settings\n- \`Ctrl+P\` - Switch tabs\n- \`Ctrl+C\` - Exit\n\nMore commands available! See commands.yml for full list.`
         );
         break;
 
       case 'models':
-      case 'model':
         // Show model selector modal
         addUserMessage('/models');
         setShowModelSelector(true);
+        break;
+
+      case 'model':
+        // Check if it's a subcommand
+        if (args.subcommand === 'info') {
+          // Show current model info
+          addUserMessage('/model info');
+          modelAPI.current.getCurrentModel().then(currentModel => {
+            const loadConfig = require('../../config/loader.js').loadConfig;
+            loadConfig().then((config: any) => {
+              let message = `# 🤖 Current Model Information\n\n`;
+              message += `**Model**: ${currentModel.model}\n`;
+              message += `**Provider**: ${currentModel.provider}\n`;
+              
+              if (config?.model?.context_window) {
+                message += `**Context Window**: ${config.model.context_window.toLocaleString()} tokens\n`;
+              }
+              if (config?.model?.max_tokens) {
+                message += `**Max Output**: ${config.model.max_tokens.toLocaleString()} tokens\n`;
+              }
+              
+              // Check if model supports reasoning
+              const supportsReasoning = 
+                currentModel.model.toLowerCase().includes('gpt-5') ||
+                currentModel.model.toLowerCase().includes('gpt5') ||
+                currentModel.model.toLowerCase().includes('/o1') ||
+                currentModel.model.toLowerCase().includes('/o3') ||
+                (currentModel.model.toLowerCase().includes('gemini') && 
+                 (currentModel.model.toLowerCase().includes('2.5') || 
+                  currentModel.model.toLowerCase().includes('2-5')));
+              
+              if (supportsReasoning) {
+                message += `\n## 🧠 Reasoning Support\n`;
+                message += `This model supports advanced reasoning capabilities.\n`;
+                if (config?.model?.reasoning_effort) {
+                  message += `**Current Effort Level**: ${config.model.reasoning_effort}\n`;
+                } else {
+                  message += `**Current Effort Level**: medium (default)\n`;
+                }
+                message += `\n*Adjust reasoning effort in Settings (Ctrl+S)*`;
+              }
+              
+              message += `\n\nUse \`/models\` to switch models or \`Ctrl+S\` for Settings.`;
+              addAssistantMessage(message);
+            }).catch((err: any) => {
+              addAssistantMessage(`Error loading config: ${err.message}`);
+            });
+          }).catch(err => {
+            addAssistantMessage(`Error getting model info: ${err.message}`);
+          });
+        } else {
+          // Default to showing model selector
+          addUserMessage('/model');
+          setShowModelSelector(true);
+        }
         break;
 
       case 'setup':
@@ -925,7 +992,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
             <Text dimColor>
               {isStreaming
                 ? 'Waiting for response... • Ctrl+C to exit'
-                : 'Enter: Send • Ctrl+P: Dashboard • Ctrl+O: Sessions • Ctrl+C: Exit'}
+                : 'Enter: Send • Ctrl+P: Dashboard • Ctrl+O: Sessions • Ctrl+S: Settings • Ctrl+C: Exit'}
             </Text>
           </Box>
         </>
@@ -982,6 +1049,16 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
           <ModelSelectorModal
             onSelect={handleModelSelect}
             onClose={() => setShowModelSelector(false)}
+          />
+        </Box>
+      )}
+
+      {/* Settings Modal */}
+      {showSettings && (
+        <Box flexDirection="column" width="100%" height="100%" justifyContent="center" alignItems="center">
+          <SettingsModal
+            onClose={() => setShowSettings(false)}
+            modelAPI={modelAPI.current}
           />
         </Box>
       )}

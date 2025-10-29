@@ -46,6 +46,7 @@
     "highlight.js": "^11.10.0",
     "ink": "^5.0.1",
     "ink-markdown": "^1.0.4",
+    "ink-select-input": "^6.2.0",
     "ink-spinner": "^5.0.0",
     "inquirer": "^12.10.0",
     "js-yaml": "^4.1.0",

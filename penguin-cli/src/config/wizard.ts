@@ -246,15 +246,15 @@ export async function runSetupWizard(): Promise<SetupWizardResult> {
   const selectedModel = models.find(m => m.id === model);
   if (selectedModel) {
     contextWindow = selectedModel.context_length;
-    const modelMaxOutput = selectedModel.max_output_tokens;
+    const modelMaxOutput = selectedModel.top_provider?.max_completion_tokens || selectedModel.max_output_tokens;
 
-    // Calculate max tokens as 90% of the smaller value between context window and max output
-    if (modelMaxOutput && contextWindow) {
-      maxTokens = Math.floor(Math.min(contextWindow, modelMaxOutput) * 0.9);
-    } else if (contextWindow) {
-      maxTokens = Math.floor(contextWindow * 0.9);
-    } else if (modelMaxOutput) {
+    // Calculate max tokens conservatively
+    if (modelMaxOutput) {
+      // Use 90% of the model's max output limit
       maxTokens = Math.floor(modelMaxOutput * 0.9);
+    } else if (contextWindow) {
+      // If no max output specified, use 90% of context window
+      maxTokens = Math.floor(contextWindow * 0.9);
     }
   }
 

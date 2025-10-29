@@ -2834,9 +2834,8 @@ class PenguinCore:
                     "provider": provider_for_config,
                     "client_preference": client_pref,
                     "streaming_enabled": True,
-                    # Prefer full context window when available; this is what
-                    # ContextWindowManager and Interface use for budgeting.
-                    "max_tokens": model_specs.get("context_length") or model_specs.get("max_output_tokens"),
+                    # Use max_output_tokens if available, otherwise use 90% of context_length
+                    "max_tokens": model_specs.get("max_output_tokens") or int((model_specs.get("context_length") or 100000) * 0.9),
                 }
 
             # Sanity-check we have the minimum required keys.
@@ -2845,11 +2844,12 @@ class PenguinCore:
                 logger.error(f"Invalid configuration for model '{model_id}': missing provider field.")
                 return False
 
-            # Update max_tokens with fetched specs – prefer context_length
-            if "context_length" in model_specs:
-                model_conf["max_tokens"] = model_specs["context_length"]
-            elif "max_output_tokens" in model_specs:
+            # Update max_tokens with fetched specs – prefer max_output_tokens
+            if "max_output_tokens" in model_specs:
                 model_conf["max_tokens"] = model_specs["max_output_tokens"]
+            elif "context_length" in model_specs:
+                # If no max_output specified, use 90% of context window
+                model_conf["max_tokens"] = int(model_specs["context_length"] * 0.9)
             else:
                 # If we don't have real specs, error instead of guessing
                 logger.error(f"Could not fetch context_length/max_output_tokens for model '{model_id}' from OpenRouter API")
@@ -3482,11 +3482,12 @@ class PenguinCore:
             # Update model settings
             config_data['model']['default'] = model_id
             
-            # Update max_tokens using the context window when available
-            if 'context_length' in model_specs:
-                config_data['model']['max_tokens'] = model_specs['context_length']
-            elif 'max_output_tokens' in model_specs:
+            # Update max_tokens - prefer max_output_tokens over context_length
+            if 'max_output_tokens' in model_specs:
                 config_data['model']['max_tokens'] = model_specs['max_output_tokens']
+            elif 'context_length' in model_specs:
+                # If no max_output specified, use 90% of context window
+                config_data['model']['max_tokens'] = int(model_specs['context_length'] * 0.9)
             else:
                 logger.error(f"No context_length/max_output_tokens available for model {model_id}")
                 return
