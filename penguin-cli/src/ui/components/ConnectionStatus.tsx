@@ -27,10 +27,18 @@ export function ConnectionStatus({ isConnected, error, workspace, showWorkspace 
 
   // Show error
   if (error) {
+    const anyErr = error as any;
+    const code = anyErr?.code as string | undefined;
+    // Helpful fallback message when Node's AggregateError has empty message
+    const message = error.message && error.message.trim().length > 0
+      ? error.message
+      : code === 'ECONNREFUSED'
+        ? 'Unable to connect to Penguin server at http://localhost:8000. Start it with: uv run penguin-web'
+        : 'Connection error. Is the Penguin server running?';
     return (
       <Box borderStyle="round" borderColor="red" padding={1} marginBottom={1}>
         <Text color="red">
-          ❌ Error: {error.message}
+          ❌ Error: {message}
         </Text>
       </Box>
     );

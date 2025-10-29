@@ -105,6 +105,11 @@ penguin/notes/
 # Reference
 reference/
 
+# Ignore CLI run files
+context/cli-run.txt
+context/cli-run-*.txt
+session_*.json
+
 # Ignore
 ignore/
 

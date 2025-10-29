@@ -4,6 +4,7 @@
  */
 
 import type { StreamConfig } from '../types';
+import { logger } from '../../utils/logger';
 
 export interface StreamProcessorCallbacks {
   onBatch: (batch: string) => void;
@@ -28,9 +29,9 @@ export class StreamProcessor {
   processToken(token: string): void {
     this.buffer += token;
 
-    // Debug: Log first few tokens
+    // Optional debug (kept quiet by default)
     if (this.buffer.length < 200) {
-      console.error(`[StreamProcessor] token: "${token}", buffer: "${this.buffer}"`);
+      logger.debug('[StreamProcessor] token', { token, buffer: this.buffer });
     }
 
     // Flush if buffer reaches batch size
@@ -72,14 +73,14 @@ export class StreamProcessor {
    * Complete the stream and flush any remaining tokens
    */
   complete(): void {
-    console.log(`[StreamProcessor] complete() called. Buffer size: ${this.buffer.length}, content: "${this.buffer.substring(0, 50)}..."`);
+    logger.debug('[StreamProcessor] complete()', {
+      bufferSize: this.buffer.length,
+      preview: this.buffer.substring(0, 50),
+    });
     this.flush();
-    console.log('[StreamProcessor] flush() completed, scheduling onComplete callback in 100ms');
-    // Delay to ensure flush state update completes and all tokens are processed
-    setTimeout(() => {
-      console.log('[StreamProcessor] Calling onComplete callback');
-      this.callbacks.onComplete?.();
-    }, 100);
+    // Use a microtask to sequence after state updates without visible delay
+    // This avoids a 100ms gap that could cause brief UI flicker.
+    queueMicrotask(() => this.callbacks.onComplete?.());
   }
 
   /**

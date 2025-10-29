@@ -8,6 +8,7 @@
 import yaml from 'js-yaml';
 import fs from 'fs';
 import path from 'path';
+import { logger } from '../../utils/logger';
 import type {
   Command,
   CommandCategory,
@@ -40,7 +41,7 @@ export class CommandRegistry {
     this.registerBuiltinCommands();
 
     if (!this.configPath || !fs.existsSync(this.configPath)) {
-      console.error(`[CommandRegistry] Commands config not found: ${this.configPath}`);
+      logger.debug(`[CommandRegistry] Commands config not found: ${this.configPath}`);
       return;
     }
 
@@ -65,12 +66,12 @@ export class CommandRegistry {
         }
       }
 
-      console.error(`[CommandRegistry] Loaded ${this.commands.size} commands (including builtins)`);
+      logger.debug(`[CommandRegistry] Loaded ${this.commands.size} commands (including builtins)`);
       // Debug: Show first few commands
       const commandNames = Array.from(this.commands.keys()).slice(0, 15);
-      console.error(`[CommandRegistry] Sample commands: ${commandNames.join(', ')}`);
+      logger.debug(`[CommandRegistry] Sample commands: ${commandNames.join(', ')}`);
     } catch (error) {
-      console.error(`[CommandRegistry] Error loading commands config:`, error);
+      logger.warn(`[CommandRegistry] Error loading commands config:`, error as Error);
     }
   }
 

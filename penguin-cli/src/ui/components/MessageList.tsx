@@ -41,7 +41,7 @@ interface MessageItemProps {
   index: number;
 }
 
-function MessageItem({ message, index }: MessageItemProps) {
+const MessageItem = React.memo(function MessageItem({ message, index }: MessageItemProps) {
   const isUser = message.role === 'user';
   const color = isUser ? 'green' : 'blue';
   const label = isUser ? 'You' : 'Penguin';
@@ -73,4 +73,12 @@ function MessageItem({ message, index }: MessageItemProps) {
       </Box>
     </Box>
   );
-}
+}, (prev, next) => {
+  // Avoid re-rendering finalized messages unless their id or content changes
+  return (
+    prev.message.id === next.message.id &&
+    prev.message.content === next.message.content &&
+    prev.message.reasoning === next.message.reasoning &&
+    prev.index === next.index
+  );
+});

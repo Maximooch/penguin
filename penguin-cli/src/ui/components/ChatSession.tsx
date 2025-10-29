@@ -37,6 +37,7 @@ import { useTab } from '../contexts/TabContext.js';
 import { ChatClient } from '../../core/connection/WebSocketClient.js';
 import { getConfigPath, validateConfig, getConfigDiagnostics } from '../../config/loader.js';
 import { exec } from 'child_process';
+import { logger } from '../../utils/logger';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 
@@ -92,7 +93,11 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
       },
     });
 
-    client.connect();
+    // Avoid unhandled rejection if backend is offline
+    client.connect().catch((err) => {
+      // onError callback above already sets UI state; swallow to prevent crash
+      logger.warn('ChatClient.connect failed', err);
+    });
     clientRef.current = client;
 
     return () => {
@@ -130,12 +135,13 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     if (!client) return;
 
     client.callbacks.onToken = (token: string) => {
-      // console.log(`[ChatSession ${propConversationId}] Received token, length: ${token.length}`);
+      // Optional debug; avoid noisy stdout
+      logger.debug(`[ChatSession ${propConversationId}] token`, { len: token.length });
       processToken(token);
     };
 
     client.callbacks.onReasoning = (token: string) => {
-      // console.log(`[ChatSession ${propConversationId}] Received reasoning token`);
+      logger.debug(`[ChatSession ${propConversationId}] reasoning token`);
       reasoningRef.current += token;
     };
 
@@ -207,7 +213,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
             setIsLoadingSessions(false);
           })
           .catch((err) => {
-            // console.error('Failed to load sessions:', err);
+            logger.warn('Failed to load sessions:', err);
             setIsLoadingSessions(false);
             setShowSessionPicker(false);
           });
@@ -846,7 +852,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
 
     // Handle multimodal message (text + image)
     if (imagePath && messageText) {
-      console.error('[ChatSession] Multimodal message detected:', { imagePath, messageText });
+      logger.debug('[ChatSession] Multimodal message detected', { imagePath, messageText });
       addUserMessage(`${messageText}\n\n📎 ${imagePath}`);
       clearTools();
       sendMessage(messageText, { image_path: imagePath });
@@ -856,7 +862,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
 
     // Handle image-only message
     if (imagePath && !messageText) {
-      console.error('[ChatSession] Auto-detected image file:', imagePath);
+      logger.debug('[ChatSession] Auto-detected image file', imagePath);
       addUserMessage(`📎 ${imagePath}`);
       addAssistantMessage(`📎 Attached image: \`${imagePath}\`\n\n_What would you like to know about this image?_`);
       clearTools();
@@ -868,15 +874,15 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     // Check if this is a command (starts with /)
     if (trimmed.startsWith('/')) {
       const parsed = parseInput(trimmed);
-      console.error(`[ChatSession] Parsed command: ${trimmed} -> ${parsed ? parsed.command.name : 'null'}`);
+      logger.debug(`[ChatSession] Parsed command: ${trimmed} -> ${parsed ? parsed.command.name : 'null'}`);
       if (parsed) {
         // Handle command
-        console.error(`[ChatSession] Handling command: ${parsed.command.name} with args:`, parsed.args);
+        logger.debug(`[ChatSession] Handling command: ${parsed.command.name}`, parsed.args);
         handleCommand(parsed.command.name, parsed.args);
         setInputKey((prev) => prev + 1);
         return;
       } else {
-        console.error(`[ChatSession] Command not recognized, falling through to send as message`);
+        logger.debug('[ChatSession] Command not recognized; sending as message');
       }
     }
 
@@ -911,7 +917,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
         setSessions(sessionList);
       })
       .catch((err) => {
-        // console.error('Failed to delete session:', err);
+        logger.warn('Failed to delete session:', err);
       });
   }, []);
 

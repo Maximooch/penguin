@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "npm run build && npm run fix-imports && node dist/index.js",
+    "dev:optimized": "npm run build && npm run fix-imports && PENGUIN_USE_OPTIMIZED_CHAT=true node dist/index.js",
     "dev:mock": "npm run build && npm run fix-imports && node dist/prototype-mock.js",
     "dev:watch": "tsc --watch",
     "build": "tsc && npm run fix-imports",
@@ -51,6 +52,7 @@
     "inquirer": "^12.10.0",
     "js-yaml": "^4.1.0",
     "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "terminal-image": "^2.0.0",
     "terminal-kit": "^3.1.2",
     "ws": "^8.18.0"
@@ -62,6 +64,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.7",
     "@types/ws": "^8.5.13",
     "@typescript-eslint/eslint-plugin": "^8.18.2",
     "@typescript-eslint/parser": "^8.18.2",

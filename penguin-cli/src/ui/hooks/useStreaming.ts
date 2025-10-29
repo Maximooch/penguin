@@ -5,6 +5,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { StreamProcessor } from '../../core/chat/StreamProcessor';
+import { logger } from '../../utils/logger';
 import type { StreamConfig } from '../../core/types';
 
 export interface UseStreamingOptions {
@@ -58,7 +59,7 @@ export function useStreaming(options: UseStreamingOptions = {}) {
   }, [isStreaming]);
 
   const complete = useCallback(() => {
-    console.log(`[useStreaming] complete() called. textRef.current length: ${textRef.current.length}`);
+    logger.debug('[useStreaming] complete()', { length: textRef.current.length });
     processorRef.current?.complete();
   }, []);
 
