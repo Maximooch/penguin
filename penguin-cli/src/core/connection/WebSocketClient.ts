@@ -13,7 +13,7 @@ export interface Message {
 }
 
 export interface StreamEvent {
-  event: 'start' | 'token' | 'reasoning' | 'progress' | 'complete' | 'error';
+  event: 'start' | 'token' | 'reasoning' | 'progress' | 'complete' | 'error' | 'tool';
   data: any;
 }
 
@@ -34,6 +34,7 @@ export interface ChatClientOptions {
   onError?: (error: Error) => void;
   onConnect?: () => void;
   onDisconnect?: (code: number, reason: string) => void;
+  onToolEvent?: (data: any) => void; // normalized in ChatSession
 }
 
 export class ChatClient {
@@ -59,6 +60,7 @@ export class ChatClient {
       onError: options.onError || (() => {}),
       onConnect: options.onConnect || (() => {}),
       onDisconnect: options.onDisconnect || (() => {}),
+      onToolEvent: options.onToolEvent || (() => {}),
     };
   }
 
@@ -127,6 +129,10 @@ export class ChatClient {
           // Extract action_results from complete event
           const actionResults = eventData.action_results as ActionResult[] | undefined;
           this.callbacks.onComplete(actionResults);
+          break;
+
+        case 'tool':
+          this.callbacks.onToolEvent(eventData);
           break;
 
         case 'error':

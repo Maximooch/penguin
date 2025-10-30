@@ -1281,3 +1281,91 @@ Now that setup wizard is working, proceed with:
 **Architecture:** Production-ready, extensible, maintainable
 
 The CLI is now ready for Phase 2 feature development with a solid Gemini-inspired foundation.
+
+---
+
+## Update — 2025-10-29
+
+This section captures the latest decisions and work to stabilize rendering, introduce a small design system, and move to an event‑based timeline (Gemini‑style) with normalized tool events.
+
+### Shipped Today
+- Quiet, safe logging and stream stability
+  - Added minimal logger (stderr, level via `PENGUIN_CLI_LOG_LEVEL`).
+    - penguin-cli/src/utils/logger.ts:1
+  - Removed noisy console prints from streaming path; microtask finalize to avoid flicker.
+    - penguin-cli/src/core/chat/StreamProcessor.ts:1
+    - penguin-cli/src/ui/hooks/useStreaming.ts:1
+  - Prevented crash on offline backend; better ECONNREFUSED message.
+    - penguin-cli/src/ui/components/ChatSession.tsx:1
+    - penguin-cli/src/ui/components/ConnectionStatus.tsx:1
+- Design tokens and primitives
+  - Semantic tokens (brand cyan/blue, status colors, spacing).
+    - penguin-cli/src/ui/theme/tokens.ts:1
+  - Panel primitive and unified Status panel (connection + progress + active tool).
+    - penguin-cli/src/ui/components/Panel.tsx:1
+    - penguin-cli/src/ui/components/StatusPanel.tsx:1
+  - Integrated StatusPanel into Chat view.
+    - penguin-cli/src/ui/components/ChatSession.tsx:1
+- Event timeline foundation
+  - Timeline event types and normalized tool event type.
+    - penguin-cli/src/core/types.ts:1
+  - Tool event store hook (idempotent, ordered by timestamp).
+    - penguin-cli/src/ui/hooks/useToolEvents.ts:1
+  - EventTimeline component: renders messages + live stream + compact tool completions.
+    - penguin-cli/src/ui/components/EventTimeline.tsx:1
+  - ChatSession now feeds `action_results` into normalized tool events and renders EventTimeline.
+    - penguin-cli/src/ui/components/ChatSession.tsx:1
+- Message list stability
+  - Memoized message items to avoid redraw churn.
+    - penguin-cli/src/ui/components/MessageList.tsx:1
+- Housekeeping
+  - Ignore local run/session artifacts.
+    - .gitignore:1
+
+### Design System (Initial)
+- Tokens: `tokens.text`, `tokens.brand`, `tokens.status`, `tokens.border`, `tokens.spacing`, `tokens.icons`.
+- Primitives: `Panel`, `StatusPanel`.
+- Direction: clean utility look (banner → tabs → Status → Timeline → Composer). Later: theme manager inspired by Gemini’s semantic‑colors.
+
+### Event Timeline & Tool Normalization
+- Event kinds: `message`, `stream`, `tool`, `progress` (types defined).
+- Tool normalization: `{ id, phase: 'start'|'update'|'end', action, ts, status, result }`.
+- Current mapping: backend `action_results[]` → single `end` event per action; timeline shows compact, dimmed result lines.
+- Active tool is shown in StatusPanel; completed results appear in the timeline and `ToolExecutionList`.
+
+### Paging & Interaction
+- Default: render last 50 timeline events; add paging hotkeys.
+  - Proposal: `PgUp/↑` = show older; `PgDn/↓` = newer; `O` toggles “older” block.
+  - Keep input focus behavior unchanged.
+
+### Theming
+- Default brand: cyan/blue. Later add light/ansi themes with a `themeManager` similar to Gemini.
+- Tokens make the palette swappable without changing components.
+
+### Testing Plan (Vitest + ink‑testing‑library)
+- Streaming finalize: last token included; no flicker when complete; stream cleared only after final message is added.
+- Tool event mapping: a list of `action_results` yields exactly one `end` event per action in chronological order.
+- ECONNREFUSED: CLI does not crash and shows actionable error in Status.
+- Pagination: rendering capped to 50, “older” hotkey reveals previous batch.
+
+### Next Tasks (Short Horizon)
+1) EventTimeline pagination window (50) with hotkeys and “N older events…” indicator.
+2) Reasoning block collapsed by default with expander in assistant messages.
+3) Full tool event pipeline: handle `start`/`update` from server; throttle updates to ~20 fps.
+4) StatusPanel: add subtle progress bar line (re‑use ProgressIndicator logic under the hood).
+5) Theme hook scaffolding for future user‑selectable themes.
+6) Tests for the above; CI job for `npm -C penguin-cli test`.
+
+### Backend Contract (Agreed Direction)
+- Emit stable tool events during a run:
+  {"type":"tool","id":"<stable-id>","phase":"start","action":"find_files","ts":1730180000000}
+  {"type":"tool","id":"<stable-id>","phase":"update","action":"find_files","ts":1730180000500,"payload":"…"}
+  {"type":"tool","id":"<stable-id>","phase":"end","action":"find_files","ts":1730180002000,"status":"completed","result":"…"}
+- `action_results` remain as a fall‑back for `end` mapping (already supported).
+
+### Acceptance Criteria
+- No TTY jitter during streaming; messages never disappear on finalize.
+- Status panel always visible; active tool and progress don’t shift the timeline.
+- Tool completions appear once in correct order; duplicates de‑duped.
+- Paging works with last‑50 default; hotkeys navigate older/newer batches.
+- All components pull colors/spacing from tokens.

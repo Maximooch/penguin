@@ -34,6 +34,57 @@ export interface ActionResult {
   timestamp?: number;
 }
 
+// Normalized tool events for UI timeline and state machines
+export type ToolEventPhase = 'start' | 'update' | 'end';
+
+export interface ToolEventNormalized {
+  id: string; // stable id for a tool invocation
+  phase: ToolEventPhase;
+  action: string;
+  ts: number;
+  status?: 'running' | 'completed' | 'error';
+  result?: string; // final result or error text
+}
+
+// Event timeline types
+export type TimelineEventKind = 'message' | 'stream' | 'tool' | 'progress' | 'system';
+
+export interface BaseEvent {
+  id: string;
+  kind: TimelineEventKind;
+  ts: number;
+}
+
+export interface MessageEvent extends BaseEvent {
+  kind: 'message';
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  reasoning?: string;
+}
+
+export interface StreamEventEntry extends BaseEvent {
+  kind: 'stream';
+  role: 'assistant';
+  text: string;
+}
+
+export interface ProgressEventEntry extends BaseEvent {
+  kind: 'progress';
+  iteration: number;
+  max: number;
+  message?: string;
+}
+
+export interface ToolEventEntry extends BaseEvent, ToolEventNormalized {
+  kind: 'tool';
+}
+
+export type TimelineEvent =
+  | MessageEvent
+  | StreamEventEntry
+  | ToolEventEntry
+  | ProgressEventEntry;
+
 export interface Session {
   id: string;
   conversationId?: string;

@@ -13,9 +13,11 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { useMessageHistory } from '../hooks/useMessageHistory';
 import { useStreaming } from '../hooks/useStreaming';
 import { useToolExecution } from '../hooks/useToolExecution';
+import { useToolEvents } from '../hooks/useToolEvents.js';
 import { useProgress } from '../hooks/useProgress';
 import { MessageList } from './MessageList';
-import { ConnectionStatus } from './ConnectionStatus';
+import { EventTimeline } from './EventTimeline.js';
+// import { ConnectionStatus } from './ConnectionStatus';
 import { ToolExecutionList } from './ToolExecution';
 import { ProgressIndicator } from './ProgressIndicator';
 import { MultiLineInput } from './MultiLineInput';
@@ -40,6 +42,8 @@ import { exec } from 'child_process';
 import { logger } from '../../utils/logger';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
+import { StatusPanel } from './StatusPanel.js';
+import type { ToolEventNormalized } from '../../core/types.js';
 
 interface ChatSessionProps {
   conversationId?: string;
@@ -65,6 +69,9 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
   const [runModeProgress, setRunModeProgress] = useState<number>(0);
   const [showModelSelector, setShowModelSelector] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [timelinePageOffset, setTimelinePageOffset] = useState(0);
+  const timelinePageSize = 50;
+  const [showReasoning, setShowReasoning] = useState(false);
   const reasoningRef = useRef(''); // Use ref instead of state to avoid re-renders
   const sessionAPI = useRef(new SessionAPI('http://localhost:8000'));
   const projectAPI = useRef(new ProjectAPI('http://localhost:8000'));
@@ -115,6 +122,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
   };
   const { messages, addUserMessage, addAssistantMessage, clearMessages } = useMessageHistory();
   const { activeTool, completedTools, clearTools, addActionResults } = useToolExecution();
+  const { events: toolEvents, addEvent: addToolEvent, addFromActionResults: addToolEventsFromActionResults, clear: clearToolEvents } = useToolEvents();
   const { progress, updateProgress, resetProgress, completeProgress } = useProgress();
 
   const { streamingText, isStreaming, processToken, complete, reset } = useStreaming({
@@ -149,6 +157,20 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
       updateProgress(iteration, maxIterations, message);
     };
 
+    client.callbacks.onToolEvent = (data: any) => {
+      // Expecting { id, phase, action, ts, status?, result? }
+      const event: ToolEventNormalized = {
+        id: data.id || `${data.action}-${Date.now()}`,
+        phase: (data.phase || 'update') as any,
+        action: data.action || 'unknown',
+        ts: data.ts || Date.now(),
+        status: data.status,
+        result: data.result,
+      };
+      // Route through normalized store (throttles updates)
+      addToolEvent(event);
+    };
+
     client.callbacks.onComplete = (actionResults: any) => {
       completeProgress();
       if (actionResults && actionResults.length > 0) {
@@ -160,6 +182,8 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
           timestamp: ar.timestamp || Date.now(),
         }));
         addActionResults(mappedResults);
+        // Normalized tool events for timeline
+        addToolEventsFromActionResults(mappedResults);
       }
       complete();
       setTimeout(() => resetProgress(), 1000);
@@ -185,6 +209,32 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     // Ctrl+S to open settings
     if (key.ctrl && input === 's') {
       setShowSettings(true);
+      return;
+    }
+
+    // Toggle reasoning visibility
+    if (!key.ctrl && (input === 'r' || input === 'R')) {
+      setShowReasoning((v) => !v);
+      return;
+    }
+
+    // Timeline paging controls
+    const totalEvents =
+      messages.length +
+      toolEvents.filter((e) => e.phase === 'end').length +
+      (streamingText ? 1 : 0);
+    const maxOffset = Math.max(0, Math.ceil(Math.max(0, totalEvents - timelinePageSize) / timelinePageSize));
+
+    if ((key.pageUp || (key.ctrl && key.upArrow))) {
+      setTimelinePageOffset((o) => Math.min(o + 1, maxOffset));
+      return;
+    }
+    if ((key.pageDown || (key.ctrl && key.downArrow))) {
+      setTimelinePageOffset((o) => Math.max(0, o - 1));
+      return;
+    }
+    if (!key.ctrl && (input === 'o' || input === 'O')) {
+      setTimelinePageOffset((o) => (o === 0 ? maxOffset : 0));
       return;
     }
 
@@ -435,6 +485,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
         // Clear all messages and tool executions
         clearMessages();
         clearTools();
+        clearToolEvents();
         resetProgress();
         break;
 
@@ -956,28 +1007,28 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
       {/* Main content */}
       {!showSessionPicker && (
         <>
-          {/* Connection status */}
-          <ConnectionStatus isConnected={isConnected} error={error} />
-
-      {/* Message history */}
-      <MessageList messages={messages} streamingText={streamingText} />
-
-      {/* Progress indicator for multi-step execution */}
-      {progress.isActive && progress.maxIterations > 1 && (
-        <Box marginY={0}>
-          <ProgressIndicator
-            iteration={progress.iteration}
-            maxIterations={progress.maxIterations}
-            message={progress.message}
-            isActive={progress.isActive}
+          {/* Unified status panel (connection + progress + active tool) */}
+          <StatusPanel
+            isConnected={isConnected}
+            error={error}
+            activeTool={activeTool}
+            progress={progress}
           />
-        </Box>
-      )}
 
-      {/* Tool execution display (inline during streaming) */}
-      {(activeTool || completedTools.length > 0) && (
+      {/* Unified event timeline (messages + streaming + compact tool results) */}
+      <EventTimeline
+        messages={messages}
+        streamingText={streamingText}
+        toolEvents={toolEvents}
+        pageSize={timelinePageSize}
+        pageOffset={timelinePageOffset}
+        showReasoning={showReasoning}
+      />
+
+      {/* Completed tools (active tool shown in StatusPanel) */}
+      {completedTools.length > 0 && (
         <Box flexDirection="column" marginY={0}>
-          <ToolExecutionList tools={[...completedTools, ...(activeTool ? [activeTool] : [])]} />
+          <ToolExecutionList tools={completedTools.filter((t) => t.status !== 'running' && t.status !== 'pending')} />
         </Box>
       )}
 

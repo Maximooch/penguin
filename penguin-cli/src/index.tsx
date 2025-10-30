@@ -14,6 +14,7 @@ import { ConnectionProvider } from './ui/contexts/ConnectionContext';
 import { SessionProvider } from './ui/contexts/SessionContext';
 import { CommandProvider } from './ui/contexts/CommandContext';
 import { TabProvider } from './ui/contexts/TabContext';
+import { ThemeProvider } from './ui/theme/ThemeContext.js';
 import { isSetupComplete } from './config/loader.js';
 import chalk from 'chalk';
 
@@ -81,15 +82,17 @@ function startApp() {
 
   // Render the app with context providers
   const { waitUntilExit } = render(
-    <CommandProvider>
-      <TabProvider initialConversationId={conversationId}>
-        <ConnectionProvider url={url} conversationId={conversationId} agentId={agentId}>
-          <SessionProvider initialSession={{ conversationId, agentId }}>
-            <App />
-          </SessionProvider>
-        </ConnectionProvider>
-      </TabProvider>
-    </CommandProvider>
+    <ThemeProvider>
+      <CommandProvider>
+        <TabProvider initialConversationId={conversationId}>
+          <ConnectionProvider url={url} conversationId={conversationId} agentId={agentId}>
+            <SessionProvider initialSession={{ conversationId, agentId }}>
+              <App />
+            </SessionProvider>
+          </ConnectionProvider>
+        </TabProvider>
+      </CommandProvider>
+    </ThemeProvider>
   );
 
   // Wait for app to exit naturally (Ink handles Ctrl+C internally)

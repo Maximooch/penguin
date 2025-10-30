@@ -28,7 +28,7 @@ describe('StreamProcessor', () => {
     processor.cleanup();
   });
 
-  it('flushes on complete', () => {
+  it('flushes on complete', async () => {
     const onBatch = vi.fn();
     const onComplete = vi.fn();
     const processor = new StreamProcessor(
@@ -38,7 +38,8 @@ describe('StreamProcessor', () => {
 
     processor.processToken('Hi');
     processor.complete();
-
+    // onComplete is scheduled in a microtask
+    await Promise.resolve();
     expect(onBatch).toHaveBeenCalledWith('Hi');
     expect(onComplete).toHaveBeenCalled();
   });
