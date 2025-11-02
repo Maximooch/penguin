@@ -19,6 +19,11 @@ from pathlib import Path
 # Add the penguin directory to Python path
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Ensure a writable workspace before importing penguin modules
+_ws = Path(os.environ.get("PENGUIN_WORKSPACE", str(Path(__file__).resolve().parent.parent / "tmp_workspace")))
+os.environ.setdefault("PENGUIN_WORKSPACE", str(_ws))
+_ws.mkdir(parents=True, exist_ok=True)
+
 from penguin.llm.openrouter_gateway import OpenRouterGateway
 from penguin.llm.model_config import ModelConfig
 
@@ -91,7 +96,7 @@ def test_penguin_action_tag_detection():
         ("Regular text without any tags", False),
         ("<not_a_real_tag>content</not_a_real_tag>", False),
         ("<div>HTML tag</div>", False),
-        ("Text with <execute> partial tag", True),  # Should detect opening tag
+        ("Text with <execute> partial tag", False),  # Partial tags don't trigger (requires complete tag)
         ("Mixed content <search>query</search> with text", True),
     ]
     
@@ -107,15 +112,17 @@ def test_penguin_action_tag_detection():
 def test_conversation_reformatting():
     """Test conversation message reformatting for SDK compatibility."""
     print("=== Testing Conversation Reformatting ===")
-    
+
     # Create a mock gateway
     config = ModelConfig(
         model="openai/gpt-5",
-        provider="openrouter", 
+        provider="openrouter",
         client_preference="openrouter"
     )
     gateway = OpenRouterGateway.__new__(OpenRouterGateway)
-    gateway.logger = config  # Mock logger for the method
+    # Create a minimal mock logger
+    import logging
+    gateway.logger = logging.getLogger("test_gateway")
     
     # Test messages with various problematic formats
     test_messages = [
@@ -171,17 +178,18 @@ def test_conversation_reformatting():
         
         # Verify specific transformations
         assert len(reformed) == len(test_messages), "Should preserve all messages"
-        
-        # Check that tool message without tool_call_id was converted
-        tool_msg_reformed = reformed[2]  # Third message
+
+        # Check that ALL tool messages are converted (aggressive fix for SDK compatibility)
+        tool_msg_reformed = reformed[2]  # Third message (tool without tool_call_id)
         assert tool_msg_reformed["role"] == "assistant", "Tool message should be converted to assistant"
         assert "[Tool Result]" in tool_msg_reformed["content"], "Tool result should be prefixed"
-        
-        # Check that proper tool message was preserved
-        proper_tool_msg = reformed[3]  # Fourth message  
-        assert proper_tool_msg["role"] == "tool", "Proper tool message should be preserved"
-        assert "tool_call_id" in proper_tool_msg, "tool_call_id should be preserved"
-        
+
+        # Check that even "proper" tool messages are converted (aggressive approach)
+        proper_tool_msg = reformed[3]  # Fourth message (tool with tool_call_id)
+        assert proper_tool_msg["role"] == "assistant", "All tool messages converted to assistant for SDK compatibility"
+        assert "[Tool Result]" in proper_tool_msg["content"], "Tool result should be prefixed"
+        assert "tool_call_id" not in proper_tool_msg, "tool_call_id should be removed for plain text format"
+
         # Check that call_id was cleaned
         cleaned_msg = reformed[4]  # Fifth message
         assert "call_abcd123" not in cleaned_msg["content"], "call_id should be replaced"

@@ -20,6 +20,11 @@ class ModelConfig:
     enable_token_counting: bool = True
     vision_enabled: Optional[bool] = None
     
+    # Responses API / streaming interrupt controls
+    use_responses_api: bool = False
+    interrupt_on_action: bool = True
+    interrupt_on_tool_call: bool = False
+    
     # Reasoning tokens support
     reasoning_enabled: bool = False
     reasoning_effort: Optional[Literal['low', 'medium', 'high']] = None
@@ -92,7 +97,7 @@ class ModelConfig:
         # Anthropic models with reasoning (Claude 3.7+ with reasoning support)
         if "anthropic" in model_lower and "claude" in model_lower:
             # Newer Claude models support reasoning
-            if any(version in model_lower for version in ["3.7", "4.", "sonnet-4", "opus-4"]):
+            if any(version in model_lower for version in ["3.7", "claude-4", "sonnet-4", "opus-4"]):
                 return True
                 
         # Grok models
@@ -151,6 +156,9 @@ class ModelConfig:
             "streaming_enabled": self.streaming_enabled,
             "supports_reasoning": self.supports_reasoning,
             "reasoning_enabled": self.reasoning_enabled,
+            "use_responses_api": self.use_responses_api,
+            "interrupt_on_action": self.interrupt_on_action,
+            "interrupt_on_tool_call": self.interrupt_on_tool_call,
         }
         if self.api_base:
             config["api_base"] = self.api_base
@@ -210,6 +218,9 @@ class ModelConfig:
             reasoning_effort=reasoning_effort if reasoning_effort in ['low', 'medium', 'high'] else None,
             reasoning_max_tokens=int(reasoning_max_tokens) if reasoning_max_tokens else None,
             reasoning_exclude=reasoning_exclude,
+            use_responses_api=os.getenv("PENGUIN_USE_RESPONSES_API", "false").lower() == "true",
+            interrupt_on_action=os.getenv("PENGUIN_INTERRUPT_ON_ACTION", "true").lower() != "false",
+            interrupt_on_tool_call=os.getenv("PENGUIN_INTERRUPT_ON_TOOL_CALL", "false").lower() == "true",
         )
     
     @classmethod

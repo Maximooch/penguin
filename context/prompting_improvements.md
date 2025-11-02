@@ -4,48 +4,79 @@ Based on analysis of `cli-run-3.txt`, Codex comparison, and prompt architecture 
 
 ## Critical Issues Found
 
-### 1. Meta-Commentary Still Occurring (P0)
+### 1. Process Explanation in Main Messages (P0)
 
-**Problem:** Despite `META_COMMENTARY_WARNING`, agent in `cli-run-3.txt` said:
+**Problem:** Agent outputs process explanation in main message content (not reasoning blocks):
 > "I need to first understand the actual project structure. Let me start over with proper investigation:"
 
 **Root Causes:**
-1. **Contradictory guidance** - `system_prompt.py:77` encourages internal monologue (*italics*)
-2. **Warning buried** - Appears after 700+ lines in prompt
-3. **Not reinforced** - Only mentioned once in output formatting section
+1. **Unclear distinction** - Prompt doesn't clarify: planning (OK) vs process explanation (NOT OK)
+2. **Contradictory guidance** - `system_prompt.py:77` encourages internal monologue (*italics*) which blurs boundaries
+3. **Warning buried** - Meta-commentary warning appears after 700+ lines, focuses on reasoning blocks
+4. **CLI renders faithfully** - CLI already handles reasoning collapse; problem is agent putting verbosity in main content
 
 **Fixes:**
 
-#### Fix 1.1: Remove Contradictory Line
+#### Fix 1.1: Clarify Planning vs Process Explanation
 ```python
 # REMOVE from system_prompt.py line 77:
 - "Internal Monologue: Use *italicized text* for brief, simulated internal thoughts or planning steps."
 
-# REPLACE with:
-+ "Internal thoughts stay internal. Never externalize planning steps or reasoning process."
+# REPLACE with explicit distinction:
++ """
++ **Internal Planning vs Process Explanation:**
++ - ✅ Planning thoughts are OK: Brief *italicized* thoughts about approach (hidden by default in CLI)
++ - ❌ Process explanation is NOT OK: Never say "Let me start by...", "I need to...", "Following my instructions..."
++ - ❌ Step-by-step explanations are NOT OK: Don't list what you're about to do
++ - ✅ Just execute tools → Acknowledge results → Provide answer
++ """
 ```
 
-#### Fix 1.2: Elevate Warning to Top
+#### Fix 1.2: Add Output Verbosity Rule to Top
 ```python
 # In prompt/builder.py, add to beginning of _build_direct():
 def _build_direct(self) -> str:
     return (
-        "🚫 CRITICAL RULE: Never externalize internal reasoning. Just execute tools, then respond with findings.\n\n" +
+        """**OUTPUT STYLE (Codex/Cursor/Claude Code Pattern):**
+
+Show your work, not your process:
+- ✅ Execute tools → Show results → Answer the question
+- ❌ Never say: "Let me start by...", "I need to...", "I'll check...", "Following instructions..."
+- ❌ Never list: "1. First I'll... 2. Then I'll... 3. Finally..."
+- ✅ If uncertain: Ask clarifying question, don't explain your uncertainty
+- ✅ Planning OK: Brief *italicized* thoughts (goes to reasoning block, hidden by default)
+
+Match Codex/Cursor directness: Answer → Evidence → Done
+"""
+        +
         self.components.base_prompt +
         # ... rest
     )
 ```
 
-#### Fix 1.3: Add Immediate Enforcement Pattern
+#### Fix 1.3: Add Pattern Detection Guide
 ```python
-# Add to prompt_workflow.py OUTPUT_STYLE_STEPS_FINAL (near beginning):
+# Add to prompt_workflow.py OUTPUT_STYLE_STEPS_FINAL:
 """
-**BEFORE EVERY RESPONSE:**
-1. Did I explain what I'm about to do? → DELETE IT
-2. Did I list my internal steps? → DELETE IT  
-3. Did I acknowledge tool results? → YES, then proceed
+**FORBIDDEN PHRASES (Delete immediately if generated):**
+- "Let me start by..."
+- "I need to first..."
+- "Following my instructions..."
+- "I'll check..."
+- "Let me investigate..."
+- "Now I'll..."
+- "Based on my analysis so far..." (before showing results)
 
-Only output: Tool calls → Results → Final answer
+**CORRECT PATTERN:**
+❌ "Let me check the file structure first. I'll look for..."
+✅ <list_files_filtered>.</>
+   <enhanced_read>file.py</enhanced_read>
+   The file structure shows...
+
+❌ "Following the workflow, I should first verify then implement..."
+✅ <enhanced_read>current.py</enhanced_read>
+   Implementing the fix:
+   <apply_diff>...
 """
 ```
 
@@ -179,9 +210,61 @@ CORE_WORKFLOW = """
    - Penguin: Has modes but deltas are small
    - **Fix:** Make mode deltas more substantial (see profiles.py)
 
-### 6. Specific Prompt Improvements
+### 6. Output Verbosity Control (Primary Focus)
 
-#### 6.1: Clarify Tool Result Handling (Most Common Error)
+#### 6.1: Match Codex/Cursor/Claude Code Output Style
+
+**Current Problem:** Agent outputs like a verbose assistant explaining its process.
+
+**Target Style (Codex/Cursor/Claude Code):**
+- Direct answers
+- Tool results shown inline
+- No process explanation
+- Minimal preamble
+
+**Implementation:**
+```python
+# Add to BASE_PROMPT after "Response Strategy":
+**--- Output Style (Codex Pattern) ---**
+
+Your responses should match Codex/Cursor/Claude Code directness:
+
+**CORRECT (Direct):**
+```python
+<read_file>path/to/file.py</read_file>
+[Tool result shows the bug at line 42]
+
+Fixed by correcting the validation logic:
+<apply_diff>path/to/file.py
+  @@ -40,5 +40,6 @@
+   def validate(data):
+-     if not data:
++     if not data or len(data) == 0:
+        raise ValueError("Empty data")
+```
+
+**WRONG (Verbose Process Explanation):**
+```
+Let me first check the file to understand the issue. I'll read the code and then analyze what's wrong.
+
+Following my workflow, I should:
+1. Read the file
+2. Identify the bug
+3. Fix it
+
+[Tool call]
+
+Based on my analysis, I found the issue. Now I'll implement the fix...
+```
+
+**Rules:**
+- Never explain what you're about to do
+- Never list your steps
+- Just: Execute → Show → Answer
+- If planning, use *brief italics* (goes to reasoning block, hidden)
+```
+
+#### 6.2: Clarify Tool Result Handling (Most Common Error)
 
 **Current:** Buried in `TOOL_RESULT_HANDLING`, mixed with exploration vs implementation rules
 
@@ -280,13 +363,29 @@ After each change:
 - **Prompt length:** <15k tokens (currently ~20k+)
 - **Agent comprehension:** Task success rate maintained or improved
 
-## Questions for User
+## Implementation Priority (Updated Based on User Feedback)
 
-1. **Internal monologue**: Do you want to keep the *italicized thoughts* feature? If yes, we need clearer boundaries (planning OK, process explanation NOT OK).
+### Phase 1 (Immediate - 1-2 hours)
+1. ✅ Add output verbosity rule to top of prompt (match Codex/Cursor style)
+2. ✅ Clarify planning (OK) vs process explanation (NOT OK)
+3. ✅ Add forbidden phrases detection
+4. ✅ Remove contradictory internal monologue line (or clarify boundaries)
 
-2. **Prompt length**: Is <15k tokens acceptable, or should we target <10k?
+### Phase 2 (This Week - 3-4 hours)
+1. ✅ Streamline OUTPUT_STYLE (remove redundant examples)
+2. ✅ Add path resolution guidance
+3. ✅ Consolidate safety rules
+4. ✅ Test with real sessions
 
-3. **Mode priority**: Which modes need the most work? (Review mode mentioned as P0)
+### Phase 3 (Future)
+1. ⏸ Mode system improvements (not priority now)
+2. ⏸ Further prompt reduction (target ~10k tokens if possible, but quality > quantity)
 
-4. **Codex parity**: How important is matching Codex's terseness vs keeping Penguin's thoroughness?
+## Key Insights from User Feedback
+
+1. **Planning OK, Process Explanation NOT OK** - Clear distinction needed
+2. **Output verbosity is main issue** - Not prompt length itself, but what agent outputs
+3. **CLI already handles reasoning collapse** - Problem is agent putting verbosity in main messages
+4. **Match Codex/Cursor/Claude Code style** - Direct answers, no process explanation
+5. **Mode system not urgent** - Focus on core output verbosity first
 

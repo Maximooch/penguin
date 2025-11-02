@@ -40,20 +40,38 @@ def setup_logger(
     penguin_log_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "logs")
     log_dirs = [penguin_log_dir, os.path.join(WORKSPACE_PATH, "logs")]
     for log_dir in log_dirs:
-        os.makedirs(log_dir, exist_ok=True)
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except Exception:
+            # If we cannot create the directory, skip adding a handler for it
+            pass
 
-    # Set up file handlers with rotation
+    # Set up file handlers with rotation, but fail soft if not permitted
+    handlers_added = 0
     for log_dir in log_dirs:
-        file_handler = RotatingFileHandler(
-            os.path.join(log_dir, log_file),
-            maxBytes=1024 * 1024,  # 1 MB
-            backupCount=5,
-        )
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
+        try:
+            file_path = os.path.join(log_dir, log_file)
+            file_handler = RotatingFileHandler(
+                file_path,
+                maxBytes=1024 * 1024,  # 1 MB
+                backupCount=5,
+            )
+            formatter = logging.Formatter(
+                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+            )
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+            handlers_added += 1
+        except Exception:
+            # Permission or path issues: skip this handler silently to avoid import-time crashes
+            continue
+
+    # If we couldn't add any file handler, attach a NullHandler to keep logging safe
+    if handlers_added == 0:
+        try:
+            logger.addHandler(logging.NullHandler())
+        except Exception:
+            pass
 
     logger.propagate = False
     return logger

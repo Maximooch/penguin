@@ -61,6 +61,15 @@ class OpenRouterGateway:
         self.site_url = site_url or os.getenv("OPENROUTER_SITE_URL")
         self.site_title = site_title or os.getenv("OPENROUTER_SITE_TITLE", "Penguin_AI_Agent")
 
+        # Simple telemetry counters
+        self._telemetry: Dict[str, Any] = {
+            "interrupts": 0,
+            "streamed_bytes": 0,
+        }
+        # Tool-call accumulation for SSE
+        self._tool_call_acc: Dict[str, Any] = {"name": None, "arguments": ""}
+        self._last_tool_call: Optional[Dict[str, Any]] = None
+
         # --- API Key Handling ---
         api_key = model_config.api_key or os.getenv("OPENROUTER_API_KEY")
         if not api_key:
@@ -424,6 +433,10 @@ class OpenRouterGateway:
                         
                         if new_content_segment:
                             _gateway_accumulated_content += new_content_segment
+                            try:
+                                self._telemetry["streamed_bytes"] += len(new_content_segment.encode("utf-8"))
+                            except Exception:
+                                pass
                             # debug_stream_chunk(request_id, {'chunk': new_content_segment, 'type': 'content'}, "content")
                             if stream_callback:
                                 try:
@@ -435,9 +448,56 @@ class OpenRouterGateway:
                         
                         full_response_content = _gateway_accumulated_content
 
+                        # Interrupt streaming when a complete Penguin action tag is detected
+                        try:
+                            if getattr(self.model_config, "interrupt_on_action", False):
+                                if self._contains_penguin_action_tags(full_response_content):
+                                    self.logger.info("[OpenRouterGateway] Interrupting stream on detected Penguin action tag (SDK path)")
+                                    try:
+                                        self._telemetry["interrupts"] += 1
+                                    except Exception:
+                                        pass
+                                    return full_response_content
+                        except Exception as _int_err:
+                            self.logger.debug(f"[OpenRouterGateway] interrupt_on_action check failed: {_int_err}")
+
                     elif tool_calls_delta:
                          self.logger.debug(f"[OpenRouterGateway] Received tool_calls delta: {tool_calls_delta}.")
-                         # Tool call streaming logic would go here if needed for external callback
+                         # Accumulate name/arguments from delta (best-effort)
+                         try:
+                             tc0 = None
+                             if isinstance(tool_calls_delta, (list, tuple)) and tool_calls_delta:
+                                 tc0 = tool_calls_delta[0]
+                             if tc0 is not None:
+                                 fn = getattr(tc0, "function", None) if not isinstance(tc0, dict) else tc0.get("function")
+                                 if fn is not None:
+                                     name = getattr(fn, "name", None) if not isinstance(fn, dict) else fn.get("name")
+                                     args_delta = getattr(fn, "arguments", None) if not isinstance(fn, dict) else fn.get("arguments")
+                                     if name and not self._tool_call_acc.get("name"):
+                                         self._tool_call_acc["name"] = name
+                                     if isinstance(args_delta, str) and args_delta:
+                                         self._tool_call_acc["arguments"] += args_delta
+                         except Exception as _acc_err:
+                             self.logger.debug(f"[OpenRouterGateway] tool_call accumulation failed: {_acc_err}")
+                         # Interrupt on tool_call if enabled
+                         try:
+                             if getattr(self.model_config, "interrupt_on_tool_call", False):
+                                 self.logger.info("[OpenRouterGateway] Interrupting stream on tool_call delta (SDK path)")
+                                 # Snapshot last tool call
+                                 try:
+                                     self._last_tool_call = {
+                                         "name": self._tool_call_acc.get("name"),
+                                         "arguments": self._tool_call_acc.get("arguments", ""),
+                                     }
+                                 except Exception:
+                                     self._last_tool_call = None
+                                 try:
+                                     self._telemetry["interrupts"] += 1
+                                 except Exception:
+                                     pass
+                                 return _gateway_accumulated_content
+                         except Exception as _tool_int_err:
+                             self.logger.debug(f"[OpenRouterGateway] interrupt_on_tool_call check failed: {_tool_int_err}")
                     else:
                         self.logger.debug(f"[OpenRouterGateway] Chunk {chunk_index-1} had no text/reasoning/tool delta.")
 
@@ -625,11 +685,62 @@ class OpenRouterGateway:
                                 self.logger.debug("Reasoning phase complete, switching to content")
                             
                             full_content += content_delta
+                            try:
+                                self._telemetry["streamed_bytes"] += len(content_delta.encode("utf-8"))
+                            except Exception:
+                                pass
                             if stream_callback:
                                 try:
                                     await stream_callback(content_delta, "assistant")
                                 except Exception as cb_err:
                                     self.logger.error(f"Error in content callback: {cb_err}")
+                            # Interrupt streaming when a complete Penguin action tag is detected
+                            try:
+                                if getattr(self.model_config, "interrupt_on_action", False):
+                                    if self._contains_penguin_action_tags(full_content):
+                                        self.logger.info("[OpenRouterGateway] Interrupting stream on detected Penguin action tag (Direct API path)")
+                                        try:
+                                            self._telemetry["interrupts"] += 1
+                                        except Exception:
+                                            pass
+                                        break
+                            except Exception as _int_err:
+                                self.logger.debug(f"[OpenRouterGateway] interrupt_on_action check failed: {_int_err}")
+                        # Handle tool_calls in direct SSE (Responses/OpenAI compatible)
+                        try:
+                            tool_calls_delta = getattr(delta, "tool_calls", None) if hasattr(delta, "tool_calls") else delta.get("tool_calls")
+                            if tool_calls_delta and getattr(self.model_config, "interrupt_on_tool_call", False):
+                                # Accumulate information
+                                try:
+                                    tc0 = None
+                                    if isinstance(tool_calls_delta, (list, tuple)) and tool_calls_delta:
+                                        tc0 = tool_calls_delta[0]
+                                    if tc0 is not None:
+                                        fn = getattr(tc0, "function", None) if not isinstance(tc0, dict) else tc0.get("function")
+                                        if fn is not None:
+                                            name = getattr(fn, "name", None) if not isinstance(fn, dict) else fn.get("name")
+                                            args_delta = getattr(fn, "arguments", None) if not isinstance(fn, dict) else fn.get("arguments")
+                                            if name and not self._tool_call_acc.get("name"):
+                                                self._tool_call_acc["name"] = name
+                                            if isinstance(args_delta, str) and args_delta:
+                                                self._tool_call_acc["arguments"] += args_delta
+                                except Exception as _acc_err2:
+                                    self.logger.debug(f"[OpenRouterGateway] tool_call accumulation failed: {_acc_err2}")
+                                self.logger.info("[OpenRouterGateway] Interrupting stream on tool_call delta (Direct API path)")
+                                try:
+                                    self._last_tool_call = {
+                                        "name": self._tool_call_acc.get("name"),
+                                        "arguments": self._tool_call_acc.get("arguments", ""),
+                                    }
+                                except Exception:
+                                    self._last_tool_call = None
+                                try:
+                                    self._telemetry["interrupts"] += 1
+                                except Exception:
+                                    pass
+                                break
+                        except Exception as _tool_int_err2:
+                            self.logger.debug(f"[OpenRouterGateway] interrupt_on_tool_call check failed: {_tool_int_err2}")
                         
                     except json.JSONDecodeError as e:
                         self.logger.warning(f"Failed to parse SSE data: {data_str[:100]}... Error: {e}")
@@ -637,6 +748,23 @@ class OpenRouterGateway:
         
         self.logger.info(f"Direct streaming call completed. Reasoning: {len(full_reasoning)} chars, Content: {len(full_content)} chars")
         return full_content
+
+    def get_telemetry(self) -> Dict[str, Any]:
+        """Return simple telemetry counters for diagnostics."""
+        try:
+            return dict(self._telemetry)
+        except Exception:
+            return {"interrupts": 0, "streamed_bytes": 0}
+
+    def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
+        """Return last detected tool_call (name, arguments) and clear accumulators."""
+        try:
+            data = self._last_tool_call
+            self._last_tool_call = None
+            self._tool_call_acc = {"name": None, "arguments": ""}
+            return data
+        except Exception:
+            return None
 
     async def _handle_non_streaming_response(
         self,

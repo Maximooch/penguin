@@ -898,7 +898,7 @@ async def handle_chat_message(
             context=request.context,
             conversation_id=request.conversation_id,
             agent_id=request.agent_id,
-            max_iterations=request.max_iterations or 5,
+            max_iterations=request.max_iterations or 100,
             context_files=request.context_files,
             streaming=effective_streaming,
             stream_callback=stream_cb,
@@ -1016,7 +1016,7 @@ async def stream_chat(
             conversation_id = data.get("conversation_id")
             context_files = data.get("context_files")
             context = data.get("context")
-            max_iterations = data.get("max_iterations", 5)
+            max_iterations = data.get("max_iterations", 100)
             image_path = data.get("image_path")
             include_reasoning = bool(data.get("include_reasoning", False))
             agent_id = data.get("agent_id")

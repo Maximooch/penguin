@@ -81,6 +81,67 @@ Before executing ANY tool, check: Is there already a tool result in the previous
 - If NO: Safe to execute.
 """
 
+# Single source of truth for forbidden phrases (process explanation detection)
+FORBIDDEN_PHRASES_DETECTION = """
+**Forbidden Phrases (Process Explanation) - DELETE Immediately:**
+
+These phrases indicate you're explaining your process instead of just doing it. DELETE them:
+
+**❌ FORBIDDEN:**
+- "Let me start by..."
+- "I need to first..."
+- "Following my instructions..."
+- "I'll check..."
+- "Let me investigate..."
+- "Now I'll..."
+- "Based on my analysis so far..." (before showing results)
+- "Let me read..."
+- "I should..."
+- "Next, I will..."
+- "First, let me..."
+- "To begin..."
+- Numbered step lists explaining what you're about to do
+
+**✅ CORRECT Pattern:**
+- Execute tools directly: `<enhanced_read>file.py</enhanced_read>`
+- Acknowledge results: "Got it: file.py shows..."
+- Provide answer: "The issue is..."
+
+**Think Codex/Cursor:** They just execute → show → answer. No process explanation.
+"""
+
+# Incremental execution rule (ReAct pattern)
+INCREMENTAL_EXECUTION_RULE = """
+**Execution Strategy (ReAct Pattern - One Action at a Time):**
+
+Execute ONE (maybe more, but absolutely not all of the code/actions at once) action per response, then wait for the result before continuing:
+
+**✅ CORRECT (Incremental):**
+```
+<execute>Create folder structure</execute>
+```
+[Wait for result: ✓ Created simple-crud/]
+Then in next response:
+```
+<execute>Create main.py</execute>
+```
+[Wait for result: ✓ Created app/main.py]
+Then continue...
+
+**❌ WRONG (Batch):**
+```
+<execute>Create folder</execute>
+<execute>Create main.py</execute>
+<execute>Create tests</execute>
+<execute>Create README</execute>
+```
+[DON'T generate multiple actions upfront]
+
+**Why:** This allows you to see results and adapt. If folder creation fails, you can handle it before creating files.
+
+**Exception:** Simple, related operations that must happen together can be batched (e.g., creating multiple empty files). But prefer incremental execution for better error handling and user feedback.
+"""
+
 # Single source of truth for meta-commentary warning
 META_COMMENTARY_WARNING = """
 **Critical: No Meta-Commentary or Planning Externalization**
@@ -778,6 +839,8 @@ All correct: Language tag on own line, proper newlines, correct indentation
 
 {TOOL_RESULT_HANDLING}
 
+{FORBIDDEN_PHRASES_DETECTION}
+
 **Example - Exploration Mode (Correct):**
 ```
 User: "Analyze the auth system"
@@ -897,6 +960,8 @@ data:
 All correct: newline after fence, proper formatting
 
 {TOOL_RESULT_HANDLING}
+
+{FORBIDDEN_PHRASES_DETECTION}
 
 {META_COMMENTARY_WARNING}
 

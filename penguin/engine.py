@@ -370,17 +370,20 @@ class Engine:
                 # Collect all action results
                 if iteration_results:
                     all_action_results.extend(iteration_results)
-                
+
                 # Stop if no actions were taken - natural conversation end
                 if not iteration_results:
                     logger.debug("Conversation completion: No actions in response")
                     break
-            
+
+            # Determine final status
+            final_status = "completed" if self.current_iteration < max_iters else "max_iterations"
+
             return {
                 "assistant_response": last_response,
                 "iterations": self.current_iteration,
                 "action_results": all_action_results,
-                "status": "completed" if self.current_iteration < max_iters else "max_iterations",
+                "status": final_status,
                 "execution_time": (datetime.utcnow() - self.start_time).total_seconds()
             }
             
@@ -698,12 +701,88 @@ class Engine:
     ):
         cm, api_client, _tm, action_executor = self._resolve_components(agent_id or self.current_agent_id)
         messages = cm.conversation.get_formatted_messages()
+
+        # Prepare Responses tools (file/code/command only) when enabled
+        extra_kwargs = {}
+        try:
+            model_cfg = getattr(self, "model_config", None)
+            if model_cfg and getattr(model_cfg, "use_responses_api", False):
+                tools_payload = _tm.get_responses_tools() if hasattr(_tm, "get_responses_tools") else []
+                if tools_payload:
+                    extra_kwargs["tools"] = tools_payload
+                    # Use forced tool_choice if set, otherwise auto
+                    forced_choice = getattr(self, "_forced_tool_choice_name", None)
+                    if forced_choice:
+                        extra_kwargs["tool_choice"] = {"type": "function", "function": {"name": forced_choice}}
+                    else:
+                        extra_kwargs["tool_choice"] = "auto"
+        except Exception as _tools_err:
+            logger.debug(f"Failed to prepare Responses tools: {_tools_err}")
+
+        # One-time consumption of forced tool_choice
+        try:
+            if hasattr(self, "_forced_tool_choice_name"):
+                self._forced_tool_choice_name = None
+        except Exception:
+            pass
         # First attempt – honour requested streaming setting
         assistant_response = await api_client.get_response(
             messages,
             stream=streaming,
             stream_callback=stream_callback,
+            **extra_kwargs,
         )
+
+        # Phase 2: If gateway interrupted due to Responses tool_call, execute it directly
+        try:
+            handler = getattr(api_client, "client_handler", None)
+            getter = getattr(handler, "get_and_clear_last_tool_call", None)
+            tool_info = await getter() if callable(getter) and asyncio.iscoroutinefunction(getter) else (getter() if callable(getter) else None)
+        except Exception:
+            tool_info = None
+
+        if tool_info and isinstance(tool_info, dict):
+            try:
+                tool_name = str(tool_info.get("name") or "").strip()
+                raw_args = tool_info.get("arguments") or "{}"
+                import json as _json
+                try:
+                    tool_args = _json.loads(raw_args) if isinstance(raw_args, str) and raw_args.strip() else {}
+                except Exception:
+                    tool_args = {}
+
+                # Execute via ToolManager if allowed
+                output = _tm.execute_tool(tool_name, tool_args)
+
+                # Persist result
+                action_result = {
+                    "action_name": tool_name,
+                    "output": str(output if output is not None else ""),
+                    "status": "completed"
+                }
+                cm.add_action_result(
+                    action_type=action_result["action_name"],
+                    result=action_result["output"],
+                    status=action_result["status"],
+                )
+                if hasattr(cm, 'core') and cm.core:
+                    await cm.core.emit_ui_event("message", {
+                        "role": "system",
+                        "content": f"Tool Result ({action_result['action_name']}):\n{action_result['output']}",
+                        "category": MessageCategory.SYSTEM_OUTPUT.name,
+                        "message_type": "action",
+                        "metadata": {"action_name": action_result['action_name']}
+                    })
+                    await asyncio.sleep(0.01)
+
+                # For the next request, prefer forcing this tool_choice name if applicable
+                try:
+                    self._forced_tool_choice_name = tool_name
+                except Exception:
+                    pass
+
+            except Exception as _tool_exec_err:
+                logger.debug(f"Responses tool_call execution failed: {_tool_exec_err}")
 
         # If we received **no content**, retry once with *stream=False* (some providers
         # fail in streaming-mode but succeed with a normal completion request).
@@ -770,7 +849,8 @@ class Engine:
         action_results = []
         if tools_enabled:
             actions: List[CodeActAction] = parse_action(assistant_response)
-            for act in actions:
+            # Enforce one action per iteration for incremental execution
+            for act in (actions[:1] if actions else []):
                 result = await action_executor.execute_action(act)
                 # Format result for display
                 action_result = {
@@ -811,6 +891,32 @@ class Engine:
                             await asyncio.sleep(0.01)  # Yield control to allow UI to render
                     except Exception as e:
                         logger.warning(f"Failed to emit tool result UI event: {e}")
+
+                # Bridge: map Penguin action → Responses tool_choice for next iteration
+                try:
+                    action_to_tool = {
+                        "execute": "code_execution",
+                        "execute_command": "execute_command",
+                        "search": "grep_search",
+                        "perplexity_search": "web_search",
+                        "enhanced_diff": "enhanced_diff",
+                        "analyze_project": "analyze_project",
+                        "apply_diff": "apply_diff",
+                        "edit_with_pattern": "edit_with_pattern",
+                        "multiedit": "multiedit_apply",
+                        "read_file": "read_file",
+                        "write_to_file": "write_to_file",
+                        "create_file": "create_file",
+                        "create_folder": "create_folder",
+                        "find_files_enhanced": "find_file",
+                        "list_files_filtered": "list_files",
+                    }
+                    act_name = act.action_type.value if hasattr(act.action_type, 'value') else str(act.action_type)
+                    mapped = action_to_tool.get(act_name)
+                    if mapped:
+                        self._forced_tool_choice_name = mapped
+                except Exception:
+                    pass
 
         # Persist conversation state
         cm.save()

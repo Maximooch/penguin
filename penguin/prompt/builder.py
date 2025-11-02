@@ -123,7 +123,29 @@ class PromptBuilder:
     
     def _build_direct(self) -> str:
         """Build standard direct mode prompt"""
+        # Import forbidden phrases detection at runtime
+        from penguin.prompt_workflow import FORBIDDEN_PHRASES_DETECTION
+        
+        # Import incremental execution rule at runtime
+        from penguin.prompt_workflow import INCREMENTAL_EXECUTION_RULE
+        
         return (
+            """**OUTPUT STYLE (Codex/Cursor/Claude Code Pattern):**
+
+Show your work, not your process:
+- ✅ Execute tools → Show results → Answer the question
+- ❌ Never say: "Let me start by...", "I need to...", "I'll check...", "Following instructions..."
+- ❌ Never list: "1. First I'll... 2. Then I'll... 3. Finally..."
+- ✅ If uncertain: Ask clarifying question, don't explain your uncertainty
+- ✅ Planning OK: Brief *italicized* thoughts (goes to reasoning block, hidden by default)
+
+Match Codex/Cursor directness: Answer → Evidence → Done
+
+""" +
+            INCREMENTAL_EXECUTION_RULE +
+            "\n\n" +
+            FORBIDDEN_PHRASES_DETECTION +
+            "\n\n" +
             self.components.base_prompt +
             self.components.empirical_first +
             self.components.persistence_directive +

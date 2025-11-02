@@ -75,11 +75,27 @@ function EventItem({ event, index, showReasoning }: { event: TimelineEvent; inde
         </Box>
       );
     case 'tool':
-      // Render compact, dimmed inline summary of finished tool result
+      // Render compact, minimal tool usage (Codex/Cursor style: just "using X")
+      const action = (event as any).action || 'unknown';
+      // Simplify action names: "enhanced_read" -> "read", "apply_diff" -> "edit", etc.
+      const toolName = action
+        .replace(/^enhanced_/, '')
+        .replace(/_/g, ' ')
+        .replace(/^apply /, 'edit ')
+        .trim();
+      const status = (event as any).status;
+      const hasError = status === 'error';
+      
       return (
         <Box flexDirection="column" marginLeft={2}>
-          <Text color={(event as any).status === 'error' ? 'red' : 'gray'} dimColor>
-            ⧗ {(event as any).action}: {(event as any).result?.slice(0, 120) || ''}
+          <Text color={hasError ? 'red' : 'gray'} dimColor>
+            {hasError ? '✗' : '✓'} using {toolName}
+            {(event as any).result && !hasError && (
+              <Text> — {(event as any).result.slice(0, 60)}</Text>
+            )}
+            {hasError && (event as any).result && (
+              <Text> — {(event as any).result.slice(0, 60)}</Text>
+            )}
           </Text>
         </Box>
       );
@@ -88,10 +104,117 @@ function EventItem({ event, index, showReasoning }: { event: TimelineEvent; inde
   }
 }
 
+// Preprocess message to extract action tags before markdown rendering
+// Includes all action types from penguin/utils/parser.py ActionType enum
+function preprocessMessage(content: string): { displayContent: string; actionCount: number } {
+  // Match all action tags - comprehensive list from parser.py ActionType enum
+  const actionTypes = [
+    'execute',
+    'execute_command',
+    'search',
+    'memory_search',
+    'add_declarative_note',
+    'list_files_filtered',
+    'find_files_enhanced',
+    'enhanced_diff',
+    'analyze_project',
+    'enhanced_read',
+    'enhanced_write',
+    'apply_diff',
+    'multiedit',
+    'edit_with_pattern',
+    'add_summary_note',
+    'perplexity_search',
+    'process_start',
+    'process_stop',
+    'process_status',
+    'process_list',
+    'process_enter',
+    'process_send',
+    'process_exit',
+    'workspace_search',
+    'task_create',
+    'task_update',
+    'task_complete',
+    'task_delete',
+    'task_list',
+    'task_display',
+    'project_create',
+    'project_update',
+    'project_delete',
+    'project_list',
+    'project_display',
+    'dependency_display',
+    'analyze_codebase',
+    'reindex_workspace',
+    'send_message',
+    'browser_navigate',
+    'browser_interact',
+    'browser_screenshot',
+    'pydoll_browser_navigate',
+    'pydoll_browser_interact',
+    'pydoll_browser_screenshot',
+    'pydoll_browser_scroll',
+    'pydoll_debug_toggle',
+    'spawn_sub_agent',
+    'stop_sub_agent',
+    'resume_sub_agent',
+    'delegate',
+    'get_repository_status',
+    'create_and_switch_branch',
+    'commit_and_push_changes',
+    'create_improvement_pr',
+    'create_feature_pr',
+    'create_bugfix_pr',
+  ];
+  
+  // Build regex pattern: <(action1|action2|...)>.*?</\1>
+  const actionTagPattern = new RegExp(`<(${actionTypes.join('|')})[^>]*>.*?<\\/\\1>`, 'gis');
+  const matches = content.match(actionTagPattern) || [];
+  let displayContent = content;
+  
+  // Remove action tags but preserve code block structure
+  matches.forEach(tag => {
+    displayContent = displayContent.replace(tag, '');
+  });
+  
+  // Clean up empty code blocks that might remain
+  displayContent = displayContent.replace(/```[\s\n]*```/g, '');
+  // Clean up code blocks with only whitespace/comments
+  displayContent = displayContent.replace(/```[a-z]*\n[\s#]*```/g, '');
+  
+  return { displayContent: displayContent.trim(), actionCount: matches.length };
+}
+
+// Detect completion markers (TASK_COMPLETED, etc.)
+function isCompletionMarker(content: string): boolean {
+  const trimmed = content.trim();
+  return (
+    trimmed === 'TASK_COMPLETED' ||
+    trimmed === 'TASK_COMPLETE' ||
+    (trimmed.length < 30 && /^(✓|✅|Done|Complete|TASK_COMPLETED)/i.test(trimmed))
+  );
+}
+
 function MessageEventItem({ event, index, showReasoning }: { event: any; index: number; showReasoning?: boolean }) {
   const isUser = event.role === 'user';
   const color = isUser ? 'green' : 'blue';
   const label = isUser ? 'You' : 'Penguin';
+  
+  // Filter completion markers (already shown via tool results)
+  if (!isUser && isCompletionMarker(event.content)) {
+    return null; // Skip rendering - completion already indicated by tool events
+  }
+  
+  // Preprocess to remove action tags from display
+  const { displayContent, actionCount } = preprocessMessage(event.content);
+  
+  // Skip empty messages after preprocessing
+  if (!displayContent.trim() && actionCount > 0) {
+    // Message was only action tags - already shown in timeline via toolEvents
+    return null;
+  }
+  
   return (
     <Box flexDirection="column">
       <Text color={color} bold>
@@ -101,7 +224,18 @@ function MessageEventItem({ event, index, showReasoning }: { event: any; index: 
         {!isUser && event.reasoning && (
           <ReasoningBlock content={event.reasoning} show={!!showReasoning} />
         )}
-        {isUser ? <Text>{event.content}</Text> : <Markdown content={event.content} />}
+        {isUser ? (
+          <Text>{event.content}</Text>
+        ) : (
+          <>
+            <Markdown content={displayContent} />
+            {actionCount > 0 && displayContent.trim() && (
+              <Text color="gray" dimColor>
+                ({actionCount} action{actionCount > 1 ? 's' : ''} executed)
+              </Text>
+            )}
+          </>
+        )}
       </Box>
     </Box>
   );

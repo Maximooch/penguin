@@ -8,11 +8,17 @@ Run with: python test_action_tag_parser.py
 """
 
 import sys
+import os
 import re
 from pathlib import Path
 
 # Add the penguin directory to Python path
 sys.path.insert(0, str(Path(__file__).parent))
+
+# Ensure a writable workspace before importing penguin modules
+_ws = Path(os.environ.get("PENGUIN_WORKSPACE", str(Path(__file__).resolve().parent.parent / "tmp_workspace")))
+os.environ.setdefault("PENGUIN_WORKSPACE", str(_ws))
+_ws.mkdir(parents=True, exist_ok=True)
 
 from penguin.utils.parser import ActionType, parse_action
 from penguin.llm.openrouter_gateway import OpenRouterGateway
@@ -79,7 +85,8 @@ def test_parser_detection():
         ("No action tags here", None, False),
         ("<invalid_action>content</invalid_action>", None, False),
         ("<div>HTML tag</div>", None, False),
-        ("Partial <execute> without closing", ActionType.EXECUTE, True),  # Should still detect
+        # Parser requires complete open/close tag pairs; partial should not match
+        ("Partial <execute> without closing", ActionType.EXECUTE, False),
     ]
     test_cases.extend(invalid_tests)
     

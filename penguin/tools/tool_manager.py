@@ -1201,6 +1201,53 @@ class ToolManager:
         """Get available tool schemas."""
         return self.tools
     
+    def get_responses_tools(self, allowed_names: Optional[List[str]] = None, include_web_search: bool = True) -> List[Dict[str, Any]]:
+        """Return tools in OpenAI/Responses API function-calling format.
+
+        Only include file/code/command related tools by default. Browser and process
+        management tools are excluded unless explicitly allowed.
+        """
+        # Default curated set for file/code/command edits/executions
+        default_allowed = [
+            "create_folder",
+            "create_file",
+            "write_to_file",
+            "read_file",
+            "list_files",
+            "find_file",
+            "enhanced_diff",
+            "analyze_project",
+            "apply_diff",
+            "edit_with_pattern",
+            "multiedit_apply",
+            "code_execution",
+            "execute_command",
+            "grep_search",
+        ]
+        allowed = set(allowed_names or default_allowed)
+        responses_tools: List[Dict[str, Any]] = []
+        for t in self.tools:
+            name = t.get("name")
+            if not name or name not in allowed:
+                continue
+            desc = t.get("description", "")
+            params_schema = t.get("input_schema") or {"type": "object", "properties": {}}
+            responses_tools.append({
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": desc,
+                    "parameters": params_schema,
+                },
+            })
+        # Optionally add built-in Responses web_search tool
+        if include_web_search:
+            try:
+                responses_tools.append({"type": "web_search"})
+            except Exception:
+                pass
+        return responses_tools
+    
     def get_tool(self, tool_name: str):
         """Get a tool instance on-demand with caching."""
         if tool_name in self._tool_instances:
@@ -1274,42 +1321,134 @@ class ToolManager:
     def _execute_enhanced_diff(self, tool_input: dict) -> str:
         """Execute enhanced diff with workspace integration."""
         from penguin.tools.core.support import enhanced_diff
-        return enhanced_diff(
-            tool_input["file1"],
-            tool_input["file2"],
-            context_lines=tool_input.get("context_lines", 3),
-            semantic=tool_input.get("semantic", True)
-        )
+        import threading, json
+        try:
+            default_timeout = int(os.environ.get('PENGUIN_TOOL_TIMEOUT_DIFF', os.environ.get('PENGUIN_TOOL_TIMEOUT', '120')))
+        except Exception:
+            default_timeout = 120
+
+        result_container = {"done": False, "result": None, "error": None}
+
+        def _runner():
+            try:
+                result_container["result"] = enhanced_diff(
+                    tool_input["file1"],
+                    tool_input["file2"],
+                    context_lines=tool_input.get("context_lines", 3),
+                    semantic=tool_input.get("semantic", True)
+                )
+            except Exception as e:
+                result_container["error"] = str(e)
+            finally:
+                result_container["done"] = True
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+        t.join(timeout=default_timeout)
+        if not result_container["done"]:
+            return json.dumps({"error": "timeout", "tool": "enhanced_diff", "timeout_seconds": default_timeout})
+        if result_container["error"] is not None:
+            return json.dumps({"error": result_container["error"], "tool": "enhanced_diff"})
+        return result_container["result"]
 
     def _execute_analyze_project(self, tool_input: dict) -> str:
         """Execute project analysis with workspace integration."""
         from penguin.tools.core.support import analyze_project_structure
-        return analyze_project_structure(
-            directory=tool_input.get("directory", "."),
-            include_external=tool_input.get("include_external", False),
-            workspace_path=self._file_root
-        )
+        import threading, json
+        try:
+            default_timeout = int(os.environ.get('PENGUIN_TOOL_TIMEOUT_ANALYZE', os.environ.get('PENGUIN_TOOL_TIMEOUT', '180')))
+        except Exception:
+            default_timeout = 180
+
+        result_container = {"done": False, "result": None, "error": None}
+
+        def _runner():
+            try:
+                result_container["result"] = analyze_project_structure(
+                    directory=tool_input.get("directory", "."),
+                    include_external=tool_input.get("include_external", False),
+                    workspace_path=self._file_root
+                )
+            except Exception as e:
+                result_container["error"] = str(e)
+            finally:
+                result_container["done"] = True
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+        t.join(timeout=default_timeout)
+        if not result_container["done"]:
+            return json.dumps({"error": "timeout", "tool": "analyze_project", "timeout_seconds": default_timeout})
+        if result_container["error"] is not None:
+            return json.dumps({"error": result_container["error"], "tool": "analyze_project"})
+        return result_container["result"]
 
     def _execute_apply_diff(self, tool_input: dict) -> str:
         """Execute diff application with workspace integration."""
         from penguin.tools.core.support import apply_diff_to_file
-        return apply_diff_to_file(
-            file_path=tool_input["file_path"],
-            diff_content=tool_input["diff_content"],
-            backup=tool_input.get("backup", True),
-            workspace_path=self._file_root
-        )
+        import threading, json
+        try:
+            default_timeout = int(os.environ.get('PENGUIN_TOOL_TIMEOUT_EDIT', os.environ.get('PENGUIN_TOOL_TIMEOUT', '180')))
+        except Exception:
+            default_timeout = 180
+
+        result_container = {"done": False, "result": None, "error": None}
+
+        def _runner():
+            try:
+                result_container["result"] = apply_diff_to_file(
+                    file_path=tool_input["file_path"],
+                    diff_content=tool_input["diff_content"],
+                    backup=tool_input.get("backup", True),
+                    workspace_path=self._file_root
+                )
+            except Exception as e:
+                result_container["error"] = str(e)
+            finally:
+                result_container["done"] = True
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+        t.join(timeout=default_timeout)
+        if not result_container["done"]:
+            return json.dumps({"error": "timeout", "tool": "apply_diff", "timeout_seconds": default_timeout})
+        if result_container["error"] is not None:
+            return json.dumps({"error": result_container["error"], "tool": "apply_diff"})
+        return result_container["result"]
 
     def _execute_edit_with_pattern(self, tool_input: dict) -> str:
         """Execute pattern-based editing with workspace integration."""
         from penguin.tools.core.support import edit_file_with_pattern
-        return edit_file_with_pattern(
-            file_path=tool_input["file_path"],
-            search_pattern=tool_input["search_pattern"],
-            replacement=tool_input["replacement"],
-            backup=tool_input.get("backup", True),
-            workspace_path=self._file_root
-        )
+        import threading, json
+        try:
+            default_timeout = int(os.environ.get('PENGUIN_TOOL_TIMEOUT_EDIT', os.environ.get('PENGUIN_TOOL_TIMEOUT', '180')))
+        except Exception:
+            default_timeout = 180
+
+        result_container = {"done": False, "result": None, "error": None}
+
+        def _runner():
+            try:
+                result_container["result"] = edit_file_with_pattern(
+                    file_path=tool_input["file_path"],
+                    search_pattern=tool_input["search_pattern"],
+                    replacement=tool_input["replacement"],
+                    backup=tool_input.get("backup", True),
+                    workspace_path=self._file_root
+                )
+            except Exception as e:
+                result_container["error"] = str(e)
+            finally:
+                result_container["done"] = True
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+        t.join(timeout=default_timeout)
+        if not result_container["done"]:
+            return json.dumps({"error": "timeout", "tool": "edit_with_pattern", "timeout_seconds": default_timeout})
+        if result_container["error"] is not None:
+            return json.dumps({"error": result_container["error"], "tool": "edit_with_pattern"})
+        return result_container["result"]
 
     def _execute_multiedit(self, tool_input: dict) -> str:
         """Execute multiedit facade with workspace integration."""
@@ -1616,7 +1755,39 @@ class ToolManager:
         self.grep_search.add_message(message)
 
     def execute_code(self, code: str) -> str:
-        return self.notebook_executor.execute_code(code)
+        import threading, json
+        # Allow a separate timeout for code execution; fall back to general tool timeout
+        try:
+            default_timeout = int(os.environ.get('PENGUIN_TOOL_TIMEOUT_CODE', os.environ.get('PENGUIN_TOOL_TIMEOUT', '300')))
+        except Exception:
+            default_timeout = 300
+
+        result_container = {"done": False, "result": None, "error": None}
+
+        def _runner():
+            try:
+                result_container["result"] = self.notebook_executor.execute_code(code)
+            except Exception as e:
+                result_container["error"] = str(e)
+            finally:
+                result_container["done"] = True
+
+        t = threading.Thread(target=_runner, daemon=True)
+        t.start()
+        t.join(timeout=default_timeout)
+
+        if not result_container["done"]:
+            return json.dumps({
+                "error": "timeout",
+                "tool": "code_execution",
+                "timeout_seconds": default_timeout,
+            })
+        if result_container["error"] is not None:
+            return json.dumps({
+                "error": f"Error executing code: {result_container['error']}",
+                "tool": "code_execution",
+            })
+        return result_container["result"] or ""
 
     def execute_command(self, command: str) -> str:
         try:
@@ -1639,21 +1810,45 @@ class ToolManager:
             env['NO_COLOR'] = '1'
             env['RICH_NO_MARKUP'] = '1'
 
-            result = subprocess.run(
-                command,
-                shell=shell,
-                capture_output=True,
-                text=True,
-                cwd=self._file_root,
-                env=env  # Use environment with Rich suppression
-            )
+            # Default timeout (seconds) for command tools
+            try:
+                default_timeout = int(os.environ.get('PENGUIN_TOOL_TIMEOUT', '60'))
+            except Exception:
+                default_timeout = 300
+                # TODO: make this configurable
+                # NOTE: You need to consider a case where it may be installing packages, etc.
+
+            result = None
+            try:
+                result = subprocess.run(
+                    command,
+                    shell=shell,
+                    capture_output=True,
+                    text=True,
+                    cwd=self._file_root,
+                    env=env,  # Use environment with Rich suppression
+                    timeout=default_timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return json.dumps({
+                    "error": "timeout",
+                    "tool": "execute_command",
+                    "timeout_seconds": default_timeout,
+                })
 
             if result.returncode == 0:
                 return result.stdout.strip()
             else:
-                return f"Error: {result.stderr.strip()}"
+                return json.dumps({
+                    "error": result.stderr.strip() or "command_failed",
+                    "tool": "execute_command",
+                    "returncode": result.returncode,
+                })
         except Exception as e:
-            return f"Error executing command: {str(e)}"
+            return json.dumps({
+                "error": f"Error executing command: {str(e)}",
+                "tool": "execute_command",
+            })
 
     def add_summary_note(self, category: str, content: str) -> str:
         self.summary_notes_tool.add_summary(category, content)
