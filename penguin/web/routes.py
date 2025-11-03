@@ -253,10 +253,12 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
         if not include_ui:
             return
         try:
-            if event_type in {"message", "stream_chunk", "human_message"}:
+            if event_type in {"message", "stream_chunk", "human_message", "tool"}:
                 payload = dict(data or {})
                 payload.setdefault("agent_id", getattr(core.conversation_manager, "current_agent_id", None))
-                payload.setdefault("message_type", "message")
+                # Don't override message_type for tool events
+                if event_type != "tool":
+                    payload.setdefault("message_type", "message")
                 await _send(event_type, payload)
         except Exception:
             pass
@@ -979,23 +981,33 @@ async def stream_chat(
                 # Send buffer if it reaches size threshold
                 if len(send_buffer) >= BUFFER_SEND_SIZE:
                     logger.debug(f"[Sender Task] Buffer reached size {BUFFER_SEND_SIZE}. Sending: '{send_buffer}'")
-                    await websocket.send_json({"event": "token", "data": {"token": send_buffer}})
-                    send_buffer = "" # Reset buffer
+                    try:
+                        await websocket.send_json({"event": "token", "data": {"token": send_buffer}})
+                        send_buffer = "" # Reset buffer
+                    except (WebSocketDisconnect, RuntimeError) as e:
+                        # Client disconnected or connection already closed
+                        logger.info(f"[Sender Task] Client disconnected during send: {e}")
+                        break
 
             except asyncio.TimeoutError:
                 # Timeout occurred - send buffer if it has content
                 if send_buffer:
                     logger.debug(f"[Sender Task] Timeout reached. Sending buffer: '{send_buffer}'")
-                    await websocket.send_json({"event": "token", "data": {"token": send_buffer}})
-                    send_buffer = ""
+                    try:
+                        await websocket.send_json({"event": "token", "data": {"token": send_buffer}})
+                        send_buffer = ""
+                    except (WebSocketDisconnect, RuntimeError) as e:
+                        # Client disconnected or connection already closed
+                        logger.info(f"[Sender Task] Client disconnected during timeout send: {e}")
+                        break
                 # Continue waiting for next token or stop signal
                 continue
 
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("[Sender Task] WebSocket closed while sending/waiting.")
+            except (websockets.exceptions.ConnectionClosed, WebSocketDisconnect):
+                logger.info("[Sender Task] WebSocket closed by client.")
                 break # Exit if connection is closed
             except Exception as e:
-                logger.error(f"[Sender Task] Error: {e}", exc_info=True)
+                logger.error(f"[Sender Task] Unexpected error: {e}", exc_info=True)
                 break
 
         logger.info("[Sender Task] Exiting.")
@@ -1054,9 +1066,27 @@ async def stream_chat(
                     logger.error(f"Error sending progress update: {e}")
 
             process_task = None
+            ui_event_handler = None
             try:
                 if hasattr(core, "register_progress_callback"):
                     core.register_progress_callback(progress_callback)
+
+                # Register UI event handler for tool events and other UI updates
+                async def _stream_ui_event_handler(event_type: str, data: Dict[str, Any]):
+                    try:
+                        if event_type == "tool":
+                            # Forward tool events directly to client
+                            await websocket.send_json({"event": "tool", "data": data})
+                        elif event_type == "message" and data.get("message_type") == "action":
+                            # Also forward action messages for backwards compatibility
+                            await websocket.send_json({"event": "message", "data": data})
+                    except Exception as e:
+                        logger.error(f"Error sending UI event via WebSocket: {e}")
+
+                ui_event_handler = _stream_ui_event_handler
+                if hasattr(core, "register_ui"):
+                    core.register_ui(ui_event_handler)
+                    logger.debug("Registered UI event handler for tool events")
 
                 await websocket.send_json({"event": "start", "data": {}}) # Signal start to client
                 logger.info("Sent 'start' event to client.")
@@ -1122,14 +1152,28 @@ async def stream_chat(
                 }
                 if include_reasoning and hasattr(core, "_streaming_state"):
                     complete_payload["reasoning"] = core._streaming_state.get("reasoning_content", "")
-                await websocket.send_json({"event": "complete", "data": complete_payload})
-                logger.info("Sent 'complete' event to client.")
 
+                try:
+                    await websocket.send_json({"event": "complete", "data": complete_payload})
+                    logger.info("Sent 'complete' event to client.")
+                except (WebSocketDisconnect, RuntimeError) as e:
+                    # Client disconnected before we could send complete event
+                    logger.info(f"Client disconnected before complete event could be sent: {e}")
+
+            except WebSocketDisconnect as disconnect_err:
+                # Client disconnected during processing - this is normal
+                logger.info(f"Client disconnected during message processing: {disconnect_err}")
+                # Ensure tasks are cancelled
+                if process_task and not process_task.done(): process_task.cancel()
+                if sender_task and not sender_task.done(): sender_task.cancel()
+                break # Exit loop on disconnect
             except Exception as process_err:
                 logger.error(f"Error during message processing: {process_err}", exc_info=True)
                 # Try to send error to client if possible
-                if websocket.client_state == websocket.client_state.CONNECTED:
+                try:
                     await websocket.send_json({"event": "error", "data": {"message": str(process_err)}})
+                except (WebSocketDisconnect, RuntimeError):
+                    logger.info("Could not send error to client - connection closed")
                 # Ensure tasks are cancelled on error
                 if process_task and not process_task.done(): process_task.cancel()
                 if sender_task and not sender_task.done(): sender_task.cancel()
@@ -1138,6 +1182,13 @@ async def stream_chat(
                 # Clean up progress callback
                 if hasattr(core, "progress_callbacks") and progress_callback in core.progress_callbacks:
                     core.progress_callbacks.remove(progress_callback)
+                # Clean up UI event handler
+                if ui_event_handler and hasattr(core, "unregister_ui"):
+                    try:
+                        core.unregister_ui(ui_event_handler)
+                        logger.debug("Unregistered UI event handler")
+                    except Exception as e:
+                        logger.warning(f"Error unregistering UI event handler: {e}")
                 # Ensure tasks are awaited/cancelled if they are still running (e.g., due to early exit)
                 if process_task and not process_task.done(): process_task.cancel()
                 if sender_task and not sender_task.done(): sender_task.cancel()

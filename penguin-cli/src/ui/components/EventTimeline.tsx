@@ -12,7 +12,7 @@ interface EventTimelineProps {
   showReasoning?: boolean;
 }
 
-export function EventTimeline({ messages, streamingText = '', toolEvents = [], pageSize = 50, pageOffset = 0, showReasoning = false }: EventTimelineProps) {
+export const EventTimeline = React.memo(function EventTimeline({ messages, streamingText = '', toolEvents = [], pageSize = 50, pageOffset = 0, showReasoning = false }: EventTimelineProps) {
   // Build a simple timeline: messages (by timestamp), tool end events, and current stream at end
   const messageEvents: TimelineEvent[] = messages.map((m) => ({
     id: m.id,
@@ -56,7 +56,7 @@ export function EventTimeline({ messages, streamingText = '', toolEvents = [], p
       ))}
     </Box>
   );
-}
+});
 
 function EventItem({ event, index, showReasoning }: { event: TimelineEvent; index: number; showReasoning?: boolean }) {
   switch (event.kind) {

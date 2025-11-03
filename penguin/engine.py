@@ -12,6 +12,7 @@ remains test‑friendly and avoids hidden globals.
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import asyncio
+import time
 import multiprocessing as mp
 from typing import Any, Callable, Coroutine, List, Optional, Sequence, Dict, Awaitable, Tuple
 
@@ -766,6 +767,16 @@ class Engine:
                     status=action_result["status"],
                 )
                 if hasattr(cm, 'core') and cm.core:
+                    # Emit tool event for chronological timeline display
+                    await cm.core.emit_ui_event("tool", {
+                        "id": f"{action_result['action_name']}-{int(time.time() * 1000)}",
+                        "phase": "end",
+                        "action": action_result['action_name'],
+                        "ts": int(time.time() * 1000),
+                        "status": action_result.get('status', 'completed'),
+                        "result": str(action_result['output'])[:200]  # Truncate for display
+                    })
+                    # Also emit message event for backwards compatibility
                     await cm.core.emit_ui_event("message", {
                         "role": "system",
                         "content": f"Tool Result ({action_result['action_name']}):\n{action_result['output']}",
@@ -881,6 +892,16 @@ class Engine:
 
                         # Only emit if not hidden
                         if not hide_tool_results:
+                            # Emit tool event for chronological timeline display
+                            await cm.core.emit_ui_event("tool", {
+                                "id": f"{action_result['action_name']}-{int(time.time() * 1000)}",
+                                "phase": "end",
+                                "action": action_result['action_name'],
+                                "ts": int(time.time() * 1000),
+                                "status": action_result.get('status', 'completed'),
+                                "result": str(action_result['output'])[:200]  # Truncate for display
+                            })
+                            # Also emit message event for backwards compatibility
                             await cm.core.emit_ui_event("message", {
                                 "role": "system",
                                 "content": f"Tool Result ({action_result['action_name']}):\n{action_result['output']}",
