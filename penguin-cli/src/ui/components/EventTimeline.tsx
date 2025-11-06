@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, Static } from 'ink';
 import type { Message, ToolEventNormalized, TimelineEvent } from '../../core/types';
 import { Markdown } from './Markdown.js';
 
@@ -10,14 +10,24 @@ interface EventTimelineProps {
   pageSize?: number;
   pageOffset?: number; // 0 = latest
   showReasoning?: boolean;
+  header?: React.ReactNode; // Optional header (banner) to display as first Static item
 }
 
-export const EventTimeline = React.memo(function EventTimeline({ messages, streamingText = '', toolEvents = [], pageSize = 50, pageOffset = 0, showReasoning = false }: EventTimelineProps) {
-  // Build a simple timeline: messages (by timestamp), tool end events, and current stream at end
-  const messageEvents: TimelineEvent[] = messages.map((m) => ({
+export const EventTimeline = React.memo(function EventTimeline({ messages, streamingText = '', toolEvents = [], pageSize = 50, pageOffset = 0, showReasoning = false, header }: EventTimelineProps) {
+  // Split into completed (static) vs streaming (dynamic) events
+  // Completed: all messages except potentially the last if streaming
+  // Streaming: current streaming text if present
+
+  const isStreaming = streamingText.length > 0;
+
+  // All completed messages
+  const completedMessages = messages;
+  const messageEvents: TimelineEvent[] = completedMessages.map((m) => ({
     id: m.id,
     kind: 'message',
-    ts: m.timestamp,
+    // Ensure timestamp is a number for proper sorting with tool events
+    // Backend may send ISO strings, frontend creates with Date.now()
+    ts: typeof m.timestamp === 'string' ? new Date(m.timestamp).getTime() : m.timestamp,
     role: m.role,
     content: m.content,
     reasoning: m.reasoning,
@@ -27,20 +37,45 @@ export const EventTimeline = React.memo(function EventTimeline({ messages, strea
     .filter((e) => e.phase === 'end')
     .map((e) => ({ ...e, kind: 'tool' as const }));
 
-  const streamingEvent: TimelineEvent[] = streamingText
-    ? [{ id: 'stream-current', kind: 'stream', ts: Date.now(), role: 'assistant', text: streamingText } as any]
-    : [];
-
-  const all: TimelineEvent[] = [...messageEvents, ...toolEndEvents, ...streamingEvent]
+  // All completed events (messages + tools), sorted chronologically
+  const completedEvents: TimelineEvent[] = [...messageEvents, ...toolEndEvents]
     .sort((a, b) => a.ts - b.ts);
 
-  const total = all.length;
+  // Pagination for completed events
+  const total = completedEvents.length;
   const pages = Math.max(1, Math.ceil(total / pageSize));
   const clampedOffset = Math.max(0, Math.min(pageOffset, pages - 1));
   const start = Math.max(0, total - pageSize * (clampedOffset + 1));
   const end = total - pageSize * clampedOffset;
-  const events: TimelineEvent[] = all.slice(start, end);
+  const visibleCompleted = completedEvents.slice(start, end);
   const hiddenOlder = start;
+
+  // Current streaming event (if any) - rendered separately in dynamic Box
+  const streamingEvent: TimelineEvent | null = isStreaming
+    ? ({ id: 'stream-current', kind: 'stream', ts: Date.now(), role: 'assistant', text: streamingText } as any)
+    : null;
+
+  // Build array of React elements for Static component (Gemini CLI pattern)
+  // Include header as first element if provided
+  const staticItems: React.ReactNode[] = [];
+
+  if (header) {
+    staticItems.push(
+      <React.Fragment key="header">{header}</React.Fragment>
+    );
+  }
+
+  // Add all visible event items
+  visibleCompleted.forEach((ev, idx) => {
+    staticItems.push(
+      <EventItem
+        key={`${ev.kind}:${ev.id}:${idx}`}
+        index={idx + 1 + start}
+        event={ev}
+        showReasoning={showReasoning}
+      />
+    );
+  });
 
   return (
     <Box flexDirection="column" gap={1}>
@@ -51,9 +86,17 @@ export const EventTimeline = React.memo(function EventTimeline({ messages, strea
           </Text>
         </Box>
       )}
-      {events.map((ev, idx) => (
-        <EventItem key={`${ev.kind}:${ev.id}:${idx}`} index={idx + 1 + start} event={ev} showReasoning={showReasoning} />
-      ))}
+
+      {/* Single Static component with header + all events (Gemini CLI pattern) */}
+      {/* This ensures banner always appears first and never scrolls away */}
+      <Static items={staticItems}>
+        {(item) => item}
+      </Static>
+
+      {/* Dynamic box: only streaming event can update */}
+      {streamingEvent && (
+        <EventItem key="stream-current" index={total + 1} event={streamingEvent} showReasoning={showReasoning} />
+      )}
     </Box>
   );
 });

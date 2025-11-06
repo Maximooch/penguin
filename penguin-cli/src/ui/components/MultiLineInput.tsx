@@ -119,19 +119,35 @@ export function MultiLineInput({
       return;
     }
 
-    // Backspace
+    // IMPORTANT: Check modified keys BEFORE unmodified keys
+
+    // Command/Ctrl + Backspace: Delete to start of line
+    if ((key.backspace || key.delete) && (key.meta || key.ctrl)) {
+      if (cursorCol > 0) {
+        const currentLine = lines[cursorLine];
+        setLines(prev => {
+          const newLines = [...prev];
+          newLines[cursorLine] = currentLine.substring(cursorCol);
+          return newLines;
+        });
+        setCursorCol(0);
+      }
+      return;
+    }
+
+    // Backspace (regular, no modifiers)
     if (key.backspace || key.delete) {
       if (cursorCol === 0 && cursorLine > 0) {
         // Join with previous line
+        const prevLineLength = lines[cursorLine - 1].length;
         setLines(prev => {
           const newLines = [...prev];
-          const prevLineLength = newLines[cursorLine - 1].length;
           newLines[cursorLine - 1] += newLines[cursorLine];
           newLines.splice(cursorLine, 1);
           return newLines;
         });
         setCursorLine(prev => prev - 1);
-        setCursorCol(lines[cursorLine - 1].length);
+        setCursorCol(prevLineLength);
       } else if (cursorCol > 0) {
         // Delete character
         setLines(prev => {
@@ -146,7 +162,18 @@ export function MultiLineInput({
       return;
     }
 
-    // Arrow keys
+    // Command/Ctrl + Left/Right: Jump to start/end of line
+    if (key.leftArrow && (key.meta || key.ctrl)) {
+      setCursorCol(0);
+      return;
+    }
+
+    if (key.rightArrow && (key.meta || key.ctrl)) {
+      setCursorCol(lines[cursorLine].length);
+      return;
+    }
+
+    // Arrow keys (up/down - no left/right modifiers supported)
     if (key.upArrow && cursorLine > 0) {
       setCursorLine(prev => prev - 1);
       setCursorCol(Math.min(cursorCol, lines[cursorLine - 1].length));
@@ -159,6 +186,7 @@ export function MultiLineInput({
       return;
     }
 
+    // Regular arrow keys (left/right)
     if (key.leftArrow && cursorCol > 0) {
       setCursorCol(prev => prev - 1);
       return;
@@ -169,8 +197,44 @@ export function MultiLineInput({
       return;
     }
 
-    // Regular character input
+    // Regular character input (including pasted text with newlines)
     if (input && !key.ctrl && !key.meta) {
+      // Check if input contains newlines (pasted text)
+      if (input.includes('\n')) {
+        const pastedLines = input.split('\n');
+        setLines(prev => {
+          const newLines = [...prev];
+          const currentLine = newLines[cursorLine];
+          const before = currentLine.substring(0, cursorCol);
+          const after = currentLine.substring(cursorCol);
+
+          // Insert first line of paste
+          newLines[cursorLine] = before + pastedLines[0];
+
+          // Insert middle lines
+          for (let i = 1; i < pastedLines.length - 1; i++) {
+            newLines.splice(cursorLine + i, 0, pastedLines[i]);
+          }
+
+          // Insert last line + remaining text
+          if (pastedLines.length > 1) {
+            const lastPasted = pastedLines[pastedLines.length - 1];
+            newLines.splice(cursorLine + pastedLines.length - 1, 0, lastPasted + after);
+          } else {
+            newLines[cursorLine] = before + pastedLines[0] + after;
+          }
+
+          return newLines;
+        });
+
+        // Move cursor to end of pasted text
+        const lastLine = pastedLines[pastedLines.length - 1];
+        setCursorLine(cursorLine + pastedLines.length - 1);
+        setCursorCol(lastLine.length);
+        return;
+      }
+
+      // Regular single character input
       setLines(prev => {
         const newLines = [...prev];
         newLines[cursorLine] =

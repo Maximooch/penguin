@@ -776,14 +776,8 @@ class Engine:
                         "status": action_result.get('status', 'completed'),
                         "result": str(action_result['output'])[:200]  # Truncate for display
                     })
-                    # Also emit message event for backwards compatibility
-                    await cm.core.emit_ui_event("message", {
-                        "role": "system",
-                        "content": f"Tool Result ({action_result['action_name']}):\n{action_result['output']}",
-                        "category": MessageCategory.SYSTEM_OUTPUT.name,
-                        "message_type": "action",
-                        "metadata": {"action_name": action_result['action_name']}
-                    })
+                    # Note: Removed duplicate "message" event emission - tool events are now
+                    # properly handled by EventTimeline component
                     await asyncio.sleep(0.01)
 
                 # For the next request, prefer forcing this tool_choice name if applicable
@@ -901,14 +895,8 @@ class Engine:
                                 "status": action_result.get('status', 'completed'),
                                 "result": str(action_result['output'])[:200]  # Truncate for display
                             })
-                            # Also emit message event for backwards compatibility
-                            await cm.core.emit_ui_event("message", {
-                                "role": "system",
-                                "content": f"Tool Result ({action_result['action_name']}):\n{action_result['output']}",
-                                "category": MessageCategory.SYSTEM_OUTPUT.name,  # Convert enum to string
-                                "message_type": "action",
-                                "metadata": {"action_name": action_result['action_name']}
-                            })
+                            # Note: Removed duplicate "message" event emission - tool events are now
+                            # properly handled by EventTimeline component
                             await asyncio.sleep(0.01)  # Yield control to allow UI to render
                     except Exception as e:
                         logger.warning(f"Failed to emit tool result UI event: {e}")

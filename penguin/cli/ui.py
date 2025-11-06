@@ -243,6 +243,10 @@ class CLIRenderer:
                 await self._handle_status_event(data)
             elif event_type == "error":
                 await self._handle_error_event(data)
+            elif event_type == "tool":
+                # Tool events are handled by the Ink CLI EventTimeline component
+                # They're passed through to the frontend, so we just acknowledge them here
+                logger.debug(f"Tool event received: {data.get('action', 'unknown')}")
             else:
                 logger.warning(f"Unknown event type: {event_type}")
             

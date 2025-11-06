@@ -47,9 +47,10 @@ import type { ToolEventNormalized } from '../../core/types.js';
 
 interface ChatSessionProps {
   conversationId?: string;
+  header?: React.ReactNode; // Optional header (banner) to display as first item
 }
 
-export function ChatSession({ conversationId: propConversationId }: ChatSessionProps) {
+export function ChatSession({ conversationId: propConversationId, header }: ChatSessionProps) {
   const { exit } = useApp();
   const [inputKey, setInputKey] = useState(0);
   const [isExiting, setIsExiting] = useState(false);
@@ -120,18 +121,30 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
       clientRef.current.sendMessage(message, options);
     }
   };
-  const { messages, addUserMessage, addAssistantMessage, clearMessages } = useMessageHistory();
-  const { activeTool, completedTools, clearTools, addActionResults } = useToolExecution();
-  const { events: toolEvents, addEvent: addToolEvent, addFromActionResults: addToolEventsFromActionResults, clear: clearToolEvents } = useToolEvents();
+  const { messages, addUserMessage, addAssistantMessage, addMessage, clearMessages } = useMessageHistory();
+  const { clearTools } = useToolExecution();
+  const { events: toolEvents, addEvent: addToolEvent, clear: clearToolEvents } = useToolEvents();
   const { progress, updateProgress, resetProgress, completeProgress } = useProgress();
+
+  // Track stream start timestamp to ensure tools sort after their triggering message
+  const streamStartTimestampRef = useRef<number | null>(null);
 
   const { streamingText, isStreaming, processToken, complete, reset } = useStreaming({
     onComplete: (finalText: string) => {
       // Add completed streaming message to history with reasoning if present
       if (finalText) {
         // console.error(`[ChatSession] onComplete - finalText length: ${finalText.length}, starts with: "${finalText.substring(0, 100)}"`);
-        addAssistantMessage(finalText, reasoningRef.current || undefined);
+        // Use stream start timestamp so tool events (which happen during streaming) sort after this message
+        const messageTimestamp = streamStartTimestampRef.current || Date.now();
+        addMessage({
+          id: `assistant-${Date.now()}`,
+          role: 'assistant',
+          content: finalText,
+          timestamp: messageTimestamp,
+          reasoning: reasoningRef.current || undefined,
+        });
         reasoningRef.current = ''; // Clear reasoning for next message
+        streamStartTimestampRef.current = null; // Reset for next stream
         reset(); // Clear streaming text immediately after adding to history
       }
     },
@@ -145,6 +158,8 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     client.callbacks.onToken = (token: string) => {
       // Optional debug; avoid noisy stdout
       logger.debug(`[ChatSession ${propConversationId}] token`, { len: token.length });
+      // Note: Stream start timestamp is now captured when sending message,
+      // not on first token, to ensure tool events sort after the message
       processToken(token);
     };
 
@@ -173,22 +188,12 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
 
     client.callbacks.onComplete = (actionResults: any) => {
       completeProgress();
-      if (actionResults && actionResults.length > 0) {
-        // Map backend format to frontend ActionResult format
-        const mappedResults = actionResults.map((ar: any) => ({
-          action: ar.action_name || ar.action,
-          result: ar.output || ar.result,
-          status: ar.status,
-          timestamp: ar.timestamp || Date.now(),
-        }));
-        addActionResults(mappedResults);
-        // Normalized tool events for timeline
-        addToolEventsFromActionResults(mappedResults);
-      }
-      complete();
+      // Note: Tool events are now emitted directly from backend as "tool" events
+      // and handled by onToolEvent callback. No need to create them from action_results here.
+      complete(); // Finalize streaming message
       setTimeout(() => resetProgress(), 1000);
     };
-  }, [propConversationId, processToken, complete, addActionResults, updateProgress, completeProgress, resetProgress]);
+  }, [propConversationId, processToken, complete, updateProgress, completeProgress, resetProgress]);
 
   const { switchToDashboard, switchConversation, tabs, activeTabId, switchTab } = useTab();
 
@@ -941,6 +946,8 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     if (isConnected && !isStreaming) {
       addUserMessage(trimmed);
       clearTools(); // Clear previous tool executions
+      // Capture stream start timestamp BEFORE sending (so tool events sort after message)
+      streamStartTimestampRef.current = Date.now();
       sendMessage(trimmed);
       // Force input to remount and clear by changing its key
       setInputKey((prev) => prev + 1);
@@ -1000,18 +1007,17 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
     } else {
       addAssistantMessage(`❌ Failed to change model. Please try again or check your configuration.`);
     }
-  }, [addAssistantMessage, propConversationId, processToken, updateProgress, completeProgress, addActionResults]);
+  }, [addAssistantMessage, propConversationId, processToken, updateProgress, completeProgress]);
 
   return (
     <Box flexDirection="column" gap={1}>
       {/* Main content */}
       {!showSessionPicker && (
         <>
-          {/* Unified status panel (connection + progress + active tool) */}
+          {/* Unified status panel (connection + progress) */}
           <StatusPanel
             isConnected={isConnected}
             error={error}
-            activeTool={activeTool}
             progress={progress}
           />
 
@@ -1023,14 +1029,10 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
         pageSize={timelinePageSize}
         pageOffset={timelinePageOffset}
         showReasoning={showReasoning}
+        header={header}
       />
 
-      {/* Completed tools (active tool shown in StatusPanel) */}
-      {completedTools.length > 0 && (
-        <Box flexDirection="column" marginY={0}>
-          <ToolExecutionList tools={completedTools.filter((t) => t.status !== 'running' && t.status !== 'pending')} />
-        </Box>
-      )}
+      {/* Tool results now displayed inline in EventTimeline */}
 
       {/* Input prompt - Multi-line with autocomplete */}
       <Box minHeight={8}>

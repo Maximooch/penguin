@@ -48,6 +48,7 @@ class EventType(Enum):
     # Action/Tool events
     ACTION = "action"
     ACTION_RESULT = "action_result"
+    TOOL = "tool"  # Tool events for chronological timeline display
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
 

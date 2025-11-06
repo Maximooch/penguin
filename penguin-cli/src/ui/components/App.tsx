@@ -22,13 +22,21 @@ export function App() {
   // Get workspace from current directory
   const workspace = process.cwd().split('/').pop() || process.cwd();
 
+  // Render banner (only for chat tab, passed to ChatSession)
+  const banner = showBanner && activeTab?.type === 'chat' ? (
+    <BannerRenderer
+      version="0.1.0"
+      workspace={workspace}
+    />
+  ) : undefined;
+
   // Render active tab content
   const renderTabContent = () => {
     if (!activeTab) return null;
 
     switch (activeTab.type) {
       case 'chat':
-        return <ChatSession conversationId={currentConversationId} />;
+        return <ChatSession conversationId={currentConversationId} header={banner} />;
       case 'dashboard':
         return <Dashboard />;
       case 'agents':
@@ -40,14 +48,6 @@ export function App() {
 
   return (
     <Box flexDirection="column" padding={1}>
-      {/* Only show banner on chat tab to avoid duplication when switching */}
-      {showBanner && activeTab?.type === 'chat' && (
-        <BannerRenderer
-          version="0.1.0"
-          workspace={workspace}
-        />
-      )}
-
       {/* Tab bar */}
       <TabBar />
 
