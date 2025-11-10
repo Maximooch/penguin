@@ -18,6 +18,20 @@ Goal: make Run Mode predictable, traceable, and resilient by wiring spec‑drive
 
 ---
 
+### Three‑phase adoption plan (orchestration)
+- Phase 1: NetworkX (native DAG in Penguin)
+  - Build/maintain Blueprint DAG; frontier selection with tie‑breakers; continuous mode advances via DAG.
+  - Maps to this roadmap’s Phase 1 (parsing/metadata) and Phase 5 (scheduler).
+- Phase 2: Temporal (durable ITUV)
+  - Make RunMode loops and ITUV phases durable with retries, backoff, timers, signals/queries.
+  - Introduce under a feature flag without breaking native mode.
+- Phase 3: PenguinGraph (first‑class graph runtime)
+  - A thin graph API with backends: NetworkX (native), Temporal (durable), future custom backends.
+  - Keeps Engine/tools intact while enabling editable graphs, richer capabilities, and swap‑able backends.
+  - Leverage Link
+
+---
+
 ### Phase 1 – Blueprint‑driven task sync (docs → structured “blueprint items” → tasks)
 Outcomes: parse markdown/docs into structured blueprint items; maintain a doc→task→commit→test graph; auto‑create/update tasks and flag drift.
 
@@ -26,18 +40,18 @@ Changes
   - Extract BlueprintItem blocks: id (e.g., REQ‑123), title, description, acceptance criteria (AC), usage recipes (CLI/API examples), trace links (files/modules).
   - Support markdown conventions (headings, fenced blocks, AC lists).
   - Support dependency metadata: `depends_on: [REQ-101, REQ-202]`, optional `milestone: true`, optional `sequence: "alpha|beta|rc"` for soft ordering.
--  - Support scheduling/tie-breaker metadata:
--    - `priority: 1..5` (higher → earlier)
--    - `effort: 1..5` (lower → earlier when equal priority)
--    - `value: 1..5` (higher → earlier)
--    - `risk: 1..5` (lower → earlier)
--    - `due_date: "YYYY-MM-DD"`
--    - Soft ordering: `sequence: "alpha|beta|rc|N"` (lexicographic or numeric)
--  - Support agent routing metadata:
--    - `agent_role: "planner|implementer|qa|..."` (maps to coordinator roles)
--    - `required_tools: ["apply_diff", "grep_search"]`
--    - `skills: ["python", "fastapi", "react"]`
--    - `parallelizable: true|false` and optional `batch: "group-name"`
+  - Support scheduling/tie-breaker metadata:
+    - `priority: 1..5` (higher → earlier)
+    - `effort: 1..5` (lower → earlier when equal priority)
+    - `value: 1..5` (higher → earlier)
+    - `risk: 1..5` (lower → earlier)
+    - `due_date: "YYYY-MM-DD"`
+    - Soft ordering: `sequence: "alpha|beta|rc|N"` (lexicographic or numeric)
+  - Support agent routing metadata:
+    - `agent_role: "planner|implementer|qa|..."` (maps to coordinator roles)
+    - `required_tools: ["apply_diff", "grep_search"]`
+    - `skills: ["python", "fastapi", "react"]`
+    - `parallelizable: true|false` and optional `batch: "group-name"`
 - [ ] `penguin/project/models.py`
   - Add `BlueprintItem` model; add fields on `Task`: `blueprint_id: Optional[str]`, `blocked_by: list[str]`, `acceptance_criteria: list[str]`, `usage_recipe: Optional[str or dict]`, `milestone: bool`, `sequence: Optional[str]`, `priority: int`, `effort: Optional[int]`, `value: Optional[int]`, `risk: Optional[int]`, `due_date: Optional[date]`, `agent_role: Optional[str]`, `required_tools: list[str]`, `skills: list[str]`, `parallelizable: bool`, `batch: Optional[str]`.
 - [ ] `penguin/project/manager.py`
@@ -203,6 +217,7 @@ Acceptance
   - `scheduler.ready_parallelism` (default: 1)
   - `scheduler.on_failure` (default: `pause_dependents`)
   - `scheduler.max_frontier` (default: 20)
+  - `orchestration.backend` (default: `native`; options: `native|temporal|penguin_graph`)
 
 Example (initial defaults):
 
@@ -239,6 +254,8 @@ scheduler:
   ready_parallelism: 1
   on_failure: pause_dependents
   max_frontier: 20
+orchestration:
+  backend: native
 verification:
   strict: true
 ```
