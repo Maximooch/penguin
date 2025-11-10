@@ -1,0 +1,294 @@
+## Penguin RunMode + Project Management Roadmap (Spec‑Driven + ITUV)
+
+Goal: make Run Mode predictable, traceable, and resilient by wiring spec‑driven development into task creation/selection and executing each task through a formal ITUV lifecycle (Implement → Test → Use → Verify), with clear gates, events, and artifacts.
+
+### Guiding principles
+- Small, composable increments; ship value each milestone.
+- Source of truth: docs → blueprint items → tasks → commits → tests → verification.
+- UI/CLI should surface status in one line; details available on drill‑down.
+- Strong observability: events, artifacts, telemetry, and reproducible runs.
+
+---
+
+### Phase 0 – Quick wins and scaffolding
+- [x] Add lightweight CLI shortcuts for small tasks
+  - `fix` (alias of implement), `research` (alias of review) in `penguin/cli/commands.yml`
+- [ ] Document current RunMode event flow and UI consumption
+  - Output: short diagram and event key list in `context/`
+
+---
+
+### Phase 1 – Blueprint‑driven task sync (docs → structured “blueprint items” → tasks)
+Outcomes: parse markdown/docs into structured blueprint items; maintain a doc→task→commit→test graph; auto‑create/update tasks and flag drift.
+
+Changes
+- [ ] `penguin/project/spec_parser.py`
+  - Extract BlueprintItem blocks: id (e.g., REQ‑123), title, description, acceptance criteria (AC), usage recipes (CLI/API examples), trace links (files/modules).
+  - Support markdown conventions (headings, fenced blocks, AC lists).
+  - Support dependency metadata: `depends_on: [REQ-101, REQ-202]`, optional `milestone: true`, optional `sequence: "alpha|beta|rc"` for soft ordering.
+-  - Support scheduling/tie-breaker metadata:
+-    - `priority: 1..5` (higher → earlier)
+-    - `effort: 1..5` (lower → earlier when equal priority)
+-    - `value: 1..5` (higher → earlier)
+-    - `risk: 1..5` (lower → earlier)
+-    - `due_date: "YYYY-MM-DD"`
+-    - Soft ordering: `sequence: "alpha|beta|rc|N"` (lexicographic or numeric)
+-  - Support agent routing metadata:
+-    - `agent_role: "planner|implementer|qa|..."` (maps to coordinator roles)
+-    - `required_tools: ["apply_diff", "grep_search"]`
+-    - `skills: ["python", "fastapi", "react"]`
+-    - `parallelizable: true|false` and optional `batch: "group-name"`
+- [ ] `penguin/project/models.py`
+  - Add `BlueprintItem` model; add fields on `Task`: `blueprint_id: Optional[str]`, `blocked_by: list[str]`, `acceptance_criteria: list[str]`, `usage_recipe: Optional[str or dict]`, `milestone: bool`, `sequence: Optional[str]`, `priority: int`, `effort: Optional[int]`, `value: Optional[int]`, `risk: Optional[int]`, `due_date: Optional[date]`, `agent_role: Optional[str]`, `required_tools: list[str]`, `skills: list[str]`, `parallelizable: bool`, `batch: Optional[str]`.
+- [ ] `penguin/project/manager.py`
+  - Add `sync_blueprints(project_id, sources)` and `reconcile_tasks_from_blueprints(...)`.
+  - Maintain a dependency DAG for tasks: validate edges, detect cycles, persist `blocked_by`, compute ready/frontier set.
+  - Drift detection: blueprint changed since last sync; tasks outdated/absent; tests missing for AC.
+- [ ] CLI
+  - `project blueprint sync [--project PROJECT_ID] [--path PATH_GLOB]`
+  - `project blueprint status [PROJECT_ID]`
+  - `task depends add <task_id> <dep_task_id>` / `task depends remove <task_id> <dep_task_id>` / `task depends list <task_id>`
+  - `project graph show [--format dot|json]` (export DAG for visualization)
+- [ ] Tests
+  - Unit: parser coverage for headings/AC/recipes; manager reconciliation.
+  - E2E: sync on a sample doc creates tasks with AC and usage recipe attached.
+
+Acceptance
+- Can parse a doc with ≥3 blueprint items, create/update tasks with AC and usage recipes.
+- Drift status shows which tasks are stale and which AC lack test coverage.
+
+---
+
+### Phase 2 – Prompt enrichment in Run Mode (contextual, blueprint‑aware execution)
+Outcomes: RunMode automatically injects Blueprint section + AC into the execution prompt and telemetry, improving determinism and verifiability.
+
+Changes
+- [ ] `penguin/run_mode.py`
+  - When executing a task with `blueprint_id`, append a “Blueprint” and “Acceptance Criteria” section to the task prompt (hide internal markers from UI).
+  - Include `context.metadata.blueprint_id` and `context.metadata.phase` in events.
+- [ ] `penguin/core.py`
+  - Thread `blueprint_id` into RunMode context when called from project manager or CLI.
+- [ ] `penguin/engine.py`
+  - Ensure `message_callback` preserves order: assistant → tool output → status.
+
+Acceptance
+- RunMode prompt contains blueprint+AC when task has `blueprint_id`.
+- Events include `blueprint_id` and are consumable by CLI/TUI without duplication.
+
+---
+
+### Phase 3 – ITUV lifecycle model and gates (Implement → Test → Use → Verify)
+Outcomes: every task can run through ITUV phases with clear success criteria, artifacts, and status transitions.
+
+Changes
+- [ ] `penguin/project/models.py`
+  - Add `TaskPhase = IMPLEMENT|TEST|USE|VERIFY`, `phase_status`, `phase_timestamps`, `artifacts: dict`.
+- [ ] `penguin/engine.py`
+  - Add optional `phase: str` to `run_task(...)` and include `phase` in STARTED/PROGRESSED/COMPLETED/FAILED events.
+- [ ] `penguin/run_mode.py`
+  - New orchestration method: given a task (or Blueprint), run sequential phases:
+    - Implement: produce code per AC.
+    - Test: run targeted tests for AC/blueprint markers and gather results.
+    - Use: execute usage recipe (CLI/API flow) to demonstrate behavior.
+    - Verify: check AC satisfied, tests pass, usage recipe success; attach summary.
+  - Phase timeboxes and retry rules; stop on failure, emit `clarification_needed`.
+- [ ] CLI
+  - `task ituv start <task_id>`
+  - `task ituv next [<task_id>]` (advance with summary)
+  - `task ituv verify <task_id>` (re‑run VERIFY gate standalone)
+- [ ] `penguin/project/validation_manager.py`
+  - Implement VERIFY gate: AC coverage, test status, usage recipe success, lint/type checks (configurable).
+
+Acceptance
+- A task with `blueprint_id` completes IMPLEMENT+TEST+USE+VERIFY, producing artifacts and marking the task completed when gates pass.
+
+---
+
+### Phase 4 – Targeted Test Runner and Usage Recipe Runner
+Outcomes: deterministic validation tied to blueprint/AC.
+
+Changes
+- [ ] `penguin/project/validation_manager.py`
+  - Pytest integration: run `pytest -q -k "blueprint_id or AC markers"`; parse results.
+  - Accept recipe types: `shell`, `http`, `python` with a safe runner and timeout.
+  - Collect artifacts: stdout/stderr, HTTP transcripts, exit codes, screenshots/logs (if web).
+- [ ] `penguin/tools` (optional)
+  - Minimal `exec_usage_recipe` tool callable from Engine when needed.
+
+Acceptance
+- For a sample Blueprint, AC tests are invoked and usage recipe is executed; artifacts persist on the task record.
+
+---
+
+### Phase 5 – Scheduler & resilience upgrades for Continuous mode
+Outcomes: better task selection and safe long‑running autonomy.
+
+Changes
+- [ ] `penguin/project/manager.py`
+  - DAG‑aware scheduling:
+    - `get_ready_tasks_async(project_id)` returns the frontier (in‑degree 0) filtered by status and phase gates.
+    - Topological selection with configurable tie‑breakers: priority DESC, due_date ASC, sequence, created_at.
+    - Cycle detection on sync; annotate tasks involved and block scheduling with actionable error.
+    - Failure policy: on task failure, automatically hold downstream dependents until override or re‑VERIFY.
+- [ ] `penguin/run_mode.py`
+  - Watchdog: detect repeated identical LLM output and request clarification.
+  - Model fallback on empty responses: one retry with non‑streaming or alternate model via `core.load_model`.
+  - Timeboxes per phase; heartbeat/health events with CPU/mem thresholds.
+  - DAG continuation: after completing a task, pick next from `get_ready_tasks_async` instead of “most relevant”; if multiple, apply tie‑breakers deterministically.
+  - Multi/sub‑agent dispatch:
+    - Use `agent_role` from task to request coordinator selection; pass `agent_role`/`agent_id` to `engine.run_task` (already supported in RunMode).
+    - Maintain per‑agent queues from the DAG frontier respecting `ready_parallelism` and agent capacity.
+    - Capability filter: only assign tasks whose `skills/required_tools` are satisfied by agent capabilities mapping.
+    - Fairness: round‑robin across agents when multiple can take a task with equal tie‑breakers.
+- [ ] `penguin/engine.py`
+  - Ensure `message_callback` preserves order: assistant → tool output → status.
+- [ ] CLI
+  - `task ituv start <task_id>`
+  - `task ituv next [<task_id>]` (advance with summary)
+  - `task ituv verify <task_id>` (re‑run VERIFY gate standalone)
+  - `run continuous [PROJECT]` shows “DAG frontier” preview: upcoming ready tasks in order of selection.
+  - `run continuous --parallel N` sets scheduler `ready_parallelism`
+
+Acceptance
+- Continuous mode advances through the DAG in topological order, only selecting tasks whose dependencies are satisfied; shows concise phase/progress and the current frontier in UI.
+
+---
+
+### Phase 6 – Git/CI integration and blueprint drift workflow
+Outcomes: link code to tasks/blueprints; close the loop via CI.
+
+Changes
+- [ ] `penguin/project/git_integration.py`, `git_manager.py`
+  - Commit metadata: include `task_id` and `blueprint_id` in messages; open PR with checklist derived from AC.
+- [ ] CI (docs)
+  - Provide a GH Actions example: run blueprint sync, targeted pytest, usage recipes; fail CI on unmet AC/drift.
+- [ ] Drift detection
+  - On doc change, mark affected tasks as “stale” and recommend ITUV rerun.
+
+Acceptance
+- A PR referencing a task/blueprint runs VERIFY checks in CI; status surfaces in the PR.
+
+---
+
+### Phase 7 – Observability and UX polish
+Outcomes: first‑class timeline and status.
+
+Changes
+- [ ] Event payloads include: `agent_id`, `blueprint_id`, `phase`, `iteration`, `progress`, `artifacts`.
+- [ ] CLI/TUI
+  - Timeline: assistant/tool/status grouped by phase, with collapsible details.
+  - `runmode status` shows: current phase, iteration, progress, timebox left.
+- [ ] Telemetry snapshot
+  - Per‑task: iterations, time, tokens, tools invoked, tests/usage results.
+
+Acceptance
+- A single command prints a compact ITUV summary with links to artifacts.
+
+---
+
+### Configuration & flags
+- [ ] `config.yml`
+  - `runmode.ituv.enabled` (default: true)
+  - `runmode.ituv.phase_timebox_sec` per phase
+  - `verification.strict` (lint/type/test gates)
+  - `blueprints.sources` (glob list for docs)
+  - `blueprints.formats` (accepted: markdown|yaml|json)
+  - `blueprints.default_dir` (default: `context/specs/`)
+  - `blueprints.auto_create_tasks` (default: true)
+  - `blueprints.test_mapping.strategy` (default: `file_patterns`)
+  - `blueprints.test_mapping.patterns` (list of glob patterns with `{id}` placeholder)
+  - `usage_runner.enabled|sandbox|network|timeout_sec` (defaults via config)
+  - `scheduler.strategy` (default: `dag`)
+  - `scheduler.tie_breakers` (default: `["priority_desc", "due_date_asc", "sequence", "created_at_asc"]`)
+  - `scheduler.ready_parallelism` (default: 1)
+  - `scheduler.on_failure` (default: `pause_dependents`)
+  - `scheduler.max_frontier` (default: 20)
+
+Example (initial defaults):
+
+```yaml
+blueprints:
+  sources:
+    - "context/specs/**/*.md"
+    - "context/specs/**/*.{yaml,yml}"
+    - "context/specs/**/*.json"
+  formats: ["markdown", "yaml", "json"]
+  default_dir: "context/specs/"
+  auto_create_tasks: true
+  test_mapping:
+    strategy: "file_patterns"
+    patterns:
+      - "tests/**/test_*blueprint_{id}*.py"
+      - "tests/**/test_{id}*.py"
+usage_runner:
+  enabled: true
+  sandbox: true
+  network: false
+  timeout_sec: 60
+runmode:
+  ituv:
+    enabled: true
+    phase_timebox_sec:
+      implement: 600
+      test: 300
+      use: 180
+      verify: 120
+scheduler:
+  strategy: dag
+  tie_breakers: ["priority_desc", "due_date_asc", "sequence", "created_at_asc"]
+  ready_parallelism: 1
+  on_failure: pause_dependents
+  max_frontier: 20
+verification:
+  strict: true
+```
+
+---
+
+### Risks and mitigations
+- Blank/empty LLM responses: already handled with non‑streaming fallback and exception; add model fallback once before aborting.
+- Large docs / token pressure: inject only relevant Blueprint section and AC; link out to rest.
+- Flaky tests/recipes: retries with backoff; allow VERIFY override with justification stored on task.
+- Security for usage recipes: allowlist commands; sandbox; timeouts; masked env.
+
+---
+
+### KPIs / success criteria
+- 90%+ tasks with `spec_id` auto‑complete ITUV without human intervention.
+- 90%+ tasks with `blueprint_id` auto‑complete ITUV without human intervention.
+- 0 duplicate assistant blocks; correct ordering of assistant → tool → status in UI.
+- CI pass rate ≥95% for tasks with AC‑backed tests.
+- Blueprint drift detection under 1s per changed file; actionable statuses in CLI.
+
+---
+
+### Rollout plan
+1) Phase 1 (Blueprint sync) – foundational, safe to ship behind CLI.  
+2) Phase 2 (Prompt enrichment) – low risk, improves quality immediately.  
+3) Phase 3 (ITUV lifecycle) – adds real gates; default OFF for non‑project chats.  
+4) Phase 4 (Runners) – unlock VERIFY confidence; document sandboxing.  
+5) Phase 5–7 (Scheduler, Git/CI, UX) – operational excellence and polish.
+
+---
+
+### Tracking checklist (high‑level)
+- [ ] P1: Blueprint parser + models + reconcile + CLI  
+- [ ] P2: RunMode prompt enrichment + blueprint metadata in events  
+- [ ] P3: ITUV data model + Engine phase + RunMode orchestration + CLI  
+- [ ] P4: Test and Usage runners + artifacts  
+- [ ] P5: Scheduler/timeboxes/watchdog + model fallback  
+- [ ] P6: Git/CI + drift + PR checklist  
+- [ ] P7: Timeline UI + telemetry snapshot + concise status
+
+---
+
+### Notes for implementers
+- Use existing files as anchors:
+  - `penguin/project/spec_parser.py`, `validation_manager.py`, `manager.py`, `models.py`
+  - `penguin/run_mode.py`, `penguin/engine.py`, `penguin/core.py`
+  - `penguin/project/task_executor.py`, `project/workflow_orchestrator.py`
+  - `penguin/project/git_integration.py`, `git_manager.py`
+- Keep edits narrowly scoped; prefer additive changes and feature flags.  
+- Add tests alongside each milestone; aim for deterministic runners with timeouts.
+
+

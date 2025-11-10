@@ -330,6 +330,20 @@ commands:
     category: system
     description: "Shortcut: set prompt mode to 'test'"
     handler: "_handle_mode_test"
+ 
+    # IN THE WORKS
+  # Lightweight workflow shortcuts
+  - name: fix
+    category: system
+    description: "Shortcut: focus on bug fixing (alias of implement)"
+    aliases: ["fx"]
+    handler: "_handle_mode_implement"
+  
+  - name: research
+    category: system
+    description: "Shortcut: research/explain before implementation (alias of review)"
+    aliases: ["res", "investigate"]
+    handler: "_handle_mode_review"
 
   # Context commands
   - name: "context list"
