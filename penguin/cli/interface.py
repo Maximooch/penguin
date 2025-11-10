@@ -1,27 +1,26 @@
-import asyncio
-import traceback
-import httpx # Added for making async HTTP requests # type: ignore
-from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Callable, Tuple, Awaitable
 import json
-from pathlib import Path
+import logging
 import os
 import shutil
-import concurrent.futures
+import traceback
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
-import logging
+import httpx  # Added for making async HTTP requests # type: ignore
 
 logger = logging.getLogger(__name__)
 
-from rich.console import Console # type: ignore
+from rich.console import Console  # type: ignore
 
 from penguin.core import PenguinCore
-from penguin.system.state import parse_iso_datetime, MessageCategory
 from penguin.system.conversation_menu import ConversationMenu, ConversationSummary
+from penguin.system.state import MessageCategory, parse_iso_datetime
+
 
 class PenguinInterface:
     """Handles all CLI business logic and core integration"""
-    
+
     def __init__(self, core: PenguinCore):
         self.core = core
         # Create a default console for conversation menu
@@ -32,7 +31,7 @@ class PenguinInterface:
         self.in_247_mode = False
         self._progress_callbacks: List[Callable[[int, int, Optional[str]], None]] = []
         self._token_callbacks: List[Callable[[Dict[str, Any]], None]] = []
-        
+
         # Initialize with safe defaults
         try:
             logging.getLogger(__name__).info(
@@ -47,13 +46,13 @@ class PenguinInterface:
             # Delay streaming setting initialisation until model_config is available
             if hasattr(self.core, 'model_config') and self.core.model_config is not None:
                 self._initialize_streaming_settings()
-            
+
             # Register for progress updates from core
             if hasattr(self.core, 'register_progress_callback') and callable(self.core.register_progress_callback):
                 self.core.register_progress_callback(self._on_progress_update)
             else:
-                print(f"[Interface] Warning: core.register_progress_callback not found or not callable.")
-            
+                print("[Interface] Warning: core.register_progress_callback not found or not callable.")
+
             # Register for token updates from core (assuming this method will be added to PenguinCore)
             # REMOVED: This was causing a warning as PenguinCore doesn't have this method yet.
             # The interface manages its own token callbacks which the CLI uses.
@@ -61,7 +60,7 @@ class PenguinInterface:
             #     self.core.register_token_callback(self._on_token_update)
             # else:
             #     print(f"[Interface] Warning: core.register_token_callback not found or not callable. Token UI may not update.")
-            
+
             # Initial token update
             self.update_token_display()
         except Exception as e:
@@ -71,7 +70,7 @@ class PenguinInterface:
     def register_progress_callback(self, callback: Callable[[int, int, Optional[str]], None]) -> None:
         """Register callback for progress updates"""
         self._progress_callbacks.append(callback)
-        
+
     def register_token_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         """Register callback for token usage updates"""
         import logging
@@ -80,7 +79,7 @@ class PenguinInterface:
             getattr(callback, "__qualname__", str(callback))
         )
         self._token_callbacks.append(callback)
-        
+
     def _on_progress_update(self, iteration: int, max_iterations: int, message: Optional[str] = None) -> None:
         """Handle progress updates from core and forward to UI"""
         for callback in self._progress_callbacks:
@@ -88,19 +87,19 @@ class PenguinInterface:
                 callback(iteration, max_iterations, message)
             except Exception as e:
                 print(f"[Interface] Error in progress callback: {e}\\n{traceback.format_exc()}")
-            
+
     def _on_token_update(self, usage: Dict[str, Any]) -> None:
         """Handle token updates from core and forward to UI"""
         # Expected usage keys from ConversationManager: "prompt_tokens", "completion_tokens", "total_tokens", "max_tokens"
         # No transformation should be needed if ConversationManager provides these directly.
-        
+
         # Forward the token usage to UI callbacks
         for callback in self._token_callbacks:
             try:
                 callback(usage)
             except Exception as e:
                 print(f"[Interface] Error in token callback: {e}\\n{traceback.format_exc()}")
-            
+
     def get_token_usage(self) -> Dict[str, Any]:
         """Get current token usage statistics from the ConversationManager.
         This method now expects a specific format focused on the active context window.
@@ -123,16 +122,16 @@ class PenguinInterface:
             if not hasattr(self.core, 'conversation_manager') or not self.core.conversation_manager:
                 print("[Interface] Warning: core.conversation_manager not found.")
                 return default_usage
-            
+
             # This should now return the standardized dict from ContextWindowManager
             usage_from_manager = self.core.conversation_manager.get_token_usage()
-            
+
             # Validate the received structure (basic check)
             if isinstance(usage_from_manager, dict) and \
                "current_total_tokens" in usage_from_manager and \
                "max_tokens" in usage_from_manager and \
                "categories" in usage_from_manager and isinstance(usage_from_manager["categories"], dict):
-                
+
                 # Add a percentage calculation for convenience
                 current_total = usage_from_manager["current_total_tokens"]
                 max_t = usage_from_manager["max_tokens"]
@@ -181,7 +180,7 @@ class PenguinInterface:
         if hasattr(self.core, 'conversation_manager') and self.core.conversation_manager:
             cm = self.core.conversation_manager
             messages = []
-            
+
             if hasattr(cm, 'conversation') and cm.conversation:
                 # Direct access to session messages instead of non-existent get_all_messages()
                 if hasattr(cm.conversation, 'session') and cm.conversation.session:
@@ -194,9 +193,9 @@ class PenguinInterface:
                             "timestamp": msg.timestamp,
                             "metadata": msg.metadata if hasattr(msg, 'metadata') else {}
                         })
-            
+
             return messages
-        
+
         # Fallback to empty list if conversation manager not available
         return []
 
@@ -213,13 +212,13 @@ class PenguinInterface:
             "task_name": None,
             "continuous": False
         }
-        
+
         # Get summary from Core if available
         if hasattr(self.core, 'current_runmode_status_summary'):
             result["summary"] = self.core.current_runmode_status_summary
             # If we have a summary that's not the idle message, RunMode is likely active
             result["active"] = self.core.current_runmode_status_summary != "RunMode idle."
-            
+
         # Get additional status from Core.run_mode if available
         if hasattr(self.core, 'run_mode') and self.core.run_mode:
             result["active"] = True
@@ -227,16 +226,16 @@ class PenguinInterface:
                 result["continuous"] = self.core.run_mode.continuous_mode
             if hasattr(self.core.run_mode, 'current_task_name'):
                 result["task_name"] = self.core.run_mode.current_task_name
-                
+
         return result
 
     def get_detailed_token_usage(self) -> Dict[str, Any]:
         """Returns the detailed token usage, now sourced from get_token_usage."""
-        # This method can be expanded later if we need to add more details 
+        # This method can be expanded later if we need to add more details
         # (e.g., per-API-call prompt/completion tokens, cost) that are not part
         # of the basic context window stats.
         base_usage = self.get_token_usage()
-        
+
         # Example of adding more data if available from core (conceptual)
         # if hasattr(self.core, 'last_api_call_stats'):
         #    base_usage['last_call_prompt_tokens'] = self.core.last_api_call_stats.get('prompt')
@@ -258,21 +257,21 @@ class PenguinInterface:
         """
         try:
             logger.debug(f"Processing input: {input_data}")
-            
+
             # Extract input text
             input_text = input_data.get('text', '')
             if not input_text.strip():
                 logger.warning("Empty input text received")
                 return {"assistant_response": "No input provided", "action_results": []}
-            
+
             # Prepare the input data dictionary
             input_data_dict = input_data
             logger.debug(f"Input data dict prepared: {input_data_dict}")
-            
+
             # Always enable streaming for better UX, but rely on event system for display
             # The stream_callback is only for legacy compatibility
             streaming_enabled = True
-            
+
             # Process the input using Core
             logger.debug(f"Calling core.process with streaming={streaming_enabled}")
             try:
@@ -284,38 +283,38 @@ class PenguinInterface:
                     streaming=streaming_enabled,
                     stream_callback=None  # Let event system handle display
                 )
-                    
+
                 logger.debug(f"Core.process completed with response keys: {response.keys() if isinstance(response, dict) else 'not a dict'}")
             except Exception as e:
-                logger.error(f"Error in core.process: {str(e)}", exc_info=True)
+                logger.error(f"Error in core.process: {e!s}", exc_info=True)
                 return {
-                    "assistant_response": f"Error in core processing: {str(e)}",
+                    "assistant_response": f"Error in core processing: {e!s}",
                     "action_results": [],
                     "error": str(e)
                 }
-            
+
             # Note: No need to manually finalize streaming - Core handles this via events
-            
+
             # Update token display to show latest stats
             logger.debug("Updating token display")
             self.update_token_display()
-            
+
             # Normalize action results to ensure CLI can display them properly
             if isinstance(response, dict) and "action_results" in response:
                 response["action_results"] = self._normalize_action_results(response["action_results"])
                 logger.debug(f"Normalized action results: {response['action_results']}")
-            
+
             return response
-            
+
         except Exception as e:
-            error_msg = f"Error processing input: {str(e)}"
+            error_msg = f"Error processing input: {e!s}"
             logger.error(error_msg, exc_info=True)
             return {
                 "assistant_response": error_msg,
                 "action_results": [],
                 "error": str(e)
             }
-            
+
     def _normalize_action_results(self, action_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Normalize action results to ensure they have all the fields needed by the CLI.
@@ -329,7 +328,7 @@ class PenguinInterface:
             List of normalized action result dictionaries
         """
         normalized_results = []
-        
+
         for result in action_results:
             if not isinstance(result, dict):
                 # Handle non-dict results by wrapping them
@@ -339,34 +338,34 @@ class PenguinInterface:
                     "status": "completed"
                 })
                 continue
-                
+
             # Create a copy to avoid modifying the original
             normalized = result.copy()
-            
+
             # Handle field name differences (Engine uses action_name, CLI expects action)
             if "action_name" in normalized and "action" not in normalized:
                 normalized["action"] = normalized["action_name"]
-                
+
             # Handle output field (Engine uses output, CLI expects result)
             if "output" in normalized and "result" not in normalized:
                 normalized["result"] = normalized["output"]
-                
+
             # Ensure required fields are present
             if "action" not in normalized:
                 normalized["action"] = normalized.get("type", "unknown")
-                
+
             if "result" not in normalized:
                 normalized["result"] = normalized.get("message", "(No output available)")
-                
+
             if "status" not in normalized:
                 normalized["status"] = "completed"
-                
+
             normalized_results.append(normalized)
-            
+
         return normalized_results
 
-    async def handle_command(self, command: str, 
-                             runmode_stream_cb: Optional[Callable[[str], Awaitable[None]]] = None, 
+    async def handle_command(self, command: str,
+                             runmode_stream_cb: Optional[Callable[[str], Awaitable[None]]] = None,
                              runmode_ui_update_cb: Optional[Callable[[], Awaitable[None]]] = None) -> Dict[str, Any]:
         """Handle slash commands"""
         parts = command.split(" ", 2)
@@ -393,26 +392,40 @@ class PenguinInterface:
             "agent": self._handle_agent_command,
             "mode": self._handle_mode_command,
             "output": self._handle_output_command,
+            # Checkpoint commands (Phase 2)
+            "checkpoint": self._handle_checkpoint_command,
+            "cp": self._handle_checkpoint_command,  # Alias
+            "save": self._handle_checkpoint_command,  # Alias
+            "rollback": self._handle_rollback_command,
+            "revert": self._handle_rollback_command,  # Alias
+            "undo": self._handle_rollback_command,  # Alias
+            "checkpoints": self._handle_checkpoints_command,
+            "cps": self._handle_checkpoints_command,  # Alias
+            "branch": self._handle_branch_command,
+            "fork": self._handle_branch_command,  # Alias
+            # Context window commands (Phase 3)
+            "truncations": self._handle_truncations_command,
+            "trunc": self._handle_truncations_command,  # Alias
             # Shortcuts
             "review": self._handle_mode_review,
             "implement": self._handle_mode_implement,
             "test": self._handle_mode_test,
         }
-        
+
         handler = handlers.get(cmd, self._invalid_command)
         if cmd == "run":
             result = await handler(args, runmode_stream_cb=runmode_stream_cb, runmode_ui_update_cb=runmode_ui_update_cb)
         else:
             # Call other handlers without the runmode-specific callbacks
             result = await handler(args)
-        
+
         # Update token display after command execution
         self.update_token_display()
-        
+
         # Normalize action_results if present for consistent display in CLI
         if isinstance(result, dict) and "action_results" in result:
             result["action_results"] = self._normalize_action_results(result["action_results"])
-            
+
         return result
 
     async def _handle_mode_command(self, args: List[str]) -> Dict[str, Any]:
@@ -530,7 +543,7 @@ class PenguinInterface:
                 else:
                     return {"error": f"Failed to delete conversation: {session_id}"}
             except Exception as e:
-                return {"error": f"Error deleting conversation: {str(e)}"}
+                return {"error": f"Error deleting conversation: {e!s}"}
         elif subcmd == "new":
             # Start a fresh conversation (reset current session)
             try:
@@ -544,7 +557,7 @@ class PenguinInterface:
                 else:
                     return {"error": "Failed to create new session"}
             except Exception as e:
-                return {"error": f"Error creating new conversation: {str(e)}"}
+                return {"error": f"Error creating new conversation: {e!s}"}
         elif subcmd == "summary":
             return {"summary": self.core.conversation_manager.conversation.get_history()}
         return {"error": f"Unknown chat command: {subcmd}"}
@@ -553,7 +566,7 @@ class PenguinInterface:
         """Handle task management commands"""
         if not args:
             return {"error": "Missing task subcommand"}
-            
+
         action = args[0].lower()
         # --- TASK CREATE ---------------------------------------------------
         # Accept both of the following syntaxes:
@@ -596,7 +609,7 @@ class PenguinInterface:
                     "task_title": task.title
                 }
             except Exception as e:
-                return {"error": f"Failed to create task: {str(e)}"}
+                return {"error": f"Failed to create task: {e!s}"}
         elif action == "run" and len(args) > 1:
             return await self.core.start_run_mode(args[1], " ".join(args[2:]))
         elif action == "status" and len(args) > 1:
@@ -617,14 +630,14 @@ class PenguinInterface:
                 else:
                     return {"error": f"Task not found: {args[1]}"}
             except Exception as e:
-                return {"error": f"Failed to get task status: {str(e)}"}
+                return {"error": f"Failed to get task status: {e!s}"}
         return {"error": f"Unknown task command: {action}"}
 
     async def _handle_project_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle project management commands"""
         if not args:
             return {"error": "Missing project subcommand"}
-            
+
         action = args[0].lower()
         # --- PROJECT CREATE ------------------------------------------------
         if action == "create" and len(args) >= 2:
@@ -653,7 +666,7 @@ class PenguinInterface:
                     "project_name": project.name
                 }
             except Exception as e:
-                return {"error": f"Failed to create project: {str(e)}"}
+                return {"error": f"Failed to create project: {e!s}"}
         elif action == "run" and len(args) > 1:
             return await self.core.start_run_mode(args[1], " ".join(args[2:]), mode_type="project")
         elif action == "status" and len(args) > 1:
@@ -668,7 +681,7 @@ class PenguinInterface:
                         "completed": len([t for t in project_tasks if t.status.value == "COMPLETED"]),
                         "failed": len([t for t in project_tasks if t.status.value == "FAILED"])
                     }
-                    
+
                     return {
                         "status": f"Project '{project.name}' status: {project.status}",
                         "project": {
@@ -683,7 +696,7 @@ class PenguinInterface:
                 else:
                     return {"error": f"Project not found: {args[1]}"}
             except Exception as e:
-                return {"error": f"Failed to get project status: {str(e)}"}
+                return {"error": f"Failed to get project status: {e!s}"}
         return {"error": f"Unknown project command: {action}"}
 
     async def _handle_config_command(self, args: List[str]) -> Dict[str, Any]:
@@ -728,9 +741,9 @@ class PenguinInterface:
             raw_value = tokens[2] if len(tokens) > 2 else None
 
             from penguin.config import (
+                get_config_value as _get_config_value,
                 load_config as _load_config,
                 set_config_value as _set_config_value,
-                get_config_value as _get_config_value,
             )
 
             if action == "list":
@@ -777,10 +790,10 @@ class PenguinInterface:
             return {"error": "Unknown config action. Use list|get|set|add|remove"}
 
         except Exception as e:
-            return {"error": f"Config command failed: {str(e)}"}
+            return {"error": f"Config command failed: {e!s}"}
 
-    async def _handle_run_command(self, args: List[str], 
-                                  runmode_stream_cb: Optional[Callable[[str], Awaitable[None]]] = None, 
+    async def _handle_run_command(self, args: List[str],
+                                  runmode_stream_cb: Optional[Callable[[str], Awaitable[None]]] = None,
                                   runmode_ui_update_cb: Optional[Callable[[], Awaitable[None]]] = None) -> Dict[str, Any]:
         """
         Handle RunMode command for executing autonomous tasks.
@@ -795,7 +808,7 @@ class PenguinInterface:
         """
         try:
             subcommand = args[0] if args else "help"
-            
+
             # Support flag-style invocation: --247 and optional --time <minutes>
             # If the first arg starts with "--", treat subcommand as flag set.
             if subcommand.startswith("--"):
@@ -810,11 +823,11 @@ class PenguinInterface:
                             + "/run continuous [task_name] - Run continuous mode\n"
                             + "/run stop - Stop current run mode execution"
                 }
-            
+
             if subcommand == "stop":
                 # Todo: implement stop functionality
                 return {"status": "RunMode stop not yet implemented"}
-            
+
             if subcommand in ["task", "continuous", "flags"]:
                 # Default values
                 continuous_mode = False
@@ -851,24 +864,24 @@ class PenguinInterface:
                         task_name = remaining[0]
                         if len(remaining) > 1:
                             desc = " ".join(remaining[1:])
-                
+
                 # Start run mode with callbacks for UI updates
                 await self.core.start_run_mode(
-                    name=task_name, 
-                    description=desc, 
-                    continuous=continuous_mode, 
+                    name=task_name,
+                    description=desc,
+                    continuous=continuous_mode,
                     time_limit=time_limit,
                     stream_callback_for_cli=runmode_stream_cb,
                     ui_update_callback_for_cli=runmode_ui_update_cb,
                 )
-                
+
                 mode_label = "continuous" if continuous_mode else "task"
                 return {
                     "status": f"RunMode {mode_label} started: {task_name or 'No specific task'}"
                 }
-                
+
             return {"error": f"Unknown run subcommand: {subcommand}"}
-            
+
         except Exception as e:
             logger.exception(f"Error in run command: {e}")
             return self._format_error(e)
@@ -878,7 +891,7 @@ class PenguinInterface:
         try:
             projects = await self.core.project_manager.list_projects_async()
             all_tasks = await self.core.project_manager.list_tasks_async()
-            
+
             # Format output similar to the old process_list_command
             result = {
                 "projects": [],
@@ -889,7 +902,7 @@ class PenguinInterface:
                     "active_tasks": len([t for t in all_tasks if t.status.value == "ACTIVE"])
                 }
             }
-            
+
             # Format projects
             for project in projects:
                 project_tasks = [t for t in all_tasks if t.project_id == project.id]
@@ -901,7 +914,7 @@ class PenguinInterface:
                     "task_count": len(project_tasks),
                     "created_at": project.created_at
                 })
-            
+
             # Format tasks
             for task in all_tasks:
                 result["tasks"].append({
@@ -913,9 +926,9 @@ class PenguinInterface:
                     "priority": task.priority,
                     "created_at": task.created_at
                 })
-            
+
             return result
-            
+
         except Exception as e:
             logger.exception(f"Error in list command: {e}")
             return self._format_error(e)
@@ -946,7 +959,7 @@ class PenguinInterface:
             "help": "Available Commands",
             "commands": self._get_command_suggestions()
         }
-    
+
     async def _handle_info_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle info command - shows what Penguin is and how to use it"""
         info_text = """**What is Penguin?**
@@ -977,27 +990,27 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
             session_info = f"Session {session_id} ({message_count} messages)"
         except Exception:
             session_info = "Active"
-        
+
         # Get model info
         try:
             current_model = self.core.get_current_model()
             model_info = f"{current_model.get('model', 'Unknown')} via {current_model.get('provider', 'Unknown')}"
         except Exception:
             model_info = "Unknown"
-        
+
         # Get version
         try:
             from penguin._version import __version__
             version_info = __version__
         except Exception:
             version_info = "Unknown"
-        
+
         formatted_info = info_text.format(
             session_info=session_info,
             model_info=model_info,
             version_info=version_info
         )
-        
+
         return {"status": formatted_info}
 
 # TODO: move this to the core to be fixed later
@@ -1006,16 +1019,16 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
         """Reload system prompt with latest formatting rules from prompt_workflow.py"""
         try:
             from penguin.system_prompt import get_system_prompt
-            
+
             # Get current prompt mode
             current_mode = self.core.get_prompt_mode()
-            
+
             # Rebuild prompt with latest rules
             new_prompt = get_system_prompt(current_mode)
-            
+
             # Update in Core and ConversationManager
             self.core.set_system_prompt(new_prompt)
-            
+
             return {
                 "status": f"✅ System prompt reloaded with latest formatting rules.\n"
                          f"Mode: {current_mode}\n"
@@ -1025,13 +1038,13 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
             }
         except Exception as e:
             logger.error(f"Error reloading prompt: {e}")
-            return {"error": f"Failed to reload prompt: {str(e)}"}
-        
+            return {"error": f"Failed to reload prompt: {e!s}"}
+
     async def _handle_exit_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle exit command"""
         self._active = False
         return {"status": "exit", "message": "Goodbye!"}
-        
+
     async def _handle_tokens_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle tokens command to show or reset token usage"""
         if args and args[0].lower() == "reset":
@@ -1044,15 +1057,172 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                     self.update_token_display()
                     return {"status": "Token counters for the current session reset successfully."}
                 except Exception as e:
-                    return {"error": f"Failed to reset token counters: {str(e)}"}
-            return {"status": "Token reset function not available or not fully implemented in ConversationManager."}
+                    return {"error": f"Failed to reset token counters: {e!s}"}
+            return {
+                "status": (
+                    "Token reset function not available or "
+                    "not fully implemented in ConversationManager."
+                )
+            }
         elif args and args[0].lower() == "detail":
             # Show detailed token usage by category
             return {"token_usage_detailed": self.get_detailed_token_usage()}
         else:
             # Show standard token usage
             return {"token_usage": self.get_token_usage()}
-            
+
+    # =================================================================
+    # CHECKPOINT COMMANDS (Phase 2 - Kimi CLI Patterns)
+    # =================================================================
+
+    async def _handle_checkpoint_command(self, args: List[str]) -> Dict[str, Any]:
+        """Create a manual checkpoint of the current conversation"""
+        name = args[0] if args else None
+        description = " ".join(args[1:]) if len(args) > 1 else None
+
+        try:
+            checkpoint_id = await self.core.create_checkpoint(name=name, description=description)
+
+            if checkpoint_id:
+                result = {
+                    "status": f"✓ Checkpoint created: {checkpoint_id}",
+                    "checkpoint_id": checkpoint_id
+                }
+                if name:
+                    result["checkpoint_name"] = name
+                if description:
+                    result["checkpoint_description"] = description
+                return result
+            else:
+                return {"error": "Failed to create checkpoint"}
+
+        except Exception as e:
+            logger.error(f"Error creating checkpoint: {e}", exc_info=True)
+            return {"error": f"Failed to create checkpoint: {e!s}"}
+
+    async def _handle_rollback_command(self, args: List[str]) -> Dict[str, Any]:
+        """Rollback to a specific checkpoint"""
+        if not args:
+            return {"error": "Checkpoint ID required. Usage: /rollback <checkpoint_id>"}
+
+        checkpoint_id = args[0]
+
+        try:
+            success = await self.core.rollback_to_checkpoint(checkpoint_id)
+
+            if success:
+                return {
+                    "status": f"✓ Rolled back to checkpoint: {checkpoint_id}",
+                    "checkpoint_id": checkpoint_id
+                }
+            else:
+                return {"error": f"Failed to rollback to checkpoint {checkpoint_id}"}
+
+        except Exception as e:
+            logger.error(f"Error rolling back to checkpoint: {e}", exc_info=True)
+            return {"error": f"Rollback failed: {e!s}"}
+
+    async def _handle_checkpoints_command(self, args: List[str]) -> Dict[str, Any]:
+        """List available checkpoints for the current session"""
+        limit = 20  # Default limit
+
+        if args:
+            try:
+                limit = int(args[0])
+            except ValueError:
+                return {"error": f"Invalid limit: {args[0]}. Must be a number."}
+
+        try:
+            checkpoints = self.core.list_checkpoints(limit=limit)
+
+            if not checkpoints:
+                return {"status": "No checkpoints found", "checkpoints": []}
+
+            return {
+                "status": f"Found {len(checkpoints)} checkpoint(s)",
+                "checkpoints": checkpoints,
+                "count": len(checkpoints)
+            }
+
+        except Exception as e:
+            logger.error(f"Error listing checkpoints: {e}", exc_info=True)
+            return {"error": f"Failed to list checkpoints: {e!s}"}
+
+    async def _handle_branch_command(self, args: List[str]) -> Dict[str, Any]:
+        """Create a new branch from a checkpoint"""
+        if not args:
+            return {"error": "Checkpoint ID required. Usage: /branch <checkpoint_id> [name] [description]"}
+
+        checkpoint_id = args[0]
+        name = args[1] if len(args) > 1 else None
+        description = " ".join(args[2:]) if len(args) > 2 else None
+
+        try:
+            branch_id = await self.core.branch_from_checkpoint(
+                checkpoint_id=checkpoint_id,
+                name=name,
+                description=description
+            )
+
+            if branch_id:
+                result = {
+                    "status": f"✓ Branch created: {branch_id}",
+                    "branch_id": branch_id,
+                    "source_checkpoint": checkpoint_id
+                }
+                if name:
+                    result["branch_name"] = name
+                return result
+            else:
+                return {"error": f"Failed to create branch from checkpoint {checkpoint_id}"}
+
+        except Exception as e:
+            logger.error(f"Error creating branch: {e}", exc_info=True)
+            return {"error": f"Branch creation failed: {e!s}"}
+
+    # =================================================================
+    # ENHANCED CONTEXT WINDOW COMMANDS (Phase 3 - Kimi CLI Patterns)
+    # =================================================================
+
+    async def _handle_truncations_command(self, args: List[str]) -> Dict[str, Any]:
+        """Display recent truncation events from context window management"""
+        limit = 10  # Default limit
+
+        if args:
+            try:
+                limit = int(args[0])
+            except ValueError:
+                return {"error": f"Invalid limit: {args[0]}. Must be a number."}
+
+        try:
+            # Get token usage which includes truncation data
+            usage = self.core.conversation_manager.get_token_usage()
+            truncations = usage.get("truncations", {})
+            recent_events = truncations.get("recent_events", [])
+
+            if not recent_events:
+                return {
+                    "status": "No truncation events yet",
+                    "truncations": [],
+                    "summary": "Context window is within budget"
+                }
+
+            # Limit the results
+            limited_events = recent_events[:limit]
+
+            return {
+                "status": f"Found {len(recent_events)} truncation event(s)",
+                "truncations": limited_events,
+                "count": len(recent_events),
+                "total_messages_removed": truncations.get("messages_removed", 0),
+                "total_tokens_freed": truncations.get("tokens_freed", 0),
+                "total_events": truncations.get("total_truncations", 0)
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting truncation events: {e}", exc_info=True)
+            return {"error": f"Failed to get truncations: {e!s}"}
+
     async def _handle_agent_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle agent management commands."""
 
@@ -1278,8 +1448,8 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
             if action == "list":
                 return {"context_files": self.core.list_context_files()}
             if action == "paths":
+
                 from penguin.utils.path_utils import get_allowed_roots
-                import json as _json
                 prj_root, ws_root, proj_extra, ctx_extra = get_allowed_roots()
                 data = {
                     "project_root": str(prj_root),
@@ -1455,8 +1625,8 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
 
             return {"error": f"Unknown context command: {action}"}
         except Exception as e:
-            return {"error": f"Context command failed: {str(e)}"}
-    
+            return {"error": f"Context command failed: {e!s}"}
+
     async def _handle_model_command(self, args: List[str]) -> Dict[str, Any]:
         """Handles /model set command for manual model setting"""
         if not args or args[0].lower() != "set":
@@ -1464,7 +1634,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
 
         if len(args) < 2:
             return {"error": "Missing model ID. Usage: /model set <model_id>"}
-            
+
         model_id_to_set = args[1]
         success = await self.core.load_model(model_id_to_set)
         if success:
@@ -1472,7 +1642,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
             if self.core.model_config and self.core.model_config.model:
                 new_model_name = self.core.model_config.model
             # Update token display as max_tokens might change
-            self.update_token_display() 
+            self.update_token_display()
             return {"status": f"Successfully set model to: {new_model_name}", "new_model_name": new_model_name}
         else:
             return {"error": f"Failed to set model to: {model_id_to_set}"}
@@ -1481,25 +1651,25 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
         """Handle streaming mode toggles and status checks"""
         # Get current streaming status
         streaming_enabled = self.get_streaming_status()
-        
+
         # Check if streaming is configured/available
         if streaming_enabled is None:
             return {"error": "Streaming configuration not available with current model"}
-        
+
         if not args:
             # Get additional stream status info
             stream_status = "No active stream"
             if hasattr(self.core, 'current_stream'):
                 if self.core.current_stream is not None:
                     stream_status = "active" if not self.core.current_stream.done() else "completed"
-            
+
             model_name = None
             if hasattr(self.core, 'model_config') and hasattr(self.core.model_config, 'model'):
                 model_name = self.core.model_config.model
             elif hasattr(self.core, 'config') and hasattr(self.core.config, 'model_config'):
                 if hasattr(self.core.config.model_config, 'model'):
                     model_name = self.core.config.model_config.model
-                
+
             return {
                 "status": f"Streaming is currently {'enabled' if streaming_enabled else 'disabled'}",
                 "details": {
@@ -1508,7 +1678,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                     "model": model_name
                 }
             }
-            
+
         action = args[0].lower()
         if action in ["on", "enable", "true", "1"]:
             success = self.set_streaming(True)
@@ -1516,9 +1686,9 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
         elif action in ["off", "disable", "false", "0"]:
             success = self.set_streaming(False)
             return {"status": "Streaming disabled" if success else "Failed to disable streaming"}
-        
+
         return {"error": f"Unknown streaming command: {action}"}
-    
+
     def set_streaming(self, enabled: bool = True) -> bool:
         """
         Enable or disable streaming mode
@@ -1531,25 +1701,25 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
             True if successful, False otherwise
         """
         success = False
-        
+
         # Direct model_config attribute
         if hasattr(self.core, 'model_config') and hasattr(self.core.model_config, 'streaming_enabled'):
             self.core.model_config.streaming_enabled = enabled
             success = True
-            
-        # Config with model_config attribute 
+
+        # Config with model_config attribute
         elif hasattr(self.core, 'config') and hasattr(self.core.config, 'model_config'):
             if hasattr(self.core.config.model_config, 'streaming_enabled'):
                 self.core.config.model_config.streaming_enabled = enabled
                 success = True
-                
+
         # Config with model property/attribute that has streaming_enabled
         elif hasattr(self.core, 'config') and hasattr(self.core.config, 'model'):
             model_attr = getattr(self.core.config, 'model')
             if isinstance(model_attr, dict) and 'streaming_enabled' in model_attr:
                 model_attr['streaming_enabled'] = enabled
                 success = True
-        
+
         # Also update API client if it has a set_streaming method
         if hasattr(self.core, 'api_client') and hasattr(self.core.api_client, 'set_streaming'):
             try:
@@ -1557,30 +1727,30 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                 success = True
             except Exception as e:
                 print(f"[Interface] Error updating API client streaming setting: {e}")
-        
+
         return success
-    
+
     def get_streaming_status(self) -> Optional[bool]:
         """Get current streaming mode setting from ModelConfig"""
         # Direct model_config attribute
         if hasattr(self.core, 'model_config') and self.core.model_config is not None and \
            hasattr(self.core.model_config, 'streaming_enabled'):
             return self.core.model_config.streaming_enabled
-        
+
         # Fallback for older config structure if model_config is not primary
         # This part might become less relevant if ModelConfig is always the source of truth
         if hasattr(self.core, 'config') and self.core.config is not None:
             if hasattr(self.core.config, 'model_config') and self.core.config.model_config is not None and \
                hasattr(self.core.config.model_config, 'streaming_enabled'):
                 return self.core.config.model_config.streaming_enabled
-            
+
             if hasattr(self.core.config, 'model') and isinstance(self.core.config.model, dict) and \
                'streaming_enabled' in self.core.config.model:
                 return self.core.config.model.get('streaming_enabled')
-                
+
         print("[Interface] Warning: Could not determine streaming status from core.model_config or core.config.")
         return None # Indicate undetermined status
-    
+
     def _get_command_suggestions(self) -> List[str]:
         """Get valid command list"""
         return [
@@ -1598,7 +1768,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
             "/models - Interactive model selection (autocomplete search)",
             "/model set <id> - Manually set a specific model ID"
         ]
-        
+
     def is_active(self) -> bool:
         """Check if interface is active"""
         return self._active
@@ -1607,7 +1777,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
         """Handle debug commands for development purposes"""
         if not args:
             return {"error": "Missing debug subcommand"}
-        
+
         subcmd = args[0].lower()
         if subcmd == "tokens":
             # Notify token usage
@@ -1678,7 +1848,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                 if hasattr(self.core, 'config') and self.core.config is not None and \
                    hasattr(self.core.config, 'model') and isinstance(self.core.config.model, dict):
                     default_streaming_enabled = self.core.config.model.get('streaming_enabled', True)
-                
+
                 self.core.model_config.streaming_enabled = default_streaming_enabled
                 print(f"[Interface] Initialized core.model_config.streaming_enabled to {self.core.model_config.streaming_enabled}")
             # If it is set, we respect it.
@@ -1720,21 +1890,21 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                     response = await client.get("https://openrouter.ai/api/v1/models")
                     response.raise_for_status() # Raise an exception for HTTP errors 4xx/5xx
                     openrouter_models = response.json().get("data", [])
-                
+
                 available_models = []
                 for or_model in openrouter_models:
                     model_id = or_model.get("id")
                     # Determine if this is the current model
                     # For OpenRouter, the model_id from their API is what we store in our config as `model`
                     is_current = (model_id == current_model_name_from_core)
-                    
+
                     # Extract provider from ID if possible (e.g. "openai/gpt-4o" -> "openai")
                     # This is a heuristic and might need refinement based on OpenRouter's ID structure
                     underlying_provider = model_id.split('/')[0] if '/' in model_id else "openrouter"
 
                     available_models.append({
                         "id": model_id, # This is the ID to use for /model set
-                        "name": or_model.get("name", model_id), 
+                        "name": or_model.get("name", model_id),
                         "provider": underlying_provider, # The conceptual provider
                         "client_preference": "openrouter", # Explicitly state it
                         "vision_enabled": "image" in or_model.get("architecture", {}).get("input_modalities", []),
@@ -1742,7 +1912,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                         "temperature": None, # OpenRouter doesn't list default temp per model here
                         "current": is_current
                     })
-                
+
                 # Sort to bring current model to top, then by ID
                 available_models.sort(key=lambda m: (not m["current"], m["id"]))
                 return available_models
@@ -1755,10 +1925,10 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
         if hasattr(self.core, 'list_available_models') and callable(self.core.list_available_models) and client_preference != 'openrouter':
             try:
                 # This assumes core.list_available_models() does NOT call this interface method again
-                return self.core.list_available_models() 
+                return self.core.list_available_models()
             except Exception as e:
                 print(f"[Interface] Error listing models from core: {e}")
-        
+
         # Fallback to parsing config.yml via self.core.config
         available_models_from_config = []
         if hasattr(self.core, 'config') and self.core.config is not None and \
@@ -1770,7 +1940,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                     is_config_entry_current = (model_key == current_model_name_from_core)
 
                     model_entry = {
-                        "id": model_key, 
+                        "id": model_key,
                         "name": conf.get("model", model_key),
                         "provider": conf.get("provider", "unknown"),
                         "client_preference": conf.get("client_preference", "litellm"),
@@ -1780,7 +1950,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                         "current": is_config_entry_current
                     }
                     available_models_from_config.append(model_entry)
-        
+
         if available_models_from_config:
             available_models_from_config.sort(key=lambda m: (not m["current"], m["id"]))
             return available_models_from_config
@@ -1808,14 +1978,14 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
         if hasattr(self.core, 'load_model') and callable(self.core.load_model):
             try:
                 # Now call the async core method
-                return await self.core.load_model(model_id_from_config) 
+                return await self.core.load_model(model_id_from_config)
             except Exception as e:
                 print(f"[Interface] Error loading model via core.load_model: {e}\\n{traceback.format_exc()}")
                 return False
-        
+
         # Fallback if core doesn't have the method - attempt to reconfigure model_config
         # This is a simplified approach and might not re-initialize APIClient correctly.
-        print(f"[Interface] Warning: core.load_model not found. Attempting fallback reconfiguration of core.model_config.")
+        print("[Interface] Warning: core.load_model not found. Attempting fallback reconfiguration of core.model_config.")
         try:
             if not (hasattr(self.core, 'config') and self.core.config is not None and \
                     hasattr(self.core.config, 'model_configs') and isinstance(self.core.config.model_configs, dict)):
@@ -1856,15 +2026,15 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
         """Handle /models command - launches interactive model selector"""
         try:
             from penguin.cli.model_selector import interactive_model_selector
-            
+
             # Get current model for display
             current_model_name = None
             if self.core.model_config and self.core.model_config.model:
                 current_model_name = self.core.model_config.model
-            
+
             # Run the interactive selector
             selected_model = await interactive_model_selector(current_model_name)
-            
+
             if selected_model:
                 # Load the selected model
                 success = await self.core.load_model(selected_model)
@@ -1880,8 +2050,8 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                     return {"error": f"Failed to load selected model: {selected_model}"}
             else:
                 return {"status": "Model selection cancelled"}
-                
+
         except ImportError:
             return {"error": "Model selector not available. Use '/model set <id>' instead."}
         except Exception as e:
-            return {"error": f"Error in model selection: {str(e)}"}
+            return {"error": f"Error in model selection: {e!s}"}

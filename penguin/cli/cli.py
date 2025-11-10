@@ -241,6 +241,7 @@ from penguin.utils.logs import setup_logger
 from penguin.cli.commands import CommandRegistry
 from penguin.cli.typer_bridge import TyperBridge, integrate_with_existing_app
 from penguin.cli.renderer import UnifiedRenderer, RenderStyle
+from penguin.cli.streaming_display import StreamingDisplay
 
 try:
     # Prefer relative import to support repo and installed layouts
@@ -2482,6 +2483,9 @@ class PenguinCLI:
             show_tool_results=self.show_tool_results,
         )
 
+        # Initialize new StreamingDisplay for smooth Rich.Live rendering
+        self.streaming_display = StreamingDisplay(console=self.console)
+
         self.conversation_menu = ConversationMenu(self.console)
         self.core.register_progress_callback(self.on_progress_update)
 
@@ -2573,6 +2577,52 @@ class PenguinCLI:
         self._safely_stop_progress()
         print("\nOperation interrupted by user.")
         raise KeyboardInterrupt
+
+    def _filter_verbose_code_blocks(self, message: str) -> str:
+        """Filter verbose code blocks to prevent screen clutter.
+        
+        Summarizes <execute> blocks and very long code blocks.
+        Returns the filtered message.
+        """
+        import re
+        
+        # Pattern to match <execute> blocks
+        execute_pattern = r'<execute>(.*?)</execute>'
+        
+        def summarize_execute_block(match):
+            code = match.group(1).strip()
+            lines = code.split('\n')
+            line_count = len(lines)
+            
+            # If short, keep as-is
+            if line_count <= 5:
+                return match.group(0)
+            
+            # Create summary
+            first_line = lines[0].strip() if lines else ""
+            
+            # Extract what the code is doing (heuristic)
+            if 'import' in first_line.lower():
+                action = "importing modules"
+            elif 'def ' in code or 'class ' in code:
+                action = "defining function/class"
+            elif 'print' in code:
+                action = "printing output"
+            elif 'Path' in code and 'write' in code:
+                action = "writing to file"
+            elif 'Path' in code and 'read' in code:
+                action = "reading file"
+            else:
+                # Use first meaningful line
+                action = first_line[:50] + "..." if len(first_line) > 50 else first_line
+            
+            summary = f"[Code: {line_count} lines - {action}]"
+            return summary
+        
+        # Replace execute blocks with summaries
+        filtered = re.sub(execute_pattern, summarize_execute_block, message, flags=re.DOTALL)
+        
+        return filtered
 
     def _extract_and_display_reasoning(self, message: str) -> str:
         """Extract <details> reasoning blocks and display them in a separate gray panel.
@@ -2681,9 +2731,14 @@ class PenguinCLI:
             if role == "assistant":
                 self.last_completed_message = message
 
+        # Filter verbose code blocks for assistant messages
+        filtered_message = message
+        if role == "assistant":
+            filtered_message = self._filter_verbose_code_blocks(message)
+
         # Use unified renderer for all message rendering
         # Render with current style (no special case for welcome message)
-        panel = self.renderer.render_message(message, role=role, as_panel=True)
+        panel = self.renderer.render_message(filtered_message, role=role, as_panel=True)
         if panel:  # Only print if not filtered as duplicate
             self.console.print(panel)
 
@@ -2909,6 +2964,179 @@ class PenguinCLI:
             self.display_message(
                 f"Projects and Tasks:\n{json.dumps(response, indent=2)}", "system"
             )
+
+    def _display_checkpoints_response(self, response: Dict[str, Any]):
+        """Display checkpoints in a nicely formatted table"""
+        try:
+            from rich.table import Table
+            
+            checkpoints = response.get("checkpoints", [])
+            
+            if not checkpoints:
+                self.display_message("No checkpoints found", "system")
+                return
+            
+            # Create table for checkpoints
+            table = Table(show_header=True, header_style="bold magenta", title="📍 Checkpoints")
+            table.add_column("ID", style="cyan", width=12)
+            table.add_column("Type", style="blue", width=8)
+            table.add_column("Name", style="green")
+            table.add_column("Timestamp", style="yellow")
+            table.add_column("Messages", style="dim", width=8)
+            
+            for cp in checkpoints:
+                checkpoint_id = cp.get("id", "")[:12]
+                checkpoint_type = cp.get("type", "auto")
+                name = cp.get("name") or "-"
+                timestamp = cp.get("timestamp", "")
+                
+                # Format timestamp if it's an ISO string
+                try:
+                    if "T" in timestamp:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                        timestamp = dt.strftime("%Y-%m-%d %H:%M")
+                except:
+                    pass
+                
+                message_count = cp.get("message_count", "?")
+                
+                table.add_row(
+                    checkpoint_id,
+                    checkpoint_type,
+                    name,
+                    timestamp,
+                    str(message_count)
+                )
+            
+            self.console.print(table)
+            self.display_message(
+                f"\nUse `/rollback <id>` to restore or `/branch <id>` to create a new branch",
+                "system"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error displaying checkpoints: {e}")
+            self.display_message(f"Checkpoints:\n{json.dumps(response, indent=2)}", "system")
+
+    def _display_truncations_response(self, response: Dict[str, Any]):
+        """Display truncation events in a nicely formatted table"""
+        try:
+            from rich.table import Table
+            from rich.panel import Panel
+            
+            truncations = response.get("truncations", [])
+            
+            if not truncations:
+                self.display_message("✓ No truncation events - context window is within budget", "system")
+                return
+            
+            # Show summary panel first
+            total_removed = response.get("total_messages_removed", 0)
+            total_freed = response.get("total_tokens_freed", 0)
+            total_events = response.get("total_events", 0)
+            
+            summary_panel = Panel(
+                f"**Total Events**: {total_events}\n"
+                f"**Messages Removed**: {total_removed}\n"
+                f"**Tokens Freed**: {total_freed:,}",
+                title="[yellow]Context Trimming Summary[/yellow]",
+                border_style="yellow",
+                padding=(0, 2)
+            )
+            self.console.print(summary_panel)
+            
+            # Create table for truncation events
+            table = Table(show_header=True, header_style="bold magenta", title="Recent Truncation Events")
+            table.add_column("Category", style="cyan")
+            table.add_column("Messages", style="red", justify="right")
+            table.add_column("Tokens Freed", style="green", justify="right")
+            table.add_column("Timestamp", style="yellow")
+            
+            for event in truncations:
+                category = event.get("category", "unknown")
+                messages_removed = event.get("messages_removed", 0)
+                tokens_freed = event.get("tokens_freed", 0)
+                timestamp = event.get("timestamp", "")
+                
+                # Format timestamp if it's an ISO string
+                try:
+                    if "T" in timestamp:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                        timestamp = dt.strftime("%H:%M:%S")
+                except:
+                    pass
+                
+                table.add_row(
+                    category,
+                    str(messages_removed),
+                    f"{tokens_freed:,}",
+                    timestamp
+                )
+            
+            self.console.print(table)
+            
+        except Exception as e:
+            logger.error(f"Error displaying truncations: {e}")
+            self.display_message(f"Truncations:\n{json.dumps(response, indent=2)}", "system")
+
+    def _display_token_usage_response(self, response: Dict[str, Any]):
+        """Display enhanced token usage with categories"""
+        try:
+            from rich.table import Table
+            from rich.panel import Panel
+            
+            token_data = response.get("token_usage", response.get("token_usage_detailed", {}))
+            
+            # Create main usage table
+            table = Table(show_header=True, header_style="bold magenta", title="📊 Token Usage")
+            table.add_column("Category", style="cyan")
+            table.add_column("Tokens", style="green", justify="right")
+            table.add_column("Percentage", style="yellow", justify="right")
+            
+            # Get category breakdown if available
+            categories = token_data.get("categories", {})
+            max_tokens = token_data.get("max_tokens", 0)
+            
+            for category_name, tokens in categories.items():
+                percentage = (tokens / max_tokens * 100) if max_tokens > 0 else 0
+                table.add_row(
+                    category_name,
+                    f"{tokens:,}",
+                    f"{percentage:.1f}%"
+                )
+            
+            # Add total row
+            total = token_data.get("current_total_tokens", 0)
+            pct = token_data.get("percentage", 0)
+            
+            table.add_row(
+                "TOTAL",
+                f"{total:,} / {max_tokens:,}",
+                f"{pct:.1f}%",
+                style="bold"
+            )
+            
+            self.console.print(table)
+            
+            # Show truncation warning if active
+            truncations = token_data.get("truncations", {})
+            if truncations and truncations.get("total_truncations", 0) > 0:
+                warning_panel = Panel(
+                    f"⚠️ Context trimming is active\n"
+                    f"Messages removed: {truncations.get('messages_removed', 0)}\n"
+                    f"Tokens freed: {truncations.get('tokens_freed', 0):,}\n"
+                    f"Use `/truncations` to see details",
+                    title="[yellow]Truncation Active[/yellow]",
+                    border_style="yellow",
+                    padding=(0, 2)
+                )
+                self.console.print(warning_panel)
+                
+        except Exception as e:
+            logger.error(f"Error displaying token usage: {e}")
+            self.display_message(f"Token usage:\n{json.dumps(response, indent=2)}", "system")
 
     def display_action_result(self, result: Dict[str, Any]):
         """Display action results in a more readable format"""
@@ -3457,7 +3685,54 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                             if "error" in response:
                                 self.display_message(response["error"], "error")
 
-                            # Handle status messages
+                            # Handle specialized displays FIRST (before generic status)
+                            # These have both data and status, show the rich display
+                            elif "checkpoints" in response:
+                                self._display_checkpoints_response(response)
+
+                            elif "truncations" in response:
+                                self._display_truncations_response(response)
+
+                            elif "token_usage" in response or "token_usage_detailed" in response:
+                                self._display_token_usage_response(response)
+
+                            # Handle conversation list
+                            elif "conversations" in response:
+                                conversation_summaries = response["conversations"]
+                                selected_id = (
+                                    self.conversation_menu.select_conversation(
+                                        conversation_summaries
+                                    )
+                                )
+                                if selected_id:
+                                    load_result = await self.interface.handle_command(
+                                        f"chat load {selected_id}"
+                                    )
+                                    if "status" in load_result:
+                                        self.display_message(
+                                            load_result["status"], "system"
+                                        )
+                                    elif "error" in load_result:
+                                        self.display_message(
+                                            load_result["error"], "error"
+                                        )
+
+                            # Handle list command response
+                            elif "projects" in response and "tasks" in response:
+                                self._display_list_response(response)
+
+                            # Handle model list
+                            elif "models_list" in response:
+                                models = response["models_list"]
+                                models_msg = "Available models:\n"
+                                for model in models:
+                                    current_marker = (
+                                        "→ " if model.get("current", False) else "  "
+                                    )
+                                    models_msg += f"{current_marker}{model.get('name')} ({model.get('provider')})\n"
+                                self.display_message(models_msg, "system")
+
+                            # Handle generic status messages LAST (fallback)
                             elif "status" in response:
                                 self.display_message(response["status"], "system")
 
@@ -3496,21 +3771,17 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                                             load_result["error"], "error"
                                         )
 
-                            # Handle token usage display
-                            elif "token_usage" in response:
-                                token_data = response["token_usage"]
-                                token_msg = "Current token usage:\n"
-                                token_msg += f"Total tokens: {token_data.get('current_total_tokens', 0)} / {token_data.get('max_tokens', 0)} "
-                                token_msg += (
-                                    f"({token_data.get('percentage', 0):.1f}%)\n\n"
-                                )
+                            # Handle token usage display (enhanced)
+                            elif "token_usage" in response or "token_usage_detailed" in response:
+                                self._display_token_usage_response(response)
 
-                                if "categories" in token_data:
-                                    token_msg += "Token breakdown by category:\n"
-                                    for cat, count in token_data["categories"].items():
-                                        token_msg += f"• {cat}: {count}\n"
+                            # Handle checkpoints list display
+                            elif "checkpoints" in response:
+                                self._display_checkpoints_response(response)
 
-                                self.display_message(token_msg, "system")
+                            # Handle truncations display
+                            elif "truncations" in response:
+                                self._display_truncations_response(response)
 
                             # Handle model list
                             elif "models_list" in response:
@@ -3741,8 +4012,16 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
     # Legacy stream_callback method removed - now using event system only
 
     def _finalize_streaming(self):
-        """Finalize streaming and clean up the Live display"""
-        if self.streaming_live:
+        """Finalize streaming and clean up the StreamingDisplay"""
+        # Stop the StreamingDisplay
+        if self.streaming_display and self.streaming_display.is_active:
+            try:
+                self.streaming_display.stop(finalize=True)
+            except Exception as e:
+                logger.error(f"Error stopping streaming display: {e}")
+
+        # Legacy cleanup for backward compatibility
+        if hasattr(self, "streaming_live") and self.streaming_live:
             try:
                 self.streaming_live.stop()
                 self.streaming_live = None
@@ -3766,29 +4045,30 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
         try:
             if event_type == "stream_chunk":
                 # ------------------------------------------------------------------
-                # Unified streaming handler using stream_id from Core
+                # NEW: Unified streaming handler using StreamingDisplay with Rich.Live
                 # ------------------------------------------------------------------
                 stream_id = data.get("stream_id")
                 chunk = data.get("chunk", "")
                 is_final = data.get("is_final", False)
                 self.streaming_role = data.get("role", "assistant")
+                is_reasoning = data.get("is_reasoning", False)
 
                 # Ignore chunks with no stream_id (should not happen after refactor)
                 if stream_id is None:
                     return
 
-                # First chunk of a new streaming message -> initialise panel
+                # First chunk of a new streaming message -> start StreamingDisplay
                 if self._active_stream_id is None:
                     self._active_stream_id = stream_id
                     self._streaming_started = True
-                    self.is_streaming = True  # Set streaming flag
+                    self.is_streaming = True
                     self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""  # Reset reasoning buffer too
+                    self.streaming_reasoning_buffer = ""
 
-                    # CRITICAL: Stop ALL active progress displays FIRST to prevent "Only one live display" error
+                    # CRITICAL: Stop ALL active progress displays FIRST
                     self._safely_stop_progress()
 
-                    # Also stop the "Thinking..." indicator from chat_loop
+                    # Stop the "Thinking..." indicator from chat_loop
                     if hasattr(self, "_thinking_progress"):
                         try:
                             self._thinking_progress.stop()
@@ -3796,13 +4076,8 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                         except Exception:
                             pass
 
-                    # Clean up any previous Live panel
-                    if getattr(self, "streaming_live", None):
-                        try:
-                            self.streaming_live.stop()
-                        except Exception:
-                            pass
-                        self.streaming_live = None
+                    # Start new streaming display with Rich.Live
+                    self.streaming_display.start_message(role=self.streaming_role)
 
                 # Ignore chunks that belong to an old or foreign stream
                 if stream_id != self._active_stream_id:
@@ -3814,102 +4089,27 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
 
                 # Process chunk for display
                 if chunk:
-                    # Check if this is reasoning content or regular content
-                    is_reasoning = data.get("is_reasoning", False)
-                    message_type = data.get("message_type", "assistant")
-
-                    if is_reasoning or message_type == "reasoning":
-                        # Add to reasoning buffer
+                    # Append to buffers for deduplication tracking
+                    if is_reasoning:
                         self.streaming_reasoning_buffer += chunk
                     else:
-                        # Add to regular content buffer
                         self.streaming_buffer += chunk
-
-                    # Update or create streaming panel using unified renderer
-                    if not getattr(self, "streaming_live", None):
-                        # Use unified renderer for streaming message
-                        panel = self.renderer.render_streaming_message(
-                            self.streaming_buffer,
-                            role=self.streaming_role,
-                            show_cursor=True
-                        )
-                        self.streaming_live = Live(
-                            panel,
-                            refresh_per_second=10,
-                            console=self.console,
-                            auto_refresh=True,
-                            transient=False  # Keep visible after stop
-                        )
-                        self.streaming_live.start()
-                    else:
-                        try:
-                            # Update with unified renderer
-                            panel = self.renderer.render_streaming_message(
-                                self.streaming_buffer,
-                                role=self.streaming_role,
-                                show_cursor=True
-                            )
-                            self.streaming_live.update(panel)
-                        except Exception as e:
-                            # Log the error and recreate Live display
-                            logger.error(f"Live.update() failed: {e}, recreating Live display")
-                            try:
-                                self.streaming_live.stop()
-                            except:
-                                pass
-                            self.streaming_live = None
-                            # Will be recreated on next chunk
+                    
+                    # Append to StreamingDisplay
+                    self.streaming_display.append_text(chunk, is_reasoning=is_reasoning)
 
                 if is_final:
-                    # Final chunk received - clean up streaming state
+                    # Final chunk received - finalize streaming
                     self.is_streaming = False
-
-                    # Display reasoning panel FIRST (above the Penguin message)
-                    if self.streaming_reasoning_buffer.strip():
-                        reasoning_panel = self.renderer.render_reasoning(
-                            self.streaming_reasoning_buffer
-                        )
-                        self.console.print(reasoning_panel)
-
-                    # Strip reasoning tags from content before final display
-                    import re
-                    content_without_reasoning = re.sub(r'<reasoning>.*?</reasoning>', '', self.streaming_buffer, flags=re.DOTALL).strip()
-                    filtered_content = (
-                        self.renderer.filter_content(content_without_reasoning)
-                        if content_without_reasoning
-                        else ""
-                    )
-
-                    # Update Live display ONE LAST TIME with final formatted version
-                    if getattr(self, "streaming_live", None) and filtered_content:
-                        try:
-                            final_renderable = None
-                            if len(filtered_content) > self.LARGE_STREAM_RENDER_THRESHOLD:
-                                simplified = Text(filtered_content)
-                                if self.renderer.style == RenderStyle.MINIMAL:
-                                    final_renderable = self.renderer.create_minimal_message(
-                                        simplified,
-                                        role=self.streaming_role,
-                                    )
-                                else:
-                                    final_renderable = self.renderer.create_message_panel(
-                                        simplified,
-                                        role=self.streaming_role,
-                                    )
-                            else:
-                                final_renderable = self.renderer.render_message(
-                                    filtered_content,
-                                    role=self.streaming_role,
-                                    as_panel=True
-                                )
-
-                            if final_renderable is not None:
-                                self.streaming_live.update(final_renderable)
-                            # Stop Live - content persists (transient=False)
-                            self.streaming_live.stop()
-                        except Exception as e:
-                            logger.error(f"Failed to update final Live display: {e}")
-                        self.streaming_live = None
+                    
+                    # Filter verbose code blocks before finalizing
+                    if self.streaming_buffer:
+                        filtered_buffer = self._filter_verbose_code_blocks(self.streaming_buffer)
+                        # Update the display's content buffer with filtered version
+                        self.streaming_display.content_buffer = filtered_buffer
+                    
+                    # Stop streaming display (will show final formatted version)
+                    self.streaming_display.stop(finalize=True)
 
                     # Store for deduplication
                     if self.streaming_buffer.strip():
@@ -3945,6 +4145,28 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
             elif event_type == "token_update":
                 # Could update a token display here if we add one
                 pass
+
+            elif event_type == "tool":
+                # Handle tool execution events - update streaming display
+                phase = data.get("phase", "")
+                tool_name = data.get("action", data.get("tool_name", ""))
+                
+                if phase == "start" and tool_name:
+                    # Show tool execution indicator
+                    if self.streaming_display.is_active:
+                        self.streaming_display.set_tool(tool_name)
+                
+                elif phase == "end":
+                    # Clear tool indicator
+                    if self.streaming_display.is_active:
+                        self.streaming_display.clear_tool()
+                    
+                    # Optionally display tool result (if not verbose)
+                    result = data.get("result", "")
+                    if result and not self.is_streaming:
+                        # Only show if not currently streaming assistant response
+                        tool_summary = f"✓ {tool_name}" if len(result) < 50 else f"✓ {tool_name}: {result[:47]}..."
+                        self.display_message(tool_summary, "system")
 
             elif event_type == "message":
                 # A new message has been added to the conversation
@@ -4078,7 +4300,11 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     self.streaming_reasoning_buffer = ""
                     self._active_stream_id = None
                     
-                    self.display_message(f"Starting task: {task_name}", "system")
+                    # Update streaming display status
+                    if self.streaming_display.is_active:
+                        self.streaming_display.set_status(f"Starting task: {task_name}")
+                    else:
+                        self.display_message(f"Starting task: {task_name}", "system")
 
                 elif "task_progress" in status_type:
                     self.run_mode_active = True
@@ -4088,6 +4314,10 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     self.run_mode_status = (
                         f"Progress: {progress}% (Iter: {iteration}/{max_iter})"
                     )
+                    
+                    # Update streaming display if active
+                    if self.streaming_display.is_active:
+                        self.streaming_display.set_status(self.run_mode_status)
 
                 elif "task_completed" in status_type or "run_mode_ended" in status_type:
                     self.run_mode_active = False
@@ -4095,6 +4325,10 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     # CRITICAL: Finalize any active streaming when task completes
                     if self._active_stream_id is not None or self.is_streaming:
                         self._finalize_streaming()
+                    
+                    # Clear streaming display status
+                    if self.streaming_display.is_active:
+                        self.streaming_display.clear_status()
                     
                     if "task_completed" in status_type:
                         task_name = data.get("data", {}).get(
@@ -4110,7 +4344,12 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
                     self.run_mode_active = True
                     prompt = data.get("data", {}).get("prompt", "Input needed")
                     self.run_mode_status = f"Clarification needed: {prompt}"
-                    self.display_message(f"Clarification needed: {prompt}", "system")
+                    
+                    # Update streaming display if active
+                    if self.streaming_display.is_active:
+                        self.streaming_display.set_status(self.run_mode_status)
+                    else:
+                        self.display_message(f"Clarification needed: {prompt}", "system")
 
             elif event_type == "error":
                 # Handle error events

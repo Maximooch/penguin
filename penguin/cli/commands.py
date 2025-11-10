@@ -791,3 +791,195 @@ async def context_command(core: Any, args: List[str]) -> Dict[str, Any]:
         return {"error": f"Failed to load context file: {file_path}"}
 
     return {"error": "Unknown context command"}
+
+
+# =============================================================================
+# CHECKPOINT COMMANDS (Phase 2 - Kimi CLI Patterns)
+# =============================================================================
+
+@registry.register(
+    "checkpoint",
+    CommandCategory.CONTEXT,
+    "Create a manual checkpoint of current conversation",
+    usage="/checkpoint [name] [description]",
+    aliases=["cp", "save"]
+)
+async def checkpoint_command(core: Any, args: List[str]) -> Dict[str, Any]:
+    """Create a manual checkpoint of the current conversation state"""
+    name = args[0] if args else None
+    description = " ".join(args[1:]) if len(args) > 1 else None
+    
+    try:
+        checkpoint_id = await core.create_checkpoint(name=name, description=description)
+        
+        if checkpoint_id:
+            result = {
+                "status": f"✓ Checkpoint created: {checkpoint_id}",
+                "checkpoint_id": checkpoint_id
+            }
+            if name:
+                result["checkpoint_name"] = name
+            if description:
+                result["checkpoint_description"] = description
+            return result
+        else:
+            return {"error": "Failed to create checkpoint"}
+            
+    except Exception as e:
+        logger.error(f"Error creating checkpoint: {e}", exc_info=True)
+        return {"error": f"Failed to create checkpoint: {str(e)}"}
+
+
+@registry.register(
+    "rollback",
+    CommandCategory.CONTEXT,
+    "Rollback conversation to a specific checkpoint",
+    usage="/rollback <checkpoint_id>",
+    aliases=["revert", "undo"]
+)
+async def rollback_command(core: Any, args: List[str]) -> Dict[str, Any]:
+    """Rollback to a specific checkpoint"""
+    if not args:
+        return {"error": "Checkpoint ID required. Usage: /rollback <checkpoint_id>"}
+    
+    checkpoint_id = args[0]
+    
+    try:
+        success = await core.rollback_to_checkpoint(checkpoint_id)
+        
+        if success:
+            return {
+                "status": f"✓ Rolled back to checkpoint: {checkpoint_id}",
+                "checkpoint_id": checkpoint_id
+            }
+        else:
+            return {"error": f"Failed to rollback to checkpoint {checkpoint_id}"}
+            
+    except Exception as e:
+        logger.error(f"Error rolling back to checkpoint: {e}", exc_info=True)
+        return {"error": f"Rollback failed: {str(e)}"}
+
+
+@registry.register(
+    "checkpoints",
+    CommandCategory.CONTEXT,
+    "List available checkpoints",
+    usage="/checkpoints [limit]",
+    aliases=["list-checkpoints", "cps"]
+)
+async def checkpoints_command(core: Any, args: List[str]) -> Dict[str, Any]:
+    """List available checkpoints for the current session"""
+    limit = 20  # Default limit
+    
+    if args:
+        try:
+            limit = int(args[0])
+        except ValueError:
+            return {"error": f"Invalid limit: {args[0]}. Must be a number."}
+    
+    try:
+        checkpoints = core.list_checkpoints(limit=limit)
+        
+        if not checkpoints:
+            return {"status": "No checkpoints found", "checkpoints": []}
+        
+        return {
+            "status": f"Found {len(checkpoints)} checkpoint(s)",
+            "checkpoints": checkpoints,
+            "count": len(checkpoints)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing checkpoints: {e}", exc_info=True)
+        return {"error": f"Failed to list checkpoints: {str(e)}"}
+
+
+@registry.register(
+    "branch",
+    CommandCategory.CONTEXT,
+    "Create a new conversation branch from a checkpoint",
+    usage="/branch <checkpoint_id> [name] [description]",
+    aliases=["fork"]
+)
+async def branch_command(core: Any, args: List[str]) -> Dict[str, Any]:
+    """Create a new branch from a checkpoint"""
+    if not args:
+        return {"error": "Checkpoint ID required. Usage: /branch <checkpoint_id> [name] [description]"}
+    
+    checkpoint_id = args[0]
+    name = args[1] if len(args) > 1 else None
+    description = " ".join(args[2:]) if len(args) > 2 else None
+    
+    try:
+        branch_id = await core.branch_from_checkpoint(
+            checkpoint_id=checkpoint_id,
+            name=name,
+            description=description
+        )
+        
+        if branch_id:
+            result = {
+                "status": f"✓ Branch created: {branch_id}",
+                "branch_id": branch_id,
+                "source_checkpoint": checkpoint_id
+            }
+            if name:
+                result["branch_name"] = name
+            return result
+        else:
+            return {"error": f"Failed to create branch from checkpoint {checkpoint_id}"}
+            
+    except Exception as e:
+        logger.error(f"Error creating branch: {e}", exc_info=True)
+        return {"error": f"Branch creation failed: {str(e)}"}
+
+
+# =============================================================================
+# ENHANCED CONTEXT WINDOW COMMANDS (Phase 3 - Kimi CLI Patterns)
+# =============================================================================
+
+@registry.register(
+    "truncations",
+    CommandCategory.DEBUG,
+    "Show recent context window truncation events",
+    usage="/truncations [limit]",
+    aliases=["trunc"]
+)
+async def truncations_command(core: Any, args: List[str]) -> Dict[str, Any]:
+    """Display recent truncation events from context window management"""
+    limit = 10  # Default limit
+    
+    if args:
+        try:
+            limit = int(args[0])
+        except ValueError:
+            return {"error": f"Invalid limit: {args[0]}. Must be a number."}
+    
+    try:
+        # Get token usage which includes truncation data
+        usage = core.conversation_manager.get_token_usage()
+        truncations = usage.get("truncations", {})
+        recent_events = truncations.get("recent_events", [])
+        
+        if not recent_events:
+            return {
+                "status": "No truncation events yet",
+                "truncations": [],
+                "summary": "Context window is within budget"
+            }
+        
+        # Limit the results
+        limited_events = recent_events[:limit]
+        
+        return {
+            "status": f"Found {len(recent_events)} truncation event(s)",
+            "truncations": limited_events,
+            "count": len(recent_events),
+            "total_messages_removed": truncations.get("messages_removed", 0),
+            "total_tokens_freed": truncations.get("tokens_freed", 0),
+            "total_events": truncations.get("total_truncations", 0)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting truncation events: {e}", exc_info=True)
+        return {"error": f"Failed to get truncations: {str(e)}"}

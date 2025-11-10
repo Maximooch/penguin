@@ -397,3 +397,77 @@ commands:
         required: true
         description: "Output style name"
     handler: "_handle_output_command"
+
+  # Checkpoint commands (NEW - Phase 2)
+  - name: checkpoint
+    category: chat
+    description: "Create a manual checkpoint of current conversation"
+    aliases: ["cp", "save"]
+    parameters:
+      - name: name
+        type: string
+        required: false
+        description: "Optional checkpoint name"
+      - name: description
+        type: string
+        required: false
+        description: "Optional checkpoint description"
+    handler: "_handle_checkpoint_command"
+    enabled: true
+
+  - name: rollback
+    category: chat
+    description: "Rollback conversation to a specific checkpoint"
+    aliases: ["revert", "undo"]
+    parameters:
+      - name: checkpoint_id
+        type: string
+        required: true
+        description: "Checkpoint ID to rollback to"
+    handler: "_handle_rollback_command"
+    enabled: true
+
+  - name: checkpoints
+    category: chat
+    description: "List available checkpoints"
+    aliases: ["cps", "list-checkpoints"]
+    parameters:
+      - name: limit
+        type: integer
+        required: false
+        description: "Maximum number of checkpoints to show (default: 20)"
+    handler: "_handle_checkpoints_command"
+    enabled: true
+
+  - name: branch
+    category: chat
+    description: "Create a new conversation branch from a checkpoint"
+    aliases: ["fork"]
+    parameters:
+      - name: checkpoint_id
+        type: string
+        required: true
+        description: "Checkpoint ID to branch from"
+      - name: name
+        type: string
+        required: false
+        description: "Optional branch name"
+      - name: description
+        type: string
+        required: false
+        description: "Optional branch description"
+    handler: "_handle_branch_command"
+    enabled: true
+
+  # Enhanced context window commands (Phase 3)
+  - name: truncations
+    category: system
+    description: "Show recent context window truncation events"
+    aliases: ["trunc"]
+    parameters:
+      - name: limit
+        type: integer
+        required: false
+        description: "Maximum number of events to show (default: 10)"
+    handler: "_handle_truncations_command"
+    enabled: true
