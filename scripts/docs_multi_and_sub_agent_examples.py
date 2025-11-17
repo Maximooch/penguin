@@ -76,7 +76,7 @@ class DummyCore:
 async def multi_agent_example() -> None:
     async with PenguinClient() as client:
         response = await client.chat(
-            "Generate a changelog for v0.3.3",
+            "Generate a changelog for v0.4.0",
             options=ChatOptions(
                 context={"repository": "penguin"},
                 agent_id="release",

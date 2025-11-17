@@ -4,7 +4,7 @@ The `APIClient` class provides a unified interface for interacting with various 
 
 ## Architecture
 
-The API client architecture v0.3.3.3.post1 consists of:
+The API client architecture v0.4.0 consists of:
 
 1. **APIClient** - Main interface with enhanced streaming and callback handling
 2. **Client Handlers** - Provider-specific implementations (native adapters or gateway classes)

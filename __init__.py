@@ -64,15 +64,16 @@ try:
 except ImportError:
     _web_exports = []
 
-# Version helper - prefer inner package version over installed package version
+# Version helper - prefer explicit module, then installed dist metadata
 try:
-    from penguin.penguin import __version__
-except ImportError:
-    # Fallback to installed package version
+    # Prefer local version module when working from source
+    from penguin._version import __version__  # type: ignore
+except Exception:
+    # Fallback to installed package version metadata
     try:
         __version__ = version("penguin-ai")
-    except PackageNotFoundError:  # Local dev mode
-        __version__ = "0.1.2-dev"
+    except PackageNotFoundError:  # Local dev mode without installed dist
+        __version__ = "0.4.0"
 
 __all__ = [
     "Engine",

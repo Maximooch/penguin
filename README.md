@@ -456,7 +456,7 @@ For major changes, please open an issue first to discuss your approach.
 <!-- - **[Performance Issues](https://github.com/Maximooch/penguin/blob/main/test_startup_performance.py)** - Use our performance test script -->
 
 ### Project Status
-- **Current Version**: v0.3.3.3.post1 (Phase 3 Complete)  
+- **Current Version**: v0.4.0  
 - **Active Development**: Phase 3 - Multi/Sub-agents, CLI/TUI refactor, GH integration, and achieving Claude Code parity then surpassing
 - **Stability**: Core features stable, performance optimization in progress
 - **Python Support**: 3.9+ (3.10+ recommended for best performance)

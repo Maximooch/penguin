@@ -2,9 +2,9 @@
 sidebar_position: 2
 ---
 
-# Getting Started (v0.3.3.3.post1)
+# Getting Started (v0.4.0)
 
-Welcome! This guide will get you up and running with Penguin v0.3.3.3.post1, featuring advanced conversation management, real-time streaming, and comprehensive checkpoint capabilities.
+Welcome! This guide will get you up and running with Penguin v0.4.0, featuring advanced conversation management, real-time streaming, and comprehensive checkpoint capabilities.
 
 ---
 
@@ -208,7 +208,7 @@ memory:
 - [Web Interface Guide](usage/web_interface.md) - Using the enhanced web UI with streaming
 - [Configuration Options](configuration.md) - Detailed configuration with model switching
 
-### New v0.3.3.3.post1 Features
+### New v0.4.0 Features
 - [Checkpoint Management](usage/checkpointing.md) - Conversation state management and branching
 - [Streaming and Events](usage/streaming.md) - Real-time streaming and event-driven architecture
 - [Model Management](usage/model_management.md) - Runtime model switching and configuration
@@ -247,7 +247,6 @@ penguin profile               # Profile startup and save a report
 penguin perf-test             # Benchmark startup performance
 penguin config debug          # Extended config + environment diagnostics
 ```
-
 
 
 

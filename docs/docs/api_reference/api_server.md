@@ -895,7 +895,7 @@ Get comprehensive system information including component status.
 **Response:**
 ```json
 {
-  "penguin_version": "0.3.0",
+  "penguin_version": "0.4.0",
   "engine_available": true,
   "checkpoints_enabled": true,
   "current_model": {
@@ -970,7 +970,7 @@ Get comprehensive model and system capabilities.
     "vision_enabled": true
   },
   "api_version": "v1",
-  "penguin_version": "0.3.0"
+  "penguin_version": "0.4.0"
 }
 ```
 

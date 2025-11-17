@@ -1,6 +1,6 @@
 # Context Window Manager
 
-The `ContextWindowManager` v0.3.3.3.post1 handles advanced token budgeting and content trimming for conversation context with multimodal content handling and dynamic budget allocation.
+The `ContextWindowManager` v0.4.0 handles advanced token budgeting and content trimming for conversation context with multimodal content handling and dynamic budget allocation.
 
 ## Overview
 
@@ -33,7 +33,7 @@ Messages are categorized into five priority levels for intelligent trimming:
 - **Fallback categories**: Automatic handling of new message types with default budgets
 
 ```mermaid
-pie title Token Budget Allocation v0.3.3.3.post1
+pie title Token Budget Allocation v0.4.0
     "SYSTEM" : 10
     "CONTEXT" : 35
     "DIALOG" : 50
@@ -269,7 +269,7 @@ Returns current token usage for a specific category.
 
 ## Advanced Trimming Strategy
 
-The trimming strategy v0.3.3.3.post1 follows a sophisticated multi-pass approach:
+The trimming strategy v0.4.0 follows a sophisticated multi-pass approach:
 
 ### Phase 1: Image Optimization
 1. **Multi-image Detection**: Identify sessions with multiple images
@@ -417,7 +417,7 @@ context_window.reset_usage(MessageCategory.DIALOG)  # Reset specific category
 
 ## Token Budgeting System
 
-The dynamic token budget allocation system v0.3.3.3.post1 includes:
+The dynamic token budget allocation system v0.4.0 includes:
 
 ### Intelligent Budget Distribution
 - **SYSTEM**: 10% (guaranteed preservation, strict minimum enforcement)

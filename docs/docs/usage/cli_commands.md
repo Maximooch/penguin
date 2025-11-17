@@ -1,4 +1,4 @@
-# Penguin CLI – Command Reference (v0.3.x)
+# Penguin CLI – Command Reference (v0.4.x)
 
 Penguin’s CLI supports both traditional sub‑commands (via Typer) and rich in‑chat commands inside the interactive session. This page documents what’s currently implemented and commonly used.
 
