@@ -846,7 +846,23 @@ class Engine:
         if streaming and hasattr(cm, "core") and cm.core:
             # Finalize streaming message (adds to conversation with reasoning)
             try:
-                cm.core.finalize_streaming_message()
+                finalized = cm.core.finalize_streaming_message()
+                # CRITICAL FIX: Use finalized content for action parsing
+                # During streaming, the finalized content is the complete accumulated response
+                if finalized and finalized.get("content"):
+                    old_len = len(assistant_response) if assistant_response else 0
+                    assistant_response = finalized["content"]
+                    logger.debug(
+                        f"[AUTO-CONTINUE FIX] Using finalized content for parsing. "
+                        f"Length: {old_len} -> {len(assistant_response)}"
+                    )
+                    # print(f"[AUTO-CONTINUE FIX] Using finalized content for parsing. Length: {old_len} -> {len(assistant_response)}", flush=True)
+                else:
+                    logger.debug(
+                        f"[AUTO-CONTINUE FIX] No finalized content available. "
+                        f"Using original response (len={len(assistant_response) if assistant_response else 0})"
+                    )
+                    # print(f"[AUTO-CONTINUE FIX] No finalized content available. Using original response (len={len(assistant_response) if assistant_response else 0})", flush=True)
                 logger.debug("Finalized streaming message with reasoning")
             except Exception as _fin_err:
                 logger.warning("Failed to finalise streaming message: %s", _fin_err)
@@ -854,6 +870,7 @@ class Engine:
         action_results = []
         if tools_enabled:
             actions: List[CodeActAction] = parse_action(assistant_response)
+            print(f"[AUTO-CONTINUE FIX] Parsed {len(actions)} actions from response", flush=True)
             # Enforce one action per iteration for incremental execution
             for act in (actions[:1] if actions else []):
                 result = await action_executor.execute_action(act)

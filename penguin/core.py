@@ -3213,7 +3213,6 @@ class PenguinCore:
                 del final_metadata["is_streaming"]
 
             if hasattr(self, "conversation_manager") and self.conversation_manager:
-                print(f"[DEBUG] finalize_streaming_message() adding message. has_reasoning={bool(reasoning_content)}, content_length={len(content_to_add)}", flush=True)
                 self.conversation_manager.conversation.add_message(
                     role=self._streaming_state["role"],
                     content=content_to_add,
@@ -3281,7 +3280,15 @@ class PenguinCore:
                     "", "assistant", callback_ref
                 )
             )
-        
+
+        # Capture finalized content before resetting state
+        finalized_message = {
+            "content": content_to_add,
+            "reasoning": reasoning_content,
+            "metadata": final_metadata.copy(),
+            "role": self._streaming_state["role"]
+        }
+
         # Reset streaming state
         self._streaming_state = {
             "active": False,
@@ -3298,12 +3305,7 @@ class PenguinCore:
             "last_emit_ts": 0.0,
         }
 
-        # Return message info for caller
-        return {
-            "role": "assistant",
-            "content": content_to_add if content_to_add.strip() else "",
-            "metadata": final_metadata,
-        }
+        return finalized_message
 
     def _prepare_runmode_stream_callback(
         self,

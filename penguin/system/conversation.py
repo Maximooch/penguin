@@ -97,13 +97,6 @@ class ConversationSystem:
         Returns:
             The created Message object
         """
-        # Debug: log when assistant messages are added
-        if role == "assistant":
-            import traceback
-            print(f"[DEBUG] add_message() called for assistant. content_length={len(str(content))}, has_reasoning={metadata.get('has_reasoning') if metadata else False}", flush=True)
-            print(f"[DEBUG] Stack trace:", flush=True)
-            for line in traceback.format_stack()[-5:-1]:
-                print(line.strip(), flush=True)
         # Set default category based on role if not specified
         if category is None:
             if role == "system":
