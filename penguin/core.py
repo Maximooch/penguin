@@ -3213,7 +3213,6 @@ class PenguinCore:
                 del final_metadata["is_streaming"]
 
             if hasattr(self, "conversation_manager") and self.conversation_manager:
-                print(f"[DEBUG] finalize_streaming_message() adding message. has_reasoning={bool(reasoning_content)}, content_length={len(content_to_add)}", flush=True)
                 self.conversation_manager.conversation.add_message(
                     role=self._streaming_state["role"],
                     content=content_to_add,

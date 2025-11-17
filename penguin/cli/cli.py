@@ -4370,16 +4370,10 @@ TIP: Use Alt+Enter for new lines, Enter to submit"""
         """
         if hasattr(self.core, "model_config") and self.core.model_config is not None:
             self.core.model_config.streaming_enabled = enabled
-            print(f"[DEBUG] Set streaming_enabled={enabled} in core.model_config")
-
         if hasattr(self.core, "api_client") and self.core.api_client is not None:
             if hasattr(self.core.api_client, "model_config"):
                 self.core.api_client.model_config.streaming_enabled = enabled
-                print(
-                    f"[DEBUG] Set streaming_enabled={enabled} in api_client.model_config"
-                )
 
-        print(f"[DEBUG] Streaming mode {'enabled' if enabled else 'disabled'}")
 
     def switch_client_preference(self, preference: str = "litellm") -> None:
         """
