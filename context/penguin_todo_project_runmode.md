@@ -49,7 +49,7 @@ Changes
     - Soft ordering: `sequence: "alpha|beta|rc|N"` (lexicographic or numeric)
   - Support agent routing metadata:
     - `agent_role: "planner|implementer|qa|..."` (maps to coordinator roles)
-    - `required_tools: ["apply_diff", "grep_search"]`
+    - `required_tools: ["apply_diff", "grep_search"]` 
     - `skills: ["python", "fastapi", "react"]`
     - `parallelizable: true|false` and optional `batch: "group-name"`
 - [ ] `penguin/project/models.py`

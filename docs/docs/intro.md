@@ -63,6 +63,8 @@ penguin project create "My Project"
 penguin task create "Implement authentication"
 ```
 
+Tip: Inside the interactive chat, type `/help` to see in‑chat commands for models, streaming, checkpoints, context files, and Run Mode. See also: Usage → CLI Commands.
+
 **Web Interface:**
 ```bash
 # Start web server (requires [web] extra)

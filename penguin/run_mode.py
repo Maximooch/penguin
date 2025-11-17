@@ -489,6 +489,7 @@ class RunMode:
                 )
                 
                 # Check if we got an LLM empty response error - should stop continuous mode
+                # TODO: Consider retrying the task/request, if need be, with a different model or prompt
                 if task_result.get("completion_type") == "llm_empty_response_error":
                     logger.warning("LLM empty response error in continuous mode, stopping")
                     await self._emit_event({

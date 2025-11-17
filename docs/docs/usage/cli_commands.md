@@ -1,7 +1,6 @@
-# Penguin CLI – Current Command Reference (v0.1.x)
+# Penguin CLI – Command Reference (v0.3.x)
 
-> **NOTE**  
-> Penguin is under active development.  The command-line interface already offers a solid core, but many advanced features shown in earlier drafts of the docs have **not been implemented yet**.  This page only documents functionality that is _actually available today_.  Anything else should be considered experimental and subject to change.
+Penguin’s CLI supports both traditional sub‑commands (via Typer) and rich in‑chat commands inside the interactive session. This page documents what’s currently implemented and commonly used.
 
 ---
 
@@ -44,14 +43,14 @@ The following global flags can be combined with either interactive or non-intera
 | `--fast-startup`        | Skip memory indexing for faster launch |
 | `--continue/-c`         | Continue the most recent conversation in interactive mode |
 | `--resume <SESSION_ID>` | Resume a specific saved conversation |
-| `--run <TASK_NAME>`     | Execute a stored task in autonomous **run-mode** |
-| `--247 / --continuous`  | Keep run-mode running continuously until interrupted |
+| `--run <TASK_NAME>`     | Execute a task in autonomous **Run Mode** |
+| `--247 / --continuous`  | Keep Run Mode running continuously until interrupted |
 | `--time-limit <MIN>`    | Set a time limit for run-mode |
 | `--version/-V`          | Print Penguin version and exit |
 
 ---
 
-## Sub-commands
+## Sub-commands (Typer)
 
 ### `project`
 Project management helpers (backed by `ProjectManager`).
@@ -94,6 +93,43 @@ Manage the Penguin configuration file and first-run setup wizard.
 
 ---
 
+## In‑Chat Commands (Interactive Session)
+When running `penguin` interactively, you can use slash‑style commands to control models, streaming, context, checkpoints, and Run Mode. Type `/help` to list all commands.
+
+### Models & Streaming
+```text
+/models                 # Interactive model selector
+/model set <MODEL_ID>   # Set a specific model (provider/model ID)
+/stream on|off          # Toggle token streaming
+```
+
+### Checkpoints & Branching
+```text
+/checkpoint [name] [description]  # Save a conversation checkpoint
+/checkpoints [limit]               # List checkpoints
+/rollback <checkpoint_id>         # Restore to a checkpoint
+/branch <checkpoint_id> [name]    # Branch a new conversation from a checkpoint
+```
+
+### Context & Diagnostics
+```text
+/context list                     # List context files
+/context add <glob>               # Copy files into workspace context
+/context write|edit|remove|note   # Manage context artifacts
+/context clear                    # Clear current context
+
+/tokens                           # Token usage summary
+/tokens detail                    # Detailed token breakdown
+/truncations [limit]              # Recent context window trimming events
+```
+
+### Run Mode (Autonomous Execution)
+```text
+/run task "Name" [description]           # Run a specific task
+/run continuous ["Name" [description]]   # Continuous Run Mode (alias: --247)
+/run stop                                # Stop current Run Mode execution (if supported)
+```
+
 ## Examples
 ```bash
 # Create a project and a task, then start the task
@@ -112,9 +148,7 @@ penguin project task start <TASK_ID>
 
 ## Missing features
 Earlier versions of the docs referenced commands such as `penguin memory`, `penguin db`, advanced task dependency graphs, and full web-server management.  These features are **work-in-progress** and are **not** available in the current release.  Attempting to run them will result in a "No such command" error.
-
 ---
 
-*Last updated: August 22nd 2025*  
-Please open an issue on GitHub if you find any inaccuracies.
-
+*Last updated: November 16, 2025*  
+If you find inaccuracies, please open an issue.

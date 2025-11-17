@@ -278,6 +278,34 @@ penguin-web
 
 For detailed usage, see the [documentation](https://penguin-rho.vercel.app).
 
+### Common In‑Chat Commands
+When running `penguin` interactively, you can use slash‑style commands to control models, streaming, context, checkpoints, and run mode. Type `/help` in chat to see them all. A few useful ones:
+
+```text
+/models                 # Interactive model selector
+/model set <MODEL_ID>   # Set a specific model (e.g., openrouter/anthropic/...)
+/stream on|off          # Toggle token streaming
+
+# Checkpoints & branches
+/checkpoint [name] [description]  # Save a conversation checkpoint
+/checkpoints [limit]               # List checkpoints
+/rollback <checkpoint_id>         # Restore to a checkpoint
+/branch <checkpoint_id> [name]    # Branch a new convo from a checkpoint
+
+# Context window & diagnostics
+/truncations [limit]     # Recent context trimming events
+/tokens|/tokens detail   # Token usage summary / details
+
+# Context file helpers
+/context add <glob>      # Copy files into workspace context
+/context list|clear      # Inspect or clear context files
+/context write|edit|remove|note   # Manage context artifacts
+
+# Run Mode
+/run task "Name" [desc]        # Run a specific task
+/run continuous ["Name" [desc]] # Continuous Run Mode (alias: --247)
+```
+
 <!-- ## 🎬 Demo & Screenshots
 
 ### CLI Interface
