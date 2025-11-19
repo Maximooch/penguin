@@ -886,6 +886,194 @@ Stream task execution events in real-time for long-running tasks.
 - `complete`: Task completed successfully
 - `error`: Error occurred during execution
 
+### Runtime Configuration Management
+
+Penguin provides runtime configuration management for dynamically adjusting project and workspace roots without restarting the server.
+
+#### GET `/api/v1/system/config`
+
+Get the current runtime configuration.
+
+**Response:**
+```json
+{
+  "status": "success",
+  "config": {
+    "project_root": "/Users/username/my-project",
+    "workspace_root": "/Users/username/penguin_workspace",
+    "execution_mode": "project",
+    "active_root": "/Users/username/my-project"
+  }
+}
+```
+
+**Configuration Fields:**
+- `project_root`: The current project directory (typically a git repository)
+- `workspace_root`: The Penguin workspace directory (for notes, conversations, memory)
+- `execution_mode`: Current execution mode (`project` or `workspace`)
+- `active_root`: The currently active root based on execution mode
+
+#### POST `/api/v1/system/config/project-root`
+
+Dynamically change the project root directory at runtime.
+
+**Request Body:**
+```json
+{
+  "path": "/Users/username/new-project"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Project root set to /Users/username/new-project",
+  "path": "/Users/username/new-project",
+  "active_root": "/Users/username/new-project"
+}
+```
+
+**Features:**
+- Validates that the path exists and is a directory
+- Updates all subscribed components (ToolManager, FileMap, etc.)
+- Changes take effect immediately without server restart
+- Preserves workspace root and other settings
+
+**Error Responses:**
+- `400`: Path does not exist or is not a directory
+- `500`: Internal error during configuration update
+
+#### POST `/api/v1/system/config/workspace-root`
+
+Dynamically change the workspace root directory at runtime.
+
+**Request Body:**
+```json
+{
+  "path": "/Users/username/custom-workspace"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Workspace root set to /Users/username/custom-workspace",
+  "path": "/Users/username/custom-workspace",
+  "active_root": "/Users/username/custom-workspace"
+}
+```
+
+**Use Cases:**
+- Switch between different workspace directories
+- Point to shared team workspaces
+- Temporarily work in an isolated environment
+
+#### POST `/api/v1/system/config/execution-mode`
+
+Switch between project and workspace execution modes.
+
+**Request Body:**
+```json
+{
+  "path": "workspace"
+}
+```
+
+**Valid Modes:**
+- `project`: File operations target the project root
+- `workspace`: File operations target the workspace root
+
+**Response:**
+```json
+{
+  "status": "success",
+  "message": "Execution mode set to workspace: /Users/username/penguin_workspace",
+  "execution_mode": "workspace",
+  "active_root": "/Users/username/penguin_workspace"
+}
+```
+
+**Behavior:**
+- `project` mode: Tools operate in your code repository
+- `workspace` mode: Tools operate in the Penguin workspace (isolated from project)
+- Active root updates automatically based on mode
+- File operations respect the selected mode immediately
+
+**Error Responses:**
+- `400`: Invalid mode (must be 'project' or 'workspace')
+
+#### Architecture: Observer Pattern
+
+The runtime configuration system uses an observer pattern for clean component synchronization:
+
+```mermaid
+%%{init: {'theme': 'neutral', 'flowchart': {'useMaxWidth': false, 'htmlLabels': true}}}%%
+flowchart TD
+    API[API Endpoint] -->|set_project_root| RC[RuntimeConfig]
+    RC -->|notify observers| TM[ToolManager]
+    RC -->|notify observers| FM[FileMap]
+    RC -->|notify observers| Other[Other Components]
+    
+    TM -->|update| FileRoot[Active File Root]
+    TM -->|refresh| FileMapData[File Map Cache]
+    TM -->|update| NotebookExec[Notebook Executor]
+    
+    style RC fill:#f9f,stroke:#333,stroke-width:2px
+    style API fill:#bbf,stroke:#333,stroke-width:1px
+    style TM fill:#bfb,stroke:#333,stroke-width:1px
+```
+
+**Benefits:**
+- **Immediate Updates**: Changes propagate to all components instantly
+- **No Restart Required**: Server continues running without interruption
+- **Type-Safe**: Validation ensures configuration integrity
+- **Observable**: Components can react to configuration changes autonomously
+
+#### Example: Switching Projects
+
+```python
+import requests
+
+base_url = "http://localhost:8000"
+
+# Get current configuration
+response = requests.get(f"{base_url}/api/v1/system/config")
+print(response.json())
+
+# Switch to a different project
+response = requests.post(
+    f"{base_url}/api/v1/system/config/project-root",
+    json={"path": "/Users/username/other-project"}
+)
+print(response.json())
+
+# Switch execution mode to project
+response = requests.post(
+    f"{base_url}/api/v1/system/config/execution-mode",
+    json={"path": "project"}
+)
+print(response.json())
+```
+
+#### Environment Variables (Initial Configuration)
+
+While runtime endpoints allow dynamic changes, you can set initial values via environment variables:
+
+```bash
+# Set initial project root
+PENGUIN_PROJECT_ROOT=/path/to/project
+
+# Set initial workspace root
+PENGUIN_WORKSPACE=/path/to/workspace
+
+# Set initial execution mode
+PENGUIN_WRITE_ROOT=project  # or 'workspace'
+```
+
+These environment variables are read at server startup and can be overridden at runtime via the API.
+
 ### System Diagnostics
 
 #### GET `/api/v1/system/info`

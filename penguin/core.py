@@ -514,6 +514,7 @@ class PenguinCore:
         api_client: Optional[APIClient] = None,
         tool_manager: Optional[ToolManager] = None,
         model_config: Optional[ModelConfig] = None,
+        runtime_config: Optional["RuntimeConfig"] = None,
     ):
         """Initialize PenguinCore with required components."""
         self.config = config or Config.load_config()
@@ -524,6 +525,19 @@ class PenguinCore:
         self.progress_callbacks = []
         self.token_callbacks = []
         self._active_contexts = set()  # Track active execution contexts
+        
+        # Initialize runtime configuration (for dynamic config changes)
+        from penguin.config import RuntimeConfig
+        if runtime_config is None:
+            # Create from current config
+            config_dict = config.to_dict() if hasattr(config, 'to_dict') else {}
+            self.runtime_config = RuntimeConfig(config_dict)
+        else:
+            self.runtime_config = runtime_config
+        
+        # Register tool_manager as observer if it exists
+        if tool_manager and hasattr(tool_manager, 'on_runtime_config_change'):
+            self.runtime_config.register_observer(tool_manager.on_runtime_config_change)
 
         # Initialize unified event system
         from penguin.cli.events import EventBus, EventType

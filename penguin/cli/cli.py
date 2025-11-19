@@ -994,7 +994,25 @@ def main_entry(
         # Typer will handle calling the subcommand.
 
     # Run the async function in the current thread
-    asyncio.run(_async_init_and_run())
+    # Run the async function in the current thread
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # If we are in a running loop (e.g. Jupyter, other async app), we need nest_asyncio
+        try:
+            import nest_asyncio
+            nest_asyncio.apply()
+            asyncio.run(_async_init_and_run())
+        except ImportError:
+            console.print("[bold red]Error: Async event loop already running.[/bold red]")
+            console.print("If you are running this from a notebook or another async app,")
+            console.print("please install 'nest_asyncio' or use the async API directly.")
+            raise typer.Exit(code=1)
+    else:
+        asyncio.run(_async_init_and_run())
 
 
 async def _handle_run_mode(

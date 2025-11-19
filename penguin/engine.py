@@ -14,7 +14,8 @@ from datetime import datetime, timedelta
 import asyncio
 import time
 import multiprocessing as mp
-from typing import Any, Callable, Coroutine, List, Optional, Sequence, Dict, Awaitable, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, AsyncGenerator, Tuple
+from penguin.utils.errors import LLMEmptyResponseError
 
 from penguin.system.conversation_manager import ConversationManager  # type: ignore
 from penguin.utils.parser import parse_action, CodeActAction, ActionExecutor  # type: ignore
@@ -398,6 +399,7 @@ class Engine:
                 "execution_time": (datetime.utcnow() - self.start_time).total_seconds()
             }
 
+
     async def run_task(
         self, 
         task_prompt: str, 
@@ -555,10 +557,44 @@ class Engine:
                 
                 # CRITICAL FIX: Persist conversation after each iteration
                 # _llm_step saves after adding messages, but we need to ensure it persists
+                # Use run_in_executor to avoid blocking the event loop with SQLite writes
                 cm, _, _, _ = self._resolve_components(self.current_agent_id)
-                cm.save()
+                try:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, cm.save)
+                except Exception as save_err:
+                    logger.warning(f"Failed to save conversation state: {save_err}")
 
-                # Check for task completion via completion phrases only
+                # Check for task completion via tool call (primary) or phrases (fallback)
+                task_completed_via_tool = False
+                for tool_result in iteration_results:
+                    if isinstance(tool_result, dict) and tool_result.get("action_name") == "task_completed":
+                        task_completed_via_tool = True
+                        break
+
+                if task_completed_via_tool:
+                    completion_status = "completed"
+                    logger.info(f"Task completion detected via 'task_completed' tool.")
+                    
+                    # Publish completion event
+                    if enable_events:
+                        try:
+                            from penguin.utils.events import EventBus, TaskEvent
+                            event_bus = EventBus.get_instance()
+                            await event_bus.publish(TaskEvent.COMPLETED.value, {
+                                "task_id": task_metadata["id"],
+                                "task_name": task_metadata["name"],
+                                "response": last_response,
+                                "iteration": self.current_iteration,
+                                "max_iterations": max_iters,
+                                "context": task_context,
+                                "message_type": "status",
+                            })
+                        except (ImportError, AttributeError):
+                            pass
+                    break
+
+                # Check for task completion via completion phrases (fallback)
                 if any(phrase in last_response for phrase in all_completion_phrases):
                     completion_status = "completed"
                     logger.debug(f"Task completion detected. Found completion phrase: {all_completion_phrases}")
@@ -581,6 +617,14 @@ class Engine:
                             pass
                     break
         
+                    break
+        
+        except LLMEmptyResponseError as e:
+            logger.warning(f"LLM returned empty response during task: {e}")
+            completion_status = "llm_empty_response_error"
+            if message_callback:
+                await message_callback(f"LLM Empty Response: {str(e)}", "error")
+            
         except Exception as e:
             # Handle any execution errors
             logger.error(f"Error executing task: {str(e)}")

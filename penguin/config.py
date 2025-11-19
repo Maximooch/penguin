@@ -8,7 +8,7 @@ from logging.handlers import RotatingFileHandler
 logger = logging.getLogger(__name__)
 
 # import logging
-from typing import Any, Dict, Optional, Literal, List
+from typing import Any, Dict, Optional, Literal, List, Callable, Union
 
 import yaml  # type: ignore
 from dotenv import load_dotenv  # type: ignore
@@ -301,6 +301,254 @@ def set_config_value(key: str, value: Any, scope: str = 'project', cwd_override:
 def get_config_value(key: str, default=None, cwd_override: Optional[str] = None):
     cfg = load_config()
     return _get_nested(cfg, key, default)
+
+
+# ---------------------------------------------------------------------------
+# RuntimeConfig - Runtime-changeable configuration with observer pattern
+# ---------------------------------------------------------------------------
+
+class RuntimeConfig:
+    """Manages runtime-changeable configuration separate from startup config.
+    
+    This class provides a clean separation between:
+    1. Startup configuration (immutable, from config files/env vars)
+    2. Runtime configuration (mutable, can be changed via API/CLI)
+    
+    Components can subscribe to configuration changes via the observer pattern,
+    ensuring all parts of the system stay synchronized.
+    
+    Example:
+        >>> runtime_config = RuntimeConfig(startup_config)
+        >>> runtime_config.register_observer(tool_manager.on_config_change)
+        >>> runtime_config.set_project_root("/new/path")  # Observers are notified
+    """
+    
+    def __init__(self, startup_config: Optional[Dict[str, Any]] = None):
+        """Initialize runtime configuration from startup config.
+        
+        Args:
+            startup_config: Initial configuration dictionary from load_config()
+        """
+        startup_config = startup_config or {}
+        
+        # Import here to avoid circular dependency
+        from penguin.utils.path_utils import get_allowed_roots, get_default_write_root
+        
+        # Initialize project root (prefer env, then config, then auto-detect)
+        project_root_env = os.environ.get('PENGUIN_PROJECT_ROOT')
+        if project_root_env:
+            try:
+                self._project_root = str(Path(project_root_env).expanduser().resolve())
+                logger.info(f"RuntimeConfig: Using PENGUIN_PROJECT_ROOT={self._project_root}")
+            except Exception as e:
+                logger.warning(f"Invalid PENGUIN_PROJECT_ROOT: {e}")
+                project_root_env = None
+        
+        if not project_root_env:
+            try:
+                prj_root, _ws_root, *_ = get_allowed_roots()
+                self._project_root = str(prj_root)
+            except Exception:
+                # Fallback to current working directory
+                self._project_root = os.getcwd()
+                logger.warning(f"RuntimeConfig: Falling back to cwd as project_root: {self._project_root}")
+        
+        # Initialize workspace root (prefer env, then config, then default)
+        workspace_env = os.environ.get('PENGUIN_WORKSPACE')
+        if workspace_env:
+            try:
+                self._workspace_root = str(Path(workspace_env).expanduser().resolve())
+            except Exception:
+                self._workspace_root = str(WORKSPACE_PATH)
+        else:
+            self._workspace_root = str(WORKSPACE_PATH)
+        
+        # Initialize execution mode (project vs workspace)
+        root_pref_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+        if root_pref_env in ('project', 'workspace'):
+            self._execution_mode = root_pref_env
+        else:
+            self._execution_mode = get_default_write_root()
+        
+        # Observer list for components that need to react to config changes
+        self._observers: List[Callable[[str, Any], None]] = []
+        
+        logger.info(
+            f"RuntimeConfig initialized: project_root={self._project_root}, "
+            f"workspace_root={self._workspace_root}, execution_mode={self._execution_mode}"
+        )
+    
+    # Properties for read access
+    @property
+    def project_root(self) -> str:
+        """Get current project root directory."""
+        return self._project_root
+    
+    @property
+    def workspace_root(self) -> str:
+        """Get current workspace root directory."""
+        return self._workspace_root
+    
+    @property
+    def execution_mode(self) -> str:
+        """Get current execution mode ('project' or 'workspace')."""
+        return self._execution_mode
+    
+    @property
+    def active_root(self) -> str:
+        """Get the currently active root based on execution mode."""
+        return self._project_root if self._execution_mode == 'project' else self._workspace_root
+    
+    # Observer pattern methods
+    def register_observer(self, callback: Callable[[str, Any], None]) -> None:
+        """Register a callback to be notified of configuration changes.
+        
+        Args:
+            callback: Function that takes (config_key: str, new_value: Any)
+        """
+        if callback not in self._observers:
+            self._observers.append(callback)
+            logger.debug(f"RuntimeConfig: Registered observer {callback.__name__}")
+    
+    def unregister_observer(self, callback: Callable[[str, Any], None]) -> None:
+        """Unregister a callback."""
+        if callback in self._observers:
+            self._observers.remove(callback)
+            logger.debug(f"RuntimeConfig: Unregistered observer {callback.__name__}")
+    
+    def _notify_observers(self, config_key: str, value: Any) -> None:
+        """Notify all registered observers of a configuration change."""
+        logger.debug(f"RuntimeConfig: Notifying {len(self._observers)} observers of {config_key} change")
+        for callback in self._observers:
+            try:
+                callback(config_key, value)
+            except Exception as e:
+                logger.error(f"RuntimeConfig: Observer {callback.__name__} error: {e}", exc_info=True)
+    
+    # Configuration change methods
+    def set_project_root(self, project_root: Union[str, Path]) -> str:
+        """Change the project root directory at runtime.
+        
+        Args:
+            project_root: Path to new project root directory
+            
+        Returns:
+            Success message string
+            
+        Raises:
+            ValueError: If path is invalid or doesn't exist
+        """
+        try:
+            resolved = Path(project_root).expanduser().resolve()
+        except Exception as exc:
+            raise ValueError(f"Invalid project root '{project_root}': {exc}") from exc
+        
+        if not resolved.exists():
+            raise ValueError(f"Project root does not exist: {resolved}")
+        if not resolved.is_dir():
+            raise ValueError(f"Project root must be a directory: {resolved}")
+        
+        old_root = self._project_root
+        self._project_root = str(resolved)
+        
+        logger.info(f"RuntimeConfig: Project root changed from {old_root} to {self._project_root}")
+        
+        # Update environment variable for path_utils security checks
+        try:
+            os.environ['PENGUIN_CWD'] = self._project_root
+        except Exception:
+            pass
+        
+        # Notify observers
+        self._notify_observers('project_root', self._project_root)
+        
+        return f"Project root set to {self._project_root}"
+    
+    def set_workspace_root(self, workspace_root: Union[str, Path]) -> str:
+        """Change the workspace root directory at runtime.
+        
+        Args:
+            workspace_root: Path to new workspace root directory
+            
+        Returns:
+            Success message string
+            
+        Raises:
+            ValueError: If path is invalid or doesn't exist
+        """
+        try:
+            resolved = Path(workspace_root).expanduser().resolve()
+        except Exception as exc:
+            raise ValueError(f"Invalid workspace root '{workspace_root}': {exc}") from exc
+        
+        if not resolved.exists():
+            raise ValueError(f"Workspace root does not exist: {resolved}")
+        if not resolved.is_dir():
+            raise ValueError(f"Workspace root must be a directory: {resolved}")
+        
+        old_root = self._workspace_root
+        self._workspace_root = str(resolved)
+        
+        logger.info(f"RuntimeConfig: Workspace root changed from {old_root} to {self._workspace_root}")
+        
+        # Notify observers
+        self._notify_observers('workspace_root', self._workspace_root)
+        
+        return f"Workspace root set to {self._workspace_root}"
+    
+    def set_execution_mode(self, mode: str) -> str:
+        """Switch active execution root between 'project' and 'workspace'.
+        
+        Args:
+            mode: Either 'project' or 'workspace'
+            
+        Returns:
+            Success message string
+            
+        Raises:
+            ValueError: If mode is not 'project' or 'workspace'
+        """
+        mode_lower = (mode or '').lower()
+        if mode_lower not in ('project', 'workspace'):
+            raise ValueError(f"Invalid execution mode '{mode}'. Must be 'project' or 'workspace'.")
+        
+        old_mode = self._execution_mode
+        self._execution_mode = mode_lower
+        
+        logger.info(f"RuntimeConfig: Execution mode changed from {old_mode} to {self._execution_mode}")
+        
+        # Update environment variable
+        try:
+            os.environ['PENGUIN_WRITE_ROOT'] = mode_lower
+            os.environ['PENGUIN_CWD'] = self.active_root
+        except Exception:
+            pass
+        
+        # Notify observers
+        self._notify_observers('execution_mode', self._execution_mode)
+        
+        return f"Execution mode set to {mode_lower}: {self.active_root}"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Export current runtime configuration as a dictionary.
+        
+        Returns:
+            Dictionary with current configuration values
+        """
+        return {
+            'project_root': self._project_root,
+            'workspace_root': self._workspace_root,
+            'execution_mode': self._execution_mode,
+            'active_root': self.active_root,
+        }
+    
+    def __repr__(self) -> str:
+        return (
+            f"RuntimeConfig(project_root='{self._project_root}', "
+            f"workspace_root='{self._workspace_root}', "
+            f"execution_mode='{self._execution_mode}')"
+        )
+
 
 def init_diagnostics(config_data: dict):
     """Initialize diagnostics based on configuration. Call this after config is loaded."""

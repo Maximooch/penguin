@@ -8,6 +8,57 @@ Penguin AI Assistant v0.2.0 can be configured through environment variables and 
 
 Simpliest way is to just do `penguin config setup`
 
+## Configuration Architecture
+
+Penguin uses a two-tier configuration system:
+
+1. **Startup Configuration** (Immutable): Loaded from environment variables and YAML files at startup
+2. **Runtime Configuration** (Mutable): Can be changed dynamically during operation without restart
+
+### Runtime Configuration
+
+The `RuntimeConfig` system allows you to change critical settings while the server is running:
+
+- **Project Root**: The directory where your code/project lives (typically a git repository)
+- **Workspace Root**: The Penguin workspace directory (for conversations, notes, memory)
+- **Execution Mode**: Where file operations target (`project` or `workspace`)
+
+**Key Features:**
+- ✅ Changes take effect immediately without restart
+- ✅ Observer pattern ensures all components stay synchronized
+- ✅ Validated to prevent invalid configurations
+- ✅ Accessible via CLI commands or Web API
+
+**Example: Dynamic Configuration via CLI**
+```bash
+# Change project root at runtime
+/config runtime set project_root /path/to/new/project
+
+# Switch execution mode
+/config runtime set execution_mode workspace
+
+# View current runtime config
+/config runtime show
+```
+
+**Example: Dynamic Configuration via Web API**
+```bash
+# Get current configuration
+curl http://localhost:8000/api/v1/system/config
+
+# Change project root
+curl -X POST http://localhost:8000/api/v1/system/config/project-root \
+  -H "Content-Type: application/json" \
+  -d '{"path": "/Users/you/new-project"}'
+
+# Switch execution mode
+curl -X POST http://localhost:8000/api/v1/system/config/execution-mode \
+  -H "Content-Type: application/json" \
+  -d '{"path": "project"}'
+```
+
+See [Runtime Configuration API](api_reference/api_server.md#runtime-configuration-management) for full API documentation.
+
 ## Configuration Methods
 
 ### 1. Environment Variables
@@ -24,6 +75,11 @@ GOOGLE_API_KEY=your_google_key_here
 DEFAULT_MODEL=gpt-4
 DEFAULT_PROVIDER=openai
 TEMPERATURE=0.7
+
+# Runtime Configuration (can be changed via API while running)
+PENGUIN_PROJECT_ROOT=/path/to/your/project    # Initial project root
+PENGUIN_WORKSPACE=/path/to/workspace          # Initial workspace root
+PENGUIN_WRITE_ROOT=project                     # Initial execution mode (project|workspace)
 
 # Task Management
 TASK_COMPLETION_PHRASE=TASK_COMPLETED
@@ -64,9 +120,15 @@ providers:
   anthropic:
     base_url: https://api.anthropic.com
     api_version: "2023-06-01"
-  
-# Project Management System
+
+# Project and Workspace Configuration
 project:
+  # Runtime configuration
+  root_strategy: git-root  # 'git-root' (default) or 'cwd'
+  additional_directories:  # Additional allowed directories for security
+    - /path/to/extra/dir
+  
+  # Project management storage
   storage:
     type: sqlite
     database_path: "${paths.workspace}/projects.db"
@@ -74,6 +136,7 @@ project:
     backup_interval: 3600  # seconds
   defaults:
     workspace: ./projects
+    write_root: workspace  # Default execution mode: 'project' or 'workspace'
     auto_checkpoint: true
     max_iterations: 10
   constraints:

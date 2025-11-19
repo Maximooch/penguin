@@ -79,6 +79,7 @@ class ActionType(Enum):
     TASK_DELETE = "task_delete"
     TASK_LIST = "task_list"
     TASK_DISPLAY = "task_display"
+    TASK_COMPLETED = "task_completed"
     PROJECT_CREATE = "project_create"
     PROJECT_UPDATE = "project_update"
     PROJECT_DELETE = "project_delete"
@@ -295,6 +296,7 @@ class ActionExecutor:
             ActionType.TASK_DELETE: self._task_delete,
             ActionType.TASK_LIST: self._task_list,
             ActionType.TASK_DISPLAY: self._task_display,
+            ActionType.TASK_COMPLETED: self._task_completed,
             ActionType.DEPENDENCY_DISPLAY: self._dependency_display,
             ActionType.ANALYZE_CODEBASE: self._analyze_codebase,
             ActionType.REINDEX_WORKSPACE: self._reindex_workspace,
@@ -345,8 +347,11 @@ class ActionExecutor:
                 logger.debug(f"Executing async handler for {action.action_type.value}")
                 result = await handler(action.params)
             else:
-                logger.debug(f"Executing sync handler for {action.action_type.value}")
-                result = handler(action.params)
+                logger.debug(f"Executing sync handler for {action.action_type.value} in thread pool")
+                # Offload synchronous tools to thread pool to avoid blocking the event loop
+                loop = asyncio.get_running_loop()
+                result = await loop.run_in_executor(None, handler, action.params)
+                
                 if asyncio.iscoroutine(result):
                     result = await result
 
@@ -985,6 +990,19 @@ class ActionExecutor:
             return f"Task '{params}' completed successfully"
         except Exception as e:
             return f"Error completing task: {str(e)}"
+
+    def _task_completed(self, params: str) -> str:
+        """Signal that the assigned task has been successfully completed.
+        
+        This is different from _task_complete - it's a signal that the LLM
+        has finished the user's request, not managing a task in the task manager.
+        
+        Format: summary
+        """
+        try:
+            return self.tool_manager.task_tools.task_completed(params.strip())
+        except Exception as e:
+            return f"Error signaling task completion: {str(e)}"
 
     def _task_delete(self, params: str) -> str:
         """Delete a task. Format: name"""

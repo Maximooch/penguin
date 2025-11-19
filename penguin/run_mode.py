@@ -488,23 +488,21 @@ class RunMode:
                     task_data["context"]
                 )
                 
-                # Check if we got an LLM empty response error - should stop continuous mode
-                # TODO: Consider retrying the task/request, if need be, with a different model or prompt
-                if task_result.get("completion_type") == "llm_empty_response_error":
-                    logger.warning("LLM empty response error in continuous mode, stopping")
+                # Check if we got an LLM empty response error - retry instead of stopping
+                if task_result.get("status") == "llm_empty_response_error":
+                    logger.warning("LLM empty response error in continuous mode. Waiting 30s before retry...")
                     await self._emit_event({
                         "type": "message",
                         "role": "system",
-                        "content": task_result.get("message", "LLM returned empty response"),
-                        "category": MessageCategory.ERROR
+                        "content": "LLM returned empty response. Waiting 30s before retrying...",
+                        "category": MessageCategory.WARNING
                     })
-                    await self._emit_event({
-                        "type": "status",
-                        "status_type": "continuous_mode_ending",
-                        "data": {"reason": "llm_empty_response"}
-                    })
-                    self._shutdown_requested = True
-                    break
+                    await asyncio.sleep(30)
+                    continue # Retry the loop (will pick up same or next task)
+                    
+                    # Old fatal error logic removed:
+                    # self._shutdown_requested = True
+                    # break
                 
                 # Check for other errors
                 if task_result.get("status") == "error" and task_result.get("completion_type") == "error":

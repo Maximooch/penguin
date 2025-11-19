@@ -92,6 +92,10 @@ class ModelLoadRequest(BaseModel):
     model_id: str
 
 
+class SystemConfigRequest(BaseModel):
+    path: str
+
+
 # Memory API models
 class MemoryStoreRequest(BaseModel):
     content: str
@@ -2243,6 +2247,90 @@ async def get_current_model(core: PenguinCore = Depends(get_core)):
         )
 
 # --- System Information and Diagnostics ---
+
+@router.get("/api/v1/system/config")
+async def get_runtime_config(core: PenguinCore = Depends(get_core)):
+    """Get current runtime configuration (project root, workspace root, execution mode)."""
+    try:
+        config_dict = core.runtime_config.to_dict()
+        return {
+            "status": "success",
+            "config": config_dict
+        }
+    except Exception as e:
+        logger.error(f"Error getting runtime config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/system/config/project-root")
+async def set_project_root(request: SystemConfigRequest, core: PenguinCore = Depends(get_core)):
+    """Set the active project root directory.
+    
+    This will update the project root for all components that subscribe to runtime
+    configuration changes (e.g., ToolManager, file operations).
+    """
+    try:
+        result = core.runtime_config.set_project_root(request.path)
+        return {
+            "status": "success",
+            "message": result,
+            "path": core.runtime_config.project_root,
+            "active_root": core.runtime_config.active_root
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error setting project root: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/system/config/workspace-root")
+async def set_workspace_root(request: SystemConfigRequest, core: PenguinCore = Depends(get_core)):
+    """Set the active workspace root directory.
+    
+    This will update the workspace root for all components that subscribe to runtime
+    configuration changes (e.g., ToolManager, file operations).
+    """
+    try:
+        result = core.runtime_config.set_workspace_root(request.path)
+        return {
+            "status": "success",
+            "message": result,
+            "path": core.runtime_config.workspace_root,
+            "active_root": core.runtime_config.active_root
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error setting workspace root: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/system/config/execution-mode")
+async def set_execution_mode(request: SystemConfigRequest, core: PenguinCore = Depends(get_core)):
+    """Set the execution mode (project or workspace).
+    
+    This determines which root directory is used as the active root for file operations.
+    
+    Args:
+        request.path: Either 'project' or 'workspace'
+    """
+    try:
+        # Use 'path' field to pass the mode value for consistency with other endpoints
+        mode = request.path
+        result = core.runtime_config.set_execution_mode(mode)
+        return {
+            "status": "success",
+            "message": result,
+            "execution_mode": core.runtime_config.execution_mode,
+            "active_root": core.runtime_config.active_root
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error setting execution mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.get("/api/v1/system/info")
 async def get_system_info(core: PenguinCore = Depends(get_core)):

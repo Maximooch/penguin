@@ -31,6 +31,7 @@ from penguin.tools.core.perplexity_tool import PerplexityProvider
 from penguin.tools.browser_tools import (
     browser_manager, BrowserNavigationTool, BrowserInteractionTool, BrowserScreenshotTool
 )
+from penguin.tools.core.task_tools import TaskTools
 
 # Lazy import for PyDoll to avoid breaking if pydoll-python is not installed
 _pydoll_tools_imported = False
@@ -147,10 +148,12 @@ class ToolManager:
                 'memory_indexing': False,
                 'browser_tools': False,
                 'pydoll_tools': False,
+                'task_tools': False,
             }
             
             # Placeholder attributes for ALL lazy loading
             self._declarative_memory_tool = None
+            self._task_tools = None
             self._grep_search = None
             self._file_map = None
             self._summary_notes_tool = None
@@ -203,6 +206,7 @@ class ToolManager:
                 'pydoll_browser_scroll': 'self.pydoll_browser_scroll_tool.execute',
                 'analyze_codebase': 'self.analyze_codebase',
                 'reindex_workspace': 'self.reindex_workspace',
+                'task_completed': 'self.task_tools.task_completed',
             }
             
             # Cached tool instances for performance
@@ -247,13 +251,27 @@ class ToolManager:
                 },
             },
             {
+                "name": "task_completed",
+                "description": "Signal that the assigned task has been successfully completed. Call this tool when you have finished the user's request.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": "A concise summary of what was accomplished.",
+                        }
+                    },
+                    "required": ["summary"],
+                },
+            },
+            {
                 "name": "multiedit_apply",
                 "description": "Apply multiple diffs atomically. Accepts unified multi-file patch or per-file block format. Dry-run by default.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
                         "content": {"type": "string", "description": "Unified patch or multiedit block"},
-                        "apply": {"type": "boolean", "description": "Apply changes (default false)"},
+                        "apply": {"type": "boolean", "description": "Apply changes (default true)"},
                     },
                     "required": ["content"],
                 },
@@ -1000,6 +1018,14 @@ class ToolManager:
 
     # Lazy loading properties with profiling
     @property
+    def task_tools(self):
+        """Lazy load task tools."""
+        if not self._lazy_initialized['task_tools']:
+            self._task_tools = TaskTools()
+            self._lazy_initialized['task_tools'] = True
+        return self._task_tools
+
+    @property
     def declarative_memory_tool(self):
         if not self._lazy_initialized['declarative_memory_tool']:
             with profile_operation("ToolManager.lazy_load_declarative_memory_tool"):
@@ -1568,6 +1594,61 @@ class ToolManager:
             # Defer until first access
             self._lazy_initialized['file_map'] = False
         return f"Execution root set to {mode_l}: {self._file_root}"
+    
+    def on_runtime_config_change(self, config_key: str, new_value: Any) -> None:
+        """Callback for RuntimeConfig changes (observer pattern).
+        
+        This method is called by RuntimeConfig when configuration values change,
+        allowing ToolManager to react and update its internal state.
+        
+        Args:
+            config_key: The configuration key that changed
+            new_value: The new value for that key
+        """
+        logger.info(f"ToolManager received config change: {config_key}={new_value}")
+        
+        if config_key == 'project_root':
+            # Update project root and refresh file map if in project mode
+            self.project_root = str(new_value)
+            if self.file_root_mode == 'project':
+                self._file_root = self.project_root
+                self._refresh_file_map()
+                logger.info(f"ToolManager: Updated file_root to {self._file_root} (project mode)")
+        
+        elif config_key == 'workspace_root':
+            # Update workspace root and refresh file map if in workspace mode
+            self.workspace_root = str(new_value)
+            if self.file_root_mode == 'workspace':
+                self._file_root = self.workspace_root
+                self._refresh_file_map()
+                logger.info(f"ToolManager: Updated file_root to {self._file_root} (workspace mode)")
+        
+        elif config_key == 'execution_mode':
+            # Switch execution mode
+            mode_lower = str(new_value).lower()
+            if mode_lower in ('project', 'workspace'):
+                self.file_root_mode = mode_lower
+                self._file_root = self.project_root if mode_lower == 'project' else self.workspace_root
+                self._refresh_file_map()
+                logger.info(f"ToolManager: Switched to {mode_lower} mode, file_root={self._file_root}")
+                
+                # Update notebook executor directory if loaded
+                if self._lazy_initialized.get('notebook_executor') and self._notebook_executor:
+                    try:
+                        self._notebook_executor.active_directory = self._file_root
+                    except Exception as e:
+                        logger.warning(f"Could not update notebook executor directory: {e}")
+    
+    def _refresh_file_map(self) -> None:
+        """Refresh the file map to reflect new root directory."""
+        try:
+            self._file_map = FileMap(self._file_root)
+            self._lazy_initialized['file_map'] = True
+            logger.debug(f"ToolManager: Refreshed file map for {self._file_root}")
+        except Exception as e:
+            logger.warning(f"ToolManager: Could not refresh file map: {e}")
+            # Defer until first access
+            self._lazy_initialized['file_map'] = False
 
     def execute_tool(self, tool_name: str, tool_input: dict) -> Union[str, dict]:
         with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
