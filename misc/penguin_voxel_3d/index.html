@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Voxel Penguin</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: Arial, sans-serif;
+        }
+        #info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 15px;
+            border-radius: 10px;
+            z-index: 100;
+        }
+        #info h1 {
+            margin: 0 0 10px 0;
+            font-size: 24px;
+        }
+        #info p {
+            margin: 5px 0;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h1>🐧 Voxel Penguin</h1>
+        <p>Drag to rotate • Scroll to zoom</p>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // Scene setup
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(20, 15, 20);
+        camera.lookAt(0, 5, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(10, 20, 10);
+        directionalLight.castShadow = true;
+        scene.add(directionalLight);
+
+        // Voxel helper function
+        function createVoxel(x, y, z, color) {
+            const geometry = new THREE.BoxGeometry(1, 1, 1);
+            const material = new THREE.MeshLambertMaterial({ color: color });
+            const cube = new THREE.Mesh(geometry, material);
+            cube.position.set(x, y, z);
+            cube.castShadow = true;
+            cube.receiveShadow = true;
+            return cube;
+        }
+
+        // Penguin group
+        const penguin = new THREE.Group();
+
+        // Colors
+        const BLACK = 0x2c3e50;
+        const WHITE = 0xecf0f1;
+        const ORANGE = 0xe67e22;
+        const YELLOW = 0xf39c12;
+
+        // Body (black back, white belly)
+        // Layer 1 (bottom)
+        for (let x = -2; x <= 2; x++) {
+            for (let z = -2; z <= 2; z++) {
+                if (Math.abs(x) <= 1 || Math.abs(z) <= 1) {
+                    penguin.add(createVoxel(x, 0, z, BLACK));
+                }
+            }
+        }
+
+        // Layer 2-5 (main body)
+        for (let y = 1; y <= 4; y++) {
+            for (let x = -2; x <= 2; x++) {
+                for (let z = -2; z <= 2; z++) {
+                    if (Math.abs(x) + Math.abs(z) <= 3) {
+                        // White belly in front
+                        if (z >= 0 && Math.abs(x) <= 1) {
+                            penguin.add(createVoxel(x, y, z, WHITE));
+                        } else {
+                            penguin.add(createVoxel(x, y, z, BLACK));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Layer 6 (neck)
+        for (let x = -1; x <= 1; x++) {
+            for (let z = -1; z <= 1; z++) {
+                if (Math.abs(x) + Math.abs(z) <= 2) {
+                    penguin.add(createVoxel(x, 5, z, z >= 0 ? WHITE : BLACK));
+                }
+            }
+        }
+
+        // Head (layers 6-8)
+        for (let y = 6; y <= 8; y++) {
+            for (let x = -1; x <= 1; x++) {
+                for (let z = -1; z <= 1; z++) {
+                    if (Math.abs(x) + Math.abs(z) <= 2) {
+                        penguin.add(createVoxel(x, y, z, z >= 0 ? WHITE : BLACK));
+                    }
+                }
+            }
+        }
+
+        // Eyes (white patches)
+        penguin.add(createVoxel(-1, 7, 1, WHITE));
+        penguin.add(createVoxel(1, 7, 1, WHITE));
+
+        // Eye pupils
+        penguin.add(createVoxel(-1, 7, 2, BLACK));
+        penguin.add(createVoxel(1, 7, 2, BLACK));
+
+        // Beak
+        penguin.add(createVoxel(0, 6, 2, ORANGE));
+        penguin.add(createVoxel(0, 7, 2, ORANGE));
+
+        // Wings (flippers)
+        // Left wing
+        for (let y = 2; y <= 4; y++) {
+            penguin.add(createVoxel(-3, y, 0, BLACK));
+            penguin.add(createVoxel(-3, y, -1, BLACK));
+        }
+
+        // Right wing
+        for (let y = 2; y <= 4; y++) {
+            penguin.add(createVoxel(3, y, 0, BLACK));
+            penguin.add(createVoxel(3, y, -1, BLACK));
+        }
+
+        // Feet
+        // Left foot
+        penguin.add(createVoxel(-1, -1, 2, ORANGE));
+        penguin.add(createVoxel(-1, -1, 3, ORANGE));
+
+        // Right foot
+        penguin.add(createVoxel(1, -1, 2, ORANGE));
+        penguin.add(createVoxel(1, -1, 3, ORANGE));
+
+        scene.add(penguin);
+
+        // Ground plane
+        const groundGeometry = new THREE.PlaneGeometry(50, 50);
+        const groundMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff });
+        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        ground.position.y = -2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // Mouse controls
+        let isDragging = false;
+        let previousMousePosition = { x: 0, y: 0 };
+
+        renderer.domElement.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            previousMousePosition = { x: e.clientX, y: e.clientY };
+        });
+
+        renderer.domElement.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                const deltaX = e.clientX - previousMousePosition.x;
+                const deltaY = e.clientY - previousMousePosition.y;
+
+                penguin.rotation.y += deltaX * 0.01;
+                penguin.rotation.x += deltaY * 0.01;
+
+                previousMousePosition = { x: e.clientX, y: e.clientY };
+            }
+        });
+
+        renderer.domElement.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+
+        // Zoom with mouse wheel
+        renderer.domElement.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            camera.position.z += e.deltaY * 0.01;
+            camera.position.z = Math.max(10, Math.min(50, camera.position.z));
+        });
+
+        // Touch controls for mobile
+        let touchStartX = 0;
+        let touchStartY = 0;
+
+        renderer.domElement.addEventListener('touchstart', (e) => {
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+        });
+
+        renderer.domElement.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            const deltaX = e.touches[0].clientX - touchStartX;
+            const deltaY = e.touches[0].clientY - touchStartY;
+
+            penguin.rotation.y += deltaX * 0.01;
+            penguin.rotation.x += deltaY * 0.01;
+
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+        });
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Gentle bobbing animation
+            penguin.position.y = Math.sin(Date.now() * 0.001) * 0.3;
+
+            renderer.render(scene, camera);
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>

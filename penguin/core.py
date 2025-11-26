@@ -273,7 +273,7 @@ class PenguinCore:
         provider: Optional[str] = None,
         workspace_path: Optional[str] = None,
         enable_cli: bool = False,
-        show_progress: bool = True,
+        show_progress: bool = True, # what is this again?
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         fast_startup: bool = False
     ) -> Union["PenguinCore", Tuple["PenguinCore", "PenguinCLI"]]:
