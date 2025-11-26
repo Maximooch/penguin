@@ -84,6 +84,42 @@ from penguin.tools.repository_tools import (
     create_and_switch_branch
 )
 
+# Security/Permission imports (lazy to avoid circular imports at module load)
+_permission_enforcer_imported = False
+_PermissionEnforcer = None
+_WorkspaceBoundaryPolicy = None
+_PermissionMode = None
+_PermissionResult = None
+_PermissionDeniedError = None
+_check_tool_permission = None
+
+def _ensure_permission_imports():
+    """Lazy import permission modules to avoid circular imports."""
+    global _permission_enforcer_imported, _PermissionEnforcer, _WorkspaceBoundaryPolicy
+    global _PermissionMode, _PermissionResult, _PermissionDeniedError, _check_tool_permission
+    
+    if not _permission_enforcer_imported:
+        try:
+            from penguin.security import (
+                PermissionEnforcer,
+                WorkspaceBoundaryPolicy,
+                PermissionMode,
+                PermissionResult,
+                PermissionDeniedError,
+            )
+            from penguin.security.tool_permissions import check_tool_permission
+            
+            _PermissionEnforcer = PermissionEnforcer
+            _WorkspaceBoundaryPolicy = WorkspaceBoundaryPolicy
+            _PermissionMode = PermissionMode
+            _PermissionResult = PermissionResult
+            _PermissionDeniedError = PermissionDeniedError
+            _check_tool_permission = check_tool_permission
+            _permission_enforcer_imported = True
+        except ImportError as e:
+            logger.warning(f"Permission system not available: {e}")
+            _permission_enforcer_imported = True  # Don't retry
+
 logger = logging.getLogger(__name__) # Add logger
 
 class ToolManager:
@@ -173,6 +209,10 @@ class ToolManager:
             self._pydoll_browser_interaction_tool = None
             self._pydoll_browser_screenshot_tool = None
             self._pydoll_browser_scroll_tool = None
+            
+            # Permission enforcer (lazy initialized)
+            self._permission_enforcer = None
+            self._permission_enabled = not os.environ.get("PENGUIN_YOLO", "").lower() in ("1", "true", "yes")
             
             # Tool registry - just map names to module paths, no actual loading
             self._tool_registry = {
@@ -1087,6 +1127,58 @@ class ToolManager:
                 self._lazy_initialized['perplexity_provider'] = True
         return self._perplexity_provider
     
+    @property
+    def permission_enforcer(self):
+        """Lazy load permission enforcer with workspace boundary policy."""
+        if self._permission_enforcer is None and self._permission_enabled:
+            _ensure_permission_imports()
+            if _PermissionEnforcer is not None:
+                with profile_operation("ToolManager.lazy_load_permission_enforcer"):
+                    logger.debug("Lazy-loading permission enforcer")
+                    # Create enforcer with WORKSPACE mode by default
+                    mode = _PermissionMode.WORKSPACE
+                    yolo = os.environ.get("PENGUIN_YOLO", "").lower() in ("1", "true", "yes")
+                    
+                    self._permission_enforcer = _PermissionEnforcer(
+                        mode=mode,
+                        yolo=yolo,
+                        audit_all=True,
+                    )
+                    
+                    # Add workspace boundary policy
+                    if _WorkspaceBoundaryPolicy is not None:
+                        boundary_policy = _WorkspaceBoundaryPolicy(
+                            workspace_root=self.workspace_root,
+                            project_root=self.project_root,
+                            mode=mode,
+                        )
+                        self._permission_enforcer.add_policy(boundary_policy)
+                        logger.info(
+                            f"Permission enforcer initialized: mode={mode.value}, "
+                            f"workspace={self.workspace_root}, project={self.project_root}"
+                        )
+        return self._permission_enforcer
+    
+    def check_tool_permission(self, tool_name: str, tool_input: dict, context: dict = None) -> tuple:
+        """Check if a tool execution is allowed.
+        
+        Args:
+            tool_name: Name of the tool
+            tool_input: Input parameters
+            context: Additional context (agent_id, etc.)
+        
+        Returns:
+            Tuple of (PermissionResult, reason) or (None, None) if permissions disabled
+        """
+        if not self._permission_enabled or self.permission_enforcer is None:
+            return None, None
+        
+        _ensure_permission_imports()
+        if _check_tool_permission is None:
+            return None, None
+        
+        return _check_tool_permission(tool_name, tool_input, self.permission_enforcer, context)
+    
     async def ensure_memory_provider(self) -> Optional[MemoryProvider]:
         """Ensure memory provider is initialized. Used for lazy loading."""
         if not self._lazy_initialized['memory_provider']:
@@ -1650,8 +1742,26 @@ class ToolManager:
             # Defer until first access
             self._lazy_initialized['file_map'] = False
 
-    def execute_tool(self, tool_name: str, tool_input: dict) -> Union[str, dict]:
+    def execute_tool(self, tool_name: str, tool_input: dict, context: dict = None) -> Union[str, dict]:
         with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
+            # Check permission before executing
+            if self._permission_enabled:
+                result, reason = self.check_tool_permission(tool_name, tool_input, context)
+                if result is not None:
+                    _ensure_permission_imports()
+                    if result == _PermissionResult.DENY:
+                        logger.warning(f"Permission denied for tool '{tool_name}': {reason}")
+                        return json.dumps({
+                            "error": "permission_denied",
+                            "tool": tool_name,
+                            "reason": reason,
+                        })
+                    elif result == _PermissionResult.ASK:
+                        # For now, log and allow - approval flow will be added in Phase 3
+                        logger.info(f"Tool '{tool_name}' requires approval: {reason}")
+                        # TODO: Implement approval flow in Phase 3
+                        # For now, we allow ASK to proceed (soft enforcement)
+            
             tool_map = {
                 "create_folder": lambda: self._execute_file_operation("create_folder", tool_input),
                 "create_file": lambda: self._execute_file_operation("create_file", tool_input),

@@ -163,20 +163,27 @@ Sub-agents inherit parent permissions or get restricted subset?
 
 ## Planning: Implementation Phases
 
-### Phase 1: Core Engine (Foundation)
+### Phase 1: Core Engine (Foundation) ✅ COMPLETE
 **Goal**: Functional permission checking with workspace boundary enforcement
 
-- [ ] Create `penguin/security/` module structure
-- [ ] Implement `PermissionMode` enum: `READ_ONLY`, `WORKSPACE`, `FULL`
-- [ ] Implement `PermissionResult` enum: `ALLOW`, `ASK`, `DENY`
-- [ ] Implement `PolicyEngine` base class with `check_operation(op, resource) -> PermissionResult`
-- [ ] Implement `WorkspaceBoundaryPolicy`: Allow operations within workspace, deny outside
-- [ ] Add path normalization utilities (resolve symlinks, detect traversal)
-- [ ] Wire into `ToolManager.execute()` as enforcement point
-- [ ] Unit tests for boundary checking, traversal prevention
+- [x] Create `penguin/security/` module structure
+- [x] Implement `PermissionMode` enum: `READ_ONLY`, `WORKSPACE`, `FULL`
+- [x] Implement `PermissionResult` enum: `ALLOW`, `ASK`, `DENY`
+- [x] Implement `PolicyEngine` base class with `check_operation(op, resource) -> PermissionResult`
+- [x] Implement `WorkspaceBoundaryPolicy`: Allow operations within workspace, deny outside
+- [x] Add path normalization utilities (resolve symlinks, detect traversal)
+- [x] Wire into `ToolManager.execute()` as enforcement point
+- [x] Unit tests for boundary checking, traversal prevention (38 tests passing)
 
-**Deliverables**: `permission_engine.py`, `policies/workspace.py`, basic tests
-**Time estimate**: 3-4 hours
+**Deliverables**: 
+- `penguin/security/__init__.py` - Module exports
+- `penguin/security/permission_engine.py` - Core classes (PermissionMode, PermissionResult, Operation, PolicyEngine, PermissionEnforcer)
+- `penguin/security/policies/workspace.py` - WorkspaceBoundaryPolicy
+- `penguin/security/path_utils.py` - Path normalization and security utilities
+- `penguin/security/tool_permissions.py` - Tool-to-operation mapping
+- `tests/test_permission_engine.py` - 38 unit tests
+
+**Time actual**: ~3 hours
 
 ### Phase 2: Configuration & Prompt Integration
 **Goal**: User-configurable policies, prompt clarity
@@ -285,38 +292,38 @@ Sub-agents inherit parent permissions or get restricted subset?
 
 ---
 
-## Before Proceeding: Final Considerations
+## Decisions Made ✅
 
 ### Implementation Order
-Suggested phase priority:
-1. **Phase 1** (Core Engine) — Foundation, can't build anything else without it
+Confirmed: Chronological (1→2→3→5→4→6)
+1. **Phase 1** (Core Engine) — Foundation ← **IN PROGRESS**
 2. **Phase 2** (Config & Prompts) — Makes it usable immediately
 3. **Phase 3** (Approval Flow) — Required for interactive use, especially Link
 4. **Phase 5** (Audit) — Observability helps debug issues
 5. **Phase 4** (Multi-Agent) — Can defer until sub-agents are more widely used
 6. **Phase 6** (Advanced) — Future enhancement
 
-### Starter Mode
-Recommend starting with **`WORKSPACE` mode** as the default:
-- Most users work within a project directory
-- Provides safety without being overly restrictive
-- `--yolo` available for power users who want `FULL`
-- `READ_ONLY` for untrusted contexts
+### Default Mode
+✅ **`WORKSPACE` mode** as default, UNLESS user explicitly sets `project_root` via:
+- `RuntimeConfig.set_project_root()` 
+- `PENGUIN_PROJECT_ROOT` env var
+- Config file `execution_mode: project`
+
+This aligns with existing `RuntimeConfig` in `config.py` which already tracks:
+- `_project_root`, `_workspace_root`, `_execution_mode`
+- Observer pattern for notifying components
 
 ### First Test Cases
-Good initial tools to wire up permission checks:
 1. `enhanced_write` / `write_to_file` — Clear write operation
 2. `execute_command` — High-risk, good test of `process.execute`
 3. `apply_diff` — Tests combined read+write permission nodes
 4. `git_push` — Tests `require_approval` flow
 
 ### MCP Integration
-The existing `MCPServer._is_allowed()` uses glob patterns. Options:
-- **Replace**: MCPServer uses PermissionEngine instead of its own filtering
-- **Layer**: MCPServer filtering + PermissionEngine (defense in depth)
-- **Migrate**: Gradually move MCP patterns into PermissionEngine config
-
-Recommend: **Layer** initially, then migrate patterns to unified config.
+✅ **Layer** approach (defense in depth), then migrate:
+- Keep existing `MCPServer._is_allowed()` glob patterns
+- Add PermissionEngine as additional layer
+- Eventually migrate MCP patterns to unified config
 
 ---
 
