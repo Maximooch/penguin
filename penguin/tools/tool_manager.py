@@ -212,7 +212,7 @@ class ToolManager:
             
             # Permission enforcer (lazy initialized)
             self._permission_enforcer = None
-            self._permission_enabled = not os.environ.get("PENGUIN_YOLO", "").lower() in ("1", "true", "yes")
+            self._permission_enabled = os.environ.get("PENGUIN_YOLO", "").lower() not in ("1", "true", "yes")
             
             # Tool registry - just map names to module paths, no actual loading
             self._tool_registry = {
