@@ -1009,3 +1009,195 @@ async def get_system_status(core: PenguinCore = Depends(get_core)):
             status_code=500,
             detail=f"Error getting system status: {str(e)}"
         )
+
+
+# --- Security/Permission Configuration ---
+
+class SecurityConfigUpdate(BaseModel):
+    """Request body for updating security configuration."""
+    mode: Optional[str] = None  # read_only | workspace | full
+    enabled: Optional[bool] = None  # Toggle permission checks (YOLO mode)
+
+
+@router.get("/api/v1/security/config")
+async def get_security_config(core: PenguinCore = Depends(get_core)):
+    """Get current security/permission configuration.
+    
+    Returns the active security mode, enabled status, and capabilities summary.
+    """
+    try:
+        # Get runtime config if available
+        runtime_config = getattr(core, 'runtime_config', None)
+        
+        if runtime_config:
+            mode = runtime_config.security_mode
+            enabled = runtime_config.security_enabled
+            workspace_root = runtime_config.workspace_root
+            project_root = runtime_config.project_root
+        else:
+            # Fallback to defaults
+            mode = "workspace"
+            enabled = True
+            workspace_root = str(WORKSPACE_PATH)
+            project_root = os.getcwd()
+        
+        # Get capabilities summary from permission enforcer if available
+        capabilities = None
+        if hasattr(core, 'tool_manager') and core.tool_manager:
+            enforcer = getattr(core.tool_manager, 'permission_enforcer', None)
+            if enforcer:
+                capabilities = enforcer.get_capabilities_summary()
+        
+        if capabilities is None:
+            # Generate default capabilities based on mode
+            capabilities = _get_default_capabilities(mode, enabled)
+        
+        return {
+            "mode": mode,
+            "enabled": enabled,
+            "workspace_root": workspace_root,
+            "project_root": project_root,
+            "capabilities": capabilities,
+            "yolo_mode": not enabled,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting security config: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting security config: {str(e)}"
+        )
+
+
+@router.patch("/api/v1/security/config")
+async def update_security_config(
+    request: SecurityConfigUpdate,
+    core: PenguinCore = Depends(get_core)
+):
+    """Update security/permission configuration at runtime.
+    
+    Allows changing:
+    - mode: Permission mode (read_only, workspace, full)
+    - enabled: Toggle permission checks (False = YOLO mode)
+    
+    Changes take effect immediately for new tool executions.
+    """
+    try:
+        runtime_config = getattr(core, 'runtime_config', None)
+        if not runtime_config:
+            raise HTTPException(
+                status_code=503,
+                detail="Runtime configuration not available"
+            )
+        
+        results = []
+        
+        # Update mode if provided
+        if request.mode is not None:
+            valid_modes = ('read_only', 'workspace', 'full')
+            if request.mode.lower() not in valid_modes:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid mode '{request.mode}'. Must be one of: {valid_modes}"
+                )
+            result = runtime_config.set_security_mode(request.mode)
+            results.append(result)
+        
+        # Update enabled status if provided
+        if request.enabled is not None:
+            result = runtime_config.set_security_enabled(request.enabled)
+            results.append(result)
+        
+        # Get updated config
+        return {
+            "success": True,
+            "message": "; ".join(results) if results else "No changes made",
+            "current": {
+                "mode": runtime_config.security_mode,
+                "enabled": runtime_config.security_enabled,
+                "yolo_mode": not runtime_config.security_enabled,
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating security config: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating security config: {str(e)}"
+        )
+
+
+@router.post("/api/v1/security/yolo")
+async def toggle_yolo_mode(
+    enable: bool = True,
+    core: PenguinCore = Depends(get_core)
+):
+    """Quick toggle for YOLO mode (disable/enable all permission checks).
+    
+    Args:
+        enable: True to enable YOLO mode (disable checks), False to restore checks
+    
+    This is a convenience endpoint equivalent to PATCH /api/v1/security/config with enabled=!enable
+    """
+    try:
+        runtime_config = getattr(core, 'runtime_config', None)
+        if not runtime_config:
+            raise HTTPException(
+                status_code=503,
+                detail="Runtime configuration not available"
+            )
+        
+        # YOLO mode means checks are DISABLED
+        result = runtime_config.set_security_enabled(not enable)
+        
+        return {
+            "success": True,
+            "yolo_mode": enable,
+            "message": result,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error toggling YOLO mode: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error toggling YOLO mode: {str(e)}"
+        )
+
+
+def _get_default_capabilities(mode: str, enabled: bool) -> Dict[str, Any]:
+    """Generate default capabilities based on mode."""
+    if not enabled:
+        return {
+            "mode": "yolo",
+            "can": ["Everything (YOLO mode - no restrictions)"],
+            "cannot": [],
+            "requires_approval": [],
+        }
+    
+    if mode == "read_only":
+        return {
+            "mode": "read_only",
+            "can": ["Read files", "Search", "Analyze", "View git status"],
+            "cannot": ["Write files", "Delete files", "Execute commands", "Git push"],
+            "requires_approval": [],
+        }
+    elif mode == "full":
+        return {
+            "mode": "full",
+            "can": ["All operations"],
+            "cannot": [],
+            "requires_approval": ["Destructive operations"],
+        }
+    else:  # workspace
+        return {
+            "mode": "workspace",
+            "can": ["Read/write within workspace", "Read/write within project", "Safe commands"],
+            "cannot": ["Write outside boundaries", "Access system paths", "Modify sensitive files"],
+            "requires_approval": ["File deletion", "Git push"],
+        }

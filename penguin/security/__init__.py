@@ -34,6 +34,11 @@ from penguin.security.path_utils import (
     get_safe_relative_path,
     sanitize_filename,
 )
+from penguin.security.prompt_integration import (
+    get_permission_section,
+    get_permission_summary,
+    get_capabilities_for_prompt,
+)
 
 __all__ = [
     # Core permission types
@@ -58,5 +63,9 @@ __all__ = [
     "validate_path_security",
     "get_safe_relative_path",
     "sanitize_filename",
+    # Prompt integration
+    "get_permission_section",
+    "get_permission_summary",
+    "get_capabilities_for_prompt",
 ]
 

@@ -39,13 +39,31 @@ def load_config():
       6. Explicit override via PENGUIN_CONFIG_PATH (highest single-file override)
 
     Note: Enterprise-managed policy layer can be added above these in future.
+    
+    Security lists (allowed_paths, denied_paths, require_approval) are merged
+    additively. Other security settings follow normal precedence (higher overrides lower).
     """
+    
+    # Keys in security section that should merge additively (append lists)
+    SECURITY_ADDITIVE_KEYS = {"allowed_paths", "denied_paths", "require_approval"}
 
-    def deep_merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    def deep_merge_dicts(base: Dict[str, Any], override: Dict[str, Any], path: str = "") -> Dict[str, Any]:
         for key, value in (override or {}).items():
-            if isinstance(value, dict) and isinstance(base.get(key), dict):
-                base[key] = deep_merge_dicts(dict(base.get(key, {})), value)
+            current_path = f"{path}.{key}" if path else key
+            
+            # Special handling for security section lists - merge additively
+            if path == "security" and key in SECURITY_ADDITIVE_KEYS:
+                base_list = base.get(key, [])
+                if not isinstance(base_list, list):
+                    base_list = [base_list] if base_list else []
+                override_list = value if isinstance(value, list) else [value] if value else []
+                # Combine lists, deduplicate while preserving order
+                combined = list(dict.fromkeys(base_list + override_list))
+                base[key] = combined
+            elif isinstance(value, dict) and isinstance(base.get(key), dict):
+                base[key] = deep_merge_dicts(dict(base.get(key, {})), value, current_path)
             else:
+                # Normal override: higher-precedence config wins
                 base[key] = value
         return base
 
@@ -370,12 +388,22 @@ class RuntimeConfig:
         else:
             self._execution_mode = get_default_write_root()
         
+        # Initialize security settings from config
+        security_config = startup_config.get('security', {})
+        self._security_mode = security_config.get('mode', 'workspace')
+        self._security_enabled = security_config.get('enabled', True)
+        # Check for YOLO mode override
+        if os.environ.get('PENGUIN_YOLO', '').lower() in ('1', 'true', 'yes'):
+            self._security_enabled = False
+            logger.warning("RuntimeConfig: YOLO mode enabled - permission checks disabled")
+        
         # Observer list for components that need to react to config changes
         self._observers: List[Callable[[str, Any], None]] = []
         
         logger.info(
             f"RuntimeConfig initialized: project_root={self._project_root}, "
-            f"workspace_root={self._workspace_root}, execution_mode={self._execution_mode}"
+            f"workspace_root={self._workspace_root}, execution_mode={self._execution_mode}, "
+            f"security_mode={self._security_mode}, security_enabled={self._security_enabled}"
         )
     
     # Properties for read access
@@ -398,6 +426,16 @@ class RuntimeConfig:
     def active_root(self) -> str:
         """Get the currently active root based on execution mode."""
         return self._project_root if self._execution_mode == 'project' else self._workspace_root
+    
+    @property
+    def security_mode(self) -> str:
+        """Get current security mode ('read_only', 'workspace', or 'full')."""
+        return self._security_mode
+    
+    @property
+    def security_enabled(self) -> bool:
+        """Get whether security/permission checks are enabled."""
+        return self._security_enabled
     
     # Observer pattern methods
     def register_observer(self, callback: Callable[[str, Any], None]) -> None:
@@ -529,6 +567,56 @@ class RuntimeConfig:
         
         return f"Execution mode set to {mode_lower}: {self.active_root}"
     
+    def set_security_mode(self, mode: str) -> str:
+        """Change the security/permission mode at runtime.
+        
+        Args:
+            mode: One of 'read_only', 'workspace', or 'full'
+            
+        Returns:
+            Success message string
+            
+        Raises:
+            ValueError: If mode is not valid
+        """
+        valid_modes = ('read_only', 'workspace', 'full')
+        mode_lower = (mode or '').lower()
+        if mode_lower not in valid_modes:
+            raise ValueError(f"Invalid security mode '{mode}'. Must be one of: {valid_modes}")
+        
+        old_mode = self._security_mode
+        self._security_mode = mode_lower
+        
+        logger.info(f"RuntimeConfig: Security mode changed from {old_mode} to {self._security_mode}")
+        
+        # Notify observers (ToolManager will update its permission enforcer)
+        self._notify_observers('security_mode', self._security_mode)
+        
+        return f"Security mode set to {mode_lower}"
+    
+    def set_security_enabled(self, enabled: bool) -> str:
+        """Enable or disable security/permission checks (YOLO mode toggle).
+        
+        Args:
+            enabled: True to enable checks, False to disable (YOLO mode)
+            
+        Returns:
+            Success message string
+        """
+        old_enabled = self._security_enabled
+        self._security_enabled = bool(enabled)
+        
+        if not self._security_enabled:
+            logger.warning("RuntimeConfig: Security checks DISABLED (YOLO mode)")
+        else:
+            logger.info("RuntimeConfig: Security checks enabled")
+        
+        # Notify observers
+        self._notify_observers('security_enabled', self._security_enabled)
+        
+        status = "enabled" if self._security_enabled else "disabled (YOLO mode)"
+        return f"Security checks {status}"
+    
     def to_dict(self) -> Dict[str, Any]:
         """Export current runtime configuration as a dictionary.
         
@@ -540,6 +628,8 @@ class RuntimeConfig:
             'workspace_root': self._workspace_root,
             'execution_mode': self._execution_mode,
             'active_root': self.active_root,
+            'security_mode': self._security_mode,
+            'security_enabled': self._security_enabled,
         }
     
     def __repr__(self) -> str:
@@ -818,6 +908,71 @@ class DiagnosticsConfig:
 
 
 @dataclass
+class SecurityConfig:
+    """Security and permission configuration.
+    
+    Controls permission enforcement for tool operations.
+    Lists (allowed_paths, denied_paths, require_approval) are merged
+    additively from project configs.
+    """
+    # Permission mode: read_only | workspace | full
+    mode: str = field(default="workspace")
+    # Additional paths to allow (glob patterns)
+    allowed_paths: List[str] = field(default_factory=list)
+    # Paths to always deny (glob patterns)
+    denied_paths: List[str] = field(default_factory=lambda: [
+        ".env", ".env.*", "**/*.pem", "**/*.key",
+        "**/*secret*", "**/*credential*"
+    ])
+    # Operations requiring user approval
+    require_approval: List[str] = field(default_factory=lambda: [
+        "filesystem.delete", "git.push", "git.force"
+    ])
+    # Enable/disable permission checks
+    enabled: bool = field(default=True)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SecurityConfig":
+        """Create from config dictionary."""
+        return cls(
+            mode=data.get("mode", "workspace"),
+            allowed_paths=list(data.get("allowed_paths", [])),
+            denied_paths=list(data.get("denied_paths", [
+                ".env", ".env.*", "**/*.pem", "**/*.key",
+                "**/*secret*", "**/*credential*"
+            ])),
+            require_approval=list(data.get("require_approval", [
+                "filesystem.delete", "git.push", "git.force"
+            ])),
+            enabled=data.get("enabled", True),
+        )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dictionary."""
+        return {
+            "mode": self.mode,
+            "allowed_paths": list(self.allowed_paths),
+            "denied_paths": list(self.denied_paths),
+            "require_approval": list(self.require_approval),
+            "enabled": self.enabled,
+        }
+    
+    def merge_additive(self, other: "SecurityConfig") -> "SecurityConfig":
+        """Merge another SecurityConfig additively.
+        
+        Lists are combined (deduplicated), mode is NOT changed.
+        This allows project configs to add paths without escalating mode.
+        """
+        return SecurityConfig(
+            mode=self.mode,  # Keep original mode (no escalation)
+            allowed_paths=list(dict.fromkeys(self.allowed_paths + other.allowed_paths)),
+            denied_paths=list(dict.fromkeys(self.denied_paths + other.denied_paths)),
+            require_approval=list(dict.fromkeys(self.require_approval + other.require_approval)),
+            enabled=self.enabled,  # Keep original enabled state
+        )
+
+
+@dataclass
 class AgentModelSettings:
     """Model override declaration for an agent persona."""
 
@@ -949,6 +1104,7 @@ class Config:
     temperature: float = field(default=0.7)
     max_tokens: Optional[int] = field(default=None)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
+    security: SecurityConfig = field(default_factory=SecurityConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     workspace_dir: Path = field(default_factory=Path.cwd)
     cache_dir: Path = field(
@@ -1107,6 +1263,12 @@ class Config:
                 except Exception as exc:  # pragma: no cover - defensive, config errors should surface in logs
                     logger.warning("Failed to load agent persona '%s': %s", persona_name, exc)
 
+        # Parse security config
+        security_data = config_data.get("security", {})
+        if not isinstance(security_data, dict):
+            security_data = {}
+        security_config = SecurityConfig.from_dict(security_data)
+
         return cls(
             model_config=llm_model_config,
             api=APIConfig(base_url=config_data.get("api", {}).get("base_url")),
@@ -1114,6 +1276,7 @@ class Config:
             temperature=config_data.get("temperature", llm_model_config.temperature), # Use model temp if global not set
             max_tokens=config_data.get("max_tokens", llm_model_config.max_tokens), # Use model max_tokens if global not set
             diagnostics=diagnostics_config,
+            security=security_config,
             output=output_config,
             fast_startup=config_data.get("performance", {}).get("fast_startup", False),
             model_configs=model_configs_section,
@@ -1136,6 +1299,7 @@ class Config:
                 if self.diagnostics.log_path
                 else None,
             },
+            "security": self.security.to_dict(),
             "output": {
                 "prompt_style": getattr(self.output, "prompt_style", "steps_final"),
                 "show_tool_results": getattr(self.output, "show_tool_results", True),

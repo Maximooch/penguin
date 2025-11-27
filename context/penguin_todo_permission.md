@@ -185,24 +185,29 @@ Sub-agents inherit parent permissions or get restricted subset?
 
 **Time actual**: ~3 hours
 
-### Phase 2: Configuration & Prompt Integration
+### Phase 2: Configuration & Prompt Integration ✅ COMPLETE
 **Goal**: User-configurable policies, prompt clarity
 
-- [ ] Add `security` section to config schema:
-  ```yaml
-  security:
-    mode: workspace
-    allowed_paths: ["workspace/**", "src/**"]
-    denied_paths: [".env", "**/*secret*"]
-    require_approval: ["git.push", "process.spawn"]
-  ```
-- [ ] Implement config-driven policy loading
-- [ ] Add `get_capabilities_summary()` for prompt injection
-- [ ] Update system prompt builder to include active permission context
-- [ ] Remove vague "permission engine" references, replace with concrete statements
+- [x] Add `security` section to config.yml schema with mode, allowed_paths, denied_paths, require_approval
+- [x] Implement config-driven policy loading with additive merge for security lists
+- [x] Add `SecurityConfig` dataclass to Config class
+- [x] Add security settings to `RuntimeConfig` (security_mode, security_enabled, set methods)
+- [x] Create `get_permission_section()` for prompt injection (`security/prompt_integration.py`)
+- [x] Update `PromptBuilder` to include permission context in all prompt modes
+- [x] Add API endpoints:
+  - `GET /api/v1/security/config` - Get current security settings
+  - `PATCH /api/v1/security/config` - Update mode/enabled at runtime
+  - `POST /api/v1/security/yolo` - Quick YOLO mode toggle
 
-**Deliverables**: Config schema, `get_permission_section()`, updated prompts
-**Time estimate**: 2-3 hours
+**Deliverables**:
+- `config.yml` security section
+- `SecurityConfig` dataclass in `config.py`
+- RuntimeConfig security methods
+- `security/prompt_integration.py` - Prompt section generator
+- `prompt/builder.py` - Updated with permission context
+- `api/routes.py` - Security config endpoints
+
+**Time actual**: ~2 hours
 
 ### Phase 3: Approval Flow
 **Goal**: Interactive approval for ASK results across CLI, TUI, and Web API

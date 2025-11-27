@@ -32,6 +32,9 @@ class PromptBuilder:
         self.components = None
         # Output formatting guidance appended to prompts; defaults lazily
         self.output_formatting: str = ""
+        # Security/permission context section (generated dynamically)
+        self._permission_section: str = ""
+        self._permission_config: dict = {}
         
     def load_components(self,
                        base_prompt: str,
@@ -63,6 +66,58 @@ class PromptBuilder:
             code_analysis_guide=code_analysis_guide,
             python_guide=python_guide
         )
+    
+    def set_permission_context(
+        self,
+        mode: str = "workspace",
+        enabled: bool = True,
+        workspace_root: Optional[str] = None,
+        project_root: Optional[str] = None,
+        allowed_paths: Optional[list] = None,
+        denied_paths: Optional[list] = None,
+        require_approval: Optional[list] = None,
+    ) -> None:
+        """Set the permission/security context for prompt generation.
+        
+        This updates the permission section that gets included in prompts,
+        informing the agent what operations are allowed.
+        
+        Args:
+            mode: Permission mode ('read_only', 'workspace', 'full')
+            enabled: Whether permission checks are active
+            workspace_root: Current workspace directory
+            project_root: Current project directory
+            allowed_paths: Additional allowed path patterns
+            denied_paths: Denied path patterns
+            require_approval: Operations requiring approval
+        """
+        self._permission_config = {
+            "mode": mode,
+            "enabled": enabled,
+            "workspace_root": workspace_root,
+            "project_root": project_root,
+            "allowed_paths": allowed_paths or [],
+            "denied_paths": denied_paths or [],
+            "require_approval": require_approval or [],
+        }
+        # Regenerate the permission section
+        self._regenerate_permission_section()
+    
+    def _regenerate_permission_section(self) -> None:
+        """Regenerate the permission section from current config."""
+        try:
+            from penguin.security.prompt_integration import get_permission_section
+            self._permission_section = get_permission_section(**self._permission_config)
+        except ImportError:
+            # Security module not available, use minimal fallback
+            mode = self._permission_config.get("mode", "workspace")
+            enabled = self._permission_config.get("enabled", True)
+            if not enabled:
+                self._permission_section = "\n## Permissions\n**YOLO mode active** - no restrictions.\n"
+            else:
+                self._permission_section = f"\n## Permissions\n**Mode: {mode.upper()}** - Standard boundaries apply.\n"
+        except Exception:
+            self._permission_section = ""
     
     def build(self, mode: str = "direct", **kwargs) -> str:
         """
@@ -147,6 +202,7 @@ Match Codex/Cursor directness: Answer → Evidence → Done
             FORBIDDEN_PHRASES_DETECTION +
             "\n\n" +
             self.components.base_prompt +
+            self._permission_section +  # Include permission context
             self.components.empirical_first +
             self.components.persistence_directive +
             self.components.workflow_section +
@@ -166,6 +222,7 @@ Match Codex/Cursor directness: Answer → Evidence → Done
         """Build ultra-minimal prompt"""
         return (
             self.components.base_prompt +
+            self._permission_section +
             self.components.persistence_directive + 
             self.components.action_syntax +
             self.output_formatting +
@@ -176,6 +233,7 @@ Match Codex/Cursor directness: Answer → Evidence → Done
         """Build educational mode prompt"""
         return (
             self.components.base_prompt +
+            self._permission_section +
             self.components.persistence_directive + 
             self.components.workflow_section +
             self.components.project_workflow +
@@ -189,6 +247,7 @@ Match Codex/Cursor directness: Answer → Evidence → Done
         """Build code review focused prompt"""
         return (
             self.components.base_prompt +
+            self._permission_section +
             self.components.persistence_directive + 
             self.components.workflow_section +
             self.components.project_workflow +
@@ -201,6 +260,7 @@ Match Codex/Cursor directness: Answer → Evidence → Done
         """Build implementation-focused prompt (spec-first, incremental)."""
         return (
             self.components.base_prompt +
+            self._permission_section +
             self.components.persistence_directive +
             self.components.workflow_section +
             self.components.project_workflow +
@@ -213,6 +273,7 @@ Match Codex/Cursor directness: Answer → Evidence → Done
         """Build testing/validation-focused prompt."""
         return (
             self.components.base_prompt +
+            self._permission_section +
             self.components.persistence_directive +
             self.components.workflow_section +
             self.components.project_workflow +
@@ -252,3 +313,41 @@ def set_output_formatting(style: str = "steps_final") -> None:
         _builder.output_formatting = get_output_formatting(style)
     except Exception:
         _builder.output_formatting = ""
+
+
+def set_permission_context_from_config() -> None:
+    """Initialize permission context from current config.
+    
+    Reads security settings from Config and RuntimeConfig,
+    then updates the prompt builder's permission section.
+    """
+    try:
+        from penguin.config import Config, RuntimeConfig, load_config
+        
+        # Load config
+        config_data = load_config()
+        security_data = config_data.get("security", {})
+        
+        # Try to get runtime config for workspace/project roots
+        workspace_root = None
+        project_root = None
+        try:
+            # RuntimeConfig may not be initialized yet
+            runtime = RuntimeConfig(config_data)
+            workspace_root = runtime.workspace_root
+            project_root = runtime.project_root
+        except Exception:
+            pass
+        
+        _builder.set_permission_context(
+            mode=security_data.get("mode", "workspace"),
+            enabled=security_data.get("enabled", True),
+            workspace_root=workspace_root,
+            project_root=project_root,
+            allowed_paths=security_data.get("allowed_paths", []),
+            denied_paths=security_data.get("denied_paths", []),
+            require_approval=security_data.get("require_approval", []),
+        )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug(f"Could not set permission context from config: {e}")

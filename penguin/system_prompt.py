@@ -242,7 +242,7 @@ PERSISTENCE_PROMPT = """
 """
 
 # Initialize prompt builder with components
-from penguin.prompt.builder import get_builder
+from penguin.prompt.builder import get_builder, set_permission_context_from_config
 
 # Load components into builder
 _builder = get_builder()
@@ -261,6 +261,10 @@ _builder.load_components(
     code_analysis_guide=prompt_workflow.CODE_ANALYSIS_GUIDE,
     python_guide=prompt_workflow.PYTHON_SPECIFIC_GUIDE
 )
+
+# Initialize permission context from security config
+# This populates the permission section in prompts (Phase 2 security feature)
+set_permission_context_from_config()
 
 # Default system prompt (direct mode)
 SYSTEM_PROMPT = _builder.build(mode="direct")
