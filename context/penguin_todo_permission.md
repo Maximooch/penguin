@@ -209,25 +209,37 @@ Sub-agents inherit parent permissions or get restricted subset?
 
 **Time actual**: ~2 hours
 
-### Phase 3: Approval Flow
-**Goal**: Interactive approval for ASK results across CLI, TUI, and Web API
+### Phase 3: Approval Flow (Web/API) ✅ COMPLETE
+**Goal**: Interactive approval for ASK results via Web API and Python API
 
-- [ ] Define approval callback interface: `async def request_approval(op, resource, reason) -> bool`
-- [ ] Implement `ApprovalQueue` for pending requests with unique IDs
-- [ ] Implement CLI approval flow (blocking prompt)
-- [ ] Implement TUI approval flow (modal dialog)
-- [ ] Implement Web API approval endpoints:
-  - `GET /api/v1/approvals` — List pending
-  - `GET /api/v1/approvals/{id}` — Get details
+- [x] Define `ApprovalRequest` dataclass with unique IDs, status, expiration
+- [x] Implement `ApprovalManager` singleton for pending/resolved requests
+- [x] Implement `ApprovalScope` (ONCE, SESSION, PATTERN) and `ApprovalStatus` (PENDING, APPROVED, DENIED, EXPIRED)
+- [x] Implement session-level approval caching (`SessionApproval`)
+- [x] Implement pattern-based pre-approval (glob patterns)
+- [x] Implement Web API approval endpoints:
+  - `GET /api/v1/approvals` — List pending requests
+  - `GET /api/v1/approvals/{id}` — Get request details
   - `POST /api/v1/approvals/{id}/approve` — Approve (with scope: once/session/pattern)
-  - `POST /api/v1/approvals/{id}/deny` — Deny
-- [ ] Add WebSocket event `approval_required` to `/api/v1/events/ws`
-- [ ] Add session-level approval caching ("allow all file writes this session")
-- [ ] Add pattern-based approval ("allow writes to `*.py`")
-- [ ] Handle async agents gracefully (queue-based, resume on approval)
+  - `POST /api/v1/approvals/{id}/deny` — Deny request
+  - `POST /api/v1/approvals/pre-approve` — Pre-approve operations
+  - `GET /api/v1/approvals/session/{id}` — Get session approvals
+  - `DELETE /api/v1/approvals/session/{id}` — Clear session approvals
+- [x] Add `ApprovalWebSocketManager` for real-time notifications
+- [x] Add WebSocket events: `approval_required`, `approval_resolved`
+- [x] Integrate with `ToolManager.execute_tool()`:
+  - Check pre-approvals before creating request
+  - Return `{"status": "pending_approval", "approval_id": "..."}` for ASK results
+- [x] Add auto-expiration with configurable TTL (default 5 min)
+- [ ] CLI approval flow (deferred - Phase 3b)
+- [ ] TUI approval flow (deferred - Phase 3b)
 
-**Deliverables**: `ApprovalHandler` interface, `ApprovalQueue`, CLI/TUI/Web implementations
-**Time estimate**: 3-4 hours
+**Deliverables**:
+- `security/approval.py` - ApprovalManager, ApprovalRequest, SessionApproval
+- `api/routes.py` - REST endpoints + WebSocket integration
+- `tools/tool_manager.py` - Approval flow integration
+
+**Time actual**: ~2 hours
 
 ### Phase 4: Multi-Agent & Sub-Agent Policies
 **Goal**: Permission scoping for sub-agents

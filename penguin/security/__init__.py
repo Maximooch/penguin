@@ -9,6 +9,7 @@ Components:
 - PolicyEngine: Base class for permission policies
 - PermissionEnforcer: Enforcement wrapper for tool execution
 - Path utilities: Secure path handling and validation
+- Approval flow: User approval for ASK permission results
 """
 
 from penguin.security.permission_engine import (
@@ -39,6 +40,14 @@ from penguin.security.prompt_integration import (
     get_permission_summary,
     get_capabilities_for_prompt,
 )
+from penguin.security.approval import (
+    ApprovalScope,
+    ApprovalStatus,
+    ApprovalRequest,
+    SessionApproval,
+    ApprovalManager,
+    get_approval_manager,
+)
 
 __all__ = [
     # Core permission types
@@ -67,5 +76,12 @@ __all__ = [
     "get_permission_section",
     "get_permission_summary",
     "get_capabilities_for_prompt",
+    # Approval flow
+    "ApprovalScope",
+    "ApprovalStatus",
+    "ApprovalRequest",
+    "SessionApproval",
+    "ApprovalManager",
+    "get_approval_manager",
 ]
 

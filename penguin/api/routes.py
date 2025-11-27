@@ -19,6 +19,169 @@ from penguin._version import __version__ as PENGUIN_VERSION
 logger = logging.getLogger(__name__)
 
 
+# --- WebSocket Connection Manager for Approvals ---
+
+class ApprovalWebSocketManager:
+    """Manages WebSocket connections for approval notifications.
+    
+    Tracks active WebSocket connections and provides methods to
+    broadcast approval events to connected clients.
+    
+    Note: The asyncio.Lock is lazily initialized on first async access
+    to avoid creating it before the event loop is running.
+    """
+    
+    def __init__(self):
+        # Map of session_id -> list of WebSocket connections
+        self._connections: Dict[str, List[WebSocket]] = {}
+        # All connections (for broadcast)
+        self._all_connections: List[WebSocket] = []
+        # Lazy-initialized lock (created on first async access)
+        self._lock: Optional[asyncio.Lock] = None
+    
+    def _get_lock(self) -> asyncio.Lock:
+        """Get or create the asyncio lock (must be called within event loop)."""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
+    
+    async def connect(self, websocket: WebSocket, session_id: Optional[str] = None):
+        """Register a WebSocket connection."""
+        async with self._get_lock():
+            self._all_connections.append(websocket)
+            if session_id:
+                if session_id not in self._connections:
+                    self._connections[session_id] = []
+                self._connections[session_id].append(websocket)
+        logger.debug(f"WebSocket connected: session={session_id}, total={len(self._all_connections)}")
+    
+    async def disconnect(self, websocket: WebSocket, session_id: Optional[str] = None):
+        """Unregister a WebSocket connection."""
+        async with self._get_lock():
+            if websocket in self._all_connections:
+                self._all_connections.remove(websocket)
+            if session_id and session_id in self._connections:
+                if websocket in self._connections[session_id]:
+                    self._connections[session_id].remove(websocket)
+                if not self._connections[session_id]:
+                    del self._connections[session_id]
+        logger.debug(f"WebSocket disconnected: session={session_id}, total={len(self._all_connections)}")
+    
+    async def update_session(self, websocket: WebSocket, old_session_id: Optional[str], new_session_id: str):
+        """Atomically update a WebSocket's session mapping without disconnecting.
+        
+        This prevents missed events during session transitions by keeping
+        the connection in _all_connections throughout the operation.
+        """
+        async with self._get_lock():
+            # Remove from old session mapping (but NOT from _all_connections)
+            if old_session_id and old_session_id in self._connections:
+                if websocket in self._connections[old_session_id]:
+                    self._connections[old_session_id].remove(websocket)
+                if not self._connections[old_session_id]:
+                    del self._connections[old_session_id]
+            
+            # Add to new session mapping
+            if new_session_id not in self._connections:
+                self._connections[new_session_id] = []
+            if websocket not in self._connections[new_session_id]:
+                self._connections[new_session_id].append(websocket)
+        
+        logger.debug(f"WebSocket session updated: {old_session_id} -> {new_session_id}")
+    
+    async def send_to_session(self, session_id: str, event: str, data: dict):
+        """Send an event to all connections for a session."""
+        async with self._get_lock():
+            # Copy list to prevent race condition during iteration
+            connections = list(self._connections.get(session_id, []))
+        
+        for ws in connections:
+            try:
+                await ws.send_json({"event": event, "data": data})
+            except Exception as e:
+                logger.warning(f"Failed to send to session {session_id}: {e}")
+    
+    async def broadcast(self, event: str, data: dict):
+        """Broadcast an event to all connected clients."""
+        async with self._get_lock():
+            connections = list(self._all_connections)
+        
+        for ws in connections:
+            try:
+                await ws.send_json({"event": event, "data": data})
+            except Exception as e:
+                logger.warning(f"Failed to broadcast: {e}")
+    
+    async def send_approval_required(self, request_dict: dict):
+        """Send an approval_required event."""
+        session_id = request_dict.get("session_id")
+        if session_id:
+            await self.send_to_session(session_id, "approval_required", request_dict)
+        # Also broadcast to all (for monitoring/admin UIs)
+        await self.broadcast("approval_required", request_dict)
+    
+    async def send_approval_resolved(self, request_dict: dict):
+        """Send an approval_resolved event."""
+        session_id = request_dict.get("session_id")
+        if session_id:
+            await self.send_to_session(session_id, "approval_resolved", request_dict)
+        await self.broadcast("approval_resolved", request_dict)
+
+
+# Singleton instance
+_ws_manager = ApprovalWebSocketManager()
+
+# Flag to track if approval callbacks are registered
+_approval_callbacks_registered = False
+
+def _setup_approval_websocket_callbacks():
+    """Register ApprovalManager callbacks for WebSocket notifications.
+    
+    This is called lazily when the first approval-related operation occurs.
+    """
+    global _approval_callbacks_registered
+    if _approval_callbacks_registered:
+        return
+    
+    try:
+        from penguin.security.approval import get_approval_manager
+        manager = get_approval_manager()
+        
+        # Create async-safe callback wrappers
+        def on_request_created(request):
+            """Callback when an approval request is created."""
+            try:
+                # Schedule the coroutine in the event loop
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(_ws_manager.send_approval_required(request.to_dict()))
+                else:
+                    loop.run_until_complete(_ws_manager.send_approval_required(request.to_dict()))
+            except Exception as e:
+                logger.error(f"Error sending approval_required event: {e}")
+        
+        def on_request_resolved(request):
+            """Callback when an approval request is resolved."""
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(_ws_manager.send_approval_resolved(request.to_dict()))
+                else:
+                    loop.run_until_complete(_ws_manager.send_approval_resolved(request.to_dict()))
+            except Exception as e:
+                logger.error(f"Error sending approval_resolved event: {e}")
+        
+        manager.on_request_created(on_request_created)
+        manager.on_request_resolved(on_request_resolved)
+        _approval_callbacks_registered = True
+        logger.info("Approval WebSocket callbacks registered")
+        
+    except ImportError:
+        logger.debug("Approval module not available, WebSocket callbacks not registered")
+    except Exception as e:
+        logger.error(f"Failed to setup approval WebSocket callbacks: {e}")
+
+
 def _validate_agent_id(agent_id: str) -> None:
     if not agent_id or len(agent_id) > 32:
         raise HTTPException(status_code=400, detail="agent_id must be 1-32 chars")
@@ -124,6 +287,13 @@ async def stream_chat(
     await websocket.accept()
     response_queue = asyncio.Queue()
     sender_task = None
+    session_id = None  # Will be set from conversation_id or generated
+    
+    # Setup approval WebSocket callbacks (lazy, only once)
+    _setup_approval_websocket_callbacks()
+    
+    # Register this connection with the approval manager
+    await _ws_manager.connect(websocket, session_id)
 
     # Task to send messages from the queue to the client
     async def sender(queue: asyncio.Queue):
@@ -205,6 +375,13 @@ async def stream_chat(
             agent_id = data.get("agent_id")
             if agent_id:
                 _validate_agent_id(agent_id)
+            
+            # Update session_id for approval tracking if conversation_id provided
+            nonlocal session_id
+            if conversation_id and session_id != conversation_id:
+                # Atomically update session mapping (no disconnect/reconnect gap)
+                await _ws_manager.update_session(websocket, session_id, conversation_id)
+                session_id = conversation_id
 
             input_data = {"text": text}
             if image_path:
@@ -312,6 +489,8 @@ async def stream_chat(
         logger.error(f"Unhandled error in websocket handler: {str(e)}", exc_info=True)
     finally:
         logger.info("Cleaning up stream_chat handler.")
+        # Disconnect from approval WebSocket manager
+        await _ws_manager.disconnect(websocket, session_id)
         # Ensure sender task is cancelled if connection closes unexpectedly
         if sender_task and not sender_task.done():
             logger.info("Cancelling sender task due to handler exit.")
@@ -1201,3 +1380,305 @@ def _get_default_capabilities(mode: str, enabled: bool) -> Dict[str, Any]:
             "cannot": ["Write outside boundaries", "Access system paths", "Modify sensitive files"],
             "requires_approval": ["File deletion", "Git push"],
         }
+
+
+# --- Approval Flow Endpoints ---
+
+# Lazy import to avoid circular imports
+_approval_manager = None
+
+def _get_approval_manager():
+    """Get the singleton ApprovalManager instance."""
+    global _approval_manager
+    if _approval_manager is None:
+        from penguin.security.approval import get_approval_manager
+        _approval_manager = get_approval_manager()
+    return _approval_manager
+
+
+class ApprovalAction(BaseModel):
+    """Request body for approving a request."""
+    scope: str = "once"  # once | session | pattern
+    pattern: Optional[str] = None  # Required if scope is "pattern"
+
+
+class PreApprovalRequest(BaseModel):
+    """Request body for pre-approving operations."""
+    operation: str  # e.g., "filesystem.write"
+    pattern: Optional[str] = None  # Glob pattern for resource matching
+    session_id: Optional[str] = None  # Session to apply to (None for global)
+    ttl_seconds: Optional[int] = None  # Optional expiration
+
+
+# NOTE: Route order matters in FastAPI - specific paths must come before path parameters
+# Order: /approvals -> /approvals/pre-approve -> /approvals/session/* -> /approvals/{id}
+
+@router.get("/api/v1/approvals")
+async def list_pending_approvals(
+    session_id: Optional[str] = None,
+):
+    """List all pending approval requests.
+    
+    Args:
+        session_id: Optional filter by session ID
+        
+    Returns:
+        List of pending approval requests
+    """
+    try:
+        manager = _get_approval_manager()
+        pending = manager.get_pending(session_id=session_id)
+        
+        return {
+            "pending": [r.to_dict() for r in pending],
+            "count": len(pending),
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing approvals: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error listing approvals: {str(e)}"
+        )
+
+
+@router.post("/api/v1/approvals/pre-approve")
+async def pre_approve_operation(request: PreApprovalRequest):
+    """Pre-approve an operation for a session or globally.
+    
+    This allows bypassing the approval flow for specific operations,
+    useful for automation/CI scenarios.
+    
+    Args:
+        request: Pre-approval configuration
+        
+    Returns:
+        The created pre-approval
+    """
+    try:
+        manager = _get_approval_manager()
+        
+        approval = manager.pre_approve(
+            operation=request.operation,
+            pattern=request.pattern,
+            session_id=request.session_id,
+            ttl_seconds=request.ttl_seconds,
+        )
+        
+        scope = "global" if request.session_id is None else f"session={request.session_id}"
+        pattern_desc = f" with pattern '{request.pattern}'" if request.pattern else ""
+        
+        return {
+            "success": True,
+            "message": f"Pre-approved '{request.operation}'{pattern_desc} for {scope}",
+            "approval": {
+                "operation": approval.operation,
+                "pattern": approval.pattern,
+                "session_id": approval.session_id,
+                "created_at": approval.created_at.isoformat(),
+                "expires_at": approval.expires_at.isoformat() if approval.expires_at else None,
+            },
+        }
+        
+    except Exception as e:
+        logger.error(f"Error pre-approving operation: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error pre-approving operation: {str(e)}"
+        )
+
+
+@router.get("/api/v1/approvals/session/{session_id}")
+async def get_session_approvals(session_id: str):
+    """Get all active pre-approvals for a session.
+    
+    Args:
+        session_id: The session ID
+        
+    Returns:
+        List of active session approvals
+    """
+    try:
+        manager = _get_approval_manager()
+        approvals = manager.get_session_approvals(session_id)
+        
+        return {
+            "session_id": session_id,
+            "approvals": [
+                {
+                    "operation": a.operation,
+                    "pattern": a.pattern,
+                    "created_at": a.created_at.isoformat(),
+                    "expires_at": a.expires_at.isoformat() if a.expires_at else None,
+                }
+                for a in approvals
+            ],
+            "count": len(approvals),
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting session approvals: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting session approvals: {str(e)}"
+        )
+
+
+@router.delete("/api/v1/approvals/session/{session_id}")
+async def clear_session_approvals(session_id: str):
+    """Clear all pre-approvals for a session.
+    
+    Args:
+        session_id: The session ID
+        
+    Returns:
+        Count of cleared approvals
+    """
+    try:
+        manager = _get_approval_manager()
+        count = manager.clear_session_approvals(session_id)
+        
+        return {
+            "success": True,
+            "message": f"Cleared {count} approvals for session '{session_id}'",
+            "cleared_count": count,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error clearing session approvals: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error clearing session approvals: {str(e)}"
+        )
+
+
+# Routes with path parameters must come AFTER specific paths
+@router.get("/api/v1/approvals/{request_id}")
+async def get_approval_request(request_id: str):
+    """Get details of a specific approval request.
+    
+    Args:
+        request_id: The approval request ID
+        
+    Returns:
+        The approval request details
+    """
+    try:
+        manager = _get_approval_manager()
+        request = manager.get_request(request_id)
+        
+        if request is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Approval request not found: {request_id}"
+            )
+        
+        return request.to_dict()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting approval request: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting approval request: {str(e)}"
+        )
+
+
+@router.post("/api/v1/approvals/{request_id}/approve")
+async def approve_request(
+    request_id: str,
+    action: ApprovalAction = ApprovalAction(),
+):
+    """Approve a pending approval request.
+    
+    Args:
+        request_id: The approval request ID
+        action: Approval action with scope (once, session, pattern)
+        
+    Returns:
+        The resolved approval request
+    """
+    try:
+        from penguin.security.approval import ApprovalScope
+        
+        manager = _get_approval_manager()
+        
+        # Parse scope
+        scope_map = {
+            "once": ApprovalScope.ONCE,
+            "session": ApprovalScope.SESSION,
+            "pattern": ApprovalScope.PATTERN,
+        }
+        scope = scope_map.get(action.scope.lower())
+        if scope is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid scope '{action.scope}'. Must be one of: once, session, pattern"
+            )
+        
+        # Pattern is required for pattern scope
+        if scope == ApprovalScope.PATTERN and not action.pattern:
+            raise HTTPException(
+                status_code=400,
+                detail="Pattern is required when scope is 'pattern'"
+            )
+        
+        result = manager.approve(request_id, scope=scope, pattern=action.pattern)
+        
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Approval request not found or already resolved: {request_id}"
+            )
+        
+        return {
+            "success": True,
+            "message": f"Request approved with scope '{action.scope}'",
+            "request": result.to_dict(),
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error approving request: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error approving request: {str(e)}"
+        )
+
+
+@router.post("/api/v1/approvals/{request_id}/deny")
+async def deny_request(request_id: str):
+    """Deny a pending approval request.
+    
+    Args:
+        request_id: The approval request ID
+        
+    Returns:
+        The resolved approval request
+    """
+    try:
+        manager = _get_approval_manager()
+        result = manager.deny(request_id)
+        
+        if result is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Approval request not found or already resolved: {request_id}"
+            )
+        
+        return {
+            "success": True,
+            "message": "Request denied",
+            "request": result.to_dict(),
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error denying request: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error denying request: {str(e)}"
+        )

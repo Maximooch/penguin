@@ -1757,10 +1757,71 @@ class ToolManager:
                             "reason": reason,
                         })
                     elif result == _PermissionResult.ASK:
-                        # For now, log and allow - approval flow will be added in Phase 3
+                        # Phase 3: Approval flow
                         logger.info(f"Tool '{tool_name}' requires approval: {reason}")
-                        # TODO: Implement approval flow in Phase 3
-                        # For now, we allow ASK to proceed (soft enforcement)
+                        
+                        # Extract operation and resource for approval tracking
+                        operation = context.get("operation", f"tool.{tool_name}") if context else f"tool.{tool_name}"
+                        resource = tool_input.get("path", tool_input.get("file_path", tool_input.get("target", "")))
+                        session_id = context.get("session_id") if context else None
+                        
+                        # Check for pre-approvals first
+                        try:
+                            from penguin.security.approval import get_approval_manager
+                            approval_manager = get_approval_manager()
+                            
+                            # Check if pre-approved - if so, continue execution
+                            if approval_manager.check_pre_approved(operation, resource, session_id):
+                                logger.info(f"Tool '{tool_name}' pre-approved for {resource}")
+                                # Pre-approved: fall through to tool execution below
+                            else:
+                                # Not pre-approved: create approval request and return pending status
+                                approval_request = approval_manager.create_request(
+                                    tool_name=tool_name,
+                                    operation=operation,
+                                    resource=resource,
+                                    reason=reason,
+                                    session_id=session_id,
+                                    context={
+                                        "tool_input": tool_input,
+                                        "agent_id": context.get("agent_id") if context else None,
+                                    },
+                                )
+                                
+                                logger.info(f"Approval request created: {approval_request.id}")
+                                return json.dumps({
+                                    "status": "pending_approval",
+                                    "approval_id": approval_request.id,
+                                    "tool": tool_name,
+                                    "operation": operation,
+                                    "resource": resource,
+                                    "reason": reason,
+                                    "message": f"Tool '{tool_name}' requires approval. Approval ID: {approval_request.id}",
+                                })
+                        except ImportError:
+                            # Approval module not available - BLOCK execution for security
+                            # Tools requiring approval must not bypass when module is missing
+                            logger.error(f"Approval module not available, blocking '{tool_name}' (approval required)")
+                            return json.dumps({
+                                "error": "approval_unavailable",
+                                "tool": tool_name,
+                                "operation": operation,
+                                "resource": resource,
+                                "reason": reason,
+                                "message": f"Tool '{tool_name}' requires approval but approval system is unavailable.",
+                            })
+                        except Exception as approval_err:
+                            # Error in approval flow - BLOCK execution for security
+                            # Don't silently allow tools that require approval
+                            logger.error(f"Error in approval flow for '{tool_name}': {approval_err}")
+                            return json.dumps({
+                                "error": "approval_error",
+                                "tool": tool_name,
+                                "operation": operation,
+                                "resource": resource,
+                                "reason": reason,
+                                "message": f"Tool '{tool_name}' requires approval but an error occurred: {approval_err}",
+                            })
             
             tool_map = {
                 "create_folder": lambda: self._execute_file_operation("create_folder", tool_input),
