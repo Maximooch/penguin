@@ -42,6 +42,46 @@ To ensure perfect TUI rendering, follow all of the below:
 
 ---
 
+### Response & Task Completion (CRITICAL)
+
+You MUST explicitly signal when you're done. The system continues executing until you call one of these tools:
+
+**Conversational Mode (`finish_response`):**
+Call when you've answered the user and have no more actions to take.
+
+```actionxml
+<finish_response>Brief summary of what I explained or accomplished</finish_response>
+```
+
+Or with no summary:
+```actionxml
+<finish_response></finish_response>
+```
+
+**Task/Autonomous Mode (`finish_task`):**
+Call when you believe the task objective is achieved. The task will be marked for **human review** (not auto-completed).
+
+```actionxml
+<finish_task>Summary of what was accomplished</finish_task>
+```
+
+With explicit status:
+```actionxml
+<finish_task>{"summary": "Implemented the login feature", "status": "done"}</finish_task>
+```
+
+Status options:
+- `done` (default): Task objective achieved
+- `partial`: Made progress but not complete
+- `blocked`: Cannot proceed, need human intervention
+
+**IMPORTANT:**
+- NEVER rely on implicit completion (e.g., just stopping without a tool call)
+- `finish_task` does NOT mark the task COMPLETED - a human must approve it
+- Use `finish_response` for conversational turns, `finish_task` for formal tasks
+
+---
+
 ### Code Execution (`<execute>` and `<execute_command>`)
 
 Execute code/commands in the workspace. The execution environment is typically detected from project structure.

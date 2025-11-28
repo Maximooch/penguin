@@ -12,6 +12,7 @@ remains test‑friendly and avoids hidden globals.
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import asyncio
+import re
 import time
 import multiprocessing as mp
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, AsyncGenerator, Tuple
@@ -288,11 +289,14 @@ class Engine:
         agent_role: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Multi-step conversational loop that continues until no actions are taken.
+        Multi-step conversational loop for natural conversation flow.
         
-        This method provides natural conversational flow by continuing to process
-        until the assistant stops taking actions, similar to how modern AI assistants
-        behave. Each iteration creates separate messages in the conversation.
+        Termination conditions (in priority order):
+        1. Explicit `finish_response` tool call (preferred)
+        2. No actions taken in an iteration (implicit completion fallback)
+        3. Max iterations reached
+        
+        Each iteration creates separate messages in the conversation.
         
         Args:
             prompt: The initial prompt to process
@@ -373,9 +377,21 @@ class Engine:
                 if iteration_results:
                     all_action_results.extend(iteration_results)
 
-                # Stop if no actions were taken - natural conversation end
+                # Check for explicit finish_response signal (primary termination)
+                # NOTE: Only check finish_response here - finish_task is for task mode (run_task)
+                finish_response_called = any(
+                    isinstance(r, dict) and r.get("action_name") == "finish_response"
+                    for r in iteration_results
+                )
+                if finish_response_called:
+                    logger.debug("Response completion: finish_response tool called")
+                    break
+
+                # Fallback: No actions = natural conversation end
+                # This handles cases where the LLM responds without calling finish_response.
+                # The explicit finish_response is preferred, but this provides robustness.
                 if not iteration_results:
-                    logger.debug("Conversation completion: No actions in response")
+                    logger.debug("Conversation completion: No actions in response (implicit)")
                     break
 
             # Determine final status
@@ -565,18 +581,29 @@ class Engine:
                 except Exception as save_err:
                     logger.warning(f"Failed to save conversation state: {save_err}")
 
-                # Check for task completion via tool call (primary) or phrases (fallback)
-                task_completed_via_tool = False
+                # Check for task completion via finish_task tool call (primary)
+                finish_task_called = False
+                finish_status = "done"  # Default status
                 for tool_result in iteration_results:
-                    if isinstance(tool_result, dict) and tool_result.get("action_name") == "task_completed":
-                        task_completed_via_tool = True
-                        break
+                    if isinstance(tool_result, dict):
+                        action_name = tool_result.get("action_name", "")
+                        if action_name in ("finish_task", "task_completed"):
+                            finish_task_called = True
+                            # Extract status from machine-readable marker [FINISH_STATUS:xxx]
+                            # This avoids false positives from user summaries containing words like "blocked"
+                            output = tool_result.get("output", "")
+                            status_match = re.search(r'\[FINISH_STATUS:(\w+)\]', output)
+                            if status_match:
+                                finish_status = status_match.group(1)
+                            break
 
-                if task_completed_via_tool:
-                    completion_status = "completed"
-                    logger.info(f"Task completion detected via 'task_completed' tool.")
+                if finish_task_called:
+                    # Task goes to PENDING_REVIEW, not COMPLETED
+                    # Human must approve to mark COMPLETED
+                    completion_status = "pending_review"
+                    logger.info(f"Task completion signal detected via 'finish_task' tool (status: {finish_status}). Marking for human review.")
                     
-                    # Publish completion event
+                    # Publish completion event (task is pending review, not fully completed)
                     if enable_events:
                         try:
                             from penguin.utils.events import EventBus, TaskEvent
@@ -588,36 +615,20 @@ class Engine:
                                 "iteration": self.current_iteration,
                                 "max_iterations": max_iters,
                                 "context": task_context,
+                                "finish_status": finish_status,
+                                "requires_review": True,
                                 "message_type": "status",
                             })
                         except (ImportError, AttributeError):
                             pass
                     break
 
-                # Check for task completion via completion phrases (fallback)
-                if any(phrase in last_response for phrase in all_completion_phrases):
-                    completion_status = "completed"
-                    logger.debug(f"Task completion detected. Found completion phrase: {all_completion_phrases}")
-                    
-                    # Publish completion event
-                    if enable_events:
-                        try:
-                            from penguin.utils.events import EventBus, TaskEvent
-                            event_bus = EventBus.get_instance()
-                            await event_bus.publish(TaskEvent.COMPLETED.value, {
-                                "task_id": task_metadata["id"],
-                                "task_name": task_metadata["name"],
-                                "response": last_response,
-                                "iteration": self.current_iteration,
-                                "max_iterations": max_iters,
-                                "context": task_context,
-                                "message_type": "status",
-                            })
-                        except (ImportError, AttributeError):
-                            pass
-                    break
-        
-                    break
+                # NOTE: Phrase-based completion detection is deprecated.
+                # Keeping commented out for reference. Use finish_task tool instead.
+                # if any(phrase in last_response for phrase in all_completion_phrases):
+                #     completion_status = "completed"
+                #     logger.debug(f"Task completion detected. Found completion phrase: {all_completion_phrases}")
+                #     break
         
         except LLMEmptyResponseError as e:
             logger.warning(f"LLM returned empty response during task: {e}")

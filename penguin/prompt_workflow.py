@@ -564,39 +564,54 @@ CONTEXT_MANAGEMENT = '''
 - **Refer to Files:** Don't rely solely on conversation history; refer back to your plan and context files.
 '''
 
-# --- Completion Phrases Guide (Clarified Scope) ---
+# --- Completion Signals Guide (Tool-Based) ---
 
 COMPLETION_PHRASES_GUIDE = '''
-## Completion Signals
+## Completion Signals (CRITICAL)
 
-**Use ONLY at the very end of your message.**
+You MUST explicitly signal when you're done using completion tools. The system continues until you call one of these:
 
-### TASK_COMPLETED
-- Use ONLY when a specific, user-initiated task (e.g., from `/run task_name` or the initial request in a non-continuous run) is **fully verified** as complete against *all* its original requirements.
-- **Do NOT use** after completing just one sub-step of a larger plan.
-- Briefly summarize the completed task.
-- When writing the TASK_COMPLETED phrase, don't use any other text or markdown formatting. Example:
-GOOD: 
-TASK_COMPLETED
+### `<finish_response>` (Conversational Mode)
+Call when you've answered the user and have no more actions to take.
 
-BAD:
-**TASK_COMPLETED**
+```actionxml
+<finish_response>Brief summary of what I explained</finish_response>
+```
 
-If you try to use any other text or markdown formatting, the system will not recognize it as a valid completion phrase.
+Or simply:
+```actionxml
+<finish_response></finish_response>
+```
 
+### `<finish_task>` (Task/Autonomous Mode)
+Call when you believe the task objective is achieved. The task will be marked for **human review** (not auto-completed).
 
-### CONTINUOUS_COMPLETED
-- Use ONLY when the *overall objective* of a continuous mode session (`/run --247`) is **fully verified** as achieved, and there are no further planned or reasonably inferable next steps based on the project context.
-- Include a comprehensive summary of the session's accomplishments.
+```actionxml
+<finish_task>Summary of what was accomplished</finish_task>
+```
 
-### NEED_USER_CLARIFICATION
-When blocked and need user input to proceed.
+With explicit status:
+```actionxml
+<finish_task>{"summary": "Implemented feature X", "status": "done"}</finish_task>
+```
 
-### EMERGENCY_STOP
-- Use ONLY for critical, unrecoverable errors, potential security risks, or situations demanding immediate halt. Briefly explain why.
+Status options:
+- `done` (default): Task objective achieved
+- `partial`: Made progress but not complete  
+- `blocked`: Cannot proceed, need human intervention
 
-### General Guidelines
-- Your reasoning must justify the phrase. Explain *why* the task/session is complete or why clarification is needed *before* using the phrase.
+### Special Signals (Still Text-Based)
+
+These are for exceptional situations only:
+
+- **NEED_USER_CLARIFICATION**: When blocked and need user input to proceed.
+- **EMERGENCY_STOP**: For critical, unrecoverable errors or security risks. Briefly explain why.
+
+### Guidelines
+- NEVER rely on implicit completion (e.g., just stopping without a tool call)
+- `finish_task` does NOT mark the task COMPLETED - a human must approve it
+- Use `finish_response` for conversational turns, `finish_task` for formal tasks
+- Your reasoning should justify completion *before* calling the tool
 '''
 
 

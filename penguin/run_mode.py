@@ -853,11 +853,13 @@ class RunMode:
             
             logger.debug("Using Engine.run_task method")
             
-            # Set up custom completion phrases to check for
+            # NOTE: Phrase-based completion detection is deprecated.
+            # The LLM should use finish_task tool instead.
+            # Keeping phrases for emergency stop and clarification only.
             completion_phrases = [
-                self.TASK_COMPLETION_PHRASE,
-                "TASK_COMPLETE",  # Common variation
-                self.CONTINUOUS_COMPLETION_PHRASE,
+                # self.TASK_COMPLETION_PHRASE,  # Deprecated: use finish_task tool
+                # "TASK_COMPLETE",  # Deprecated: use finish_task tool
+                # self.CONTINUOUS_COMPLETION_PHRASE,  # Deprecated: use finish_task tool
                 self.NEED_USER_CLARIFICATION_PHRASE,
                 self.EMERGENCY_STOP_PHRASE
             ]
@@ -978,7 +980,12 @@ class RunMode:
         if context and context.get("id") == "user_specified":
             return "user_specified"
         
-        # Check special completion phrases in response
+        # Check Engine result status (from finish_task tool)
+        status = result.get("status", "")
+        if status == "pending_review":
+            return "pending_review"
+        
+        # Check special completion phrases in response (only for emergency/clarification)
         response = result.get("assistant_response", "")
         
         if self.EMERGENCY_STOP_PHRASE in response:
@@ -986,9 +993,11 @@ class RunMode:
             
         if self.NEED_USER_CLARIFICATION_PHRASE in response:
             return "clarification_needed"
+        
+        # NOTE: Phrase-based completion detection is deprecated.
+        # Keeping commented for reference.
+        # if self.CONTINUOUS_COMPLETION_PHRASE in response:
+        #     return "continuous"
             
-        if self.CONTINUOUS_COMPLETION_PHRASE in response:
-            return "continuous"
-            
-        # Standard task completion
+        # Standard task completion (via finish_task tool)
         return "task" 

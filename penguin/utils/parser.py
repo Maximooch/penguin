@@ -79,7 +79,11 @@ class ActionType(Enum):
     TASK_DELETE = "task_delete"
     TASK_LIST = "task_list"
     TASK_DISPLAY = "task_display"
-    TASK_COMPLETED = "task_completed"
+    # Response/Task completion signals (explicit termination)
+    FINISH_RESPONSE = "finish_response"
+    FINISH_TASK = "finish_task"
+    # Legacy alias - kept for backward compatibility
+    TASK_COMPLETED = "task_completed"  # Deprecated: use FINISH_TASK
     PROJECT_CREATE = "project_create"
     PROJECT_UPDATE = "project_update"
     PROJECT_DELETE = "project_delete"
@@ -296,7 +300,10 @@ class ActionExecutor:
             ActionType.TASK_DELETE: self._task_delete,
             ActionType.TASK_LIST: self._task_list,
             ActionType.TASK_DISPLAY: self._task_display,
-            ActionType.TASK_COMPLETED: self._task_completed,
+            # Response/Task completion signals
+            ActionType.FINISH_RESPONSE: self._finish_response,
+            ActionType.FINISH_TASK: self._finish_task,
+            ActionType.TASK_COMPLETED: self._finish_task,  # Deprecated alias
             ActionType.DEPENDENCY_DISPLAY: self._dependency_display,
             ActionType.ANALYZE_CODEBASE: self._analyze_codebase,
             ActionType.REINDEX_WORKSPACE: self._reindex_workspace,
@@ -991,18 +998,36 @@ class ActionExecutor:
         except Exception as e:
             return f"Error completing task: {str(e)}"
 
-    def _task_completed(self, params: str) -> str:
-        """Signal that the assigned task has been successfully completed.
+    def _finish_response(self, params: str) -> str:
+        """Signal that the conversational response is complete.
         
-        This is different from _task_complete - it's a signal that the LLM
-        has finished the user's request, not managing a task in the task manager.
+        Called by the LLM when it has finished responding and has no more
+        actions to take. This stops the run_response loop.
         
-        Format: summary
+        Format: optional summary
         """
         try:
-            return self.tool_manager.task_tools.task_completed(params.strip())
+            return self.tool_manager.task_tools.finish_response(params.strip() if params else None)
+        except Exception as e:
+            return f"Error signaling response completion: {str(e)}"
+
+    def _finish_task(self, params: str) -> str:
+        """Signal that the LLM believes the task objective is achieved.
+        
+        This transitions the task to PENDING_REVIEW status for human approval.
+        The summary becomes the review note.
+        
+        Format: summary (optional) or JSON {"summary": "...", "status": "done|partial|blocked"}
+        """
+        try:
+            return self.tool_manager.task_tools.finish_task(params.strip() if params else None)
         except Exception as e:
             return f"Error signaling task completion: {str(e)}"
+
+    # Deprecated: kept for backward compatibility
+    def _task_completed(self, params: str) -> str:
+        """Deprecated: Use _finish_task instead."""
+        return self._finish_task(params)
 
     def _task_delete(self, params: str) -> str:
         """Delete a task. Format: name"""

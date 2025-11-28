@@ -115,8 +115,14 @@ class CognitionSystem:
                 raw_response
             )
 
-            # Check for task completion
-            exit_continuation = TASK_COMPLETION_PHRASE in str(assistant_response)
+            # Check for task/response completion via finish_task or finish_response tools
+            # NOTE: Phrase-based detection is deprecated. Use finish_task/finish_response tools.
+            exit_continuation = any(
+                action.action_type.value in ("finish_response", "finish_task", "task_completed")
+                for action in actions
+            )
+            # Legacy phrase detection (commented out):
+            # exit_continuation = TASK_COMPLETION_PHRASE in str(assistant_response)
 
             # Log response details
             logger.debug(f"Processed response: {assistant_response}")

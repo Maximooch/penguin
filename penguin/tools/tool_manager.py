@@ -246,7 +246,9 @@ class ToolManager:
                 'pydoll_browser_scroll': 'self.pydoll_browser_scroll_tool.execute',
                 'analyze_codebase': 'self.analyze_codebase',
                 'reindex_workspace': 'self.reindex_workspace',
-                'task_completed': 'self.task_tools.task_completed',
+                'finish_response': 'self.task_tools.finish_response',
+                'finish_task': 'self.task_tools.finish_task',
+                'task_completed': 'self.task_tools.task_completed',  # Deprecated alias
             }
             
             # Cached tool instances for performance
@@ -291,8 +293,42 @@ class ToolManager:
                 },
             },
             {
+                "name": "finish_response",
+                "description": "Signal that your response is complete. Call when you've answered the user and have no more actions to take. This stops the response loop.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": "Optional brief summary of your response.",
+                        }
+                    },
+                    "required": [],
+                },
+            },
+            {
+                "name": "finish_task",
+                "description": "Signal that you believe the task objective is achieved. The task will be marked for human review (not auto-completed). Call this in task/autonomous mode when done.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": "Summary of what was accomplished. This becomes the review note.",
+                        },
+                        "status": {
+                            "type": "string",
+                            "enum": ["done", "partial", "blocked"],
+                            "description": "Completion status: done (objective met), partial (some progress), blocked (cannot proceed).",
+                        }
+                    },
+                    "required": [],
+                },
+            },
+            # Deprecated: kept for backward compatibility
+            {
                 "name": "task_completed",
-                "description": "Signal that the assigned task has been successfully completed. Call this tool when you have finished the user's request.",
+                "description": "DEPRECATED: Use finish_task instead. Signals task completion.",
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -301,7 +337,7 @@ class ToolManager:
                             "description": "A concise summary of what was accomplished.",
                         }
                     },
-                    "required": ["summary"],
+                    "required": [],
                 },
             },
             {
@@ -1940,6 +1976,16 @@ class ToolManager:
                     tool_input["repo_owner"],
                     tool_input["repo_name"],
                     tool_input["branch_name"]
+                ),
+                # Response/Task completion signals
+                "finish_response": lambda: self.task_tools.finish_response(
+                    tool_input.get("summary")
+                ),
+                "finish_task": lambda: self.task_tools.finish_task(
+                    json.dumps(tool_input) if tool_input else None
+                ),
+                "task_completed": lambda: self.task_tools.task_completed(
+                    tool_input.get("summary", "")
                 ),
             }
 

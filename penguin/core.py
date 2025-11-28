@@ -1904,8 +1904,14 @@ class PenguinCore:
             # Parse actions and continue with action handling
             actions = parse_action(assistant_response)
             
-            # Check for task completion
-            exit_continuation = TASK_COMPLETION_PHRASE in assistant_response
+            # Check for task/response completion via finish_task or finish_response tools
+            # NOTE: Phrase-based detection is deprecated. Use finish_task/finish_response tools.
+            exit_continuation = any(
+                action.action_type.value in ("finish_response", "finish_task", "task_completed")
+                for action in actions
+            )
+            # Legacy phrase detection (commented out):
+            # exit_continuation = TASK_COMPLETION_PHRASE in assistant_response
             
             # Execute actions with interrupt checking
             action_results = []
