@@ -1480,14 +1480,36 @@ class ActionExecutor:
         })
 
     def _enhanced_write(self, params: str) -> str:
-        """Enhanced file writing. Format: path:content:backup"""
-        parts = params.split(":", 2)
-        if len(parts) < 2:
+        """Enhanced file writing. Format: path:content:backup
+        
+        Parsing strategy: Find path from start (first colon), then check if
+        the content ends with :true or :false for the backup flag. This handles
+        content that contains colons (e.g., CSS, URLs).
+        """
+        first_sep = params.find(":")
+        if first_sep == -1:
+            return "Error: Need path and content (format: path:content[:backup])"
+        
+        path = params[:first_sep].strip()
+        remainder = params[first_sep + 1:]
+        
+        if not path or not remainder:
             return "Error: Need path and content"
         
-        path = parts[0].strip()
-        content = parts[1]  # Don't strip content as it may contain important whitespace
-        backup = parts[2].strip().lower() == "true" if len(parts) > 2 else True
+        # Default backup to True
+        backup = True
+        content = remainder
+        
+        # Check if remainder ends with :true or :false (backup flag)
+        # Only consider it a flag if it's at the very end with no newlines
+        if ":" in remainder:
+            content_part, flag = remainder.rsplit(":", 1)
+            flag_stripped = flag.strip().lower()
+            # Only treat as backup flag if it's exactly "true" or "false"
+            # and doesn't contain newlines (to avoid matching content that ends with :something)
+            if flag_stripped in {"true", "false"} and "\n" not in flag and "\r" not in flag:
+                backup = flag_stripped == "true"
+                content = content_part
         
         return self.tool_manager.execute_tool("write_to_file", {
             "path": path,
