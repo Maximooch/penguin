@@ -14,6 +14,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AgentInfo:
+    """Information about a registered agent.
+    
+    Attributes:
+        agent_id: Unique identifier for the agent
+        role: Role/function of the agent (e.g., "analyzer", "implementer")
+        system_prompt: Custom system prompt override
+        model_max_tokens: Token limit for this agent
+        persona: Persona config name to apply
+        model_config_id: Model configuration override
+        default_tools: Tool name restrictions (legacy, use permissions)
+        permissions: Permission configuration dict for this agent
+        parent_agent_id: Parent agent for permission inheritance
+    """
     agent_id: str
     role: str
     system_prompt: Optional[str] = None
@@ -21,14 +34,30 @@ class AgentInfo:
     persona: Optional[str] = None
     model_config_id: Optional[str] = None
     default_tools: Optional[Sequence[str]] = None
+    permissions: Optional[Dict[str, Any]] = None
+    parent_agent_id: Optional[str] = None
 
 
 @dataclass
 class LiteAgent:
+    """Lightweight agent with a simple handler function.
+    
+    Lite agents are registered callable handlers that can be invoked
+    when no full agent is available for a role. They receive the same
+    permission enforcement as full agents.
+    
+    Attributes:
+        agent_id: Unique identifier
+        role: Role/function of the agent
+        handler: Async or sync callable for processing requests
+        description: Human-readable description
+        permissions: Permission configuration dict (same as AgentInfo)
+    """
     agent_id: str
     role: str
     handler: Callable[[str, Dict[str, Any]], Awaitable[Any] | Any]
     description: Optional[str] = None
+    permissions: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -70,10 +99,30 @@ class MultiAgentCoordinator:
         model_config_id: Optional[str] = None,
         model_overrides: Optional[Dict[str, Any]] = None,
         default_tools: Optional[Sequence[str]] = None,
+        permissions: Optional[Dict[str, Any]] = None,
+        parent_agent_id: Optional[str] = None,
         shared_cw_max_tokens: Optional[int] = None,
         share_session_with: Optional[str] = None,
         share_context_window_with: Optional[str] = None,
     ) -> None:
+        """Spawn a new agent with optional permission restrictions.
+        
+        Args:
+            agent_id: Unique identifier for the agent
+            role: Agent's role (e.g., "analyzer", "implementer")
+            system_prompt: Custom system prompt
+            model_max_tokens: Token limit
+            activate: Whether to make this the active agent
+            persona: Persona config name to apply
+            model_config_id: Model configuration override
+            model_overrides: Additional model parameter overrides
+            default_tools: Tool name restrictions (legacy)
+            permissions: Permission config dict (mode, operations, paths)
+            parent_agent_id: Parent agent for permission inheritance
+            shared_cw_max_tokens: Shared context window token limit
+            share_session_with: Agent ID to share session with
+            share_context_window_with: Agent ID to share context window with
+        """
         self.core.register_agent(
             agent_id,
             system_prompt=system_prompt,
@@ -95,23 +144,92 @@ class MultiAgentCoordinator:
             persona=persona,
             model_config_id=model_config_id,
             default_tools=tuple(default_tools) if default_tools else None,
+            permissions=dict(permissions) if permissions else None,
+            parent_agent_id=parent_agent_id,
         )
         self.agents_by_role.setdefault(role, []).append(info)
         self._rr_index.setdefault(role, 0)
+        
+        # Register agent permission policy if permissions specified
+        if permissions:
+            self._register_agent_permissions(agent_id, permissions, parent_agent_id)
+        
         logger.info("Spawned agent '%s' with role '%s'", agent_id, role)
+    
+    def _register_agent_permissions(
+        self,
+        agent_id: str,
+        permissions: Dict[str, Any],
+        parent_agent_id: Optional[str] = None,
+    ) -> None:
+        """Register permission policy for an agent.
+        
+        Lazily imports security module to avoid circular imports.
+        """
+        try:
+            from penguin.security.agent_permissions import (
+                AgentPermissionConfig,
+                register_agent_policy,
+            )
+            
+            config = AgentPermissionConfig.from_dict(permissions)
+            register_agent_policy(agent_id, config, parent_agent_id)
+            logger.debug(f"Registered permission policy for agent '{agent_id}'")
+            
+        except ImportError:
+            logger.debug("Security module not available, skipping permission registration")
+        except Exception as e:
+            logger.warning(f"Failed to register agent permissions: {e}")
 
-    def register_existing(self, agent_id: str, *, role: str) -> None:
-        info = AgentInfo(agent_id=agent_id, role=role)
+    def register_existing(
+        self,
+        agent_id: str,
+        *,
+        role: str,
+        permissions: Optional[Dict[str, Any]] = None,
+        parent_agent_id: Optional[str] = None,
+    ) -> None:
+        """Register an existing agent with the coordinator.
+        
+        Args:
+            agent_id: Agent ID to register
+            role: Agent's role
+            permissions: Optional permission config dict
+            parent_agent_id: Parent agent for permission inheritance
+        """
+        info = AgentInfo(
+            agent_id=agent_id,
+            role=role,
+            permissions=dict(permissions) if permissions else None,
+            parent_agent_id=parent_agent_id,
+        )
         self.agents_by_role.setdefault(role, []).append(info)
         self._rr_index.setdefault(role, 0)
+        
+        if permissions:
+            self._register_agent_permissions(agent_id, permissions, parent_agent_id)
 
     async def destroy_agent(self, agent_id: str) -> None:
+        """Destroy an agent and clean up its permission policy."""
         for role, lst in list(self.agents_by_role.items()):
             self.agents_by_role[role] = [a for a in lst if a.agent_id != agent_id]
             if not self.agents_by_role[role]:
                 self.agents_by_role.pop(role, None)
                 self._rr_index.pop(role, None)
+        
+        # Unregister permission policy
+        self._unregister_agent_permissions(agent_id)
         logger.info("Destroyed agent '%s'", agent_id)
+    
+    def _unregister_agent_permissions(self, agent_id: str) -> None:
+        """Unregister permission policy for an agent."""
+        try:
+            from penguin.security.agent_permissions import unregister_agent_policy
+            unregister_agent_policy(agent_id)
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"Failed to unregister agent permissions: {e}")
 
     # ------------------------------------------------------------------
     # Lite agents
@@ -124,20 +242,48 @@ class MultiAgentCoordinator:
         handler: Callable[[str, Dict[str, Any]], Awaitable[Any] | Any],
         agent_id: Optional[str] = None,
         description: Optional[str] = None,
+        permissions: Optional[Dict[str, Any]] = None,
     ) -> str:
+        """Register a lightweight agent handler.
+        
+        Args:
+            role: Agent role
+            handler: Async or sync callable for processing requests
+            agent_id: Optional custom ID (auto-generated if not provided)
+            description: Human-readable description
+            permissions: Optional permission config dict
+            
+        Returns:
+            The agent ID (provided or generated)
+        """
         counter = self._lite_counters.get(role, 0) + 1
         self._lite_counters[role] = counter
         lite_id = agent_id or f"lite-{role}-{counter}"
-        info = LiteAgent(agent_id=lite_id, role=role, handler=handler, description=description)
+        info = LiteAgent(
+            agent_id=lite_id,
+            role=role,
+            handler=handler,
+            description=description,
+            permissions=dict(permissions) if permissions else None,
+        )
         self.lite_agents_by_role.setdefault(role, []).append(info)
+        
+        # Register permission policy for lite agent
+        if permissions:
+            self._register_agent_permissions(lite_id, permissions, parent_agent_id=None)
+        
         logger.info("Registered lite agent '%s' for role '%s'", lite_id, role)
         return lite_id
 
     def unregister_lite_agent(self, agent_id: str) -> None:
+        """Unregister a lite agent and clean up its permission policy."""
         for role, agents in list(self.lite_agents_by_role.items()):
             self.lite_agents_by_role[role] = [a for a in agents if a.agent_id != agent_id]
             if not self.lite_agents_by_role[role]:
                 self.lite_agents_by_role.pop(role, None)
+        
+        # Unregister permission policy
+        self._unregister_agent_permissions(agent_id)
 
     # ------------------------------------------------------------------
     # Delegation tracking

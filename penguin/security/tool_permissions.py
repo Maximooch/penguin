@@ -200,6 +200,8 @@ def check_tool_permission(
     """Check if a tool execution is allowed.
     
     This is the main entry point for ToolManager integration.
+    Checks both global policies and agent-specific policies if an agent_id
+    is provided in context.
     
     Args:
         tool_name: Name of the tool to check
@@ -210,8 +212,6 @@ def check_tool_permission(
     Returns:
         Tuple of (PermissionResult, reason_string)
     """
-    from penguin.security.permission_engine import PermissionEnforcer
-    
     operations = get_tool_operations(tool_name)
     
     if not operations:
@@ -223,7 +223,20 @@ def check_tool_permission(
     ctx = dict(context or {})
     ctx["tool_name"] = tool_name
     
-    # Check each required operation
+    # Check agent-specific policy first (if agent_id in context)
+    agent_id = ctx.get("agent_id")
+    if agent_id:
+        agent_result, agent_reason = _check_agent_permission(
+            agent_id, operations, resource or tool_name, ctx
+        )
+        if agent_result == PermissionResult.DENY:
+            return agent_result, agent_reason
+        if agent_result == PermissionResult.ASK:
+            # Agent policy requires approval - don't short-circuit,
+            # but remember to return ASK if global also allows
+            ctx["_agent_ask"] = agent_reason
+    
+    # Check each required operation against global policy
     results = []
     for operation in operations:
         result = enforcer.check(operation, resource or tool_name, ctx)
@@ -238,5 +251,60 @@ def check_tool_permission(
         if result == PermissionResult.ASK:
             return result, f"Operation '{operation.value}' requires approval for '{resource or tool_name}'"
     
+    # Check if agent policy said ASK
+    if "_agent_ask" in ctx:
+        return PermissionResult.ASK, ctx["_agent_ask"]
+    
     return PermissionResult.ALLOW, "All operations allowed"
+
+
+def _check_agent_permission(
+    agent_id: str,
+    operations: List[Operation],
+    resource: str,
+    context: Dict[str, Any],
+) -> Tuple[PermissionResult, str]:
+    """Check agent-specific permission policy.
+    
+    Args:
+        agent_id: Agent ID to check
+        operations: Operations to check
+        resource: Resource being accessed
+        context: Additional context
+        
+    Returns:
+        Tuple of (PermissionResult, reason)
+    """
+    try:
+        from penguin.security.agent_permissions import get_agent_policy
+        
+        policy = get_agent_policy(agent_id)
+        if policy is None:
+            # No agent-specific policy, defer to global
+            return PermissionResult.ALLOW, "No agent-specific policy"
+        
+        # Check all operations first, accumulate results
+        # DENY takes precedence over ASK, ASK takes precedence over ALLOW
+        results = []
+        for operation in operations:
+            result, reason = policy.check_operation(operation, resource, context)
+            results.append((result, reason, operation))
+            
+            # Short-circuit on DENY (safe - nothing can override a denial)
+            if result == PermissionResult.DENY:
+                return result, reason
+        
+        # Check for any ASK results (only after confirming no DENY)
+        for result, reason, operation in results:
+            if result == PermissionResult.ASK:
+                return result, reason
+        
+        return PermissionResult.ALLOW, f"Agent '{agent_id}' allowed"
+        
+    except ImportError:
+        # Agent permissions module not available
+        return PermissionResult.ALLOW, "Agent permissions module not available"
+    except Exception as e:
+        logger.warning(f"Error checking agent permission: {e}")
+        return PermissionResult.ALLOW, f"Agent permission check failed: {e}"
 

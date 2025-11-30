@@ -48,6 +48,14 @@ from penguin.security.approval import (
     ApprovalManager,
     get_approval_manager,
 )
+from penguin.security.agent_permissions import (
+    AgentPermissionConfig,
+    AgentPermissionPolicy,
+    register_agent_policy,
+    get_agent_policy,
+    unregister_agent_policy,
+    clear_agent_policies,
+)
 
 __all__ = [
     # Core permission types
@@ -83,5 +91,12 @@ __all__ = [
     "SessionApproval",
     "ApprovalManager",
     "get_approval_manager",
+    # Agent permissions
+    "AgentPermissionConfig",
+    "AgentPermissionPolicy",
+    "register_agent_policy",
+    "get_agent_policy",
+    "unregister_agent_policy",
+    "clear_agent_policies",
 ]
 

@@ -1028,13 +1028,36 @@ class AgentModelSettings:
 
 @dataclass
 class AgentPersonaConfig:
-    """Declarative configuration for a reusable agent persona."""
+    """Declarative configuration for a reusable agent persona.
+    
+    The `permissions` field unifies with `default_tools` for operation-based
+    access control. If both are specified, `permissions.operations` takes
+    precedence; `default_tools` is kept for backward compatibility.
+    
+    Example config:
+        ```yaml
+        agents:
+          analyzer:
+            description: "Read-only code analyzer"
+            permissions:
+              mode: read_only
+              operations: [filesystem.read, memory.read]
+              allowed_paths: ["src/", "tests/"]
+          implementer:
+            permissions:
+              operations: [filesystem.read, filesystem.write, process.execute]
+              denied_paths: ["**/.env*"]
+        ```
+    """
 
     name: str
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     model: Optional[AgentModelSettings] = None
+    # Legacy: tool name restrictions (kept for backward compatibility)
     default_tools: Optional[List[str]] = None
+    # New: unified permission config (operations, paths, mode)
+    permissions: Optional[Dict[str, Any]] = None
     share_session_with: Optional[str] = None
     share_context_window_with: Optional[str] = None
     shared_cw_max_tokens: Optional[int] = None
@@ -1056,12 +1079,22 @@ class AgentPersonaConfig:
             tools_block = data.get("tools")
         default_tools = list(tools_block) if isinstance(tools_block, list) else None
 
+        # Parse permissions block
+        permissions_block = data.get("permissions")
+        permissions = None
+        if isinstance(permissions_block, dict):
+            permissions = dict(permissions_block)
+        elif isinstance(permissions_block, list):
+            # Short form: just a list of operations
+            permissions = {"operations": list(permissions_block)}
+
         return cls(
             name=name,
             description=data.get("description"),
             system_prompt=data.get("system_prompt"),
             model=model_settings,
             default_tools=default_tools,
+            permissions=permissions,
             share_session_with=data.get("share_session_with"),
             share_context_window_with=data.get("share_context_window_with"),
             shared_cw_max_tokens=data.get("shared_cw_max_tokens"),
@@ -1069,6 +1102,22 @@ class AgentPersonaConfig:
             activate_by_default=bool(data.get("activate") or data.get("activate_by_default", False)),
             metadata=dict(data.get("metadata", {})),
         )
+    
+    def get_permission_config(self) -> Optional["AgentPermissionConfig"]:
+        """Get the AgentPermissionConfig for this persona.
+        
+        Lazily imports from security module to avoid circular imports.
+        Returns None if no permissions configured.
+        """
+        if self.permissions is None:
+            return None
+        
+        try:
+            from penguin.security.agent_permissions import AgentPermissionConfig
+            return AgentPermissionConfig.from_dict(self.permissions)
+        except ImportError:
+            logger.warning("Security module not available, skipping permission config")
+            return None
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a serialisable mapping representing the persona."""
@@ -1078,6 +1127,7 @@ class AgentPersonaConfig:
             "description": self.description,
             "system_prompt": self.system_prompt,
             "default_tools": list(self.default_tools) if self.default_tools else None,
+            "permissions": dict(self.permissions) if self.permissions else None,
             "share_session_with": self.share_session_with,
             "share_context_window_with": self.share_context_window_with,
             "shared_cw_max_tokens": self.shared_cw_max_tokens,

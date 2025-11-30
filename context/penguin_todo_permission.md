@@ -241,23 +241,39 @@ Sub-agents inherit parent permissions or get restricted subset?
 
 **Time actual**: ~2 hours
 
-### Phase 4: Multi-Agent & Sub-Agent Policies
+### Phase 4: Multi-Agent & Sub-Agent Policies ✅ COMPLETE
 **Goal**: Permission scoping for sub-agents
 
-- [ ] Add `permissions` field to sub-agent spawn parameters
-- [ ] Implement permission inheritance rules (child ≤ parent)
-- [ ] Wire permission checks into `MultiAgentCoordinator`
-- [ ] Add per-agent permission override in config:
+- [x] Add `AgentPermissionConfig` dataclass for per-agent permissions
+- [x] Update `AgentPersonaConfig` to include `permissions` field (unifies with `default_tools`)
+- [x] Update `AgentInfo` and `LiteAgent` with permissions field
+- [x] Implement permission inheritance rules (refinement model: child ≤ parent)
+- [x] Wire permission checks into `MultiAgentCoordinator.spawn_agent()`
+- [x] Register/unregister agent policies on agent lifecycle events
+- [x] Update `check_tool_permission()` to check agent-specific policies
+- [x] Add per-agent permission override in config:
   ```yaml
   agents:
     analyzer:
-      permissions: [filesystem.read, memory.read]
+      permissions:
+        mode: read_only
+        operations: [filesystem.read, memory.read]
+        allowed_paths: ["src/", "tests/"]
     implementer:
-      permissions: [filesystem.read, filesystem.write, process.execute]
+      permissions:
+        operations: [filesystem.read, filesystem.write, process.execute]
+        denied_paths: ["**/.env*"]
   ```
 
-**Deliverables**: Sub-agent permission scoping, coordinator integration
-**Time estimate**: 2-3 hours
+**Deliverables**:
+- `security/agent_permissions.py` - AgentPermissionConfig, AgentPermissionPolicy, registry
+- `config.py` - Updated AgentPersonaConfig with permissions field
+- `multi/coordinator.py` - Agent permission registration on spawn/destroy
+- `security/tool_permissions.py` - Agent-aware permission checking
+
+**Future consideration**: Lite agents could be given implicit trust in scenarios where they're registered by trusted code (noted in LiteAgent docstring).
+
+**Time actual**: ~1.5 hours
 
 ### Phase 5: Audit & Observability
 **Goal**: Visibility into permission decisions
