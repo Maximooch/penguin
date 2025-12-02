@@ -275,17 +275,43 @@ Sub-agents inherit parent permissions or get restricted subset?
 
 **Time actual**: ~1.5 hours
 
-### Phase 5: Audit & Observability
+### Phase 5: Audit & Observability ✅ COMPLETE
 **Goal**: Visibility into permission decisions
 
-- [ ] Add permission check logging (configurable verbosity)
-- [ ] Track denial reasons for debugging
-- [ ] Expose permission metrics via telemetry collector
-- [ ] Add `/permissions` slash command to show current policy state
-- [ ] Add `penguin permissions list` CLI command
+- [x] Add `AuditConfig` dataclass with per-category verbosity settings
+- [x] Create `security/audit.py` with `PermissionAuditLogger` class
+- [x] Integrate audit logging into `PermissionEnforcer._log_check()`
+- [x] Add CLI commands:
+  - `penguin permissions list` - Show current permission settings
+  - `penguin permissions audit` - Show recent audit log entries
+  - `penguin permissions summary` - Show audit statistics
+- [x] Add REST API endpoints:
+  - `GET /api/v1/security/audit` - Get recent audit entries
+  - `GET /api/v1/security/audit/stats` - Get audit statistics
+- [x] Per-category verbosity config:
+  ```yaml
+  security:
+    audit:
+      enabled: true
+      log_file: ".penguin/permission_audit.log"
+      categories:
+        filesystem: all
+        process: ask_and_deny
+        network: deny_only
+        git: ask_and_deny
+        memory: off
+  ```
 
-**Deliverables**: Audit logging, CLI/TUI introspection commands
-**Time estimate**: 1-2 hours
+**Deliverables**:
+- `config.py` - Added `AuditConfig` dataclass integrated with `SecurityConfig`
+- `security/audit.py` - New audit logging module with file persistence and memory buffer
+- `security/permission_engine.py` - Integrated audit logger in `_log_check()`
+- `cli/cli.py` - Added `permissions` subcommand group with list/audit/summary
+- `api/routes.py` - Added audit REST endpoints
+
+**Deferred**: `/permissions` slash command (lower priority, would need prompt integration)
+
+**Time actual**: 15 minutes
 
 ### Phase 6: Advanced Policies (Future)
 **Goal**: Sophisticated policy rules beyond simple allowlists

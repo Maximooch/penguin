@@ -1162,6 +1162,179 @@ Get comprehensive model and system capabilities.
 }
 ```
 
+### Security & Permissions
+
+Penguin provides security endpoints for managing permissions, approvals, and audit logs.
+
+#### GET `/api/v1/security/audit`
+
+Get recent permission audit log entries.
+
+**Query Parameters:**
+- `limit`: Maximum entries to return (1-1000, default: 100)
+- `result`: Filter by result (`allow`, `ask`, `deny`)
+- `category`: Filter by category (`filesystem`, `process`, `network`, `git`, `memory`)
+- `agent_id`: Filter by agent ID
+
+**Response:**
+```json
+{
+  "entries": [
+    {
+      "id": "audit_abc123",
+      "timestamp": "2024-01-01T12:00:00Z",
+      "operation": "filesystem.write",
+      "resource": "/path/to/file.py",
+      "result": "allow",
+      "reason": "Within workspace boundary",
+      "policy": "workspace-boundary",
+      "agent_id": "default",
+      "tool_name": "write_file"
+    }
+  ],
+  "total": 42,
+  "filters": {
+    "limit": 100,
+    "result": null,
+    "category": null,
+    "agent_id": null
+  }
+}
+```
+
+#### GET `/api/v1/security/audit/stats`
+
+Get audit statistics summary.
+
+**Response:**
+```json
+{
+  "total": 1250,
+  "by_result": {
+    "allow": 1180,
+    "ask": 45,
+    "deny": 25
+  },
+  "by_category": {
+    "filesystem": 890,
+    "process": 200,
+    "network": 100,
+    "git": 60
+  }
+}
+```
+
+#### GET `/api/v1/approvals`
+
+List pending approval requests.
+
+**Response:**
+```json
+{
+  "pending": [
+    {
+      "id": "apr_xyz789",
+      "tool_name": "bash",
+      "operation": "process.execute",
+      "resource": "rm -rf ./build",
+      "reason": "Destructive command requires approval",
+      "session_id": "sess_abc",
+      "created_at": "2024-01-01T12:00:00Z",
+      "expires_at": "2024-01-01T12:05:00Z"
+    }
+  ]
+}
+```
+
+#### POST `/api/v1/approvals/{request_id}/approve`
+
+Approve a pending permission request.
+
+**Request Body:**
+```json
+{
+  "scope": "session"
+}
+```
+
+**Scope Options:**
+- `once`: Approve this single request only
+- `session`: Approve similar operations for the current session
+- `pattern`: Approve operations matching the resource pattern
+
+**Response:**
+```json
+{
+  "status": "approved",
+  "request_id": "apr_xyz789",
+  "scope": "session"
+}
+```
+
+#### POST `/api/v1/approvals/{request_id}/deny`
+
+Deny a pending permission request.
+
+**Response:**
+```json
+{
+  "status": "denied",
+  "request_id": "apr_xyz789"
+}
+```
+
+#### POST `/api/v1/approvals/pre-approve`
+
+Pre-approve an operation pattern for a session.
+
+**Request Body:**
+```json
+{
+  "operation": "filesystem.delete",
+  "pattern": "./build/*",
+  "session_id": "sess_abc"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "pre-approved",
+  "operation": "filesystem.delete",
+  "pattern": "./build/*"
+}
+```
+
+#### WebSocket Approval Events
+
+When using WebSocket streaming, approval requests are sent as events:
+
+```json
+{
+  "event": "approval_required",
+  "data": {
+    "request_id": "apr_xyz789",
+    "tool_name": "bash",
+    "operation": "process.execute",
+    "resource": "rm -rf ./build",
+    "reason": "Destructive command requires approval",
+    "expires_at": "2024-01-01T12:05:00Z"
+  }
+}
+```
+
+After approval/denial:
+```json
+{
+  "event": "approval_resolved",
+  "data": {
+    "request_id": "apr_xyz789",
+    "status": "approved",
+    "scope": "session"
+  }
+}
+```
+
 ### File Upload and Multi-Modal Support
 
 #### POST `/api/v1/upload`

@@ -440,7 +440,7 @@ class PermissionEnforcer:
         policy: str,
         context: Dict[str, Any],
     ) -> None:
-        """Log a permission check to the audit log."""
+        """Log a permission check to the audit log and audit logger."""
         if not self._audit_all and result == PermissionResult.ALLOW:
             return
         
@@ -454,6 +454,26 @@ class PermissionEnforcer:
             tool_name=context.get("tool_name"),
         )
         self._audit_log.append(check)
+        
+        # Send to audit logger (handles its own filtering)
+        try:
+            from penguin.security.audit import get_audit_logger
+            audit_logger = get_audit_logger()
+            audit_logger.log(
+                operation=operation.value,
+                resource=resource,
+                result=result.value,
+                reason=reason,
+                policy=policy,
+                agent_id=context.get("agent_id"),
+                tool_name=context.get("tool_name"),
+                session_id=context.get("session_id"),
+                context=context if audit_logger._include_context else None,
+            )
+        except ImportError:
+            pass  # Audit module not available
+        except Exception as e:
+            logger.debug(f"Failed to log to audit logger: {e}")
         
         # Also log to standard logger
         level = logging.DEBUG if result == PermissionResult.ALLOW else logging.INFO

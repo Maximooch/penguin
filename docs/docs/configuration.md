@@ -428,6 +428,85 @@ web:
     max_request_size: 10485760  # 10MB
 ```
 
+## Security Configuration
+
+Penguin includes a comprehensive permission system that controls what operations the AI agent can perform. See [Security & Permissions](advanced/security.md) for full documentation.
+
+### Security Modes
+
+```yaml
+security:
+  # Security mode: read_only, workspace, or full
+  mode: workspace
+  
+  # Enable/disable permission checks (set to false or use PENGUIN_YOLO=true to disable)
+  enabled: true
+  
+  # Additional allowed paths beyond workspace/project
+  allowed_paths:
+    - /path/to/shared/resources
+  
+  # Explicitly denied paths (always blocked)
+  denied_paths:
+    - ~/.ssh
+    - ~/.aws
+    - /etc
+  
+  # Operations requiring user approval before execution
+  require_approval:
+    - filesystem.delete
+    - git.push
+    - git.force
+```
+
+**Mode Descriptions:**
+- `read_only`: Agent can only read files, no modifications allowed
+- `workspace`: Operations restricted to workspace and project directories (default)
+- `full`: Minimal restrictions, use with caution in trusted environments
+
+### Audit Logging
+
+Configure permission audit logging for debugging and compliance:
+
+```yaml
+security:
+  audit:
+    enabled: true
+    log_file: ".penguin/permission_audit.log"
+    
+    # Per-category verbosity: off, deny_only, ask_and_deny, all
+    categories:
+      filesystem: all
+      process: ask_and_deny
+      network: deny_only
+      git: ask_and_deny
+      memory: off
+    
+    # Maximum entries to keep in memory for API queries
+    max_memory_entries: 1000
+    
+    # Include full context in logs (may contain sensitive data)
+    include_context: false
+```
+
+### Multi-Agent Permissions
+
+Define per-agent permission restrictions:
+
+```yaml
+agents:
+  code-reviewer:
+    persona: "Code Review Expert"
+    permissions:
+      mode: read_only
+      operations:
+        - filesystem.read
+        - memory.read
+      allowed_paths:
+        - ./src
+        - ./tests
+```
+
 ## Advanced Configuration
 
 ### Custom Tool Configuration

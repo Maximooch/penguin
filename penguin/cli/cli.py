@@ -1415,6 +1415,209 @@ def config_debug():
     console.print(f"[dim]Python: {sys.version}[/dim]")
 
 
+# ────────────────────────────────────────────────────────────────────────────────
+# Permission Management Commands
+# ────────────────────────────────────────────────────────────────────────────────
+permissions_app = typer.Typer(name="permissions", help="Permission and security management")
+app.add_typer(permissions_app, name="permissions")
+
+
+@permissions_app.command("list")
+def permissions_list(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    verbose: bool = typer.Option(False, "-v", "--verbose", help="Show detailed info"),
+):
+    """List current permission settings and capabilities.
+    
+    Shows:
+    - Current security mode (read_only, workspace, full)
+    - Allowed/denied paths
+    - Operations requiring approval
+    - Agent-specific permissions (if any)
+    """
+    from rich.panel import Panel
+    from rich.table import Table
+    
+    try:
+        from penguin.config import load_config, SecurityConfig
+        from penguin.security import get_agent_policy
+        from penguin.security.agent_permissions import _agent_policies
+        
+        config = load_config()
+        security_data = config.get("security", {})
+        security_config = SecurityConfig.from_dict(security_data)
+        
+        if json_output:
+            output = {
+                "mode": security_config.mode,
+                "enabled": security_config.enabled,
+                "allowed_paths": security_config.allowed_paths,
+                "denied_paths": security_config.denied_paths,
+                "require_approval": security_config.require_approval,
+                "audit": security_config.audit.to_dict(),
+                "agent_policies": list(_agent_policies.keys()),
+            }
+            console.print(json.dumps(output, indent=2))
+            return
+        
+        # Display header
+        mode_color = {"read_only": "yellow", "workspace": "green", "full": "red"}.get(
+            security_config.mode, "white"
+        )
+        console.print(Panel(
+            f"[bold]Security Mode:[/bold] [{mode_color}]{security_config.mode.upper()}[/{mode_color}]\n"
+            f"[bold]Enabled:[/bold] {'✅ Yes' if security_config.enabled else '❌ No'}",
+            title="🔐 Permission Settings",
+            border_style="cyan",
+        ))
+        
+        # Paths table
+        if verbose or security_config.allowed_paths or security_config.denied_paths:
+            path_table = Table(title="Path Restrictions", show_header=True)
+            path_table.add_column("Type", style="bold")
+            path_table.add_column("Patterns")
+            
+            if security_config.allowed_paths:
+                path_table.add_row(
+                    "[green]Allowed[/green]",
+                    ", ".join(security_config.allowed_paths) or "(none)"
+                )
+            if security_config.denied_paths:
+                path_table.add_row(
+                    "[red]Denied[/red]",
+                    ", ".join(security_config.denied_paths[:5]) + 
+                    (f" (+{len(security_config.denied_paths)-5} more)" if len(security_config.denied_paths) > 5 else "")
+                )
+            
+            console.print(path_table)
+        
+        # Operations requiring approval
+        if security_config.require_approval:
+            console.print(f"\n[bold]Operations requiring approval:[/bold]")
+            for op in security_config.require_approval:
+                console.print(f"  • {op}")
+        
+        # Audit settings
+        if verbose:
+            console.print(f"\n[bold]Audit Settings:[/bold]")
+            console.print(f"  Enabled: {security_config.audit.enabled}")
+            console.print(f"  Log file: {security_config.audit.log_file}")
+            console.print(f"  Categories: {security_config.audit.categories}")
+        
+        # Agent policies
+        if _agent_policies:
+            console.print(f"\n[bold]Agent Policies:[/bold] {len(_agent_policies)} registered")
+            if verbose:
+                for agent_id, policy in _agent_policies.items():
+                    console.print(f"  • {agent_id}: mode={policy.agent_config.mode}")
+        
+    except ImportError as e:
+        console.print(f"[red]Security module not available: {e}[/red]")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[red]Error reading permissions: {e}[/red]")
+        if verbose:
+            console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        raise typer.Exit(code=1)
+
+
+@permissions_app.command("audit")
+def permissions_audit(
+    limit: int = typer.Option(20, "-n", "--limit", help="Number of entries to show"),
+    result: Optional[str] = typer.Option(None, "-r", "--result", help="Filter by result (allow/ask/deny)"),
+    category: Optional[str] = typer.Option(None, "-c", "--category", help="Filter by category"),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+):
+    """Show recent permission audit log entries.
+    
+    Displays recent permission checks with their results, useful for debugging
+    why operations were allowed or denied.
+    """
+    from rich.table import Table
+    
+    try:
+        from penguin.security.audit import get_audit_logger
+        
+        audit_logger = get_audit_logger()
+        entries = audit_logger.get_recent_entries(
+            limit=limit,
+            result_filter=result,
+            category_filter=category,
+        )
+        
+        if json_output:
+            console.print(json.dumps([e.to_dict() for e in entries], indent=2))
+            return
+        
+        if not entries:
+            console.print("[yellow]No audit entries found.[/yellow]")
+            if not audit_logger._enabled:
+                console.print("[dim]Hint: Audit logging may be disabled in config.[/dim]")
+            return
+        
+        table = Table(title=f"Recent Permission Checks (last {len(entries)})", show_header=True)
+        table.add_column("Time", style="dim", width=12)
+        table.add_column("Operation", style="cyan")
+        table.add_column("Resource", style="white", max_width=30)
+        table.add_column("Result", style="bold")
+        table.add_column("Reason", max_width=35)
+        
+        for entry in entries:
+            # Parse timestamp to show just time
+            time_str = entry.timestamp.split("T")[1][:8] if "T" in entry.timestamp else entry.timestamp[:8]
+            
+            # Color result
+            result_color = {"allow": "green", "ask": "yellow", "deny": "red"}.get(entry.result, "white")
+            result_display = f"[{result_color}]{entry.result.upper()}[/{result_color}]"
+            
+            # Truncate resource if needed
+            resource = entry.resource
+            if len(resource) > 30:
+                resource = "..." + resource[-27:]
+            
+            table.add_row(
+                time_str,
+                entry.operation,
+                resource,
+                result_display,
+                entry.reason[:35] + "..." if len(entry.reason) > 35 else entry.reason,
+            )
+        
+        console.print(table)
+        
+        # Show summary
+        stats = audit_logger.get_stats()
+        console.print(
+            f"\n[dim]Total: {stats['total']} checks | "
+            f"Allow: {stats['allow']} | Ask: {stats['ask']} | Deny: {stats['deny']}[/dim]"
+        )
+        
+    except ImportError as e:
+        console.print(f"[red]Audit module not available: {e}[/red]")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[red]Error reading audit log: {e}[/red]")
+        raise typer.Exit(code=1)
+
+
+@permissions_app.command("summary")
+def permissions_summary():
+    """Show a summary of permission audit activity."""
+    try:
+        from penguin.security.audit import get_audit_logger
+        
+        audit_logger = get_audit_logger()
+        summary = audit_logger.get_summary()
+        console.print(summary)
+        
+    except ImportError as e:
+        console.print(f"[red]Audit module not available: {e}[/red]")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[red]Error generating summary: {e}[/red]")
+        raise typer.Exit(code=1)
+
+
 # Agent Management Commands
 @agent_app.command("personas")
 def agent_personas(

@@ -46,6 +46,7 @@ const sidebars: SidebarsConfig = {
       label: 'Advanced Topics',
       items: [
         'advanced/custom_tools',
+        'advanced/security',
         'advanced/error_handling',
         'advanced/diagnostics',
         'advanced/stop_conditions',

@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks, UploadFile, File, Form # type: ignore
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks, UploadFile, File, Form, Query # type: ignore
 from pydantic import BaseModel # type: ignore
 from dataclasses import asdict # type: ignore
 from datetime import datetime # type: ignore
@@ -1346,6 +1346,98 @@ async def toggle_yolo_mode(
         raise HTTPException(
             status_code=500,
             detail=f"Error toggling YOLO mode: {str(e)}"
+        )
+
+
+@router.get("/api/v1/security/audit")
+async def get_audit_log(
+    limit: int = Query(default=100, ge=1, le=1000, description="Maximum entries to return (1-1000)"),
+    result: Optional[str] = Query(default=None, description="Filter by result (allow/ask/deny)"),
+    category: Optional[str] = Query(default=None, description="Filter by category"),
+    agent_id: Optional[str] = Query(default=None, description="Filter by agent ID"),
+):
+    """Get recent permission audit log entries.
+    
+    Returns a list of recent permission checks with their results.
+    Useful for debugging permission issues and understanding what operations
+    were allowed or denied.
+    
+    Query parameters:
+    - limit: Maximum entries to return (default 100, max 1000)
+    - result: Filter by result ("allow", "ask", "deny")
+    - category: Filter by category ("filesystem", "process", "network", etc.)
+    - agent_id: Filter by agent ID
+    """
+    try:
+        from penguin.security.audit import get_audit_logger
+        
+        audit_logger = get_audit_logger()
+        entries = audit_logger.get_recent_entries(
+            limit=limit,
+            result_filter=result,
+            category_filter=category,
+            agent_filter=agent_id,
+        )
+        
+        return {
+            "entries": [e.to_dict() for e in entries],
+            "total": len(entries),
+            "filters": {
+                "limit": limit,
+                "result": result,
+                "category": category,
+                "agent_id": agent_id,
+            }
+        }
+        
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Audit module not available: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting audit log: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting audit log: {str(e)}"
+        )
+
+
+@router.get("/api/v1/security/audit/stats")
+async def get_audit_stats():
+    """Get audit statistics.
+    
+    Returns summary statistics about permission checks:
+    - Total number of checks
+    - Breakdown by result (allow/ask/deny)
+    - Breakdown by category
+    """
+    try:
+        from penguin.security.audit import get_audit_logger
+        
+        audit_logger = get_audit_logger()
+        stats = audit_logger.get_stats()
+        
+        return {
+            "total": stats.get("total", 0),
+            "by_result": {
+                "allow": stats.get("allow", 0),
+                "ask": stats.get("ask", 0),
+                "deny": stats.get("deny", 0),
+            },
+            "by_category": stats.get("by_category", {}),
+        }
+        
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Audit module not available: {str(e)}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting audit stats: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error getting audit stats: {str(e)}"
         )
 
 

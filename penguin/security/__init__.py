@@ -56,6 +56,13 @@ from penguin.security.agent_permissions import (
     unregister_agent_policy,
     clear_agent_policies,
 )
+from penguin.security.audit import (
+    AuditEntry,
+    PermissionAuditLogger,
+    get_audit_logger,
+    configure_audit_logger,
+    configure_from_config,
+)
 
 __all__ = [
     # Core permission types
@@ -98,5 +105,11 @@ __all__ = [
     "get_agent_policy",
     "unregister_agent_policy",
     "clear_agent_policies",
+    # Audit logging
+    "AuditEntry",
+    "PermissionAuditLogger",
+    "get_audit_logger",
+    "configure_audit_logger",
+    "configure_from_config",
 ]
 

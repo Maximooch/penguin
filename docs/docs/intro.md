@@ -18,6 +18,7 @@ Welcome to the documentation for Penguin! Penguin v0.4.0 is a modular, extensibl
 - **Event-Driven Architecture**: Real-time UI updates via unified EventBus system
 - **GitHub Integration**: Webhook support for automated workflows and CI/CD pipelines
 - **Memory System**: Pluggable memory providers with vector search and semantic retrieval
+- **Security & Permissions**: Comprehensive permission engine with configurable modes, approval flows, and audit logging
 - **Message Routing**: MessageBus protocol for agent-to-agent and human-to-agent communication
 - **Agent Management**: Pause/resume controls, delegation patterns, and persona configurations
 - **File manipulation and code generation**
@@ -94,6 +95,7 @@ response = agent.chat("Help me debug this function")
 
 ### Advanced Topics
 - [Custom Tools](advanced/custom_tools.md)
+- [Security & Permissions](advanced/security.md)
 - [Error Handling](advanced/error_handling.md)
 - [Diagnostics](advanced/diagnostics.md)
 - [Extending Penguin](advanced/extensibility.md)
@@ -133,6 +135,7 @@ Penguin's orchestration layer now speaks to both primary agents and scoped sub-a
 - **`penguin.project`** - SQLite-backed project and task management with Engine integration
 - **`penguin.tools`** - Extensible tool ecosystem with lazy loading and fast startup
 - **`penguin.memory`** - Pluggable memory providers with vector search and persistence
+- **`penguin.security`** - Permission engine with policies, approval flows, and audit logging
 - **`penguin.telemetry`** - Performance tracking, token usage, and diagnostics collection
 
 ### Key Architecture Improvements

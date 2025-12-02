@@ -908,6 +908,110 @@ class DiagnosticsConfig:
 
 
 @dataclass
+class AuditConfig:
+    """Configuration for permission audit logging.
+    
+    Controls what permission checks are logged and where.
+    
+    Verbosity levels per category:
+    - "off": No logging for this category
+    - "deny_only": Only log DENY results
+    - "ask_and_deny": Log ASK and DENY results
+    - "all": Log all permission checks (ALLOW, ASK, DENY)
+    
+    Example config:
+        ```yaml
+        security:
+          audit:
+            enabled: true
+            log_file: ".penguin/permission_audit.log"
+            categories:
+              filesystem: all
+              process: deny_only
+              network: off
+        ```
+    """
+    # Enable/disable audit logging
+    enabled: bool = field(default=True)
+    # Log file path (relative to workspace or absolute)
+    log_file: str = field(default=".penguin/permission_audit.log")
+    # Per-category verbosity settings
+    categories: Dict[str, str] = field(default_factory=lambda: {
+        "filesystem": "all",
+        "process": "ask_and_deny",
+        "network": "deny_only",
+        "git": "ask_and_deny",
+        "memory": "off",
+    })
+    # Maximum number of entries to keep in memory (for API queries)
+    max_memory_entries: int = field(default=1000)
+    # Include full context in logs (may contain sensitive data)
+    include_context: bool = field(default=False)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AuditConfig":
+        """Create from config dictionary."""
+        if not isinstance(data, dict):
+            return cls()
+        
+        # Validate categories is a dict before converting
+        default_categories = {
+            "filesystem": "all",
+            "process": "ask_and_deny",
+            "network": "deny_only",
+            "git": "ask_and_deny",
+            "memory": "off",
+        }
+        categories_raw = data.get("categories", default_categories)
+        categories = dict(categories_raw) if isinstance(categories_raw, dict) else default_categories
+        
+        return cls(
+            enabled=data.get("enabled", True),
+            log_file=data.get("log_file", ".penguin/permission_audit.log"),
+            categories=categories,
+            max_memory_entries=data.get("max_memory_entries", 1000),
+            include_context=data.get("include_context", False),
+        )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to dictionary."""
+        return {
+            "enabled": self.enabled,
+            "log_file": self.log_file,
+            "categories": dict(self.categories),
+            "max_memory_entries": self.max_memory_entries,
+            "include_context": self.include_context,
+        }
+    
+    def should_log(self, category: str, result: str) -> bool:
+        """Check if a permission check should be logged.
+        
+        Args:
+            category: Operation category (e.g., "filesystem", "process")
+            result: Permission result ("allow", "ask", "deny")
+            
+        Returns:
+            True if this check should be logged
+        """
+        if not self.enabled:
+            return False
+        
+        verbosity = self.categories.get(category, "deny_only")
+        
+        if verbosity == "off":
+            return False
+        elif verbosity == "deny_only":
+            return result == "deny"
+        elif verbosity == "ask_and_deny":
+            return result in ("ask", "deny")
+        elif verbosity == "all":
+            return True
+        else:
+            # Unknown verbosity, default to deny_only
+            return result == "deny"
+
+
+@dataclass
 class SecurityConfig:
     """Security and permission configuration.
     
@@ -930,6 +1034,8 @@ class SecurityConfig:
     ])
     # Enable/disable permission checks
     enabled: bool = field(default=True)
+    # Audit logging configuration
+    audit: AuditConfig = field(default_factory=AuditConfig)
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SecurityConfig":
@@ -945,6 +1051,7 @@ class SecurityConfig:
                 "filesystem.delete", "git.push", "git.force"
             ])),
             enabled=data.get("enabled", True),
+            audit=AuditConfig.from_dict(data.get("audit", {})),
         )
     
     def to_dict(self) -> Dict[str, Any]:
@@ -955,6 +1062,7 @@ class SecurityConfig:
             "denied_paths": list(self.denied_paths),
             "require_approval": list(self.require_approval),
             "enabled": self.enabled,
+            "audit": self.audit.to_dict(),
         }
     
     def merge_additive(self, other: "SecurityConfig") -> "SecurityConfig":
@@ -969,6 +1077,7 @@ class SecurityConfig:
             denied_paths=list(dict.fromkeys(self.denied_paths + other.denied_paths)),
             require_approval=list(dict.fromkeys(self.require_approval + other.require_approval)),
             enabled=self.enabled,  # Keep original enabled state
+            audit=self.audit,  # Keep original audit config
         )
 
 
