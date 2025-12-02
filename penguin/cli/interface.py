@@ -564,11 +564,22 @@ class PenguinInterface:
         return {"error": f"Unknown chat command: {subcmd}"}
 
     async def _handle_task_command(self, args: List[str]) -> Dict[str, Any]:
-        """Handle task management commands"""
+        """Handle task management commands including DAG operations.
+        
+        Subcommands:
+            create <name> [description] - Create a new task
+            run <task_id> [description] - Run a task
+            status <task_id> - Show task status
+            deps <task_id> - Show task dependencies
+            graph <project_id> - Export DAG in DOT format
+            ready <project_id> - List ready tasks
+            frontier <project_id> - Show DAG frontier with tie-breakers
+        """
         if not args:
             return {"error": "Missing task subcommand"}
 
         action = args[0].lower()
+        
         # --- TASK CREATE ---------------------------------------------------
         # Accept both of the following syntaxes:
         #   /task create <name> <description words...>
@@ -611,8 +622,13 @@ class PenguinInterface:
                 }
             except Exception as e:
                 return {"error": f"Failed to create task: {e!s}"}
+        
         elif action == "run" and len(args) > 1:
-            return await self.core.start_run_mode(args[1], " ".join(args[2:]))
+            task_name = args[1]
+            task_desc = " ".join(args[2:]) if len(args) > 2 else None
+            await self.core.start_run_mode(task_name, task_desc)
+            return {"status": f"Started run mode for task: {task_name}"}
+        
         elif action == "status" and len(args) > 1:
             try:
                 task = await self.core.project_manager.get_task_async(args[1])
@@ -625,13 +641,114 @@ class PenguinInterface:
                             "status": task.status.value,
                             "description": task.description,
                             "priority": task.priority,
-                            "created_at": task.created_at
+                            "created_at": task.created_at,
+                            "phase": task.phase.value if hasattr(task, "phase") else "pending",
+                            "blueprint_id": getattr(task, "blueprint_id", None),
                         }
                     }
                 else:
                     return {"error": f"Task not found: {args[1]}"}
             except Exception as e:
                 return {"error": f"Failed to get task status: {e!s}"}
+        
+        # --- DAG OPERATIONS ---------------------------------------------------
+        elif action == "deps":
+            if len(args) < 2:
+                return {"error": "Usage: /task deps <task_id>"}
+            
+            task_id = args[1]
+            try:
+                task = self.core.project_manager.get_task(task_id)
+                if not task:
+                    return {"error": f"Task not found: {task_id}"}
+                
+                # Get dependency details
+                deps = []
+                for dep_id in task.dependencies:
+                    dep_task = self.core.project_manager.get_task(dep_id)
+                    if dep_task:
+                        deps.append({
+                            "id": dep_id,
+                            "title": dep_task.title,
+                            "status": dep_task.status.value,
+                        })
+                
+                return {
+                    "task_id": task_id,
+                    "task_title": task.title,
+                    "dependencies": deps,
+                    "is_blocked": len([d for d in deps if d["status"] != "completed"]) > 0,
+                }
+            except Exception as e:
+                return {"error": f"Failed to get task dependencies: {e!s}"}
+        
+        elif action == "graph":
+            if len(args) < 2:
+                return {"error": "Usage: /task graph <project_id>"}
+            
+            project_id = args[1]
+            try:
+                dot = self.core.project_manager.export_dag_dot(project_id)
+                return {
+                    "status": f"DAG for project {project_id}",
+                    "dot": dot,
+                    "hint": "Save to .dot file and render with: dot -Tpng graph.dot -o graph.png",
+                }
+            except Exception as e:
+                return {"error": f"Failed to export DAG: {e!s}"}
+        
+        elif action == "ready":
+            if len(args) < 2:
+                return {"error": "Usage: /task ready <project_id>"}
+            
+            project_id = args[1]
+            try:
+                ready_tasks = self.core.project_manager.get_ready_tasks(project_id)
+                return {
+                    "status": f"Ready tasks for project {project_id}",
+                    "count": len(ready_tasks),
+                    "tasks": [
+                        {
+                            "id": t.id,
+                            "title": t.title,
+                            "priority": t.priority,
+                            "phase": t.phase.value if hasattr(t, "phase") else "pending",
+                        }
+                        for t in ready_tasks[:20]
+                    ],
+                }
+            except Exception as e:
+                return {"error": f"Failed to get ready tasks: {e!s}"}
+        
+        elif action == "frontier":
+            if len(args) < 2:
+                return {"error": "Usage: /task frontier <project_id>"}
+            
+            project_id = args[1]
+            try:
+                stats = self.core.project_manager.get_dag_stats(project_id)
+                ready_tasks = self.core.project_manager.get_ready_tasks(project_id)
+                
+                return {
+                    "status": f"DAG frontier for project {project_id}",
+                    "total_tasks": stats["total_tasks"],
+                    "ready_count": stats["ready_count"],
+                    "critical_path_length": stats["critical_path_length"],
+                    "frontier": [
+                        {
+                            "id": t.id,
+                            "title": t.title,
+                            "priority": t.priority,
+                            "due_date": t.due_date,
+                            "effort": getattr(t, "effort", None),
+                            "value": getattr(t, "value", None),
+                        }
+                        for t in ready_tasks[:10]
+                    ],
+                }
+            except Exception as e:
+                return {"error": f"Failed to get DAG frontier: {e!s}"}
+        
         return {"error": f"Unknown task command: {action}"}
 
     async def _handle_project_command(self, args: List[str]) -> Dict[str, Any]:
@@ -763,119 +880,6 @@ class PenguinInterface:
                 return {"error": f"Failed to get blueprint status: {e!s}"}
         
         return {"error": f"Unknown blueprint command: {action}"}
-
-    async def _handle_task_command(self, args: List[str]) -> Dict[str, Any]:
-        """Handle task management commands including DAG operations.
-        
-        Subcommands:
-            deps <task_id> - Show task dependencies
-            graph <project_id> - Export DAG in DOT format
-            ready <project_id> - List ready tasks
-            frontier <project_id> - Show DAG frontier with tie-breakers
-        """
-        if not args:
-            return {"error": "Missing task subcommand"}
-        
-        action = args[0].lower()
-        
-        if action == "deps":
-            if len(args) < 2:
-                return {"error": "Usage: /task deps <task_id>"}
-            
-            task_id = args[1]
-            try:
-                task = self.core.project_manager.get_task(task_id)
-                if not task:
-                    return {"error": f"Task not found: {task_id}"}
-                
-                # Get dependency details
-                deps = []
-                for dep_id in task.dependencies:
-                    dep_task = self.core.project_manager.get_task(dep_id)
-                    if dep_task:
-                        deps.append({
-                            "id": dep_id,
-                            "title": dep_task.title,
-                            "status": dep_task.status.value,
-                        })
-                
-                return {
-                    "task_id": task_id,
-                    "task_title": task.title,
-                    "dependencies": deps,
-                    "is_blocked": len([d for d in deps if d["status"] != "completed"]) > 0,
-                }
-            except Exception as e:
-                return {"error": f"Failed to get task dependencies: {e!s}"}
-        
-        elif action == "graph":
-            if len(args) < 2:
-                return {"error": "Usage: /task graph <project_id>"}
-            
-            project_id = args[1]
-            try:
-                dot = self.core.project_manager.export_dag_dot(project_id)
-                return {
-                    "status": f"DAG for project {project_id}",
-                    "dot": dot,
-                    "hint": "Save to .dot file and render with: dot -Tpng graph.dot -o graph.png",
-                }
-            except Exception as e:
-                return {"error": f"Failed to export DAG: {e!s}"}
-        
-        elif action == "ready":
-            if len(args) < 2:
-                return {"error": "Usage: /task ready <project_id>"}
-            
-            project_id = args[1]
-            try:
-                ready_tasks = self.core.project_manager.get_ready_tasks(project_id)
-                return {
-                    "status": f"Ready tasks for project {project_id}",
-                    "count": len(ready_tasks),
-                    "tasks": [
-                        {
-                            "id": t.id,
-                            "title": t.title,
-                            "priority": t.priority,
-                            "phase": t.phase.value if hasattr(t, "phase") else "pending",
-                        }
-                        for t in ready_tasks[:20]
-                    ],
-                }
-            except Exception as e:
-                return {"error": f"Failed to get ready tasks: {e!s}"}
-        
-        elif action == "frontier":
-            if len(args) < 2:
-                return {"error": "Usage: /task frontier <project_id>"}
-            
-            project_id = args[1]
-            try:
-                stats = self.core.project_manager.get_dag_stats(project_id)
-                ready_tasks = self.core.project_manager.get_ready_tasks(project_id)
-                
-                return {
-                    "status": f"DAG frontier for project {project_id}",
-                    "total_tasks": stats["total_tasks"],
-                    "ready_count": stats["ready_count"],
-                    "critical_path_length": stats["critical_path_length"],
-                    "frontier": [
-                        {
-                            "id": t.id,
-                            "title": t.title,
-                            "priority": t.priority,
-                            "due_date": t.due_date,
-                            "effort": getattr(t, "effort", None),
-                            "value": getattr(t, "value", None),
-                        }
-                        for t in ready_tasks[:10]
-                    ],
-                }
-            except Exception as e:
-                return {"error": f"Failed to get DAG frontier: {e!s}"}
-        
-        return {"error": f"Unknown task command: {action}"}
 
     async def _handle_config_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle configuration commands: list|get|set|add|remove

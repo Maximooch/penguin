@@ -976,9 +976,9 @@ class ProjectManager:
             value=item.value,
             risk=item.risk,
             sequence=item.sequence,
-            agent_role=item.agent_role or blueprint.default_agent_role,
-            required_tools=item.required_tools or blueprint.default_required_tools,
-            skills=item.skills or blueprint.default_skills,
+            agent_role=item.agent_role if item.agent_role else blueprint.default_agent_role,
+            required_tools=item.required_tools if item.required_tools else blueprint.default_required_tools,
+            skills=item.skills if item.skills else blueprint.default_skills,
             parallelizable=item.parallelizable,
             batch=item.batch,
             recipe=item.recipe,
@@ -1001,9 +1001,9 @@ class ProjectManager:
         task.value = item.value
         task.risk = item.risk
         task.sequence = item.sequence
-        task.agent_role = item.agent_role or blueprint.default_agent_role
-        task.required_tools = item.required_tools or blueprint.default_required_tools
-        task.skills = item.skills or blueprint.default_skills
+        task.agent_role = item.agent_role if item.agent_role else blueprint.default_agent_role
+        task.required_tools = item.required_tools if item.required_tools else blueprint.default_required_tools
+        task.skills = item.skills if item.skills else blueprint.default_skills
         task.parallelizable = item.parallelizable
         task.batch = item.batch
         task.recipe = item.recipe
