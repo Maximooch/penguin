@@ -32,32 +32,40 @@ Goal: make Run Mode predictable, traceable, and resilient by wiring spec‑drive
 
 ---
 
-### Phase 1 – Blueprint‑driven task sync (docs → structured “blueprint items” → tasks)
+### Phase 1 – Blueprint‑driven task sync (docs → structured "blueprint items" → tasks) ✅ COMPLETED
 Outcomes: parse markdown/docs into structured blueprint items; maintain a doc→task→commit→test graph; auto‑create/update tasks and flag drift.
 
-Changes
-- [ ] `penguin/project/spec_parser.py`
-  - Extract BlueprintItem blocks: id (e.g., REQ‑123), title, description, acceptance criteria (AC), usage recipes (CLI/API examples), trace links (files/modules).
-  - Support markdown conventions (headings, fenced blocks, AC lists).
-  - Support dependency metadata: `depends_on: [REQ-101, REQ-202]`, optional `milestone: true`, optional `sequence: "alpha|beta|rc"` for soft ordering.
-  - Support scheduling/tie-breaker metadata:
-    - `priority: 1..5` (higher → earlier)
-    - `effort: 1..5` (lower → earlier when equal priority)
-    - `value: 1..5` (higher → earlier)
-    - `risk: 1..5` (lower → earlier)
-    - `due_date: "YYYY-MM-DD"`
-    - Soft ordering: `sequence: "alpha|beta|rc|N"` (lexicographic or numeric)
-  - Support agent routing metadata:
-    - `agent_role: "planner|implementer|qa|..."` (maps to coordinator roles)
-    - `required_tools: ["apply_diff", "grep_search"]` 
-    - `skills: ["python", "fastapi", "react"]`
-    - `parallelizable: true|false` and optional `batch: "group-name"`
-- [ ] `penguin/project/models.py`
-  - Add `BlueprintItem` model; add fields on `Task`: `blueprint_id: Optional[str]`, `blocked_by: list[str]`, `acceptance_criteria: list[str]`, `usage_recipe: Optional[str or dict]`, `milestone: bool`, `sequence: Optional[str]`, `priority: int`, `effort: Optional[int]`, `value: Optional[int]`, `risk: Optional[int]`, `due_date: Optional[date]`, `agent_role: Optional[str]`, `required_tools: list[str]`, `skills: list[str]`, `parallelizable: bool`, `batch: Optional[str]`.
-- [ ] `penguin/project/manager.py`
-  - Add `sync_blueprints(project_id, sources)` and `reconcile_tasks_from_blueprints(...)`.
-  - Maintain a dependency DAG for tasks: validate edges, detect cycles, persist `blocked_by`, compute ready/frontier set.
-  - Drift detection: blueprint changed since last sync; tasks outdated/absent; tests missing for AC.
+**Completed Changes:**
+- [x] `penguin/project/blueprint_parser.py` (NEW)
+  - BlueprintParser class with support for markdown, YAML, and JSON formats
+  - Extracts BlueprintItem blocks: id, title, description, acceptance criteria, usage recipes, dependencies
+  - Parses YAML frontmatter for project metadata and ITUV settings
+  - Supports inline task metadata: `{priority=high, effort=2, agent_role=implementer, ...}`
+  - Parses Usage Recipes section for USE gate automation
+- [x] `penguin/project/models.py`
+  - Added `TaskPhase` enum: PENDING → IMPLEMENT → TEST → USE → VERIFY → DONE | BLOCKED
+  - Added `BlueprintItem` model with full metadata support
+  - Added `Blueprint` model for parsed Blueprint documents
+  - Extended `Task` with: `blueprint_id`, `phase`, `effort`, `value`, `risk`, `sequence`, `agent_role`, `required_tools`, `skills`, `parallelizable`, `batch`, `recipe`, `assignees`
+  - Added `advance_phase()` and `set_phase()` methods for ITUV lifecycle
+- [x] `penguin/project/manager.py`
+  - Added NetworkX-based DAG: `build_dag()`, `get_ready_tasks()`, `get_next_task_dag()`
+  - Added `sync_blueprint()` for creating/updating tasks from Blueprint
+  - Added `_sort_by_tie_breakers()` with configurable tie-breaker order
+  - Added `get_dag_stats()` and `export_dag_dot()` for visualization
+  - Added `set_tie_breakers()` and `invalidate_dag()` for DAG management
+- [x] `penguin/run_mode.py`
+  - Updated `start_continuous()` to accept `project_id` and `use_dag` parameters
+  - Updated `_get_next_task_data()` to use DAG-based selection when project is active
+  - Added `_task_to_data()` helper with ITUV/Blueprint context fields
+- [x] `penguin/cli/commands.yml`
+  - Added: `/blueprint sync`, `/blueprint status`
+  - Added: `/task deps`, `/task graph`, `/task ready`, `/task frontier`
+- [x] `penguin/cli/interface.py`
+  - Added `_handle_blueprint_command()` for sync and status
+  - Added DAG operations to `_handle_task_command()`: deps, graph, ready, frontier
+- [x] `context/blueprint.template.md`
+  - Complete Blueprint template with ITUV settings, agent routing, usage recipes, and reference sections
 - [ ] CLI
   - `project blueprint sync [--project PROJECT_ID] [--path PATH_GLOB]`
   - `project blueprint status [PROJECT_ID]`

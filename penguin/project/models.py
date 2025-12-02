@@ -18,6 +18,17 @@ from penguin.utils.events import TaskEvent  ## type: ignore
 from penguin.utils.serialization import to_dict, from_dict  ## type: ignore
 
 
+class TaskPhase(Enum):
+    """ITUV lifecycle phase for a task."""
+    PENDING = "pending"      # Not yet started
+    IMPLEMENT = "implement"  # Writing/modifying code
+    TEST = "test"            # Running tests
+    USE = "use"              # Executing usage recipes
+    VERIFY = "verify"        # Checking acceptance criteria
+    DONE = "done"            # All gates passed
+    BLOCKED = "blocked"      # Waiting on dependencies or clarification
+
+
 class TaskStatus(Enum):
     """Task status enumeration with clear state transitions."""
     ACTIVE = "active"
@@ -149,6 +160,152 @@ class StateTransition:
 
 
 @dataclass
+class BlueprintItem:
+    """Represents a parsed Blueprint specification item.
+    
+    BlueprintItems are parsed from Blueprint documents (markdown/yaml/json)
+    and used to create or update Tasks with full ITUV lifecycle support.
+    """
+    
+    id: str  # e.g., "AUTH-1" or auto-generated slug
+    title: str
+    description: str
+    
+    # Acceptance criteria (feeds VERIFY gate)
+    acceptance_criteria: List[str] = field(default_factory=list)
+    
+    # Dependencies (DAG edges)
+    depends_on: List[str] = field(default_factory=list)
+    
+    # Usage recipe reference (feeds USE gate)
+    recipe: Optional[str] = None
+    
+    # Core metadata
+    estimate: Optional[int] = None  # Story points or hours
+    priority: str = "medium"  # low | medium | high | critical
+    labels: List[str] = field(default_factory=list)
+    assignees: List[str] = field(default_factory=list)  # @handles
+    due_date: Optional[str] = None  # YYYY-MM-DD
+    
+    # ITUV tie-breakers
+    effort: Optional[int] = None  # 1-5 scale
+    value: Optional[int] = None   # 1-5 scale
+    risk: Optional[int] = None    # 1-5 scale
+    sequence: Optional[str] = None  # alpha | beta | rc | ga
+    
+    # Agent routing
+    agent_role: Optional[str] = None  # planner | implementer | qa | reviewer
+    required_tools: List[str] = field(default_factory=list)
+    skills: List[str] = field(default_factory=list)
+    parallelizable: bool = False
+    batch: Optional[str] = None  # Group name for batched execution
+    
+    # Parent-child relationship
+    parent_id: Optional[str] = None
+    
+    # Source tracking
+    source_file: Optional[str] = None
+    source_line: Optional[int] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return to_dict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BlueprintItem":
+        """Create BlueprintItem from dictionary."""
+        return from_dict(cls, data)
+    
+    def priority_score(self) -> int:
+        """Convert priority string to numeric score for sorting (higher = more urgent)."""
+        scores = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+        return scores.get(self.priority.lower(), 2)
+    
+    def sequence_score(self) -> int:
+        """Convert sequence string to numeric score for sorting."""
+        scores = {"alpha": 1, "beta": 2, "rc": 3, "ga": 4}
+        return scores.get(self.sequence.lower(), 0) if self.sequence else 0
+
+
+@dataclass
+class Blueprint:
+    """Represents a parsed Blueprint document with metadata and items.
+    
+    A Blueprint is the top-level container parsed from a Blueprint file.
+    It contains project-level metadata and a list of BlueprintItems (tasks).
+    """
+    
+    # Required metadata
+    title: str
+    project_key: str  # e.g., "AUTH", "BACKEND"
+    
+    # Version and status
+    version: str = "0.1.0"
+    status: str = "draft"  # draft | active | completed | archived
+    
+    # Ownership
+    owners: List[str] = field(default_factory=list)  # @handles
+    labels: List[str] = field(default_factory=list)
+    
+    # Source info
+    repo: Optional[str] = None
+    path: Optional[str] = None
+    
+    # Links to external docs
+    links: List[Dict[str, str]] = field(default_factory=list)
+    
+    # Timestamps
+    created: Optional[str] = None
+    updated: Optional[str] = None
+    
+    # ITUV lifecycle defaults
+    ituv_enabled: bool = True
+    phase_timebox_sec: Dict[str, int] = field(default_factory=lambda: {
+        "implement": 600,
+        "test": 300,
+        "use": 180,
+        "verify": 120
+    })
+    
+    # Default agent routing
+    default_agent_role: str = "implementer"
+    default_required_tools: List[str] = field(default_factory=list)
+    default_skills: List[str] = field(default_factory=list)
+    
+    # Content sections
+    overview: str = ""
+    goals: List[str] = field(default_factory=list)
+    non_goals: List[str] = field(default_factory=list)
+    context: Dict[str, str] = field(default_factory=dict)
+    
+    # Items (tasks)
+    items: List[BlueprintItem] = field(default_factory=list)
+    
+    # Usage recipes
+    recipes: List[Dict[str, Any]] = field(default_factory=list)
+    
+    # Validation criteria (spec-level)
+    validation: List[str] = field(default_factory=list)
+    
+    # Risks and open questions
+    risks: List[str] = field(default_factory=list)
+    questions: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        data = to_dict(self)
+        data["items"] = [item.to_dict() for item in self.items]
+        return data
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Blueprint":
+        """Create Blueprint from dictionary."""
+        if "items" in data:
+            data["items"] = [BlueprintItem.from_dict(item) for item in data["items"]]
+        return from_dict(cls, data)
+
+
+@dataclass
 class Task:
     """Represents an individual task with execution tracking and state management."""
     
@@ -185,10 +342,42 @@ class Task:
     acceptance_criteria: List[str] = field(default_factory=list)
     definition_of_done: Optional[str] = None
     
+    # === Blueprint/ITUV fields ===
+    
+    # Blueprint traceability
+    blueprint_id: Optional[str] = None  # e.g., "AUTH-1"
+    blueprint_source: Optional[str] = None  # File path
+    
+    # ITUV lifecycle
+    phase: TaskPhase = TaskPhase.PENDING
+    phase_started_at: Optional[str] = None
+    phase_timebox_sec: Optional[int] = None
+    
+    # ITUV tie-breakers (for DAG scheduler)
+    effort: Optional[int] = None  # 1-5 scale (lower = easier)
+    value: Optional[int] = None   # 1-5 scale (higher = more impactful)
+    risk: Optional[int] = None    # 1-5 scale (higher = riskier)
+    sequence: Optional[str] = None  # alpha | beta | rc | ga
+    
+    # Agent routing
+    agent_role: Optional[str] = None  # planner | implementer | qa | reviewer
+    required_tools: List[str] = field(default_factory=list)
+    skills: List[str] = field(default_factory=list)
+    parallelizable: bool = False
+    batch: Optional[str] = None
+    
+    # Usage recipe reference (feeds USE gate)
+    recipe: Optional[str] = None
+    
+    # Assignees (Link-resolvable @handles)
+    assignees: List[str] = field(default_factory=list)
+    
     def __post_init__(self):
         """Validate task data after initialization."""
         if isinstance(self.status, str):
             self.status = TaskStatus(self.status)
+        if isinstance(self.phase, str):
+            self.phase = TaskPhase(self.phase)
     
     def can_transition_to(self, new_status: TaskStatus) -> bool:
         """Check if transition to new status is valid."""
@@ -353,6 +542,7 @@ class Task:
         """Convert to dictionary for serialization."""
         data = to_dict(self)
         data['status'] = self.status.value
+        data['phase'] = self.phase.value
         data['execution_history'] = [r.to_dict() for r in self.execution_history]
         data['transition_history'] = [t.to_dict() for t in self.transition_history]
         return data
@@ -363,6 +553,10 @@ class Task:
         # Handle status conversion
         if 'status' in data:
             data['status'] = TaskStatus(data['status'])
+        
+        # Handle phase conversion
+        if 'phase' in data:
+            data['phase'] = TaskPhase(data['phase'])
         
         # Handle execution history
         if 'execution_history' in data:
@@ -377,6 +571,49 @@ class Task:
             ]
         
         return from_dict(cls, data)
+    
+    # === ITUV Phase Management ===
+    
+    def advance_phase(self, reason: Optional[str] = None) -> bool:
+        """Advance to the next ITUV phase.
+        
+        Returns:
+            True if phase was advanced, False if already at DONE or BLOCKED.
+        """
+        phase_order = [
+            TaskPhase.PENDING,
+            TaskPhase.IMPLEMENT,
+            TaskPhase.TEST,
+            TaskPhase.USE,
+            TaskPhase.VERIFY,
+            TaskPhase.DONE
+        ]
+        
+        if self.phase in (TaskPhase.DONE, TaskPhase.BLOCKED):
+            return False
+        
+        try:
+            current_idx = phase_order.index(self.phase)
+            if current_idx < len(phase_order) - 1:
+                self.phase = phase_order[current_idx + 1]
+                self.phase_started_at = datetime.utcnow().isoformat()
+                self.updated_at = datetime.utcnow().isoformat()
+                return True
+        except ValueError:
+            pass
+        
+        return False
+    
+    def set_phase(self, phase: TaskPhase, reason: Optional[str] = None) -> None:
+        """Set the task phase directly."""
+        self.phase = phase
+        self.phase_started_at = datetime.utcnow().isoformat()
+        self.updated_at = datetime.utcnow().isoformat()
+    
+    def priority_score(self) -> int:
+        """Get numeric priority score for sorting (higher = more urgent)."""
+        # Invert so lower priority number = higher score
+        return 10 - min(self.priority, 10)
 
 
 @dataclass  

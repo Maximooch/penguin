@@ -395,7 +395,9 @@ class RunMode:
     async def start_continuous(
         self, 
         specified_task_name: Optional[str] = None, 
-        task_description: Optional[str] = None
+        task_description: Optional[str] = None,
+        project_id: Optional[str] = None,
+        use_dag: bool = True,
     ) -> None:
         """
         Start continuous operation mode.
@@ -403,15 +405,20 @@ class RunMode:
         Args:
             specified_task_name: Optional name of a specific task to prioritize
             task_description: Optional description/message if no specific task
+            project_id: Optional project ID to scope task selection (enables DAG scheduling)
+            use_dag: If True and project_id is set, use DAG-based task selection
         """
         try:
             self.continuous_mode = True
+            self._active_project_id = project_id
             logger.debug("RunMode: Starting continuous operation mode")
             
             initial_continuous_mode_message = (
                 "Starting continuous operation mode\n"
+                + (f"Project: {project_id}\n" if project_id else "")
                 + (f"Task: {specified_task_name}\n" if specified_task_name else "")
                 + (f"Description: {task_description}\n" if task_description else "")
+                + (f"DAG scheduling: {'enabled' if use_dag and project_id else 'disabled'}\n")
                 + (
                     f"Time limit: {self.time_limit.total_seconds() / 60:.1f} minutes\n"
                     if self.time_limit
@@ -436,6 +443,10 @@ class RunMode:
                     task = await self.core.project_manager.get_task_by_title(specified_task_name)
                     if task:
                         task_description = task.description
+                        # Also capture project_id from task if not specified
+                        if not project_id and task.project_id:
+                            project_id = task.project_id
+                            self._active_project_id = project_id
                 except Exception as e:
                     logger.debug(f"Could not find task '{specified_task_name}': {e}")
             
@@ -470,8 +481,13 @@ class RunMode:
                     await asyncio.sleep(0.1)
                     continue
 
-                # Get next task
-                task_data = await self._get_next_task_data(specified_task_name, task_description)
+                # Get next task using DAG scheduler if project is active
+                task_data = await self._get_next_task_data(
+                    specified_task_name, 
+                    task_description,
+                    project_id=project_id,
+                    use_dag=use_dag,
+                )
                 if not task_data:
                     logger.debug("No tasks available, determining next step")
                     # Create general task to determine next steps
@@ -575,7 +591,9 @@ class RunMode:
     async def _get_next_task_data(
         self, 
         specified_task_name: Optional[str], 
-        task_description: Optional[str]
+        task_description: Optional[str],
+        project_id: Optional[str] = None,
+        use_dag: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """
         Helper to prepare task data for execution.
@@ -583,6 +601,8 @@ class RunMode:
         Args:
             specified_task_name: Optional name of specific task
             task_description: Optional description for task
+            project_id: Optional project ID to scope task selection
+            use_dag: If True, use DAG-based selection (respects dependencies)
             
         Returns:
             Dictionary with task data or None if no task available
@@ -593,19 +613,7 @@ class RunMode:
                 task = self.core.project_manager.get_task_by_title(specified_task_name)
                 if task:
                     # Return data from existing task
-                    return {
-                        "name": task.title,
-                        "description": task.description if task_description is None else task_description,
-                        "context": {
-                            "id": task.id,
-                            "project_id": task.project_id,
-                            "priority": task.priority,
-                            "metadata": task.metadata if hasattr(task, "metadata") else {},
-                            "status": task.status.value,
-                            "progress": getattr(task, "progress", 0),
-                            "due_date": task.due_date,
-                        }
-                    }
+                    return self._task_to_data(task, task_description)
             except Exception as e:
                 logger.debug(f"Could not find task '{specified_task_name}': {e}")
             else:
@@ -621,30 +629,75 @@ class RunMode:
                         "status": "active",
                         "progress": 0,
                         "due_date": None,
+                        "phase": "pending",
+                        "blueprint_id": None,
                     }
                 }
         
         # Get next task from project manager
         try:
-            next_task = await self.core.project_manager.get_next_task_async()
+            next_task = None
+            
+            # Try DAG-based selection first if project_id is provided
+            if use_dag and project_id:
+                try:
+                    next_task = await self.core.project_manager.get_next_task_dag_async(project_id)
+                    if next_task:
+                        logger.debug(f"DAG scheduler selected task: {next_task.title}")
+                except Exception as e:
+                    logger.debug(f"DAG selection failed, falling back: {e}")
+            
+            # Fall back to legacy selection
+            if not next_task:
+                next_task = await self.core.project_manager.get_next_task_async(project_id)
+            
             if next_task:
-                return {
-                    "name": next_task.title,
-                    "description": next_task.description,
-                    "context": {
-                        "id": next_task.id,
-                        "project_id": next_task.project_id,
-                        "priority": next_task.priority,
-                        "metadata": getattr(next_task, "metadata", {}),
-                        "status": next_task.status.value,
-                        "progress": getattr(next_task, "progress", 0),
-                        "due_date": next_task.due_date,
-                    }
-                }
+                return self._task_to_data(next_task)
+                
         except Exception as e:
             logger.debug(f"Error getting next task: {e}")
             
         return None
+    
+    def _task_to_data(
+        self, 
+        task, 
+        description_override: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Convert a Task object to task data dictionary.
+        
+        Args:
+            task: Task object from ProjectManager
+            description_override: Optional description to use instead of task.description
+            
+        Returns:
+            Dictionary with task data for execution
+        """
+        return {
+            "name": task.title,
+            "description": description_override if description_override else task.description,
+            "context": {
+                "id": task.id,
+                "project_id": task.project_id,
+                "priority": task.priority,
+                "metadata": getattr(task, "metadata", {}),
+                "status": task.status.value,
+                "progress": getattr(task, "progress", 0),
+                "due_date": task.due_date,
+                # ITUV/Blueprint fields
+                "phase": getattr(task, "phase", None),
+                "phase_value": task.phase.value if hasattr(task, "phase") and task.phase else "pending",
+                "blueprint_id": getattr(task, "blueprint_id", None),
+                "acceptance_criteria": getattr(task, "acceptance_criteria", []),
+                "recipe": getattr(task, "recipe", None),
+                "agent_role": getattr(task, "agent_role", None),
+                "required_tools": getattr(task, "required_tools", []),
+                "skills": getattr(task, "skills", []),
+                "effort": getattr(task, "effort", None),
+                "value": getattr(task, "value", None),
+                "risk": getattr(task, "risk", None),
+            }
+        }
 
     async def _health_check(self) -> None:
         """Perform periodic health checks of system resources."""

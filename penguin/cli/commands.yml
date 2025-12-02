@@ -227,6 +227,66 @@ commands:
     description: "Show all projects and tasks"
     handler: "_handle_list"
 
+  # Blueprint commands (DAG-based task management)
+  - name: "blueprint sync"
+    category: task
+    description: "Sync a Blueprint file to create/update project tasks"
+    parameters:
+      - name: file
+        type: string
+        required: true
+        description: "Path to Blueprint file (markdown, yaml, or json)"
+      - name: project_id
+        type: string
+        required: false
+        description: "Target project ID (creates new if not specified)"
+    handler: "_handle_blueprint_sync"
+
+  - name: "blueprint status"
+    category: task
+    description: "Show Blueprint sync status for a project"
+    parameters:
+      - name: project_id
+        type: string
+        required: true
+    handler: "_handle_blueprint_status"
+
+  - name: "task deps"
+    category: task
+    description: "Show task dependencies"
+    parameters:
+      - name: task_id
+        type: string
+        required: true
+    handler: "_handle_task_deps"
+
+  - name: "task graph"
+    category: task
+    description: "Export project task graph in DOT format"
+    parameters:
+      - name: project_id
+        type: string
+        required: true
+    handler: "_handle_task_graph"
+
+  - name: "task ready"
+    category: task
+    description: "List tasks ready for execution (all deps satisfied)"
+    parameters:
+      - name: project_id
+        type: string
+        required: true
+    handler: "_handle_task_ready"
+
+  - name: "task frontier"
+    category: task
+    description: "Show DAG frontier (ready tasks with tie-breaker order)"
+    parameters:
+      - name: project_id
+        type: string
+        required: true
+    handler: "_handle_task_frontier"
+
   # Image message
   - name: image
     category: chat

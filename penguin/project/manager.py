@@ -2,7 +2,7 @@
 
 This module provides a comprehensive project and task management interface with
 both synchronous and asynchronous APIs, event integration, and advanced features
-like dependency tracking and resource management.
+like dependency tracking, DAG-based scheduling, and resource management.
 """
 
 import asyncio
@@ -11,9 +11,21 @@ import logging
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-from .models import Project, Task, TaskStatus, ExecutionRecord, ExecutionResult, StateTransition
+import networkx as nx
+
+from .models import (
+    Blueprint,
+    BlueprintItem,
+    ExecutionRecord,
+    ExecutionResult,
+    Project,
+    StateTransition,
+    Task,
+    TaskPhase,
+    TaskStatus,
+)
 from .storage import ProjectStorage
 from .exceptions import (
     ProjectError, TaskError, ValidationError, ProjectNotFoundError, 
@@ -56,6 +68,21 @@ class ProjectManager:
             logger.info("EventBus integration enabled")
         except ImportError:
             logger.warning("EventBus not available - events will be disabled")
+        
+        # DAG scheduler state
+        self._dag: Optional[nx.DiGraph] = None
+        self._dag_project_id: Optional[str] = None
+        
+        # Default tie-breaker order for DAG frontier selection
+        self._tie_breakers: List[str] = [
+            "priority_desc",
+            "due_date_asc",
+            "sequence",
+            "effort_asc",
+            "value_desc",
+            "risk_asc",
+            "created_at_asc",
+        ]
         
         logger.info(f"ProjectManager initialized with workspace: {workspace_path}")
     
@@ -568,6 +595,424 @@ class ProjectManager:
                 logger.debug(f"Failed to publish event {event_type}: {e}")
         else:
             logger.debug(f"Event {event_type} not published (EventBus not available)")
+    
+    # ==================== DAG Scheduling ====================
+    
+    def build_dag(self, project_id: str, force: bool = False) -> nx.DiGraph:
+        """Build or retrieve the dependency DAG for a project.
+        
+        Args:
+            project_id: Project ID to build DAG for.
+            force: If True, rebuild even if cached.
+            
+        Returns:
+            NetworkX DiGraph with tasks as nodes and dependencies as edges.
+        """
+        if not force and self._dag is not None and self._dag_project_id == project_id:
+            return self._dag
+        
+        tasks = self.list_tasks(project_id)
+        dag = nx.DiGraph()
+        
+        # Add all tasks as nodes
+        for task in tasks:
+            dag.add_node(task.id, task=task)
+        
+        # Add dependency edges (from dependency -> task)
+        for task in tasks:
+            for dep_id in task.dependencies:
+                if dag.has_node(dep_id):
+                    dag.add_edge(dep_id, task.id)
+        
+        # Check for cycles
+        if not nx.is_directed_acyclic_graph(dag):
+            cycles = list(nx.simple_cycles(dag))
+            raise DependencyError(
+                f"Dependency cycle detected in project {project_id}: {cycles[:3]}"
+            )
+        
+        self._dag = dag
+        self._dag_project_id = project_id
+        
+        logger.debug(f"Built DAG for project {project_id}: {len(tasks)} tasks, {dag.number_of_edges()} edges")
+        return dag
+    
+    def get_ready_tasks(self, project_id: str) -> List[Task]:
+        """Get tasks that are ready to execute (all dependencies satisfied).
+        
+        A task is ready if:
+        - It's in ACTIVE status
+        - All its dependencies are COMPLETED
+        - It's not blocked
+        
+        Args:
+            project_id: Project to get ready tasks for.
+            
+        Returns:
+            List of ready tasks, sorted by tie-breakers.
+        """
+        dag = self.build_dag(project_id)
+        tasks = self.list_tasks(project_id)
+        task_map = {t.id: t for t in tasks}
+        
+        ready = []
+        for task in tasks:
+            if task.status != TaskStatus.ACTIVE:
+                continue
+            
+            # Check all dependencies are completed
+            all_deps_done = True
+            for dep_id in task.dependencies:
+                dep_task = task_map.get(dep_id)
+                if not dep_task or dep_task.status != TaskStatus.COMPLETED:
+                    all_deps_done = False
+                    break
+            
+            if all_deps_done:
+                ready.append(task)
+        
+        # Sort by tie-breakers
+        return self._sort_by_tie_breakers(ready)
+    
+    async def get_ready_tasks_async(self, project_id: str) -> List[Task]:
+        """Async version of get_ready_tasks."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.get_ready_tasks, project_id
+        )
+    
+    def get_next_task_dag(self, project_id: str) -> Optional[Task]:
+        """Get the next task to execute from the DAG frontier.
+        
+        This is the DAG-aware version of get_next_task that respects
+        dependencies and uses tie-breakers for selection.
+        
+        Args:
+            project_id: Project to get next task for.
+            
+        Returns:
+            The highest-priority ready task, or None if no tasks are ready.
+        """
+        ready = self.get_ready_tasks(project_id)
+        return ready[0] if ready else None
+    
+    async def get_next_task_dag_async(self, project_id: str) -> Optional[Task]:
+        """Async version of get_next_task_dag."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.get_next_task_dag, project_id
+        )
+    
+    def _sort_by_tie_breakers(self, tasks: List[Task]) -> List[Task]:
+        """Sort tasks by configured tie-breakers.
+        
+        Tie-breaker format: "field_direction" where direction is asc or desc.
+        Special cases:
+        - priority_desc: higher priority score first
+        - sequence: alpha < beta < rc < ga
+        """
+        def sort_key(task: Task) -> Tuple:
+            keys = []
+            for tb in self._tie_breakers:
+                if tb == "priority_desc":
+                    # Higher priority score = more urgent
+                    keys.append(-task.priority_score())
+                elif tb == "due_date_asc":
+                    # Earlier due date first, None last
+                    keys.append(task.due_date or "9999-99-99")
+                elif tb == "sequence":
+                    # Sequence order: alpha=1, beta=2, rc=3, ga=4, None=0
+                    seq_order = {"alpha": 1, "beta": 2, "rc": 3, "ga": 4}
+                    keys.append(seq_order.get(task.sequence, 0) if task.sequence else 0)
+                elif tb == "effort_asc":
+                    # Lower effort first, None last
+                    keys.append(task.effort if task.effort is not None else 999)
+                elif tb == "value_desc":
+                    # Higher value first, None last
+                    keys.append(-(task.value if task.value is not None else 0))
+                elif tb == "risk_asc":
+                    # Lower risk first, None last
+                    keys.append(task.risk if task.risk is not None else 999)
+                elif tb == "created_at_asc":
+                    keys.append(task.created_at)
+            return tuple(keys)
+        
+        return sorted(tasks, key=sort_key)
+    
+    def get_dag_stats(self, project_id: str) -> Dict[str, Any]:
+        """Get statistics about the project's task DAG.
+        
+        Args:
+            project_id: Project to analyze.
+            
+        Returns:
+            Dictionary with DAG statistics.
+        """
+        dag = self.build_dag(project_id)
+        tasks = self.list_tasks(project_id)
+        
+        # Count by status
+        status_counts = {}
+        for task in tasks:
+            status_counts[task.status.value] = status_counts.get(task.status.value, 0) + 1
+        
+        # Count by phase
+        phase_counts = {}
+        for task in tasks:
+            phase_counts[task.phase.value] = phase_counts.get(task.phase.value, 0) + 1
+        
+        # Find critical path (longest path)
+        try:
+            critical_path = nx.dag_longest_path(dag)
+        except nx.NetworkXError:
+            critical_path = []
+        
+        # Get frontier (ready tasks)
+        ready = self.get_ready_tasks(project_id)
+        
+        return {
+            "project_id": project_id,
+            "total_tasks": len(tasks),
+            "total_edges": dag.number_of_edges(),
+            "status_counts": status_counts,
+            "phase_counts": phase_counts,
+            "ready_count": len(ready),
+            "ready_task_ids": [t.id for t in ready[:10]],
+            "critical_path_length": len(critical_path),
+            "critical_path": critical_path[:10],
+            "is_acyclic": nx.is_directed_acyclic_graph(dag),
+        }
+    
+    def export_dag_dot(self, project_id: str) -> str:
+        """Export the DAG in DOT format for visualization.
+        
+        Args:
+            project_id: Project to export.
+            
+        Returns:
+            DOT format string.
+        """
+        dag = self.build_dag(project_id)
+        
+        lines = ["digraph TaskDAG {"]
+        lines.append("  rankdir=LR;")
+        lines.append("  node [shape=box];")
+        
+        for node_id in dag.nodes():
+            task = dag.nodes[node_id].get("task")
+            if task:
+                label = f"{task.title[:30]}\\n[{task.status.value}]"
+                color = {
+                    TaskStatus.COMPLETED: "green",
+                    TaskStatus.ACTIVE: "blue",
+                    TaskStatus.RUNNING: "orange",
+                    TaskStatus.FAILED: "red",
+                }.get(task.status, "gray")
+                lines.append(f'  "{node_id}" [label="{label}", color="{color}"];')
+        
+        for src, dst in dag.edges():
+            lines.append(f'  "{src}" -> "{dst}";')
+        
+        lines.append("}")
+        return "\n".join(lines)
+    
+    def set_tie_breakers(self, tie_breakers: List[str]) -> None:
+        """Set the tie-breaker order for DAG frontier selection.
+        
+        Args:
+            tie_breakers: List of tie-breaker names in priority order.
+                Valid values: priority_desc, due_date_asc, sequence,
+                effort_asc, value_desc, risk_asc, created_at_asc
+        """
+        self._tie_breakers = tie_breakers
+        logger.info(f"Set tie-breakers: {tie_breakers}")
+    
+    def invalidate_dag(self) -> None:
+        """Invalidate the cached DAG, forcing rebuild on next access."""
+        self._dag = None
+        self._dag_project_id = None
+    
+    # ==================== Blueprint Integration ====================
+    
+    def sync_blueprint(
+        self,
+        blueprint: Blueprint,
+        project_id: Optional[str] = None,
+        create_missing: bool = True,
+        update_existing: bool = True,
+    ) -> Dict[str, Any]:
+        """Sync a Blueprint to the project, creating/updating tasks.
+        
+        Args:
+            blueprint: Parsed Blueprint object.
+            project_id: Target project ID. If None, creates a new project.
+            create_missing: Create tasks that don't exist.
+            update_existing: Update tasks that already exist.
+            
+        Returns:
+            Dictionary with sync results (created, updated, skipped counts).
+        """
+        # Create or get project
+        if project_id is None:
+            project = self.create_project(
+                name=blueprint.title,
+                description=blueprint.overview or f"Project from Blueprint: {blueprint.title}",
+                tags=blueprint.labels,
+            )
+            project_id = project.id
+        else:
+            project = self.get_project(project_id)
+            if not project:
+                raise ProjectNotFoundError(f"Project '{project_id}' not found", project_id)
+        
+        # Get existing tasks by blueprint_id
+        existing_tasks = self.list_tasks(project_id)
+        existing_by_blueprint = {t.blueprint_id: t for t in existing_tasks if t.blueprint_id}
+        
+        # Track results
+        created = []
+        updated = []
+        skipped = []
+        
+        # Build ID mapping for dependencies
+        id_mapping: Dict[str, str] = {}  # blueprint_id -> task_id
+        for task in existing_tasks:
+            if task.blueprint_id:
+                id_mapping[task.blueprint_id] = task.id
+        
+        # First pass: create/update tasks (without dependencies)
+        for item in blueprint.items:
+            existing = existing_by_blueprint.get(item.id)
+            
+            if existing:
+                if update_existing:
+                    # Update existing task
+                    self._update_task_from_blueprint_item(existing, item, blueprint)
+                    self.storage.update_task(existing)
+                    updated.append(item.id)
+                    id_mapping[item.id] = existing.id
+                else:
+                    skipped.append(item.id)
+                    id_mapping[item.id] = existing.id
+            elif create_missing:
+                # Create new task
+                task = self._create_task_from_blueprint_item(item, blueprint, project_id)
+                self.storage.create_task(task)
+                created.append(item.id)
+                id_mapping[item.id] = task.id
+            else:
+                skipped.append(item.id)
+        
+        # Second pass: resolve dependencies
+        for item in blueprint.items:
+            task_id = id_mapping.get(item.id)
+            if not task_id:
+                continue
+            
+            task = self.storage.get_task(task_id)
+            if not task:
+                continue
+            
+            # Resolve dependency IDs
+            resolved_deps = []
+            for dep_blueprint_id in item.depends_on:
+                dep_task_id = id_mapping.get(dep_blueprint_id)
+                if dep_task_id:
+                    resolved_deps.append(dep_task_id)
+                else:
+                    logger.warning(f"Dependency {dep_blueprint_id} not found for task {item.id}")
+            
+            if resolved_deps != task.dependencies:
+                task.dependencies = resolved_deps
+                task.updated_at = datetime.utcnow().isoformat()
+                self.storage.update_task(task)
+        
+        # Invalidate DAG cache
+        self.invalidate_dag()
+        
+        result = {
+            "project_id": project_id,
+            "blueprint_title": blueprint.title,
+            "created": created,
+            "updated": updated,
+            "skipped": skipped,
+            "total_items": len(blueprint.items),
+        }
+        
+        self._publish_event("blueprint_synced", result)
+        logger.info(f"Synced blueprint '{blueprint.title}': {len(created)} created, {len(updated)} updated")
+        
+        return result
+    
+    def _create_task_from_blueprint_item(
+        self,
+        item: BlueprintItem,
+        blueprint: Blueprint,
+        project_id: str,
+    ) -> Task:
+        """Create a Task from a BlueprintItem."""
+        now = datetime.utcnow().isoformat()
+        
+        # Convert priority string to int
+        priority_map = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        priority = priority_map.get(item.priority.lower(), 2)
+        
+        return Task(
+            id=self._generate_id(item.title),
+            title=item.title,
+            description=item.description,
+            status=TaskStatus.ACTIVE,
+            created_at=now,
+            updated_at=now,
+            priority=priority,
+            project_id=project_id,
+            parent_task_id=None,  # Will be set if parent_id is resolved
+            tags=item.labels,
+            dependencies=[],  # Will be resolved in second pass
+            due_date=item.due_date,
+            acceptance_criteria=item.acceptance_criteria,
+            blueprint_id=item.id,
+            blueprint_source=item.source_file,
+            phase=TaskPhase.PENDING,
+            effort=item.effort,
+            value=item.value,
+            risk=item.risk,
+            sequence=item.sequence,
+            agent_role=item.agent_role or blueprint.default_agent_role,
+            required_tools=item.required_tools or blueprint.default_required_tools,
+            skills=item.skills or blueprint.default_skills,
+            parallelizable=item.parallelizable,
+            batch=item.batch,
+            recipe=item.recipe,
+            assignees=item.assignees,
+        )
+    
+    def _update_task_from_blueprint_item(
+        self,
+        task: Task,
+        item: BlueprintItem,
+        blueprint: Blueprint,
+    ) -> None:
+        """Update a Task from a BlueprintItem."""
+        task.title = item.title
+        task.description = item.description
+        task.tags = item.labels
+        task.due_date = item.due_date
+        task.acceptance_criteria = item.acceptance_criteria
+        task.effort = item.effort
+        task.value = item.value
+        task.risk = item.risk
+        task.sequence = item.sequence
+        task.agent_role = item.agent_role or blueprint.default_agent_role
+        task.required_tools = item.required_tools or blueprint.default_required_tools
+        task.skills = item.skills or blueprint.default_skills
+        task.parallelizable = item.parallelizable
+        task.batch = item.batch
+        task.recipe = item.recipe
+        task.assignees = item.assignees
+        task.updated_at = datetime.utcnow().isoformat()
+        
+        # Convert priority string to int
+        priority_map = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        task.priority = priority_map.get(item.priority.lower(), 2)
     
     # ==================== Context and Integration ====================
     
