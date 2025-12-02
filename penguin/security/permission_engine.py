@@ -441,21 +441,8 @@ class PermissionEnforcer:
         context: Dict[str, Any],
     ) -> None:
         """Log a permission check to the audit log and audit logger."""
-        if not self._audit_all and result == PermissionResult.ALLOW:
-            return
-        
-        check = PermissionCheck(
-            operation=operation,
-            resource=resource,
-            result=result,
-            reason=reason,
-            policy=policy,
-            agent_id=context.get("agent_id"),
-            tool_name=context.get("tool_name"),
-        )
-        self._audit_log.append(check)
-        
-        # Send to audit logger (handles its own filtering)
+        # Always send to audit logger first - it has its own category-based filtering
+        # that respects user configuration (e.g., "filesystem": "all" logs all operations)
         try:
             from penguin.security.audit import get_audit_logger
             audit_logger = get_audit_logger()
@@ -474,6 +461,22 @@ class PermissionEnforcer:
             pass  # Audit module not available
         except Exception as e:
             logger.debug(f"Failed to log to audit logger: {e}")
+        
+        # Skip in-memory audit log for ALLOW results unless audit_all is enabled
+        # (in-memory log is for PermissionEnforcer's internal tracking, not user-facing audit)
+        if not self._audit_all and result == PermissionResult.ALLOW:
+            return
+        
+        check = PermissionCheck(
+            operation=operation,
+            resource=resource,
+            result=result,
+            reason=reason,
+            policy=policy,
+            agent_id=context.get("agent_id"),
+            tool_name=context.get("tool_name"),
+        )
+        self._audit_log.append(check)
         
         # Also log to standard logger
         level = logging.DEBUG if result == PermissionResult.ALLOW else logging.INFO

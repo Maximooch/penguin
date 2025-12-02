@@ -1193,7 +1193,33 @@ class ToolManager:
                             f"Permission enforcer initialized: mode={mode.value}, "
                             f"workspace={self.workspace_root}, project={self.project_root}"
                         )
+                    
+                    # Configure audit logger from config if available
+                    self._configure_audit_logger()
         return self._permission_enforcer
+    
+    def _configure_audit_logger(self) -> None:
+        """Configure the audit logger from SecurityConfig if available."""
+        try:
+            from penguin.config import SecurityConfig
+            from penguin.security.audit import configure_from_config
+            
+            # Get security config from our stored config dict
+            security_data = self.config.get("security", {}) if self.config else {}
+            if security_data:
+                security_config = SecurityConfig.from_dict(security_data)
+                configure_from_config(
+                    audit_config=security_config.audit,
+                    workspace_root=self.workspace_root,
+                )
+                logger.debug(
+                    f"Audit logger configured: enabled={security_config.audit.enabled}, "
+                    f"log_file={security_config.audit.log_file}"
+                )
+        except ImportError as e:
+            logger.debug(f"Could not configure audit logger: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to configure audit logger: {e}")
     
     def check_tool_permission(self, tool_name: str, tool_input: dict, context: dict = None) -> tuple:
         """Check if a tool execution is allowed.
