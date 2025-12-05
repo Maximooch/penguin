@@ -268,4 +268,104 @@ RunMode integrates with the `ProjectManager` to:
 3. Get the next highest priority task in continuous mode
 4. Track metadata for completed tasks
 
-This allows for a seamless workflow where tasks can be created interactively and then executed autonomously. 
+This allows for a seamless workflow where tasks can be created interactively and then executed autonomously.
+
+## DAG-Based Task Selection
+
+When a project has tasks created from a [Blueprint](./blueprints.md), RunMode uses DAG-based scheduling instead of simple priority ordering:
+
+```mermaid
+flowchart TD
+    GetNext[Get Next Task] --> HasDAG{Project has DAG?}
+    HasDAG -- No --> Priority[Priority-based selection]
+    HasDAG -- Yes --> Ready[Get ready tasks from DAG]
+    Ready --> Filter[Filter completed tasks]
+    Filter --> TieBreak[Apply tie-breakers]
+    TieBreak --> Execute[Execute task]
+    Execute --> Complete[Mark complete in DAG]
+    Complete --> GetNext
+```
+
+### Tie-Breaker Order
+
+When multiple tasks are ready (no pending dependencies), selection uses:
+
+1. **Priority** - `critical` > `high` > `medium` > `low`
+2. **Value/Effort ratio** - Higher value, lower effort wins (WSJF)
+3. **Risk** - Higher risk first (fail fast principle)
+4. **Sequence** - Explicit ordering from blueprint
+
+### Example
+
+```python
+# In continuous mode with a Blueprint-synced project
+await run_mode.start_continuous()
+
+# RunMode will:
+# 1. Check if project has a DAG
+# 2. Get tasks with no pending dependencies
+# 3. Apply tie-breakers to select next task
+# 4. Execute task through ITUV workflow
+# 5. Mark task complete, update DAG
+# 6. Repeat until no tasks remain
+```
+
+## ITUV Workflow Integration
+
+RunMode can execute tasks through the ITUV (Implement, Test, Use, Verify) lifecycle when orchestration is enabled:
+
+```mermaid
+stateDiagram-v2
+    [*] --> GetTask
+    GetTask --> StartWorkflow: Task available
+    GetTask --> Done: No tasks
+    
+    state "ITUV Workflow" as ITUV {
+        Implement --> Test
+        Test --> Use
+        Use --> Verify
+        Verify --> Complete
+    }
+    
+    StartWorkflow --> ITUV
+    ITUV --> MarkComplete
+    MarkComplete --> GetTask
+    
+    Done --> [*]
+```
+
+### Enabling ITUV
+
+```yaml
+# config.yml
+orchestration:
+  backend: native  # or "temporal" for durability
+  phase_timeouts:
+    implement: 600
+    test: 300
+    use: 180
+    verify: 120
+```
+
+### Workflow Commands
+
+```bash
+# Start ITUV workflow for a specific task
+/workflow start task-123
+
+# Check workflow status
+/workflow status ituv-task-123-abc
+
+# Pause/resume/cancel
+/workflow pause ituv-task-123-abc
+/workflow resume ituv-task-123-abc
+/workflow cancel ituv-task-123-abc
+```
+
+See [Orchestration](./orchestration.md) for detailed workflow documentation.
+
+## See Also
+
+- [Blueprints](./blueprints.md) - Spec-driven task creation
+- [Orchestration](./orchestration.md) - ITUV workflow execution
+- [Project Management](../usage/project_management.md) - Task and project APIs 

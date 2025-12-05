@@ -19,16 +19,118 @@ Goal: make Run Mode predictable, traceable, and resilient by wiring spec‑drive
 ---
 
 ### Three‑phase adoption plan (orchestration)
-- Phase 1: NetworkX (native DAG in Penguin)
+- Phase 1: NetworkX (native DAG in Penguin) ✅ COMPLETED
   - Build/maintain Blueprint DAG; frontier selection with tie‑breakers; continuous mode advances via DAG.
-  - Maps to this roadmap’s Phase 1 (parsing/metadata) and Phase 5 (scheduler).
-- Phase 2: Temporal (durable ITUV)
+  - Maps to this roadmap's Phase 1 (parsing/metadata) and Phase 5 (scheduler).
+- Phase 2: Temporal (durable ITUV) 🚧 IN PROGRESS
   - Make RunMode loops and ITUV phases durable with retries, backoff, timers, signals/queries.
   - Introduce under a feature flag without breaking native mode.
 - Phase 3: PenguinGraph (first‑class graph runtime)
   - A thin graph API with backends: NetworkX (native), Temporal (durable), future custom backends.
   - Keeps Engine/tools intact while enabling editable graphs, richer capabilities, and swap‑able backends.
   - Leverage Link
+
+---
+
+### Phase 2 Temporal – Detailed Implementation Plan
+
+**Goal:** Make ITUV workflows durable across restarts with retries, timeouts, signals, and queries.
+
+**Package Structure:**
+```
+penguin/orchestration/
+├── __init__.py           # Public API exports
+├── backend.py            # Abstract OrchestrationBackend interface
+├── native.py             # NetworkX + in-memory implementation
+├── state.py              # WorkflowState storage (SQLite)
+├── temporal/
+│   ├── __init__.py
+│   ├── client.py         # Temporal client wrapper
+│   ├── worker.py         # Activity worker setup
+│   ├── workflows.py      # ITUVWorkflow definition
+│   └── activities.py     # IMPLEMENT, TEST, USE, VERIFY activities
+└── config.py             # Backend selection, connection settings
+```
+
+**Changes:**
+- [ ] `penguin/orchestration/backend.py`
+  - Abstract `OrchestrationBackend` with methods:
+    - `start_workflow(task_id, blueprint_id) -> workflow_id`
+    - `get_workflow_status(workflow_id) -> WorkflowStatus`
+    - `signal_workflow(workflow_id, signal, payload)`
+    - `query_workflow(workflow_id, query) -> Any`
+    - `cancel_workflow(workflow_id)`
+    - `list_workflows(project_id, status_filter) -> List[WorkflowInfo]`
+- [ ] `penguin/orchestration/native.py`
+  - Wrap existing NetworkX DAG + RunMode as `NativeBackend`
+  - In-memory workflow state with persistence to SQLite
+  - Signals handled via EventBus
+- [ ] `penguin/orchestration/state.py`
+  - `WorkflowState` model: workflow_id, task_id, phase, status, started_at, updated_at, context_snapshot_id, artifacts
+  - SQLite storage for state persistence (survives restarts)
+  - Conversation history stored by reference (context_snapshot_id) to avoid payload limits
+- [ ] `penguin/orchestration/temporal/client.py`
+  - `TemporalClient` wrapper with connection management
+  - Local dev mode (auto-start Temporal server) vs external connection
+  - Retry logic for transient connection failures
+- [ ] `penguin/orchestration/temporal/worker.py`
+  - Activity worker registration
+  - Graceful shutdown handling
+  - Health check endpoint
+- [ ] `penguin/orchestration/temporal/workflows.py`
+  - `ITUVWorkflow`:
+    - Input: task_id, blueprint_id, config (timeouts, retries)
+    - Phases: IMPLEMENT → TEST → USE → VERIFY (sequential activities)
+    - Gate logic: each phase must pass before advancing
+    - Failure handling: retry with backoff, then pause for human input
+    - Signals: `pause`, `resume`, `cancel`, `inject_feedback`
+    - Queries: `get_status`, `get_phase`, `get_artifacts`, `get_progress`
+- [ ] `penguin/orchestration/temporal/activities.py`
+  - `implement_activity(task_id, context_snapshot_id) -> ImplementResult`
+  - `test_activity(task_id, test_patterns) -> TestResult`
+  - `use_activity(task_id, recipe_name) -> UseResult`
+  - `verify_activity(task_id, acceptance_criteria) -> VerifyResult`
+  - Each activity: load context from storage, invoke Engine, save artifacts, return result
+- [ ] `penguin/orchestration/config.py`
+  - `orchestration.backend`: `native` | `temporal` (default: `native`)
+  - `orchestration.temporal.address`: Temporal server address (default: `localhost:7233`)
+  - `orchestration.temporal.namespace`: Temporal namespace (default: `penguin`)
+  - `orchestration.temporal.task_queue`: Task queue name (default: `penguin-ituv`)
+  - `orchestration.temporal.auto_start`: Auto-start local Temporal server (default: `true` for dev)
+- [ ] `pyproject.toml`
+  - Add `temporalio` to optional dependencies under `[project.optional-dependencies.orchestration]`
+- [ ] `penguin/project/manager.py`
+  - Add `get_orchestration_backend() -> OrchestrationBackend` factory method
+  - Integrate workflow start/status into task lifecycle
+- [ ] CLI
+  - `workflow start <task_id>` - Start ITUV workflow for task
+  - `workflow status <workflow_id>` - Get workflow status
+  - `workflow pause <workflow_id>` - Pause workflow
+  - `workflow resume <workflow_id>` - Resume workflow
+  - `workflow cancel <workflow_id>` - Cancel workflow
+  - `workflow list [project_id]` - List workflows
+
+**Durability Model:**
+- Workflow state persisted in Temporal (survives restarts)
+- Conversation history persisted in SQLite, referenced by snapshot_id
+- Artifacts stored in project workspace, paths recorded in workflow state
+- On restart: query Temporal for active workflows, resume from last checkpoint
+
+**Signal/Query Patterns:**
+- `pause` signal: Set workflow to PAUSED state, wait for `resume`
+- `resume` signal: Continue from current phase
+- `cancel` signal: Graceful termination, mark task as cancelled
+- `inject_feedback` signal: Provide human clarification mid-workflow
+- `get_status` query: Returns current phase, status, progress
+- `get_artifacts` query: Returns list of artifacts with paths
+
+**Acceptance Criteria:**
+- [ ] ITUV workflow runs to completion via Temporal
+- [ ] Workflow survives worker restart and resumes from checkpoint
+- [ ] Signals (pause/resume/cancel) work correctly
+- [ ] Queries return accurate status and artifacts
+- [ ] Native backend continues to work when Temporal is disabled
+- [ ] Config toggle switches between backends without code changes
 
 ---
 

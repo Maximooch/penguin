@@ -120,6 +120,9 @@ llm_transformers = [
 ]
 llm_ollama = ["ollama>=0.1.7"]
 
+# Orchestration (Temporal for durable workflows)
+orchestration = ["temporalio>=1.5.0"]
+
 # PyDoll browser automation (optional - no WebDriver required)
 pydoll = [
     "pydoll-python>=2.0.0; python_version>='3.10'",  # Requires Python 3.10+

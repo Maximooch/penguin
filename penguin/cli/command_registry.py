@@ -287,6 +287,105 @@ class CommandRegistry:
                         lines.append(f"    • {param.name} ({param.type}, {req}): {param.description}")
         
         return "\n".join(lines)
+
+    def get_contextual_help(self, topic: str) -> Tuple[str, List[str]]:
+        """
+        Get contextual help for a specific topic.
+        
+        Args:
+            topic: Category name or command prefix (e.g., "project", "chat", "task")
+        
+        Returns:
+            Tuple of (header, list of command descriptions)
+        """
+        topic_lower = topic.lower().strip()
+        matching_commands: List[Command] = []
+        
+        # Strategy 1: Match by category name
+        if topic_lower in self.categories:
+            matching_commands = self.categories[topic_lower]
+        
+        # Strategy 2: Match commands that start with the topic (e.g., "project" matches "project create")
+        if not matching_commands:
+            for cmd in self.commands.values():
+                if cmd.name.startswith(topic_lower) or cmd.name == topic_lower:
+                    matching_commands.append(cmd)
+        
+        # Strategy 3: Check aliases
+        if not matching_commands:
+            for cmd in self.commands.values():
+                if topic_lower in cmd.aliases:
+                    matching_commands.append(cmd)
+        
+        if not matching_commands:
+            return f"No commands found for '{topic}'", [
+                "Try: /help (for all commands)",
+                "Categories: " + ", ".join(sorted(self.categories.keys()))
+            ]
+        
+        # Build help output
+        header = f"Commands: {topic.title()}"
+        lines: List[str] = []
+        
+        for cmd in sorted(matching_commands, key=lambda c: c.name):
+            cmd_str = f"/{cmd.name}"
+            if cmd.aliases:
+                alias_str = ", ".join(f"/{a}" for a in cmd.aliases)
+                cmd_str += f" ({alias_str})"
+            
+            # Build parameter hint
+            if cmd.parameters:
+                param_hints = []
+                for p in cmd.parameters:
+                    if p.required:
+                        param_hints.append(f"<{p.name}>")
+                    else:
+                        param_hints.append(f"[{p.name}]")
+                cmd_str += " " + " ".join(param_hints)
+            
+            lines.append(f"{cmd_str} - {cmd.description}")
+            
+            # Show parameter details for contextual help
+            for param in cmd.parameters:
+                req = "required" if param.required else "optional"
+                lines.append(f"  • {param.name} ({req}): {param.description}")
+        
+        return header, lines
+
+    def get_all_help(self) -> Tuple[str, List[str]]:
+        """
+        Get general help listing all commands grouped by category.
+        
+        Returns:
+            Tuple of (header, list of command descriptions)
+        """
+        lines: List[str] = []
+        
+        for category, commands in sorted(self.categories.items()):
+            if not commands:
+                continue
+            
+            # Deduplicate: only show commands where this is the primary category
+            unique_cmds = [c for c in commands if c.enabled]
+            if not unique_cmds:
+                continue
+            
+            cat_title = category.replace('_', ' ').title()
+            lines.append(f"\n[{cat_title}]")
+            
+            for cmd in sorted(unique_cmds, key=lambda c: c.name):
+                cmd_str = f"/{cmd.name}"
+                if cmd.parameters:
+                    param_hints = []
+                    for p in cmd.parameters:
+                        if p.required:
+                            param_hints.append(f"<{p.name}>")
+                        else:
+                            param_hints.append(f"[{p.name}]")
+                    cmd_str += " " + " ".join(param_hints)
+                lines.append(f"  {cmd_str} - {cmd.description}")
+        
+        return "Available Commands", lines
     
     def _register_builtin_commands(self) -> None:
         """Register minimal builtin commands as fallback."""

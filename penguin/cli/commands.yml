@@ -287,6 +287,63 @@ commands:
         required: true
     handler: "_handle_task_frontier"
 
+  # Workflow commands (ITUV orchestration)
+  - name: "workflow start"
+    category: task
+    description: "Start ITUV workflow for a task"
+    parameters:
+      - name: task_id
+        type: string
+        required: true
+        description: "Task ID to execute"
+    handler: "_handle_workflow_start"
+
+  - name: "workflow status"
+    category: task
+    description: "Get workflow status"
+    parameters:
+      - name: workflow_id
+        type: string
+        required: true
+    handler: "_handle_workflow_status"
+
+  - name: "workflow pause"
+    category: task
+    description: "Pause a running workflow"
+    parameters:
+      - name: workflow_id
+        type: string
+        required: true
+    handler: "_handle_workflow_pause"
+
+  - name: "workflow resume"
+    category: task
+    description: "Resume a paused workflow"
+    parameters:
+      - name: workflow_id
+        type: string
+        required: true
+    handler: "_handle_workflow_resume"
+
+  - name: "workflow cancel"
+    category: task
+    description: "Cancel a running workflow"
+    parameters:
+      - name: workflow_id
+        type: string
+        required: true
+    handler: "_handle_workflow_cancel"
+
+  - name: "workflow list"
+    category: task
+    description: "List workflows"
+    parameters:
+      - name: project_id
+        type: string
+        required: false
+        description: "Optional project ID to filter by"
+    handler: "_handle_workflow_list"
+
   # Image message
   - name: image
     category: chat

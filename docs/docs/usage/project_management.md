@@ -72,13 +72,63 @@ penguin project task delete <TASK_ID> [--force/-f]
 
 ---
 
+### Blueprint Commands
+
+Blueprints enable spec-driven development where documentation drives task creation:
+
+```bash
+# Sync a blueprint file to create/update tasks
+/blueprint sync context/specs/auth-system.md [project_id]
+
+# View blueprint sync status
+/blueprint status <project_id>
+```
+
+### DAG and Dependency Commands
+
+When tasks are created from blueprints, they form a dependency graph (DAG):
+
+```bash
+# View task dependencies
+/task deps <task_id>
+
+# Export dependency graph (DOT format for Graphviz)
+/task graph <project_id>
+
+# List tasks ready to execute (no pending dependencies)
+/task ready <project_id>
+
+# Get execution frontier (next tasks based on tie-breakers)
+/task frontier <project_id>
+```
+
+### Workflow Commands (ITUV Orchestration)
+
+Execute tasks through the ITUV (Implement, Test, Use, Verify) lifecycle:
+
+```bash
+# Start ITUV workflow for a task
+/workflow start <task_id>
+
+# Check workflow status
+/workflow status <workflow_id>
+
+# Control workflows
+/workflow pause <workflow_id>
+/workflow resume <workflow_id>
+/workflow cancel <workflow_id>
+
+# List workflows
+/workflow list [project_id]
+```
+
 ### Planned Extensions (not yet implemented)
 These commands are design-level only.  Attempting to run them will produce a "No such command" error:
 
 * `penguin project show`, `project stats`, `project archive/restore`, export/import
-* `penguin project task update`, `task show`, dependency management, bulk ops
+* `penguin project task update`, `task show`, bulk ops
 * Memory/database/workspace sub-apps
-* Advanced filters (`--tree`, `--graph`, etc.)
+* Advanced filters (`--tree`, etc.)
 
 Refer to the roadmap for progress.
 

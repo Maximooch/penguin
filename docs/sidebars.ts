@@ -25,6 +25,8 @@ const sidebars: SidebarsConfig = {
         'system/memory-system',
         'system/run-mode',
         'system/state-management',
+        'system/blueprints',
+        'system/orchestration',
       ],
     },
     {

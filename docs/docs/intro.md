@@ -25,6 +25,8 @@ Welcome to the documentation for Penguin! Penguin v0.4.0 is a modular, extensibl
 - **Web searches for up-to-date information**
 - **Automated task execution with Engine and Run Mode**
 - **Project management with SQLite persistence**
+- **Blueprint-driven development** with spec parsing and DAG-based task scheduling
+- **ITUV Workflow Orchestration** (Implement, Test, Use, Verify) with native and Temporal backends
 - **Custom tool integration with lazy loading**
 - **PyDoll browser automation**
 - **REST API and WebSocket streaming**
@@ -86,6 +88,11 @@ response = agent.chat("Help me debug this function")
 - [Installation & Setup](getting_started.md)
 - [Configuration](configuration.md)
 
+### System Architecture
+- [Blueprints](system/blueprints.md) - Spec-driven task creation
+- [Orchestration](system/orchestration.md) - ITUV workflow execution
+- [Run Mode](system/run-mode.md) - Autonomous task execution
+
 ### Usage Guides
 - [CLI Commands](usage/cli_commands.md)
 - [Project Management](usage/project_management.md)
@@ -132,7 +139,8 @@ Penguin's orchestration layer now speaks to both primary agents and scoped sub-a
 - **`penguin.cli`** - Command-line interface with TUI, EventBus integration, and performance monitoring
 - **`penguin.web`** - FastAPI server with REST API, WebSocket streaming, and GitHub webhooks
 - **`penguin.multi`** - Multi-agent coordinator with role-based routing and delegation
-- **`penguin.project`** - SQLite-backed project and task management with Engine integration
+- **`penguin.project`** - SQLite-backed project and task management with Blueprint parsing and DAG scheduling
+- **`penguin.orchestration`** - ITUV workflow orchestration with native and Temporal backends
 - **`penguin.tools`** - Extensible tool ecosystem with lazy loading and fast startup
 - **`penguin.memory`** - Pluggable memory providers with vector search and persistence
 - **`penguin.security`** - Permission engine with policies, approval flows, and audit logging

@@ -16,6 +16,7 @@ from rich.console import Console  # type: ignore
 from penguin.core import PenguinCore
 from penguin.system.conversation_menu import ConversationMenu, ConversationSummary
 from penguin.system.state import MessageCategory, parse_iso_datetime
+from penguin.cli.command_registry import CommandRegistry
 
 
 class PenguinInterface:
@@ -376,6 +377,7 @@ class PenguinInterface:
             "task": self._handle_task_command,
             "project": self._handle_project_command,
             "blueprint": self._handle_blueprint_command,
+            "workflow": self._handle_workflow_command,
             "run": self._handle_run_command,
             "config": self._handle_config_command,
             "list": self._handle_list_command,
@@ -881,6 +883,137 @@ class PenguinInterface:
         
         return {"error": f"Unknown blueprint command: {action}"}
 
+    async def _handle_workflow_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle workflow management commands (ITUV orchestration).
+        
+        Subcommands:
+            start <task_id> - Start ITUV workflow for a task
+            status <workflow_id> - Get workflow status
+            pause <workflow_id> - Pause a running workflow
+            resume <workflow_id> - Resume a paused workflow
+            cancel <workflow_id> - Cancel a running workflow
+            list [project_id] - List workflows
+        """
+        if not args:
+            return {"error": "Missing workflow subcommand. Use: start, status, pause, resume, cancel, list"}
+        
+        action = args[0].lower()
+        
+        # Get orchestration backend
+        try:
+            from penguin.orchestration import get_backend
+            from penguin.config import WORKSPACE_PATH
+            backend = get_backend(workspace_path=WORKSPACE_PATH)
+            
+            # Set core reference for native backend
+            if hasattr(backend, "set_core"):
+                backend.set_core(self.core)
+        except ImportError as e:
+            return {"error": f"Orchestration not available: {e}"}
+        except Exception as e:
+            return {"error": f"Failed to initialize orchestration backend: {e!s}"}
+        
+        if action == "start":
+            if len(args) < 2:
+                return {"error": "Usage: /workflow start <task_id>"}
+            
+            task_id = args[1]
+            
+            try:
+                # Get task to find blueprint_id
+                task = self.core.project_manager.get_task(task_id)
+                blueprint_id = getattr(task, "blueprint_id", None) if task else None
+                
+                workflow_id = await backend.start_workflow(
+                    task_id=task_id,
+                    blueprint_id=blueprint_id,
+                )
+                
+                return {
+                    "status": f"Started ITUV workflow for task {task_id}",
+                    "workflow_id": workflow_id,
+                }
+            except Exception as e:
+                return {"error": f"Failed to start workflow: {e!s}"}
+        
+        elif action == "status":
+            if len(args) < 2:
+                return {"error": "Usage: /workflow status <workflow_id>"}
+            
+            workflow_id = args[1]
+            
+            try:
+                info = await backend.get_workflow_status(workflow_id)
+                if not info:
+                    return {"error": f"Workflow not found: {workflow_id}"}
+                
+                return {
+                    "status": f"Workflow {workflow_id}",
+                    "info": info.to_dict(),
+                }
+            except Exception as e:
+                return {"error": f"Failed to get workflow status: {e!s}"}
+        
+        elif action == "pause":
+            if len(args) < 2:
+                return {"error": "Usage: /workflow pause <workflow_id>"}
+            
+            workflow_id = args[1]
+            
+            try:
+                success = await backend.pause_workflow(workflow_id)
+                if success:
+                    return {"status": f"Paused workflow {workflow_id}"}
+                else:
+                    return {"error": f"Failed to pause workflow {workflow_id}"}
+            except Exception as e:
+                return {"error": f"Failed to pause workflow: {e!s}"}
+        
+        elif action == "resume":
+            if len(args) < 2:
+                return {"error": "Usage: /workflow resume <workflow_id>"}
+            
+            workflow_id = args[1]
+            
+            try:
+                success = await backend.resume_workflow(workflow_id)
+                if success:
+                    return {"status": f"Resumed workflow {workflow_id}"}
+                else:
+                    return {"error": f"Failed to resume workflow {workflow_id}"}
+            except Exception as e:
+                return {"error": f"Failed to resume workflow: {e!s}"}
+        
+        elif action == "cancel":
+            if len(args) < 2:
+                return {"error": "Usage: /workflow cancel <workflow_id>"}
+            
+            workflow_id = args[1]
+            
+            try:
+                success = await backend.cancel_workflow(workflow_id)
+                if success:
+                    return {"status": f"Cancelled workflow {workflow_id}"}
+                else:
+                    return {"error": f"Failed to cancel workflow {workflow_id}"}
+            except Exception as e:
+                return {"error": f"Failed to cancel workflow: {e!s}"}
+        
+        elif action == "list":
+            project_id = args[1] if len(args) > 1 else None
+            
+            try:
+                workflows = await backend.list_workflows(project_id=project_id, limit=20)
+                return {
+                    "status": f"Workflows" + (f" for project {project_id}" if project_id else ""),
+                    "count": len(workflows),
+                    "workflows": [w.to_dict() for w in workflows],
+                }
+            except Exception as e:
+                return {"error": f"Failed to list workflows: {e!s}"}
+        
+        return {"error": f"Unknown workflow command: {action}"}
+
     async def _handle_config_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle configuration commands: list|get|set|add|remove
 
@@ -1136,10 +1269,29 @@ class PenguinInterface:
         return {"error": "Invalid command", "suggestions": self._get_command_suggestions()}
 
     async def _handle_help_command(self, args: List[str]) -> Dict[str, Any]:
-        """Handle help command"""
+        """Handle help command with optional contextual topic.
+        
+        Usage:
+            /help          - Show all commands grouped by category
+            /help project  - Show project-related commands
+            /help chat     - Show chat-related commands
+            /help task     - Show task-related commands
+        """
+        # Lazy-load command registry (singleton-ish pattern)
+        if not hasattr(self, '_command_registry'):
+            self._command_registry = CommandRegistry()
+        
+        if args:
+            # Contextual help for a specific topic
+            topic = " ".join(args)
+            header, commands = self._command_registry.get_contextual_help(topic)
+        else:
+            # General help
+            header, commands = self._command_registry.get_all_help()
+        
         return {
-            "help": "Available Commands",
-            "commands": self._get_command_suggestions()
+            "help": header,
+            "commands": commands
         }
 
     async def _handle_info_command(self, args: List[str]) -> Dict[str, Any]:
