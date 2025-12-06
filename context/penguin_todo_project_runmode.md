@@ -132,6 +132,72 @@ penguin/orchestration/
 - [ ] Native backend continues to work when Temporal is disabled
 - [ ] Config toggle switches between backends without code changes
 
+**Deployment Architecture:**
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Deployment Options                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Option A: Development (all-in-one)                                  │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │            Penguin Process (CLI or Web)                        │ │
+│  │  ┌─────────────┐  ┌─────────────┐  ┌───────────────────────┐  │ │
+│  │  │ CLI/Routes  │──│ Native      │──│ SQLite State          │  │ │
+│  │  │ (client)    │  │ Backend     │  │ (workflow_state.db)   │  │ │
+│  │  └─────────────┘  └─────────────┘  └───────────────────────┘  │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                      │
+│  Option B: Development with Temporal (local server)                  │
+│  ┌────────────┐    ┌───────────────────┐                            │
+│  │ Penguin    │───▶│ temporal server   │  (temporal server start-dev)│
+│  │ (client+   │    │ start-dev         │                            │
+│  │  worker)   │◀───│ (in-memory)       │                            │
+│  └────────────┘    └───────────────────┘                            │
+│                                                                      │
+│  Option C: Production (separate processes)                           │
+│  ┌────────────┐    ┌─────────────────┐    ┌─────────────────────┐  │
+│  │ Penguin    │───▶│ Temporal Server │◀───│ Penguin Worker      │  │
+│  │ Web/CLI    │    │ (external/cloud)│    │ (separate process)  │  │
+│  │ (client)   │    └─────────────────┘    │ python -m penguin.  │  │
+│  └────────────┘                           │ orchestration.worker│  │
+│                                           └─────────────────────┘  │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Testing Phase 2:**
+
+```bash
+# 1. Test native backend (no external deps)
+python scripts/test_orchestration_manual.py
+
+# 2. Test with Temporal server (requires temporal CLI)
+temporal server start-dev  # In separate terminal
+python scripts/test_orchestration_manual.py --backend temporal
+
+# 3. Test via REST API (requires web server)
+penguin-web  # In separate terminal
+python scripts/test_orchestration_manual.py --api http://localhost:8000
+
+# 4. Run pytest suite
+pytest tests/test_orchestration.py -v
+```
+
+**REST API Endpoints:**
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/workflows` | List workflows |
+| POST | `/api/v1/workflows` | Start workflow |
+| GET | `/api/v1/workflows/{id}` | Get workflow status |
+| POST | `/api/v1/workflows/{id}/signal` | Send signal |
+| POST | `/api/v1/workflows/{id}/pause` | Pause workflow |
+| POST | `/api/v1/workflows/{id}/resume` | Resume workflow |
+| POST | `/api/v1/workflows/{id}/cancel` | Cancel workflow |
+| GET | `/api/v1/orchestration/config` | Get config |
+| GET | `/api/v1/orchestration/health` | Health check |
+
 ---
 
 ### Phase 1 – Blueprint‑driven task sync (docs → structured "blueprint items" → tasks) ✅ COMPLETED

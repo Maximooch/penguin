@@ -2404,7 +2404,277 @@ async def get_system_status(core: PenguinCore = Depends(get_core)):
         )
 
 
+# ============================================================================
+# Workflow / Orchestration API Endpoints
+# ============================================================================
+
+class WorkflowStartRequest(BaseModel):
+    task_id: str
+    blueprint_id: Optional[str] = None
+    config: Optional[Dict[str, Any]] = None
+
+
+class WorkflowSignalRequest(BaseModel):
+    signal: str  # pause, resume, cancel, inject_feedback
+    payload: Optional[Dict[str, Any]] = None
+
+
+@router.get("/api/v1/workflows")
+async def list_workflows(
+    project_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    core: PenguinCore = Depends(get_core),
+):
+    """List workflows with optional filtering."""
+    try:
+        from penguin.orchestration import get_backend, WorkflowStatus
+        backend = get_backend(workspace_path=WORKSPACE_PATH)
+        
+        # Set core reference for native backend
+        if hasattr(backend, "set_core"):
+            backend.set_core(core)
+        
+        # Parse status filter
+        status_filter = None
+        if status:
+            try:
+                status_filter = WorkflowStatus(status.lower())
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid status: {status}. Valid: pending, running, paused, completed, failed, cancelled"
+                )
+        
+        workflows = await backend.list_workflows(
+            project_id=project_id,
+            status_filter=status_filter,
+            limit=limit,
+        )
+        
+        return {
+            "workflows": [w.to_dict() for w in workflows],
+            "count": len(workflows),
+        }
+    except HTTPException:
+        raise
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"Orchestration not available: {e}")
+    except Exception as e:
+        logger.error(f"Error listing workflows: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/workflows")
+async def start_workflow(
+    request: WorkflowStartRequest,
+    core: PenguinCore = Depends(get_core),
+):
+    """Start a new ITUV workflow for a task."""
+    try:
+        from penguin.orchestration import get_backend
+        backend = get_backend(workspace_path=WORKSPACE_PATH)
+        
+        if hasattr(backend, "set_core"):
+            backend.set_core(core)
+        
+        # Get blueprint_id from task if not provided
+        blueprint_id = request.blueprint_id
+        if not blueprint_id:
+            task = core.project_manager.get_task(request.task_id)
+            if task:
+                blueprint_id = getattr(task, "blueprint_id", None)
+        
+        workflow_id = await backend.start_workflow(
+            task_id=request.task_id,
+            blueprint_id=blueprint_id,
+            config=request.config,
+        )
+        
+        return {
+            "workflow_id": workflow_id,
+            "task_id": request.task_id,
+            "status": "started",
+        }
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"Orchestration not available: {e}")
+    except Exception as e:
+        logger.error(f"Error starting workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/workflows/{workflow_id}")
+async def get_workflow(
+    workflow_id: str,
+    core: PenguinCore = Depends(get_core),
+):
+    """Get workflow status and details."""
+    try:
+        from penguin.orchestration import get_backend
+        backend = get_backend(workspace_path=WORKSPACE_PATH)
+        
+        if hasattr(backend, "set_core"):
+            backend.set_core(core)
+        
+        info = await backend.get_workflow_status(workflow_id)
+        if not info:
+            raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
+        
+        return info.to_dict()
+    except HTTPException:
+        raise
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"Orchestration not available: {e}")
+    except Exception as e:
+        logger.error(f"Error getting workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/workflows/{workflow_id}/signal")
+async def signal_workflow(
+    workflow_id: str,
+    request: WorkflowSignalRequest,
+    core: PenguinCore = Depends(get_core),
+):
+    """Send a signal to a workflow (pause, resume, cancel, inject_feedback)."""
+    try:
+        from penguin.orchestration import get_backend
+        backend = get_backend(workspace_path=WORKSPACE_PATH)
+        
+        if hasattr(backend, "set_core"):
+            backend.set_core(core)
+        
+        signal = request.signal.lower()
+        
+        if signal == "pause":
+            success = await backend.pause_workflow(workflow_id)
+        elif signal == "resume":
+            success = await backend.resume_workflow(workflow_id)
+        elif signal == "cancel":
+            success = await backend.cancel_workflow(workflow_id)
+        elif signal == "inject_feedback":
+            if hasattr(backend, "signal_workflow"):
+                success = await backend.signal_workflow(
+                    workflow_id, "inject_feedback", request.payload
+                )
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="inject_feedback signal not supported by this backend"
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown signal: {signal}. Valid: pause, resume, cancel, inject_feedback"
+            )
+        
+        if success:
+            return {"status": "ok", "signal": signal, "workflow_id": workflow_id}
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to send signal {signal} to workflow {workflow_id}"
+            )
+    except HTTPException:
+        raise
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"Orchestration not available: {e}")
+    except Exception as e:
+        logger.error(f"Error signaling workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/workflows/{workflow_id}/pause")
+async def pause_workflow(workflow_id: str, core: PenguinCore = Depends(get_core)):
+    """Convenience endpoint to pause a workflow."""
+    return await signal_workflow(
+        workflow_id, 
+        WorkflowSignalRequest(signal="pause"), 
+        core
+    )
+
+
+@router.post("/api/v1/workflows/{workflow_id}/resume")
+async def resume_workflow(workflow_id: str, core: PenguinCore = Depends(get_core)):
+    """Convenience endpoint to resume a workflow."""
+    return await signal_workflow(
+        workflow_id,
+        WorkflowSignalRequest(signal="resume"),
+        core
+    )
+
+
+@router.post("/api/v1/workflows/{workflow_id}/cancel")
+async def cancel_workflow(workflow_id: str, core: PenguinCore = Depends(get_core)):
+    """Convenience endpoint to cancel a workflow."""
+    return await signal_workflow(
+        workflow_id,
+        WorkflowSignalRequest(signal="cancel"),
+        core
+    )
+
+
+@router.get("/api/v1/orchestration/config")
+async def get_orchestration_config(core: PenguinCore = Depends(get_core)):
+    """Get current orchestration configuration."""
+    try:
+        from penguin.orchestration import get_config
+        config = get_config()
+        return config.to_dict()
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"Orchestration not available: {e}")
+    except Exception as e:
+        logger.error(f"Error getting orchestration config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/orchestration/health")
+async def orchestration_health(core: PenguinCore = Depends(get_core)):
+    """Check orchestration backend health."""
+    try:
+        from penguin.orchestration import get_backend, get_config
+        config = get_config()
+        backend = get_backend(workspace_path=WORKSPACE_PATH)
+        
+        # Basic health check
+        health = {
+            "backend": config.backend,
+            "status": "healthy",
+            "details": {},
+        }
+        
+        # Check if backend has health_check method
+        if hasattr(backend, "health_check"):
+            health["details"] = await backend.health_check()
+        
+        # For Temporal, check connection
+        if config.backend == "temporal":
+            try:
+                from penguin.orchestration.temporal import TemporalClient
+                client = TemporalClient(config.temporal)
+                connected = await client.is_connected()
+                health["details"]["temporal_connected"] = connected
+                if not connected:
+                    health["status"] = "degraded"
+            except Exception as e:
+                health["status"] = "degraded"
+                health["details"]["temporal_error"] = str(e)
+        
+        return health
+    except ImportError as e:
+        return {
+            "backend": "unavailable",
+            "status": "unavailable",
+            "error": str(e),
+        }
+    except Exception as e:
+        logger.error(f"Error checking orchestration health: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
 # Memory System API Endpoints
+# ============================================================================
 @router.post("/api/v1/memory/store")
 async def store_memory(
     request: MemoryStoreRequest,
