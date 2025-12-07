@@ -225,7 +225,7 @@ class PenguinAPI:
         image_path: Optional[str] = None,
         tools_enabled: bool = True,
         streaming: bool = False,
-        max_iterations: int = 10,
+        max_iterations: int = 5000,
         on_chunk: Optional[Callable[[str, str], Awaitable[None]]] = None,
         include_reasoning: bool = False,
     ) -> Dict[str, Any]:
@@ -240,7 +240,7 @@ class PenguinAPI:
             image_path: Optional path to an image file for vision models
             tools_enabled: Whether to enable tool use (currently respected by Engine)
             streaming: Whether to use streaming for responses
-            max_iterations: The maximum number of conversational turns.
+            max_iterations: The maximum number of conversational turns (default 5000).
             
         Returns:
             Dictionary containing the response and any action results
@@ -307,7 +307,7 @@ class PenguinAPI:
         message: str,
         conversation_id: Optional[str] = None,
         image_path: Optional[str] = None,
-        max_iterations: int = 10,
+        max_iterations: int = 5000,
     ) -> AsyncGenerator[tuple[str, str], None]:
         """Stream chat responses as (message_type, chunk) tuples."""
 

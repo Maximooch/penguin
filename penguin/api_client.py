@@ -71,6 +71,7 @@ class TaskOptions:
     continuous: bool = False
     time_limit: Optional[int] = None
     context: Optional[Dict[str, Any]] = None
+    max_iterations: Optional[int] = None
 
 
 @dataclass
@@ -405,7 +406,7 @@ class PenguinClient:
         if hasattr(self.core, 'engine') and self.core.engine:
             return await self.core.engine.run_task(
                 task_prompt=prompt,
-                max_iterations=10,
+                max_iterations=opts.max_iterations or 5000,
                 task_name=opts.name or "API Task",
                 task_context=opts.context or {},
                 enable_events=True
@@ -415,7 +416,7 @@ class PenguinClient:
             return await self.core.process(
                 input_data={"text": prompt},
                 context=opts.context,
-                max_iterations=10
+                max_iterations=opts.max_iterations or 5000
             )
     
     async def start_run_mode(

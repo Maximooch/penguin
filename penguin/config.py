@@ -793,7 +793,7 @@ TASK_COMPLETION_PHRASE = "TASK_COMPLETED"  # Single task completion
 CONTINUOUS_COMPLETION_PHRASE = "CONTINUOUS_COMPLETED"  # End of continuous session
 EMERGENCY_STOP_PHRASE = "EMERGENCY_STOP"  # Immediate termination needed
 NEED_USER_CLARIFICATION_PHRASE = "NEED_USER_CLARIFICATION"  # Pause for user input
-MAX_TASK_ITERATIONS = 100 # Check to see if it works fine with 100 messages before more
+MAX_TASK_ITERATIONS = 5000  # High default for agentic workflows; API callers can override
 
 
 # Default model configuration (safe defaults for CI/non-interactive)

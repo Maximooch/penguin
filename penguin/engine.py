@@ -48,7 +48,7 @@ class EngineSettings:
     retry_attempts: int = 2
     backoff_seconds: float = 1.5
     streaming_default: bool = False
-    max_iterations_default: int = 5
+    max_iterations_default: int = 5000
     token_budget_stop_enabled: bool = False
     wall_clock_stop_seconds: Optional[int] = None
 
@@ -308,7 +308,7 @@ class Engine:
         Returns:
             Dictionary with final response and execution metadata
         """
-        max_iters = max_iterations or 10
+        max_iters = max_iterations if max_iterations is not None else 5000
         self.current_iteration = 0
         self.start_time = datetime.utcnow()
         

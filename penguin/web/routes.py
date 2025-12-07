@@ -1535,7 +1535,7 @@ async def execute_task_from_project(
         # Execute task using Engine
         result = await core.engine.run_task(
             task_prompt=task_prompt,
-            max_iterations=10,
+            max_iterations=5000,
             task_name=task.title,
             task_context={
                 "task_id": task_id,
@@ -1610,7 +1610,7 @@ async def execute_task_sync(
         # Execute task using Engine
         result = await core.engine.run_task(
             task_prompt=task_prompt,
-            max_iterations=10,  # Default to 10 iterations
+            max_iterations=5000,
             task_name=request.name,
             task_context={
                 "continuous": request.continuous,
