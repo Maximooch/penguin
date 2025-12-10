@@ -263,9 +263,9 @@ class ContextWindowManager:
         # Default allocation percentages (can be made configurable)
         allocations = {
             MessageCategory.SYSTEM: 0.10,     # 10% - highest priority (only system prompt)
-            MessageCategory.CONTEXT: 0.35,    # 35% - high priority
-            MessageCategory.DIALOG: 0.50,     # 50% - medium priority
-            MessageCategory.SYSTEM_OUTPUT: 0.05  # 5% - lowest priority (renamed from ACTIONS)
+            MessageCategory.CONTEXT: 0.30,    # 35% - high priority
+            MessageCategory.DIALOG: 0.40,     # 40% - medium priority
+            MessageCategory.SYSTEM_OUTPUT: 0.20  # 20% - lowest priority (renamed from ACTIONS)
         }
         # This needs room for large messages, like images, audio, and files. 
         # It also needs to be dynamic based on letting some categories have more budget than others until they are full?

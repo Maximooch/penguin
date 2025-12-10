@@ -52,18 +52,29 @@ class RenderStyle(Enum):
 
 
 # Theme colors for different message types
-THEME_COLORS = {
-    "user": "cyan",
-    "assistant": "blue",
-    "system": "yellow",
-    "error": "red",
-    "tool": "magenta",
-    "reasoning": "dim white",
-    "code_border": "dim blue",
-    "diff_add": "green",
-    "diff_remove": "red",
-    "context": "dim",
-}
+# Load from centralized theme module for configurable colors
+def _get_theme_colors() -> Dict[str, str]:
+    """Get theme colors from centralized theme module."""
+    try:
+        from penguin.cli.theme import get_theme_colors
+        return get_theme_colors()
+    except ImportError:
+        # Fallback if theme module not available
+        return {
+            "user": "cyan",
+            "assistant": "#5F87FF",
+            "system": "yellow",
+            "error": "red",
+            "tool": "magenta",
+            "reasoning": "dim white",
+            "code_border": "dim #5F87FF",
+            "diff_add": "green",
+            "diff_remove": "red",
+            "context": "dim",
+        }
+
+# Initialize THEME_COLORS - will be refreshed on first use
+THEME_COLORS = _get_theme_colors()
 
 # Language display names for code blocks
 LANGUAGE_DISPLAY_NAMES = {

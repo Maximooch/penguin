@@ -70,24 +70,53 @@ LANGUAGE_DISPLAY_NAMES = {
 }
 
 # Theme colors for different message roles/elements
-THEME_COLORS = {
-    "user": "cyan",
-    "assistant": "green",
-    "system": "yellow",
-    "error": "bold red",
-    "tool_code": "blue",
-    "tool_result": "magenta",
-    "default": "dim",
-    "code_border": "dim blue",
-    "response_panel": "cyan",
-    "stats_panel": "green",
-    "conversation_panel": "blue",
-    "message_panel_user": "grey",
-    "message_panel_assistant": "green",
-    "message_panel_system": "yellow",
-    "message_panel_tool": "blue", # For tool calls/results if needed later
-    "message_panel_default": "white",
-}
+# Load from centralized theme module for configurable colors
+def _get_ui_theme_colors() -> Dict[str, str]:
+    """Get theme colors from centralized theme module."""
+    try:
+        from penguin.cli.theme import get_theme_colors
+        theme = get_theme_colors()
+        # Map theme colors to UI-specific keys
+        return {
+            "user": theme.get("user", "cyan"),
+            "assistant": theme.get("assistant", "#5F87FF"),
+            "system": theme.get("system", "yellow"),
+            "error": theme.get("error", "bold red"),
+            "tool_code": theme.get("tool", "#5F87FF"),
+            "tool_result": theme.get("tool", "magenta"),
+            "default": theme.get("context", "dim"),
+            "code_border": theme.get("code_border", "dim #5F87FF"),
+            "response_panel": theme.get("response_panel", "cyan"),
+            "stats_panel": theme.get("stats_panel", "green"),
+            "conversation_panel": theme.get("conversation_panel", "#5F87FF"),
+            "message_panel_user": theme.get("message_panel_user", "grey"),
+            "message_panel_assistant": theme.get("message_panel_assistant", "green"),
+            "message_panel_system": theme.get("message_panel_system", "yellow"),
+            "message_panel_tool": theme.get("message_panel_tool", "#5F87FF"),
+            "message_panel_default": theme.get("message_panel_default", "white"),
+        }
+    except ImportError:
+        # Fallback if theme module not available
+        return {
+            "user": "cyan",
+            "assistant": "#5F87FF",
+            "system": "yellow",
+            "error": "bold red",
+            "tool_code": "#5F87FF",
+            "tool_result": "magenta",
+            "default": "dim",
+            "code_border": "dim #5F87FF",
+            "response_panel": "cyan",
+            "stats_panel": "green",
+            "conversation_panel": "#5F87FF",
+            "message_panel_user": "grey",
+            "message_panel_assistant": "green",
+            "message_panel_system": "yellow",
+            "message_panel_tool": "#5F87FF",
+            "message_panel_default": "white",
+        }
+
+THEME_COLORS = _get_ui_theme_colors()
 
 logger = logging.getLogger(__name__)
 

@@ -316,7 +316,13 @@ def _print_ascii_banner(console_obj: RichConsole, *, force: bool = False) -> Non
     global _banner_printed
     if _banner_printed and not force:
         return
-    console_obj.print(PENGUIN_ASCII_BANNER, style="bold cyan")
+    # Use configurable banner color from theme
+    try:
+        from penguin.cli.theme import get_color
+        banner_style = get_color("banner", "bold cyan")
+    except ImportError:
+        banner_style = "bold cyan"
+    console_obj.print(PENGUIN_ASCII_BANNER, style=banner_style)
     _banner_printed = True
 logger = setup_logger("penguin_cli.log")  # Setup a logger for the CLI module
 
@@ -484,6 +490,12 @@ async def _initialize_core_components_globally(
         vision_enabled=model_dict.get("vision_enabled", False),
         max_tokens=model_dict.get("max_tokens", 8000),
         temperature=model_dict.get("temperature", 0.7),
+        # # Reasoning configuration
+        # reasoning_enabled=model_dict.get("reasoning_enabled", False),
+        # reasoning_effort=model_dict.get("reasoning_effort"),
+        # reasoning_max_tokens=model_dict.get("reasoning_max_tokens"),
+        # reasoning_exclude=model_dict.get("reasoning_exclude", False),
+        # verbosity=model_dict.get("verbosity"),
     )
 
     _api_client = APIClient(model_config=_model_config)

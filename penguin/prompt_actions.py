@@ -87,10 +87,10 @@ Status options:
 Execute code/commands in the workspace. The execution environment is typically detected from project structure.
 
 **Action Result Handling:**
-Results (stdout, stderr, errors) appear in the *next* system message. **You MUST wait for this message.** Your *next* response must:
+Results (stdout, stderr, errors) appear in the *next* message marked with "[Tool Execution Result]". **You MUST respond to this message.** Your *next* response must:
 1.  **Acknowledge** the result explicitly (e.g., "The file check succeeded.", "The script failed with: [error message]").
 2.  **Verify** the outcome (e.g., check file existence/content).
-3.  **Proceed** based *only* on the verified outcome.
+3.  **Proceed** based *only* on the verified outcome, OR call `<finish_response>` if the task is complete.
 
 **Example 1: Python (when project has *.py files, pyproject.toml, etc.):**
 ```python

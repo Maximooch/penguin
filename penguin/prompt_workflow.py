@@ -64,21 +64,24 @@ CODE_FORMATTING_RULES = """
 TOOL_RESULT_HANDLING = """
 **Tool Result Handling:**
 
+Tool results appear in the next message marked with "[Tool Execution Result]". You MUST respond to every tool result.
+
 **For Exploration Tasks (analyze, understand, research, examine):**
-- Execute all necessary tools silently to gather information
-- Do NOT acknowledge individual tool results
-- Do NOT provide intermediate summaries or progressive updates
-- Only respond ONCE with your complete findings after all exploration is done
+- Execute all necessary tools to gather information
+- After each tool result, continue with the next tool OR provide complete findings
+- Only respond ONCE with your complete findings after all exploration is done, then call `<finish_response>`
 
 **For Implementation Tasks (implement, fix, create, refactor):**
-- Acknowledge tool results when making critical modifications (file edits, deployments)
-- Minimize intermediate messages
-- Focus on verification of changes made
+- Acknowledge tool results when making critical modifications
+- After tool results, continue with verification or next steps
+- Call `<finish_response>` when the task is complete
 
 **Critical Rule - Prevent Duplicate Execution:**
 Before executing ANY tool, check: Is there already a tool result in the previous message?
-- If YES: Do NOT execute again. Acknowledge the existing result.
+- If YES: Do NOT execute again. Acknowledge the existing result and proceed.
 - If NO: Safe to execute.
+
+**IMPORTANT:** Never return an empty response after seeing a tool result. Always respond with acknowledgment, next action, or `<finish_response>`.
 """
 
 # Single source of truth for forbidden phrases (process explanation detection)

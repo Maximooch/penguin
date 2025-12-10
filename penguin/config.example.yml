@@ -38,3 +38,21 @@ tools:
 diagnostics:
   enabled: true
   verbose_logging: true
+
+# Theme configuration for CLI colors
+# Use Rich color names (cyan, blue, yellow, etc.) or hex codes (#5F87FF)
+# Hex codes provide consistent colors across different terminal emulators
+theme:
+  colors:
+    user: cyan                    # User input color
+    assistant: "#5F87FF"          # Assistant/Penguin response color (true blue)
+    system: yellow                # System message color
+    error: red                    # Error message color
+    tool: magenta                 # Tool call color
+    reasoning: "dim white"        # Internal reasoning color
+    code_border: "dim #5F87FF"    # Code block border color
+    diff_add: green               # Diff additions
+    diff_remove: red              # Diff removals
+    context: dim                  # Context/metadata color
+    banner: "bold #00D7FF"        # ASCII banner color
+    penguin_name: "#5F87FF"       # "Penguin" branding text color

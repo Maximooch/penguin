@@ -1201,6 +1201,11 @@ async def stream_chat(
 
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
+    except RuntimeError as e:
+        if "Cannot call" in str(e) and "close" in str(e):
+            logger.info("WebSocket closed, cannot receive more messages.")
+        else:
+            logger.error(f"RuntimeError in WebSocket handler: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Unhandled error in websocket handler: {str(e)}", exc_info=True)
     finally:
@@ -1990,6 +1995,11 @@ async def stream_task(
             # Need a way to signal interruption to RunMode/Core gracefully.
             # For now, just cancel the asyncio task.
             task_execution.cancel()
+    except RuntimeError as e:
+        if "Cannot call" in str(e) and "close" in str(e):
+            logger.info("Run mode WebSocket closed, cannot receive more messages.")
+        else:
+            logger.error(f"RuntimeError in stream_task handler: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Unhandled error in stream_task handler: {e}", exc_info=True)
         # Try to send error to client if connection is still open
