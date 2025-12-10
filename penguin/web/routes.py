@@ -1020,7 +1020,13 @@ async def stream_chat(
 
     try:
         while True: # Keep handling incoming client messages
-            data = await websocket.receive_json() # Wait for a request from client
+            # Guard receive_json against client disconnect
+            try:
+                data = await websocket.receive_json() # Wait for a request from client
+            except (WebSocketDisconnect, RuntimeError) as e:
+                logger.info(f"Client disconnected during receive_json: {e}")
+                break  # Exit the loop cleanly
+
             logger.info(f"Received request from client: {data.get('text', '')[:50]}...")
 
             # Start a new sender task for this message
@@ -1048,10 +1054,17 @@ async def stream_chat(
             if image_path:
                 input_data["image_path"] = image_path
 
-            # Progress callback setup (no changes needed here)
+            # Progress callback setup with connection state check
             progress_callback_task = None
             async def progress_callback(iteration, max_iter, message=None):
                 nonlocal progress_callback_task
+                # Skip if websocket is not connected
+                try:
+                    if websocket.client_state.name != "CONNECTED":
+                        return
+                except Exception:
+                    return  # Can't check state, assume disconnected
+
                 progress_callback_task = asyncio.create_task(
                     websocket.send_json({
                         "event": "progress",
@@ -1066,6 +1079,8 @@ async def stream_chat(
                     await progress_callback_task
                 except asyncio.CancelledError:
                     logger.debug("Progress callback task cancelled")
+                except (WebSocketDisconnect, RuntimeError):
+                    logger.debug("WebSocket closed during progress callback")
                 except Exception as e:
                     logger.error(f"Error sending progress update: {e}")
 
@@ -1077,6 +1092,13 @@ async def stream_chat(
 
                 # Register UI event handler for tool events and other UI updates
                 async def _stream_ui_event_handler(event_type: str, data: Dict[str, Any]):
+                    # Skip if websocket is not connected
+                    try:
+                        if websocket.client_state.name != "CONNECTED":
+                            return
+                    except Exception:
+                        return  # Can't check state, assume disconnected
+
                     try:
                         if event_type == "tool":
                             # Forward tool events directly to client
@@ -1084,6 +1106,8 @@ async def stream_chat(
                         elif event_type == "message" and data.get("message_type") == "action":
                             # Also forward action messages for backwards compatibility
                             await websocket.send_json({"event": "message", "data": data})
+                    except (WebSocketDisconnect, RuntimeError):
+                        logger.debug(f"WebSocket closed during UI event: {event_type}")
                     except Exception as e:
                         logger.error(f"Error sending UI event via WebSocket: {e}")
 
