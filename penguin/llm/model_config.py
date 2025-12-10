@@ -3,6 +3,19 @@ from typing import Any, Dict, Optional, Literal, Union
 from dataclasses import dataclass, field
 
 
+CONTEXT_WINDOW_SAFETY_FRACTION = max(
+    min(float(os.getenv("PENGUIN_CONTEXT_SAFETY_FRACTION", "0.85")), 0.95),
+    0.5,
+)
+
+
+def safe_context_window(context_length: Optional[int]) -> Optional[int]:
+    """Return a buffered context window to leave headroom for prompts/responses."""
+    if context_length is None or context_length <= 0:
+        return None
+    return max(int(context_length * CONTEXT_WINDOW_SAFETY_FRACTION), 1)
+
+
 @dataclass
 class ModelConfig:
     """Configuration for a model."""

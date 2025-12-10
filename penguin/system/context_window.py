@@ -200,11 +200,14 @@ class ContextWindowManager:
             if 'model' in config and isinstance(config['model'], dict):
                 cw = config['model'].get('context_window')
                 if cw:
-                    if self.max_tokens and cw > self.max_tokens:
+                    if self.max_tokens is None or cw < self.max_tokens:
                         self.max_tokens = cw
-                        logger.info(f"Using global context_window from config.yml (upgraded): {self.max_tokens}")
+                        logger.info(f"Using configured context_window from config.yml: {self.max_tokens}")
                     else:
-                        logger.info(f"Retaining model's max_tokens ({self.max_tokens}); global context_window={cw} not larger")
+                        logger.info(
+                            "Ignoring configured context_window override because model max_tokens is smaller "
+                            f"({self.max_tokens} <= {cw})"
+                        )
         except (ImportError, AttributeError) as e:
             logger.warning(f"Could not load config.yml for max_tokens: {e}")
 

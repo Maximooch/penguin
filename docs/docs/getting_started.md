@@ -160,7 +160,7 @@ Control which root file tools operate on:
 
 - CLI flag: `--root project|workspace` (applies for the current run)
 - Env var: `PENGUIN_WRITE_ROOT=project|workspace` (overrides config)
-- Config default: `defaults.write_root: project|workspace`
+- Config default: `defaults.write_root: project` (set to workspace to sandbox writes)
 - Fallback default: `project`
 
 On startup the CLI prints the active execution root, e.g.
@@ -168,9 +168,9 @@ On startup the CLI prints the active execution root, e.g.
 Execution root: project (/path/to/your/repo)
 ```
 
-Set project as the default once:
+Set workspace as the default once:
 ```bash
-penguin config set defaults.write_root project
+penguin config set defaults.write_root workspace
 ```
 
 ### Advanced Configuration File
@@ -247,7 +247,6 @@ penguin profile               # Profile startup and save a report
 penguin perf-test             # Benchmark startup performance
 penguin config debug          # Extended config + environment diagnostics
 ```
-
 
 
 

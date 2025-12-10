@@ -278,6 +278,9 @@ penguin-web
 
 For detailed usage, see the [documentation](https://penguin-rho.vercel.app).
 
+File operations default to your project root (git root). Use `--root workspace` or set
+`defaults.write_root: workspace` if you want writes to go to the Penguin workspace instead.
+
 ### Common In‑Chat Commands
 When running `penguin` interactively, you can use slash‑style commands to control models, streaming, context, checkpoints, and run mode. Type `/help` in chat to see them all. A few useful ones:
 

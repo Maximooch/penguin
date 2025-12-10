@@ -33,6 +33,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Box style with no visible borders (4 spaces per required segment, 8 rows)
+BORDERLESS_BOX = rich.box.Box("\n".join(["    "] * 8))
+
 
 # =============================================================================
 # CONFIGURATION
@@ -40,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 class RenderStyle(Enum):
     """Rendering style presets"""
+    BORDERLESS = "borderless"  # No borders, keep padding for readability
     MINIMAL = "minimal"      # No panels, just headers (best for copy/paste)
     COMPACT = "compact"      # Minimal borders, less padding
     STANDARD = "standard"    # Default Rich styling
@@ -172,6 +176,7 @@ INTERNAL_MARKERS_PATTERNS = [
     re.compile(r'<internal>.*?</internal>', re.DOTALL),
     re.compile(r'<enhanced_read>.*?</enhanced_read>', re.DOTALL),
     re.compile(r'<enhanced_write>.*?</enhanced_write>', re.DOTALL),
+    re.compile(r'<finish_response>.*?</finish_response>', re.DOTALL | re.IGNORECASE),
     # Filter tool result output that appears in assistant messages
     re.compile(r'^enhanced_read: \[Tool Result\].*?(?=\n\n|\Z)', re.MULTILINE | re.DOTALL),
     re.compile(r'^execute: \[Tool Result\].*?(?=\n\n|\Z)', re.MULTILINE | re.DOTALL),
@@ -226,7 +231,8 @@ class UnifiedRenderer:
                  width: Optional[int] = None,
                  filter_internal_markers: bool = True,
                  deduplicate_messages: bool = True,
-                 max_blank_lines: int = 2):
+                 max_blank_lines: int = 2,
+                 panel_padding: Optional[Tuple[int, int]] = None):
         """
         Initialize the unified renderer.
 
@@ -239,6 +245,7 @@ class UnifiedRenderer:
             filter_internal_markers: Whether to filter internal implementation markers
             deduplicate_messages: Whether to detect and skip duplicate messages
             max_blank_lines: Maximum consecutive blank lines allowed
+            panel_padding: Override panel padding (tuple of (vertical, horizontal))
         """
         self.console = console or Console()
         self.style = style
@@ -249,6 +256,7 @@ class UnifiedRenderer:
         self.filter_internal_markers = filter_internal_markers
         self.deduplicate_messages = deduplicate_messages
         self.max_blank_lines = max_blank_lines
+        self.panel_padding: Optional[Tuple[int, int]] = panel_padding
 
         # Cache for language detection
         self._lang_cache = {}
@@ -256,6 +264,27 @@ class UnifiedRenderer:
         # Deduplication tracking
         self._last_message_hash = None
         self._message_history = []  # Store last N message hashes
+
+    def _get_panel_padding(self, default: Optional[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
+        """Resolve panel padding with optional override."""
+        return self.panel_padding if self.panel_padding is not None else default
+
+    def _get_box_style(self, default_box):
+        """Return borderless box when requested."""
+        return BORDERLESS_BOX if self.style == RenderStyle.BORDERLESS else default_box
+
+    def _is_finish_response_echo(self, text: str) -> bool:
+        """Detect finish_response tool echoes to suppress from user-facing transcript."""
+        normalized = text.strip().lower()
+        if not normalized:
+            return False
+        return normalized.startswith("finish_response") or normalized.startswith("✓ finish_response") or normalized.startswith("response complete")
+
+    def _strip_finish_response_tags(self, text: str) -> str:
+        """Remove finish_response tags/echoes from free-form text."""
+        if not isinstance(text, str):
+            return text
+        return re.sub(r'<finish_response>.*?</finish_response>', '', text, flags=re.DOTALL | re.IGNORECASE)
 
     def set_show_tool_results(self, enabled: bool) -> None:
         """Toggle rendering of tool result blocks."""
@@ -302,6 +331,12 @@ class UnifiedRenderer:
         # Filter internal markers if string content
         if isinstance(actual_content, str):
             actual_content = self.filter_content(actual_content)
+            actual_content = self._strip_finish_response_tags(actual_content)
+            # Skip auto-finish system echoes (finish_response tool confirmations)
+            if role == "system":
+                if self._is_finish_response_echo(actual_content):
+                    logger.debug("Suppressing finish_response system message")
+                    return None
 
         # Process reasoning blocks if present
         actual_content, reasoning = self.extract_reasoning(actual_content)
@@ -358,7 +393,11 @@ class UnifiedRenderer:
             for item in content:
                 item_type = item.get("type")
                 if item_type == "text":
-                    text_content = item.get("text", "")
+                    text_content = self.filter_content(item.get("text", ""))
+                    text_content = self._strip_finish_response_tags(text_content)
+                    if role == "system" and self._is_finish_response_echo(text_content):
+                        logger.debug("Suppressing finish_response system message (multimodal)")
+                        continue
                     if text_content:
                         renderables.extend(self._render_text_segment(text_content))
                 elif item_type == "image_url":
@@ -464,7 +503,11 @@ class UnifiedRenderer:
         if not code:
             if self.style == RenderStyle.MINIMAL:
                 return Text("(Empty code block)", style="dim italic")
-            return Panel(Text("(Empty code block)", style="dim italic"))
+            return Panel(
+                Text("(Empty code block)", style="dim italic"),
+                padding=self._get_panel_padding((1, 1)),
+                box=self._get_box_style(rich.box.ROUNDED),
+            )
 
         # Auto-detect language if needed
         if not language or language == "text":
@@ -502,7 +545,10 @@ class UnifiedRenderer:
             title=panel_title,
             title_align="left",
             border_style=THEME_COLORS.get("code_border", "dim blue"),
-            padding=(0, 1) if self.style == RenderStyle.COMPACT else (1, 2),
+            padding=self._get_panel_padding(
+                (0, 1) if self.style == RenderStyle.COMPACT else (1, 2)
+            ),
+            box=self._get_box_style(rich.box.ROUNDED),
             expand=False
         )
 
@@ -612,7 +658,10 @@ class UnifiedRenderer:
                 title="🧠 Reasoning",
                 title_align="left",
                 border_style=THEME_COLORS["reasoning"],
-                padding=(0, 1) if self.style == RenderStyle.COMPACT else (1, 2)
+                padding=self._get_panel_padding(
+                    (0, 1) if self.style == RenderStyle.COMPACT else (1, 2)
+                ),
+                box=self._get_box_style(rich.box.ROUNDED),
             )
 
     def render_tool_result(self, result: Dict) -> List[Any]:
@@ -752,7 +801,9 @@ class UnifiedRenderer:
         title = " ".join(title_parts)
 
         # Determine box style based on rendering style
-        if self.style == RenderStyle.COMPACT:
+        if self.style == RenderStyle.BORDERLESS:
+            box_style = BORDERLESS_BOX
+        elif self.style == RenderStyle.COMPACT:
             box_style = rich.box.SIMPLE
         elif self.style == RenderStyle.DETAILED:
             box_style = rich.box.DOUBLE
@@ -767,7 +818,9 @@ class UnifiedRenderer:
             border_style=border_style,
             width=self.width,
             box=box_style,
-            padding=(0, 1) if self.style == RenderStyle.COMPACT else (1, 2)
+            padding=self._get_panel_padding(
+                (0, 1) if self.style == RenderStyle.COMPACT else (1, 2)
+            )
         )
 
     def create_minimal_message(self,
@@ -1038,7 +1091,9 @@ class UnifiedRenderer:
             title="❌ Error",
             title_align="left",
             border_style=THEME_COLORS["error"],
-            width=self.width
+            width=self.width,
+            padding=self._get_panel_padding((1, 1)),
+            box=self._get_box_style(rich.box.ROUNDED),
         )
 
     def render_list(self,

@@ -136,7 +136,7 @@ project:
     backup_interval: 3600  # seconds
   defaults:
     workspace: ./projects
-    write_root: workspace  # Default execution mode: 'project' or 'workspace'
+    write_root: project  # Default execution mode: 'project' (set to workspace to isolate)
     auto_checkpoint: true
     max_iterations: 10
   constraints:

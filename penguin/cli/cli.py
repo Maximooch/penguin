@@ -237,6 +237,13 @@ from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
 from penguin.utils.logs import setup_logger
 
+# Default to a quieter root logger unless explicitly overridden
+DEFAULT_LOG_LEVEL = os.getenv("PENGUIN_LOG_LEVEL", "WARNING").upper()
+try:
+    logging.getLogger().setLevel(getattr(logging, DEFAULT_LOG_LEVEL, logging.WARNING))
+except Exception:
+    logging.getLogger().setLevel(logging.WARNING)
+
 # Import unified command system
 from penguin.cli.commands import CommandRegistry
 from penguin.cli.typer_bridge import TyperBridge, integrate_with_existing_app
@@ -287,6 +294,7 @@ app = typer.Typer(
     "For experimental TUI, use: penguin-tui-proto"
 )
 console = RichConsole()  # Use the renamed import
+CLI_PANEL_PADDING = None  # Use per-panel defaults; override via config if needed
 
 PENGUIN_ASCII_BANNER = r"""
 ooooooooo.                                                 o8o              
@@ -738,7 +746,7 @@ def main_entry(
     root: Optional[str] = typer.Option(
         None,
         "--root",
-        help="Execution root for file ops and commands: 'project' or 'workspace'",
+        help="Execution root for file ops and commands: 'project' (default) or 'workspace'",
     ),
     version: Optional[bool] = typer.Option(
         None, "--version", "-V", help="Show Penguin version and exit.", is_eager=True
@@ -959,6 +967,19 @@ def main_entry(
             )
         except Exception:
             pass
+
+        # Show current model/provider/adapter for visibility
+        try:
+            adapter_name = (
+                _api_client.client_handler.__class__.__name__
+                if _api_client and getattr(_api_client, "client_handler", None)
+                else "unknown"
+            )
+            console.print(
+                f"[dim]Model: {_model_config.provider}/{_model_config.model} via {_model_config.client_preference} ({adapter_name})[/dim]"
+            )
+        except Exception:
+            logger.debug("Unable to display model/adapter info", exc_info=True)
 
         # Record project flag for downstream commands
         ctx.obj = ctx.obj or {}
@@ -2577,7 +2598,7 @@ def task_delete(
 
 
 class PenguinCLI:
-    USER_COLOR = "cyan"
+    USER_COLOR = "grey"
     PENGUIN_COLOR = "blue"
     TOOL_COLOR = "yellow"
     RESULT_COLOR = "green"
@@ -2694,18 +2715,24 @@ class PenguinCLI:
         self.in_247_mode = False
         self.message_count = 0
         self.console = RichConsole()  # Use RichConsole instead of Console
+        self.panel_padding = CLI_PANEL_PADDING
 
-        # Initialize unified renderer with MINIMAL style (no panels for easier copy/paste)
+        # Initialize unified renderer with borderless style (padding retained, no borders)
         self.renderer = UnifiedRenderer(
             console=self.console,
-            style=RenderStyle.MINIMAL,
+            style=RenderStyle.BORDERLESS,
             show_timestamps=False,
             show_metadata=False,
             show_tool_results=self.show_tool_results,
+            panel_padding=self.panel_padding,
         )
 
         # Initialize new StreamingDisplay for smooth Rich.Live rendering
-        self.streaming_display = StreamingDisplay(console=self.console)
+        self.streaming_display = StreamingDisplay(
+            console=self.console,
+            panel_padding=self.panel_padding,
+            borderless=True,
+        )
 
         self.conversation_menu = ConversationMenu(self.console)
         self.core.register_progress_callback(self.on_progress_update)
@@ -3761,13 +3788,27 @@ class PenguinCLI:
         # Display ASCII art banner (printed once per process)
         _print_ascii_banner(self.console)
 
-        welcome_message = """Welcome to Penguin AI Assistant!
+        welcome_message = """
 
-For help: /help  •  For information: /info  •  To exit: /exit
+Welcome to Penguin! 
 
-TIP: Use Alt+Enter for new lines, Enter to submit"""
+**Quick commands**
+- `/help` — Command list
+- `/info` — Session and config info
+- `/exit` — Quit the chat
 
-        self.display_message(welcome_message, "system")
+**Shortcuts**
+- Alt+Enter for new lines
+- Enter to submit
+
+"""
+
+        # Render welcome copy without a panel to keep the intro minimal
+        try:
+            from rich.markdown import Markdown
+            self.console.print(Markdown(welcome_message))
+        except Exception:
+            self.console.print(welcome_message)
 
         while True:
             try:

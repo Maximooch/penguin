@@ -123,7 +123,7 @@ function getDefaultConfig(): Partial<PenguinConfig> {
       autoload_project_docs: true,
     },
     defaults: {
-      write_root: 'workspace',
+      write_root: 'project',
     },
     prompt: {
       mode: 'direct',

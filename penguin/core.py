@@ -1,5 +1,5 @@
 """
-PenguinCore acts as the central nervous system for the Penguin AI assistant, orchestrating interactions between various subsystems.
+PenguinCore acts as the central nervous system for Penguin, orchestrating interactions between various subsystems.
 
 Key Systems:
 - ConversationManager: Handles messages, context, conversation persistence, and formatting
@@ -194,7 +194,7 @@ from penguin._version import __version__ as PENGUIN_VERSION
 
 # LLM and API
 from penguin.llm.api_client import APIClient
-from penguin.llm.model_config import ModelConfig
+from penguin.llm.model_config import ModelConfig, safe_context_window
 
 MODEL_CONFIG_FIELD_NAMES = {field.name for field in fields(ModelConfig)}
 
@@ -2864,16 +2864,28 @@ class PenguinCore:
                 logger.error(f"Invalid configuration for model '{model_id}': missing provider field.")
                 return False
 
+            context_length = model_specs.get("context_length")
+            safe_window = safe_context_window(context_length)
+            max_output_tokens = model_specs.get("max_output_tokens")
+
             # Update max_tokens with fetched specs – prefer max_output_tokens
-            if "max_output_tokens" in model_specs:
-                model_conf["max_tokens"] = model_specs["max_output_tokens"]
-            elif "context_length" in model_specs:
-                # If no max_output specified, use 90% of context window
-                model_conf["max_tokens"] = int(model_specs["context_length"] * 0.9)
+            if max_output_tokens is not None:
+                model_conf["max_tokens"] = min(
+                    max_output_tokens,
+                    safe_window or max_output_tokens,
+                )
+            elif safe_window is not None:
+                model_conf["max_tokens"] = safe_window
             else:
                 # If we don't have real specs, error instead of guessing
                 logger.error(f"Could not fetch context_length/max_output_tokens for model '{model_id}' from OpenRouter API")
                 return False
+
+            # Use the buffered context window for history if available to avoid overruns
+            if safe_window:
+                existing_history = model_conf.get("max_history_tokens")
+                if existing_history is None or existing_history > safe_window:
+                    model_conf["max_history_tokens"] = safe_window
 
             # -----------------------------------------------------------------
             # 2. Build a fresh ModelConfig object dynamically from model_configs
@@ -3495,6 +3507,9 @@ class PenguinCore:
         import yaml
         
         config_path = Path(__file__).parent / "config.yml"
+        context_length = model_specs.get("context_length")
+        safe_window = safe_context_window(context_length)
+        max_output_tokens = model_specs.get("max_output_tokens")
         
         try:
             # Load current config
@@ -3505,18 +3520,22 @@ class PenguinCore:
             config_data['model']['default'] = model_id
             
             # Update max_tokens - prefer max_output_tokens over context_length
-            if 'max_output_tokens' in model_specs:
-                config_data['model']['max_tokens'] = model_specs['max_output_tokens']
-            elif 'context_length' in model_specs:
-                # If no max_output specified, use 90% of context window
-                config_data['model']['max_tokens'] = int(model_specs['context_length'] * 0.9)
+            if max_output_tokens is not None:
+                config_data['model']['max_tokens'] = min(
+                    max_output_tokens,
+                    safe_window or max_output_tokens,
+                )
+            elif safe_window is not None:
+                config_data['model']['max_tokens'] = safe_window
             else:
                 logger.error(f"No context_length/max_output_tokens available for model {model_id}")
                 return
             
             # Store context window info for reference
-            if 'context_length' in model_specs:
-                config_data['model']['context_window'] = model_specs['context_length']
+            if safe_window is not None:
+                config_data['model']['context_window'] = safe_window
+            elif context_length is not None:
+                config_data['model']['context_window'] = context_length
             
             # Remove max_output_tokens if it exists (we only need max_tokens)
             if 'max_output_tokens' in config_data['model']:
@@ -3526,7 +3545,15 @@ class PenguinCore:
             with open(config_path, 'w') as f:
                 yaml.safe_dump(config_data, f, default_flow_style=False, sort_keys=False)
                 
-            logger.info(f"Updated config.yml with model {model_id}, max_tokens (context window) {config_data['model']['max_tokens']}, context_window {model_specs.get('context_length', 'unknown')}")
+            logger.info(
+                "Updated config.yml with model %s, max_tokens %s, context_window %s "
+                "(raw_context_length=%s, safety_fraction_applied=%s)",
+                model_id,
+                config_data['model']['max_tokens'],
+                config_data['model'].get('context_window'),
+                context_length or "unknown",
+                safe_window is not None,
+            )
             
         except Exception as e:
             logger.error(f"Failed to update config.yml: {e}")

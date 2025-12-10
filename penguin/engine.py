@@ -925,7 +925,8 @@ class Engine:
         action_results = []
         if tools_enabled:
             actions: List[CodeActAction] = parse_action(assistant_response)
-            print(f"[AUTO-CONTINUE FIX] Parsed {len(actions)} actions from response", flush=True)
+            # Keep parsing note at debug level to avoid noisy stdout in normal runs
+            logger.debug("[AUTO-CONTINUE FIX] Parsed %s actions from response", len(actions))
             # Enforce one action per iteration for incremental execution
             for act in (actions[:1] if actions else []):
                 result = await action_executor.execute_action(act)

@@ -82,7 +82,7 @@ THEME_COLORS = {
     "response_panel": "cyan",
     "stats_panel": "green",
     "conversation_panel": "blue",
-    "message_panel_user": "cyan",
+    "message_panel_user": "grey",
     "message_panel_assistant": "green",
     "message_panel_system": "yellow",
     "message_panel_tool": "blue", # For tool calls/results if needed later
@@ -146,15 +146,22 @@ class CLIRenderer:
         cli_config = self._load_cli_display_config()
 
         # Initialize unified renderer with settings from config
+        style_name = cli_config.get('style', 'BORDERLESS').upper()
+        try:
+            render_style = RenderStyle[style_name]
+        except KeyError:
+            render_style = RenderStyle.BORDERLESS
+
         self.renderer = UnifiedRenderer(
             console=self.console,
-            style=RenderStyle[cli_config.get('style', 'MINIMAL').upper()],
+            style=render_style,
             show_timestamps=cli_config.get('show_timestamps', True),
             show_metadata=cli_config.get('show_metadata', False),
             show_tool_results=getattr(core, "show_tool_results", True),
             filter_internal_markers=cli_config.get('hide_internal_markers', True),
             deduplicate_messages=cli_config.get('deduplicate_messages', True),
-            max_blank_lines=cli_config.get('max_blank_lines', 2)
+            max_blank_lines=cli_config.get('max_blank_lines', 2),
+            panel_padding=None,
         )
 
         # Streaming state - simplified

@@ -387,6 +387,14 @@ class RuntimeConfig:
             self._execution_mode = root_pref_env
         else:
             self._execution_mode = get_default_write_root()
+
+        # Propagate defaults to env for components that rely on env hints.
+        # Use setdefault so explicit env overrides still win.
+        try:
+            os.environ.setdefault("PENGUIN_WRITE_ROOT", self._execution_mode)
+            os.environ.setdefault("PENGUIN_CWD", self.active_root)
+        except Exception:
+            logger.debug("RuntimeConfig: failed to set default env roots", exc_info=True)
         
         # Initialize security settings from config
         security_config = startup_config.get('security', {})

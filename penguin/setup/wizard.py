@@ -1,16 +1,17 @@
-import questionary
-import yaml
-import os
-import json
-import httpx
 import asyncio
-from pathlib import Path
+import json
+import os
 import platform
 import shutil
 import subprocess
-from typing import Dict, Any, List, Optional, Tuple
-import shutil
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
+import questionary
+import yaml
 from rich.console import Console
+from penguin.llm.model_config import safe_context_window
 
 # Create rich console for enhanced output
 console = Console()
@@ -403,10 +404,13 @@ async def run_setup_wizard() -> Dict[str, Any]:
     if models:
         for _m in models:
             if _m.get("id") == model:
-                context_window_auto = _m.get("context_length")
+                context_length = _m.get("context_length")
+                context_window_auto = safe_context_window(context_length) or context_length
                 # Use official max_output_tokens field when provided, no fallback.
                 if _m.get("max_output_tokens") is not None:
                     max_tokens_auto = _m.get("max_output_tokens")
+                    if context_window_auto:
+                        max_tokens_auto = min(max_tokens_auto, context_window_auto)
                 break
     
     need_api_key = await questionary.confirm(

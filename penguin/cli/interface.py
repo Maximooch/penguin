@@ -1308,6 +1308,8 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
 - Ask Penguin to help: "Refactor my auth module" or "Add tests for the calculator"
 - Run code safely: Penguin can execute Python snippets and show results
 - Manage projects: Use `/project` and `/task` commands for structured work
+- Default roots: File edits target your project root; switch with
+  `/config runtime set execution_mode workspace` or `penguin --root workspace`
 - Get help anytime: `/help` shows all available commands
 
 **Documentation:** https://github.com/Maximooch/penguin

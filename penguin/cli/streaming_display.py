@@ -14,7 +14,10 @@ Key Features:
 """
 
 import logging
+import re
 from typing import Optional
+
+import rich.box
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -26,10 +29,18 @@ from rich.text import Text
 logger = logging.getLogger(__name__)
 
 
+_BLANK_BOX = rich.box.Box("\n".join(["    "] * 8))
+
+
 class StreamingDisplay:
     """Manages live streaming display with Rich.Live"""
 
-    def __init__(self, console: Optional[Console] = None):
+    def __init__(
+        self,
+        console: Optional[Console] = None,
+        panel_padding: Optional[tuple[int, int]] = None,
+        borderless: bool = False,
+    ):
         """
         Initialize streaming display.
 
@@ -37,6 +48,8 @@ class StreamingDisplay:
             console: Rich Console instance (creates new one if not provided)
         """
         self.console = console or Console()
+        self.panel_padding: Optional[tuple[int, int]] = panel_padding
+        self.borderless: bool = borderless
         self.live: Optional[Live] = None
         self.current_message: list = []
         self.current_tool: Optional[str] = None
@@ -49,6 +62,20 @@ class StreamingDisplay:
         # Configuration
         self.refresh_rate = 10  # updates per second
         self.show_cursor = True  # Show typing cursor during streaming
+
+    def _strip_finish_response_tags(self, text: str) -> str:
+        """Remove finish_response markers from streaming content."""
+        if not isinstance(text, str):
+            return text
+        return re.sub(r'<finish_response>.*?</finish_response>', '', text, flags=re.DOTALL | re.IGNORECASE)
+
+    def _pad(self, default: tuple[int, int]) -> tuple[int, int]:
+        """Return override padding when provided."""
+        return self.panel_padding if self.panel_padding is not None else default
+
+    def _box(self):
+        """Return box style, blank when borderless."""
+        return _BLANK_BOX if self.borderless else None
 
     def start_message(self, role: str = "assistant"):
         """
@@ -201,7 +228,14 @@ class StreamingDisplay:
             status_group = Group(
                 Spinner("dots"), Text(f" {self.status}", style="yellow")
             )
-            parts.append(Panel(status_group, border_style="yellow", padding=(0, 1)))
+            parts.append(
+                Panel(
+                    status_group,
+                    border_style="yellow",
+                    padding=self._pad((0, 1)),
+                    box=self._box(),
+                )
+            )
 
         # Add tool execution indicator
         if self.current_tool:
@@ -209,11 +243,19 @@ class StreamingDisplay:
             tool_text.append("🔧 ", style="blue")
             tool_text.append("Executing: ", style="blue")
             tool_text.append(self.current_tool, style="bold blue")
-            parts.append(Panel(tool_text, border_style="blue", padding=(0, 1)))
+            parts.append(
+                Panel(
+                    tool_text,
+                    border_style="blue",
+                    padding=self._pad((0, 1)),
+                    box=self._box(),
+                )
+            )
 
         # Add streaming message content
         if self.content_buffer or self.current_message:
             message_text = self.content_buffer or "".join(self.current_message)
+            message_text = self._strip_finish_response_tags(message_text)
 
             # Add typing cursor if enabled
             if self.show_cursor and self.is_active:
@@ -237,7 +279,8 @@ class StreamingDisplay:
                     title=title,
                     title_align="left",
                     border_style=border_color,
-                    padding=(1, 2),
+                    padding=self._pad((1, 2)),
+                    box=self._box(),
                 )
             )
 
@@ -256,16 +299,18 @@ class StreamingDisplay:
                     title="[dim]Internal Reasoning[/dim]",
                     title_align="left",
                     border_style="dim",
-                    padding=(0, 1),
+                    padding=self._pad((0, 1)),
+                    box=self._box(),
                 )
             )
 
         # Display main content
         if self.content_buffer:
+            cleaned = self._strip_finish_response_tags(self.content_buffer)
             try:
-                content = Markdown(self.content_buffer)
+                content = Markdown(cleaned)
             except Exception:
-                content = Text(self.content_buffer)
+                content = Text(cleaned)
 
             border_color = "blue" if self.role == "assistant" else "cyan"
             title = "🐧 Penguin" if self.role == "assistant" else self.role.title()
@@ -276,7 +321,8 @@ class StreamingDisplay:
                     title=title,
                     title_align="left",
                     border_style=border_color,
-                    padding=(1, 2),
+                    padding=self._pad((1, 2)),
+                    box=self._box(),
                 )
             )
 
