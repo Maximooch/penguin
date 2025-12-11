@@ -80,7 +80,7 @@ class ConversationManager:
             api_client=api_client,
             config_obj=self._get_live_config()
         )
-        logger.info(f"Context window initialized with max tokens: {self.context_window.max_tokens}")
+        logger.info(f"Context window initialized with max tokens: {self.context_window.max_context_window_tokens}")
         
         # Session manager for persistence and caching
         self.session_manager = SessionManager(
@@ -349,26 +349,26 @@ class ConversationManager:
         if share_context_window:
             self.agent_context_windows[agent_id] = self.agent_context_windows[parent_agent_id]
 
-        # Configure child's CWM max_tokens from parent (optionally clamp) when not sharing the object
+        # Configure child's CWM max_context_window_tokens from parent (optionally clamp) when not sharing the object
         if not share_context_window:
             try:
                 parent_cw = self.agent_context_windows[parent_agent_id]
                 child_cw = self.agent_context_windows[agent_id]
-                if parent_cw and child_cw and hasattr(parent_cw, "max_tokens") and hasattr(child_cw, "max_tokens"):
-                    desired = parent_cw.max_tokens
+                if parent_cw and child_cw and hasattr(parent_cw, "max_context_window_tokens") and hasattr(child_cw, "max_context_window_tokens"):
+                    desired = parent_cw.max_context_window_tokens
                     if shared_cw_max_tokens is not None:
                         desired = min(desired, int(shared_cw_max_tokens))
-                    child_cw.max_tokens = desired
+                    child_cw.max_context_window_tokens = desired
                     if shared_cw_max_tokens is not None:
                         note = (
-                            f"Note: Sub-agent '{agent_id}' uses isolated CWM with max_tokens={desired} (parent={parent_cw.max_tokens})."
+                            f"Note: Sub-agent '{agent_id}' uses isolated CWM with max_context_window_tokens={desired} (parent={parent_cw.max_context_window_tokens})."
                         )
                         meta = {
                             "type": "cw_clamp_notice",
                             "sub_agent": agent_id,
                             "child_max": desired,
-                            "parent_max": parent_cw.max_tokens,
-                            "clamped": bool(desired < parent_cw.max_tokens),
+                            "parent_max": parent_cw.max_context_window_tokens,
+                            "clamped": bool(desired < parent_cw.max_context_window_tokens),
                         }
                         # Record on parent and mirror to child for easier discovery
                         self.add_system_note(parent_agent_id, content=note, metadata=dict(meta))
@@ -771,7 +771,7 @@ class ConversationManager:
 
         standardized_usage: Dict[str, Any] = {
             "current_total_tokens": cw_usage.get("total", 0),
-            "max_tokens": cw_usage.get("max", self.context_window.max_tokens),
+            "max_tokens": cw_usage.get("max", self.context_window.max_context_window_tokens),
             "available_tokens": cw_usage.get("available", self.context_window.available_tokens),
             "percentage": cw_usage.get("usage_percentage", 0),
             "categories": categories_current,

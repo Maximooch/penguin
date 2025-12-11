@@ -163,53 +163,28 @@ class ContextWindowManager:
         # Initialize truncation tracker
         self.truncation_tracker = TruncationTracker()
 
-        # Get max_tokens from model_config / config context_window when available
-        self.max_tokens = 150000  # Default fallback
-        
-        if model_config and hasattr(model_config, 'max_tokens') and model_config.max_tokens:
-            self.max_tokens = model_config.max_tokens
-            logger.info(f"Using model's max_tokens: {self.max_tokens}")
-        
-        # Prefer values coming from the live Config instance when provided
-        if config_obj is not None:
-            try:
-                cw_from_config = None
-                # Prefer a dedicated max_history_tokens (context capacity) when present
-                if hasattr(config_obj, 'model_config') and hasattr(config_obj.model_config, 'max_history_tokens'):
-                    cw_from_config = config_obj.model_config.max_history_tokens
-                # Upgrade only if larger
-                if cw_from_config and cw_from_config > self.max_tokens:
-                    self.max_tokens = cw_from_config
-                    logger.info(f"Using live Config max_history_tokens: {self.max_tokens}")
-            except Exception as e:
-                logger.warning(f"Failed to read context window from live Config: {e}")
+        # Context window budget - get from config.yml model.context_window
+        # NOTE: context_window = INPUT capacity (history), max_tokens = OUTPUT limit (generation)
+        self.max_context_window_tokens = None
 
-        # Try to load from module-level config as a last resort (legacy path)
         try:
             from penguin.config import config
-            if 'model_configs' in config:
-                model_name = model_config.model if model_config and hasattr(model_config, 'model') else None
-                if model_name and model_name in config['model_configs'] and 'max_tokens' in config['model_configs'][model_name]:
-                    config_max_tokens = config['model_configs'][model_name]['max_tokens']
-                    if config_max_tokens:
-                        self.max_tokens = config_max_tokens
-                        logger.info(f"Using config.yml max_tokens for {model_name}: {self.max_tokens}")
-            # Prefer global model.context_window if present. Do not downgrade the
-            # window if model_config already provides a larger, authoritative value
-            # (e.g., fetched from model specs). Use the larger of the two.
+            from penguin.llm.model_config import safe_context_window
             if 'model' in config and isinstance(config['model'], dict):
-                cw = config['model'].get('context_window')
-                if cw:
-                    if self.max_tokens is None or cw < self.max_tokens:
-                        self.max_tokens = cw
-                        logger.info(f"Using configured context_window from config.yml: {self.max_tokens}")
-                    else:
-                        logger.info(
-                            "Ignoring configured context_window override because model max_tokens is smaller "
-                            f"({self.max_tokens} <= {cw})"
-                        )
-        except (ImportError, AttributeError) as e:
-            logger.warning(f"Could not load config.yml for max_tokens: {e}")
+                raw_context_window = config['model'].get('context_window')
+                if raw_context_window:
+                    # Apply 85% safety fraction to leave headroom for prompts/responses
+                    self.max_context_window_tokens = safe_context_window(raw_context_window)
+                    logger.info(f"Context window: {self.max_context_window_tokens} tokens (85% of {raw_context_window})")
+        except (ImportError, AttributeError):
+            pass
+
+        if not self.max_context_window_tokens:
+            logger.error(
+                "No context_window configured! Set 'model.context_window' in config.yml. "
+                "Using emergency fallback of 100000 tokens."
+            )
+            self.max_context_window_tokens = 100000
 
         # Try to get token counter with clearer logging
         if token_counter:
@@ -258,7 +233,7 @@ class ContextWindowManager:
         
     def _initialize_token_budgets(self):
         """Initialize default token budgets for different message categories"""
-        total_budget = self.max_tokens
+        total_budget = self.max_context_window_tokens
         
         # Default allocation percentages (can be made configurable)
         allocations = {
@@ -305,13 +280,13 @@ class ContextWindowManager:
     @property
     def total_budget(self) -> int:
         """Get the total token budget"""
-        return self.max_tokens
+        return self.max_context_window_tokens
     
     @property
     def available_tokens(self) -> int:
         """Get the number of available tokens"""
         used_tokens = sum(budget.current_tokens for budget in self._budgets.values())
-        return max(0, self.max_tokens - used_tokens)
+        return max(0, self.max_context_window_tokens - used_tokens)
     
     def get_budget(self, category: MessageCategory) -> TokenBudget:
         """Get the token budget for a specific category"""
@@ -336,7 +311,7 @@ class ContextWindowManager:
         if category:
             return self._budgets[category].current_tokens > self._budgets[category].max_tokens
         
-        return sum(budget.current_tokens for budget in self._budgets.values()) > self.max_tokens
+        return sum(budget.current_tokens for budget in self._budgets.values()) > self.max_context_window_tokens
     
     def analyze_session(self, session: Session) -> Dict[str, Any]:
         """
@@ -383,7 +358,7 @@ class ContextWindowManager:
             "total_tokens": total_tokens,
             "per_category": per_category_tokens,
             "image_count": image_count,
-            "over_budget": total_tokens > self.max_tokens,
+            "over_budget": total_tokens > self.max_context_window_tokens,
             "message_count": len(session.messages)
         }
     
@@ -442,8 +417,8 @@ class ContextWindowManager:
         ]
             
         # Check if total is over budget
-        total_over_budget = stats["total_tokens"] > self.max_tokens
-        tokens_to_trim = max(0, stats["total_tokens"] - self.max_tokens) if total_over_budget else 0
+        total_over_budget = stats["total_tokens"] > self.max_context_window_tokens
+        tokens_to_trim = max(0, stats["total_tokens"] - self.max_context_window_tokens) if total_over_budget else 0
         
         # Trim categories in priority order
         for category in trim_order:
@@ -644,12 +619,12 @@ class ContextWindowManager:
         usage = {
             "total": sum(budget.current_tokens for budget in self._budgets.values()),
             "available": self.available_tokens,
-            "max": self.max_tokens,
+            "max": self.max_context_window_tokens,
             **{str(category): budget.current_tokens for category, budget in self._budgets.items()}
         }
         
         # Add extra debug info
-        usage["usage_percentage"] = (usage["total"] / self.max_tokens) * 100 if self.max_tokens else 0
+        usage["usage_percentage"] = (usage["total"] / self.max_context_window_tokens) * 100 if self.max_context_window_tokens else 0
         
         return usage
         
@@ -698,7 +673,7 @@ class ContextWindowManager:
         # For total budget, subtract SYSTEM tokens as those are never trimmed
         system_tokens = stats["per_category"].get(MessageCategory.SYSTEM, 0)
         adjusted_total = stats["total_tokens"] - system_tokens
-        adjusted_budget = self.max_tokens - system_tokens
+        adjusted_budget = self.max_context_window_tokens - system_tokens
         total_over_budget = adjusted_total > adjusted_budget
         
         if total_over_budget or categories_over_budget:
@@ -839,7 +814,7 @@ class ContextWindowManager:
                             category.name,
                             f"{category_tokens:,}",
                             f"{category_budget.min_tokens:,}-{max_tokens:,}",
-                            f"{max_tokens/self.max_tokens*100:.1f}%",
+                            f"{max_tokens/self.max_context_window_tokens*100:.1f}%",
                             progress_bar
                         )
                     else:
@@ -848,17 +823,17 @@ class ContextWindowManager:
                             category.name,
                             f"{category_tokens:,}",
                             f"{category_budget.min_tokens:,}-{max_tokens:,}",
-                            f"{max_tokens/self.max_tokens*100:.1f}%",
+                            f"{max_tokens/self.max_context_window_tokens*100:.1f}%",
                             "[" + " " * 20 + "] 0.0%"
                         )
                 
             # Add summary row with simple string progress bar
-            total_progress_bar = f"[{'█' * int(total/self.max_tokens*20)}{' ' * (20 - int(total/self.max_tokens*20))}] {total/self.max_tokens*100:.1f}%"
+            total_progress_bar = f"[{'█' * int(total/self.max_context_window_tokens*20)}{' ' * (20 - int(total/self.max_context_window_tokens*20))}] {total/self.max_context_window_tokens*100:.1f}%"
             
             table.add_row(
                 "TOTAL", 
                 f"{total:,}",
-                f"0-{self.max_tokens:,}",
+                f"0-{self.max_context_window_tokens:,}",
                 "100.0%",
                 total_progress_bar,
                 style="bold"
@@ -1045,7 +1020,7 @@ class ContextWindowManager:
         Shows how tokens are allocated across categories and contributors.
         """
         report = {
-            "total_budget": self.max_tokens,
+            "total_budget": self.max_context_window_tokens,
             "categories": {},
             "utilization": {}
         }
@@ -1063,7 +1038,7 @@ class ContextWindowManager:
             total_used += budget.current_tokens
         
         report["utilization"]["total_used"] = total_used
-        report["utilization"]["total_available"] = self.max_tokens - total_used
-        report["utilization"]["overall_pct"] = (total_used / self.max_tokens * 100) if self.max_tokens else 0
+        report["utilization"]["total_available"] = self.max_context_window_tokens - total_used
+        report["utilization"]["overall_pct"] = (total_used / self.max_context_window_tokens * 100) if self.max_context_window_tokens else 0
         
         return report 

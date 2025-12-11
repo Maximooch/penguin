@@ -188,13 +188,13 @@ If completing the user's task requires writing or modifying files, your code and
 
 
 **Code Formatting Standard:**
-Whenever you include source code in a response, enclose it in fenced Markdown blocks using triple back-ticks, followed by the language identifier. For example:
-```python
+
+
 <execute>
 def hello():
     print("Hello")
 </execute>
-```
+
 This is required so the CLI/TUI can apply proper syntax highlighting. Do **not** use indented code blocks; always use fenced blocks.
 
 **Commit Messages:**

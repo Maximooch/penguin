@@ -1232,10 +1232,10 @@ class PenguinCore:
                         agent_cw.model_config = agent_model_config
                     if (
                         agent_model_config.max_tokens is not None
-                        and hasattr(agent_cw, "max_tokens")
+                        and hasattr(agent_cw, "max_context_window_tokens")
                         and agent_model_config.max_tokens
                     ):
-                        agent_cw.max_tokens = agent_model_config.max_tokens
+                        agent_cw.max_context_window_tokens = agent_model_config.max_tokens
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.debug(f"Failed to apply model config to context window for '{agent_id}': {exc}")
 
@@ -2772,13 +2772,17 @@ class PenguinCore:
     # Model management helpers
     # ------------------------------------------------------------------
 
-    def _apply_new_model_config(self, new_model_config: ModelConfig) -> None:
+    def _apply_new_model_config(self, new_model_config: ModelConfig, context_window_tokens: Optional[int] = None) -> None:
         """Internal helper that swaps the model configuration and re-wires dependent components.
 
         This keeps the public ``load_model`` method concise and focused on
         validation / construction of the ``ModelConfig``.  All mutation of
         run-time state happens here so that we only need to test it in one
         place.
+
+        Args:
+            new_model_config: The new ModelConfig to apply
+            context_window_tokens: The safe context window size (85% of raw) to apply
         """
         # Swap the model_config reference first so that any downstream logic
         # reads the up-to-date values.
@@ -2801,6 +2805,12 @@ class PenguinCore:
                     cw = self.conversation_manager.context_window
                     cw.model_config = new_model_config  # type: ignore[attr-defined]
                     cw.api_client = self.api_client     # type: ignore[attr-defined]
+                    # Update context window budget with safe window (85% of raw)
+                    if context_window_tokens:
+                        old_budget = cw.max_context_window_tokens
+                        cw.max_context_window_tokens = context_window_tokens
+                        cw._initialize_token_budgets()  # Re-compute category budgets
+                        logger.info(f"Updated context window: {old_budget} -> {context_window_tokens} tokens")
             except Exception as e:
                 logger.warning(f"Failed to propagate new model config to ContextWindowManager: {e}")
 
@@ -2899,16 +2909,16 @@ class PenguinCore:
             )
 
             # -----------------------------------------------------------------
-            # 3. Apply it to running components
+            # 3. Apply it to running components (pass safe_window for context budget)
             # -----------------------------------------------------------------
-            self._apply_new_model_config(new_model_config)
-            
+            self._apply_new_model_config(new_model_config, context_window_tokens=safe_window)
+
             # -----------------------------------------------------------------
             # 4. Update config.yml with new model specifications
             # -----------------------------------------------------------------
             self._update_config_file_with_model(model_id, model_specs)
-            
-            logger.info(f"Successfully switched to model '{model_id}' with context window {model_specs.get('context_length', 'unknown')} tokens.")
+
+            logger.info(f"Successfully switched to model '{model_id}' with context window {safe_window} tokens (85% of {context_length}).")
             return True
         except Exception as e:
             logger.error(f"Failed to switch to model '{model_id}': {e}")

@@ -130,7 +130,7 @@ async def fetch_models_from_openrouter() -> List[Dict[str, Any]]:
         console.print(f"[bold red]⚠️ Failed to fetch models from OpenRouter:[/bold red] {e}")
         return []
 
-async def interactive_model_selector(current_model: Optional[str] = None) -> Optional[str]:
+async def interactive_model_selector(current_model: Optional[str] = None) -> Optional[str]: 
     """
     Interactive model selector using prompt_toolkit autocomplete.
     Returns the selected model ID or None if cancelled.
