@@ -105,7 +105,7 @@ class CognitionSystem:
             # Get raw response from API
             raw_response = self.api_client.create_message(
                 messages=conversation_history,
-                max_tokens=None,
+                max_output_tokens=None,
                 temperature=None,
                 vision=vision,
             )

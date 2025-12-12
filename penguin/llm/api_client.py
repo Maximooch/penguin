@@ -192,7 +192,7 @@ class APIClient:
     async def get_response(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: Optional[bool] = None,
         stream_callback: Optional[Callable[[str, str], None]] = None,
@@ -203,7 +203,7 @@ class APIClient:
 
         Args:
             messages: List of message dictionaries (OpenAI format).
-            max_tokens: Optional max tokens to generate.
+            max_output_tokens: Optional max output tokens to generate.
             temperature: Optional temperature parameter.
             stream: Optional override for streaming preference.
             stream_callback: Callback for handling streaming chunks. Should accept (chunk: str, message_type: str).
@@ -214,6 +214,10 @@ class APIClient:
         """
         if not self.client_handler:
             raise RuntimeError("APIClient handler not initialized.")
+
+        legacy_max_tokens = kwargs.pop("max_tokens", None)
+        if max_output_tokens is None and legacy_max_tokens is not None:
+            max_output_tokens = legacy_max_tokens
 
         use_streaming = stream if stream is not None else self.model_config.streaming_enabled
         prepared_messages = self._prepare_messages_with_system_prompt(messages)
@@ -322,7 +326,7 @@ class APIClient:
 
             response_text = await self.client_handler.get_response(
                 messages=prepared_messages,
-                max_tokens=max_tokens or self.model_config.max_tokens,
+                max_output_tokens=max_output_tokens or self.model_config.max_output_tokens,
                 temperature=temperature if temperature is not None else self.model_config.temperature,
                 stream=use_streaming,
                 stream_callback=effective_callback, # Pass the potentially wrapped async callback

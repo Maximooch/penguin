@@ -554,8 +554,8 @@ Body must be JSON. Fields:
 - `persona`, `system_prompt` (optional)
 - `share_session` (default false) – share parent session
 - `share_context_window` (default false) – share parent context window
-- `shared_cw_max_tokens` (optional int) – clamp when using isolated CW
-- `model_config_id`, `model_overrides`, `model_max_tokens` (optional)
+- `shared_context_window_max_tokens` (optional int) – clamp when using isolated CW
+- `model_config_id`, `model_overrides`, `model_output_max_tokens` (optional)
 - `default_tools` (optional list) – recorded only; not enforced
 - `initial_prompt` (optional) – message sent to the child after spawn
 
@@ -567,7 +567,7 @@ Example:
   "persona": "research",
   "share_session": false,
   "share_context_window": false,
-  "shared_cw_max_tokens": 512,
+  "shared_context_window_max_tokens": 512,
   "initial_prompt": "Summarize docs in /docs"
 }</spawn_sub_agent>
 ```

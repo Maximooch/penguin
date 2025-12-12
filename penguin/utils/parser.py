@@ -650,7 +650,7 @@ class ActionExecutor:
         JSON body:
           - id (required), parent (optional, default current), persona/system_prompt (optional)
           - share_session (bool, default False), share_context_window (bool, default False)
-          - shared_cw_max_tokens (int, optional), model_* overrides (optional), default_tools (optional)
+          - shared_context_window_max_tokens (int, optional), model_* overrides (optional), default_tools (optional)
           - initial_prompt (optional)
         """
         try:
@@ -670,14 +670,14 @@ class ActionExecutor:
         parent_id = str(payload.get("parent") or getattr(conversation, "current_agent_id", None) or "default").strip()
         share_session = bool(payload.get("share_session", False))
         share_cw = bool(payload.get("share_context_window", False))
-        shared_cw_max_tokens = payload.get("shared_cw_max_tokens")
+        shared_context_window_max_tokens = payload.get("shared_context_window_max_tokens", payload.get("shared_cw_max_tokens"))  # Accept both keys
         try:
-            shared_cw_max_tokens = int(shared_cw_max_tokens) if shared_cw_max_tokens is not None else None
+            shared_context_window_max_tokens = int(shared_context_window_max_tokens) if shared_context_window_max_tokens is not None else None
         except Exception:
-            shared_cw_max_tokens = None
+            shared_context_window_max_tokens = None
 
         kwargs: Dict[str, Any] = {}
-        for key in ("persona", "system_prompt", "model_config_id", "model_max_tokens", "default_tools"):
+        for key in ("persona", "system_prompt", "model_config_id", "model_output_max_tokens", "default_tools"):
             if key in payload:
                 kwargs[key] = payload[key]
         if isinstance(payload.get("model_overrides"), dict):
@@ -689,7 +689,7 @@ class ActionExecutor:
                 parent_agent_id=parent_id,
                 share_session=share_session,
                 share_context_window=share_cw,
-                shared_cw_max_tokens=shared_cw_max_tokens,
+                shared_context_window_max_tokens=shared_context_window_max_tokens,
                 **kwargs,
             )
         except Exception as e:

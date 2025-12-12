@@ -91,7 +91,7 @@ class PenguinInterface:
 
     def _on_token_update(self, usage: Dict[str, Any]) -> None:
         """Handle token updates from core and forward to UI"""
-        # Expected usage keys from ConversationManager: "prompt_tokens", "completion_tokens", "total_tokens", "max_tokens"
+        # Expected usage keys from ConversationManager: "prompt_tokens", "completion_tokens", "total_tokens", "max_context_window_tokens"
         # No transformation should be needed if ConversationManager provides these directly.
 
         # Forward the token usage to UI callbacks
@@ -107,7 +107,7 @@ class PenguinInterface:
         Output format expected from ConversationManager (via ContextWindowManager):
         {
             "current_total_tokens": ..., 
-            "max_tokens": ...,       
+            "max_context_window_tokens": ...,  # Context window capacity       
             "categories": {
                 "SYSTEM": ..., ... 
             }
@@ -115,7 +115,7 @@ class PenguinInterface:
         """
         default_usage = {
             "current_total_tokens": 0,
-            "max_tokens": self.core.model_config.max_tokens if hasattr(self.core, 'model_config') and self.core.model_config else 200000,
+            "max_context_window_tokens": self.core.model_config.max_context_window_tokens if hasattr(self.core, 'model_config') and self.core.model_config and hasattr(self.core.model_config, 'max_context_window_tokens') else 200000,  # Context window capacity
             "categories": {cat.name: 0 for cat in MessageCategory},
             "error": "No data from ConversationManager"
         }
@@ -130,12 +130,12 @@ class PenguinInterface:
             # Validate the received structure (basic check)
             if isinstance(usage_from_manager, dict) and \
                "current_total_tokens" in usage_from_manager and \
-               "max_tokens" in usage_from_manager and \
+               "max_context_window_tokens" in usage_from_manager and \
                "categories" in usage_from_manager and isinstance(usage_from_manager["categories"], dict):
 
                 # Add a percentage calculation for convenience
                 current_total = usage_from_manager["current_total_tokens"]
-                max_t = usage_from_manager["max_tokens"]
+                max_t = usage_from_manager.get("max_context_window_tokens", usage_from_manager.get("max_tokens", 0))  # Accept both keys
                 usage_from_manager["percentage"] = (current_total / max_t * 100) if max_t > 0 else 0
                 return usage_from_manager
             else:
@@ -1674,8 +1674,8 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                         system_prompt=options["system_prompt"],
                         share_session=options["share_session"],
                         share_context_window=options["share_context"],
-                        shared_cw_max_tokens=options["shared_cw_max"],
-                        model_max_tokens=options["model_max"],
+                        shared_context_window_max_tokens=options["shared_cw_max"],
+                        model_output_max_tokens=options["model_max"],
                         persona=options["persona"],
                         model_config_id=options["model_id"],
                         default_tools=tools_tuple,
@@ -1686,7 +1686,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                         agent_id,
                         system_prompt=options["system_prompt"],
                         activate=options["activate"],
-                        model_max_tokens=options["model_max"],
+                        model_output_max_tokens=options["model_max"],
                         persona=options["persona"],
                         model_config_id=options["model_id"],
                         default_tools=tools_tuple,
@@ -1977,7 +1977,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
             new_model_name = "Unknown"
             if self.core.model_config and self.core.model_config.model:
                 new_model_name = self.core.model_config.model
-            # Update token display as max_tokens might change
+            # Update token display as max_context_window_tokens might change
             self.update_token_display()
             return {"status": f"Successfully set model to: {new_model_name}", "new_model_name": new_model_name}
         else:
@@ -2244,7 +2244,8 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                         "provider": underlying_provider, # The conceptual provider
                         "client_preference": "openrouter", # Explicitly state it
                         "vision_enabled": "image" in or_model.get("architecture", {}).get("input_modalities", []),
-                        "max_tokens": or_model.get("context_length"), # OpenRouter calls it context_length
+                        "max_output_tokens": or_model.get("top_provider", {}).get("max_completion_tokens"),  # Output token limit
+                        "context_window": or_model.get("context_length"),  # Context window size
                         "temperature": None, # OpenRouter doesn't list default temp per model here
                         "current": is_current
                     })
@@ -2281,7 +2282,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                         "provider": conf.get("provider", "unknown"),
                         "client_preference": conf.get("client_preference", "litellm"),
                         "vision_enabled": conf.get("vision_enabled", False),
-                        "max_tokens": conf.get("max_tokens"),
+                        "max_output_tokens": conf.get("max_output_tokens", conf.get("max_tokens")),  # Accept both keys
                         "temperature": conf.get("temperature"),
                         "current": is_config_entry_current
                     }
@@ -2341,14 +2342,14 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                 self.core.model_config.api_base = new_model_conf_dict.get("api_base") # For Ollama etc.
                 self.core.model_config.streaming_enabled = new_model_conf_dict.get("streaming_enabled", self.core.model_config.streaming_enabled)
                 self.core.model_config.vision_enabled = new_model_conf_dict.get("vision_enabled", self.core.model_config.vision_enabled)
-                self.core.model_config.max_tokens = new_model_conf_dict.get("max_tokens", self.core.model_config.max_tokens)
+                self.core.model_config.max_output_tokens = new_model_conf_dict.get("max_output_tokens", new_model_conf_dict.get("max_tokens", self.core.model_config.max_output_tokens))
                 self.core.model_config.temperature = new_model_conf_dict.get("temperature", self.core.model_config.temperature)
                 # Potentially need to re-initialize or update APIClient here
                 # self.core.api_client.reconfigure(self.core.model_config) # If such a method exists
                 print(f"[Interface] Fallback: Updated core.model_config for model '{model_id_from_config}'. APIClient may need manual re-initialization in PenguinCore.")
                 # After changing model, streaming settings might change, so re-initialize/sync them
                 self._initialize_streaming_settings()
-                # Also update token display as max_tokens might have changed
+                # Also update token display as max_context_window_tokens might have changed
                 self.update_token_display()
                 return True
             else:
@@ -2375,7 +2376,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                 # Load the selected model
                 success = await self.core.load_model(selected_model)
                 if success:
-                    # Update token display as max_tokens might change
+                    # Update token display as max_context_window_tokens might change
                     self.update_token_display()
                     return {
                         "status": f"Successfully selected model: {selected_model}",

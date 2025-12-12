@@ -1797,7 +1797,7 @@ class PenguinTextualApp(App):
                         model = getattr(self.core.model_config, "model", None)
                     tokens = self.interface.get_token_usage() if self.interface else {}
                     cur = tokens.get("current_total_tokens", 0)
-                    max_t = tokens.get("max_tokens", 0)
+                    max_t = tokens.get("max_context_window_tokens", tokens.get("max_tokens", 0))  # Context window capacity
                     payload = {"model": model or "model?", "tokens_cur": cur, "tokens_max": max_t, "elapsed": elapsed}
                     if payload != getattr(self, "_last_status_payload", None):
                         sidebar.update_status(payload)
@@ -2742,10 +2742,10 @@ class PenguinTextualApp(App):
     async def _display_token_usage(self, usage):
         """Display token usage in a formatted way."""
         current = usage.get("current_total_tokens", 0)
-        max_tokens = usage.get("max_tokens", 0)
+        max_context_tokens = usage.get("max_context_window_tokens", usage.get("max_tokens", 0))  # Context window capacity
         percentage = usage.get("percentage", 0)
         
-        content = f"**Token Usage:** {current:,} / {max_tokens:,} ({percentage:.1f}%)\n\n"
+        content = f"**Token Usage:** {current:,} / {max_context_tokens:,} ({percentage:.1f}%)\n\n"  # Context window usage
         
         if "categories" in usage:
             content += "**By Category:**\n"

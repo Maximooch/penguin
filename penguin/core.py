@@ -402,7 +402,14 @@ class PenguinCore:
                         client_preference=getattr(config.model_config, 'client_preference', 'native'),
                         streaming_enabled=bool(getattr(config.model_config, 'streaming_enabled', True)),
                         # Generation cap should be the configured model's value; do not substitute context window here
-                        max_tokens=getattr(config.model_config, 'max_tokens', None),
+                        max_output_tokens=getattr(
+                            config.model_config,
+                            "max_output_tokens",
+                            getattr(config.model_config, "max_output_tokens", getattr(config.model_config, "max_tokens", None)),  # Prefer new name
+                        ),
+                        max_context_window_tokens=getattr(
+                            config.model_config, "max_context_window_tokens", None
+                        ),
                     )
                     logger.info(f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}")
                     if pbar: pbar.update(1)
@@ -632,12 +639,6 @@ class PenguinCore:
         if not self.config.diagnostics.enabled:
             disable_diagnostics()
         
-        # Ensure model_config max_tokens is consistent – prefer context_window from config
-        if model_config and not hasattr(model_config, 'max_tokens'):
-            model_config.max_tokens = self.config.model.get("context_window") or self.config.model.get("max_tokens", 8000)
-        elif model_config and model_config.max_tokens is None:
-            model_config.max_tokens = self.config.model.get("context_window") or self.config.model.get("max_tokens", 8000)
-
         # Initialize conversation manager (replaces conversation system)
         from penguin.config import WORKSPACE_PATH
         from penguin.system.checkpoint_manager import CheckpointConfig
@@ -921,6 +922,12 @@ class PenguinCore:
                 continue
             if key in {"id", "name"}:
                 continue
+            if key == "max_tokens":
+                flattened["max_output_tokens"] = value  # Legacy key -> new canonical key
+                continue
+            if key == "context_window":
+                flattened["max_context_window_tokens"] = value
+                continue
             if key == "reasoning" and isinstance(value, Mapping):
                 enabled = value.get("enabled")
                 if enabled is not None:
@@ -1008,7 +1015,8 @@ class PenguinCore:
             "model": model_config.model,
             "provider": model_config.provider,
             "client_preference": model_config.client_preference,
-            "max_tokens": getattr(model_config, "max_tokens", None),
+            "max_output_tokens": getattr(model_config, "max_output_tokens", None),
+            "max_context_window_tokens": getattr(model_config, "max_context_window_tokens", None),
             "temperature": getattr(model_config, "temperature", None),
             "streaming_enabled": getattr(model_config, "streaming_enabled", None),
         }
@@ -1120,8 +1128,8 @@ class PenguinCore:
         activate: bool = False,
         share_session_with: Optional[str] = None,
         share_context_window_with: Optional[str] = None,
-        shared_cw_max_tokens: Optional[int] = None,
-        model_max_tokens: Optional[int] = None,
+        shared_context_window_max_tokens: Optional[int] = None,
+        model_output_max_tokens: Optional[int] = None,
         persona: Optional[str] = None,
         model_config: Optional[ModelConfig] = None,
         model_config_id: Optional[str] = None,
@@ -1152,10 +1160,10 @@ class PenguinCore:
                 share_session_with = persona_config.share_session_with
             if share_context_window_with is None and persona_config.share_context_window_with:
                 share_context_window_with = persona_config.share_context_window_with
-            if shared_cw_max_tokens is None and persona_config.shared_cw_max_tokens is not None:
-                shared_cw_max_tokens = persona_config.shared_cw_max_tokens
-            if model_max_tokens is None and persona_config.model_max_tokens is not None:
-                model_max_tokens = persona_config.model_max_tokens
+            if shared_context_window_max_tokens is None and persona_config.shared_context_window_max_tokens is not None:
+                shared_context_window_max_tokens = persona_config.shared_context_window_max_tokens
+            if model_output_max_tokens is None and persona_config.model_output_max_tokens is not None:
+                model_output_max_tokens = persona_config.model_output_max_tokens
             if default_tools is None and persona_config.default_tools:
                 default_tools = tuple(persona_config.default_tools)
 
@@ -1166,24 +1174,24 @@ class PenguinCore:
             model_overrides=model_overrides,
         )
 
-        if agent_model_config and model_max_tokens is None and agent_model_config.max_tokens is not None:
-            model_max_tokens = agent_model_config.max_tokens
+        if agent_model_config and model_output_max_tokens is None and agent_model_config.max_output_tokens is not None:
+            model_output_max_tokens = agent_model_config.max_output_tokens
         if (
             agent_model_config
-            and shared_cw_max_tokens is None
-            and agent_model_config.max_tokens is not None
+            and shared_context_window_max_tokens is None
+            and agent_model_config.max_output_tokens is not None
             and (share_session_with or share_context_window_with)
         ):
-            shared_cw_max_tokens = agent_model_config.max_tokens
+            shared_context_window_max_tokens = agent_model_config.max_output_tokens
 
         # Provision agent or sub-agent
         effective_cw_cap = None
-        if shared_cw_max_tokens is not None and model_max_tokens is not None:
-            effective_cw_cap = min(int(shared_cw_max_tokens), int(model_max_tokens))
-        elif shared_cw_max_tokens is not None:
-            effective_cw_cap = int(shared_cw_max_tokens)
-        elif model_max_tokens is not None:
-            effective_cw_cap = int(model_max_tokens)
+        if shared_context_window_max_tokens is not None and model_output_max_tokens is not None:
+            effective_cw_cap = min(int(shared_context_window_max_tokens), int(model_output_max_tokens))
+        elif shared_context_window_max_tokens is not None:
+            effective_cw_cap = int(shared_context_window_max_tokens)
+        elif model_output_max_tokens is not None:
+            effective_cw_cap = int(model_output_max_tokens)
 
         if share_session_with or share_context_window_with:
             parent = share_session_with or share_context_window_with
@@ -1192,7 +1200,7 @@ class PenguinCore:
                 parent_agent_id=parent,
                 share_session=bool(share_session_with),
                 share_context_window=bool(share_session_with or share_context_window_with),
-                shared_cw_max_tokens=effective_cw_cap,
+                shared_context_window_max_tokens=effective_cw_cap,
             )
             conv = self.conversation_manager.get_agent_conversation(agent_id)
         else:
@@ -1231,11 +1239,11 @@ class PenguinCore:
                     if hasattr(agent_cw, "model_config"):
                         agent_cw.model_config = agent_model_config
                     if (
-                        agent_model_config.max_tokens is not None
+                        agent_model_config.max_output_tokens is not None
                         and hasattr(agent_cw, "max_context_window_tokens")
-                        and agent_model_config.max_tokens
+                        and agent_model_config.max_output_tokens
                     ):
-                        agent_cw.max_context_window_tokens = agent_model_config.max_tokens
+                        agent_cw.max_context_window_tokens = agent_model_config.max_output_tokens
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.debug(f"Failed to apply model config to context window for '{agent_id}': {exc}")
 
@@ -1440,8 +1448,8 @@ class PenguinCore:
         system_prompt: Optional[str] = None,
         share_session: bool = True,
         share_context_window: bool = True,
-        shared_cw_max_tokens: Optional[int] = None,
-        model_max_tokens: Optional[int] = None,
+        shared_context_window_max_tokens: Optional[int] = None,
+        model_output_max_tokens: Optional[int] = None,
         activate: bool = False,
         persona: Optional[str] = None,
         model_config: Optional[ModelConfig] = None,
@@ -1458,8 +1466,8 @@ class PenguinCore:
             activate=activate,
             share_session_with=share_session_with,
             share_context_window_with=share_context_with,
-            shared_cw_max_tokens=shared_cw_max_tokens,
-            model_max_tokens=model_max_tokens,
+            shared_context_window_max_tokens=shared_context_window_max_tokens,
+            model_output_max_tokens=model_output_max_tokens,
             persona=persona,
             model_config=model_config,
             model_config_id=model_config_id,
@@ -1475,7 +1483,7 @@ class PenguinCore:
                     parent_agent_id=parent_agent_id,
                     share_session=share_session,
                     share_context_window=share_context_window,
-                    shared_cw_max_tokens=shared_cw_max_tokens,
+                    shared_context_window_max_tokens=shared_context_window_max_tokens,
                 )
         except Exception as e:
             logger.debug(f"create_sub_agent mapping ensure failed for '{agent_id}': {e}")
@@ -1678,7 +1686,7 @@ class PenguinCore:
                             "total": u.get("total", u.get("current_total_tokens")),
                             "available": u.get("available", u.get("available_tokens")),
                         }
-                        cw_max = u.get("max", u.get("max_tokens"))
+                        cw_max = u.get("max", u.get("max_context_window_tokens", u.get("max_tokens")))  # max_context_window_tokens is the canonical key
                     except Exception:
                         pass
                 # Record agent info
@@ -2865,7 +2873,7 @@ class PenguinCore:
                     "client_preference": client_pref,
                     "streaming_enabled": True,
                     # Use max_output_tokens if available, otherwise use 90% of context_length
-                    "max_tokens": model_specs.get("max_output_tokens") or int((model_specs.get("context_length") or 100000) * 0.9),
+                    "max_output_tokens": model_specs.get("max_output_tokens") or int((model_specs.get("context_length") or 100000) * 0.9),
                 }
 
             # Sanity-check we have the minimum required keys.
@@ -2878,14 +2886,14 @@ class PenguinCore:
             safe_window = safe_context_window(context_length)
             max_output_tokens = model_specs.get("max_output_tokens")
 
-            # Update max_tokens with fetched specs – prefer max_output_tokens
+            # Update max_output_tokens with fetched specs
             if max_output_tokens is not None:
-                model_conf["max_tokens"] = min(
+                model_conf["max_output_tokens"] = min(
                     max_output_tokens,
                     safe_window or max_output_tokens,
                 )
             elif safe_window is not None:
-                model_conf["max_tokens"] = safe_window
+                model_conf["max_output_tokens"] = safe_window
             else:
                 # If we don't have real specs, error instead of guessing
                 logger.error(f"Could not fetch context_length/max_output_tokens for model '{model_id}' from OpenRouter API")
@@ -2946,7 +2954,7 @@ class PenguinCore:
                 "provider": conf.get("provider", "unknown"),
                 "client_preference": conf.get("client_preference", "native"),
                 "vision_enabled": conf.get("vision_enabled", False),
-                "max_tokens": conf.get("max_tokens"),
+                "max_output_tokens": conf.get("max_output_tokens", conf.get("max_tokens")),  # Accept both keys
                 "temperature": conf.get("temperature"),
                 "current": model_id == current_model_name or conf.get("model") == current_model_name,
             }
@@ -2970,7 +2978,7 @@ class PenguinCore:
             "model": self.model_config.model,
             "provider": self.model_config.provider,
             "client_preference": self.model_config.client_preference,
-            "max_tokens": getattr(self.model_config, 'max_tokens', None),
+            "max_output_tokens": getattr(self.model_config, 'max_output_tokens', None),
             "temperature": getattr(self.model_config, 'temperature', None),
             "streaming_enabled": self.model_config.streaming_enabled,
             "vision_enabled": bool(getattr(self.model_config, 'vision_enabled', False)),
@@ -3529,14 +3537,14 @@ class PenguinCore:
             # Update model settings
             config_data['model']['default'] = model_id
             
-            # Update max_tokens - prefer max_output_tokens over context_length
+            # Update max_output_tokens - prefer max_output_tokens over context_length
             if max_output_tokens is not None:
-                config_data['model']['max_tokens'] = min(
+                config_data['model']['max_output_tokens'] = min(
                     max_output_tokens,
                     safe_window or max_output_tokens,
                 )
             elif safe_window is not None:
-                config_data['model']['max_tokens'] = safe_window
+                config_data['model']['max_output_tokens'] = safe_window
             else:
                 logger.error(f"No context_length/max_output_tokens available for model {model_id}")
                 return
@@ -3547,7 +3555,7 @@ class PenguinCore:
             elif context_length is not None:
                 config_data['model']['context_window'] = context_length
             
-            # Remove max_output_tokens if it exists (we only need max_tokens)
+            # Remove old max_tokens key if it exists (we now use max_output_tokens)
             if 'max_output_tokens' in config_data['model']:
                 del config_data['model']['max_output_tokens']
             
@@ -3556,10 +3564,10 @@ class PenguinCore:
                 yaml.safe_dump(config_data, f, default_flow_style=False, sort_keys=False)
                 
             logger.info(
-                "Updated config.yml with model %s, max_tokens %s, context_window %s "
+                "Updated config.yml with model %s, max_output_tokens %s, context_window %s "
                 "(raw_context_length=%s, safety_fraction_applied=%s)",
                 model_id,
-                config_data['model']['max_tokens'],
+                config_data['model']['max_output_tokens'],
                 config_data['model'].get('context_window'),
                 context_length or "unknown",
                 safe_window is not None,

@@ -486,7 +486,7 @@ async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_c
                     system_prompt=req.system_prompt,
                     share_session=bool(req.share_session),
                     share_context_window=bool(req.share_context_window),
-                    shared_cw_max_tokens=req.shared_cw_max_tokens,
+                    shared_context_window_max_tokens=req.shared_cw_max_tokens,  # Web API uses short name for compat
                     persona=req.persona,
                     model_config_id=model_id or None,
                     model_overrides=overrides,
@@ -775,7 +775,7 @@ async def list_models(core: PenguinCore = Depends(get_core)):
                     "name": cur.get("model"),
                     "provider": cur.get("provider"),
                     "client_preference": cur.get("client_preference"),
-                    "max_tokens": cur.get("max_tokens"),
+                    "max_output_tokens": cur.get("max_output_tokens", cur.get("max_tokens")),  # Accept both keys
                     "temperature": cur.get("temperature"),
                     "vision_enabled": cur.get("vision_enabled", False),
                     "current": True,
@@ -2266,7 +2266,7 @@ async def get_current_model(core: PenguinCore = Depends(get_core)):
             "model": core.model_config.model,
             "provider": core.model_config.provider,
             "client_preference": core.model_config.client_preference,
-            "max_tokens": core.model_config.max_tokens,
+            "max_output_tokens": core.model_config.max_output_tokens,  # Output token limit
             "temperature": core.model_config.temperature,
             "streaming_enabled": core.model_config.streaming_enabled,
             "vision_enabled": core.model_config.vision_enabled

@@ -112,13 +112,18 @@ class AnthropicAdapter(BaseAdapter):
     async def create_completion(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: bool = False,
-        stream_callback: Optional[Callable[[str], None]] = None
+        stream_callback: Optional[Callable[[str], None]] = None,
+        **kwargs: Any,
     ) -> Any:
         """Create a completion request with optional streaming"""
         try:
+            legacy_max_tokens = kwargs.pop("max_tokens", None)
+            if max_output_tokens is None and legacy_max_tokens is not None:
+                max_output_tokens = legacy_max_tokens
+
             # Format messages for Anthropic
             formatted_messages = self.format_messages(messages)
             
@@ -136,7 +141,7 @@ class AnthropicAdapter(BaseAdapter):
             request_params = {
                 "model": self.model_config.model,
                 "messages": formatted_messages,
-                "max_tokens": max_tokens or self.model_config.max_tokens or 4096,
+                "max_tokens": max_output_tokens or self.model_config.max_output_tokens or 4096,
                 "temperature": temperature or self.model_config.temperature or 0.7,
                 "stream": stream,
             }
@@ -179,10 +184,11 @@ class AnthropicAdapter(BaseAdapter):
     async def get_response(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: bool = False,
         stream_callback: Optional[Callable[[str], None]] = None,
+        **kwargs: Any,
     ) -> str:
         """Unified entrypoint to satisfy BaseAdapter interface.
 
@@ -193,10 +199,11 @@ class AnthropicAdapter(BaseAdapter):
             # Ensure callback is callable; pass through directly
             final_text = await self.create_completion(
                 messages=messages,
-                max_tokens=max_tokens,
+                max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 stream=True,
                 stream_callback=stream_callback,
+                **kwargs,
             )
             # create_completion returns a string when streaming
             return final_text or ""
@@ -204,10 +211,11 @@ class AnthropicAdapter(BaseAdapter):
         # Non-streaming path
         response = await self.create_completion(
             messages=messages,
-            max_tokens=max_tokens,
+            max_output_tokens=max_output_tokens,
             temperature=temperature,
             stream=False,
             stream_callback=None,
+            **kwargs,
         )
         content, _ = self.process_response(response)
         return content or ""

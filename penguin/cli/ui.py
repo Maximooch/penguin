@@ -613,7 +613,7 @@ class CLIRenderer:
             self.progress.update(self.context_task_id, visible=True)
             current = float(self.token_usage_data.get("current_total_tokens", 0))
             # Ensure maximum is at least 1 and not None/0 to avoid division by zero
-            maximum = float(self.token_usage_data.get("max_tokens") or 1)
+            maximum = float(self.token_usage_data.get("max_context_window_tokens", self.token_usage_data.get("max_tokens")) or 1)  # Context window capacity
             maximum = max(maximum, 1.0) # Ensure it's at least 1
             # Ensure current doesn't exceed maximum for progress bar display
             current = min(current, maximum)

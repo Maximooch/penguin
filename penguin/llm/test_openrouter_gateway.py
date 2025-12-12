@@ -228,7 +228,7 @@ async def main():
             provider=TEST_PROVIDER,
             client_preference="openrouter",  # Ensure this is set to "openrouter"
             api_key=api_key,
-            max_tokens=500,  # Keep tests short
+            max_output_tokens=500,  # Keep tests short
             temperature=0.5,
             vision_enabled=VISION_ENABLED,
             streaming_enabled=True  # Default streaming preference (can be overridden in call)

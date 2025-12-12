@@ -56,6 +56,6 @@ class VerificationManager:
         
         response = await self.llm_client.create_completion(
             prompt=prompt,
-            max_tokens=3
+            max_output_tokens=3
         )
         return "YES" in response.upper()

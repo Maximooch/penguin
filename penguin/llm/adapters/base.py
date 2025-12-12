@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple, AsyncIterator, Callable, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 class BaseAdapter(ABC):
     """Base adapter interface for LLM providers"""
@@ -37,10 +37,11 @@ class BaseAdapter(ABC):
     async def create_completion(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: bool = False,
-        stream_callback: Optional[Callable[[str], None]] = None
+        stream_callback: Optional[Callable[[str], None]] = None,
+        **kwargs: Any,
     ) -> Any:
         """Create a completion request with optional streaming"""
         pass
@@ -49,10 +50,11 @@ class BaseAdapter(ABC):
     async def get_response(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: bool = False,
         stream_callback: Optional[Callable[[str], None]] = None,
+        **kwargs: Any,
     ) -> str:
         """
         Get a response from the provider's LLM.

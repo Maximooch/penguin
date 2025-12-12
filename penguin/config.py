@@ -846,7 +846,7 @@ def get_model_config(model_name: Optional[str] = None) -> Dict[str, Any]:
         "model": model_name,
         "provider": base_config.get("provider", DEFAULT_PROVIDER),
         "api_base": base_config.get("api_base", DEFAULT_API_BASE),
-        "max_tokens": base_config.get("max_tokens"),
+        "max_output_tokens": base_config.get("max_output_tokens", base_config.get("max_tokens")),
         "temperature": base_config.get("temperature"),
         "use_assistants_api": _MODEL.get("use_assistants_api", False),
         "assistant_config": get_assistant_config() if _MODEL.get("use_assistants_api", False) else None,
@@ -1099,7 +1099,7 @@ class AgentModelSettings:
     client_preference: Optional[str] = None
     api_base: Optional[str] = None
     temperature: Optional[float] = None
-    max_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
     streaming_enabled: Optional[bool] = None
     vision_enabled: Optional[bool] = None
     use_assistants_api: Optional[bool] = None
@@ -1116,7 +1116,7 @@ class AgentModelSettings:
             client_preference=data.get("client_preference"),
             api_base=data.get("api_base"),
             temperature=data.get("temperature"),
-            max_tokens=data.get("max_tokens"),
+            max_output_tokens=data.get("max_output_tokens", data.get("max_tokens")),
             streaming_enabled=data.get("streaming_enabled"),
             vision_enabled=data.get("vision_enabled"),
             use_assistants_api=data.get("use_assistants_api"),
@@ -1133,7 +1133,7 @@ class AgentModelSettings:
             "client_preference": self.client_preference,
             "api_base": self.api_base,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_output_tokens": self.max_output_tokens,
             "streaming_enabled": self.streaming_enabled,
             "vision_enabled": self.vision_enabled,
             "use_assistants_api": self.use_assistants_api,
@@ -1177,8 +1177,8 @@ class AgentPersonaConfig:
     permissions: Optional[Dict[str, Any]] = None
     share_session_with: Optional[str] = None
     share_context_window_with: Optional[str] = None
-    shared_cw_max_tokens: Optional[int] = None
-    model_max_tokens: Optional[int] = None
+    shared_context_window_max_tokens: Optional[int] = None
+    model_output_max_tokens: Optional[int] = None
     activate_by_default: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -1214,8 +1214,8 @@ class AgentPersonaConfig:
             permissions=permissions,
             share_session_with=data.get("share_session_with"),
             share_context_window_with=data.get("share_context_window_with"),
-            shared_cw_max_tokens=data.get("shared_cw_max_tokens"),
-            model_max_tokens=data.get("model_max_tokens"),
+            shared_context_window_max_tokens=data.get("shared_context_window_max_tokens", data.get("shared_cw_max_tokens")),
+            model_output_max_tokens=data.get("model_output_max_tokens", data.get("model_max_tokens")),
             activate_by_default=bool(data.get("activate") or data.get("activate_by_default", False)),
             metadata=dict(data.get("metadata", {})),
         )
@@ -1247,8 +1247,8 @@ class AgentPersonaConfig:
             "permissions": dict(self.permissions) if self.permissions else None,
             "share_session_with": self.share_session_with,
             "share_context_window_with": self.share_context_window_with,
-            "shared_cw_max_tokens": self.shared_cw_max_tokens,
-            "model_max_tokens": self.model_max_tokens,
+            "shared_context_window_max_tokens": self.shared_context_window_max_tokens,
+            "model_output_max_tokens": self.model_output_max_tokens,
             "activate": self.activate_by_default,
             "metadata": dict(self.metadata) if self.metadata else None,
         }
@@ -1269,7 +1269,7 @@ class Config:
     api: APIConfig = field(default_factory=APIConfig)
     workspace_path: Path = field(default_factory=lambda: Path(WORKSPACE_PATH))
     temperature: float = field(default=0.7)
-    max_tokens: Optional[int] = field(default=None)
+    max_output_tokens: Optional[int] = field(default=None)
     diagnostics: DiagnosticsConfig = field(default_factory=DiagnosticsConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
@@ -1297,7 +1297,7 @@ class Config:
         result = {}
         # Common model parameters
         attrs = ["provider", "client_preference", "streaming_enabled", "api_base", 
-                 "max_tokens", "temperature", "vision_enabled", "use_assistants_api"]
+                 "max_output_tokens", "temperature", "vision_enabled", "use_assistants_api"]
         
         for attr in attrs:
             if hasattr(self.model_config, attr):
@@ -1441,7 +1441,7 @@ class Config:
             api=APIConfig(base_url=config_data.get("api", {}).get("base_url")),
             workspace_path=Path(WORKSPACE_PATH), # WORKSPACE_PATH is already defined globally
             temperature=config_data.get("temperature", llm_model_config.temperature), # Use model temp if global not set
-            max_tokens=config_data.get("max_tokens", llm_model_config.max_tokens), # Use model max_tokens if global not set
+            max_output_tokens=config_data.get("max_output_tokens", config_data.get("max_tokens", llm_model_config.max_output_tokens)),  # Accepts both old and new key
             diagnostics=diagnostics_config,
             security=security_config,
             output=output_config,
@@ -1457,7 +1457,7 @@ class Config:
         return {
             "default_model_config": self.model_config.get_config(),
             "global_temperature": self.temperature,
-            "global_max_tokens": self.max_tokens,
+            "global_max_output_tokens": self.max_output_tokens,
             "diagnostics": {
                 "enabled": self.diagnostics.enabled,
                 "max_context_tokens": self.diagnostics.max_context_tokens,

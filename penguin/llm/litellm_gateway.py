@@ -47,17 +47,18 @@ class LiteLLMGateway:
     async def get_response(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: bool = False,
         stream_callback: Optional[Callable[[str], None]] = None,
+        **kwargs: Any,
     ) -> str:
         """
         Get a response from the configured LLM via LiteLLM.
 
         Args:
             messages: A list of message dictionaries (OpenAI format).
-            max_tokens: The maximum number of tokens to generate.
+            max_output_tokens: The maximum number of output tokens to generate.
             temperature: The sampling temperature.
             stream: Whether to stream the response.
             stream_callback: A callback function to handle streaming chunks.
@@ -67,6 +68,10 @@ class LiteLLMGateway:
         """
         request_id = os.urandom(4).hex() # Generate a simple request ID for tracking
         logger.info(f"[Request:{request_id}] LiteLLMGateway.get_response called.")
+
+        legacy_max_tokens = kwargs.pop("max_tokens", None)
+        if max_output_tokens is None and legacy_max_tokens is not None:
+            max_output_tokens = legacy_max_tokens
         
         # Determine if streaming should be used; fall back to non-streaming if 
         # streaming is requested but no callback is provided
@@ -87,7 +92,7 @@ class LiteLLMGateway:
 
             # 2. Prepare parameters for LiteLLM
             litellm_params = self._prepare_litellm_params(
-                formatted_messages, max_tokens, temperature
+                formatted_messages, max_output_tokens, temperature
             )
             logger.debug(f"[Request:{request_id}] LiteLLM parameters prepared.")
             # Log params safely (redacts API key)
@@ -151,14 +156,14 @@ class LiteLLMGateway:
     def _prepare_litellm_params(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Prepare the dictionary of parameters for litellm.acompletion."""
         params = {
             "model": self.model_config.model,
             "messages": messages,
-            "max_tokens": max_tokens or self.model_config.max_tokens,
+            "max_tokens": max_output_tokens or self.model_config.max_output_tokens,
             "temperature": temperature if temperature is not None else self.model_config.temperature,
             # Add other common params if needed (top_p, presence_penalty, etc.)
         }

@@ -326,7 +326,7 @@ class ConversationManager:
         parent_agent_id: str,
         share_session: bool = True,
         share_context_window: bool = True,
-        shared_cw_max_tokens: Optional[int] = None,
+        shared_context_window_max_tokens: Optional[int] = None,
     ) -> None:
         """Create a sub-agent, honoring session/context-window sharing preferences."""
         self._ensure_agent(parent_agent_id)
@@ -356,10 +356,10 @@ class ConversationManager:
                 child_cw = self.agent_context_windows[agent_id]
                 if parent_cw and child_cw and hasattr(parent_cw, "max_context_window_tokens") and hasattr(child_cw, "max_context_window_tokens"):
                     desired = parent_cw.max_context_window_tokens
-                    if shared_cw_max_tokens is not None:
-                        desired = min(desired, int(shared_cw_max_tokens))
+                    if shared_context_window_max_tokens is not None:
+                        desired = min(desired, int(shared_context_window_max_tokens))
                     child_cw.max_context_window_tokens = desired
-                    if shared_cw_max_tokens is not None:
+                    if shared_context_window_max_tokens is not None:
                         note = (
                             f"Note: Sub-agent '{agent_id}' uses isolated CWM with max_context_window_tokens={desired} (parent={parent_cw.max_context_window_tokens})."
                         )
@@ -725,9 +725,10 @@ class ConversationManager:
 
             {
                 "current_total_tokens": <int>,   # tokens currently loaded in context window
-                "max_tokens": <int>,            # model context limit
+                "max_tokens": <int>,            # model context limit (legacy key, deprecated)
+                "max_context_window_tokens": <int>,
                 "available_tokens": <int>,      # remaining budget
-                "percentage": <float>,          # current_total / max_tokens * 100
+                "percentage": <float>,          # current_total / max_context_window_tokens * 100
                 "categories": {
                     "SYSTEM": <int>,
                     "CONTEXT": <int>,
@@ -771,7 +772,10 @@ class ConversationManager:
 
         standardized_usage: Dict[str, Any] = {
             "current_total_tokens": cw_usage.get("total", 0),
-            "max_tokens": cw_usage.get("max", self.context_window.max_context_window_tokens),
+            "max_tokens": cw_usage.get("max", self.context_window.max_context_window_tokens),  # Legacy key for backward compat
+            "max_context_window_tokens": cw_usage.get(
+                "max", self.context_window.max_context_window_tokens
+            ),
             "available_tokens": cw_usage.get("available", self.context_window.available_tokens),
             "percentage": cw_usage.get("usage_percentage", 0),
             "categories": categories_current,

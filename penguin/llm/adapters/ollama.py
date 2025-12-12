@@ -39,16 +39,21 @@ class OllamaAdapter(BaseAdapter):
     async def create_completion(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: bool = False,
         stream_callback: Optional[Callable[[str], None]] = None,
+        **kwargs: Any,
     ) -> Any:
+        legacy_max_tokens = kwargs.pop("max_tokens", None)
+        if max_output_tokens is None and legacy_max_tokens is not None:
+            max_output_tokens = legacy_max_tokens
+
         options: Dict[str, Any] = {}
         if temperature is not None:
             options["temperature"] = temperature
-        if max_tokens is not None:
-            options["num_predict"] = max_tokens
+        if max_output_tokens is not None:
+            options["num_predict"] = max_output_tokens
 
         params = {
             "model": self.model_config.model,
@@ -73,10 +78,11 @@ class OllamaAdapter(BaseAdapter):
     async def get_response(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: bool = False,
         stream_callback: Optional[Callable[[str], None]] = None,
+        **kwargs: Any,
     ) -> str:
         if stream:
             collected: List[str] = []
@@ -88,18 +94,20 @@ class OllamaAdapter(BaseAdapter):
 
             await self.create_completion(
                 messages,
-                max_tokens=max_tokens,
+                max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 stream=True,
                 stream_callback=_cb,
+                **kwargs,
             )
             return "".join(collected)
         else:
             resp = await self.create_completion(
                 messages,
-                max_tokens=max_tokens,
+                max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 stream=False,
+                **kwargs,
             )
             text, _ = self.process_response(resp)
             return text

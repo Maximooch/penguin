@@ -46,6 +46,7 @@ in terms of short/long term memory.
 
 
 import logging
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Any, Callable, Tuple
@@ -60,15 +61,18 @@ class TokenBudget:
     # Minimum tokens guaranteed for this category
     min_tokens: int
     # Maximum tokens this category can consume
-    max_tokens: int
+    max_category_tokens: int  # Max tokens this category can consume
     # Current tokens used by this category
     current_tokens: int = 0
 
     def __post_init__(self):
-        # Ensure min_tokens <= max_tokens
-        if self.min_tokens > self.max_tokens:
-            logger.warning(f"min_tokens ({self.min_tokens}) > max_tokens ({self.max_tokens}). Setting min_tokens = max_tokens")
-            self.min_tokens = self.max_tokens
+        # Ensure min_tokens <= max_category_tokens
+        if self.min_tokens > self.max_category_tokens:
+            logger.warning(
+                f"min_tokens ({self.min_tokens}) > max_category_tokens ({self.max_category_tokens}). "
+                "Setting min_tokens = max_category_tokens"
+            )
+            self.min_tokens = self.max_category_tokens
 
 
 @dataclass
@@ -156,7 +160,7 @@ class ContextWindowManager:
         Initialize the context window manager.
 
         Args:
-            model_config: Optional model configuration with max_tokens
+            model_config: Optional model configuration with token limits
             token_counter: Function to count tokens for content
             api_client: API client for token counting
         """
@@ -164,7 +168,7 @@ class ContextWindowManager:
         self.truncation_tracker = TruncationTracker()
 
         # Context window budget - get from config.yml model.context_window
-        # NOTE: context_window = INPUT capacity (history), max_tokens = OUTPUT limit (generation)
+        # NOTE: context_window = INPUT capacity (history), max_output_tokens = OUTPUT limit (generation)
         self.max_context_window_tokens = None
 
         try:
@@ -257,7 +261,7 @@ class ContextWindowManager:
             
             self._budgets[category] = TokenBudget(
                 min_tokens=min_tokens,
-                max_tokens=budget,
+                max_category_tokens=budget,
                 current_tokens=0
             )
         
@@ -273,7 +277,7 @@ class ContextWindowManager:
             if category not in self._budgets:
                 self._budgets[category] = TokenBudget(
                     min_tokens=0,
-                    max_tokens=default_max,
+                    max_category_tokens=default_max,
                     current_tokens=0,
                 )
     
@@ -281,6 +285,26 @@ class ContextWindowManager:
     def total_budget(self) -> int:
         """Get the total token budget"""
         return self.max_context_window_tokens
+
+    @property
+    def max_tokens(self) -> int:
+        """Backward-compatible alias for `max_context_window_tokens`. Deprecated."""
+        warnings.warn(
+            "ContextWindowManager.max_tokens is deprecated. Use max_context_window_tokens instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.max_context_window_tokens
+
+    @max_tokens.setter
+    def max_tokens(self, value: int) -> None:
+        warnings.warn(
+            "ContextWindowManager.max_tokens is deprecated. Use max_context_window_tokens instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.max_context_window_tokens = int(value)
+        self._initialize_token_budgets()
     
     @property
     def available_tokens(self) -> int:
@@ -309,7 +333,10 @@ class ContextWindowManager:
     def is_over_budget(self, category: Optional[MessageCategory] = None) -> bool:
         """Check if a category or the entire context is over budget"""
         if category:
-            return self._budgets[category].current_tokens > self._budgets[category].max_tokens
+            return (
+                self._budgets[category].current_tokens
+                > self._budgets[category].max_category_tokens
+            )
         
         return sum(budget.current_tokens for budget in self._budgets.values()) > self.max_context_window_tokens
     
@@ -423,13 +450,15 @@ class ContextWindowManager:
         # Trim categories in priority order
         for category in trim_order:
             budget = self._budgets.get(category)
+            if budget is None:
+                continue
             category_msgs = categorized[category]
             category_tokens = stats["per_category"].get(category, 0)
             
             # If this category is over its individual budget, trim it regardless of total
-            if category_tokens > budget.max_tokens:
+            if category_tokens > budget.max_category_tokens:
                 # Determine how much to trim
-                category_excess = category_tokens - budget.max_tokens
+                category_excess = category_tokens - budget.max_category_tokens
                 
                 # If the overall budget is also exceeded, we might need to trim even more
                 if total_over_budget:
@@ -662,11 +691,11 @@ class ContextWindowManager:
             if budget is None:
                 continue
             category_tokens = stats["per_category"].get(category, 0)
-            if category_tokens > budget.max_tokens:
+            if category_tokens > budget.max_category_tokens:
                 categories_over_budget.append(category)
                 logger.info(
                     f"Category {category.name} is over budget: {category_tokens} tokens " +
-                    f"(exceeds by {category_tokens - budget.max_tokens})"
+                    f"(exceeds by {category_tokens - budget.max_category_tokens})"
                 )
         
         # If total is over budget or any non-SYSTEM categories are over budget, trim
@@ -739,13 +768,15 @@ class ContextWindowManager:
         usage = self.get_token_usage()
         total = usage.get("total", 0)
         available = usage.get("available", 0)
-        max_tokens = usage.get("max", 0)
+        max_context_window_tokens = usage.get("max", 0)
         
         # Calculate percentage of total budget used
-        percentage = (total / max_tokens * 100) if max_tokens > 0 else 0
+        percentage = (
+            (total / max_context_window_tokens * 100) if max_context_window_tokens > 0 else 0
+        )
         
         output = [
-            f"Token Usage: {total:,}/{max_tokens:,} ({percentage:.1f}%)",
+            f"Token Usage: {total:,}/{max_context_window_tokens:,} ({percentage:.1f}%)",
             f"Available: {available:,} tokens",
             "\nBy Category:"
         ]
@@ -753,7 +784,11 @@ class ContextWindowManager:
         # Add category breakdowns
         for category in MessageCategory:
             category_tokens = usage.get(str(category), 0)
-            category_max = self._budgets[category].max_tokens if category in self._budgets else 0
+            category_max = (
+                self._budgets[category].max_category_tokens
+                if category in self._budgets
+                else 0
+            )
             category_pct = (category_tokens / category_max * 100) if category_max > 0 else 0
             
             output.append(f"  {category.name}: {category_tokens:,}/{category_max:,} ({category_pct:.1f}%)")
@@ -776,11 +811,11 @@ class ContextWindowManager:
             usage = self.get_token_usage()
             total = usage.get("total", 0)
             available = usage.get("available", 0)
-            max_tokens = usage.get("max", 0)
+            max_context_window_tokens = usage.get("max", 0)
             
             # Create rich table with proper Box object
             table = Table(
-                title=f"Token Usage: {total:,}/{max_tokens:,} ({total/max_tokens*100:.1f}%)",
+                title=f"Token Usage: {total:,}/{max_context_window_tokens:,} ({total/max_context_window_tokens*100:.1f}%)",
                 expand=False,
                 box=SIMPLE,  # Use SIMPLE box instead of boolean
                 safe_box=True  # Prevents rendering issues
@@ -800,9 +835,9 @@ class ContextWindowManager:
                 
                 if category_budget:
                     # Create progress bar with clean rendering
-                    max_tokens = category_budget.max_tokens
-                    if max_tokens > 0:
-                        usage_pct = min(100, category_tokens / max_tokens * 100)
+                    category_max = category_budget.max_category_tokens
+                    if category_max > 0:
+                        usage_pct = min(100, category_tokens / category_max * 100)
                         bar_width = 20
                         filled = int(usage_pct / 100 * bar_width)
                         
@@ -813,8 +848,8 @@ class ContextWindowManager:
                         table.add_row(
                             category.name,
                             f"{category_tokens:,}",
-                            f"{category_budget.min_tokens:,}-{max_tokens:,}",
-                            f"{max_tokens/self.max_context_window_tokens*100:.1f}%",
+                            f"{category_budget.min_tokens:,}-{category_max:,}",
+                            f"{category_max/self.max_context_window_tokens*100:.1f}%",
                             progress_bar
                         )
                     else:
@@ -822,8 +857,8 @@ class ContextWindowManager:
                         table.add_row(
                             category.name,
                             f"{category_tokens:,}",
-                            f"{category_budget.min_tokens:,}-{max_tokens:,}",
-                            f"{max_tokens/self.max_context_window_tokens*100:.1f}%",
+                            f"{category_budget.min_tokens:,}-{category_max:,}",
+                            f"{category_max/self.max_context_window_tokens*100:.1f}%",
                             "[" + " " * 20 + "] 0.0%"
                         )
                 
@@ -853,13 +888,13 @@ class ContextWindowManager:
         usage = self.get_token_usage()
         total = usage.get("total", 0)
         available = usage.get("available", 0)
-        max_tokens = usage.get("max", 0)
+        max_context_window_tokens = usage.get("max", 0)
         
         # Calculate percentage of total budget used
-        percentage = (total / max_tokens * 100) if max_tokens else 0
+        percentage = (total / max_context_window_tokens * 100) if max_context_window_tokens else 0
         
         output = [
-            f"Token Usage: {total:,}/{max_tokens:,} ({percentage:.1f}%)",
+            f"Token Usage: {total:,}/{max_context_window_tokens:,} ({percentage:.1f}%)",
             f"Available: {available:,} tokens",
             "\nBy Category:"
         ]
@@ -869,8 +904,14 @@ class ContextWindowManager:
             category_tokens = usage.get(str(category), 0)
             budget = self._budgets.get(category)
             if budget:
-                category_pct = (category_tokens / budget.max_tokens * 100) if budget.max_tokens else 0
-                output.append(f"  {category.name}: {category_tokens:,}/{budget.max_tokens:,} ({category_pct:.1f}%)")
+                category_pct = (
+                    (category_tokens / budget.max_category_tokens * 100)
+                    if budget.max_category_tokens
+                    else 0
+                )
+                output.append(
+                    f"  {category.name}: {category_tokens:,}/{budget.max_category_tokens:,} ({category_pct:.1f}%)"
+                )
         
         return "\n".join(output)
     
@@ -888,7 +929,7 @@ class ContextWindowManager:
         budget = self._budgets.get(category)
         if not budget:
             return 0
-        return max(0, budget.max_tokens - budget.current_tokens)
+        return max(0, budget.max_category_tokens - budget.current_tokens)
     
     def borrow_tokens(self, from_category: MessageCategory, to_category: MessageCategory, amount: int) -> bool:
         """
@@ -909,13 +950,13 @@ class ContextWindowManager:
             return False
         
         # Check if from_category has enough unused tokens
-        available_from = from_budget.max_tokens - from_budget.current_tokens
+        available_from = from_budget.max_category_tokens - from_budget.current_tokens
         if available_from < amount:
             return False
         
         # Perform the borrowing
-        from_budget.max_tokens -= amount
-        to_budget.max_tokens += amount
+        from_budget.max_category_tokens -= amount
+        to_budget.max_category_tokens += amount
         
         logger.debug(f"Borrowed {amount} tokens from {from_category.name} to {to_category.name}")
         return True
@@ -936,8 +977,12 @@ class ContextWindowManager:
         
         if context_budget and dialog_budget:
             # If CONTEXT is over budget and DIALOG has unused tokens
-            context_over = context_budget.current_tokens - context_budget.max_tokens
-            dialog_available = dialog_budget.max_tokens - dialog_budget.current_tokens
+            context_over = (
+                context_budget.current_tokens - context_budget.max_category_tokens
+            )
+            dialog_available = (
+                dialog_budget.max_category_tokens - dialog_budget.current_tokens
+            )
             
             if context_over > 0 and dialog_available > 0:
                 # Borrow up to what's needed or available
@@ -1029,10 +1074,14 @@ class ContextWindowManager:
         for category, budget in self._budgets.items():
             category_info = {
                 "min_tokens": budget.min_tokens,
-                "max_tokens": budget.max_tokens,
+                "max_context_window_tokens": budget.max_category_tokens,
                 "current_tokens": budget.current_tokens,
-                "available": budget.max_tokens - budget.current_tokens,
-                "utilization_pct": (budget.current_tokens / budget.max_tokens * 100) if budget.max_tokens else 0
+                "available": budget.max_category_tokens - budget.current_tokens,
+                "utilization_pct": (
+                    (budget.current_tokens / budget.max_category_tokens * 100)
+                    if budget.max_category_tokens
+                    else 0
+                ),
             }
             report["categories"][category.name] = category_info
             total_used += budget.current_tokens

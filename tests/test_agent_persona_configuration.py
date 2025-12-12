@@ -21,7 +21,7 @@ os.environ.setdefault("PENGUIN_WORKSPACE", str(_TEST_WORKSPACE))
 class StubContextWindow:
     def __init__(self, model_config: ModelConfig) -> None:
         self.model_config = model_config
-        self.max_tokens: Optional[int] = model_config.max_tokens
+        self.max_context_window_tokens: Optional[int] = model_config.max_context_window_tokens
 
     def is_over_budget(self) -> bool:
         return False
@@ -66,7 +66,7 @@ class StubConversationManager:
         parent_agent_id: str,
         share_session: bool,
         share_context_window: bool,
-        shared_cw_max_tokens: Optional[int],
+        shared_cw_max_context_window_tokens: Optional[int],
     ) -> None:
         # For this stub we simply ensure the conversation exists.
         self.get_agent_conversation(agent_id)
@@ -171,7 +171,7 @@ def test_register_agent_applies_persona_model(monkeypatch: pytest.MonkeyPatch) -
         model="openai/gpt-5-high",
         provider="openai",
         client_preference="native",
-        max_tokens=80000,
+        max_output_tokens=80000,
     )
 
     persona_model = AgentModelSettings(id="kimi-lite")

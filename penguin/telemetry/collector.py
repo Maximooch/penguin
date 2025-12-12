@@ -124,7 +124,9 @@ class TelemetryCollector:
                     cm = core.conversation_manager
                     overall = cm.get_token_usage() or {}
                     try:
-                        overall.setdefault("max_tokens", getattr(cm.context_window, "max_tokens", None))
+                        cw_max = getattr(cm.context_window, "max_context_window_tokens", None)
+                        overall.setdefault("max_context_window_tokens", cw_max)
+                        overall.setdefault("max_tokens", cw_max)
                     except Exception:
                         pass
                     tokens_summary["overall"] = overall
@@ -134,8 +136,10 @@ class TelemetryCollector:
                         try:
                             if cw and hasattr(cw, "get_token_usage"):
                                 usage = cw.get_token_usage()
-                                if usage is not None and hasattr(cw, "max_tokens"):
-                                    usage.setdefault("max_tokens", getattr(cw, "max_tokens", None))
+                                if usage is not None:
+                                    cw_max = getattr(cw, "max_context_window_tokens", None)
+                                    usage.setdefault("max_context_window_tokens", cw_max)
+                                    usage.setdefault("max_tokens", cw_max)
                                     usage.setdefault("current_total_tokens", usage.get("total"))
                         except Exception:
                             usage = {}

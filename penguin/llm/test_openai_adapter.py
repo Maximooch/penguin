@@ -64,7 +64,7 @@ def _build_adapter(model_id: str, *, vision_enabled: Optional[bool] = None) -> O
         provider="openai",
         client_preference="native",
         api_key=api_key,
-        max_tokens=400,
+        max_output_tokens=400,
         temperature=0.5,
         vision_enabled=vision_enabled,
         streaming_enabled=True,
@@ -176,5 +176,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
 

@@ -40,7 +40,7 @@ async def test_basic_response(gateway, model_name):
     ]
     
     try:
-        response = await gateway.get_response(messages, max_tokens=50)
+        response = await gateway.get_response(messages, max_output_tokens=50)
         print(f"     Response: {response[:100]}...")
         return "successful" in response.lower() or len(response.strip()) > 0
     except Exception as e:
@@ -56,7 +56,7 @@ async def test_reasoning_response(gateway, model_name):
     ]
     
     try:
-        response = await gateway.get_response(messages, max_tokens=500)
+        response = await gateway.get_response(messages, max_output_tokens=500)
         print(f"     Response length: {len(response)} chars")
         print(f"     Preview: {response[:200]}...")
         return len(response) > 50  # Reasoning responses should be substantial
@@ -76,7 +76,7 @@ async def test_with_penguin_actions(gateway, model_name):
     ]
     
     try:
-        response = await gateway.get_response(messages, max_tokens=200)
+        response = await gateway.get_response(messages, max_output_tokens=200)
         print(f"     Response: {response[:150]}...")
         # Should not get tool call validation errors
         return not response.startswith("[Error:") and len(response) > 10
@@ -101,7 +101,7 @@ async def test_streaming_response(gateway, model_name):
     try:
         response = await gateway.get_response(
             messages, 
-            max_tokens=100,
+            max_output_tokens=100,
             stream=True,
             stream_callback=stream_callback
         )
@@ -127,7 +127,7 @@ async def test_model(model_name, api_key):
             reasoning_enabled=True,
             reasoning_effort="medium" if "deepseek" not in model_name.lower() else None,
             reasoning_max_tokens=1000 if "anthropic" in model_name.lower() else None,
-            max_tokens=1000,
+            max_output_tokens=1000,
             temperature=0.3,
             streaming_enabled=True
         )

@@ -216,7 +216,7 @@ def test_integration_mock():
             client_preference="openrouter",
             reasoning_enabled=True,
             reasoning_effort="medium",
-            max_tokens=1000,
+            max_output_tokens=1000,
             temperature=0.7
         )
         
@@ -236,7 +236,7 @@ def test_integration_mock():
         print("✅ Gateway initialization successful")
         print(f"   Model: {gateway.model_config.model}")
         print(f"   Reasoning: {reasoning_config}")
-        print(f"   Max tokens: {gateway.model_config.max_tokens}")
+        print(f"   Max output tokens: {gateway.model_config.max_output_tokens}")
         
         # Test message processing pipeline (without actual API call)
         test_messages = [

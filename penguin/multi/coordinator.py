@@ -20,7 +20,7 @@ class AgentInfo:
         agent_id: Unique identifier for the agent
         role: Role/function of the agent (e.g., "analyzer", "implementer")
         system_prompt: Custom system prompt override
-        model_max_tokens: Token limit for this agent
+        model_output_max_tokens: Output token limit for this agent
         persona: Persona config name to apply
         model_config_id: Model configuration override
         default_tools: Tool name restrictions (legacy, use permissions)
@@ -30,7 +30,7 @@ class AgentInfo:
     agent_id: str
     role: str
     system_prompt: Optional[str] = None
-    model_max_tokens: Optional[int] = None
+    model_output_max_tokens: Optional[int] = None
     persona: Optional[str] = None
     model_config_id: Optional[str] = None
     default_tools: Optional[Sequence[str]] = None
@@ -93,7 +93,7 @@ class MultiAgentCoordinator:
         *,
         role: str,
         system_prompt: Optional[str] = None,
-        model_max_tokens: Optional[int] = None,
+        model_output_max_tokens: Optional[int] = None,
         activate: bool = False,
         persona: Optional[str] = None,
         model_config_id: Optional[str] = None,
@@ -101,7 +101,7 @@ class MultiAgentCoordinator:
         default_tools: Optional[Sequence[str]] = None,
         permissions: Optional[Dict[str, Any]] = None,
         parent_agent_id: Optional[str] = None,
-        shared_cw_max_tokens: Optional[int] = None,
+        shared_context_window_max_tokens: Optional[int] = None,
         share_session_with: Optional[str] = None,
         share_context_window_with: Optional[str] = None,
     ) -> None:
@@ -111,7 +111,7 @@ class MultiAgentCoordinator:
             agent_id: Unique identifier for the agent
             role: Agent's role (e.g., "analyzer", "implementer")
             system_prompt: Custom system prompt
-            model_max_tokens: Token limit
+            model_output_max_tokens: Output token limit
             activate: Whether to make this the active agent
             persona: Persona config name to apply
             model_config_id: Model configuration override
@@ -119,7 +119,7 @@ class MultiAgentCoordinator:
             default_tools: Tool name restrictions (legacy)
             permissions: Permission config dict (mode, operations, paths)
             parent_agent_id: Parent agent for permission inheritance
-            shared_cw_max_tokens: Shared context window token limit
+            shared_context_window_max_tokens: Shared context window token limit
             share_session_with: Agent ID to share session with
             share_context_window_with: Agent ID to share context window with
         """
@@ -127,12 +127,12 @@ class MultiAgentCoordinator:
             agent_id,
             system_prompt=system_prompt,
             activate=activate,
-            model_max_tokens=model_max_tokens,
+            model_output_max_tokens=model_output_max_tokens,
             persona=persona,
             model_config_id=model_config_id,
             model_overrides=model_overrides,
             default_tools=default_tools,
-            shared_cw_max_tokens=shared_cw_max_tokens,
+            shared_context_window_max_tokens=shared_context_window_max_tokens,
             share_session_with=share_session_with,
             share_context_window_with=share_context_window_with,
         )
@@ -140,7 +140,7 @@ class MultiAgentCoordinator:
             agent_id=agent_id,
             role=role,
             system_prompt=system_prompt,
-            model_max_tokens=model_max_tokens,
+            model_output_max_tokens=model_output_max_tokens,
             persona=persona,
             model_config_id=model_config_id,
             default_tools=tuple(default_tools) if default_tools else None,

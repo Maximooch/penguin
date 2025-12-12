@@ -176,7 +176,7 @@ async def main():
             provider=TEST_PROVIDER,
             api_key=api_key, # Pass key explicitly if found
             api_base=getattr(sys.modules[__name__], 'TEST_API_BASE', None), # Get api_base if defined
-            max_tokens=500, # Keep tests short
+            max_output_tokens=500, # Keep tests short
             temperature=0.5,
             vision_enabled=VISION_ENABLED,
             streaming_enabled=True # Default streaming preference (can be overridden in call)

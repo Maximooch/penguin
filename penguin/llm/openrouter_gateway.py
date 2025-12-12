@@ -312,7 +312,7 @@ class OpenRouterGateway:
     async def get_response(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
@@ -323,7 +323,7 @@ class OpenRouterGateway:
 
         Args:
             messages: List of message dictionaries (OpenAI format).
-            max_tokens: Optional max tokens for the response.
+            max_output_tokens: Optional max output tokens for the response.
             temperature: Optional sampling temperature.
             stream: Whether to stream the response. If None, uses model_config default.
             stream_callback: Callback function for handling streaming chunks (required if stream=True).
@@ -351,6 +351,10 @@ class OpenRouterGateway:
         # If stream is explicitly True, try to stream.
         # If stream is None, fall back to config.
         use_streaming = stream if stream is not None else self.model_config.streaming_enabled
+
+        legacy_max_tokens = kwargs.pop("max_tokens", None)
+        if max_output_tokens is None and legacy_max_tokens is not None:
+            max_output_tokens = legacy_max_tokens
         
         # If streaming is decided but no callback is provided, log warning and disable
         if use_streaming and stream_callback is None:
@@ -375,7 +379,7 @@ class OpenRouterGateway:
         request_params = {
             "model": self.model_config.model,
             "messages": processed_messages, # Use processed messages
-            "max_tokens": max_tokens or self.model_config.max_tokens,
+            "max_tokens": max_output_tokens or self.model_config.max_output_tokens,
             "temperature": temperature if temperature is not None else self.model_config.temperature,
             "stream": use_streaming,
             "extra_headers": self.extra_headers,

@@ -1,6 +1,7 @@
 import os
-from typing import Any, Dict, Optional, Literal, Union
+import warnings
 from dataclasses import dataclass, field
+from typing import Any, Dict, Literal, Optional
 
 
 CONTEXT_WINDOW_SAFETY_FRACTION = max(
@@ -25,7 +26,10 @@ class ModelConfig:
     api_base: Optional[str] = None
     api_key: Optional[str] = None
     api_version: Optional[str] = None
-    max_tokens: Optional[int] = None
+    # Max tokens the model may generate in a single response (output cap).
+    max_output_tokens: Optional[int] = None
+    # Model context window size (input capacity) in tokens, before safety buffer.
+    max_context_window_tokens: Optional[int] = None
     max_history_tokens: Optional[int] = None
     temperature: float = 0.7
     use_assistants_api: bool = False
@@ -53,7 +57,11 @@ class ModelConfig:
             print(f"Warning: Model '{self.model}' for LiteLLM preference lacks provider prefix. Assuming '{self.provider}/{self.model}'.")
             self.model = f"{self.provider}/{self.model}"
 
-        self.max_history_tokens = self.max_history_tokens or 200000
+        if self.max_history_tokens is None:
+            if self.max_context_window_tokens is not None:
+                self.max_history_tokens = safe_context_window(self.max_context_window_tokens)
+            else:
+                self.max_history_tokens = 200000
         
         # TODO: move this to the gateway. 
         # Auto-detect vision support 
@@ -90,7 +98,25 @@ class ModelConfig:
         self.supports_vision = self.vision_enabled
         self.streaming_enabled = self.streaming_enabled
 
-    # TODO: move this to the gateway.
+    @property
+    def max_tokens(self) -> Optional[int]:
+        """Backward-compatible alias for `max_output_tokens`. Deprecated."""
+        warnings.warn(
+            "ModelConfig.max_tokens is deprecated. Use max_output_tokens instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.max_output_tokens
+
+    @max_tokens.setter
+    def max_tokens(self, value: Optional[int]) -> None:
+        warnings.warn(
+            "ModelConfig.max_tokens is deprecated. Use max_output_tokens instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.max_output_tokens = value
+
     def _detect_reasoning_support(self) -> bool:
         """Auto-detect if the model supports reasoning tokens."""
         model_lower = self.model.lower()
@@ -147,14 +173,18 @@ class ModelConfig:
             return None
             
         config = {}
-        
-        if self.reasoning_effort:
+
+        if self._uses_effort_style():
+            config["effort"] = self.reasoning_effort or "high"
+        elif self._uses_max_tokens_style():
+            if self.reasoning_max_tokens is not None:
+                config["max_tokens"] = self.reasoning_max_tokens
+            else:
+                config["max_tokens"] = 16000
+        elif self.reasoning_effort:
             config["effort"] = self.reasoning_effort
-        elif self.reasoning_max_tokens:
+        elif self.reasoning_max_tokens is not None:
             config["max_tokens"] = self.reasoning_max_tokens
-        else:
-            # Default configuration
-            config["enabled"] = True
             
         if self.reasoning_exclude:
             config["exclude"] = True
@@ -177,8 +207,10 @@ class ModelConfig:
         }
         if self.api_base:
             config["api_base"] = self.api_base
-        if self.max_tokens:
-            config["max_tokens"] = self.max_tokens
+        if self.max_output_tokens is not None:
+            config["max_output_tokens"] = self.max_output_tokens
+        if self.max_context_window_tokens is not None:
+            config["max_context_window_tokens"] = self.max_context_window_tokens
         if self.temperature is not None:
             config["temperature"] = self.temperature
         if self.max_history_tokens is not None:
@@ -211,14 +243,16 @@ class ModelConfig:
         reasoning_max_tokens = os.getenv("PENGUIN_REASONING_MAX_TOKENS")
         reasoning_exclude = os.getenv("PENGUIN_REASONING_EXCLUDE", "").lower() == "true"
 
+        max_output_env = os.getenv("PENGUIN_MAX_OUTPUT_TOKENS") or os.getenv("PENGUIN_MAX_TOKENS") # TODO: renaming Penguin env vars
+        max_context_env = os.getenv("PENGUIN_MAX_CONTEXT_WINDOW_TOKENS") or os.getenv("PENGUIN_CONTEXT_WINDOW")
+
         return cls(
             model=default_model,
             provider=provider,
             client_preference=client_pref,
             api_base=os.getenv("PENGUIN_API_BASE"),
-            max_tokens=int(os.getenv("PENGUIN_MAX_TOKENS"))
-            if os.getenv("PENGUIN_MAX_TOKENS")
-            else None,
+            max_output_tokens=int(max_output_env) if max_output_env else None,
+            max_context_window_tokens=int(max_context_env) if max_context_env else None,
             temperature=float(os.getenv("PENGUIN_TEMPERATURE"))
             if os.getenv("PENGUIN_TEMPERATURE")
             else 0.7,
@@ -283,8 +317,19 @@ class ModelConfig:
             provider=provider,
             client_preference=client_preference,
             api_base=model_specific.get("api_base") or os.getenv("PENGUIN_API_BASE"),
-            max_tokens=model_specific.get("max_tokens") or (
-                int(os.getenv("PENGUIN_MAX_TOKENS")) if os.getenv("PENGUIN_MAX_TOKENS") else None
+            max_output_tokens=model_specific.get("max_output_tokens")
+            or model_specific.get("max_tokens")
+            or (
+                int(os.getenv("PENGUIN_MAX_OUTPUT_TOKENS") or os.getenv("PENGUIN_MAX_TOKENS"))
+                if (os.getenv("PENGUIN_MAX_OUTPUT_TOKENS") or os.getenv("PENGUIN_MAX_TOKENS"))
+                else None
+            ),
+            max_context_window_tokens=model_specific.get("max_context_window_tokens")
+            or model_specific.get("context_window")
+            or (
+                int(os.getenv("PENGUIN_MAX_CONTEXT_WINDOW_TOKENS") or os.getenv("PENGUIN_CONTEXT_WINDOW"))
+                if (os.getenv("PENGUIN_MAX_CONTEXT_WINDOW_TOKENS") or os.getenv("PENGUIN_CONTEXT_WINDOW"))
+                else None
             ),
             temperature=model_specific.get("temperature") or (
                 float(os.getenv("PENGUIN_TEMPERATURE")) if os.getenv("PENGUIN_TEMPERATURE") else 0.7

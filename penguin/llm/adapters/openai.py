@@ -49,7 +49,7 @@ class OpenAIAdapter(BaseAdapter):
     async def create_completion(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: bool = False,
         stream_callback: Optional[Callable[[str], None]] = None,
@@ -59,7 +59,7 @@ class OpenAIAdapter(BaseAdapter):
 
         Args:
             messages: Conversation in OpenAI-style message format.
-            max_tokens: Max output tokens (model dependent).
+            max_output_tokens: Max output tokens (model dependent).
             temperature: Sampling temperature.
             stream: Whether to stream the response.
             stream_callback: Callback invoked with chunks during streaming. If
@@ -67,6 +67,10 @@ class OpenAIAdapter(BaseAdapter):
                 (chunk, message_type). We will only pass a single positional
                 argument here and let APIClient wrap signatures as needed.
         """
+        legacy_max_tokens = kwargs.pop("max_tokens", None)
+        if max_output_tokens is None and legacy_max_tokens is not None:
+            max_output_tokens = legacy_max_tokens
+
         processed_messages = await self._process_messages_for_vision(messages)
 
         reasoning_config = self.model_config.get_reasoning_config()
@@ -89,7 +93,7 @@ class OpenAIAdapter(BaseAdapter):
             request_params: Dict[str, Any] = {
                 "model": self.model_config.model,
                 "input": input_parts,
-                **({"max_output_tokens": max_tokens} if max_tokens else {}),
+                **({"max_output_tokens": max_output_tokens} if max_output_tokens else {}),
                 **({"reasoning": reasoning_config} if reasoning_config else {}),
             }
         else:
@@ -97,7 +101,7 @@ class OpenAIAdapter(BaseAdapter):
             request_params = {
                 "model": self.model_config.model,
                 "input": input_text,
-                **({"max_output_tokens": max_tokens} if max_tokens else {}),
+                **({"max_output_tokens": max_output_tokens} if max_output_tokens else {}),
                 **({"reasoning": reasoning_config} if reasoning_config else {}),
             }
 
@@ -145,7 +149,7 @@ class OpenAIAdapter(BaseAdapter):
     async def get_response(
         self,
         messages: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None,
+        max_output_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         stream: bool = False,
         stream_callback: Optional[Callable[[str], None]] = None,
@@ -155,7 +159,7 @@ class OpenAIAdapter(BaseAdapter):
         if stream:
             accumulated = await self.create_completion(
                 messages=messages,
-                max_tokens=max_tokens,
+                max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 stream=True,
                 stream_callback=stream_callback,
@@ -165,7 +169,7 @@ class OpenAIAdapter(BaseAdapter):
         # Non-streaming path
         resp = await self.create_completion(
             messages=messages,
-            max_tokens=max_tokens,
+            max_output_tokens=max_output_tokens,
             temperature=temperature,
             stream=False,
             stream_callback=None,

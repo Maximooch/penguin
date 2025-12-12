@@ -36,7 +36,7 @@ async def test_direct_api_path():
             client_preference="openrouter",
             reasoning_enabled=True,
             reasoning_effort="medium",
-            max_tokens=100,
+            max_output_tokens=100,
             temperature=0.3
         )
         
@@ -58,7 +58,7 @@ async def test_direct_api_path():
             # We expect this to fail with API key error, but NOT with TypeError or AttributeError
             response = await gateway.get_response(
                 messages=test_messages,
-                max_tokens=50,
+                max_output_tokens=50,
                 stream=False
             )
             
@@ -103,7 +103,7 @@ async def test_non_reasoning_model():
             provider="openrouter",
             client_preference="openrouter",
             reasoning_enabled=False,
-            max_tokens=100
+            max_output_tokens=100
         )
         
         gateway = OpenRouterGateway(config)
@@ -117,7 +117,7 @@ async def test_non_reasoning_model():
         try:
             response = await gateway.get_response(
                 messages=test_messages,
-                max_tokens=50,
+                max_output_tokens=50,
                 stream=False
             )
             print(f"⚠️  Unexpected success: {response[:50]}...")

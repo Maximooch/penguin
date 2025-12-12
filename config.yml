@@ -10,7 +10,7 @@ model:
   streaming_enabled: true
   temperature: 0.3
   context_window: 272000
-  max_tokens: null
+  max_output_tokens: null
 api:
   base_url: null
 tools:

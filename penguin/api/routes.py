@@ -1102,7 +1102,7 @@ async def get_current_model(core: PenguinCore = Depends(get_core)):
             "model": core.model_config.model,
             "provider": core.model_config.provider,
             "client_preference": core.model_config.client_preference,
-            "max_tokens": core.model_config.max_tokens,
+            "max_output_tokens": core.model_config.max_output_tokens,
             "temperature": core.model_config.temperature,
             "streaming_enabled": core.model_config.streaming_enabled,
             "vision_enabled": core.model_config.vision_enabled

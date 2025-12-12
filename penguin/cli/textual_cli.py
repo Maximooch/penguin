@@ -242,10 +242,10 @@ class PenguinTextualApp(App[None]):
 
     def _on_token_update(self, usage: Dict[str, Any]) -> None:  # noqa: D401
         current = usage.get("current_total_tokens", 0)
-        max_tokens = usage.get("max_tokens", 0)
+        max_context_tokens = usage.get("max_context_window_tokens", usage.get("max_tokens", 0))  # Context window capacity
         percentage = usage.get("percentage", 0)
         self.status_bar.update(
-            f"Tokens: {current}/{max_tokens} ({percentage:.1f}%)"
+            f"Tokens: {current}/{max_context_tokens} ({percentage:.1f}%)"  # Context window usage
         )
 
     def _on_progress_update(self, iteration: int, max_iter: int, message: Optional[str] | None) -> None:  # noqa: D401,E501

@@ -85,7 +85,7 @@ class MockCore:
         # Token usage state
         self._token_usage = {
             "current_total_tokens": 1500,
-            "max_tokens": 200000,
+            "max_context_window_tokens": 200000,  # Context window capacity
             "categories": {
                 "DIALOG": 800,
                 "SYSTEM_OUTPUT": 400,
@@ -123,7 +123,7 @@ class MockModelConfig:
         self.model = "mock-gpt-4"
         self.provider = "mock"
         self.streaming_enabled = True
-        self.max_tokens = 200000
+        self.max_context_window_tokens = 200000  # Context window capacity
 
 
 class MockConversationManager:
@@ -136,7 +136,7 @@ class MockConversationManager:
         """Return mock token usage"""
         return {
             "current_total_tokens": 1500,
-            "max_tokens": 200000,
+            "max_context_window_tokens": 200000,  # Context window capacity
             "categories": {
                 "DIALOG": 800,
                 "SYSTEM_OUTPUT": 400,
@@ -611,7 +611,7 @@ class PrototypeCLI:
             tokens_msg = MockMessage(
                 role="system",
                 content=f"**Token Usage:**\n\n"
-                       f"- Total: {usage['current_total_tokens']:,} / {usage['max_tokens']:,}\n"
+                       f"- Total: {usage['current_total_tokens']:,} / {usage.get('max_context_window_tokens', usage.get('max_tokens', 0)):,}\n"  # Context window usage
                        f"- Dialog: {usage['categories']['DIALOG']:,}\n"
                        f"- System Output: {usage['categories']['SYSTEM_OUTPUT']:,}\n"
                        f"- Context: {usage['categories']['CONTEXT']:,}\n"

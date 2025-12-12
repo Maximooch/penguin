@@ -488,14 +488,45 @@ async def _initialize_core_components_globally(
         client_preference=model_dict.get("client_preference", "native"),
         streaming_enabled=streaming_enabled,
         vision_enabled=model_dict.get("vision_enabled", False),
-        max_tokens=model_dict.get("max_tokens", 8000),
+        max_output_tokens=model_dict.get("max_output_tokens", model_dict.get("max_tokens", 8000)),
+        max_context_window_tokens=model_dict.get(
+            "max_context_window_tokens",
+            model_dict.get("context_window"),
+        ),
         temperature=model_dict.get("temperature", 0.7),
-        # # Reasoning configuration
-        # reasoning_enabled=model_dict.get("reasoning_enabled", False),
-        # reasoning_effort=model_dict.get("reasoning_effort"),
-        # reasoning_max_tokens=model_dict.get("reasoning_max_tokens"),
-        # reasoning_exclude=model_dict.get("reasoning_exclude", False),
-        # verbosity=model_dict.get("verbosity"),
+        # Reasoning configuration (supports both legacy flat keys and nested `reasoning:` block)
+        reasoning_enabled=(
+            bool(
+                model_dict.get("reasoning", {}).get(
+                    "enabled", model_dict.get("reasoning_enabled", False)
+                )
+            )
+            if isinstance(model_dict.get("reasoning"), dict)
+            else bool(model_dict.get("reasoning_enabled", False))
+        ),
+        reasoning_effort=(
+            model_dict.get("reasoning", {}).get(
+                "effort", model_dict.get("reasoning_effort")
+            )
+            if isinstance(model_dict.get("reasoning"), dict)
+            else model_dict.get("reasoning_effort")
+        ),
+        reasoning_max_tokens=(
+            model_dict.get("reasoning", {}).get(
+                "max_tokens", model_dict.get("reasoning_max_tokens")
+            )
+            if isinstance(model_dict.get("reasoning"), dict)
+            else model_dict.get("reasoning_max_tokens")
+        ),
+        reasoning_exclude=(
+            bool(
+                model_dict.get("reasoning", {}).get(
+                    "exclude", model_dict.get("reasoning_exclude", False)
+                )
+            )
+            if isinstance(model_dict.get("reasoning"), dict)
+            else bool(model_dict.get("reasoning_exclude", False))
+        ),
     )
 
     _api_client = APIClient(model_config=_model_config)
@@ -1801,10 +1832,10 @@ def agent_spawn(
         "--share-context/--isolate-context",
         help="Share context window with parent",
     ),
-    shared_cw_max_tokens: Optional[int] = typer.Option(
+    shared_context_window_max_tokens: Optional[int] = typer.Option(
         None, "--shared-cw-max", help="Clamp shared context window tokens"
     ),
-    model_max_tokens: Optional[int] = typer.Option(
+    model_output_max_tokens: Optional[int] = typer.Option(
         None, "--model-max-tokens", help="Clamp agent context window tokens"
     ),
     model_config_id: Optional[str] = typer.Option(
@@ -1850,8 +1881,8 @@ def agent_spawn(
                     system_prompt=system_prompt,
                     share_session=share_session,
                     share_context_window=share_context_window,
-                    shared_cw_max_tokens=shared_cw_max_tokens,
-                    model_max_tokens=model_max_tokens,
+                    shared_context_window_max_tokens=shared_context_window_max_tokens,
+                    model_output_max_tokens=model_output_max_tokens,
                     persona=persona,
                     model_config_id=model_config_id,
                     default_tools=tools_tuple,
@@ -1862,7 +1893,7 @@ def agent_spawn(
                     agent_id,
                     system_prompt=system_prompt,
                     activate=activate,
-                    model_max_tokens=model_max_tokens,
+                    model_output_max_tokens=model_output_max_tokens,
                     persona=persona,
                     model_config_id=model_config_id,
                     default_tools=tools_tuple,
@@ -3357,10 +3388,10 @@ class PenguinCLI:
             
             # Get category breakdown if available
             categories = token_data.get("categories", {})
-            max_tokens = token_data.get("max_tokens", 0)
+            max_context_tokens = token_data.get("max_context_window_tokens", token_data.get("max_tokens", 0))  # Context window capacity
             
             for category_name, tokens in categories.items():
-                percentage = (tokens / max_tokens * 100) if max_tokens > 0 else 0
+                percentage = (tokens / max_context_tokens * 100) if max_context_tokens > 0 else 0
                 table.add_row(
                     category_name,
                     f"{tokens:,}",
@@ -3373,7 +3404,7 @@ class PenguinCLI:
             
             table.add_row(
                 "TOTAL",
-                f"{total:,} / {max_tokens:,}",
+                f"{total:,} / {max_context_tokens:,}",  # Context window usage
                 f"{pct:.1f}%",
                 style="bold"
             )
@@ -4724,7 +4755,7 @@ def coord_spawn(
     system_prompt: Optional[str] = typer.Option(
         None, "--system-prompt", "-s", help="Optional system prompt override"
     ),
-    model_max_tokens: Optional[int] = typer.Option(
+    model_output_max_tokens: Optional[int] = typer.Option(
         None, "--model-max-tokens", help="Clamp child CWM at this size"
     ),
     activate: bool = typer.Option(
@@ -4739,7 +4770,7 @@ def coord_spawn(
     default_tools: Optional[List[str]] = typer.Option(
         None, "--tool", "-t", help="Restrict tools available to the agent (repeatable)"
     ),
-    shared_cw_max_tokens: Optional[int] = typer.Option(
+    shared_context_window_max_tokens: Optional[int] = typer.Option(
         None, "--shared-cw-max", help="Clamp shared context window tokens"
     ),
     workspace: Optional[Path] = typer.Option(
@@ -4765,12 +4796,12 @@ def coord_spawn(
             agent_id,
             role=role,
             system_prompt=system_prompt,
-            model_max_tokens=model_max_tokens,
+            model_output_max_tokens=model_output_max_tokens,
             activate=activate,
             persona=persona,
             model_config_id=model_config_id,
             default_tools=tools_tuple,
-            shared_cw_max_tokens=shared_cw_max_tokens,
+            shared_context_window_max_tokens=shared_context_window_max_tokens,
         )
         console.print(f"[green]Spawned agent[/green] {agent_id} with role '{role}'")
 

@@ -92,7 +92,7 @@ class ModelInfo:
     name: str
     provider: str
     vision_enabled: bool
-    max_tokens: Optional[int]
+    max_output_tokens: Optional[int]
     current: bool
 
 
@@ -347,7 +347,7 @@ class PenguinClient:
                 name=model["name"],
                 provider=model["provider"],
                 vision_enabled=model.get("vision_enabled", False),
-                max_tokens=model.get("max_tokens"),
+                max_output_tokens=model.get("max_output_tokens", model.get("max_tokens")),
                 current=model.get("current", False)
             )
             for model in models
@@ -379,7 +379,7 @@ class PenguinClient:
             name=model_data["model"],
             provider=model_data["provider"],
             vision_enabled=model_data.get("vision_enabled", False),
-            max_tokens=model_data.get("max_tokens"),
+            max_output_tokens=model_data.get("max_output_tokens", model_data.get("max_tokens")),
             current=True
         )
     
@@ -496,8 +496,8 @@ class PenguinClient:
         activate: bool = False,
         share_session_with: Optional[str] = None,
         share_context_window_with: Optional[str] = None,
-        shared_cw_max_tokens: Optional[int] = None,
-        model_max_tokens: Optional[int] = None,
+        shared_cw_max_output_tokens: Optional[int] = None,
+        model_max_output_tokens: Optional[int] = None,
         persona: Optional[str] = None,
         model_config: Optional[ModelConfig] = None,
         model_config_id: Optional[str] = None,
@@ -511,8 +511,8 @@ class PenguinClient:
             activate=activate,
             share_session_with=share_session_with,
             share_context_window_with=share_context_window_with,
-            shared_cw_max_tokens=shared_cw_max_tokens,
-            model_max_tokens=model_max_tokens,
+            shared_context_window_max_tokens=shared_context_window_max_tokens,
+            model_output_max_tokens=model_output_max_tokens,
             persona=persona,
             model_config=model_config,
             model_config_id=model_config_id,
@@ -528,8 +528,8 @@ class PenguinClient:
         system_prompt: Optional[str] = None,
         share_session: bool = True,
         share_context_window: bool = True,
-        shared_cw_max_tokens: Optional[int] = None,
-        model_max_tokens: Optional[int] = None,
+        shared_cw_max_output_tokens: Optional[int] = None,
+        model_max_output_tokens: Optional[int] = None,
         activate: bool = False,
         persona: Optional[str] = None,
         model_config: Optional[ModelConfig] = None,
@@ -544,8 +544,8 @@ class PenguinClient:
             system_prompt=system_prompt,
             share_session=share_session,
             share_context_window=share_context_window,
-            shared_cw_max_tokens=shared_cw_max_tokens,
-            model_max_tokens=model_max_tokens,
+            shared_context_window_max_tokens=shared_context_window_max_tokens,
+            model_output_max_tokens=model_output_max_tokens,
             activate=activate,
             persona=persona,
             model_config=model_config,

@@ -20,7 +20,7 @@ model:
   streaming_enabled: true
   temperature: 0.5
   context_window: 200000
-  max_tokens: 64000
+  max_output_tokens: 64000
   # If it's GPT-5, you can uncomment this and set the reasoning effort.
   # reasoning: 
   #   enabled: true
