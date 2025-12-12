@@ -119,7 +119,29 @@ class Engine:
 - **Stop Conditions**: TokenBudget, WallClock, External callbacks
 - **Multi-Agent Coordinator**: Routes work to specialized agents
 
-### 3. ConversationManager (`system/conversation_manager.py`)
+### 3. ModelConfig (`llm/model_config.py`)
+
+Configuration for LLM model parameters:
+
+```python
+@dataclass
+class ModelConfig:
+    model: str                          # Model identifier
+    provider: str                       # Provider (openai, anthropic, etc.)
+    max_output_tokens: Optional[int]    # Response generation limit
+    max_context_window_tokens: Optional[int]  # Input context capacity
+    temperature: float                  # Sampling temperature
+    reasoning_enabled: bool             # Extended thinking support
+    # ... additional fields
+```
+
+**Key Features:**
+- Explicit token limit naming (no ambiguous `max_tokens`)
+- Reasoning configuration for models like Claude, DeepSeek R1
+- Provider-specific adapter selection
+- Deprecation warnings for legacy property access
+
+### 4. ConversationManager (`system/conversation_manager.py`)
 
 Manages conversation state, context, and persistence:
 
@@ -280,6 +302,8 @@ core.register_agent(
     persona="python_expert",  # From config
     model_config_id="claude-3.5",  # Model override
     share_session_with="default",  # Parent agent
+    shared_context_window_max_tokens=50000,  # Context limit for this agent
+    model_output_max_tokens=8000,  # Output limit for this agent
     default_tools=["python_ast", "lint"]  # Tool subset
 )
 ```
@@ -346,6 +370,21 @@ MessageCategory (system/state.py):
   INTERNAL           # Core's internal thoughts/plans (if exposed)
   UNKNOWN            # Fallback for unset categories
 ```
+
+
+### Token Limit Naming Convention
+
+The codebase uses explicit naming for token limits to avoid ambiguity:
+
+| Name | Purpose | Location |
+|------|---------|----------|
+| `max_output_tokens` | Model response/generation limit | ModelConfig |
+| `max_context_window_tokens` | Input context capacity | ModelConfig, ContextWindowManager |
+| `max_category_tokens` | Per-category budget limit | TokenBudget |
+| `shared_context_window_max_tokens` | Multi-agent shared context | Agent registration |
+| `model_output_max_tokens` | Per-agent output limit | Agent registration |
+
+**Deprecated:** The ambiguous `max_tokens` property is deprecated with warnings. Use the explicit names above.
 
 **Trimming Strategy:**
 1. Preserve SYSTEM messages (never truncated)
