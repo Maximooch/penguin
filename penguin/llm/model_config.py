@@ -90,16 +90,17 @@ class ModelConfig:
         self.supports_vision = self.vision_enabled
         self.streaming_enabled = self.streaming_enabled
 
-    # TODO: move this to the gateway. 
+    # TODO: move this to the gateway.
     def _detect_reasoning_support(self) -> bool:
         """Auto-detect if the model supports reasoning tokens."""
         model_lower = self.model.lower()
-        
+
         # DeepSeek R1 models
         if "deepseek" in model_lower and ("r1" in model_lower or "reasoning" in model_lower):
             return True
-            
-        # OpenAI o-series and GPT-5+ models
+
+        # OpenAI o-series and GPT-5+ models (reasoning is MANDATORY for GPT-5.2+)
+        # See: https://openrouter.ai/openai/gpt-5.2/api - "Mandatory reasoning"
         if any(pattern in model_lower for pattern in ["o1", "o3", "openai/o", "gpt-5", "gpt-6"]):
             return True
             
@@ -122,6 +123,7 @@ class ModelConfig:
     def _uses_effort_style(self) -> bool:
         """Check if model uses effort-style reasoning configuration."""
         model_lower = self.model.lower()
+        # OpenAI reasoning models use effort-style (low/medium/high)
         return any(
             pattern in model_lower
             for pattern in [

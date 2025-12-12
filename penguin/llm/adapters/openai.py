@@ -1,18 +1,17 @@
 import asyncio
-import json
 import base64
 import io
+import json
 import logging
 import mimetypes
 import os
-from typing import Any, Dict, List, Optional, Tuple, Callable, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import tiktoken  # type: ignore
 from openai import AsyncOpenAI  # type: ignore
 
-from .base import BaseAdapter
 from ..model_config import ModelConfig
-
+from .base import BaseAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +32,9 @@ class OpenAIAdapter(BaseAdapter):
         self.model_config = model_config
         api_key = model_config.api_key or os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("Missing OpenAI API key. Set OPENAI_API_KEY or model_config.api_key.")
+            raise ValueError(
+                "Missing OpenAI API key. Set OPENAI_API_KEY or model_config.api_key."
+            )
 
         # Respect custom base URL if provided (e.g., Azure/OpenAI-compatible gateways)
         self.client = AsyncOpenAI(
@@ -69,7 +70,9 @@ class OpenAIAdapter(BaseAdapter):
         processed_messages = await self._process_messages_for_vision(messages)
 
         reasoning_config = self.model_config.get_reasoning_config()
-        temp_val = temperature if temperature is not None else self.model_config.temperature
+        temp_val = (
+            temperature if temperature is not None else self.model_config.temperature
+        )
 
         # Pull optional openai-specific kwargs
         instructions: Optional[str] = kwargs.get("instructions")
@@ -78,9 +81,9 @@ class OpenAIAdapter(BaseAdapter):
         response_format: Optional[Dict[str, Any]] = kwargs.get("response_format")
         tools: Optional[List[Dict[str, Any]]] = kwargs.get("tools")
         tool_choice: Optional[Union[str, Dict[str, Any]]] = kwargs.get("tool_choice")
-        stream_options: Optional[Dict[str, Any]] = kwargs.get("stream_options")
 
-        # Build input either as compact string or as structured content parts when images present
+        # Build input either as a compact string, or as structured content parts
+        # when images are present.
         input_parts = self._build_input_parts(processed_messages)
         if input_parts is not None:
             request_params: Dict[str, Any] = {
@@ -111,7 +114,8 @@ class OpenAIAdapter(BaseAdapter):
             request_params["tools"] = tools
         if tool_choice:
             request_params["tool_choice"] = tool_choice
-        # Per OpenAI Responses API, o-/gpt-5 style reasoning models do not accept temperature
+        # Per OpenAI Responses API, o-/gpt-5 style reasoning models do not accept
+        # temperature.
         try:
             uses_effort_style = bool(self.model_config._uses_effort_style())
         except Exception:
@@ -120,12 +124,10 @@ class OpenAIAdapter(BaseAdapter):
             request_params["temperature"] = temp_val
 
         if stream:
-            # Default include_usage unless explicitly disabled
-            so = dict(stream_options or {})
-            if "include_usage" not in so:
-                so["include_usage"] = True
-            if so:
-                request_params["stream_options"] = so
+            # Note: `stream_options.include_usage` is a Chat Completions option and is
+            # not supported by the Responses API. Additionally, some OpenAI SDK
+            # versions don't accept `stream_options` on `responses.stream`, so we
+            # intentionally ignore any user-provided `stream_options` here.
             try:
                 return await self._stream_with_sdk(request_params, stream_callback)
             except Exception as e:
@@ -190,10 +192,13 @@ class OpenAIAdapter(BaseAdapter):
                 for part in content:
                     if isinstance(part, dict):
                         if part.get("type") == "image_url" and "image_url" in part:
-                            # Keep as-is; _process_messages_for_vision will encode local files
+                            # Keep as-is; _process_messages_for_vision will encode local
+                            # files.
                             fixed_parts.append(part)
                         elif part.get("type") == "text":
-                            fixed_parts.append({"type": "text", "text": str(part.get("text", ""))})
+                            fixed_parts.append(
+                                {"type": "text", "text": str(part.get("text", ""))}
+                            )
                         else:
                             fixed_parts.append(part)
                     else:
@@ -210,6 +215,7 @@ class OpenAIAdapter(BaseAdapter):
         text = self._extract_text_from_response_object(response)
         return (text or ""), []
 
+    # Duplicate function?
     def count_tokens(self, content: Union[str, List, Dict]) -> int:
         """Count tokens using tiktoken with a default GPT-4o encoding.
 
@@ -239,9 +245,15 @@ class OpenAIAdapter(BaseAdapter):
                     for k, v in m.items():
                         if k == "content" and isinstance(v, list):
                             for item in v:
-                                if isinstance(item, dict) and item.get("type") == "text":
+                                if (
+                                    isinstance(item, dict)
+                                    and item.get("type") == "text"
+                                ):
                                     tokens += len(encoding.encode(item.get("text", "")))
-                                elif isinstance(item, dict) and item.get("type") == "image_url":
+                                elif (
+                                    isinstance(item, dict)
+                                    and item.get("type") == "image_url"
+                                ):
                                     # Skip exact accounting for images
                                     tokens += 1300
                         else:
@@ -258,7 +270,9 @@ class OpenAIAdapter(BaseAdapter):
     def supports_vision(self) -> bool:
         return True
 
-    async def _process_messages_for_vision(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    async def _process_messages_for_vision(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Encode local image paths in content lists into data URIs."""
         processed: List[Dict[str, Any]] = []
         for message in self.format_messages(messages):
@@ -271,15 +285,25 @@ class OpenAIAdapter(BaseAdapter):
                         path: Optional[str] = None
                         if isinstance(url_obj, dict) and "image_path" in url_obj:
                             path = url_obj.get("image_path")
-                        elif isinstance(url_obj, dict) and "url" in url_obj and str(url_obj["url"]).startswith("file://"):
+                        elif (
+                            isinstance(url_obj, dict)
+                            and "url" in url_obj
+                            and str(url_obj["url"]).startswith("file://")
+                        ):
                             path = str(url_obj["url"])[7:]
-                        # Back-compat: sometimes we get {type:"image_url", image_path:"..."}
+                        # Back-compat: sometimes we get
+                        # {type:"image_url", image_path:"..."}
                         if not path and "image_path" in item:
                             path = item.get("image_path")
                         if path and os.path.exists(path):
                             data_uri = await self._encode_image(path)
                             if data_uri:
-                                new_content.append({"type": "image_url", "image_url": {"url": data_uri}})
+                                new_content.append(
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": data_uri},
+                                    }
+                                )
                                 continue
                     new_content.append(item)
                 processed.append({**message, "content": new_content})
@@ -291,6 +315,7 @@ class OpenAIAdapter(BaseAdapter):
         """Encode an image file to a base64 data URI suitable for OpenAI."""
         try:
             from PIL import Image as PILImage  # type: ignore
+
             with PILImage.open(image_path) as img:
                 max_size = (1024, 1024)
                 img.thumbnail(max_size, PILImage.LANCZOS)
@@ -325,11 +350,18 @@ class OpenAIAdapter(BaseAdapter):
                         if delta:
                             accumulated_content.append(delta)
                             if stream_callback:
-                                await self._safe_invoke_callback(stream_callback, delta, "assistant")
-                    elif etype in ("response.thinking.delta", "response.reasoning.delta"):
+                                await self._safe_invoke_callback(
+                                    stream_callback, delta, "assistant"
+                                )
+                    elif etype in (
+                        "response.thinking.delta",
+                        "response.reasoning.delta",
+                    ):
                         delta = getattr(event, "delta", "")
                         if delta and stream_callback:
-                            await self._safe_invoke_callback(stream_callback, delta, "reasoning")
+                            await self._safe_invoke_callback(
+                                stream_callback, delta, "reasoning"
+                            )
                 final = await stream.get_final_response()
                 # Prefer SDK's convenience property if present
                 final_text = getattr(final, "output_text", None)
@@ -355,13 +387,16 @@ class OpenAIAdapter(BaseAdapter):
             "Authorization": f"Bearer {self.client.api_key}",
             "Content-Type": "application/json",
         }
-        base_url_str = str(self.client.base_url) if self.client.base_url else "https://api.openai.com/v1"
+        base_url_str = (
+            str(self.client.base_url)
+            if self.client.base_url
+            else "https://api.openai.com/v1"
+        )
         url = base_url_str.rstrip("/") + "/responses"
         payload = dict(request_params)
         payload["stream"] = True
 
         accumulated_content: List[str] = []
-        reasoning_phase = False
 
         async with httpx.AsyncClient(timeout=60.0) as http:
             async with http.stream("POST", url, headers=headers, json=payload) as resp:
@@ -385,20 +420,30 @@ class OpenAIAdapter(BaseAdapter):
                             if delta:
                                 accumulated_content.append(delta)
                                 if stream_callback:
-                                    await self._safe_invoke_callback(stream_callback, delta, "assistant")
-                        elif etype in ("response.thinking.delta", "response.reasoning.delta"):
+                                    await self._safe_invoke_callback(
+                                        stream_callback, delta, "assistant"
+                                    )
+                        elif etype in (
+                            "response.thinking.delta",
+                            "response.reasoning.delta",
+                        ):
                             delta = data.get("delta", "")
                             if delta and stream_callback:
-                                await self._safe_invoke_callback(stream_callback, delta, "reasoning")
+                                await self._safe_invoke_callback(
+                                    stream_callback, delta, "reasoning"
+                                )
                     except Exception:
                         # Skip malformed lines
                         continue
         return "".join(accumulated_content)
 
-    async def _safe_invoke_callback(self, cb: Callable[[str], None], chunk: str, message_type: str) -> None:
+    async def _safe_invoke_callback(
+        self, cb: Callable[[str], None], chunk: str, message_type: str
+    ) -> None:
         """Invoke provided callback safely with support for legacy signatures."""
         try:
             import inspect
+
             if asyncio.iscoroutinefunction(cb):
                 params = list(inspect.signature(cb).parameters.keys())
                 if len(params) >= 2:
@@ -410,6 +455,7 @@ class OpenAIAdapter(BaseAdapter):
                 params = []
                 try:
                     import inspect as _insp
+
                     params = list(_insp.signature(cb).parameters.keys())
                 except Exception:
                     params = []
@@ -437,12 +483,20 @@ class OpenAIAdapter(BaseAdapter):
                 out = resp.get("output") or resp.get("choices")
                 if isinstance(out, list) and out:
                     first = out[0]
-                    # message.content -> list of parts with {type:"output_text","text":...}
+                    # message.content -> list of parts with
+                    # {type:"output_text","text":...}
                     content = None
                     if isinstance(first, dict):
-                        content = first.get("message", {}).get("content") or first.get("content")
+                        content = first.get("message", {}).get("content") or first.get(
+                            "content"
+                        )
                     if isinstance(content, list):
-                        texts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") in ("output_text", "text")]
+                        texts = [
+                            p.get("text", "")
+                            for p in content
+                            if isinstance(p, dict)
+                            and p.get("type") in ("output_text", "text")
+                        ]
                         if texts:
                             return "".join(texts)
         except Exception:
@@ -468,11 +522,17 @@ class OpenAIAdapter(BaseAdapter):
                 text = " ".join(texts)
             else:
                 text = str(content)
-            prefix = "User" if role == "user" else ("Assistant" if role == "assistant" else role.capitalize())
+            prefix = (
+                "User"
+                if role == "user"
+                else ("Assistant" if role == "assistant" else role.capitalize())
+            )
             parts.append(f"{prefix}: {text}")
         return "\n".join(parts)
 
-    def _build_input_parts(self, messages: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+    def _build_input_parts(
+        self, messages: List[Dict[str, Any]]
+    ) -> Optional[List[Dict[str, Any]]]:
         """Return input as structured parts when images are present; otherwise None.
 
         Output shape example:
@@ -498,7 +558,9 @@ class OpenAIAdapter(BaseAdapter):
                             url_val = url_obj
                         if url_val:
                             any_image = True
-                            images.append({"type": "input_image", "image_url": {"url": url_val}})
+                            images.append(
+                                {"type": "input_image", "image_url": {"url": url_val}}
+                            )
                     elif isinstance(item, dict) and item.get("type") == "text":
                         txt = str(item.get("text", ""))
                         if txt:
@@ -519,77 +581,3 @@ class OpenAIAdapter(BaseAdapter):
             parts.append({"type": "input_text", "text": "\n".join(texts)})
         parts.extend(images)
         return parts
-
-    # def _build_input_payload(
-    #     self,
-    #     messages: List[Dict[str, Any]],
-    #     *,
-    #     max_tokens: Optional[int],
-    #     temperature: float,
-    #     reasoning: Optional[Dict[str, Any]],
-    # ) -> Dict[str, Any]:
-    #     """Construct a payload using Responses API "input" and "instructions" fields.
-
-    #     - System message (first) becomes "instructions"
-    #     - Entire transcript becomes a single input_text for continuity
-    #     - Image parts from the most recent user message are appended as input_image
-    #     """
-    #     system_text = ""
-    #     other_messages: List[Dict[str, Any]] = []
-    #     for m in messages:
-    #         if m.get("role") == "system" and not system_text:
-    #             system_text = str(m.get("content", ""))
-    #         else:
-    #             other_messages.append(m)
-
-    #     # Flatten transcript to text
-    #     transcript_parts: List[str] = []
-    #     for m in other_messages:
-    #         role = m.get("role", "user")
-    #         content = m.get("content", "")
-    #         if isinstance(content, list):
-    #             texts: List[str] = []
-    #             for part in content:
-    #                 if isinstance(part, dict) and part.get("type") == "text":
-    #                     texts.append(str(part.get("text", "")))
-    #                 elif isinstance(part, dict) and part.get("type") == "image_url":
-    #                     texts.append("[image]")
-    #                 else:
-    #                     texts.append(str(part))
-    #             content_text = " ".join(texts)
-    #         else:
-    #             content_text = str(content)
-    #         prefix = "User" if role == "user" else ("Assistant" if role == "assistant" else role.capitalize())
-    #         transcript_parts.append(f"{prefix}: {content_text}")
-
-    #     input_items: List[Dict[str, Any]] = [{"type": "input_text", "text": "\n".join(transcript_parts)}]
-
-    #     # Append images from the last user message (if any) as input_image
-    #     last_user = None
-    #     for m in reversed(other_messages):
-    #         if m.get("role") == "user":
-    #             last_user = m
-    #             break
-    #     if last_user and isinstance(last_user.get("content"), list):
-    #         for part in last_user["content"]:
-    #             if isinstance(part, dict) and part.get("type") == "image_url":
-    #                 url_obj = part.get("image_url")
-    #                 url = None
-    #                 if isinstance(url_obj, dict) and "url" in url_obj:
-    #                     url = url_obj["url"]
-    #                 if url:
-    #                     input_items.append({"type": "input_image", "image_url": url})
-
-    #     payload: Dict[str, Any] = {
-    #         "model": self.model_config.model,
-    #         "input": input_items,
-    #         "temperature": temperature,
-    #         **({"max_output_tokens": max_tokens} if max_tokens else {}),
-    #     }
-    #     if system_text:
-    #         payload["instructions"] = system_text
-    #     if reasoning:
-    #         payload["reasoning"] = reasoning
-    #     return payload
-
-

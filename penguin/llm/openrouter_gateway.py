@@ -100,6 +100,67 @@ class OpenRouterGateway:
         else:
              self.logger.debug(f"Using extra headers: {self.extra_headers}")
 
+    def _parse_openrouter_error(self, error_text: str, status_code: int) -> str:
+        """
+        Parse OpenRouter error response and return a user-friendly message.
+
+        OpenRouter errors typically come as JSON with structure:
+        {"error": {"message": "...", "code": ..., "metadata": {"provider_name": "..."}}}
+        """
+        try:
+            error_data = json.loads(error_text)
+            error_info = error_data.get("error", {})
+
+            # Extract error details
+            error_message = error_info.get("message", "Unknown error")
+            error_code = error_info.get("code", status_code)
+            metadata = error_info.get("metadata", {})
+            provider_name = metadata.get("provider_name", "unknown provider")
+
+            # Build user-friendly message based on error type
+            if status_code == 400:
+                # Bad request - often model/parameter issues
+                if "context" in error_message.lower() or "token" in error_message.lower():
+                    return f"[Error: Context too large for {provider_name}. {error_message}]"
+                elif "model" in error_message.lower():
+                    return f"[Error: Model issue ({provider_name}). {error_message}]"
+                else:
+                    return f"[Error: Bad request to {provider_name}. {error_message}]"
+
+            elif status_code == 401:
+                return f"[Error: Authentication failed. Check your API key. {error_message}]"
+
+            elif status_code == 402:
+                return f"[Error: Insufficient credits/payment required. {error_message}]"
+
+            elif status_code == 403:
+                return f"[Error: Access denied to {provider_name}. {error_message}]"
+
+            elif status_code == 404:
+                return f"[Error: Model not found. {error_message}]"
+
+            elif status_code == 429:
+                # Rate limit - include retry info if available
+                return f"[Error: Rate limit exceeded ({provider_name}). {error_message}]"
+
+            elif status_code == 502 or status_code == 503:
+                return f"[Error: {provider_name} is temporarily unavailable. {error_message}]"
+
+            elif status_code == 504:
+                return f"[Error: Request to {provider_name} timed out. Try again or use a different model.]"
+
+            else:
+                # Generic error with all available info
+                return f"[Error: {provider_name} returned {error_code}. {error_message}]"
+
+        except json.JSONDecodeError:
+            # Not JSON, return raw text (truncated)
+            truncated = error_text[:200] + "..." if len(error_text) > 200 else error_text
+            return f"[Error: API returned status {status_code}. {truncated}]"
+        except Exception as e:
+            self.logger.warning(f"Failed to parse error response: {e}")
+            return f"[Error: API call failed with status {status_code}]"
+
     async def _encode_image(self, image_path: str) -> Optional[str]:
         """Encodes an image file to a base64 data URI."""
         if not os.path.exists(image_path):
@@ -506,6 +567,12 @@ class OpenRouterGateway:
 
                 # For streaming responses, we return only the content part
                 # The reasoning was already streamed via callback
+                if not full_response_content:
+                    self.logger.warning(f"Streaming response completed with no content. Model: {self.model_config.model}")
+                    # If we have reasoning but no content, the model may have only produced thinking
+                    if full_reasoning_content:
+                        return "[Note: Model produced reasoning tokens but no final response. This may indicate the model is still processing or encountered an issue.]"
+                    return f"[Error: Model {self.model_config.model} returned empty response. The model may not support this request type or encountered an issue.]"
                 return full_response_content
 
             else: # Not streaming
@@ -577,14 +644,25 @@ class OpenRouterGateway:
                 return full_response_content or "" # Ensure string return
 
         except APIError as e:
-            # error_context = {'request_id': request_id, 'phase': 'api_call', 'model': self.model_config.model}
-            # debug_error(e, error_context)
-            self.logger.error(f"OpenRouter API error [{request_id}]: {e}", exc_info=True)
-            return f"[Error: OpenRouter API Error - {e.status_code} - {e.message}]"
+            self.logger.error(f"OpenRouter API error: {e}", exc_info=True)
+            # Safely extract attributes - OpenAI SDK APIError may have different structure
+            status_code = getattr(e, 'status_code', None) or getattr(e, 'code', 500)
+            message = getattr(e, 'message', None) or str(e)
+            # Try to extract detailed error from the response body
+            error_body = getattr(e, 'body', None)
+            if error_body and isinstance(error_body, (str, dict)):
+                error_text = error_body if isinstance(error_body, str) else json.dumps(error_body)
+                return self._parse_openrouter_error(error_text, status_code)
+            # Fallback to basic error info - include full error message
+            return f"[Error: {message}]"
         except Exception as e:
-            # error_context = {'request_id': request_id, 'phase': 'unexpected', 'model': self.model_config.model}
-            # debug_error(e, error_context)
-            self.logger.error(f"Unexpected error during OpenRouter API call [{request_id}]: {e}", exc_info=True)
+            self.logger.error(f"Unexpected error during OpenRouter API call: {e}", exc_info=True)
+            # Check if it's an httpx error with response details
+            if hasattr(e, 'response') and e.response is not None:
+                try:
+                    return self._parse_openrouter_error(e.response.text, e.response.status_code)
+                except Exception:
+                    pass
             return f"[Error: Unexpected error communicating with OpenRouter - {str(e)}]"
 
     async def _direct_api_call_with_reasoning(
@@ -615,9 +693,11 @@ class OpenRouterGateway:
         }
         
         url = "https://openrouter.ai/api/v1/chat/completions"
-        
+
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            # Longer timeout for cold-starting models (GPT-5, new models may take minutes to warm up)
+            # OpenRouter sends `: OPENROUTER PROCESSING` keep-alive comments during warmup
+            async with httpx.AsyncClient(timeout=300.0) as client:
                 if use_streaming:
                     return await self._handle_streaming_response(
                         client, url, headers, direct_params, stream_callback
@@ -627,8 +707,17 @@ class OpenRouterGateway:
                         client, url, headers, direct_params, stream_callback
                     )
                     
+        except httpx.ReadTimeout:
+            self.logger.error(f"Request timed out for model {self.model_config.model}")
+            return f"[Error: Request timed out. Model {self.model_config.model} may be cold-starting or experiencing high load. Try again in a moment.]"
+        except httpx.ConnectTimeout:
+            self.logger.error(f"Connection timed out for model {self.model_config.model}")
+            return f"[Error: Connection timed out. OpenRouter may be experiencing issues. Try again later.]"
         except Exception as e:
             self.logger.error(f"Direct API call failed: {e}", exc_info=True)
+            # Check for timeout-related errors in the exception
+            if "timeout" in str(e).lower():
+                return f"[Error: Request timed out for {self.model_config.model}. The model may need time to warm up. Try again.]"
             return f"[Error: Direct API call failed - {str(e)}]"
 
     async def _handle_streaming_response(
@@ -650,18 +739,24 @@ class OpenRouterGateway:
             if response.status_code != 200:
                 error_text = (await response.aread()).decode()
                 self.logger.error(f"Direct API call failed with status {response.status_code}: {error_text}")
-                return f"[Error: API call failed with status {response.status_code}]"
-            
+                return self._parse_openrouter_error(error_text, response.status_code)
+
             async for line in response.aiter_lines():
                 if not line.strip():
                     continue
-                    
+
+                # Handle OpenRouter SSE keep-alive comments (e.g., ": OPENROUTER PROCESSING")
+                # These are sent to prevent connection timeouts during model cold-start/warmup
+                if line.startswith(":"):
+                    self.logger.debug(f"OpenRouter keep-alive: {line}")
+                    continue
+
                 if line.startswith("data: "):
                     data_str = line[6:]  # Remove "data: " prefix
-                    
+
                     if data_str.strip() == "[DONE]":
                         break
-                        
+
                     try:
                         data = json.loads(data_str)
                         choice = data.get("choices", [{}])[0]
@@ -747,6 +842,13 @@ class OpenRouterGateway:
                         continue
         
         self.logger.info(f"Direct streaming call completed. Reasoning: {len(full_reasoning)} chars, Content: {len(full_content)} chars")
+
+        # Check for empty content and provide helpful message
+        if not full_content:
+            self.logger.warning(f"Direct streaming response completed with no content. Model: {self.model_config.model}")
+            if full_reasoning:
+                return "[Note: Model produced reasoning tokens but no final response. This may indicate the model is still processing or encountered an issue.]"
+            return f"[Error: Model {self.model_config.model} returned empty response. The model may not support this request type or encountered an issue.]"
         return full_content
 
     def get_telemetry(self) -> Dict[str, Any]:
@@ -782,8 +884,8 @@ class OpenRouterGateway:
         if response.status_code != 200:
             error_text = response.text
             self.logger.error(f"Direct API call failed with status {response.status_code}: {error_text}")
-            return f"[Error: API call failed with status {response.status_code}]"
-        
+            return self._parse_openrouter_error(error_text, response.status_code)
+
         try:
             data = response.json()
             choice = data.get("choices", [{}])[0]
@@ -801,8 +903,21 @@ class OpenRouterGateway:
                     self.logger.error(f"Error in reasoning callback: {cb_err}")
             
             self.logger.info(f"Direct non-streaming call completed. Reasoning: {len(reasoning)} chars, Content: {len(content)} chars")
+
+            # Check for empty content and provide helpful message
+            if not content:
+                self.logger.warning(f"Direct non-streaming response had no content. Model: {self.model_config.model}")
+                # Check if there's an error embedded in the response
+                error_info = data.get("error", {})
+                if error_info:
+                    error_message = error_info.get("message", "Unknown error")
+                    provider_name = error_info.get("metadata", {}).get("provider_name", "unknown provider")
+                    return f"[Error: {provider_name} returned: {error_message}]"
+                if reasoning:
+                    return "[Note: Model produced reasoning tokens but no final response. This may indicate the model is still processing or encountered an issue.]"
+                return f"[Error: Model {self.model_config.model} returned empty response. The model may not support this request type or encountered an issue.]"
             return content
-            
+
         except json.JSONDecodeError as e:
             self.logger.error(f"Failed to parse response JSON: {e}")
             return f"[Error: Failed to parse response - {str(e)}]"
