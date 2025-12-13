@@ -743,7 +743,7 @@ class ActionExecutor:
             return "delegate_explore_task requires 'task'"
 
         start_dir = payload.get("directory", ".")
-        max_iterations = min(payload.get("max_iterations", 10), 15)  # Cap at 15
+        max_iterations = min(payload.get("max_iterations", 100), 100)  # Default 100, cap at 100
 
         # Get current working directory for context
         cwd = os.getcwd()

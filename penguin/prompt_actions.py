@@ -593,6 +593,35 @@ Send a task to a specific agent and record a delegation event.
 }</delegate>
 ```
 
+
+4) Delegate Exploration Task (`<delegate_explore_task>`)
+
+Spawn a haiku sub-agent to autonomously explore a codebase. The sub-agent can list directories, read files, and search - then returns a summary.
+
+```actionxml
+<delegate_explore_task>{
+  "task": "Explore this codebase and summarize the architecture",
+  "directory": ".",
+  "max_iterations": 50
+}</delegate_explore_task>
+```
+
+Parameters:
+- `task` (required): What to explore/analyze
+- `directory` (optional): Starting directory (default: current)
+- `max_iterations` (optional): Max tool rounds (default: 100, max: 100)
+
+The sub-agent uses claude-haiku-4.5 for cost efficiency and has access to:
+- `list_files`: List directory contents (max 50 items)
+- `read_file`: Read file contents (max 200 lines)
+- `search`: Grep for patterns in code files
+
+Example tasks:
+- "Explore this codebase and summarize the architecture"
+- "Find all API endpoints and document them"
+- "Identify the main entry points and how they connect"
+- "Search for authentication/security patterns"
+
 Notes:
 - For general multi-agent chatter, use `<send_message>` with `target`/`targets` and optional `channel`.
 - Cross-parent channel rooms are a future consideration; prefer direct `target` for sub-agent flows today.
