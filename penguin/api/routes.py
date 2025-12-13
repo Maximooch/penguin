@@ -194,7 +194,7 @@ class MessageRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None
     context_files: Optional[List[str]] = None
     streaming: Optional[bool] = True
-    max_iterations: Optional[int] = 5
+    max_iterations: Optional[int] = None  # Uses MAX_TASK_ITERATIONS if not specified
     image_path: Optional[str] = None
     agent_id: Optional[str] = None
 

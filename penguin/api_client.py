@@ -58,7 +58,7 @@ class ChatOptions:
     context: Optional[Dict[str, Any]] = None
     context_files: Optional[List[str]] = None
     streaming: bool = False
-    max_iterations: int = 5
+    max_iterations: int = 5000  # High default for autonomous operation
     image_path: Optional[str] = None
     agent_id: Optional[str] = None
 

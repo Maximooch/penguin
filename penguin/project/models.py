@@ -74,7 +74,7 @@ class ExecutionRecord:
     response: str = ""
     task_prompt: str = ""
     iterations: int = 0
-    max_iterations: int = 5
+    max_iterations: int = 5000  # High default for autonomous operation
     tokens_used: Dict[str, int] = field(default_factory=dict)
     tools_used: List[str] = field(default_factory=list)
     execution_context: Dict[str, Any] = field(default_factory=dict)

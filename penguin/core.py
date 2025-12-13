@@ -60,7 +60,7 @@ Core Methods:
         input_data: Union[Dict[str, Any], str],
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
-        max_iterations: int = 5,
+        max_iterations: int = MAX_TASK_ITERATIONS,  # Use config value (default 5000)
         context_files: Optional[List[str]] = None,
         streaming: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
@@ -185,6 +185,7 @@ from penguin.config import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER,
     TASK_COMPLETION_PHRASE,
+    MAX_TASK_ITERATIONS,
     AgentModelSettings,
     AgentPersonaConfig,
     Config,
@@ -2351,7 +2352,7 @@ class PenguinCore:
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
         agent_id: Optional[str] = None,
-        max_iterations: int = 5,
+        max_iterations: int = MAX_TASK_ITERATIONS,  # Use config value (default 5000)
         context_files: Optional[List[str]] = None,
         streaming: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
@@ -2604,7 +2605,7 @@ class PenguinCore:
         message: str,
         image_path: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
-        max_iterations: int = 5,
+        max_iterations: int = MAX_TASK_ITERATIONS,  # Use config value (default 5000)
         streaming: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None
     ) -> Dict[str, Any]:

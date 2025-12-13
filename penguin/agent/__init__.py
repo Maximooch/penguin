@@ -97,7 +97,7 @@ class PenguinAgent:
         agent_id: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
         context_files: Optional[Iterable[str]] = None,
-        max_iterations: int = 5,
+        max_iterations: int = 5000,  # High default for autonomous operation
         multi_step: bool = True,
     ) -> Dict[str, Any]:
         """Send a message to the assistant and return the structured response."""
