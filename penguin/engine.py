@@ -390,7 +390,6 @@ class Engine:
                 # NOTE: Implicit completion detection is DISABLED.
                 # The LLM must explicitly call finish_response to end the conversation.
                 # This prevents premature termination when processing tool results.
-                # See: https://github.com/Maximooch/penguin/issues/XXX
                 #
                 # if not iteration_results:
                 #     logger.debug("Conversation completion: No actions in response (implicit)")
