@@ -1319,6 +1319,9 @@ class PenguinCore:
 
                 async def _agent_inbox(msg: ProtocolMessage, *, _agent_id: str = agent_id):
                     try:
+                        logger.info(f"[SUB-AGENT-DEBUG] _agent_inbox called for agent '{_agent_id}'")
+                        logger.info(f"[SUB-AGENT-DEBUG] Message from: {msg.sender}, content length: {len(str(msg.content))}")
+
                         self.conversation_manager.set_current_agent(_agent_id)
                         conv_local = self.conversation_manager.get_agent_conversation(_agent_id)
                         conv_local.add_message(
@@ -1334,6 +1337,8 @@ class PenguinCore:
                             message_type=msg.message_type or "message",
                         )
                         self.conversation_manager.save()
+                        logger.info(f"[SUB-AGENT-DEBUG] Message added to conversation for '{_agent_id}'")
+
                         await self.emit_ui_event("message", {
                             "role": "user",
                             "content": msg.content,
@@ -1347,27 +1352,40 @@ class PenguinCore:
                         should_process = msg.metadata.get("auto_process", True) if msg.metadata else True
                         parent_map = getattr(self.conversation_manager, "sub_agent_parent", {}) or {}
                         is_sub_agent = _agent_id in parent_map
+                        has_engine = getattr(self, "engine", None) is not None
 
-                        if should_process and is_sub_agent and getattr(self, "engine", None):
+                        logger.info(f"[SUB-AGENT-DEBUG] should_process={should_process}, is_sub_agent={is_sub_agent}, has_engine={has_engine}")
+                        logger.info(f"[SUB-AGENT-DEBUG] parent_map keys: {list(parent_map.keys())}")
+
+                        if should_process and is_sub_agent and has_engine:
                             try:
+                                logger.info(f"[SUB-AGENT-DEBUG] Calling engine.run_agent_turn for '{_agent_id}'")
                                 # Run the sub-agent turn asynchronously
                                 response = await self.engine.run_agent_turn(
                                     _agent_id,
                                     msg.content,
                                     tools_enabled=True,
                                 )
+                                logger.info(f"[SUB-AGENT-DEBUG] run_agent_turn completed, response length: {len(str(response)) if response else 0}")
+
                                 # Send response back to parent
                                 parent_id = parent_map.get(_agent_id)
                                 if parent_id and response:
+                                    logger.info(f"[SUB-AGENT-DEBUG] Sending response to parent '{parent_id}'")
                                     await self.send_to_agent(
                                         parent_id,
                                         f"[Sub-agent {_agent_id} response]:\n{response}",
                                         metadata={"from_sub_agent": _agent_id, "auto_process": False}
                                     )
+                                    logger.info(f"[SUB-AGENT-DEBUG] Response sent to parent")
+                                else:
+                                    logger.warning(f"[SUB-AGENT-DEBUG] No response or no parent_id: parent_id={parent_id}, response={bool(response)}")
                             except Exception as proc_err:
-                                logger.error(f"Sub-agent '{_agent_id}' processing failed: {proc_err}")
+                                logger.error(f"[SUB-AGENT-DEBUG] Sub-agent '{_agent_id}' processing failed: {proc_err}", exc_info=True)
+                        else:
+                            logger.info(f"[SUB-AGENT-DEBUG] Skipping processing: should_process={should_process}, is_sub_agent={is_sub_agent}, has_engine={has_engine}")
                     except Exception as e:
-                        logger.debug(f"Agent inbox handler failed: {e}")
+                        logger.error(f"[SUB-AGENT-DEBUG] Agent inbox handler failed: {e}", exc_info=True)
 
                 bus.register_handler(agent_id, _agent_inbox)
                 self._agent_bus_handlers[agent_id] = _agent_inbox
@@ -1558,7 +1576,9 @@ class PenguinCore:
         channel: Optional[str] = None,
     ) -> bool:
         try:
+            logger.info(f"[SUB-AGENT-DEBUG] route_message called: recipient={recipient_id}, content_len={len(str(content))}")
             if not (MessageBus and ProtocolMessage):
+                logger.warning("[SUB-AGENT-DEBUG] MessageBus or ProtocolMessage not available")
                 return False
             sender = agent_id or getattr(self.conversation_manager, "current_agent_id", None)
             session_id = None
@@ -1576,10 +1596,12 @@ class PenguinCore:
                 session_id=session_id,
                 channel=channel,
             )
+            logger.info(f"[SUB-AGENT-DEBUG] Sending via MessageBus: sender={sender}, recipient={recipient_id}")
             await MessageBus.get_instance().send(msg)
+            logger.info(f"[SUB-AGENT-DEBUG] MessageBus.send() completed")
             return True
         except Exception as e:
-            logger.error(f"route_message failed: {e}")
+            logger.error(f"[SUB-AGENT-DEBUG] route_message failed: {e}", exc_info=True)
             return False
 
     # Convenience wrappers

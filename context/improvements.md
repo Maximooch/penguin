@@ -726,26 +726,46 @@ class PermissionMode(Enum):
 
 ---
 
-## 🟢 Fixed: Sub-Agent Execution Loop
+## 🟡 Partially Fixed: Sub-Agent Execution Loop
 
-*Fixed during this session*
+*Code added but live testing revealed issues*
 
-### Solution Implemented
+### What Was Implemented
 
 When `spawn_sub_agent` is called with `initial_prompt`:
 1. ✅ Sub-agent is registered with persona/config
 2. ✅ Message is sent via MessageBus
-3. ✅ `_agent_inbox` handler receives the message
-4. ✅ Handler triggers `engine.run_agent_turn()` for sub-agents
-5. ✅ Response is sent back to parent agent via MessageBus
+3. ⚠️ `_agent_inbox` handler should receive the message
+4. ❌ Handler should trigger `engine.run_agent_turn()` - NOT WORKING
+5. ❌ Response should be sent back to parent - NOT WORKING
 
-### Code Change (core.py `_agent_inbox`)
+### Live Test Results (sub-agent-test-1.txt)
 
-Added automatic processing for sub-agents:
-- Checks if agent has a parent (is a sub-agent)
-- Calls `engine.run_agent_turn()` to process the message
-- Sends response back to parent via `send_to_agent()`
-- Uses `auto_process` metadata flag to prevent infinite loops
+**What Worked:**
+- `spawn_sub_agent` tool executed successfully
+- Sub-agents created with IDs: src-explorer, docs-explorer
+- System confirmed spawning with parent='default'
+
+**What Failed:**
+1. **No response from sub-agents** - initial_prompt sent but no results returned
+2. **Workspace context not inherited** - `execute_command` ran in Penguin dir, not FactoryVis
+3. **Sub-agents not in process list** - Not tracked as active processes
+4. **Path resolution wrong** - Tools resolve relative to Penguin, not project
+
+### Root Causes to Investigate
+
+1. **Async execution timing** - Is `_agent_inbox` being awaited properly?
+2. **Workspace inheritance** - Sub-agents need parent's working directory
+3. **Engine availability** - Does `self.engine` exist when inbox is called?
+4. **Error swallowing** - Exceptions may be caught and logged silently
+
+### Debugging Plan
+
+1. Add logging to `_agent_inbox` to trace execution flow
+2. Check if `engine.run_agent_turn()` is actually called
+3. Verify `sub_agent_parent` map is populated correctly
+4. Test with synchronous execution first (remove async)
+5. Check workspace/project path inheritance in sub-agent creation
 
 ### Current Flow (Broken)
 ```

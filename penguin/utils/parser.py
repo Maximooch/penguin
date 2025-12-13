@@ -698,9 +698,15 @@ class ActionExecutor:
         initial_prompt = payload.get("initial_prompt")
         if initial_prompt:
             try:
-                await core.send_to_agent(agent_id, initial_prompt)
-            except Exception:
-                pass
+                import logging
+                _logger = logging.getLogger(__name__)
+                _logger.info(f"[SUB-AGENT-DEBUG] Sending initial_prompt to '{agent_id}': {initial_prompt[:100]}...")
+                result = await core.send_to_agent(agent_id, initial_prompt)
+                _logger.info(f"[SUB-AGENT-DEBUG] send_to_agent returned: {result}")
+            except Exception as e:
+                import logging
+                _logger = logging.getLogger(__name__)
+                _logger.error(f"[SUB-AGENT-DEBUG] Failed to send initial_prompt: {e}", exc_info=True)
 
         return f"Spawned sub-agent '{agent_id}' (parent='{parent_id}', share_session={share_session}, share_context_window={share_cw})"
 
