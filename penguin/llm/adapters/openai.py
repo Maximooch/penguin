@@ -541,16 +541,24 @@ class OpenAIAdapter(BaseAdapter):
 
         Output shape example:
         [
-          {"type": "input_text", "text": "..."},
-          {"type": "input_image", "image_url": {"url": "data:..."}}
+          {
+            "type": "message",
+            "role": "user",
+            "content": [
+              {"type": "input_text", "text": "..."},
+              {"type": "input_image", "image_url": "data:..."}
+            ]
+          }
         ]
         """
         any_image = False
-        texts: List[str] = []
-        images: List[Dict[str, Any]] = []
+        input_items: List[Dict[str, Any]] = []
 
         for m in self.format_messages(messages):
+            role = m.get("role", "user")
             content = m.get("content", "")
+            msg_parts: List[Dict[str, Any]] = []
+
             if isinstance(content, list):
                 for item in content:
                     if isinstance(item, dict) and item.get("type") == "image_url":
@@ -562,26 +570,23 @@ class OpenAIAdapter(BaseAdapter):
                             url_val = url_obj
                         if url_val:
                             any_image = True
-                            images.append(
-                                {"type": "input_image", "image_url": {"url": url_val}}
+                            msg_parts.append(
+                                {"type": "input_image", "image_url": url_val}
                             )
                     elif isinstance(item, dict) and item.get("type") == "text":
                         txt = str(item.get("text", ""))
                         if txt:
-                            texts.append(txt)
+                            msg_parts.append({"type": "input_text", "text": txt})
                     else:
-                        # Unknown item type → coerce to text
-                        texts.append(str(item))
+                        msg_parts.append({"type": "input_text", "text": str(item)})
             else:
-                # Coerce plain string content
                 if str(content):
-                    texts.append(str(content))
+                    msg_parts.append({"type": "input_text", "text": str(content)})
+
+            if msg_parts:
+                input_items.append({"type": "message", "role": role, "content": msg_parts})
 
         if not any_image:
             return None
 
-        parts: List[Dict[str, Any]] = []
-        if texts:
-            parts.append({"type": "input_text", "text": "\n".join(texts)})
-        parts.extend(images)
-        return parts
+        return input_items

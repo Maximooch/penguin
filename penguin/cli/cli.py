@@ -3963,12 +3963,21 @@ Welcome to Penguin!
                         elif command == "image":
                             # Explicit handling of /image so we can stream the vision response correctly
                             try:
+                                import shlex
+
                                 # Parse arguments: /image <path> [description words...]
-                                image_path = None
-                                description = ""
-                                if len(command_parts) > 1 and command_parts[1].strip():
-                                    image_path = command_parts[1].strip().strip("'\"")
-                                else:
+                                # Use shlex so quoted paths with spaces work correctly.
+                                raw = user_input[1:]  # drop leading "/"
+                                try:
+                                    tokens = shlex.split(raw)
+                                except ValueError:
+                                    tokens = raw.split()
+
+                                # tokens[0] should be "image"
+                                image_path = tokens[1] if len(tokens) > 1 else None
+                                description = " ".join(tokens[2:]) if len(tokens) > 2 else ""
+
+                                if not image_path:
                                     # Ask interactively if no path provided
                                     image_path = (
                                         input("Drag and drop your image here: ")
@@ -3983,14 +3992,25 @@ Welcome to Penguin!
                                     )
                                     continue
 
-                                # Remaining part (index 2) is the description if present
-                                if len(command_parts) > 2:
-                                    description = command_parts[2]
                                 if not description.strip():
-                                    description = input(
-                                        "Description (optional): "
-                                    ).strip()
+                                    description = input("Description (optional): ").strip()
+                                    image_path = (
+                                        input("Drag and drop your image here: ")
+                                        .strip()
+                                        .replace("'", "")
+                                    )
 
+                                # Validate the file exists
+                                if not image_path or not os.path.exists(image_path):
+                                    self.display_message(
+                                        f"Image file not found: {image_path}", "error"
+                                    )
+                                    continue
+
+                                if not description.strip():
+                                    description = input("Description (optional): ").strip()
+
+                                # Send the message through the standard interface path so all
                                 # Send the message through the standard interface path so all
                                 # normal streaming / action-result handling is reused
                                 response = await self.interface.process_input(
