@@ -387,12 +387,14 @@ class Engine:
                     logger.debug("Response completion: finish_response tool called")
                     break
 
-                # Fallback: No actions = natural conversation end
-                # This handles cases where the LLM responds without calling finish_response.
-                # The explicit finish_response is preferred, but this provides robustness.
-                if not iteration_results:
-                    logger.debug("Conversation completion: No actions in response (implicit)")
-                    break
+                # NOTE: Implicit completion detection is DISABLED.
+                # The LLM must explicitly call finish_response to end the conversation.
+                # This prevents premature termination when processing tool results.
+                # See: https://github.com/Maximooch/penguin/issues/XXX
+                #
+                # if not iteration_results:
+                #     logger.debug("Conversation completion: No actions in response (implicit)")
+                #     break
 
             # Determine final status
             final_status = "completed" if self.current_iteration < max_iters else "max_iterations"
