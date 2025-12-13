@@ -67,12 +67,12 @@ def test_persona_tool_restrictions():
     researcher = config.agent_personas["researcher"]
     implementer = config.agent_personas["implementer"]
 
-    # Researcher should have read-only tools
+    # Researcher should have read-only tools + safe execute
     researcher_tools = researcher.default_tools or []
     assert "enhanced_read" in researcher_tools, "Researcher should have enhanced_read"
     assert "enhanced_write" not in researcher_tools, "Researcher should NOT have enhanced_write"
-    assert "execute" not in researcher_tools, "Researcher should NOT have execute"
-    print(f"✓ Researcher tools (read-only): {researcher_tools}")
+    assert "execute" in researcher_tools, "Researcher should have execute (safe commands only)"
+    print(f"✓ Researcher tools (read-only + safe execute): {researcher_tools}")
 
     # Implementer should have write tools
     implementer_tools = implementer.default_tools or []

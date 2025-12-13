@@ -171,24 +171,27 @@ Tests cover:
 
 ### Execute and Read-Only Mode
 
-The permission engine blocks `execute` in `read_only` mode because `process.execute` is not in the read-only operation set.
+**UPDATE:** Safe execute is now supported in `read_only` mode!
 
-**What's read-only:**
-- `filesystem.read`
-- `filesystem.list`
-- `git.read`
-- `memory.read`
-- `network.fetch`
+The command filter (`penguin/security/command_filter.py`) validates commands before execution:
 
-**What's NOT read-only (blocked in read_only mode):**
-- `process.execute` - Even for grep/cat commands
-- `filesystem.write`
-- `filesystem.delete`
-- `git.push`
+**Allowed in read_only mode:**
+- `grep`, `find`, `cat`, `head`, `tail`, `ls`, `tree`
+- `git log`, `git status`, `git diff`, `git branch`
+- `wc`, `sort`, `uniq`, `awk`, `sed` (without -i)
+- Pipe chains where all segments are safe
 
-**Workaround options:**
-1. Use workspace mode with `denied_paths: ["**/*"]` to block all writes but allow execute
-2. Keep read_only mode and rely on enhanced tools (search, list_files_filtered) instead of raw execute
-3. Future: Add a `read_execute` permission mode
+**Blocked in read_only mode:**
+- `rm`, `mv`, `cp`, `chmod`, `touch`, `mkdir`
+- `git push`, `git commit`, `git reset`, `git checkout`
+- Redirects (`>`, `>>`)
+- Command substitution (`$()`, backticks)
+- Dangerous flags (`curl -o`, `sed -i`, `tar -x`)
 
-**Current approach:** Read-only agents use enhanced tools instead of execute. These tools (search, list_files_filtered, workspace_search) provide similar functionality for information gathering.
+**How it works:**
+1. `workspace.py` checks if operation is `process.execute`
+2. If in `read_only` mode, calls `is_command_safe(command)`
+3. Command filter parses the command, validates each segment
+4. Safe commands allowed, dangerous commands denied with reason
+
+**Test coverage:** 47 test cases in `tests/test_command_filter.py`
