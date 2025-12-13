@@ -514,6 +514,23 @@ UI Subscribers:
 5. Synthesize response
 ```
 
+
+### Engine Loop Termination
+
+The engine's `run_response` and `run_task` methods use explicit termination signals:
+
+**run_response (Conversational Mode):**
+- Terminates ONLY when `finish_response` tool is called
+- Max iterations (default 5000) as safety limit
+- NO implicit termination on empty action results
+
+**run_task (Autonomous Mode):**
+- Terminates ONLY when `finish_task` tool is called
+- Task marked for human review (not auto-completed)
+- Phrase-based completion detection is deprecated
+
+**Important:** The LLM must explicitly call termination tools. This prevents premature loop exit when the LLM is processing tool results and needs to continue.
+
 ## Performance Optimizations
 
 ### 1. Fast Startup Mode
