@@ -110,6 +110,7 @@ class ActionType(Enum):
     STOP_SUB_AGENT = "stop_sub_agent"
     RESUME_SUB_AGENT = "resume_sub_agent"
     DELEGATE = "delegate"
+    DELEGATE_EXPLORE_TASK = "delegate_explore_task"
     
     # Repository management actions
     GET_REPOSITORY_STATUS = "get_repository_status"
@@ -324,6 +325,7 @@ class ActionExecutor:
             ActionType.STOP_SUB_AGENT: self._stop_sub_agent,
             ActionType.RESUME_SUB_AGENT: self._resume_sub_agent,
             ActionType.DELEGATE: self._delegate,
+            ActionType.DELEGATE_EXPLORE_TASK: self._delegate_explore_task,
             # Enhanced file operations
             ActionType.LIST_FILES_FILTERED: self._list_files_filtered,
             ActionType.FIND_FILES_ENHANCED: self._find_files_enhanced,
@@ -709,6 +711,223 @@ class ActionExecutor:
                 _logger.error(f"[SUB-AGENT-DEBUG] Failed to send initial_prompt: {e}", exc_info=True)
 
         return f"Spawned sub-agent '{agent_id}' (parent='{parent_id}', share_session={share_session}, share_context_window={share_cw})"
+
+
+    async def _delegate_explore_task(self, params: str) -> str:
+        """Delegate an autonomous exploration task to haiku (later general sub agent) with tool access.
+
+        The sub-agent can list directories, read files, and search.
+        It runs a mini action loop until it has enough info to respond.
+
+        JSON body:
+          - task (required): What to explore/analyze
+          - directory (optional): Starting directory (default: current)
+          - max_iterations (optional): Max tool rounds (default: 10)
+
+        Example: <delegate_explore_task>{"task": "Explore this codebase and summarize the architecture"}</delegate_explore_task>
+        """
+        import logging
+        import os
+        import re
+        from pathlib import Path
+
+        _logger = logging.getLogger(__name__)
+
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON: {e}"
+
+        task = payload.get("task", "").strip()
+        if not task:
+            return "delegate_explore_task requires 'task'"
+
+        start_dir = payload.get("directory", ".")
+        max_iterations = min(payload.get("max_iterations", 10), 15)  # Cap at 15
+
+        # Get current working directory for context
+        cwd = os.getcwd()
+
+        # Tool execution functions
+        def execute_list_files(path: str) -> str:
+            try:
+                p = Path(path)
+                if not p.exists():
+                    return f"Directory not found: {path}"
+                if not p.is_dir():
+                    return f"Not a directory: {path}"
+
+                items = []
+                for item in sorted(p.iterdir())[:50]:  # Limit to 50 items
+                    if item.name.startswith('.'):
+                        continue  # Skip hidden
+                    prefix = "📁 " if item.is_dir() else "📄 "
+                    size = f" ({item.stat().st_size} bytes)" if item.is_file() else ""
+                    items.append(f"{prefix}{item.name}{size}")
+
+                return f"Contents of {path}:\n" + "\n".join(items) if items else f"{path} is empty"
+            except Exception as e:
+                return f"Error listing {path}: {e}"
+
+        def execute_read_file(path: str, max_lines: int = 200) -> str:
+            try:
+                p = Path(path)
+                if not p.exists():
+                    return f"File not found: {path}"
+                if not p.is_file():
+                    return f"Not a file: {path}"
+                if p.stat().st_size > 100000:
+                    return f"File too large: {path} ({p.stat().st_size} bytes)"
+
+                content = p.read_text(errors='replace')
+                lines = content.splitlines()[:max_lines]
+                if len(content.splitlines()) > max_lines:
+                    lines.append(f"... (truncated, {len(content.splitlines())} total lines)")
+
+                return f"=== {path} ===\n" + "\n".join(lines)
+            except Exception as e:
+                return f"Error reading {path}: {e}"
+
+        def execute_search(pattern: str, path: str = ".") -> str:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["grep", "-rn", "--include=*.py", "--include=*.js", "--include=*.ts", 
+                     "--include=*.md", "--include=*.json", "--include=*.yaml", "--include=*.yml",
+                     pattern, path],
+                    capture_output=True, text=True, timeout=10
+                )
+                matches = result.stdout.strip().splitlines()[:20]  # Limit results
+                if matches:
+                    return f"Search results for '{pattern}':\n" + "\n".join(matches)
+                return f"No matches found for '{pattern}'"
+            except Exception as e:
+                return f"Search error: {e}"
+
+        def execute_tool(name: str, args: dict) -> str:
+            if name == "list_files":
+                return execute_list_files(args.get("path", "."))
+            elif name == "read_file":
+                return execute_read_file(args.get("path", ""), args.get("max_lines", 200))
+            elif name == "search":
+                return execute_search(args.get("pattern", ""), args.get("path", "."))
+            return f"Unknown tool: {name}"
+
+        # System prompt for the explorer
+        system_prompt = f"""You are a codebase exploration assistant. Your job is to explore and understand codebases.
+
+You have these tools:
+- list_files: List directory contents
+- read_file: Read a file (max 200 lines)
+- search: Search for patterns in files
+
+Current directory: {cwd}
+Starting directory: {start_dir}
+
+IMPORTANT:
+1. Start by listing the root directory to understand the structure
+2. Read key files like README.md, package.json, pyproject.toml, etc.
+3. Identify the main technology stack and architecture
+4. Be systematic but efficient - don't read every file
+5. When you have enough information, provide a clear summary
+
+To use a tool, respond with a JSON block:
+```json
+{{"tool": "tool_name", "args": {{"param": "value"}}}}
+```
+
+When done exploring, provide your final summary WITHOUT any tool calls."""
+
+        try:
+            from penguin.llm.openrouter_gateway import OpenRouterGateway
+            from penguin.llm.model_config import ModelConfig
+
+            model_config = ModelConfig(
+                model="anthropic/claude-haiku-4.5",
+                provider="openrouter",
+                max_output_tokens=2000,
+            )
+            gateway = OpenRouterGateway(model_config)
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": task},
+            ]
+
+            final_content = ""
+
+            # Mini action loop
+            for iteration in range(max_iterations):
+                _logger.info(f"[DELEGATE] Iteration {iteration + 1}/{max_iterations}")
+
+                response = await gateway.get_response(messages=messages)
+
+                # Extract content from response
+                content = ""
+                if isinstance(response, dict):
+                    content = response.get("content", "")
+                    if not content and "choices" in response:
+                        choices = response.get("choices", [])
+                        if choices:
+                            content = choices[0].get("message", {}).get("content", "")
+                elif hasattr(response, "content"):
+                    content = response.content
+                else:
+                    content = str(response)
+
+                final_content = content
+
+                # Check for tool calls (look for JSON blocks)
+                tool_match = re.search(r'```json\s*({[^`]+})\s*```', content, re.DOTALL)
+                if not tool_match:
+                    # Also try without code fence
+                    tool_match = re.search(r'\{"tool":\s*"(\w+)"', content)
+
+                if tool_match:
+                    try:
+                        # Parse tool call
+                        if '```' in content:
+                            tool_json = json.loads(tool_match.group(1))
+                        else:
+                            # Extract full JSON object
+                            start = content.find('{"tool"')
+                            depth = 0
+                            end = start
+                            for i, c in enumerate(content[start:]):
+                                if c == '{': depth += 1
+                                elif c == '}': depth -= 1
+                                if depth == 0:
+                                    end = start + i + 1
+                                    break
+                            tool_json = json.loads(content[start:end])
+
+                        tool_name = tool_json.get("tool")
+                        tool_args = tool_json.get("args", {})
+
+                        _logger.info(f"[DELEGATE] Tool call: {tool_name}({tool_args})")
+
+                        # Execute tool
+                        result = execute_tool(tool_name, tool_args)
+
+                        # Add to conversation
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": f"Tool result:\n{result}"})
+
+                    except json.JSONDecodeError as e:
+                        _logger.warning(f"[DELEGATE] Failed to parse tool call: {e}")
+                        # Treat as final response
+                        return f"[Haiku Explorer]:\n{content}"
+                else:
+                    # No tool call - this is the final response
+                    return f"[Haiku Explorer]:\n{content}"
+
+            # Max iterations reached
+            return f"[Haiku Explorer] (max iterations reached):\n{final_content}"
+
+        except Exception as e:
+            _logger.error(f"delegate_explore_task failed: {e}", exc_info=True)
+            return f"delegate_explore_task failed: {e}"
+
 
     async def _stop_sub_agent(self, params: str) -> str:
         try:
