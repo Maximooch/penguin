@@ -15,7 +15,7 @@
 - **Expose Diagnostics Early**: add targeted logging (e.g., available `model_configs`, richer error details) as soon as ambiguity appears. It saves time when issues surface later.
 - **Script First, UI Later**: when CLI/TUI support is missing, create focused scripts (`phaseD_live_sub_agent_demo.py`) to exercise behaviour. These evolve into regression tests and documentation examples.
 - **Document While Hot**: update docs and notes in the same session as code changes. Future agents shouldn’t reverse-engineer what just shipped.
-- **Respect External Constraints**: Moonshot’s 262k limit and similar provider caps require careful prompts and `shared_cw_max_tokens`. Guardrails in code and docs prevent repeated context overflows.
+- **Respect External Constraints**: Moonshot’s 262k limit and similar provider caps require careful prompts and `shared_context_window_max_tokens`. Guardrails in code and docs prevent repeated context overflows.
 
 ## Recommendations for Future Agents
 

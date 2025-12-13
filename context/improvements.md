@@ -222,3 +222,368 @@ except Exception as e:
 
 *Created: Session with Penguin, following max_tokens migration*
 *Last Updated: Same session*
+
+
+---
+
+## 🔴 Multi-Agent Infrastructure Issues
+
+*Added after reviewing penguin/multi/coordinator.py, core.py register_agent, config.py AgentPersonaConfig, and docs*
+
+### 1. No Agent Configuration in Default Configs
+
+**Problem:** Neither `config.yml` nor `config.example.yml` contain any `agents:` or `personas:` section, despite the code fully supporting it.
+
+**Evidence:**
+- `config.py` lines 1418-1431 parse `agents:` or `personas:` from config
+- `AgentPersonaConfig` dataclass is fully implemented (lines 1146-1230)
+- Documentation in `sub_agents.md` line 82 says: *"Define them in `config.yml` under the `agents:` section"*
+- But neither config file has this section
+
+**Impact:** Users have no example of how to configure personas. The feature is invisible.
+
+**Fix:** Add example agents section to `config.example.yml`:
+```yaml
+agents:
+  researcher:
+    description: "Research and analysis specialist"
+    system_prompt: "You are a research specialist focused on gathering information."
+    shared_context_window_max_tokens: 50000
+    model_output_max_tokens: 8000
+    permissions:
+      mode: read_only
+      operations: [filesystem.read, memory.read, web.search]
+
+  implementer:
+    description: "Code implementation specialist"
+    permissions:
+      operations: [filesystem.read, filesystem.write, process.execute]
+      denied_paths: [".env", "**/*.key"]
+```
+
+**Estimated Effort:** Small (add config examples, update docs)
+
+---
+
+### 2. Confusing Parameter Naming Between Layers
+
+**Problem:** Different layers use different parameter names for the same concept:
+
+| Layer | Context Window Param | Output Token Param |
+|-------|---------------------|-------------------|
+| `spawn_sub_agent` action | `shared_cw_max_tokens` (web API) | `model_max_tokens` |
+| `coordinator.spawn_agent` | `shared_context_window_max_tokens` | `model_output_max_tokens` |
+| `core.register_agent` | `shared_context_window_max_tokens` | `model_output_max_tokens` |
+| `AgentPersonaConfig` | `shared_context_window_max_tokens` | `model_output_max_tokens` |
+
+**Evidence:**
+- Web API routes.py keeps `shared_cw_max_tokens` for backward compat
+- Parser.py accepts both old and new names
+- Documentation mixes both naming conventions
+
+**Impact:** Confusion when configuring agents. Users don't know which name to use.
+
+**Fix:** 
+1. Standardize on new names everywhere except web API (for backward compat)
+2. Add clear deprecation notices in docs
+3. Update all examples to use new names
+
+**Estimated Effort:** Small (mostly done in token migration, needs doc cleanup)
+
+---
+
+### 3. No Validation or Feedback on Agent Config Errors
+
+**Problem:** Invalid agent configurations fail silently or with cryptic errors.
+
+**Evidence:**
+- `config.py` line 1430: catches all exceptions with just a warning log
+- No schema validation for agent configs
+- No CLI command to validate agent configuration
+
+**Impact:** Users don't know if their agent config is correct until runtime failure.
+
+**Fix:**
+1. Add `penguin config validate` command
+2. Add JSON schema for agent configuration
+3. Surface config errors clearly at startup
+
+**Estimated Effort:** Medium
+
+---
+
+### 4. Unclear Relationship Between Coordinator and Core
+
+**Problem:** Two overlapping APIs for agent management:
+- `MultiAgentCoordinator.spawn_agent()` - role-based, delegation tracking
+- `PenguinCore.register_agent()` - lower-level, conversation/executor setup
+
+**Evidence:**
+- `coordinator.spawn_agent()` calls `core.register_agent()` internally (line 126)
+- But coordinator adds role tracking, round-robin routing, delegation records
+- Users don't know which to use
+
+**Impact:** Confusion about the right abstraction level. Potential for inconsistent state.
+
+**Fix:**
+1. Document clear use cases: Coordinator for multi-agent workflows, Core for single-agent setup
+2. Consider making Coordinator the only public API for agent management
+3. Add architecture diagram showing the relationship
+
+**Estimated Effort:** Medium (mostly documentation)
+
+---
+
+### 5. Missing Integration Between CLI and Multi-Agent
+
+**Problem:** CLI commands for agents exist but aren't well-integrated with config-based personas.
+
+**Evidence:**
+- `sub_agents.md` line 84 mentions `penguin agent personas` command
+- But running `penguin agent --help` shows limited options
+- No easy way to spawn a pre-configured persona from CLI
+
+**Impact:** Multi-agent features are hard to discover and use.
+
+**Fix:**
+1. Add `penguin agent spawn --persona researcher` that pulls from config
+2. Add `penguin agent list-personas` to show available personas
+3. Add TUI integration for persona selection
+
+**Estimated Effort:** Medium
+
+---
+
+### 6. Context Window Sharing Logic is Complex and Undocumented
+
+**Problem:** The logic for sharing context windows between agents is spread across multiple files and hard to follow.
+
+**Evidence:**
+- `core.py` lines 1179-1204: Complex conditional logic for `effective_cw_cap`
+- `conversation_manager.create_sub_agent()` has its own sharing logic
+- No clear documentation of what happens when you set various combinations of:
+  - `share_session_with`
+  - `share_context_window_with`
+  - `shared_context_window_max_tokens`
+
+**Impact:** Users can't predict behavior. Easy to misconfigure.
+
+**Fix:**
+1. Create a decision matrix documenting all combinations
+2. Add validation that rejects invalid combinations
+3. Add debug logging showing what sharing mode was selected
+
+**Estimated Effort:** Medium
+
+---
+
+### 7. No Live Demo or Tutorial for Multi-Agent
+
+**Problem:** The only example is `scripts/phaseD_live_sub_agent_demo.py` which is hard to find and understand.
+
+**Evidence:**
+- `sub_agents.md` line 116 references the script
+- No step-by-step tutorial
+- No simple "hello world" multi-agent example
+
+**Impact:** High barrier to entry for multi-agent features.
+
+**Fix:**
+1. Add `docs/docs/tutorials/multi_agent_quickstart.md`
+2. Create a simpler example script
+3. Add interactive CLI walkthrough
+
+**Estimated Effort:** Medium
+
+---
+
+## Recommended Multi-Agent Session Order
+
+1. **Add agents section to config.example.yml** - Immediate visibility
+2. **Create multi-agent quickstart tutorial** - Lower barrier to entry
+3. **Add `penguin agent spawn --persona` CLI** - Easy experimentation
+4. **Document context window sharing matrix** - Reduce confusion
+5. **Add config validation command** - Catch errors early
+
+
+
+---
+
+## 🔵 Future: Multi-Agent Design Pattern Implementation
+
+*To be tackled AFTER resolving the config and infrastructure issues above*
+
+**Reference:** See `context/multi_agent_design_patterns.md` for full source material from:
+- Anthropic: Effective Context Engineering for AI Agents
+- Anthropic: Building a Multi-Agent Research System  
+- Manus: Wide Research
+
+---
+
+### 1. Implement Orchestrator-Worker Pattern
+
+**Goal:** Enable a lead agent to spawn specialized subagents for specific tasks.
+
+**From Anthropic:** *"Our Research system uses a multi-agent architecture with an orchestrator-worker pattern, where a lead agent coordinates the process while delegating to specialized subagents that operate in parallel."*
+
+**Implementation:**
+- [ ] Define clear delegation protocol: objective, output format, tool guidance, task boundaries
+- [ ] Add `delegate_research` and `delegate_implementation` high-level actions
+- [ ] Create default personas: `researcher`, `implementer`, `reviewer`
+- [ ] Implement result synthesis - lead agent collects subagent outputs
+
+**Estimated Effort:** Large
+
+---
+
+### 2. Add Effort Scaling Heuristics
+
+**Goal:** Teach agents to scale resources based on task complexity.
+
+**From Anthropic:** *"Simple fact-finding requires just 1 agent with 3-10 tool calls, direct comparisons might need 2-4 subagents with 10-15 calls each, and complex research might use more than 10 subagents."*
+
+**Implementation:**
+- [ ] Add task complexity classification (simple/medium/complex)
+- [ ] Embed scaling rules in system prompt or persona configs
+- [ ] Define resource budgets per complexity level:
+  - Simple: 1 agent, 3-10 tool calls, 5K output tokens
+  - Medium: 2-4 subagents, 10-15 calls each, 15K output tokens
+  - Complex: 5+ subagents, divided responsibilities, 50K+ output tokens
+- [ ] Add guardrails to prevent over-spawning (was a failure mode for Anthropic)
+
+**Estimated Effort:** Medium
+
+---
+
+### 3. Implement Memory Persistence for Long-Horizon Tasks
+
+**Goal:** Prevent context overflow by summarizing and persisting completed work.
+
+**From Anthropic:** *"Agents summarize completed work phases and store essential information in external memory before proceeding to new tasks."*
+
+**Implementation:**
+- [ ] Add automatic phase summarization when context usage exceeds threshold (e.g., 70%)
+- [ ] Store summaries in `context/` folder or memory system
+- [ ] Implement "checkpoint and continue" pattern for long tasks
+- [ ] Add `<save_progress>` and `<load_progress>` actions
+- [ ] Consider spawning fresh subagent with clean context + handoff summary
+
+**Estimated Effort:** Medium
+
+---
+
+### 4. Enable Parallel Subagent Execution
+
+**Goal:** Run multiple subagents simultaneously for breadth-first tasks.
+
+**From Anthropic:** *"We introduced two kinds of parallelization: (1) the lead agent spins up 3-5 subagents in parallel rather than serially; (2) the subagents use 3+ tools in parallel. These changes cut research time by up to 90%."*
+
+**From Manus:** *"Each sub-task is assigned to a dedicated agent with its own fresh context window. Agents work simultaneously."*
+
+**Implementation:**
+- [ ] Add `parallel=True` option to `spawn_sub_agent`
+- [ ] Implement async subagent execution in coordinator
+- [ ] Add progress tracking for parallel agents
+- [ ] Implement result collection and synthesis
+- [ ] Handle partial failures gracefully (retry failed subagents)
+
+**Estimated Effort:** Large
+
+---
+
+### 5. Address Context Rot with Just-in-Time Loading
+
+**Goal:** Minimize context usage by loading data only when needed.
+
+**From Anthropic:** *"Store lightweight identifiers (e.g., file paths, links) and dynamically load data via tools at runtime, as in Anthropic's Claude Code for large database analysis."*
+
+**Implementation:**
+- [ ] Audit current context loading patterns
+- [ ] Replace eager file loading with path references
+- [ ] Add `<load_context>` action for on-demand retrieval  
+- [ ] Implement progressive disclosure - layer by layer understanding
+- [ ] Add context usage warnings at 50%, 70%, 90% thresholds
+
+**Estimated Effort:** Medium
+
+---
+
+### 6. Trim the System Prompt (Urgent - High Impact)
+
+**Goal:** Reduce the 64KB system prompt to essential, high-signal content.
+
+**From Anthropic:** *"Good context engineering means finding the smallest possible set of high-signal tokens that maximize the likelihood of some desired outcome."*
+
+**Current State:**
+- ~64,000 characters / ~16,000 tokens
+- 10% of context window consumed before conversation starts
+- 20+ mentions of `finish_response` alone
+- Redundant sections and examples
+
+**Implementation:**
+- [ ] Audit and deduplicate all sections
+- [ ] Remove redundant examples (keep 1-2 best)
+- [ ] Consolidate code formatting rules (currently repeated 3+ times)
+- [ ] Move tool documentation to on-demand loading
+- [ ] Consider dynamic prompt assembly based on task type
+- [ ] Target: <20KB system prompt (<5K tokens)
+
+**Estimated Effort:** Medium (but high impact)
+
+---
+
+### 7. Add End-State Evaluation for Agents
+
+**Goal:** Evaluate agents by outcome, not process.
+
+**From Anthropic:** *"Instead of judging whether the agent followed a specific process, evaluate whether it achieved the correct final state."*
+
+**Implementation:**
+- [ ] Define success criteria for common task types
+- [ ] Add `<evaluate_outcome>` action for self-assessment
+- [ ] Implement LLM-as-judge for complex outputs
+- [ ] Track success rates per agent/persona for tuning
+- [ ] Add evaluation checkpoints for long tasks
+
+**Estimated Effort:** Medium
+
+---
+
+### 8. Implement Subagent Output to Filesystem
+
+**Goal:** Reduce token overhead by having subagents write directly to files.
+
+**From Anthropic:** *"Rather than requiring subagents to communicate everything through the lead agent, implement artifact systems where specialized agents can create outputs that persist independently."*
+
+**Implementation:**
+- [ ] Define artifact conventions (e.g., `context/artifacts/<agent_id>/<task>.md`)
+- [ ] Add `<create_artifact>` action for subagents
+- [ ] Lead agent receives lightweight references, not full content
+- [ ] Implement artifact cleanup after synthesis
+
+**Estimated Effort:** Small
+
+---
+
+## Recommended Implementation Order
+
+**Phase 1: Foundation (Current Sprint)**
+1. Fix config issues (add agents section to config.example.yml)
+2. Add CLI `penguin agent spawn --persona`
+3. Create multi-agent quickstart tutorial
+
+**Phase 2: Core Patterns**
+4. Trim system prompt (highest ROI)
+5. Implement memory persistence
+6. Add effort scaling heuristics
+
+**Phase 3: Advanced**
+7. Orchestrator-worker pattern
+8. Parallel subagent execution
+9. End-state evaluation
+
+**Phase 4: Optimization**
+10. Just-in-time context loading
+11. Subagent artifact system
+12. Advanced delegation protocols
+

@@ -41,7 +41,7 @@ Create a top‑level or sub‑agent. Payload (minimal):
   "system_prompt": "...",         // optional
   "share_session": false,          // default false
   "share_context_window": false,   // default false
-  "shared_cw_max_tokens": 512,     // optional; applies when isolated CW
+  "shared_context_window_max_tokens": 512,     // optional; applies when isolated CW
   "model_overrides": {             // optional fallback (used only when model_config_id missing)
     "model": "moonshotai/kimi-k2-0905",
     "provider": "openrouter",
@@ -126,8 +126,8 @@ Aggregate gauges and counters:
     "last_message_at": "2025-09-23T00:00:00Z"
   },
   "tokens": {
-    "overall": {"current_total_tokens": 1200, "max_tokens": 128000},
-    "per_agent": {"default": {"current_total_tokens": 1200, "max_tokens": 128000}}
+    "overall": {"current_total_tokens": 1200, "max_context_window_tokens": 128000},
+    "per_agent": {"default": {"current_total_tokens": 1200, "max_context_window_tokens": 128000}}
   },
   "rates": {
     "1m": {"messages": 10},

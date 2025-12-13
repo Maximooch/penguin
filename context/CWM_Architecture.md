@@ -20,7 +20,7 @@ The Context Window Manager (CWM) is responsible for:
 ┌─────────────────────────────────────────────────────────┐
 │                ContextWindowManager                     │
 ├─────────────────────────────────────────────────────────┤
-│ • max_tokens: int (150k default)                       │
+│ • max_context_window_tokens: int (150k default)                       │
 │ • token_counter: Callable                              │
 │ • _budgets: Dict[MessageCategory, TokenBudget]         │
 ├─────────────────────────────────────────────────────────┤
@@ -49,7 +49,7 @@ Total Budget (150k tokens)
 │      TokenBudget        │
 ├─────────────────────────┤
 │ • min_tokens: int       │
-│ • max_tokens: int       │
+│ • max_category_tokens: int│
 │ • current_tokens: int   │
 └─────────────────────────┘
 ```
