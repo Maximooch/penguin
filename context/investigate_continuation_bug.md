@@ -547,3 +547,57 @@ self.logger.debug(f"Direct streaming response completed with no content...")
 5. Engine breaks with "Implicit completion" (debug log)
 6. User gets control back - no warnings, no spam
 
+
+---
+
+## ROOT CAUSE: Prompt Framing Issue (December 2024)
+
+### Investigation: Why Doesn't LLM Call finish_response?
+
+User observation: Line 148-149 in `system_prompt.py` framed `finish_response` as something to call only after tool results, not after general conversational responses.
+
+**Original (problematic):**
+```
+-   Action results appear in the **next** message as "[Tool Execution Result]". Acknowledge the result, then proceed or call `<finish_response>` if complete.
+```
+
+This only mentioned `finish_response` in the context of action results, leading the LLM to think it shouldn't call `finish_response` after regular conversational turns.
+
+### Analysis of Prompt Structure
+
+1. **prompt_actions.py** (lines 45-82): Has excellent finish_response guidance
+   - "You MUST explicitly signal when you're done"
+   - "Call when you've answered the user and have no more actions to take"
+   - "NEVER rely on implicit completion"
+
+2. **prompt_workflow.py** (COMPLETION_PHRASES_GUIDE, lines 571-618): Also has good guidance
+   - "You MUST explicitly signal when you're done using completion tools"
+   - "The system continues until you call one of these"
+
+3. **system_prompt.py** (line 148-149): Had conflicting/confusing guidance
+   - Only mentioned finish_response after "[Tool Execution Result]"
+   - Created confusion about when to call it
+
+### The Fix
+
+Updated `system_prompt.py` lines 148-149:
+
+**Before:**
+```
+-   Use `<finish_response>` (or <finish_task>) to end your turn when the task is fully complete.
+-   Action results appear in the **next** message as "[Tool Execution Result]". Acknowledge the result, then proceed or call `<finish_response>` if complete.
+```
+
+**After:**
+```
+-   **ALWAYS call `<finish_response>` when you're done** - whether after answering a question, completing a task, or providing information. Never just stop without calling it.
+-   Action results appear in the **next** message as "[Tool Execution Result]". Acknowledge the result, then either continue working or call `<finish_response>` if done.
+```
+
+### Summary of All Fixes Applied
+
+1. **max_iterations defaults**: Changed from 5 to MAX_TASK_ITERATIONS (5000) across all files
+2. **Empty response handling**: Simplified to break after 3 consecutive empties (no injection)
+3. **Warning level**: Changed openrouter_gateway empty response from `warning` to `debug`
+4. **System prompt clarity**: Emphasized that `finish_response` must be called after ANY completed response
+
