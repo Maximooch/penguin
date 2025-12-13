@@ -409,6 +409,51 @@ agents:
 
 ---
 
+
+
+---
+
+## 📘 Reference: Claude Code Sub-Agent Patterns
+
+*See `context/claude_code_subagents_reference.md` for full documentation*
+
+### Config Format (What Claude Code Uses)
+
+```yaml
+# .claude/agents/code-reviewer.yaml
+name: code-reviewer
+description: Reviews code for quality, security, and best practices
+model: claude-haiku-3-20240307  # Optional: cheaper/faster model
+tools:  # Optional: restrict available tools
+  - Read
+  - Glob
+  - Grep
+  - LS
+prompt: |
+  You are an expert code reviewer...
+```
+
+### What Penguin Already Has vs. Needs
+
+| Feature | Claude Code | Penguin Status |
+|---------|-------------|----------------|
+| YAML config | `.claude/agents/*.yaml` | ✅ `config.yml` agents section (code exists, no examples) |
+| Required fields | name, description, prompt | ✅ `AgentPersonaConfig` has these |
+| Model override | `model: claude-haiku-3` | ✅ `AgentModelSettings` supports this |
+| Tool restrictions | `tools: [Read, Glob]` | ✅ `default_tools` field exists |
+| Explicit invocation | `@agent-name task` | ❌ Not implemented |
+| Auto delegation | Based on description | ❌ Not implemented |
+| Interactive management | `/agents` command | ❌ Partial (`penguin agent` exists but limited) |
+| Two scopes | Project + User level | ❌ Only project level |
+
+### Key Implementation Gaps
+
+1. **No config examples** - The `agents:` section works but nobody knows about it
+2. **No model specification in examples** - Users don't know they can use cheaper models
+3. **No `@agent-name` syntax** - Can't explicitly invoke a persona
+4. **No automatic delegation** - Agent must be manually spawned, no "Claude decides" mode
+
+
 ## 🔵 Future: Multi-Agent Design Pattern Implementation
 
 *To be tackled AFTER resolving the config and infrastructure issues above*

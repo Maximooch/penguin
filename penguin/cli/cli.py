@@ -415,7 +415,7 @@ async def _initialize_core_components_globally(
     logger.info("Initializing core components globally...")
     init_start_time = time.time()
 
-    _loaded_config = penguin_config_global  # Use the imported config
+    _loaded_config = Config.load_config()  # Use Config object with parsed agent_personas
 
     effective_workspace = (
         workspace_override or WORKSPACE_PATH
@@ -3885,6 +3885,57 @@ Welcome to Penguin!
                 user_msg_key = f"user:{user_input[:50]}"
                 self.processed_messages.add(user_msg_key)
                 self.message_turn_map[user_msg_key] = self.current_conversation_turn
+
+                # Handle @agent-name syntax for explicit agent invocation
+                if user_input.startswith("@"):
+                    # Parse @agent-name message
+                    parts = user_input[1:].split(" ", 1)
+                    target_agent = parts[0].strip()
+                    message_content = parts[1].strip() if len(parts) > 1 else ""
+
+                    if not target_agent:
+                        self.display_message("Usage: @agent-name <message>", "error")
+                        continue
+
+                    if not message_content:
+                        self.display_message(f"Please provide a message for @{target_agent}", "error")
+                        continue
+
+                    # Check if agent exists (either as persona or registered agent)
+                    personas = {entry.get("name") for entry in self.core.get_persona_catalog()}
+                    roster_ids = {entry.get("id") for entry in self.core.get_agent_roster()}
+
+                    if target_agent not in personas and target_agent not in roster_ids:
+                        available = sorted(personas | roster_ids - {None})
+                        self.display_message(
+                            f"Unknown agent '@{target_agent}'. Available: {', '.join(available)}", 
+                            "error"
+                        )
+                        continue
+
+                    # If it's a persona but not yet spawned, spawn it
+                    if target_agent in personas and target_agent not in roster_ids:
+                        try:
+                            self.core.register_agent(
+                                target_agent,
+                                persona=target_agent,
+                                activate=False
+                            )
+                            self.display_message(f"Spawned agent '{target_agent}' from persona", "system")
+                        except Exception as e:
+                            self.display_message(f"Failed to spawn agent: {e}", "error")
+                            continue
+
+                    # Send message to the target agent
+                    try:
+                        success = await self.core.send_to_agent(target_agent, message_content)
+                        if success:
+                            self.display_message(f"Message sent to @{target_agent}", "system")
+                        else:
+                            self.display_message(f"Failed to send message to @{target_agent}", "error")
+                    except Exception as e:
+                        self.display_message(f"Error sending to @{target_agent}: {e}", "error")
+                    continue
 
                 # Handle commands
                 if user_input.startswith("/"):

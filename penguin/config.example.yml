@@ -14,7 +14,7 @@ workspace:
     - context
 
 model:
-  default: anthropic/claude-sonnet-4
+  model: anthropic/claude-sonnet-4
   provider: openrouter
   client_preference: openrouter
   streaming_enabled: true
@@ -56,3 +56,144 @@ theme:
     context: dim                  # Context/metadata color
     banner: "bold #00D7FF"        # ASCII banner color
     penguin_name: "#5F87FF"       # "Penguin" branding text color
+
+# =============================================================================
+# AGENT PERSONAS
+# =============================================================================
+# Define reusable agent personas with custom prompts, tools, and model settings.
+# Spawn agents with: penguin agent spawn --persona <name>
+# Or programmatically: core.register_agent("my-agent", persona="researcher")
+
+agents:
+  # Research specialist - read-only, focused on information gathering
+  researcher:
+    description: "Research and analysis specialist for information gathering"
+    system_prompt: |
+      You are a research specialist. Your role is to:
+      1. Gather information from files, documentation, and web sources
+      2. Analyze and synthesize findings
+      3. Provide clear, well-organized summaries
+      4. Cite sources and note uncertainties
+
+      You have READ-ONLY access. Do not attempt to modify files.
+      Focus on thoroughness and accuracy over speed.
+
+    model:
+      default: anthropic/claude-haiku-4.5  # Cheaper model for research tasks
+      provider: openrouter
+      max_output_tokens: 8000
+
+  # TODO: include grep, glob, related, more web search tools, and maybe just allow <execute> with the policy engine enforcing read-only
+    # Read-only tools
+    default_tools:
+      - enhanced_read
+      - list_files_filtered
+      - search
+      - workspace_search
+      - memory_search
+      - perplexity_search
+
+    permissions:
+      mode: read_only
+      operations:
+        - filesystem.read
+        - memory.read
+        - web.search
+
+    shared_context_window_max_tokens: 50000  # Limit context for cost control
+
+  # Implementation specialist - can modify files and execute code
+  implementer:
+    description: "Code implementation specialist for making changes"
+    system_prompt: |
+      You are an implementation specialist. Your role is to:
+      1. Write clean, well-tested code
+      2. Make targeted, surgical changes
+      3. Follow existing code patterns and style
+      4. Verify changes work before reporting completion
+
+      Be precise. Make minimal changes to achieve the goal.
+      Always verify your changes compile/run before finishing.
+
+    model:
+      model: anthropic/claude-sonnet-4  # More capable model for implementation
+      provider: openrouter
+      max_output_tokens: 16000
+
+    default_tools:
+      - enhanced_read
+      - enhanced_write
+      - apply_diff
+      - multiedit
+      - execute
+      - execute_command
+      - list_files_filtered
+      - search
+
+    permissions:
+      mode: workspace
+      operations:
+        - filesystem.read
+        - filesystem.write
+        - process.execute
+      denied_paths:
+        - ".env"
+        - ".env.*"
+        - "**/*.key"
+        - "**/*.pem"
+
+    shared_context_window_max_tokens: 80000
+
+  # Code reviewer - read-only, focused on quality and security
+  reviewer:
+    description: "Code review specialist for quality and security analysis"
+    system_prompt: |
+      You are a code review specialist. Your role is to:
+      1. Identify bugs, security vulnerabilities, and code smells
+      2. Check adherence to best practices and style guidelines
+      3. Suggest improvements with clear explanations
+      4. Prioritize issues by severity (critical > high > medium > low)
+
+      Be constructive and specific. Explain WHY something is an issue,
+      not just WHAT the issue is. Provide actionable recommendations.
+
+    model:
+      model: anthropic/claude-haiku-4.5  # Fast model for review
+      provider: openrouter
+      max_output_tokens: 8000
+
+    default_tools:
+      - enhanced_read
+      - list_files_filtered
+      - search
+      - analyze_project
+
+    permissions:
+      mode: read_only
+      operations:
+        - filesystem.read
+
+    shared_context_window_max_tokens: 60000
+
+# Model configurations for different use cases
+model_configs:
+  # Fast/cheap model for simple tasks
+  haiku-4.5:
+    provider: openrouter
+    context_window: 200000
+    max_output_tokens: 4000
+    temperature: 0.3
+
+  # Balanced model for most tasks  
+  sonnet-4.5:
+    provider: openrouter
+    context_window: 200000
+    max_output_tokens: 16000
+    temperature: 0.5
+
+  # Powerful model for complex reasoning
+  opus-4.5:
+    provider: openrouter
+    context_window: 200000
+    max_output_tokens: 32000
+    temperature: 0.5
