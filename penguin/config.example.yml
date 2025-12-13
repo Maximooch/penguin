@@ -92,8 +92,7 @@ agents:
       - workspace_search
       - memory_search
       - perplexity_search
-
-    permissions:
+      permissions:
       mode: read_only
       operations:
         - filesystem.read
@@ -167,8 +166,7 @@ agents:
       - list_files_filtered
       - search
       - analyze_project
-
-    permissions:
+      permissions:
       mode: read_only
       operations:
         - filesystem.read

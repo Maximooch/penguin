@@ -163,3 +163,32 @@ Tests cover:
 
 *Last updated: During multi-agent config session*
 
+
+
+---
+
+## Permission Engine Notes
+
+### Execute and Read-Only Mode
+
+The permission engine blocks `execute` in `read_only` mode because `process.execute` is not in the read-only operation set.
+
+**What's read-only:**
+- `filesystem.read`
+- `filesystem.list`
+- `git.read`
+- `memory.read`
+- `network.fetch`
+
+**What's NOT read-only (blocked in read_only mode):**
+- `process.execute` - Even for grep/cat commands
+- `filesystem.write`
+- `filesystem.delete`
+- `git.push`
+
+**Workaround options:**
+1. Use workspace mode with `denied_paths: ["**/*"]` to block all writes but allow execute
+2. Keep read_only mode and rely on enhanced tools (search, list_files_filtered) instead of raw execute
+3. Future: Add a `read_execute` permission mode
+
+**Current approach:** Read-only agents use enhanced tools instead of execute. These tools (search, list_files_filtered, workspace_search) provide similar functionality for information gathering.
