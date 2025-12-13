@@ -632,3 +632,93 @@ prompt: |
 11. Subagent artifact system
 12. Advanced delegation protocols
 
+
+
+---
+
+## 🟡 Permission Engine: Safe Execute for Read-Only Agents
+
+*Added after discovering read_only mode blocks all execute*
+
+### Problem
+
+The permission engine blocks `process.execute` entirely in `read_only` mode. This prevents research sub-agents from using grep, find, cat, etc. in the project root.
+
+### Solution: Two-Phase Approach
+
+#### Phase 1: Safe Command Allowlist (Short-term)
+
+Add a command allowlist to the permission engine. In `read_only` mode, only these commands are permitted:
+
+```python
+SAFE_READ_COMMANDS = {
+    # File reading
+    "cat", "head", "tail", "less", "more",
+    # Searching
+    "grep", "egrep", "fgrep", "rg", "ag", "ack",
+    # Finding
+    "find", "fd", "locate", "which", "whereis",
+    # Listing
+    "ls", "tree", "exa", "du", "df",
+    # Text processing (read-only)
+    "wc", "sort", "uniq", "diff", "comm",
+    # Git (read operations)
+    "git log", "git show", "git diff", "git status", "git branch",
+    # Other safe commands
+    "echo", "pwd", "whoami", "date", "env", "printenv",
+}
+
+BLOCKED_PATTERNS = [
+    ">", ">>",           # Redirects
+    "rm", "rmdir",       # Delete
+    "mv", "cp",          # Move/copy (can overwrite)
+    "chmod", "chown",    # Permissions
+    "sudo", "su",        # Privilege escalation
+    "curl.*-o", "wget",  # Downloads that write
+    "touch", "mkdir",    # Create files/dirs
+    "kill", "pkill",     # Process control
+]
+```
+
+**Implementation location:** `penguin/security/policies/workspace.py` or new `command_filter.py`
+
+**Estimated Effort:** Small-Medium
+
+#### Phase 2: read_execute Permission Mode (Medium-term)
+
+Add a new permission mode:
+
+```python
+class PermissionMode(Enum):
+    READ_ONLY = "read_only"       # No execute, no writes
+    READ_EXECUTE = "read_execute" # Safe execute, no writes  
+    WORKSPACE = "workspace"       # Execute + writes in workspace
+    FULL = "full"                 # Everything allowed
+```
+
+`read_execute` mode:
+- Allows `process.execute` with command filtering (Phase 1)
+- Blocks `filesystem.write`, `filesystem.delete`
+- Allows all read operations
+
+**Estimated Effort:** Medium
+
+---
+
+## 🟡 Dependabot Security Vulnerabilities
+
+**Status:** 26 vulnerabilities on default branch
+- 1 Critical
+- 5 High  
+- 17 Moderate
+- 3 Low
+
+**URL:** https://github.com/Maximooch/penguin/security/dependabot
+
+**Action needed:**
+1. Review and triage vulnerabilities
+2. Update dependencies where safe
+3. Document any that can't be updated (breaking changes)
+
+**Estimated Effort:** Small-Medium (1 session)
+
