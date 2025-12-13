@@ -1341,6 +1341,31 @@ class PenguinCore:
                             "message_type": msg.message_type or "message",
                             "metadata": {"via": "message_bus", "from": msg.sender}
                         })
+
+                        # Trigger sub-agent processing if this is a sub-agent (has parent)
+                        # and auto_process is enabled (default for initial_prompt)
+                        should_process = msg.metadata.get("auto_process", True) if msg.metadata else True
+                        parent_map = getattr(self.conversation_manager, "sub_agent_parent", {}) or {}
+                        is_sub_agent = _agent_id in parent_map
+
+                        if should_process and is_sub_agent and getattr(self, "engine", None):
+                            try:
+                                # Run the sub-agent turn asynchronously
+                                response = await self.engine.run_agent_turn(
+                                    _agent_id,
+                                    msg.content,
+                                    tools_enabled=True,
+                                )
+                                # Send response back to parent
+                                parent_id = parent_map.get(_agent_id)
+                                if parent_id and response:
+                                    await self.send_to_agent(
+                                        parent_id,
+                                        f"[Sub-agent {_agent_id} response]:\n{response}",
+                                        metadata={"from_sub_agent": _agent_id, "auto_process": False}
+                                    )
+                            except Exception as proc_err:
+                                logger.error(f"Sub-agent '{_agent_id}' processing failed: {proc_err}")
                     except Exception as e:
                         logger.debug(f"Agent inbox handler failed: {e}")
 

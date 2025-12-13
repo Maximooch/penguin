@@ -722,3 +722,70 @@ class PermissionMode(Enum):
 
 **Estimated Effort:** Small-Medium (1 session)
 
+
+
+---
+
+## 🟢 Fixed: Sub-Agent Execution Loop
+
+*Fixed during this session*
+
+### Solution Implemented
+
+When `spawn_sub_agent` is called with `initial_prompt`:
+1. ✅ Sub-agent is registered with persona/config
+2. ✅ Message is sent via MessageBus
+3. ✅ `_agent_inbox` handler receives the message
+4. ✅ Handler triggers `engine.run_agent_turn()` for sub-agents
+5. ✅ Response is sent back to parent agent via MessageBus
+
+### Code Change (core.py `_agent_inbox`)
+
+Added automatic processing for sub-agents:
+- Checks if agent has a parent (is a sub-agent)
+- Calls `engine.run_agent_turn()` to process the message
+- Sends response back to parent via `send_to_agent()`
+- Uses `auto_process` metadata flag to prevent infinite loops
+
+### Current Flow (Broken)
+```
+Parent Agent → spawn_sub_agent → registers agent → sends initial_prompt via MessageBus → ???
+                                                                                         ↓
+                                                              Message sits in bus, no consumer
+```
+
+### Expected Flow
+```
+Parent Agent → spawn_sub_agent → registers agent → starts sub-agent engine loop
+                                                              ↓
+                                              Sub-agent processes initial_prompt
+                                                              ↓
+                                              Sub-agent sends response to parent
+                                                              ↓
+                                              Parent receives and continues
+```
+
+### Required Implementation
+
+1. **Sub-agent engine loop** - Each sub-agent needs its own processing loop
+   - Could be async task spawned on creation
+   - Or lazy-started when first message arrives
+
+2. **Response routing** - Sub-agent results need to reach parent
+   - Via MessageBus back to parent
+   - Or via shared result queue
+   - Or via callback mechanism
+
+3. **Lifecycle management** - Track sub-agent state
+   - Running / Paused / Completed
+   - Timeout handling
+   - Error propagation
+
+### Workaround (Current)
+
+The parent agent must do the work itself. Sub-agents are registered but not functional for autonomous work.
+
+### Estimated Effort: Large
+
+This is a significant architectural addition - essentially running multiple agent loops concurrently.
+

@@ -79,12 +79,10 @@ agents:
       Focus on thoroughness and accuracy over speed.
 
     model:
-      default: anthropic/claude-haiku-4.5  # Cheaper model for research tasks
+      model: anthropic/claude-haiku-4.5
       provider: openrouter
-      max_output_tokens: 8000
+      max_output_tokens: 64000
 
-  # TODO: include grep, glob, related, more web search tools, and maybe just allow <execute> with the policy engine enforcing read-only
-    # Read-only tools
     default_tools:
       - enhanced_read
       - list_files_filtered
@@ -92,14 +90,16 @@ agents:
       - workspace_search
       - memory_search
       - perplexity_search
-      permissions:
+      - execute  # Safe commands only (grep, find, cat, git log) - filtered by command_filter.py
+
+    permissions:
       mode: read_only
       operations:
         - filesystem.read
         - memory.read
         - web.search
 
-    shared_context_window_max_tokens: 50000  # Limit context for cost control
+    shared_context_window_max_tokens: 50000
 
   # Implementation specialist - can modify files and execute code
   implementer:
@@ -115,9 +115,9 @@ agents:
       Always verify your changes compile/run before finishing.
 
     model:
-      model: anthropic/claude-sonnet-4  # More capable model for implementation
+      model: anthropic/claude-sonnet-4
       provider: openrouter
-      max_output_tokens: 16000
+      max_output_tokens: 64000
 
     default_tools:
       - enhanced_read
@@ -157,21 +157,24 @@ agents:
       not just WHAT the issue is. Provide actionable recommendations.
 
     model:
-      model: anthropic/claude-haiku-4.5  # Fast model for review
+      model: anthropic/claude-haiku-4.5
       provider: openrouter
-      max_output_tokens: 8000
+      max_output_tokens: 90000
 
     default_tools:
       - enhanced_read
       - list_files_filtered
       - search
       - analyze_project
-      permissions:
+      - execute  # Safe commands only (grep, find, cat, git log) - filtered by command_filter.py
+
+    permissions:
       mode: read_only
       operations:
         - filesystem.read
 
     shared_context_window_max_tokens: 60000
+
 
 # Model configurations for different use cases
 model_configs:
@@ -179,7 +182,7 @@ model_configs:
   haiku-4.5:
     provider: openrouter
     context_window: 200000
-    max_output_tokens: 4000
+    max_output_tokens: 64000
     temperature: 0.3
 
   # Balanced model for most tasks  
