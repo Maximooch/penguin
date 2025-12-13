@@ -601,3 +601,48 @@ Updated `system_prompt.py` lines 148-149:
 3. **Warning level**: Changed openrouter_gateway empty response from `warning` to `debug`
 4. **System prompt clarity**: Emphasized that `finish_response` must be called after ANY completed response
 
+
+---
+
+## ADDITIONAL FIX: Detect Trivial Responses (December 2024)
+
+### Problem Discovered
+
+OpenRouter logs showed "56,065 → 3" pattern - the LLM was returning 3 output tokens (not truly empty).
+
+When LLM has nothing to add but doesn't call `finish_response`, it might:
+- Return just "\n\n" (2 newlines)
+- Return partial text like "I" or "Let me..."
+- Return minimal tokens that pass the `.strip()` check
+
+These 3-token responses were NOT caught by `if not last_response.strip():` because they weren't truly empty.
+
+### The Fix
+
+Updated engine.py to detect "trivial" responses (< 10 characters):
+
+```python
+# Also catch very short responses (< 10 chars) which indicate LLM has nothing to add
+stripped_response = (last_response or "").strip()
+is_empty_or_trivial = not stripped_response or len(stripped_response) < 10
+
+if is_empty_or_trivial:
+    self._empty_response_count += 1
+    # ... break after 3 consecutive
+```
+
+### Why 10 Characters?
+
+- 3 output tokens ≈ 3-12 characters typically
+- Any meaningful response would be > 10 chars
+- Catches partial responses like "I", "Let me", "\n\nI'm"
+- Doesn't interfere with legitimate short responses (those would have tool calls)
+
+### Summary of ALL Fixes
+
+1. **max_iterations defaults**: 5 → 5000
+2. **Empty response detection**: Empty → Empty OR < 10 chars
+3. **Warning level**: warning → debug
+4. **System prompt**: Clarified finish_response usage
+5. **Trivial response detection**: NEW - catches 3-token responses
+

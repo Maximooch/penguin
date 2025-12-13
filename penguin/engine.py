@@ -390,17 +390,21 @@ class Engine:
                     logger.debug("Response completion: finish_response tool called")
                     break
 
-                # Track consecutive empty responses - break after 3 (simple approach)
-                if not last_response or not last_response.strip():
-                    self._empty_response_count += 1
-                    logger.debug(f"Empty response #{self._empty_response_count}")
+                # Track consecutive empty/near-empty responses - break after 3 (simple approach)
+                # Also catch very short responses (< 10 chars) which indicate LLM has nothing to add
+                stripped_response = (last_response or "").strip()
+                is_empty_or_trivial = not stripped_response or len(stripped_response) < 10
 
-                    # Break after 3 consecutive empty responses
+                if is_empty_or_trivial:
+                    self._empty_response_count += 1
+                    logger.debug(f"Empty/trivial response #{self._empty_response_count}: '{stripped_response[:20] if stripped_response else '(empty)'}'")
+
+                    # Break after 3 consecutive empty/trivial responses
                     if self._empty_response_count >= 3:
-                        logger.debug("Implicit completion: 3 consecutive empty responses")
+                        logger.debug("Implicit completion: 3 consecutive empty/trivial responses")
                         break
                 else:
-                    # Reset counter on non-empty response
+                    # Reset counter on substantive response
                     self._empty_response_count = 0
 
             # Determine final status
@@ -642,18 +646,22 @@ class Engine:
                 #     logger.debug(f"Task completion detected. Found completion phrase: {all_completion_phrases}")
                 #     break
 
-                # Track consecutive empty responses - break after 3 (simple approach)
-                if not last_response or not last_response.strip():
-                    self._empty_response_count_task += 1
-                    logger.debug(f"Empty response #{self._empty_response_count_task} (run_task)")
+                # Track consecutive empty/near-empty responses - break after 3 (simple approach)
+                # Also catch very short responses (< 10 chars) which indicate LLM has nothing to add
+                stripped_response = (last_response or "").strip()
+                is_empty_or_trivial = not stripped_response or len(stripped_response) < 10
 
-                    # Break after 3 consecutive empty responses
+                if is_empty_or_trivial:
+                    self._empty_response_count_task += 1
+                    logger.debug(f"Empty/trivial response #{self._empty_response_count_task} (run_task): '{stripped_response[:20] if stripped_response else '(empty)'}'")
+
+                    # Break after 3 consecutive empty/trivial responses
                     if self._empty_response_count_task >= 3:
-                        logger.debug("Implicit task completion: 3 consecutive empty responses")
+                        logger.debug("Implicit task completion: 3 consecutive empty/trivial responses")
                         completion_status = "implicit_completion"
                         break
                 else:
-                    # Reset counter on non-empty response
+                    # Reset counter on substantive response
                     self._empty_response_count_task = 0
         
         except LLMEmptyResponseError as e:
