@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from penguin.security.command_filter import is_command_safe, CommandFilterResult
 from penguin.security.permission_engine import (
     Operation,
     PermissionMode,
@@ -219,6 +220,13 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
         # READ_ONLY mode denies all non-read operations
         if self._mode == PermissionMode.READ_ONLY:
             if not Operation.is_read_only(operation):
+                # Special case: allow safe execute commands (grep, find, cat, etc.)
+                if operation == Operation.PROCESS_EXECUTE:
+                    filter_result = is_command_safe(resource)
+                    if filter_result.allowed:
+                        return PermissionResult.ALLOW, f"READ_ONLY mode - safe command: {filter_result.reason}"
+                    else:
+                        return PermissionResult.DENY, f"READ_ONLY mode - {filter_result.reason}"
                 return PermissionResult.DENY, f"READ_ONLY mode - {operation.value} not allowed"
         
         # For non-filesystem operations, defer to other policies
