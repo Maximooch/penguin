@@ -645,4 +645,42 @@ if is_empty_or_trivial:
 3. **Warning level**: warning → debug
 4. **System prompt**: Clarified finish_response usage
 5. **Trivial response detection**: NEW - catches 3-token responses
+6. **Debug logging**: Added [LOOP DEBUG] logs to track iterations and parsing issues
+
+
+---
+
+## DEPLOYMENT NOTES
+
+### Changes must be active!
+
+If running Penguin from an installed package (pip install), changes to source files won't take effect until:
+
+1. **Reinstall from source**: `pip install -e .` from the penguin directory
+2. **Or restart**: Ensure the Python process reloads the modules
+
+### How to verify fixes are active
+
+Check for these debug logs when running (with debug logging enabled):
+- `[LOOP DEBUG] run_response iter N: response_len=X, actions=Y`
+- `Empty/trivial response #N: 'preview...'`
+- `Implicit completion: 3 consecutive empty/trivial responses`
+
+If you don't see these logs, the fixes aren't loaded.
+
+### Test command
+
+```bash
+# From penguin directory, run with debug logging
+LOG_LEVEL=DEBUG python -m penguin.cli "Hello, respond briefly"
+```
+
+### Expected behavior after all fixes
+
+1. LLM responds
+2. If LLM doesn't call finish_response:
+   - Engine asks for more → trivial response #1
+   - Engine asks for more → trivial response #2
+   - Engine asks for more → trivial response #3
+   - **Engine breaks** (max 3 API calls wasted, not 10+)
 

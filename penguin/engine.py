@@ -364,7 +364,10 @@ class Engine:
                 
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
-                
+
+                # Debug: Log response length and action count to help diagnose loops
+                logger.debug(f"[LOOP DEBUG] run_response iter {self.current_iteration}: response_len={len(last_response or '')}, actions={len(iteration_results)}")
+
                 # CRITICAL: Finalize streaming message after each iteration to force separate UI panels
                 if hasattr(cm, 'core') and cm.core:
                     # Force finalize any active streaming to break message boundaries
@@ -389,6 +392,10 @@ class Engine:
                 if finish_response_called:
                     logger.debug("Response completion: finish_response tool called")
                     break
+
+                # Debug: Check if LLM mentioned finish_response but didn't format it correctly
+                if last_response and "finish_response" in last_response.lower() and not finish_response_called:
+                    logger.warning(f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}...")
 
                 # Track consecutive empty/near-empty responses - break after 3 (simple approach)
                 # Also catch very short responses (< 10 chars) which indicate LLM has nothing to add
