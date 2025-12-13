@@ -359,3 +359,124 @@ Users should no longer need to say "continue" every 5 iterations. The agent will
 2. Max iterations (5000) is reached
 3. User interrupts
 
+
+
+---
+
+## ADDITIONAL FIX: Empty Response Handling
+
+### Problem Discovered (cli-run-2.txt)
+
+Even after fixing max_iterations, the LLM sometimes:
+1. Produces a complete, beautiful response
+2. Doesn't call `finish_response`
+3. Engine asks for more
+4. LLM returns empty (17 times in the test case!)
+5. User has to Ctrl+C
+
+### Solution: System Message Injection
+
+Instead of implicit completion (which could break during long reasoning), we now:
+
+1. **Track consecutive empty responses**
+2. **After 3 empty responses**, inject a system message:
+   ```
+   [System Notice] Multiple empty responses detected.
+   If your task is complete, please call: <finish_response>brief summary</finish_response>
+   If you need to continue working, please proceed with your next action.
+   ```
+3. **Reset counter** after injection to give LLM another chance
+4. **Safety break** after 10+ iterations with continued empty responses
+
+### Why System Message Instead of Implicit Break?
+
+- Implicit break could interrupt during long reasoning phases
+- System message prompts LLM to make explicit decision
+- LLM can either finish properly or continue with actions
+- More robust than guessing when to stop
+
+### Code Location
+
+`penguin/engine.py` in `run_response()` method, after the `finish_response_called` check.
+
+### Expected Behavior
+
+1. LLM completes response without calling finish_response
+2. Engine asks for more → empty response #1
+3. Engine asks for more → empty response #2
+4. Engine asks for more → empty response #3
+5. System injects reminder message
+6. LLM sees reminder and calls finish_response (or continues with action)
+7. Loop ends cleanly
+
+
+---
+
+## COMPLETE FIX: Safety Break Logic (December 2024)
+
+### The Bug in the Previous Fix
+
+The system message injection (added earlier) had a **fatal flaw in the safety break logic**:
+
+```python
+# Reset counter after injection
+self._empty_response_count = 0
+
+# Break after too many attempts (safety limit)
+if self.current_iteration > 10 and not iteration_results:  # UNREACHABLE!
+    break
+```
+
+**Why it was broken:**
+1. Counter resets to 0 after every reminder injection
+2. Safety break only triggers when BOTH `current_iteration > 10` AND `_empty_response_count >= 3`
+3. But counter is always 0-2 when we check iteration number (just got reset!)
+4. **The break NEVER triggered** - loop ran until max_iterations (5000)
+
+**Evidence:** cli-run-2.txt showed 17 consecutive empty response warnings with no break.
+
+### The Fix
+
+Added a **total empty response counter** that never resets:
+
+```python
+# Initialize at start of run_response/run_task
+self._empty_response_count = 0
+self._total_empty_responses = 0
+
+# On each empty response
+self._empty_response_count += 1
+self._total_empty_responses += 1  # Never reset
+
+# Hard break after 10 total (prevents runaway loops)
+if self._total_empty_responses >= 10:
+    logger.warning(f"Breaking due to {self._total_empty_responses} total empty responses")
+    break
+
+# Reminder injection after 3 consecutive
+if self._empty_response_count >= 3:
+    # ... inject reminder ...
+    self._empty_response_count = 0  # Only reset consecutive counter
+```
+
+### Files Updated
+
+1. **penguin/engine.py**
+   - `run_response()`: Added `_total_empty_responses` counter, hard break at 10
+   - `run_task()`: Added `_total_empty_responses_task` counter, hard break at 10
+
+2. **agent/__init__.py**
+   - Lines 111, 243: Changed `max_iterations: int = 5` → `MAX_TASK_ITERATIONS`
+
+3. **penguin/local_task/manager.py**
+   - Line 453: Changed `data.get("max_iterations", 5)` → `MAX_TASK_ITERATIONS`
+
+### Expected Behavior After Fix
+
+1. LLM completes response without calling finish_response
+2. Empty responses accumulate (total counter tracks all of them)
+3. After 3 consecutive → reminder injected, consecutive counter resets
+4. If LLM still doesn't respond, more empties accumulate
+5. After 10 TOTAL empties → hard break (loop exits)
+6. User no longer needs to Ctrl+C or type "continue"
+
