@@ -480,3 +480,70 @@ if self._empty_response_count >= 3:
 5. After 10 TOTAL empties → hard break (loop exits)
 6. User no longer needs to Ctrl+C or type "continue"
 
+
+---
+
+## SIMPLIFIED FIX: Remove Injection, Break After 3 (December 2024)
+
+### Why the Previous Fix Was Over-Engineered
+
+The system message injection approach had issues:
+1. Spammed the console with warning messages
+2. Added complexity without benefit
+3. The LLM often ignored the injected reminder anyway
+
+### Root Cause Analysis: Why LLM Doesn't Call finish_response
+
+Looking at real usage logs, the LLM often ends with questions like:
+- "Which direction appeals to you?"
+- "Any preferences on style and behavior?"
+
+This is **valid conversational behavior**. The LLM is waiting for user input, so it correctly doesn't call `finish_response`. The engine then:
+1. Asks for more (because no finish_response)
+2. LLM returns empty (nothing more to say)
+3. Repeat...
+
+**Conclusion:** Empty responses after a question-ending response are **expected**, not an error.
+
+### The Simplified Fix
+
+**engine.py changes:**
+```python
+# Track consecutive empty responses - break after 3 (simple approach)
+if not last_response or not last_response.strip():
+    self._empty_response_count += 1
+    logger.debug(f"Empty response #{self._empty_response_count}")
+
+    # Break after 3 consecutive empty responses
+    if self._empty_response_count >= 3:
+        logger.debug("Implicit completion: 3 consecutive empty responses")
+        break
+else:
+    # Reset counter on non-empty response
+    self._empty_response_count = 0
+```
+
+**openrouter_gateway.py change:**
+```python
+# Changed from warning to debug level
+self.logger.debug(f"Direct streaming response completed with no content...")
+```
+
+### Files Updated
+
+1. **penguin/engine.py**
+   - `run_response()`: Simplified to break after 3 empties, no injection
+   - `run_task()`: Same simplification
+
+2. **penguin/llm/openrouter_gateway.py**
+   - Line 852: Changed `warning` → `debug` level
+
+### Expected Behavior After Simplified Fix
+
+1. LLM gives complete response (possibly ending with a question)
+2. Engine asks for more → empty response #1 (debug log only)
+3. Engine asks for more → empty response #2 (debug log only)
+4. Engine asks for more → empty response #3 (debug log only)
+5. Engine breaks with "Implicit completion" (debug log)
+6. User gets control back - no warnings, no spam
+

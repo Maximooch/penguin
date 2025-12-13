@@ -849,7 +849,7 @@ class OpenRouterGateway:
 
         # Check for empty content and provide helpful message
         if not full_content:
-            self.logger.warning(f"Direct streaming response completed with no content. Model: {self.model_config.model}")
+            self.logger.debug(f"Direct streaming response completed with no content. Model: {self.model_config.model}")
             if full_reasoning:
                 return "[Note: Model produced reasoning tokens but no final response. This may indicate the model is still processing or encountered an issue.]"
             return f"[Error: Model {self.model_config.model} returned empty response. The model may not support this request type or encountered an issue.]"

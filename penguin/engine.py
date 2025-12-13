@@ -334,9 +334,8 @@ class Engine:
         last_response = ""
         all_action_results = []
 
-        # Initialize empty response counters for this run
+        # Initialize empty response counter for this run
         self._empty_response_count = 0
-        self._total_empty_responses = 0
 
         try:
             while self.current_iteration < max_iters:
@@ -391,45 +390,17 @@ class Engine:
                     logger.debug("Response completion: finish_response tool called")
                     break
 
-                # Track consecutive empty responses and inject reminder after threshold
+                # Track consecutive empty responses - break after 3 (simple approach)
                 if not last_response or not last_response.strip():
                     self._empty_response_count += 1
-                    self._total_empty_responses += 1
-                    logger.debug(f"Empty response #{self._empty_response_count} (total: {self._total_empty_responses})")
+                    logger.debug(f"Empty response #{self._empty_response_count}")
 
-                    # Hard break after 10 total empty responses (prevents runaway loops)
-                    if self._total_empty_responses >= 10:
-                        logger.warning(f"Breaking due to {self._total_empty_responses} total empty responses")
-                        break
-
-                    # After 3 consecutive empty responses, inject a system reminder
+                    # Break after 3 consecutive empty responses
                     if self._empty_response_count >= 3:
-                        logger.warning(f"Detected {self._empty_response_count} consecutive empty responses - injecting completion reminder")
-
-                        # Inject system message to conversation
-                        finish_tag = "<" + "finish_response" + ">"
-                        close_tag = "</" + "finish_response" + ">"
-                        reminder_content = (
-                            f"[System Notice] Multiple empty responses detected. "
-                            f"If your task is complete, please call: {finish_tag}brief summary{close_tag} "
-                            f"If you need to continue working, please proceed with your next action."
-                        )
-
-                        try:
-                            cm.conversation.add_message(
-                                role="user",
-                                content=reminder_content,
-                                category=MessageCategory.SYSTEM,
-                                metadata={"type": "completion_reminder", "auto_injected": True}
-                            )
-                            logger.info("Injected completion reminder into conversation")
-                        except Exception as inject_err:
-                            logger.warning(f"Failed to inject reminder: {inject_err}")
-
-                        # Reset consecutive counter after injection (but NOT total)
-                        self._empty_response_count = 0
+                        logger.debug("Implicit completion: 3 consecutive empty responses")
+                        break
                 else:
-                    # Reset consecutive counter on non-empty response (but NOT total)
+                    # Reset counter on non-empty response
                     self._empty_response_count = 0
 
             # Determine final status
@@ -533,9 +504,8 @@ class Engine:
         # Store action results from all iterations
         all_action_results = []
 
-        # Initialize empty response counters for this run
+        # Initialize empty response counter for this run
         self._empty_response_count_task = 0
-        self._total_empty_responses_task = 0
 
         # Publish task start event if EventBus is available
         if enable_events:
@@ -672,46 +642,18 @@ class Engine:
                 #     logger.debug(f"Task completion detected. Found completion phrase: {all_completion_phrases}")
                 #     break
 
-                # Track consecutive empty responses and inject reminder after threshold
+                # Track consecutive empty responses - break after 3 (simple approach)
                 if not last_response or not last_response.strip():
                     self._empty_response_count_task += 1
-                    self._total_empty_responses_task += 1
-                    logger.debug(f"Empty response #{self._empty_response_count_task} (total: {self._total_empty_responses_task}) (run_task)")
+                    logger.debug(f"Empty response #{self._empty_response_count_task} (run_task)")
 
-                    # Hard break after 10 total empty responses (prevents runaway loops)
-                    if self._total_empty_responses_task >= 10:
-                        logger.warning(f"Breaking run_task due to {self._total_empty_responses_task} total empty responses")
-                        completion_status = "empty_response_limit"
-                        break
-
-                    # After 3 consecutive empty responses, inject a system reminder
+                    # Break after 3 consecutive empty responses
                     if self._empty_response_count_task >= 3:
-                        logger.warning(f"Detected {self._empty_response_count_task} consecutive empty responses in run_task - injecting completion reminder")
-
-                        # Inject system message to conversation
-                        finish_tag_str = "<" + "finish_task" + ">"
-                        close_tag_str = "</" + "finish_task" + ">"
-                        reminder_content = (
-                            f"[System Notice] Multiple empty responses detected. "
-                            f"If your task is complete, please call: {finish_tag_str}brief summary{close_tag_str} "
-                            f"If you need to continue working, please proceed with your next action."
-                        )
-
-                        try:
-                            cm.conversation.add_message(
-                                role="user",
-                                content=reminder_content,
-                                category=MessageCategory.SYSTEM,
-                                metadata={"type": "completion_reminder", "auto_injected": True}
-                            )
-                            logger.info("Injected completion reminder into conversation (run_task)")
-                        except Exception as inject_err:
-                            logger.warning(f"Failed to inject reminder: {inject_err}")
-
-                        # Reset consecutive counter after injection (but NOT total)
-                        self._empty_response_count_task = 0
+                        logger.debug("Implicit task completion: 3 consecutive empty responses")
+                        completion_status = "implicit_completion"
+                        break
                 else:
-                    # Reset consecutive counter on non-empty response (but NOT total)
+                    # Reset counter on non-empty response
                     self._empty_response_count_task = 0
         
         except LLMEmptyResponseError as e:
