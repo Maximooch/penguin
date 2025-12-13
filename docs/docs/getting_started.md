@@ -180,7 +180,7 @@ model:
   default: anthropic/claude-3-5-sonnet
   client_preference: openrouter
   streaming_enabled: true
-  max_tokens: 200000
+  max_context_window_tokens: 200000
 
 performance:
   fast_startup: true

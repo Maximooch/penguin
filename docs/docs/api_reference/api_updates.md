@@ -152,7 +152,7 @@ List all available models from configuration and providers.
             "provider": "anthropic",
             "client_preference": "openrouter",
             "vision_enabled": true,
-            "max_tokens": 64000,
+            "max_context_window_tokens": 64000,
             "temperature": 0.7,
             "current": true
         },
@@ -162,7 +162,7 @@ List all available models from configuration and providers.
             "provider": "openai", 
             "client_preference": "openrouter",
             "vision_enabled": true,
-            "max_tokens": 16384,
+            "max_context_window_tokens": 16384,
             "temperature": 0.7,
             "current": false
         }
@@ -199,7 +199,7 @@ Get information about the currently loaded model.
     "model": "anthropic/claude-3-5-sonnet-20240620",
     "provider": "anthropic",
     "client_preference": "openrouter",
-    "max_tokens": 64000,
+    "max_context_window_tokens": 64000,
     "temperature": 0.7,
     "streaming_enabled": true,
     "vision_enabled": true

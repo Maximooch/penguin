@@ -12,7 +12,8 @@ classDiagram
         +Optional~String~ api_base
         +Optional~String~ api_key
         +Optional~String~ api_version
-        +Optional~Int~ max_tokens
+        +Optional~Int~ max_output_tokens
+        +Optional~Int~ max_context_window_tokens
         +Optional~Int~ max_history_tokens
         +Float temperature
         +Boolean use_assistants_api
@@ -36,7 +37,8 @@ classDiagram
 | `api_base` | `Optional[str]` | `None` | Custom API base URL |
 | `api_key` | `Optional[str]` | `None` | API key for authentication |
 | `api_version` | `Optional[str]` | `None` | API version identifier |
-| `max_tokens` | `Optional[int]` | `None` | Maximum tokens to generate |
+| `max_output_tokens` | `Optional[int]` | `None` | Maximum tokens to generate in response |
+| `max_context_window_tokens` | `Optional[int]` | `None` | Maximum context window capacity |
 | `max_history_tokens` | `Optional[int]` | `200000` | Maximum tokens to retain in history |
 | `temperature` | `float` | `0.7` | Temperature for sampling (0.0-1.0) |
 | `use_assistants_api` | `bool` | `False` | Whether to use OpenAI Assistants API |
@@ -81,7 +83,8 @@ Creates a ModelConfig instance from environment variables:
 | `PENGUIN_MODEL` | `model` |
 | `PENGUIN_PROVIDER` | `provider` |
 | `PENGUIN_API_BASE` | `api_base` |
-| `PENGUIN_MAX_TOKENS` | `max_tokens` |
+| `PENGUIN_MAX_OUTPUT_TOKENS` | `max_output_tokens` |
+| `PENGUIN_MAX_CONTEXT_WINDOW_TOKENS` | `max_context_window_tokens` |
 | `PENGUIN_TEMPERATURE` | `temperature` |
 | `PENGUIN_MAX_HISTORY_TOKENS` | `max_history_tokens` |
 | `PENGUIN_USE_ASSISTANTS_API` | `use_assistants_api` |
@@ -120,7 +123,7 @@ config = ModelConfig(
 config = ModelConfig(
     model="claude-3-5-sonnet",
     provider="anthropic",
-    max_tokens=4096,
+    max_output_tokens=4096,
     temperature=0.5,
     use_native_adapter=True,
     streaming_enabled=True,

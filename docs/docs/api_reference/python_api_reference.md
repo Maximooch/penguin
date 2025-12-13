@@ -264,7 +264,7 @@ model = ModelInfo(
     name="anthropic/claude-3-sonnet-20240229", # Full model name
     provider="anthropic",                 # Provider name
     vision_enabled=True,                  # Vision capability
-    max_tokens=4000,                      # Token limit
+    max_output_tokens=4000,               # Output token limit
     current=True                          # Whether currently active
 )
 ```

@@ -58,7 +58,7 @@ async def research_and_write(prompt: str) -> str:
         cm.create_sub_agent(
             researcher_id,
             parent_agent_id=parent_id,
-            shared_cw_max_tokens=512,
+            shared_context_window_max_tokens=512,
         )
 
         # Let the researcher gather information
@@ -87,7 +87,7 @@ The CLI exposes these persona presets via `penguin agent personas`, and you can 
 
 Sub-agents can also be managed directly from model output using ActionXML tags:
 
-- `<spawn_sub_agent>{...}</spawn_sub_agent>` – create a child (defaults to isolated session/CW). Supports `id`, `parent`, `persona`, `system_prompt`, `share_session`, `share_context_window`, `shared_cw_max_tokens`, `model_config_id` or `model_overrides`, `default_tools`, and an optional `initial_prompt`.
+- `<spawn_sub_agent>{...}</spawn_sub_agent>` – create a child (defaults to isolated session/CW). Supports `id`, `parent`, `persona`, `system_prompt`, `share_session`, `share_context_window`, `shared_context_window_max_tokens`, `model_config_id` or `model_overrides`, `default_tools`, and an optional `initial_prompt`.
 - `<stop_sub_agent>{"id": "child"}</stop_sub_agent>` – pause a child (engine-driven loops should skip work).
 - `<resume_sub_agent>{"id": "child"}</resume_sub_agent>` – resume a paused child.
 - `<delegate>{"parent": "default", "child": "child", "content": "…", "channel": "dev-room"}</delegate>` – send a message to a child and record a delegation event (includes `channel`).

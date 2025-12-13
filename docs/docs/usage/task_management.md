@@ -138,10 +138,10 @@ from penguin.project import ResourceConstraints
 
 # Set realistic token budgets based on task complexity
 constraints = ResourceConstraints(
-    max_tokens=5000,      # Simple code changes
-    max_tokens=15000,     # Documentation generation
-    max_tokens=25000,     # Complex refactoring
-    max_tokens=50000      # Large feature implementation
+    max_output_tokens=5000,      # Simple code changes
+    max_output_tokens=15000,     # Documentation generation
+    max_output_tokens=25000,     # Complex refactoring
+    max_output_tokens=50000      # Large feature implementation
 )
 ```
 
@@ -344,7 +344,7 @@ fields:
     default: medium
 
 resource_constraints:
-  max_tokens: "{{ 5000 if complexity == 'simple' else 15000 if complexity == 'medium' else 25000 }}"
+  max_output_tokens: "{{ 5000 if complexity == 'simple' else 15000 if complexity == 'medium' else 25000 }}"
   max_duration_minutes: "{{ 60 if complexity == 'simple' else 180 if complexity == 'medium' else 360 }}"
   allowed_tools: ["file_operations", "code_execution", "web_search"]
 
@@ -375,7 +375,7 @@ fields:
     default: medium
 
 resource_constraints:
-  max_tokens: "{{ 3000 if severity in ['low', 'medium'] else 8000 }}"
+  max_output_tokens: "{{ 3000 if severity in ['low', 'medium'] else 8000 }}"
   max_duration_minutes: "{{ 30 if severity == 'low' else 60 if severity == 'medium' else 180 }}"
   allowed_tools: ["file_operations", "code_execution", "web_search", "debugging_tools"]
 
@@ -625,7 +625,7 @@ def handle_token_limit(task, error):
     # Increase token budget and retry
     tm.update_task_constraints(
         task.id,
-        max_tokens=task.resource_constraints.max_tokens * 1.5
+        max_output_tokens=task.resource_constraints.max_output_tokens * 1.5
     )
     return "retry"
 

@@ -178,7 +178,7 @@ task = pm.create_task(
     description="Create comprehensive API docs",
     priority=TaskPriority.HIGH,
     resource_constraints=ResourceConstraints(
-        max_tokens=15000,
+        max_output_tokens=15000,
         max_duration_minutes=120,
         allowed_tools=["file_operations", "web_search"]
     )

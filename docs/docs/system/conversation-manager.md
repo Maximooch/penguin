@@ -55,7 +55,7 @@ classDiagram
     }
 
     class ContextWindowManager {
-        -max_tokens: int
+        -max_context_window_tokens: int
         -budgets: Dict
         +process_session()
         +trim_session()

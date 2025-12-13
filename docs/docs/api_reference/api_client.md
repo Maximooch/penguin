@@ -176,7 +176,7 @@ Injects system prompt at the beginning of message list while preserving other sy
 async def get_response(
     self,
     messages: List[Dict[str, Any]],
-    max_tokens: Optional[int] = None,
+    max_output_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
     stream: Optional[bool] = None,
     stream_callback: Optional[Callable[[str], None]] = None,
@@ -188,7 +188,7 @@ Unified interface for both streaming and non-streaming responses with enhanced c
 
 **Parameters:**
 - `messages`: List of message dictionaries (OpenAI format)
-- `max_tokens`: Maximum tokens to generate
+- `max_output_tokens`: Maximum tokens to generate in response
 - `temperature`: Sampling temperature
 - `stream`: Whether to use streaming mode
 - `stream_callback`: Callback accepting `(chunk: str, message_type: str)`
@@ -308,7 +308,7 @@ class ModelConfig:
     api_base: Optional[str] = None
     api_key: Optional[str] = None
     api_version: Optional[str] = None
-    max_tokens: Optional[int] = None
+    max_output_tokens: Optional[int] = None
     max_history_tokens: Optional[int] = None
     temperature: float = 0.7
     streaming_enabled: bool = True
@@ -367,7 +367,7 @@ response = await api_client.get_response(
     messages,
     stream=True,
     stream_callback=streaming_callback,
-    max_tokens=1000,
+    max_output_tokens=1000,
     temperature=0.7
 )
 

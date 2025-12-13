@@ -665,7 +665,7 @@ response = await core.process("Hello!", streaming=True)
 # Get comprehensive system information
 info = core.get_system_info()
 print(f"Current model: {info['current_model']['model']}")
-print(f"Context window: {info['current_model']['max_tokens']}")
+print(f"Context window: {info['current_model']['max_context_window_tokens']}")
 
 # Enable diagnostics
 core.print_startup_report()

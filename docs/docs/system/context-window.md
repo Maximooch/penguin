@@ -131,7 +131,7 @@ def __init__(
 
 The ContextWindowManager automatically resolves configuration from multiple sources in priority order:
 
-1. **Model Configuration**: `model_config.max_tokens` (if provided)
+1. **Model Configuration**: `model_config.max_context_window_tokens` (if provided)
 2. **Live Config Object**: `config_obj.model_config.max_history_tokens` (preferred)
 3. **Global Config**: `config.yml` model settings
 4. **Fallback**: Default 150,000 tokens
@@ -153,7 +153,7 @@ The system automatically selects the best available token counter:
 
 ### Clamp Notices (Sub-Agents)
 
-When a sub-agent is created with an isolated context window and a `shared_cw_max_tokens` value, the child's `ContextWindowManager.max_tokens` is set to the lower of the parent’s max and the provided clamp. A system note with metadata `type=cw_clamp_notice` is recorded on both the parent and child conversations to make this visible in transcripts and dashboards. The metadata includes:
+When a sub-agent is created with an isolated context window and a `shared_context_window_max_tokens` value, the child's `ContextWindowManager.max_context_window_tokens` is set to the lower of the parent’s max and the provided clamp. A system note with metadata `type=cw_clamp_notice` is recorded on both the parent and child conversations to make this visible in transcripts and dashboards. The metadata includes:
 
 - `sub_agent`: child agent id
 - `child_max`: effective child max tokens
@@ -343,7 +343,7 @@ context_window = ContextWindowManager(
 )
 
 # Automatic configuration resolution from multiple sources
-print(f"Max tokens: {context_window.max_tokens}")
+print(f"Max tokens: {context_window.max_context_window_tokens}")
 print(f"Available tokens: {context_window.available_tokens}")
 ```
 
@@ -395,8 +395,8 @@ if rich_available:
 for category in MessageCategory:
     budget = context_window.get_budget(category)
     usage = context_window.get_usage(category)
-    percentage = (usage / budget.max_tokens) * 100 if budget.max_tokens > 0 else 0
-    print(f"{category.name}: {usage}/{budget.max_tokens} ({percentage:.1f}%)")
+    percentage = (usage / budget.max_category_tokens) * 100 if budget.max_category_tokens > 0 else 0
+    print(f"{category.name}: {usage}/{budget.max_category_tokens} ({percentage:.1f}%)")
 ```
 
 ### Advanced Category Management

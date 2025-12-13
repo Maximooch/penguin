@@ -253,7 +253,8 @@ List all registered agents with their configurations.
     "model": {
       "model": "openai/gpt-5",
       "provider": "openai",
-      "max_tokens": 399000
+      "max_output_tokens": 8000,
+      "max_context_window_tokens": 399000
     },
     "parent": null,
     "children": ["sub-agent-1"],
@@ -743,7 +744,7 @@ List all available models from configuration.
       "name": "anthropic/claude-3-sonnet-20240229",
       "provider": "anthropic",
       "vision_enabled": true,
-      "max_tokens": 4000,
+      "max_output_tokens": 4000,
       "current": true
     },
     {
@@ -751,7 +752,7 @@ List all available models from configuration.
       "name": "openai/gpt-4",
       "provider": "openai",
       "vision_enabled": false,
-      "max_tokens": 8000,
+      "max_output_tokens": 8000,
       "current": false
     }
   ]
@@ -789,7 +790,7 @@ Get information about the currently loaded model.
   "model": "anthropic/claude-3-sonnet-20240229",
   "provider": "anthropic",
   "client_preference": "native",
-  "max_tokens": 4000,
+  "max_output_tokens": 4000,
   "temperature": 0.7,
   "streaming_enabled": true,
   "vision_enabled": true

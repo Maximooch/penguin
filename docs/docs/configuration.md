@@ -109,7 +109,7 @@ model:
   default: gpt-4
   provider: openai
   temperature: 0.7
-  max_tokens: 4000
+  max_output_tokens: 4000
   timeout: 30
 
 # Provider-specific settings
@@ -369,7 +369,7 @@ project:
     # Resource constraints
     max_memory_mb: 1024
     max_files: 100
-    max_tokens: 100000
+    max_context_window_tokens: 100000  # For indexing budget
 ```
 
 ## Memory System Configuration
