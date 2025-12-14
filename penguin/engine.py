@@ -404,13 +404,25 @@ class Engine:
                 stripped_response = (last_response or "").strip()
                 is_empty_or_trivial = not stripped_response or len(stripped_response) < 10
 
+                # DIAGNOSTIC: Log trivial responses to understand what Claude is actually returning
+                # finish_reason=stop with 3 tokens means Claude deliberately stopped - WHY?
+                if is_empty_or_trivial or len(last_response or "") < 20:
+                    last_action = iteration_results[-1].get("action_name") if iteration_results else "none"
+                    logger.warning(
+                        f"[WALLET_GUARD] Trivial response detected: "
+                        f"raw={repr(last_response)}, "
+                        f"stripped_len={len(stripped_response)}, "
+                        f"last_action={last_action}, "
+                        f"iter={self.current_iteration}"
+                    )
+
                 if is_empty_or_trivial:
                     self._empty_response_count += 1
                     logger.debug(f"Empty/trivial response #{self._empty_response_count}: '{stripped_response[:20] if stripped_response else '(empty)'}'")
 
                     # Break after 3 consecutive empty/trivial responses
                     if self._empty_response_count >= 3:
-                        logger.debug("Implicit completion: 3 consecutive empty/trivial responses")
+                        logger.warning(f"[WALLET_GUARD] Breaking: {self._empty_response_count} consecutive trivial responses")
                         break
                 else:
                     # Reset counter on substantive response
@@ -660,13 +672,24 @@ class Engine:
                 stripped_response = (last_response or "").strip()
                 is_empty_or_trivial = not stripped_response or len(stripped_response) < 10
 
+                # DIAGNOSTIC: Log trivial responses to understand what Claude is actually returning
+                if is_empty_or_trivial or len(last_response or "") < 20:
+                    last_action = iteration_results[-1].get("action_name") if iteration_results else "none"
+                    logger.warning(
+                        f"[WALLET_GUARD] Trivial response in run_task: "
+                        f"raw={repr(last_response)}, "
+                        f"stripped_len={len(stripped_response)}, "
+                        f"last_action={last_action}, "
+                        f"iter={self.current_iteration}"
+                    )
+
                 if is_empty_or_trivial:
                     self._empty_response_count_task += 1
                     logger.debug(f"Empty/trivial response #{self._empty_response_count_task} (run_task): '{stripped_response[:20] if stripped_response else '(empty)'}'")
 
                     # Break after 3 consecutive empty/trivial responses
                     if self._empty_response_count_task >= 3:
-                        logger.debug("Implicit task completion: 3 consecutive empty/trivial responses")
+                        logger.warning(f"[WALLET_GUARD] Breaking run_task: {self._empty_response_count_task} consecutive trivial responses")
                         completion_status = "implicit_completion"
                         break
                 else:

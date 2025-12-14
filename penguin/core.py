@@ -3298,43 +3298,52 @@ class PenguinCore:
             final_metadata["reasoning"] = reasoning_content
             final_metadata["reasoning_length"] = self.api_client.count_tokens(reasoning_content) if reasoning_content and self.api_client else len(reasoning_content) // 4
         
-        if content_to_add.strip():
-            # Add to conversation manager
-            if self._streaming_state["role"] == "assistant":
-                category = MessageCategory.DIALOG
-            elif self._streaming_state["role"] == "system":
-                category = MessageCategory.SYSTEM
-            else:
-                category = MessageCategory.DIALOG
+        # WALLET_GUARD: Context MUST advance or we're guaranteed to loop
+        # If content is empty, force a placeholder so the same context isn't sent repeatedly
+        if not content_to_add.strip():
+            logger.warning(
+                f"[WALLET_GUARD] Empty response from LLM, forcing context advance. "
+                f"Raw content was: {repr(content_to_add[:50] if content_to_add else 'None')}"
+            )
+            content_to_add = "[Empty response from model]"
+            final_metadata["was_empty"] = True
 
-            # Remove streaming flag from metadata for final version
-            if "is_streaming" in final_metadata:
-                del final_metadata["is_streaming"]
+        # Add to conversation manager (now guaranteed to have content)
+        if self._streaming_state["role"] == "assistant":
+            category = MessageCategory.DIALOG
+        elif self._streaming_state["role"] == "system":
+            category = MessageCategory.SYSTEM
+        else:
+            category = MessageCategory.DIALOG
 
-            if hasattr(self, "conversation_manager") and self.conversation_manager:
-                self.conversation_manager.conversation.add_message(
-                    role=self._streaming_state["role"],
-                    content=content_to_add,
-                    category=category,
-                    metadata=final_metadata
-                )
+        # Remove streaming flag from metadata for final version
+        if "is_streaming" in final_metadata:
+            del final_metadata["is_streaming"]
 
-                # For WebSocket streaming (RunMode), emit a message event
-                # so the TypeScript CLI can display the complete assistant response
-                if hasattr(self, '_temp_ws_callback') and self._temp_ws_callback:
-                    asyncio.create_task(self._temp_ws_callback({
-                        "type": "message",
-                        "role": self._streaming_state["role"],
-                        "content": content_to_add,
-                        "category": category,
-                        "metadata": final_metadata
-                    }))
+        if hasattr(self, "conversation_manager") and self.conversation_manager:
+            self.conversation_manager.conversation.add_message(
+                role=self._streaming_state["role"],
+                content=content_to_add,
+                category=category,
+                metadata=final_metadata
+            )
 
-                # Skip emitting a separate 'message' event for regular UI – the UI has been
-                # streaming content live. Emitting again causes a duplicated
-                # assistant block.  Conversation persistence is already
-                # handled above; UI just needs the final `stream_chunk` with
-                # `is_final=True` which we emit later.
+            # For WebSocket streaming (RunMode), emit a message event
+            # so the TypeScript CLI can display the complete assistant response
+            if hasattr(self, '_temp_ws_callback') and self._temp_ws_callback:
+                asyncio.create_task(self._temp_ws_callback({
+                    "type": "message",
+                    "role": self._streaming_state["role"],
+                    "content": content_to_add,
+                    "category": category,
+                    "metadata": final_metadata
+                }))
+
+            # Skip emitting a separate 'message' event for regular UI – the UI has been
+            # streaming content live. Emitting again causes a duplicated
+            # assistant block.  Conversation persistence is already
+            # handled above; UI just needs the final `stream_chunk` with
+            # `is_final=True` which we emit later.
 
         # Flush any residual coalesced buffer before the final event so the UI
         # doesn't miss the tail end of the message.
