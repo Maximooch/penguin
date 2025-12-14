@@ -39,6 +39,8 @@ builtins.open = _safe_open  # type: ignore[attr-defined]
 
 from penguin.config import CONVERSATIONS_PATH
 from penguin.system.state import Message, MessageCategory, Session, create_message
+from penguin.constants import DEFAULT_MAX_MESSAGES_PER_SESSION
+
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +60,7 @@ class SessionManager:
     def __init__(
         self, 
         base_path: str = CONVERSATIONS_PATH,
-        max_messages_per_session: int = 5000,  # Increased from 500 to 5000
+        max_messages_per_session: int = DEFAULT_MAX_MESSAGES_PER_SESSION,
         max_sessions_in_memory: int = 20,
         format: str = "json",
         auto_save_interval: int = 60  # seconds

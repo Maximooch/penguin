@@ -47,6 +47,7 @@ from .core import PenguinCore
 from .config import config
 from .llm.model_config import ModelConfig
 from .system.checkpoint_manager import CheckpointType
+from penguin.constants import get_engine_max_iterations_default
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,7 @@ class ChatOptions:
     context: Optional[Dict[str, Any]] = None
     context_files: Optional[List[str]] = None
     streaming: bool = False
-    max_iterations: int = 5000  # High default for autonomous operation
+    max_iterations: Optional[int] = None  # Uses config default if None
     image_path: Optional[str] = None
     agent_id: Optional[str] = None
 
@@ -406,7 +407,7 @@ class PenguinClient:
         if hasattr(self.core, 'engine') and self.core.engine:
             return await self.core.engine.run_task(
                 task_prompt=prompt,
-                max_iterations=opts.max_iterations or 5000,
+                max_iterations=opts.max_iterations or get_engine_max_iterations_default(),
                 task_name=opts.name or "API Task",
                 task_context=opts.context or {},
                 enable_events=True
@@ -416,7 +417,7 @@ class PenguinClient:
             return await self.core.process(
                 input_data={"text": prompt},
                 context=opts.context,
-                max_iterations=opts.max_iterations or 5000
+                max_iterations=opts.max_iterations or get_engine_max_iterations_default()
             )
     
     async def start_run_mode(

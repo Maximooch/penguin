@@ -23,6 +23,7 @@ from penguin.system.conversation import ConversationSystem
 from penguin.system.session_manager import SessionManager
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.system.checkpoint_manager import CheckpointManager, CheckpointConfig, CheckpointType
+from penguin.constants import DEFAULT_MAX_MESSAGES_PER_SESSION
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class ConversationManager:
         api_client=None,
         workspace_path: Optional[Path] = None,
         system_prompt: str = "",
-        max_messages_per_session: int = 5000,
+        max_messages_per_session: int = DEFAULT_MAX_MESSAGES_PER_SESSION,
         max_sessions_in_memory: int = 20,
         auto_save_interval: int = 60,
         checkpoint_config: Optional[CheckpointConfig] = None
@@ -903,7 +904,7 @@ class ConversationManager:
             List of conversation metadata dictionaries
         """
         # Get basic conversation listing from session manager
-        conversations = self.session_manager.list_sessions(limit=100000, offset=0)
+        conversations = self.session_manager.list_sessions(limit=limit, offset=offset)
         
         # Enhance with meaningful titles
         for conversation in conversations:

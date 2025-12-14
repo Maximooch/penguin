@@ -51,6 +51,8 @@ except ImportError:
 from penguin.memory.providers.base import MemoryProvider, MemoryProviderError
 from penguin.memory.embedding import get_embedder
 
+from penguin.constants import DEFAULT_MAX_CHUNK_SIZE
+
 logger = logging.getLogger(__name__)
 
 
@@ -715,11 +717,10 @@ class LanceMemoryProvider(MemoryProvider):
                         }
                         
                         # If the file is very large, split into smaller chunks (~8k chars)
-                        MAX_CHUNK_SIZE = 8000
-                        if len(content) > MAX_CHUNK_SIZE:
+                        if len(content) > DEFAULT_MAX_CHUNK_SIZE:
                             chunk = ""
                             for line in content.split("\n"):
-                                if len(chunk) + len(line) + 1 > MAX_CHUNK_SIZE:
+                                if len(chunk) + len(line) + 1 > DEFAULT_MAX_CHUNK_SIZE:
                                     await self.add_memory(chunk, metadata, categories)
                                     indexed_count += 1
                                     chunk = ""

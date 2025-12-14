@@ -53,6 +53,10 @@ from typing import Dict, List, Optional, Union, Any, Callable, Tuple
 
 from penguin.system.state import Message, MessageCategory, Session
 
+from penguin.constants import CONTEXT_UNCATEGORIZED_BUDGET_FRACTION
+
+from penguin.constants import get_default_context_window_emergency_fallback_tokens
+
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -186,9 +190,9 @@ class ContextWindowManager:
         if not self.max_context_window_tokens:
             logger.error(
                 "No context_window configured! Set 'model.context_window' in config.yml. "
-                "Using emergency fallback of 100000 tokens."
+                f"Using emergency fallback of {get_default_context_window_emergency_fallback_tokens()} tokens."
             )
-            self.max_context_window_tokens = 100000
+            self.max_context_window_tokens = get_default_context_window_emergency_fallback_tokens()
 
         # Try to get token counter with clearer logging
         if token_counter:
@@ -272,7 +276,8 @@ class ContextWindowManager:
         # attempted to access attributes on a `None` budget.  Assign a small
         # default budget so they are at least tracked safely.
         # ------------------------------------------------------------------
-        default_max = int(total_budget * 0.05)  # 5 % fallback per uncategorised
+        fraction = max(min(CONTEXT_UNCATEGORIZED_BUDGET_FRACTION, 1.0), 0.0)
+        default_max = int(total_budget * fraction)  # fallback per uncategorised
         for category in MessageCategory:
             if category not in self._budgets:
                 self._budgets[category] = TokenBudget(

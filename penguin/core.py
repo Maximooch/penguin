@@ -60,7 +60,7 @@ Core Methods:
         input_data: Union[Dict[str, Any], str],
         context: Optional[Dict[str, Any]] = None,
         conversation_id: Optional[str] = None,
-        max_iterations: int = MAX_TASK_ITERATIONS,  # Use config value (default 5000)
+        max_iterations: int = MAX_TASK_ITERATIONS,  # Use config value (from engine.max_iterations_default)
         context_files: Optional[List[str]] = None,
         streaming: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
@@ -191,6 +191,7 @@ from penguin.config import (
     Config,
 )
 from penguin.config import config as raw_config
+from penguin.constants import DEFAULT_MAX_MESSAGES_PER_SESSION
 from penguin._version import __version__ as PENGUIN_VERSION
 
 # LLM and API
@@ -658,7 +659,7 @@ class PenguinCore:
             api_client=api_client,
             workspace_path=WORKSPACE_PATH,
             system_prompt=self.system_prompt,
-            max_messages_per_session=5000,
+            max_messages_per_session=DEFAULT_MAX_MESSAGES_PER_SESSION,
             max_sessions_in_memory=20,
             auto_save_interval=60,
             checkpoint_config=checkpoint_config

@@ -7,6 +7,7 @@ Run: python -m penguin.cli.layout_probe
 from __future__ import annotations
 
 import asyncio
+from penguin.constants import UI_ASYNC_SLEEP_SECONDS
 import sys
 from pathlib import Path
 from typing import Any
@@ -76,7 +77,7 @@ class ProbeApp(App):
             pass
 
         print("; ".join(report))
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(UI_ASYNC_SLEEP_SECONDS)
         self.exit()
 
 

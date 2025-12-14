@@ -7,7 +7,9 @@ from rich.panel import Panel  # type: ignore
 from rich.progress import BarColumn, Progress, TextColumn  # type: ignore
 
 console = Console()
-MAX_CONTEXT_TOKENS = 200000
+
+from penguin.constants import DEFAULT_MAX_HISTORY_TOKENS
+MAX_CONTEXT_TOKENS = DEFAULT_MAX_HISTORY_TOKENS
 
 
 class TokenTracker:

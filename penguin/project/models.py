@@ -16,6 +16,7 @@ import json
 
 from penguin.utils.events import TaskEvent  ## type: ignore
 from penguin.utils.serialization import to_dict, from_dict  ## type: ignore
+from penguin.constants import DEFAULT_ENGINE_MAX_ITERATIONS
 
 
 class TaskPhase(Enum):
@@ -74,7 +75,7 @@ class ExecutionRecord:
     response: str = ""
     task_prompt: str = ""
     iterations: int = 0
-    max_iterations: int = 5000  # High default for autonomous operation
+    max_iterations: int = DEFAULT_ENGINE_MAX_ITERATIONS
     tokens_used: Dict[str, int] = field(default_factory=dict)
     tools_used: List[str] = field(default_factory=list)
     execution_context: Dict[str, Any] = field(default_factory=dict)

@@ -17,6 +17,7 @@ import httpx
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
 from penguin import __version__
+from penguin.constants import get_engine_max_iterations_default
 from penguin.utils.events import EventBus
 from penguin.web.health import get_health_monitor
 from penguin.utils.errors import AgentNotFoundError, PenguinError
@@ -1564,7 +1565,7 @@ async def execute_task_from_project(
         # Execute task using Engine
         result = await core.engine.run_task(
             task_prompt=task_prompt,
-            max_iterations=5000,
+            max_iterations=get_engine_max_iterations_default(),
             task_name=task.title,
             task_context={
                 "task_id": task_id,
@@ -1639,7 +1640,7 @@ async def execute_task_sync(
         # Execute task using Engine
         result = await core.engine.run_task(
             task_prompt=task_prompt,
-            max_iterations=5000,
+            max_iterations=get_engine_max_iterations_default(),
             task_name=request.name,
             task_context={
                 "continuous": request.continuous,

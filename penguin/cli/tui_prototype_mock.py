@@ -25,6 +25,7 @@ You can also use:
 from __future__ import annotations
 
 import asyncio
+from penguin.constants import UI_ASYNC_SLEEP_SECONDS
 from typing import Any, Dict
 
 import sys
@@ -499,7 +500,7 @@ class PrototypePenguinApp(PenguinTextualApp):
                     "message_type": "assistant",
                 },
             )
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(UI_ASYNC_SLEEP_SECONDS)
         # Belt-and-suspenders: force a final flush to render any trailing markdown
         await self.handle_core_event(
             "stream_chunk",

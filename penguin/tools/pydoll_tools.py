@@ -1,6 +1,7 @@
 import os
 import logging
 import asyncio
+from penguin.constants import PYDOLL_SLEEP_SECONDS
 import importlib.metadata
 import datetime
 import sys
@@ -659,7 +660,7 @@ class PyDollBrowserScrollTool:
                 js = f"window.scrollBy({{top: {dy}, left: {dx}, behavior: {behavior_js}}});"
                 for _ in range(times):
                     await _try_eval_js(page, js)
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(PYDOLL_SLEEP_SECONDS)
                 return f"Scrolled by (x={dx}, y={dy}) x{times}"
 
             if mode == "page":
@@ -671,7 +672,7 @@ class PyDollBrowserScrollTool:
                     js = f"window.scrollBy({{top: {dy}, left: 0, behavior: {behavior_js}}});"
                     for _ in range(times):
                         await _try_eval_js(page, js)
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(PYDOLL_SLEEP_SECONDS)
                     return f"Page scrolled down x{times}"
                 if direction in ("up", "pageup"):
                     dy = -(delta_y if isinstance(delta_y, int) else 800)
@@ -679,7 +680,7 @@ class PyDollBrowserScrollTool:
                     js = f"window.scrollBy({{top: {dy}, left: 0, behavior: {behavior_js}}});"
                     for _ in range(times):
                         await _try_eval_js(page, js)
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(PYDOLL_SLEEP_SECONDS)
                     return f"Page scrolled up x{times}"
                 if direction in ("end", "bottom"):
                     js = f"window.scrollTo({{top: document.body.scrollHeight, left: 0, behavior: {behavior_js}}});"

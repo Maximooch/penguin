@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from penguin.project.git_manager import _get_github_app_client
 from penguin.config import GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH, GITHUB_APP_INSTALLATION_ID
+from penguin.constants import DEFAULT_PATCH_TRUNCATION_LIMIT
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +124,8 @@ async def _build_review_prompt(pr: Any, files: list) -> str:
     for file in files:
         # Truncate very long patches
         patch = file.patch or ""
-        if len(patch) > 5000:
-            patch = patch[:5000] + "\n... (truncated)"
+        if len(patch) > DEFAULT_PATCH_TRUNCATION_LIMIT:
+            patch = patch[:DEFAULT_PATCH_TRUNCATION_LIMIT] + "\n... (truncated)"
 
         prompt += f"""
 ### 📄 `{file.filename}` ({file.status})

@@ -26,6 +26,7 @@ You can also use regular CLI commands:
 from __future__ import annotations
 
 import asyncio
+from penguin.constants import UI_ASYNC_SLEEP_SECONDS
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -253,7 +254,7 @@ class PrototypeCLI:
                 "is_final": False,
                 "stream_id": "demo"
             })
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(UI_ASYNC_SLEEP_SECONDS)
 
         # Final chunk
         await self.core.emit_ui_event("stream_chunk", {

@@ -14,6 +14,7 @@ import websockets
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
+from penguin.constants import get_engine_max_iterations_default
 from penguin._version import __version__ as PENGUIN_VERSION
 
 logger = logging.getLogger(__name__)
@@ -551,7 +552,7 @@ async def execute_task_sync(
         # Execute task using Engine
         result = await core.engine.run_task(
             task_prompt=task_prompt,
-            max_iterations=5000,
+            max_iterations=get_engine_max_iterations_default(),
             task_name=request.name,
             task_context={
                 "continuous": request.continuous,

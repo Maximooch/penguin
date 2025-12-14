@@ -3,6 +3,11 @@
 # If you don't already have a config.yml file you can either configure it in the setup wizard, or rename this file to config.yml and edit values as needed.
 # If you already have a config.yml file, you can edit it to your liking.
 
+# Engine behavior (defaults)
+engine:
+  # Canonical iteration budget used across engine/core/api unless explicitly overridden.
+  max_iterations_default: 5000
+
 workspace:
   path: ~/penguin_workspace
   create_dirs:

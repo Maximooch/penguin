@@ -12,6 +12,7 @@ remains test‑friendly and avoids hidden globals.
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import asyncio
+from penguin.constants import UI_ASYNC_SLEEP_SECONDS
 import re
 import time
 import multiprocessing as mp
@@ -24,6 +25,7 @@ from penguin.system.state import MessageCategory  # type: ignore
 from penguin.llm.api_client import APIClient  # type: ignore
 from penguin.tools import ToolManager  # type: ignore
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
+from penguin.constants import get_engine_max_iterations_default
 
 import logging
 
@@ -48,7 +50,7 @@ class EngineSettings:
     retry_attempts: int = 2
     backoff_seconds: float = 1.5
     streaming_default: bool = False
-    max_iterations_default: int = 5000
+    max_iterations_default: int = field(default_factory=get_engine_max_iterations_default)
     token_budget_stop_enabled: bool = False
     wall_clock_stop_seconds: Optional[int] = None
 
@@ -308,7 +310,7 @@ class Engine:
         Returns:
             Dictionary with final response and execution metadata
         """
-        max_iters = max_iterations if max_iterations is not None else 5000
+        max_iters = max_iterations if max_iterations is not None else self.settings.max_iterations_default
         self.current_iteration = 0
         self.start_time = datetime.utcnow()
         
@@ -374,7 +376,7 @@ class Engine:
                     cm.core.finalize_streaming_message()
                     
                     # Small delay to allow UI to process the message boundary
-                    await asyncio.sleep(0.05)
+                    await asyncio.sleep(UI_ASYNC_SLEEP_SECONDS)
                 
                 # Save conversation state after each iteration to persist separate messages
                 cm.save()

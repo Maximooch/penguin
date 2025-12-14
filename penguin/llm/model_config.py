@@ -3,6 +3,8 @@ import warnings
 from dataclasses import dataclass, field
 from typing import Any, Dict, Literal, Optional
 
+from penguin.constants import get_default_max_history_tokens
+
 
 CONTEXT_WINDOW_SAFETY_FRACTION = max(
     min(float(os.getenv("PENGUIN_CONTEXT_SAFETY_FRACTION", "0.85")), 0.95),
@@ -61,7 +63,7 @@ class ModelConfig:
             if self.max_context_window_tokens is not None:
                 self.max_history_tokens = safe_context_window(self.max_context_window_tokens)
             else:
-                self.max_history_tokens = 200000
+                self.max_history_tokens = get_default_max_history_tokens()
         
         # TODO: move this to the gateway. 
         # Auto-detect vision support 

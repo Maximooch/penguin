@@ -13,6 +13,8 @@ from anthropic import AsyncAnthropic, Anthropic
 from .base import BaseAdapter
 from ..model_config import ModelConfig
 
+from penguin.constants import get_default_max_output_tokens
+
 logger = logging.getLogger(__name__)
 
 class AnthropicAdapter(BaseAdapter):
@@ -55,7 +57,7 @@ class AnthropicAdapter(BaseAdapter):
             request_params = {
                 "model": self.model_config.model,
                 "messages": formatted_messages,
-                "max_tokens": max_tokens or self.model_config.max_tokens or 8192,
+                "max_tokens": max_tokens or self.model_config.max_tokens or get_default_max_output_tokens(),
                 "temperature": temperature or self.model_config.temperature or 0.4,
             }
             

@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 from penguin.api_client import PenguinClient
 from penguin.config import WORKSPACE_PATH, Config
 from penguin.core import PenguinCore
+from penguin.constants import get_engine_max_iterations_default
 
 
 class PenguinAgent:
@@ -97,7 +98,7 @@ class PenguinAgent:
         agent_id: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None,
         context_files: Optional[Iterable[str]] = None,
-        max_iterations: int = 5000,  # High default for autonomous operation
+        max_iterations: int = None,  # Uses config default
         multi_step: bool = True,
     ) -> Dict[str, Any]:
         """Send a message to the assistant and return the structured response."""
@@ -105,6 +106,8 @@ class PenguinAgent:
         effective_agent = agent_id or self.default_agent_id
         files = self._prepare_context_files(context_files)
         payload: Dict[str, Any] = {"text": message}
+        if max_iterations is None:
+            max_iterations = get_engine_max_iterations_default()
         return self._run(
             self.core.process(
                 payload,

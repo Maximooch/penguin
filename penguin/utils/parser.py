@@ -19,7 +19,13 @@ from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
 from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
+from penguin.constants import (
+    DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
+    get_engine_max_iterations_default,
+    DEFAULT_LARGE_FILE_THRESHOLD_BYTES,
+)
 import os
+
 logger = logging.getLogger(__name__)
 
 
@@ -743,7 +749,18 @@ class ActionExecutor:
             return "delegate_explore_task requires 'task'"
 
         start_dir = payload.get("directory", ".")
-        max_iterations = min(payload.get("max_iterations", 100), 100)  # Default 100, cap at 100
+        requested_max_iterations = payload.get("max_iterations", None)
+        if requested_max_iterations is None:
+            requested_max_iterations = get_engine_max_iterations_default()
+        try:
+            requested_max_iterations = int(requested_max_iterations)
+        except Exception:
+            requested_max_iterations = get_engine_max_iterations_default()
+
+        max_iterations = min(
+            requested_max_iterations,
+            int(DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP),
+        )
 
         # Get current working directory for context
         cwd = os.getcwd()
@@ -776,7 +793,7 @@ class ActionExecutor:
                     return f"File not found: {path}"
                 if not p.is_file():
                     return f"Not a file: {path}"
-                if p.stat().st_size > 100000:
+                if p.stat().st_size > DEFAULT_LARGE_FILE_THRESHOLD_BYTES:
                     return f"File too large: {path} ({p.stat().st_size} bytes)"
 
                 content = p.read_text(errors='replace')

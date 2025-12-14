@@ -801,7 +801,12 @@ TASK_COMPLETION_PHRASE = "TASK_COMPLETED"  # Single task completion
 CONTINUOUS_COMPLETION_PHRASE = "CONTINUOUS_COMPLETED"  # End of continuous session
 EMERGENCY_STOP_PHRASE = "EMERGENCY_STOP"  # Immediate termination needed
 NEED_USER_CLARIFICATION_PHRASE = "NEED_USER_CLARIFICATION"  # Pause for user input
-MAX_TASK_ITERATIONS = 5000  # High default for agentic workflows; API callers can override
+# Canonical iteration budget (config-driven).
+# Source of truth: config.yml → engine.max_iterations_default
+try:
+    MAX_TASK_ITERATIONS = int(_get_nested(config, "engine.max_iterations_default", 5000))
+except Exception:
+    MAX_TASK_ITERATIONS = 5000
 
 
 # Default model configuration (safe defaults for CI/non-interactive)

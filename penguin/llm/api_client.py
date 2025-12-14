@@ -18,6 +18,7 @@ import tiktoken  # type: ignore
 from PIL import Image  # type: ignore
 
 from .model_config import ModelConfig
+from penguin.constants import get_default_max_history_tokens
 from .adapters import get_adapter # Keep for native preference
 # Lazy import gateways to avoid import overhead
 # from .litellm_gateway import LiteLLMGateway
@@ -120,7 +121,7 @@ class APIClient:
             raise ValueError(f"Invalid client_preference: {model_config.client_preference}. Must be 'native', 'litellm', or 'openrouter'.")
 
         # Common properties (potentially less relevant now?)
-        self.max_history_tokens = model_config.max_history_tokens or 200000
+        self.max_history_tokens = model_config.max_history_tokens or get_default_max_history_tokens()
 
         # Clean up old logging/prints
         # print("\n=== API Client Initialization ===")
