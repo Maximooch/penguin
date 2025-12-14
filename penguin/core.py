@@ -3604,8 +3604,8 @@ class PenguinCore:
                 config_data['model']['context_window'] = context_length
             
             # Remove old max_tokens key if it exists (we now use max_output_tokens)
-            if 'max_output_tokens' in config_data['model']:
-                del config_data['model']['max_output_tokens']
+            if 'max_tokens' in config_data['model']:
+                del config_data['model']['max_tokens']
             
             # Write back to file
             with open(config_path, 'w') as f:

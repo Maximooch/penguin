@@ -34,6 +34,8 @@ A prioritized list of technical debt and architectural improvements identified d
 **Examples Found:**
 - Config access: `data.get("key")` vs `getattr(obj, "key", None)` vs direct attribute
 - Async patterns: Some async, some sync, some mixed in same class
+- CLI command parsing: naive `.split()` vs `shlex.split()` (paths with spaces/quotes broke `/image`)
+- LLM adapter payload shaping: request schema drift (OpenAI Responses multimodal `input` shape broke at runtime)
 - Config types: Dict-based AND dataclass AND Pydantic models
 - File editing: `apply_diff` vs `multiedit` vs `enhanced_write` (3 ways to edit files)
 - Logging: `logger.debug` vs `print()` vs `console.print()`
@@ -46,6 +48,12 @@ A prioritized list of technical debt and architectural improvements identified d
 3. Gradually refactor to consistency
 
 **Estimated Effort:** Medium (ongoing)
+
+**Concrete improvements from recent debugging:**
+- Standardize *all* user-entered command-line parsing (slash commands, file paths) on `shlex.split()` with a fallback. Do not use `.split(" ")` for anything that can contain paths.
+- Add a lightweight “adapter contract test” layer for LLM adapters that validates outbound request shapes (no network call required). This would have caught:
+  - OpenAI Responses API requiring top-level `input` items of `type="message"`
+  - `input_image.image_url` needing to be a string (not `{"url": ...}`)
 
 ---
 
