@@ -756,43 +756,92 @@ config = substitute_path_variables(config, config['paths'])
 _MODEL = config.get('model', {}) if isinstance(config.get('model'), dict) else {}
 _API = config.get('api', {}) if isinstance(config.get('api'), dict) else {}
 
-# Now that WORKSPACE_PATH is defined and paths resolved, initialize diagnostics
-init_diagnostics(config)
-
 # Avoid noisy stdout during normal startup; log at DEBUG level instead.
 logger.debug(f"Workspace path: {WORKSPACE_PATH}")
 
-# Set up logging
-# logging.basicConfig(level=logging.DEBUG)
-# logger = logging.getLogger(__name__)
+# =============================================================================
+# LAZY INITIALIZATION FOR STARTUP PERFORMANCE
+# =============================================================================
+# These operations are deferred until first use to speed up startup time.
+# - init_diagnostics: Only needed when diagnostics features are used
+# - load_dotenv: Only needed when API keys are accessed
+# =============================================================================
 
-# Load environment variables from user-level and project .env files
-# 1) User-level: ~/.config/penguin/.env (or APPDATA equivalent) – provides persistent keys
-try:
-    if os.name == 'posix':
-        user_env_dir = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'penguin'
-    else:
-        user_env_dir = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming')) / 'penguin'
-    user_env_path = user_env_dir / '.env'
-    if user_env_path.exists():
-        load_dotenv(dotenv_path=str(user_env_path), override=False)
-except Exception:
-    # Non-fatal if user-level .env loading fails
-    pass
+_env_loaded = False
+_diagnostics_initialized = False
 
-# 2) Project-level: nearest .env up the CWD chain – overrides user-level values
-load_dotenv(override=True)
+def _ensure_env_loaded():
+    """Lazy-load environment variables from .env files. Called on first API key access."""
+    global _env_loaded
+    if _env_loaded:
+        return
+    _env_loaded = True
 
-# API Keys
-# MODEL_API_KEY = os.environ.get("MODEL_API_KEY")
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
-PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY")
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+    # 1) User-level: ~/.config/penguin/.env (or APPDATA equivalent) – provides persistent keys
+    try:
+        if os.name == 'posix':
+            user_env_dir = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config')) / 'penguin'
+        else:
+            user_env_dir = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming')) / 'penguin'
+        user_env_path = user_env_dir / '.env'
+        if user_env_path.exists():
+            load_dotenv(dotenv_path=str(user_env_path), override=False)
+    except Exception:
+        # Non-fatal if user-level .env loading fails
+        pass
 
-# GitHub App Configuration
-GITHUB_APP_ID = os.environ.get("GITHUB_APP_ID")
-GITHUB_APP_PRIVATE_KEY_PATH = os.environ.get("GITHUB_APP_PRIVATE_KEY_PATH")
-GITHUB_APP_INSTALLATION_ID = os.environ.get("GITHUB_APP_INSTALLATION_ID")
+    # 2) Project-level: nearest .env up the CWD chain – overrides user-level values
+    load_dotenv(override=True)
+
+def _ensure_diagnostics_initialized():
+    """Lazy-initialize diagnostics. Called on first diagnostics access."""
+    global _diagnostics_initialized
+    if _diagnostics_initialized:
+        return
+    _diagnostics_initialized = True
+    init_diagnostics(config)
+
+def get_api_key(key_name: str) -> Optional[str]:
+    """Get an API key, loading .env files if not already done."""
+    _ensure_env_loaded()
+    return os.environ.get(key_name)
+
+# API Keys - now lazily loaded via property-like access
+# For backwards compatibility, we provide module-level variables that are
+# populated on first access via __getattr__ at the module level.
+# Direct access patterns like `from penguin.config import TAVILY_API_KEY`
+# will trigger the lazy load.
+
+# Placeholder values - actual values loaded lazily
+_API_KEY_NAMES = {
+    'TAVILY_API_KEY': 'TAVILY_API_KEY',
+    'PERPLEXITY_API_KEY': 'PERPLEXITY_API_KEY',
+    'GITHUB_TOKEN': 'GITHUB_TOKEN',
+    'GITHUB_APP_ID': 'GITHUB_APP_ID',
+    'GITHUB_APP_PRIVATE_KEY_PATH': 'GITHUB_APP_PRIVATE_KEY_PATH',
+    'GITHUB_APP_INSTALLATION_ID': 'GITHUB_APP_INSTALLATION_ID',
+}
+
+# For direct module attribute access, we need actual variables
+# These will be None until _ensure_env_loaded() is called
+TAVILY_API_KEY: Optional[str] = None
+PERPLEXITY_API_KEY: Optional[str] = None
+GITHUB_TOKEN: Optional[str] = None
+GITHUB_APP_ID: Optional[str] = None
+GITHUB_APP_PRIVATE_KEY_PATH: Optional[str] = None
+GITHUB_APP_INSTALLATION_ID: Optional[str] = None
+
+def _populate_api_keys():
+    """Populate API key module variables after env is loaded."""
+    global TAVILY_API_KEY, PERPLEXITY_API_KEY, GITHUB_TOKEN
+    global GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH, GITHUB_APP_INSTALLATION_ID
+    _ensure_env_loaded()
+    TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
+    PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY")
+    GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
+    GITHUB_APP_ID = os.environ.get("GITHUB_APP_ID")
+    GITHUB_APP_PRIVATE_KEY_PATH = os.environ.get("GITHUB_APP_PRIVATE_KEY_PATH")
+    GITHUB_APP_INSTALLATION_ID = os.environ.get("GITHUB_APP_INSTALLATION_ID")
 
 # Constants
 # CONTINUATION_EXIT_PHRASE = "AUTOMODE_COMPLETE"
@@ -1553,3 +1602,20 @@ def _configure_diagnostics_logging(diagnostics_config: "DiagnosticsConfig", log_
     for handler in root_logger.handlers:
         if isinstance(handler, logging.StreamHandler):
             handler.setLevel(max(handler.level, logging.WARNING))
+
+
+# =============================================================================
+# MODULE-LEVEL __getattr__ FOR LAZY API KEY ACCESS
+# =============================================================================
+# This enables lazy loading when accessing API keys via attribute access
+# e.g., `import penguin.config; penguin.config.TAVILY_API_KEY`
+# Note: Direct imports like `from penguin.config import TAVILY_API_KEY` will
+# get None initially; use get_api_key() for those cases.
+# =============================================================================
+
+def __getattr__(name: str):
+    """Lazy loading for API key variables."""
+    if name in _API_KEY_NAMES:
+        _ensure_env_loaded()
+        return os.environ.get(_API_KEY_NAMES[name])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

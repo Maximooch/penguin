@@ -122,28 +122,37 @@ import time
 PROFILE_ENABLED = os.environ.get("PENGUIN_PROFILE", "0") == "1"
 if PROFILE_ENABLED:
     print("\033[2mStarting CLI module import timing...\033[0m")
+    import importlib
     total_start = time.time()
     module_times = {}
 
     def time_import(module_name):
         start = time.time()
-        result = __import__(module_name, globals(), locals(), [], 0)
+        result = importlib.import_module(module_name)
         end = time.time()
         module_times[module_name] = (end - start) * 1000  # Convert to ms
         return result
 
     # Time major imports
     typer = time_import("typer")
-    rich_console_import = time_import("rich.console")
-    Console = rich_console_import.Console
+    RichConsole = time_import("rich.console").Console
     Markdown = time_import("rich.markdown").Markdown
     Panel = time_import("rich.panel").Panel
-    Progress = time_import("rich.progress").Progress
-    SpinnerColumn = time_import("rich.progress").SpinnerColumn
-    TextColumn = time_import("rich.progress").TextColumn
+    _rich_progress = time_import("rich.progress")
+    Progress = _rich_progress.Progress
+    SpinnerColumn = _rich_progress.SpinnerColumn
+    TextColumn = _rich_progress.TextColumn
     Syntax = time_import("rich.syntax").Syntax
     Live = time_import("rich.live").Live
     Text = time_import("rich.text").Text
+    rich = time_import("rich")
+
+    # prompt_toolkit imports
+    PromptSession = time_import("prompt_toolkit").PromptSession
+    KeyBindings = time_import("prompt_toolkit.key_binding").KeyBindings
+    Keys = time_import("prompt_toolkit.keys").Keys
+    Style = time_import("prompt_toolkit.styles").Style
+    HTML = time_import("prompt_toolkit.formatted_text").HTML
 
     # Removed prompt_toolkit timing imports – legacy Rich CLI removed
 
@@ -221,6 +230,7 @@ from penguin.config import (
     WORKSPACE_PATH,
     Config,  # Import Config type for type hinting
     config as penguin_config_global,
+    _ensure_env_loaded,  # Lazy env loading for startup performance
 )
 from penguin.core import PenguinCore
 from penguin.llm.api_client import APIClient
@@ -529,6 +539,8 @@ async def _initialize_core_components_globally(
         ),
     )
 
+    # Ensure .env files are loaded before API client needs API keys
+    _ensure_env_loaded()
     _api_client = APIClient(model_config=_model_config)
     _api_client.set_system_prompt(SYSTEM_PROMPT)
 

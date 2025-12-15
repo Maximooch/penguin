@@ -189,6 +189,7 @@ from penguin.config import (
     AgentModelSettings,
     AgentPersonaConfig,
     Config,
+    _ensure_env_loaded,  # Lazy env loading for startup performance
 )
 from penguin.config import config as raw_config
 from penguin.constants import DEFAULT_MAX_MESSAGES_PER_SESSION
@@ -277,14 +278,14 @@ class PenguinCore:
         enable_cli: bool = False,
         show_progress: bool = True, # what is this again?
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
-        fast_startup: bool = False
+        fast_startup: bool = True  # Default True for faster startup (defers memory indexing)
     ) -> Union["PenguinCore", Tuple["PenguinCore", "PenguinCLI"]]:
         """
         Factory method for creating PenguinCore instance.
         Returns either PenguinCore alone or with CLI if enable_cli=True
-        
+
         Args:
-            fast_startup: If True, defer heavy operations like memory indexing until first use
+            fast_startup: If True (default), defer heavy operations like memory indexing until first use
         """
         # Fix HuggingFace tokenizers parallelism warning early, before any model loading
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -424,6 +425,8 @@ class PenguinCore:
                     if progress_callback:
                         current_step_index += 1
                         progress_callback(current_step_index, total_steps, "Initializing API client")
+                    # Ensure .env files are loaded before API client needs API keys
+                    _ensure_env_loaded()
                     api_client_start = time.time()
                     api_client = APIClient(model_config=model_config)
                     api_client.set_system_prompt(SYSTEM_PROMPT)
@@ -670,11 +673,11 @@ class PenguinCore:
         # streaming panels to merge into a single message in the CLI.
         self.conversation_manager.core = self  # type: ignore[attr-defined]
 
-        # Initialize action executor with project manager and conversation manager
-        print("DEBUG: Initializing ActionExecutor...")
-        print(f"DEBUG: ToolManager type: {type(self.tool_manager)}")
-        print(f"DEBUG: ProjectManager type: {type(self.project_manager)}")
-        print(f"DEBUG: ConversationManager type: {type(self.conversation_manager)}")
+        # # Initialize action executor with project manager and conversation manager
+        # print("DEBUG: Initializing ActionExecutor...")
+        # print(f"DEBUG: ToolManager type: {type(self.tool_manager)}")
+        # print(f"DEBUG: ProjectManager type: {type(self.project_manager)}")
+        # print(f"DEBUG: ConversationManager type: {type(self.conversation_manager)}")
         self.action_executor = ActionExecutor(
             self.tool_manager,
             self.project_manager,

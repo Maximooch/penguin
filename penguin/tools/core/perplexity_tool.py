@@ -3,7 +3,7 @@ from typing import Dict, List
 
 import requests
 
-from penguin.config import PERPLEXITY_API_KEY
+from penguin.config import get_api_key
 
 from .web_search import WebSearchProvider
 
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class PerplexityProvider(WebSearchProvider):
     def __init__(self):
-        self.api_key = PERPLEXITY_API_KEY
+        self.api_key = get_api_key("PERPLEXITY_API_KEY")
         if not self.api_key:
             raise ValueError("PERPLEXITY_API_KEY environment variable is not set")
         self.base_url = "https://api.perplexity.ai/chat/completions"

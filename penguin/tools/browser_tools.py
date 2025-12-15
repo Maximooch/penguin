@@ -35,7 +35,7 @@ class BrowserManager:
         #     logging.warning("Could not detect browser-use version")
         
         self.browser_use_version = "disabled"
-        logging.warning("browser-use temporarily disabled for Python 3.8-3.10 compatibility. Use PyDoll instead.")
+        # browser-use disabled - PyDoll is the preferred browser automation tool
         
         # logging.info(f"browser-use version: {browser_use.__version__}") # Doesn't work, fix later.
         

@@ -15,11 +15,8 @@ from typing import Any, Dict, Optional, Union
 
 from github import Github, GithubException
 from penguin.config import (
-    GITHUB_REPOSITORY, 
-    GITHUB_TOKEN, 
-    GITHUB_APP_ID, 
-    GITHUB_APP_PRIVATE_KEY_PATH, 
-    GITHUB_APP_INSTALLATION_ID
+    GITHUB_REPOSITORY,
+    get_api_key,
 )
 
 from .git_integration import GitIntegration
@@ -101,29 +98,35 @@ class GitManager:
     def _initialize_github_client(self) -> Optional[Github]:
         """
         Initialize GitHub client using GitHub App authentication or fallback to PAT.
-        
+
         Returns:
             Github client instance or None if authentication fails
         """
+        # Get API keys lazily (only loads .env when needed)
+        github_app_id = get_api_key("GITHUB_APP_ID")
+        github_app_private_key_path = get_api_key("GITHUB_APP_PRIVATE_KEY_PATH")
+        github_app_installation_id = get_api_key("GITHUB_APP_INSTALLATION_ID")
+        github_token = get_api_key("GITHUB_TOKEN")
+
         # Try GitHub App authentication first
-        if all([GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH, GITHUB_APP_INSTALLATION_ID]):
+        if all([github_app_id, github_app_private_key_path, github_app_installation_id]):
             logger.info("Attempting GitHub App authentication...")
             github_client = _get_github_app_client(
-                GITHUB_APP_ID, 
-                GITHUB_APP_PRIVATE_KEY_PATH, 
-                GITHUB_APP_INSTALLATION_ID
+                github_app_id,
+                github_app_private_key_path,
+                github_app_installation_id
             )
             if github_client:
                 logger.info("Successfully authenticated with GitHub App")
                 return github_client
             else:
                 logger.warning("GitHub App authentication failed, falling back to PAT")
-        
+
         # Fallback to Personal Access Token
-        if GITHUB_TOKEN:
+        if github_token:
             logger.info("Using GitHub Personal Access Token authentication")
-            return Github(GITHUB_TOKEN)
-        
+            return Github(github_token)
+
         logger.warning("No GitHub authentication configured. GitHub integration will be disabled.")
         return None
 
