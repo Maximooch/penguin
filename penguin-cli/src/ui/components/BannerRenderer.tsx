@@ -8,7 +8,7 @@
  * Uses terminal-image for pixel art rendering (iTerm2/Kitty)
  */
 
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { Box, Text } from 'ink';
 import terminalImage from 'terminal-image';
 import fs from 'fs';
@@ -31,6 +31,46 @@ const COMPACT_TEXT = `██████╗ ███████╗███╗
 ██║     ███████╗██║ ╚████║╚██████╔╝╚██████╔╝██║██║ ╚████║
 ╚═╝     ╚══════╝╚═╝  ╚═══╝ ╚═════╝  ╚═════╝ ╚═╝╚═╝  ╚═══╝`;
 
+// Module-level cache - load image once at module init time
+let cachedImage: string | null = null;
+let cachedLayout: 'side-by-side' | 'vertical' | 'compact' = 'vertical';
+
+// Determine layout based on terminal width
+function detectLayout(forceLayout?: 'side-by-side' | 'vertical' | 'compact'): 'side-by-side' | 'vertical' | 'compact' {
+  if (forceLayout) return forceLayout;
+  const terminalWidth = process.stdout.columns || 80;
+  if (terminalWidth >= 120) return 'side-by-side';
+  if (terminalWidth >= 80) return 'vertical';
+  return 'compact';
+}
+
+// Pre-load image at module init (runs once when module is imported)
+async function preloadImage() {
+  const layout = detectLayout();
+  cachedLayout = layout;
+
+  try {
+    const imagePath = path.join(process.cwd(), '..', 'context', 'image.png');
+    if (fs.existsSync(imagePath)) {
+      const imageBuffer = fs.readFileSync(imagePath);
+      const imageWidth = layout === 'side-by-side' ? 30 : 40;
+      const imageHeight = layout === 'side-by-side' ? 15 : 20;
+
+      cachedImage = await terminalImage.buffer(imageBuffer, {
+        width: imageWidth,
+        height: imageHeight,
+        preserveAspectRatio: true
+      });
+    }
+  } catch {
+    // Terminal doesn't support images, use text-only
+    cachedImage = null;
+  }
+}
+
+// Start loading immediately when module is imported
+preloadImage();
+
 interface BannerProps {
   version?: string;
   workspace?: string;
@@ -38,69 +78,14 @@ interface BannerProps {
 }
 
 export function BannerRenderer({ version = '0.1.0', workspace, forceLayout }: BannerProps) {
-  const [renderedImage, setRenderedImage] = useState<string | null>(null);
-  const [layout, setLayout] = useState<'side-by-side' | 'vertical' | 'compact'>('vertical');
-  const [imageSupported, setImageSupported] = useState(false);
-  const [isReady, setIsReady] = useState(false);
+  // Use cached values - no state updates to prevent re-renders
+  const layout = forceLayout || cachedLayout;
+  const renderedImage = cachedImage;
+  const imageSupported = cachedImage !== null;
 
-  useEffect(() => {
-    async function loadImage() {
-      // Detect terminal capabilities
-      const terminalWidth = process.stdout.columns || 80;
-
-      // Determine layout
-      let chosenLayout: 'side-by-side' | 'vertical' | 'compact';
-      if (forceLayout) {
-        chosenLayout = forceLayout;
-      } else if (terminalWidth >= 120) {
-        chosenLayout = 'side-by-side';
-      } else if (terminalWidth >= 80) {
-        chosenLayout = 'vertical';
-      } else {
-        chosenLayout = 'compact';
-      }
-      setLayout(chosenLayout);
-
-      // Try to load pixel art image
-      try {
-        const imagePath = path.join(process.cwd(), '..', 'context', 'image.png');
-
-        if (fs.existsSync(imagePath)) {
-          const imageBuffer = fs.readFileSync(imagePath);
-
-          // Render with appropriate size based on layout
-          const imageWidth = chosenLayout === 'side-by-side' ? 30 : 40;
-          const imageHeight = chosenLayout === 'side-by-side' ? 15 : 20;
-
-          const rendered = await terminalImage.buffer(imageBuffer, {
-            width: imageWidth,
-            height: imageHeight,
-            preserveAspectRatio: true
-          });
-
-          setRenderedImage(rendered);
-          setImageSupported(true);
-        } else {
-          setImageSupported(false);
-        }
-      } catch (error) {
-        // Terminal doesn't support images, use text-only
-        setImageSupported(false);
-      } finally {
-        // Always set ready, even if image loading failed
-        setIsReady(true);
-      }
-    }
-
-    loadImage();
-  }, [forceLayout]);
-
-  // Don't render until fully loaded to prevent duplicates
-  if (!isReady) {
-    return null;
-  }
-
-  // Fallback: Text-only if images not supported
+  // Always render text banner immediately - don't wait for image loading
+  // This is critical because the banner is rendered inside Ink's <Static> component
+  // which only renders once and won't re-render when isReady changes
   if (!imageSupported || !renderedImage) {
     return (
       <Box flexDirection="column" marginBottom={1}>

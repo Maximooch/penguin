@@ -2584,25 +2584,9 @@ class PenguinCore:
                     streaming=streaming
                 )
 
-            # TODO: Should be at least 3 attempts. 
-            # with exponential backoff?
-
-            # ------------------------------------------------------------------
-            # Empty-response fallback – if the assistant returned no content we
-            # immediately retry once with *streaming disabled*.  This addresses
-            # rare provider quirks where streaming yields an empty string.
-            # ------------------------------------------------------------------
-            if isinstance(response, dict) and not response.get("assistant_response", "").strip():
-                try:
-                    logger.warning("Assistant response was empty – retrying once without streaming…")
-                    retry_data, _ = await self.get_response(streaming=False)
-                    if retry_data and retry_data.get("assistant_response", "").strip():
-                        response["assistant_response"] = retry_data["assistant_response"]
-                        # Propagate any action results gathered during retry
-                        response["action_results"] = retry_data.get("action_results", [])
-                        logger.info("Non-streaming retry succeeded and produced a response.")
-                except Exception as retry_err:
-                    logger.warning(f"Non-streaming retry after empty response failed: {retry_err}")
+            # NOTE: Empty-response retry logic removed - engine._llm_step handles this.
+            # Engine retries once with stream=False, then raises LLMEmptyResponseError.
+            # WALLET_GUARD in finalize_streaming_message injects placeholder for empty streams.
 
             # Ensure conversation is saved after processing
             conversation_manager.save()

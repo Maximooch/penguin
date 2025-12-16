@@ -462,3 +462,52 @@ if not iteration_results and last_response:
 
 ### Status
 **FIXED** - Free models now complete after responding instead of looping.
+
+---
+
+## Fix #7: Pre-Execution Tool Result Detection (2025-12-15)
+
+### The Bug
+Fix #6's `[Tool Result]` check in the main loop happened AFTER `_llm_step()` returned with actions already executed. When a confused model output both action tags AND echoed results:
+
+```
+<execute_command>python script.py</execute_command> [Tool Result] Random number: 180076...
+```
+
+The flow was:
+1. `_llm_step()` called
+2. `parse_action()` extracts `<execute_command>`
+3. Action executes (random number generated)
+4. `_llm_step()` returns
+5. **NOW** `[Tool Result]` check runs → breaks
+6. But action already executed!
+
+This caused an extra iteration before the break caught it.
+
+### The Fix
+Moved `[Tool Result]` detection BEFORE action parsing in `_llm_step`:
+
+**Location:** `engine.py:1058-1067`
+```python
+# WALLET_GUARD: Skip action parsing if model is echoing tool results
+# Confused models may output action tags AND echoed results - don't execute
+if assistant_response and "[Tool Result]" in assistant_response:
+    logger.warning(
+        f"[WALLET_GUARD] Skipping action parsing: response contains echoed '[Tool Result]' "
+        f"(model confused about format, len={len(assistant_response)})"
+    )
+    actions = []
+else:
+    actions: List[CodeActAction] = parse_action(assistant_response)
+```
+
+### Result
+Now when a model outputs action + echoed result:
+1. `_llm_step()` sees `[Tool Result]` in response
+2. Skips action parsing entirely → `actions = []`
+3. No action executed
+4. Main loop's `[Tool Result]` check also triggers → break
+5. No wasted execution!
+
+### Status
+**FIXED** - Actions no longer execute when model is confused about format.

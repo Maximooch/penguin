@@ -2,10 +2,8 @@
 
 > **Purpose:** Guide for configuring Penguin to route LLM requests through Link's inference proxy for unified billing, analytics, and future RL/finetuning data collection.
 >
-> **Last Updated:** 2025-12-15 (Implementation Complete)
+> **Last Updated:** 2025-12-16
 > **Link Version:** MVP (auth middleware added)
->
-> **Implementation Status:** ✅ IMPLEMENTED - See `penguin/llm/client.py`
 
 ---
 
@@ -36,8 +34,6 @@ Link's inference proxy at `/api/v1/chat/completions` is **fully OpenAI-compatibl
 
 ## Quick Start
 
-> ✅ **Implemented** in `penguin/llm/client.py` and `penguin/llm/openrouter_gateway.py`
-
 ### Minimal Configuration
 
 Set these environment variables in Penguin:
@@ -60,19 +56,39 @@ That's it for MVP. Penguin's OpenAI SDK calls will automatically route through L
 
 Link's inference proxy supports multiple auth modes (checked in order):
 
-### 1. API Key (Production)
+### 1. User API Key (Recommended for Production)
+
+Create API keys in Settings → API Keys → Link API Keys section:
 
 ```python
 # In Penguin's LLM client
 headers = {
-    "Authorization": f"Bearer {os.getenv('LINK_INFERENCE_API_KEY')}",
-    "X-Link-User-Id": user_id,
+    "Authorization": f"Bearer {os.getenv('LINK_API_KEY')}",  # e.g., sk-link-abc12345...
+    "X-Link-Session-Id": session_id,  # Optional, for tracking
+    "X-Link-Agent-Id": agent_id,      # Optional, for multi-agent
+}
+```
+
+User API keys:
+- Start with `sk-link-` prefix (triggers GitHub/GitLab secret scanning)
+- Are validated against the database (hashed storage)
+- Automatically associate usage with the user who created them
+- Can be revoked anytime from the settings UI
+
+### 2. Admin API Key (Environment Variable)
+
+For server-to-server communication where you need to specify a different user:
+
+```python
+headers = {
+    "Authorization": f"Bearer {os.getenv('LINK_INFERENCE_API_KEY')}",  # Admin key from env
+    "X-Link-User-Id": user_id,      # Required - which user to bill
     "X-Link-Session-Id": session_id,
     "X-Link-Agent-Id": agent_id,
 }
 ```
 
-### 2. Internal Headers (MVP/Local)
+### 3. Internal Headers (MVP/Local)
 
 For same-machine traffic (Link and Penguin on localhost), just pass the headers:
 
@@ -331,7 +347,7 @@ curl -X POST http://localhost:3001/api/v1/chat/completions \
   -H "X-Link-User-Id: test-user" \
   -H "X-Link-Session-Id: test-session" \
   -d '{
-    "model": "anthropic/claude-3.5-haiku",
+    "model": "anthropic/claude-haiku-4.5",
     "messages": [{"role": "user", "content": "Hello!"}],
     "max_tokens": 100
   }'
@@ -345,7 +361,50 @@ pnpm run chat-cli
 # This uses the inference proxy with test user context
 ```
 
-### 3. Verify billing
+### 3. Penguin Integration Test
+
+**IMPORTANT**: For Penguin's tests to actually route through Link, you MUST set `base_url` explicitly:
+
+```python
+# ✅ CORRECT: Routes through Link
+base_url = "http://localhost:3001/api/v1"  # Link proxy
+
+# ❌ WRONG: Routes directly to OpenRouter (bypasses Link)
+base_url = None  # Defaults to https://openrouter.ai/api/v1
+```
+
+Example test that actually tests Link integration:
+
+```python
+def test_link_integration():
+    """Test that requests route through Link's proxy."""
+    # MUST specify Link's URL explicitly
+    client = OpenAI(
+        base_url="http://localhost:3001/api/v1",
+        api_key="not-needed-for-internal",  # Uses headers instead
+        default_headers={
+            "X-Link-User-Id": "test-user",
+            "X-Link-Session-Id": "test-session",
+        },
+    )
+
+    response = client.chat.completions.create(
+        model="anthropic/claude-haiku-4.5",
+        messages=[{"role": "user", "content": "Hello"}],
+        max_tokens=10,
+    )
+
+    # Verify response came through
+    assert response.choices[0].message.content
+```
+
+To verify requests are hitting Link, check the backend logs:
+
+```
+[OpenRouter] Non-streaming chat completion: anthropic/claude-haiku-4.5 (user: test-user, auth: internal-headers)
+```
+
+### 4. Verify billing
 
 Check the billing queue logs:
 ```bash
@@ -386,6 +445,14 @@ Check the billing queue logs:
 ---
 
 ## Changelog
+
+### 2025-12-16
+- Added Google OAuth login page for agentboard-web
+- Added AuthContext provider for frontend session management
+- Settings router now uses authenticated user's ID for API key operations
+- Added `/api/auth/me` endpoint for frontend session validation
+- Added logout button to Settings → General tab
+- All authenticated pages now require login (redirect to `/login` if not authenticated)
 
 ### 2025-12-15
 - Initial document

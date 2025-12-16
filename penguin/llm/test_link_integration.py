@@ -15,12 +15,17 @@ import json
 import logging
 import os
 import sys
+
+from dotenv import load_dotenv
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
+
+# Load .env from project root
+load_dotenv(project_root / ".env")
 sys.path.insert(0, str(project_root))
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -38,25 +43,35 @@ except ImportError as e:
 
 # --- Helper Functions for Creating Test Objects ---
 
-def create_mock_model_config() -> ModelConfig:
-    """Create a mock ModelConfig for testing."""
+def create_mock_model_config(api_key: Optional[str] = "test-api-key-12345") -> ModelConfig:
+    """Create a mock ModelConfig for testing.
+    
+    Args:
+        api_key: API key to use. Pass None for Link proxy tests where no key is needed.
+    """
     return ModelConfig(
         model="anthropic/claude-haiku-4.5",
         provider="openrouter",
         client_preference="openrouter",
-        api_key="test-api-key-12345",
+        api_key=api_key,
         streaming_enabled=True,
     )
 
 
-def create_link_config() -> LinkConfig:
-    """Create a LinkConfig for testing."""
+def create_link_config(api_key: Optional[str] = None) -> LinkConfig:
+    """Create a LinkConfig for testing.
+
+    Args:
+        api_key: API key to use. Defaults to LINK_API_KEY from .env.
+    """
+    if api_key is None:
+        api_key = os.getenv("LINK_API_KEY")
     return LinkConfig(
         user_id="user-test-123",
         session_id="sess-test-456",
         agent_id="agent-test-789",
         workspace_id="ws-test-abc",
-        api_key="link-api-key-xyz",
+        api_key=api_key,
     )
 
 
@@ -84,7 +99,8 @@ class TestLinkConfig:
         assert headers["X-Link-Session-Id"] == "sess-test-456"
         assert headers["X-Link-Agent-Id"] == "agent-test-789"
         assert headers["X-Link-Workspace-Id"] == "ws-test-abc"
-        assert headers["Authorization"] == "Bearer link-api-key-xyz"
+        assert headers["Authorization"] == f"Bearer {os.getenv('LINK_API_KEY')}"
+
     
     def test_to_headers_partial(self):
         """Test to_headers() with partial configuration."""
@@ -262,11 +278,16 @@ class TestLiveIntegration:
     Uses anthropic/claude-haiku-4.5 (cheap model) for cost efficiency.
     """
     
-    def _get_live_model_config(self) -> ModelConfig:
-        """Create ModelConfig for live testing."""
-        api_key = os.getenv("OPENROUTER_API_KEY")
-        if not api_key:
-            raise RuntimeError("OPENROUTER_API_KEY not set")
+    def _get_live_model_config(self, for_link_proxy: bool = False) -> ModelConfig:
+        """Create ModelConfig for live testing.
+        
+        Args:
+            for_link_proxy: If True, don't require API key (Link handles auth).
+        """
+        # For Link proxy, no API key needed - Link handles authentication
+        api_key = None if for_link_proxy else os.getenv("OPENROUTER_API_KEY")
+        if not for_link_proxy and not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY not set (required for direct OpenRouter)")
         
         return ModelConfig(
             model="anthropic/claude-haiku-4.5",
@@ -275,7 +296,7 @@ class TestLiveIntegration:
             api_key=api_key,
             streaming_enabled=True,
         )
-    
+
     def test_live_request_with_link_headers(self):
         """Test a live request with Link headers configured.
         
@@ -284,15 +305,16 @@ class TestLiveIntegration:
         2. OpenRouter accepts requests with extra headers (they're ignored)
         3. The response is properly formatted
         """
-        model_config = self._get_live_model_config()
-        
+        model_config = self._get_live_model_config(for_link_proxy=True)
         link_config = LinkConfig(
             user_id="test-live-user",
             session_id="test-live-session",
+            api_key=os.getenv("LINK_API_KEY"),
         )
         
         config = LLMClientConfig(
-            base_url=None,  # Use default OpenRouter
+            base_url="http://localhost:3001/api/v1",  # set to localhost for now to target Link, later on linkplatform.ai
+            # Use default OpenRouter
             link=link_config,
         )
         

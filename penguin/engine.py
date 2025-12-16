@@ -16,7 +16,7 @@ from penguin.constants import UI_ASYNC_SLEEP_SECONDS
 import re
 import time
 import multiprocessing as mp
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Union, AsyncGenerator, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union, AsyncGenerator, Tuple
 from penguin.utils.errors import LLMEmptyResponseError
 
 from penguin.system.conversation_manager import ConversationManager  # type: ignore
@@ -42,6 +42,95 @@ class ResourceSnapshot:
     tokens_completion: int = 0
     wall_clock_sec: float = 0.0
     # Future: cpu_sec, mem_mb, network_kb, docker_exit_code, …
+
+
+@dataclass
+class LoopConfig:
+    """Configuration for _iteration_loop() to handle both run_response and run_task modes.
+
+    This dataclass captures the differences between the two modes, allowing
+    a single loop implementation to serve both entry points.
+    """
+    # Mode identifier for logging
+    mode: str  # "response" or "task"
+
+    # Termination signal - which action name triggers explicit completion
+    termination_action: str  # "finish_response" or "finish_task"
+
+    # Streaming configuration
+    streaming: bool = True
+    stream_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
+
+    # Whether to reset/finalize streaming state between iterations
+    manage_streaming_state: bool = False
+
+    # How to save conversation (sync vs async)
+    async_save: bool = False
+
+    # Event publishing configuration
+    enable_events: bool = False
+    task_metadata: Optional[Dict[str, Any]] = None
+
+    # Message callback for tool results (run_task mode)
+    message_callback: Optional[Callable] = None
+
+    # Default completion status when loop ends without explicit signal
+    default_completion_status: str = "completed"
+
+
+@dataclass
+class LoopState:
+    """Consolidated state for iteration loops (run_response, run_task).
+
+    This dataclass replaces scattered dynamic attributes that were
+    created on-demand with `if not hasattr(self, '_xxx')` patterns.
+    Now all state is initialized upfront and reset per-run.
+    """
+    # Empty/trivial response tracking
+    empty_response_count: int = 0
+
+    # Response repetition detection
+    last_response_hash: Optional[int] = None
+    repeat_count: int = 0
+
+    def reset(self) -> None:
+        """Reset state for a new run."""
+        self.empty_response_count = 0
+        self.last_response_hash = None
+        self.repeat_count = 0
+
+    def check_repeated(self, response: str) -> bool:
+        """Check if response is repeated, return True if should break.
+
+        Returns True if this response has been seen >= 2 times consecutively.
+        """
+        response_signature = hash((response or "")[:200])
+        if response_signature == self.last_response_hash:
+            self.repeat_count += 1
+            if self.repeat_count >= 2:
+                return True
+        else:
+            self.repeat_count = 0
+        self.last_response_hash = response_signature
+        return False
+
+    def check_trivial(self, response: str, threshold: int = 10) -> Tuple[bool, bool]:
+        """Check if response is trivial, return (is_trivial, should_break).
+
+        Returns:
+            Tuple of (is_empty_or_trivial, should_break_after_3)
+        """
+        stripped_response = (response or "").strip()
+        is_empty_or_trivial = not stripped_response or len(stripped_response) < threshold
+
+        if is_empty_or_trivial:
+            self.empty_response_count += 1
+            should_break = self.empty_response_count >= 3
+        else:
+            self.empty_response_count = 0
+            should_break = False
+
+        return is_empty_or_trivial, should_break
 
 @dataclass
 class EngineSettings:
@@ -158,6 +247,9 @@ class Engine:
         self.current_iteration: int = 0
         self._interrupted: bool = False
 
+        # Consolidated loop state (replaces scattered dynamic attributes)
+        self._loop_state = LoopState()
+
     # ------------------------------------------------------------------
     # Agent registry API
     # ------------------------------------------------------------------
@@ -240,6 +332,87 @@ class Engine:
             agent.tool_manager or self.tool_manager,
             agent.action_executor or self.action_executor,
         )
+
+    # ------------------------------------------------------------------
+    # Iteration Loop Helpers
+    # ------------------------------------------------------------------
+
+    def _check_wallet_guard_termination(
+        self,
+        last_response: str,
+        iteration_results: List[Dict[str, Any]],
+        mode: str = "response"
+    ) -> Tuple[bool, Optional[str]]:
+        """Check WALLET_GUARD conditions that should terminate the loop.
+
+        Consolidates the common termination checks used by both run_response and run_task.
+
+        Args:
+            last_response: The assistant's response text
+            iteration_results: List of action results from this iteration
+            mode: "response" or "task" for logging context
+
+        Returns:
+            Tuple of (should_break, completion_status)
+            - should_break: True if loop should terminate
+            - completion_status: Status string if breaking, None otherwise
+        """
+        # Check for no-action completion (models that don't use CodeAct format)
+        if not iteration_results and last_response:
+            has_action_tags = bool(re.search(r'<\w+>.*?</\w+>', last_response, re.DOTALL))
+            if not has_action_tags:
+                logger.debug(f"[WALLET_GUARD] No actions in {mode} response, treating as complete (model may not support CodeAct)")
+                return True, "implicit_completion" if mode == "task" else None
+
+        # Check for confused model echoing tool results
+        if last_response and "[Tool Result]" in last_response:
+            logger.warning(f"[WALLET_GUARD] Breaking {mode}: model is echoing tool results as text")
+            return True, "implicit_completion" if mode == "task" else None
+
+        # Check for repeated/looping responses
+        if self._loop_state.check_repeated(last_response):
+            logger.warning(f"[WALLET_GUARD] Breaking {mode}: response repeated {self._loop_state.repeat_count} times")
+            return True, "implicit_completion" if mode == "task" else None
+
+        # Check for empty/trivial responses
+        stripped_response = (last_response or "").strip()
+        is_empty_or_trivial, should_break = self._loop_state.check_trivial(last_response)
+
+        # DIAGNOSTIC: Log trivial responses
+        if is_empty_or_trivial or len(last_response or "") < 20:
+            last_action = iteration_results[-1].get("action_name") if iteration_results else "none"
+            logger.warning(
+                f"[WALLET_GUARD] Trivial response in {mode}: "
+                f"raw={repr(last_response)}, "
+                f"stripped_len={len(stripped_response)}, "
+                f"last_action={last_action}, "
+                f"iter={self.current_iteration}"
+            )
+
+        if is_empty_or_trivial:
+            logger.debug(f"Empty/trivial response #{self._loop_state.empty_response_count} ({mode}): '{stripped_response[:20] if stripped_response else '(empty)'}'")
+
+        if should_break:
+            logger.warning(f"[WALLET_GUARD] Breaking {mode}: {self._loop_state.empty_response_count} consecutive trivial responses")
+            return True, "implicit_completion" if mode == "task" else None
+
+        return False, None
+
+    async def _save_conversation(self, cm: ConversationManager, async_save: bool = False) -> None:
+        """Save conversation state, optionally using async executor.
+
+        Args:
+            cm: ConversationManager to save
+            async_save: If True, use run_in_executor for non-blocking save
+        """
+        if async_save:
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, cm.save)
+            except Exception as save_err:
+                logger.warning(f"Failed to save conversation state: {save_err}")
+        else:
+            cm.save()
 
     # ------------------------------------------------------------------
     # Public API
@@ -336,8 +509,8 @@ class Engine:
         last_response = ""
         all_action_results = []
 
-        # Initialize empty response counter for this run
-        self._empty_response_count = 0
+        # Reset loop state for this run
+        self._loop_state.reset()
 
         try:
             while self.current_iteration < max_iters:
@@ -348,11 +521,9 @@ class Engine:
                 if await self._check_stop():
                     break
                 
-                # Reset streaming state before each iteration to ensure separate UI panels
-                if hasattr(cm, 'core') and cm.core:
-                    # Force finalize any previous streaming before starting new iteration
-                    cm.core.finalize_streaming_message()
-                
+                # NOTE: Pre-iteration finalize removed - post-iteration finalize (after _llm_step) handles cleanup
+                # The _llm_step finalize gets content for parsing, post-iteration finalize ensures UI boundaries
+
                 # Determine effective streaming flag
                 streaming_flag = streaming if streaming is not None else self.settings.streaming_default
 
@@ -378,8 +549,8 @@ class Engine:
                     # Small delay to allow UI to process the message boundary
                     await asyncio.sleep(UI_ASYNC_SLEEP_SECONDS)
                 
-                # Save conversation state after each iteration to persist separate messages
-                cm.save()
+                # Save conversation state after each iteration (async to avoid blocking event loop)
+                await self._save_conversation(cm, async_save=True)
                 
                 # Collect all action results
                 if iteration_results:
@@ -399,44 +570,10 @@ class Engine:
                 if last_response and "finish_response" in last_response.lower() and not finish_response_called:
                     logger.warning(f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}...")
 
-                # WALLET_GUARD: No-action completion for models that don't use CodeAct format
-                # If the model responded without any action tags, treat as conversation complete
-                # This prevents infinite loops with free/simple models that just answer directly
-                if not iteration_results and last_response:
-                    # Check if response contains any action-like XML tags
-                    has_action_tags = bool(re.search(r'<\w+>.*?</\w+>', last_response, re.DOTALL))
-                    if not has_action_tags:
-                        logger.debug(f"[WALLET_GUARD] No actions in response, treating as conversation complete (model may not support CodeAct)")
-                        break
-
-                # Track consecutive empty/near-empty responses - break after 3 (simple approach)
-                # Also catch very short responses (< 10 chars) which indicate LLM has nothing to add
-                stripped_response = (last_response or "").strip()
-                is_empty_or_trivial = not stripped_response or len(stripped_response) < 10
-
-                # DIAGNOSTIC: Log trivial responses to understand what Claude is actually returning
-                # finish_reason=stop with 3 tokens means Claude deliberately stopped - WHY?
-                if is_empty_or_trivial or len(last_response or "") < 20:
-                    last_action = iteration_results[-1].get("action_name") if iteration_results else "none"
-                    logger.warning(
-                        f"[WALLET_GUARD] Trivial response detected: "
-                        f"raw={repr(last_response)}, "
-                        f"stripped_len={len(stripped_response)}, "
-                        f"last_action={last_action}, "
-                        f"iter={self.current_iteration}"
-                    )
-
-                if is_empty_or_trivial:
-                    self._empty_response_count += 1
-                    logger.debug(f"Empty/trivial response #{self._empty_response_count}: '{stripped_response[:20] if stripped_response else '(empty)'}'")
-
-                    # Break after 3 consecutive empty/trivial responses
-                    if self._empty_response_count >= 3:
-                        logger.warning(f"[WALLET_GUARD] Breaking: {self._empty_response_count} consecutive trivial responses")
-                        break
-                else:
-                    # Reset counter on substantive response
-                    self._empty_response_count = 0
+                # WALLET_GUARD: Consolidated termination checks
+                should_break, _ = self._check_wallet_guard_termination(last_response, iteration_results, mode="response")
+                if should_break:
+                    break
 
             # Determine final status
             final_status = "completed" if self.current_iteration < max_iters else "max_iterations"
@@ -539,8 +676,8 @@ class Engine:
         # Store action results from all iterations
         all_action_results = []
 
-        # Initialize empty response counter for this run
-        self._empty_response_count_task = 0
+        # Reset loop state for this run
+        self._loop_state.reset()
 
         # Publish task start event if EventBus is available
         if enable_events:
@@ -618,15 +755,9 @@ class Engine:
                     except (ImportError, AttributeError):
                         pass
                 
-                # CRITICAL FIX: Persist conversation after each iteration
-                # _llm_step saves after adding messages, but we need to ensure it persists
-                # Use run_in_executor to avoid blocking the event loop with SQLite writes
+                # CRITICAL FIX: Persist conversation after each iteration using async save
                 cm, _, _, _ = self._resolve_components(self.current_agent_id)
-                try:
-                    loop = asyncio.get_running_loop()
-                    await loop.run_in_executor(None, cm.save)
-                except Exception as save_err:
-                    logger.warning(f"Failed to save conversation state: {save_err}")
+                await self._save_conversation(cm, async_save=True)
 
                 # Check for task completion via finish_task tool call (primary)
                 finish_task_called = False
@@ -677,44 +808,11 @@ class Engine:
                 #     logger.debug(f"Task completion detected. Found completion phrase: {all_completion_phrases}")
                 #     break
 
-                # WALLET_GUARD: No-action completion for models that don't use CodeAct format
-                # If the model responded without any action tags, treat as task complete
-                # This prevents infinite loops with free/simple models that just answer directly
-                if not iteration_results and last_response:
-                    has_action_tags = bool(re.search(r'<\w+>.*?</\w+>', last_response, re.DOTALL))
-                    if not has_action_tags:
-                        logger.debug(f"[WALLET_GUARD] No actions in run_task response, treating as task complete (model may not support CodeAct)")
-                        completion_status = "implicit_completion"
-                        break
-
-                # Track consecutive empty/near-empty responses - break after 3 (simple approach)
-                # Also catch very short responses (< 10 chars) which indicate LLM has nothing to add
-                stripped_response = (last_response or "").strip()
-                is_empty_or_trivial = not stripped_response or len(stripped_response) < 10
-
-                # DIAGNOSTIC: Log trivial responses to understand what Claude is actually returning
-                if is_empty_or_trivial or len(last_response or "") < 20:
-                    last_action = iteration_results[-1].get("action_name") if iteration_results else "none"
-                    logger.warning(
-                        f"[WALLET_GUARD] Trivial response in run_task: "
-                        f"raw={repr(last_response)}, "
-                        f"stripped_len={len(stripped_response)}, "
-                        f"last_action={last_action}, "
-                        f"iter={self.current_iteration}"
-                    )
-
-                if is_empty_or_trivial:
-                    self._empty_response_count_task += 1
-                    logger.debug(f"Empty/trivial response #{self._empty_response_count_task} (run_task): '{stripped_response[:20] if stripped_response else '(empty)'}'")
-
-                    # Break after 3 consecutive empty/trivial responses
-                    if self._empty_response_count_task >= 3:
-                        logger.warning(f"[WALLET_GUARD] Breaking run_task: {self._empty_response_count_task} consecutive trivial responses")
-                        completion_status = "implicit_completion"
-                        break
-                else:
-                    # Reset counter on substantive response
-                    self._empty_response_count_task = 0
+                # WALLET_GUARD: Consolidated termination checks
+                should_break, guard_status = self._check_wallet_guard_termination(last_response, iteration_results, mode="task")
+                if should_break:
+                    completion_status = guard_status or "implicit_completion"
+                    break
         
         except LLMEmptyResponseError as e:
             logger.warning(f"LLM returned empty response during task: {e}")
@@ -1010,7 +1108,16 @@ class Engine:
 
         action_results = []
         if tools_enabled:
-            actions: List[CodeActAction] = parse_action(assistant_response)
+            # WALLET_GUARD: Skip action parsing if model is echoing tool results
+            # Confused models may output action tags AND echoed results - don't execute
+            if assistant_response and "[Tool Result]" in assistant_response:
+                logger.warning(
+                    f"[WALLET_GUARD] Skipping action parsing: response contains echoed '[Tool Result]' "
+                    f"(model confused about format, len={len(assistant_response)})"
+                )
+                actions = []
+            else:
+                actions: List[CodeActAction] = parse_action(assistant_response)
             # Keep parsing note at debug level to avoid noisy stdout in normal runs
             logger.debug("[AUTO-CONTINUE FIX] Parsed %s actions from response", len(actions))
             # Enforce one action per iteration for incremental execution

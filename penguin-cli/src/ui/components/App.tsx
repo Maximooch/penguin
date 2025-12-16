@@ -5,7 +5,7 @@
  * REFACTORED: Now uses TabContext for managing different views
  */
 
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Box } from 'ink';
 import { useTab } from '../contexts/TabContext.js';
 import { ChatSession } from './ChatSession.js';
@@ -14,21 +14,15 @@ import { MultiAgentLayout } from './MultiAgentLayout.js';
 import { TabBar } from './TabBar.js';
 import { BannerRenderer } from './BannerRenderer.js';
 
+// Memoized banner - won't re-render unless props change
+const MemoizedBanner = React.memo(BannerRenderer);
+
 export function App() {
   const [showBanner] = useState(true);
-  const [bannerRendered] = useState(true); // Only render banner once
   const { activeTab, currentConversationId } = useTab();
 
-  // Get workspace from current directory
-  const workspace = process.cwd().split('/').pop() || process.cwd();
-
-  // Render banner (only for chat tab, passed to ChatSession)
-  const banner = showBanner && activeTab?.type === 'chat' ? (
-    <BannerRenderer
-      version="0.1.0"
-      workspace={workspace}
-    />
-  ) : undefined;
+  // Get workspace from current directory - memoized to prevent re-renders
+  const workspace = useMemo(() => process.cwd().split('/').pop() || process.cwd(), []);
 
   // Render active tab content
   const renderTabContent = () => {
@@ -36,7 +30,7 @@ export function App() {
 
     switch (activeTab.type) {
       case 'chat':
-        return <ChatSession conversationId={currentConversationId} header={banner} />;
+        return <ChatSession conversationId={currentConversationId} />;
       case 'dashboard':
         return <Dashboard />;
       case 'agents':
@@ -48,6 +42,14 @@ export function App() {
 
   return (
     <Box flexDirection="column" padding={1}>
+      {/* Banner - only shown on chat tab */}
+      {showBanner && activeTab?.type === 'chat' && (
+        <MemoizedBanner
+          version="0.1.0"
+          workspace={workspace}
+        />
+      )}
+
       {/* Tab bar */}
       <TabBar />
 

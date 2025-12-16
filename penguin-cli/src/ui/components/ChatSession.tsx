@@ -47,10 +47,9 @@ import type { ToolEventNormalized } from '../../core/types.js';
 
 interface ChatSessionProps {
   conversationId?: string;
-  header?: React.ReactNode; // Optional header (banner) to display as first item
 }
 
-export function ChatSession({ conversationId: propConversationId, header }: ChatSessionProps) {
+export function ChatSession({ conversationId: propConversationId }: ChatSessionProps) {
   const { exit } = useApp();
   const [inputKey, setInputKey] = useState(0);
   const [isExiting, setIsExiting] = useState(false);
@@ -1029,7 +1028,6 @@ export function ChatSession({ conversationId: propConversationId, header }: Chat
         pageSize={timelinePageSize}
         pageOffset={timelinePageOffset}
         showReasoning={showReasoning}
-        header={header}
       />
 
       {/* Tool results now displayed inline in EventTimeline */}
