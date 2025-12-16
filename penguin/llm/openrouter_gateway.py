@@ -440,8 +440,34 @@ class OpenRouterGateway:
                 _gateway_accumulated_reasoning = ""
                 _gateway_accumulated_content = ""
                 reasoning_phase_complete = False
-                
+                # Track finish_reason for error and truncation detection
+                sdk_last_finish_reason: Optional[str] = None
+                sdk_stream_error: Optional[Dict[str, Any]] = None
+
                 async for chunk in completion:
+                    # Track finish_reason from each chunk
+                    try:
+                        chunk_finish_reason = chunk.choices[0].finish_reason
+                        if chunk_finish_reason:
+                            sdk_last_finish_reason = chunk_finish_reason
+                            self.logger.debug(f"[OpenRouterGateway] SDK stream finish_reason: {chunk_finish_reason}")
+
+                            # Handle mid-stream errors (finish_reason: 'error')
+                            if chunk_finish_reason == "error":
+                                # Try to extract error info from the chunk
+                                error_info = getattr(chunk, "error", None)
+                                if error_info:
+                                    error_message = getattr(error_info, "message", None) or "Unknown streaming error"
+                                    provider_name = getattr(getattr(error_info, "metadata", None), "provider_name", None) or "unknown provider"
+                                else:
+                                    error_message = "Unknown streaming error"
+                                    provider_name = "unknown provider"
+                                sdk_stream_error = {"message": error_message, "provider": provider_name}
+                                self.logger.error(f"[OpenRouterGateway] SDK mid-stream error from {provider_name}: {error_message}")
+                                break
+                    except (IndexError, AttributeError):
+                        pass
+
                     delta_obj = chunk.choices[0].delta
 
                     # ChoiceDelta objects expose attributes but not dict methods; fall back to dict check.
@@ -569,6 +595,16 @@ class OpenRouterGateway:
                 # self.logger.info(f"[OpenRouterGateway] Finished stream [{request_id}]. Accumulated reasoning length: {len(full_reasoning_content)}, content length: {len(full_response_content)}")
                 # debug_stream_complete(request_id, full_response_content)
 
+                self.logger.info(f"[OpenRouterGateway] SDK streaming completed. Content: {len(full_response_content)} chars, finish_reason: {sdk_last_finish_reason}")
+
+                # Handle mid-stream error if one occurred
+                if sdk_stream_error:
+                    error_msg = sdk_stream_error.get("message", "Unknown error")
+                    provider = sdk_stream_error.get("provider", "unknown provider")
+                    if full_response_content:
+                        return f"{full_response_content}\n\n[Error: Stream interrupted by {provider}: {error_msg}]"
+                    return f"[Error: {provider} returned mid-stream error: {error_msg}]"
+
                 # For streaming responses, we return only the content part
                 # The reasoning was already streamed via callback
                 if not full_response_content:
@@ -577,20 +613,41 @@ class OpenRouterGateway:
                     if full_reasoning_content:
                         return "[Note: Model produced reasoning tokens but no final response. This may indicate the model is still processing or encountered an issue.]"
                     return f"[Error: Model {self.model_config.model} returned empty response. The model may not support this request type or encountered an issue.]"
+
+                # Check for truncation (finish_reason: 'length')
+                if sdk_last_finish_reason == "length":
+                    self.logger.warning(f"[OpenRouterGateway] SDK streaming response was truncated (finish_reason='length'). Model: {self.model_config.model}")
+                    return f"{full_response_content}\n\n[Note: Response was truncated due to token limits. Consider increasing max_output_tokens or breaking your request into smaller parts.]"
+
                 return full_response_content
 
             else: # Not streaming
-                # Extract content and reasoning
+                # Extract content, reasoning, and finish_reason
+                sdk_finish_reason: Optional[str] = None
                 if completion.choices and completion.choices[0].message:
                      response_message = completion.choices[0].message
                      full_response_content = response_message.content or ""
-                     
+                     sdk_finish_reason = completion.choices[0].finish_reason
+
+                     # Handle error finish_reason
+                     if sdk_finish_reason == "error":
+                         error_info = getattr(completion, 'error', None)
+                         if error_info:
+                             error_message = getattr(error_info, 'message', None) or "Unknown error"
+                             provider_name = getattr(getattr(error_info, 'metadata', None), 'provider_name', None) or "unknown provider"
+                         else:
+                             error_message = "Unknown error"
+                             provider_name = "unknown provider"
+                         if full_response_content:
+                             return f"{full_response_content}\n\n[Error: {provider_name} returned error: {error_message}]"
+                         return f"[Error: {provider_name} returned: {error_message}]"
+
                      # Extract reasoning if present
                      reasoning_content = getattr(response_message, 'reasoning', None)
                      if reasoning_content:
                          full_reasoning_content = reasoning_content
                          self.logger.info(f"[OpenRouterGateway] Non-streaming response includes reasoning tokens: {len(reasoning_content)} chars")
-                         
+
                          # If reasoning is not excluded, we could prepend it to the response
                          # or handle it separately based on configuration
                          if not self.model_config.reasoning_exclude and reasoning_content:
@@ -644,7 +701,13 @@ class OpenRouterGateway:
                      self.logger.warning(f"Model finished (reason: {finish_reason}) but returned no content and generated 0 completion tokens.")
                      return f"[Model finished with no content from {provider}. Please try again or try with a different model.]"
 
-                self.logger.debug(f"Non-streaming response received. Content length: {len(full_response_content or '')}")
+                self.logger.debug(f"Non-streaming response received. Content length: {len(full_response_content or '')}, finish_reason: {sdk_finish_reason}")
+
+                # Check for truncation (finish_reason: 'length')
+                if sdk_finish_reason == "length":
+                    self.logger.warning(f"[OpenRouterGateway] SDK non-streaming response was truncated (finish_reason='length'). Model: {self.model_config.model}")
+                    return f"{full_response_content}\n\n[Note: Response was truncated due to token limits. Consider increasing max_output_tokens or breaking your request into smaller parts.]"
+
                 return full_response_content or "" # Ensure string return
 
         except APIError as e:
@@ -734,11 +797,18 @@ class OpenRouterGateway:
     ) -> str:
         """Handle streaming response from direct API call."""
         params["stream"] = True
-        
+
+        # Add debug mode if enabled (development only - echoes upstream request)
+        if getattr(self.model_config, "debug_upstream", False):
+            params["debug"] = {"echo_upstream_body": True}
+            self.logger.info("[OpenRouterGateway] Debug mode enabled - will echo upstream request body")
+
         full_content = ""
         full_reasoning = ""
         reasoning_phase_complete = False
-        
+        last_finish_reason: Optional[str] = None
+        stream_error: Optional[Dict[str, Any]] = None
+
         async with client.stream("POST", url, headers=headers, json=params) as response:
             if response.status_code != 200:
                 error_text = (await response.aread()).decode()
@@ -763,9 +833,39 @@ class OpenRouterGateway:
 
                     try:
                         data = json.loads(data_str)
-                        choice = data.get("choices", [{}])[0]
+
+                        # Handle debug chunks (first chunk with empty choices when debug mode is on)
+                        # Debug chunks contain the transformed upstream request body
+                        choices = data.get("choices", [])
+                        if not choices and getattr(self.model_config, "debug_upstream", False):
+                            debug_body = data.get("debug", {}).get("upstream_body")
+                            if debug_body:
+                                self.logger.info(f"[OpenRouterGateway] Debug - Upstream request body: {json.dumps(debug_body, indent=2)[:2000]}")
+                            continue
+
+                        choice = choices[0] if choices else {}
                         delta = choice.get("delta", {})
-                        
+
+                        # Track finish_reason for error and truncation detection
+                        finish_reason = choice.get("finish_reason")
+                        if finish_reason:
+                            last_finish_reason = finish_reason
+                            self.logger.debug(f"[OpenRouterGateway] Received finish_reason: {finish_reason}")
+
+                            # Handle mid-stream errors (finish_reason: 'error')
+                            # Per OpenRouter docs: errors during streaming come with finish_reason='error'
+                            if finish_reason == "error":
+                                error_info = data.get("error", {})
+                                error_message = error_info.get("message", "Unknown streaming error")
+                                provider_name = error_info.get("metadata", {}).get("provider_name", "unknown provider")
+                                stream_error = {
+                                    "message": error_message,
+                                    "provider": provider_name,
+                                    "code": error_info.get("code")
+                                }
+                                self.logger.error(f"[OpenRouterGateway] Mid-stream error from {provider_name}: {error_message}")
+                                break
+
                         # Handle reasoning content
                         reasoning_delta = getattr(delta, "reasoning", None) if hasattr(delta, "reasoning") else delta.get("reasoning")
                         if reasoning_delta and not reasoning_phase_complete:
@@ -845,7 +945,16 @@ class OpenRouterGateway:
                         self.logger.warning(f"Failed to parse SSE data: {data_str[:100]}... Error: {e}")
                         continue
         
-        self.logger.info(f"Direct streaming call completed. Reasoning: {len(full_reasoning)} chars, Content: {len(full_content)} chars")
+        self.logger.info(f"Direct streaming call completed. Reasoning: {len(full_reasoning)} chars, Content: {len(full_content)} chars, finish_reason: {last_finish_reason}")
+
+        # Handle mid-stream error if one occurred
+        if stream_error:
+            error_msg = stream_error.get("message", "Unknown error")
+            provider = stream_error.get("provider", "unknown provider")
+            # If we have partial content, include it with the error
+            if full_content:
+                return f"{full_content}\n\n[Error: Stream interrupted by {provider}: {error_msg}]"
+            return f"[Error: {provider} returned mid-stream error: {error_msg}]"
 
         # Check for empty content and provide helpful message
         if not full_content:
@@ -853,6 +962,13 @@ class OpenRouterGateway:
             if full_reasoning:
                 return "[Note: Model produced reasoning tokens but no final response. This may indicate the model is still processing or encountered an issue.]"
             return f"[Error: Model {self.model_config.model} returned empty response. The model may not support this request type or encountered an issue.]"
+
+        # Check for truncation (finish_reason: 'length')
+        # Per OpenRouter docs: token limit errors become successful responses with finish_reason='length'
+        if last_finish_reason == "length":
+            self.logger.warning(f"[OpenRouterGateway] Response was truncated (finish_reason='length'). Model: {self.model_config.model}")
+            return f"{full_content}\n\n[Note: Response was truncated due to token limits. Consider increasing max_output_tokens or breaking your request into smaller parts.]"
+
         return full_content
 
     def get_telemetry(self) -> Dict[str, Any]:
@@ -894,19 +1010,29 @@ class OpenRouterGateway:
             data = response.json()
             choice = data.get("choices", [{}])[0]
             message = choice.get("message", {})
-            
+            finish_reason = choice.get("finish_reason")
+
             # Some providers include keys with explicit None values; coalesce to empty strings
             content = message.get("content") or ""
             reasoning = message.get("reasoning") or ""
-            
+
             # If we have reasoning and a callback, emit it
             if reasoning and stream_callback:
                 try:
                     await stream_callback(reasoning, "reasoning")
                 except Exception as cb_err:
                     self.logger.error(f"Error in reasoning callback: {cb_err}")
-            
-            self.logger.info(f"Direct non-streaming call completed. Reasoning: {len(reasoning)} chars, Content: {len(content)} chars")
+
+            self.logger.info(f"Direct non-streaming call completed. Reasoning: {len(reasoning)} chars, Content: {len(content)} chars, finish_reason: {finish_reason}")
+
+            # Handle error finish_reason (rare in non-streaming but possible)
+            if finish_reason == "error":
+                error_info = data.get("error", {})
+                error_message = error_info.get("message", "Unknown error")
+                provider_name = error_info.get("metadata", {}).get("provider_name", "unknown provider")
+                if content:
+                    return f"{content}\n\n[Error: {provider_name} returned error: {error_message}]"
+                return f"[Error: {provider_name} returned: {error_message}]"
 
             # Check for empty content and provide helpful message
             if not content:
@@ -920,6 +1046,12 @@ class OpenRouterGateway:
                 if reasoning:
                     return "[Note: Model produced reasoning tokens but no final response. This may indicate the model is still processing or encountered an issue.]"
                 return f"[Error: Model {self.model_config.model} returned empty response. The model may not support this request type or encountered an issue.]"
+
+            # Check for truncation (finish_reason: 'length')
+            if finish_reason == "length":
+                self.logger.warning(f"[OpenRouterGateway] Non-streaming response was truncated (finish_reason='length'). Model: {self.model_config.model}")
+                return f"{content}\n\n[Note: Response was truncated due to token limits. Consider increasing max_output_tokens or breaking your request into smaller parts.]"
+
             return content
 
         except json.JSONDecodeError as e:

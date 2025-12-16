@@ -212,24 +212,24 @@ class ConversationSystem:
         return message
 
     def prepare_conversation(
-        self, 
-        user_input: str, 
-        image_path: Optional[str] = None
+        self,
+        user_input: str,
+        image_paths: Optional[List[str]] = None
     ) -> None:
         """
-        Prepare conversation with user input and optional image.
-        
+        Prepare conversation with user input and optional images.
+
         Adds system prompt if needed, then adds the user message.
-        
+
         Args:
             user_input: User message text
-            image_path: Optional path to an image file
+            image_paths: Optional list of paths to image files
         """
         # Send system prompt if not sent yet
         if not self.system_prompt_sent and self.system_prompt:
             self.add_message(
-                "system", 
-                self.system_prompt, 
+                "system",
+                self.system_prompt,
                 MessageCategory.SYSTEM,
                 {"type": "system_prompt"},
                 message_type="status",
@@ -237,12 +237,11 @@ class ConversationSystem:
             self.system_prompt_sent = True
 
         # Handle image content if provided
-        if image_path:
-            # Create multimodal content with text and image
-            content = [
-                {"type": "text", "text": user_input},
-                {"type": "image_url", "image_path": image_path}  # Use standardized format for adapters
-            ]
+        if image_paths:
+            # Create multimodal content with text and images
+            content: List[Dict[str, Any]] = [{"type": "text", "text": user_input}]
+            for path in image_paths:
+                content.append({"type": "image_url", "image_path": path})
             self.add_message("user", content)
         else:
             # Simple text content

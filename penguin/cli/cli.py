@@ -2828,8 +2828,9 @@ class PenguinCLI:
         # Create prompt_toolkit session
         self.session = self._create_prompt_session()
 
-        # Add signal handler for clean interrupts
-        signal.signal(signal.SIGINT, self._handle_interrupt)
+        # NOTE: We intentionally do NOT register a custom SIGINT handler.
+        # prompt_toolkit handles Ctrl+C natively by raising KeyboardInterrupt,
+        # which our chat_loop's try/except blocks catch appropriately.
 
         self._streaming_lock = asyncio.Lock()
         self._streaming_session_id = None  # legacy session id (will be removed)
@@ -2877,8 +2878,15 @@ class PenguinCLI:
         )
 
     def _handle_interrupt(self, sig, frame):
+        """Handle SIGINT (Ctrl+C) - clean up progress but let the event loop handle the interrupt."""
         self._safely_stop_progress()
-        print("\nOperation interrupted by user.")
+        # Clean up any streaming in progress
+        if hasattr(self, "_streaming_started") and self._streaming_started:
+            try:
+                self._finalize_streaming()
+            except Exception:
+                pass
+        # Let the KeyboardInterrupt propagate naturally to be caught by chat_loop's handlers
         raise KeyboardInterrupt
 
     def _filter_verbose_code_blocks(self, message: str) -> str:
@@ -3865,6 +3873,9 @@ Welcome to Penguin!
         except Exception:
             self.console.print(welcome_message)
 
+        # Track consecutive interrupts for double-Ctrl+C exit
+        _consecutive_interrupts = 0
+
         while True:
             try:
                 # Clear any lingering progress bars before showing input
@@ -3872,13 +3883,26 @@ Welcome to Penguin!
 
                 # Use prompt_toolkit instead of input()
                 prompt_html = HTML(f"<prompt>You [{self.message_count}]: </prompt>")
-                user_input = await self.session.prompt_async(prompt_html)
+                try:
+                    user_input = await self.session.prompt_async(prompt_html)
+                    _consecutive_interrupts = 0  # Reset on successful input
+                except KeyboardInterrupt:
+                    # Ctrl+C during input - cancel current line, don't exit
+                    _consecutive_interrupts += 1
+                    if _consecutive_interrupts >= 2:
+                        self.console.print("\n[yellow]Double interrupt - exiting...[/yellow]")
+                        break
+                    self.console.print("\n[dim]Ctrl+C pressed. Press again to exit, or type /exit[/dim]")
+                    continue
 
                 if user_input.lower() in ["exit", "quit"]:
                     break
 
                 if not user_input.strip():
                     continue
+
+                # Reset interrupt counter on valid input
+                _consecutive_interrupts = 0
 
                 # Increment conversation turn for new user input
                 self.current_conversation_turn += 1
@@ -4243,13 +4267,14 @@ Welcome to Penguin!
                         self.display_message(response)
 
                 except KeyboardInterrupt:
-                    # Handle interrupt
-                    self.display_message("Processing interrupted by user", "system")
+                    # Handle interrupt during processing - don't exit, just cancel current operation
+                    self.console.print("\n[yellow]Processing interrupted[/yellow]")
                     self._safely_stop_progress()
                     # Cleanup any streaming in progress
                     if hasattr(self, "_streaming_started") and self._streaming_started:
                         self._finalize_streaming()
-                    raise
+                    # Don't raise - continue to next prompt iteration
+                    continue
                 except Exception as e:
                     self.display_message(f"Error processing input: {e!s}", "error")
                     self.display_message(traceback.format_exc(), "error")
@@ -4263,16 +4288,14 @@ Welcome to Penguin!
                 self.message_count += 1
 
             except KeyboardInterrupt:
-                self.display_message("[DEBUG] Keyboard interrupt received", "system")
+                # Fallback handler - should rarely be hit now
+                self.console.print("\n[yellow]Interrupted[/yellow]")
                 break
 
             except Exception as e:
-                self.display_message(f"[DEBUG] Chat loop error: {e!s}", "error")
-                self.display_message(
-                    f"[DEBUG] Traceback:\n{traceback.format_exc()}", "error"
-                )
+                self.display_message(f"Chat loop error: {e!s}", "error")
+                logger.error(f"Chat loop error: {traceback.format_exc()}")
 
-        self.display_message("[DEBUG] Exiting chat loop", "system")
         console.print("\nGoodbye! 👋")
 
     async def handle_conversation_command(self, command_parts: List[str]) -> None:

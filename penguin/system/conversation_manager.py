@@ -556,22 +556,22 @@ class ConversationManager:
         self,
         message: str,
         conversation_id: Optional[str] = None,
-        image_path: Optional[str] = None,
+        image_paths: Optional[List[str]] = None,
         streaming: bool = False,
         stream_callback: Optional[Callable[[str], None]] = None,
         context_files: Optional[List[str]] = None
     ) -> Union[str, AsyncGenerator[str, None]]:
         """
         Process a user message and get AI response.
-        
+
         Args:
             message: User input message
             conversation_id: Optional ID to load specific conversation
-            image_path: Optional path to image for multi-modal input
+            image_paths: Optional list of image paths for multi-modal input
             streaming: Whether to stream the response
             stream_callback: Callback for streaming chunks
             context_files: Optional list of context files to load
-            
+
         Returns:
             AI assistant's response or streaming generator
         """
@@ -581,18 +581,18 @@ class ConversationManager:
                 if not self.load(conversation_id):
                     logger.warning(f"Failed to load conversation {conversation_id}, creating new one")
                     self.create_new_conversation()
-                
+
             # Load context files if specified
             if context_files:
                 for file_path in context_files:
                     self.load_context_file(file_path)
-                
+
             # Make sure we have a valid session
             if not self.conversation or not self.conversation.session:
                 self.create_new_conversation()
-            
+
             # Prepare conversation with user input
-            self.conversation.prepare_conversation(message, image_path)
+            self.conversation.prepare_conversation(message, image_paths=image_paths)
             
             # Get formatted messages for API and ensure they're not empty
             messages = self.conversation.get_formatted_messages()

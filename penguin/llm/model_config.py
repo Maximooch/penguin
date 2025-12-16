@@ -51,6 +51,9 @@ class ModelConfig:
     reasoning_exclude: bool = False
     supports_reasoning: Optional[bool] = None
 
+    # OpenRouter debug mode - echoes upstream request body (development only)
+    debug_upstream: bool = False
+
     def __post_init__(self):
         if self.api_key is None and self.provider:
             self.api_key = os.getenv(f"{self.provider.upper()}_API_KEY")
@@ -206,6 +209,7 @@ class ModelConfig:
             "use_responses_api": self.use_responses_api,
             "interrupt_on_action": self.interrupt_on_action,
             "interrupt_on_tool_call": self.interrupt_on_tool_call,
+            "debug_upstream": self.debug_upstream,
         }
         if self.api_base:
             config["api_base"] = self.api_base
@@ -272,6 +276,7 @@ class ModelConfig:
             use_responses_api=os.getenv("PENGUIN_USE_RESPONSES_API", "false").lower() == "true",
             interrupt_on_action=os.getenv("PENGUIN_INTERRUPT_ON_ACTION", "true").lower() != "false",
             interrupt_on_tool_call=os.getenv("PENGUIN_INTERRUPT_ON_TOOL_CALL", "false").lower() == "true",
+            debug_upstream=os.getenv("OPENROUTER_DEBUG", "").lower() == "true",
         )
     
     @classmethod

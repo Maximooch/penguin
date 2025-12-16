@@ -45,6 +45,8 @@ def _format_error_response(error: Exception, status_code: int = 500) -> HTTPExce
             detail={"error": penguin_error.to_dict()}
         )
 
+MAX_IMAGES_PER_REQUEST = 10
+
 class MessageRequest(BaseModel):
     text: str
     conversation_id: Optional[str] = None
@@ -52,7 +54,7 @@ class MessageRequest(BaseModel):
     context_files: Optional[List[str]] = None
     streaming: Optional[bool] = True
     max_iterations: Optional[int] = None  # Uses MAX_TASK_ITERATIONS if not specified
-    image_path: Optional[str] = None
+    image_paths: Optional[List[str]] = None  # Multiple images supported (max 10)
     include_reasoning: Optional[bool] = False
     agent_id: Optional[str] = None
 
@@ -881,11 +883,15 @@ async def handle_chat_message(
         input_data = {
             "text": request.text
         }
-        
-        # Add image path if provided
-        if request.image_path:
-            input_data["image_path"] = request.image_path
-        
+
+        # Add image paths if provided (with limit enforcement)
+        if request.image_paths:
+            if len(request.image_paths) > MAX_IMAGES_PER_REQUEST:
+                logger.warning(f"Truncating image_paths from {len(request.image_paths)} to {MAX_IMAGES_PER_REQUEST}")
+                input_data["image_paths"] = request.image_paths[:MAX_IMAGES_PER_REQUEST]
+            else:
+                input_data["image_paths"] = request.image_paths
+
         # If reasoning is requested, capture reasoning chunks via a local callback
         reasoning_buf: List[str] = []
         stream_cb = None
@@ -1040,7 +1046,7 @@ async def stream_chat(
             context_files = data.get("context_files")
             context = data.get("context")
             max_iterations = data.get("max_iterations", 100)
-            image_path = data.get("image_path")
+            image_paths = data.get("image_paths")  # Multiple images supported
             include_reasoning = bool(data.get("include_reasoning", False))
             agent_id = data.get("agent_id")
 
@@ -1052,8 +1058,12 @@ async def stream_chat(
                 _validate_agent_id(agent_id)
 
             input_data = {"text": text}
-            if image_path:
-                input_data["image_path"] = image_path
+            if image_paths:
+                if len(image_paths) > MAX_IMAGES_PER_REQUEST:
+                    logger.warning(f"Truncating image_paths from {len(image_paths)} to {MAX_IMAGES_PER_REQUEST}")
+                    input_data["image_paths"] = image_paths[:MAX_IMAGES_PER_REQUEST]
+                else:
+                    input_data["image_paths"] = image_paths
 
             # Progress callback setup with connection state check
             progress_callback_task = None

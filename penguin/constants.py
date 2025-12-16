@@ -31,6 +31,9 @@ CONTEXT_UNCATEGORIZED_BUDGET_FRACTION = float(
     os.getenv("PENGUIN_CONTEXT_UNCATEGORIZED_BUDGET_FRACTION", "0.05")
 )
 
+# Maximum number of images to retain in context window before trimming oldest
+DEFAULT_MAX_CONTEXT_IMAGES = int(os.getenv("PENGUIN_MAX_CONTEXT_IMAGES", "5"))
+
 # Session manager defaults
 DEFAULT_SESSION_LIST_LIMIT = int(os.getenv("PENGUIN_SESSION_LIST_LIMIT", "100000"))
 

@@ -2389,12 +2389,12 @@ class PenguinCore:
         # Handle flexible input format
         if isinstance(input_data, str):
             message = input_data
-            image_path = None
+            image_paths = None
         else:
             message = input_data.get("text", "")
-            image_path = input_data.get("image_path")
-            
-        if not message and not image_path:
+            image_paths = input_data.get("image_paths")  # List of image paths
+
+        if not message and not image_paths:
             return {"assistant_response": "No input provided", "action_results": []}
 
         conversation_manager = self.conversation_manager
@@ -2495,7 +2495,7 @@ class PenguinCore:
                         # Use the task-oriented engine for formal tasks
                         response = await self.engine.run_task(
                             task_prompt=message,
-                            image_path=image_path,
+                            image_paths=image_paths,
                             max_iterations=max_iterations,
                             task_context=context,
                             message_callback=engine_message_callback,
@@ -2505,7 +2505,7 @@ class PenguinCore:
                         # Use the new conversational multi-step engine
                         response = await self.engine.run_response(
                             prompt=message,
-                            image_path=image_path,
+                            image_paths=image_paths,
                             max_iterations=max_iterations,
                             streaming=streaming,
                             stream_callback=engine_stream_callback,
@@ -2515,7 +2515,7 @@ class PenguinCore:
                     # Use the single-turn conversational engine
                     response = await self.engine.run_single_turn(
                         message,
-                        image_path=image_path,
+                        image_paths=image_paths,
                         streaming=streaming,
                         stream_callback=engine_stream_callback,
                         agent_id=agent_id,
@@ -2523,7 +2523,7 @@ class PenguinCore:
             else:
                 # ---------- Legacy path (fallback) ----------
                 # Prepare conversation and call get_response directly
-                conversation_manager.conversation.prepare_conversation(message, image_path)
+                conversation_manager.conversation.prepare_conversation(message, image_paths=image_paths)
 
                 # FIX: Set the callback for event-based streaming, even in legacy mode
                 internal_stream_callback = self._handle_stream_chunk if streaming else None

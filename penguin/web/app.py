@@ -12,7 +12,7 @@ from contextlib import suppress
 from typing import Optional, Dict, Any, List, AsyncGenerator, Callable, Awaitable
 
 from penguin import __version__
-from penguin.config import config, Config
+from penguin.config import config, Config, _ensure_env_loaded
 from penguin.core import PenguinCore
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig
@@ -41,6 +41,9 @@ def _create_core() -> PenguinCore:
         # Create a proper Config object
         config_obj = Config.load_config()
         model_config = config_obj.model_config
+
+        # Ensure .env files are loaded before API client needs API keys
+        _ensure_env_loaded()
 
         # Initialize components using live Config-derived model_config
         api_client = APIClient(model_config=model_config)

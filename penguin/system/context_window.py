@@ -152,13 +152,14 @@ class TruncationTracker:
 
 class ContextWindowManager:
     """Manages token budgeting and content trimming for conversation context"""
-    
+
     def __init__(
         self,
         model_config = None,
         token_counter: Optional[Callable[[Any], int]] = None,
         api_client=None,
         config_obj: Optional[Any] = None,
+        max_context_images: Optional[int] = None,
     ):
         """
         Initialize the context window manager.
@@ -167,9 +168,14 @@ class ContextWindowManager:
             model_config: Optional model configuration with token limits
             token_counter: Function to count tokens for content
             api_client: API client for token counting
+            max_context_images: Maximum images to retain before trimming oldest
         """
         # Initialize truncation tracker
         self.truncation_tracker = TruncationTracker()
+
+        # Max images to keep in context (trim oldest when exceeded)
+        from penguin.constants import DEFAULT_MAX_CONTEXT_IMAGES
+        self.max_context_images = max_context_images if max_context_images is not None else DEFAULT_MAX_CONTEXT_IMAGES
 
         # Context window budget - get from config.yml model.context_window
         # NOTE: context_window = INPUT capacity (history), max_output_tokens = OUTPUT limit (generation)
@@ -382,9 +388,11 @@ class ContextWindowManager:
             if category in per_category_tokens:
                 per_category_tokens[category] += token_count
                 
-        # Add a warning log if there are multiple images
-        if image_count > 1:
-            logger.warning(f"Multiple images detected ({image_count}). This may consume significant token budget.")
+        # Add a warning log if images exceed or approach limit
+        if image_count > self.max_context_images:
+            logger.warning(f"Image count ({image_count}) exceeds limit ({self.max_context_images}). Oldest will be trimmed.")
+        elif image_count > 1:
+            logger.debug(f"Multiple images in context ({image_count}/{self.max_context_images} max).")
         
         return {
             "total_tokens": total_tokens,
@@ -420,14 +428,12 @@ class ContextWindowManager:
             
         # Analyze current message state
         stats = self.analyze_session(session)
-        
-        # Special handling for images - they consume many tokens
-        if stats["image_count"] > 1:
+
+        # Special handling for images - trim oldest when exceeding max_context_images
+        if stats["image_count"] > self.max_context_images:
             # First pass: handle images separately
-            session_with_image_placeholders = self._handle_image_trimming(session) 
-            
-            # why use session_with_image_placeholders? Isn't that approximate character count instead of using a real tokenizer?
-            
+            session_with_image_placeholders = self._handle_image_trimming(session)
+
             # Re-analyze after image trimming
             stats = self.analyze_session(session_with_image_placeholders)
             session = session_with_image_placeholders
@@ -588,23 +594,23 @@ class ContextWindowManager:
     
     def _handle_image_trimming(self, session: Session) -> Session:
         """
-        Replace all but the most recent image with placeholders.
-        
+        Replace oldest images with placeholders, keeping up to max_context_images.
+
         Args:
             session: Session object with messages
-            
+
         Returns:
-            New Session with image content trimmed
+            New Session with oldest image content trimmed
         """
         if not session.messages:
             return session
-            
+
         # Find messages with images
-        image_messages = [(i, msg) for i, msg in enumerate(session.messages) 
+        image_messages = [(i, msg) for i, msg in enumerate(session.messages)
                           if self._contains_image(msg.content)]
-        
-        # Nothing to trim if 0-1 images
-        if len(image_messages) <= 1:
+
+        # Nothing to trim if within limit
+        if len(image_messages) <= self.max_context_images:
             return Session(
                 id=session.id,
                 created_at=session.created_at,
@@ -612,11 +618,16 @@ class ContextWindowManager:
                 metadata=session.metadata.copy(),
                 messages=[msg for msg in session.messages]
             )
-        
-        # Keep most recent image intact
+
+        # Sort by timestamp to identify oldest vs newest
         image_messages.sort(key=lambda x: x[1].timestamp)
-        most_recent_msg = image_messages[-1][1]
-        
+
+        # Keep the N most recent images (last N in sorted list)
+        messages_to_keep = {msg.id for _, msg in image_messages[-self.max_context_images:]}
+        trimmed_count = len(image_messages) - self.max_context_images
+
+        logger.info(f"Trimming {trimmed_count} oldest images, keeping {self.max_context_images} most recent")
+
         # Create result with replaced images
         result = Session(
             id=session.id,
@@ -624,16 +635,16 @@ class ContextWindowManager:
             last_active=session.last_active,
             metadata=session.metadata.copy()
         )
-        
+
         # Process each message
         for msg in session.messages:
-            if msg.id != most_recent_msg.id and self._contains_image(msg.content):
-                # Replace image with placeholder
+            if self._contains_image(msg.content) and msg.id not in messages_to_keep:
+                # Replace old image with placeholder
                 result.messages.append(self._create_placeholder_message(msg))
             else:
                 # Keep message as is
                 result.messages.append(msg)
-        
+
         return result
     
     def get_current_allocations(self) -> Dict[MessageCategory, float]:
@@ -709,7 +720,24 @@ class ContextWindowManager:
         adjusted_total = stats["total_tokens"] - system_tokens
         adjusted_budget = self.max_context_window_tokens - system_tokens
         total_over_budget = adjusted_total > adjusted_budget
-        
+
+        # Try dynamic rebalancing before trimming
+        if total_over_budget or categories_over_budget:
+            movements = self.auto_rebalance_budgets()
+            if movements:
+                logger.info(f"Rebalanced token budgets: {movements}")
+                # Re-check category budgets after rebalancing
+                categories_over_budget = []
+                for category in reversed(list(MessageCategory)):
+                    if category == MessageCategory.SYSTEM:
+                        continue
+                    budget = self._budgets.get(category)
+                    if budget is None:
+                        continue
+                    category_tokens = stats["per_category"].get(category, 0)
+                    if category_tokens > budget.max_category_tokens:
+                        categories_over_budget.append(category)
+
         if total_over_budget or categories_over_budget:
             # Perform trimming
             if total_over_budget:

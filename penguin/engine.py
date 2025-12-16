@@ -249,7 +249,7 @@ class Engine:
         self,
         prompt: str,
         *,
-        image_path: Optional[str] = None,
+        image_paths: Optional[List[str]] = None,
         tools_enabled: bool = True,
         streaming: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
@@ -265,7 +265,7 @@ class Engine:
 
         self.current_agent_id = selected
         cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
-        cm.conversation.prepare_conversation(prompt, image_path)
+        cm.conversation.prepare_conversation(prompt, image_paths=image_paths)
         response_data = await self._llm_step(
             tools_enabled=tools_enabled,
             streaming=streaming,
@@ -283,7 +283,7 @@ class Engine:
         self,
         prompt: str,
         *,
-        image_path: Optional[str] = None,
+        image_paths: Optional[List[str]] = None,
         max_iterations: Optional[int] = None,
         streaming: Optional[bool] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
@@ -292,28 +292,28 @@ class Engine:
     ) -> Dict[str, Any]:
         """
         Multi-step conversational loop for natural conversation flow.
-        
+
         Termination conditions (in priority order):
         1. Explicit `finish_response` tool call (preferred)
         2. No actions taken in an iteration (implicit completion fallback)
         3. Max iterations reached
-        
+
         Each iteration creates separate messages in the conversation.
-        
+
         Args:
             prompt: The initial prompt to process
-            image_path: Optional image path for multi-modal inputs
+            image_paths: Optional list of image paths for multi-modal inputs
             max_iterations: Maximum number of iterations (default: 10)
             streaming: Whether to use streaming for responses
             stream_callback: Optional callback for streaming chunks
-            
+
         Returns:
             Dictionary with final response and execution metadata
         """
         max_iters = max_iterations if max_iterations is not None else self.settings.max_iterations_default
         self.current_iteration = 0
         self.start_time = datetime.utcnow()
-        
+
         # Prepare conversation with initial prompt for the selected agent
         selected, lite_output = await self._resolve_agent(agent_id=agent_id, agent_role=agent_role, prompt=prompt)
         if lite_output is not None:
@@ -331,7 +331,7 @@ class Engine:
 
         self.current_agent_id = selected
         cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
-        cm.conversation.prepare_conversation(prompt, image_path=image_path)
+        cm.conversation.prepare_conversation(prompt, image_paths=image_paths)
         
         last_response = ""
         all_action_results = []
@@ -451,9 +451,9 @@ class Engine:
 
 
     async def run_task(
-        self, 
-        task_prompt: str, 
-        image_path: Optional[str] = None,
+        self,
+        task_prompt: str,
+        image_paths: Optional[List[str]] = None,
         max_iterations: Optional[int] = None,
         task_context: Optional[Dict[str, Any]] = None,
         task_id: Optional[str] = None,
@@ -466,11 +466,11 @@ class Engine:
         agent_role: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Multi‑step reasoning loop with comprehensive task handling.
-        
+        Multi-step reasoning loop with comprehensive task handling.
+
         Args:
             task_prompt: The prompt for the task
-            image_path: Optional image path for multi-modal inputs
+            image_paths: Optional list of image paths for multi-modal inputs
             max_iterations: Maximum number of iterations (overrides settings default)
             task_context: Additional context for the task (metadata, environment, etc.)
             task_id: Optional task ID for tracking and events
@@ -479,7 +479,7 @@ class Engine:
             on_completion: Optional callback when task completes
             enable_events: Whether to publish events (defaults to True)
             message_callback: Optional callback to display messages during execution (message, type)
-            
+
         Returns:
             Dictionary with task execution results including:
             - assistant_response: The final response from the assistant
@@ -505,7 +505,7 @@ class Engine:
 
         self.current_agent_id = selected
         cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
-        cm.conversation.prepare_conversation(task_prompt, image_path=image_path)
+        cm.conversation.prepare_conversation(task_prompt, image_paths=image_paths)
 
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
