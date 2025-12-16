@@ -399,6 +399,16 @@ class Engine:
                 if last_response and "finish_response" in last_response.lower() and not finish_response_called:
                     logger.warning(f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}...")
 
+                # WALLET_GUARD: No-action completion for models that don't use CodeAct format
+                # If the model responded without any action tags, treat as conversation complete
+                # This prevents infinite loops with free/simple models that just answer directly
+                if not iteration_results and last_response:
+                    # Check if response contains any action-like XML tags
+                    has_action_tags = bool(re.search(r'<\w+>.*?</\w+>', last_response, re.DOTALL))
+                    if not has_action_tags:
+                        logger.debug(f"[WALLET_GUARD] No actions in response, treating as conversation complete (model may not support CodeAct)")
+                        break
+
                 # Track consecutive empty/near-empty responses - break after 3 (simple approach)
                 # Also catch very short responses (< 10 chars) which indicate LLM has nothing to add
                 stripped_response = (last_response or "").strip()
@@ -666,6 +676,16 @@ class Engine:
                 #     completion_status = "completed"
                 #     logger.debug(f"Task completion detected. Found completion phrase: {all_completion_phrases}")
                 #     break
+
+                # WALLET_GUARD: No-action completion for models that don't use CodeAct format
+                # If the model responded without any action tags, treat as task complete
+                # This prevents infinite loops with free/simple models that just answer directly
+                if not iteration_results and last_response:
+                    has_action_tags = bool(re.search(r'<\w+>.*?</\w+>', last_response, re.DOTALL))
+                    if not has_action_tags:
+                        logger.debug(f"[WALLET_GUARD] No actions in run_task response, treating as task complete (model may not support CodeAct)")
+                        completion_status = "implicit_completion"
+                        break
 
                 # Track consecutive empty/near-empty responses - break after 3 (simple approach)
                 # Also catch very short responses (< 10 chars) which indicate LLM has nothing to add

@@ -291,3 +291,174 @@ The commit history shows multiple attempts to fix this:
 - `266516a`: Placeholder fixes
 
 **Root cause was never addressed until now:** messages not being added to conversation when response is whitespace-only. The force-add fix ensures context always advances.
+
+---
+
+## Fix #3: Early Return Bypass (2025-12-15)
+
+### The Bug
+The WALLET_GUARD fix was being bypassed by an early return in `handle_streaming_chunk`:
+
+```python
+# core.py:3192 (BEFORE)
+if not chunk.strip() and not self._streaming_state["active"]:
+    # Only skip whitespace chunks if we haven't started streaming yet
+    return  # <-- BUG: Streaming never activates for whitespace-only responses!
+```
+
+**Flow when LLM returns whitespace:**
+1. LLM returns 3 tokens of whitespace (e.g., `"\n\n"`)
+2. First chunk arrives, is whitespace
+3. `not chunk.strip()` = True, `not streaming_active` = True
+4. **Early return** → Streaming never activates
+5. `finalize_streaming_message()` sees `active=False`, returns `None`
+6. **WALLET_GUARD never runs** → Message never added
+7. Context doesn't advance → Loop
+
+### The Fix
+```python
+# core.py:3190-3196 (AFTER)
+# WALLET_GUARD FIX: Even whitespace-only first chunks must activate streaming
+if not chunk.strip() and not self._streaming_state["active"]:
+    logger.debug(f"[WALLET_GUARD] First chunk is whitespace-only, activating streaming anyway")
+    # Fall through to activate streaming - WALLET_GUARD in finalize will handle it
+```
+
+Now whitespace-only responses still activate streaming, allowing `finalize_streaming_message()` to run and add the `[Empty response from model]` placeholder.
+
+---
+
+## Fix #4: Empty String Bypass (2025-12-15)
+
+### The Bug (ANOTHER early return!)
+Even after Fix #3, there was ANOTHER early return at line 3179:
+
+```python
+if not chunk:  # True for "" or None (BEFORE the whitespace check!)
+    if self._streaming_state["active"]:
+        # only tracks if ALREADY active
+        ...
+    return  # <-- Returns before whitespace check if chunk is ""
+```
+
+OpenRouter data showed:
+- `tokens_completion: 0` (OpenRouter's count)
+- `native_tokens_completion: 3` (Amazon Bedrock's native count)
+
+The 3 native tokens were being stripped to `""` somewhere in the pipeline.
+
+### The Fix
+Now empty chunks also activate streaming:
+
+```python
+if not chunk:
+    # WALLET_GUARD: Even truly empty chunks must activate streaming
+    if not self._streaming_state["active"]:
+        logger.debug(f"[WALLET_GUARD] First chunk is empty, activating streaming anyway")
+        self._streaming_state["active"] = True
+        self._streaming_state["content"] = ""
+        # ... initialize other state ...
+    # Track empty chunks, but streaming is now active
+    return
+```
+
+Now ALL response types (empty, whitespace, content) activate streaming, ensuring `finalize_streaming_message()` runs and WALLET_GUARD can add the placeholder.
+
+---
+
+## Potential Bug #5: SDK Path `.strip()` Check (2025-12-15)
+
+### The Issue
+During code audit, found a potential bypass in the SDK streaming path:
+
+**Location:** `openrouter_gateway.py:534`
+```python
+if new_content_segment.strip():  # PROBLEM: Skips whitespace!
+    await stream_callback(new_content_segment, "assistant")
+```
+
+The SDK path has a `.strip()` check that **never calls `stream_callback`** when content is whitespace-only. This bypasses all WALLET_GUARD fixes because:
+
+1. Model returns whitespace tokens via SDK path
+2. `new_content_segment = "\n\n"`
+3. `.strip()` returns "" → callback NOT called
+4. `handle_streaming_chunk` never runs
+5. `_streaming_state["active"]` stays False
+6. `finalize_streaming_message()` returns None
+7. No message added to conversation
+8. Context doesn't advance → Loop!
+
+### Compare to Direct API Path
+The direct API path (line 891-893) has **NO** `.strip()` check:
+```python
+if stream_callback:
+    await stream_callback(content_delta, "assistant")  # Always called!
+```
+
+### Affected Code Paths
+- **SDK path:** Non-reasoning models → **VULNERABLE**
+- **Direct API path:** Reasoning models (Claude Opus 4.5) → **NOT affected** (no .strip() check)
+
+### Proposed Fix
+Remove the `.strip()` check at line 534 to match the direct API path:
+```python
+# BEFORE:
+if new_content_segment.strip():
+    await stream_callback(new_content_segment, "assistant")
+
+# AFTER:
+if stream_callback:
+    await stream_callback(new_content_segment, "assistant")
+```
+
+Let the callback (`handle_streaming_chunk`) handle whitespace content - it now has WALLET_GUARD logic to deal with it.
+
+### The Fix (2025-12-15)
+Removed the `.strip()` check at `openrouter_gateway.py:534`:
+```python
+# WALLET_GUARD FIX: Always call stream_callback, even for whitespace
+# The downstream handle_streaming_chunk has WALLET_GUARD logic to handle it
+# Previously: `if new_content_segment.strip():` skipped whitespace, bypassing fixes
+if stream_callback:
+    await stream_callback(new_content_segment, "assistant")
+```
+
+Now both SDK and direct API paths call the callback for all content, including whitespace.
+
+### Status
+**FIXED** - SDK path now matches direct API path behavior.
+
+---
+
+## Fix #6: No-Action Completion for Non-CodeAct Models (2025-12-15)
+
+### The Bug
+Free/simple models (like `mistralai/devstral-2512:free`) don't know about CodeAct action format. They respond with plain text like "Hello! How can I assist you today?" without `<finish_response>` tags.
+
+**Result:** Engine kept iterating because:
+1. No `finish_response` action parsed
+2. Response was 34+ chars (not "trivial")
+3. No termination condition met
+4. Model outputs same response again → infinite loop
+
+### The Fix
+Added no-action completion check in both `run_response` and `run_task`:
+
+**Location:** `engine.py:402-410` (run_response), `engine.py:680-688` (run_task)
+```python
+# WALLET_GUARD: No-action completion for models that don't use CodeAct format
+# If the model responded without any action tags, treat as conversation complete
+if not iteration_results and last_response:
+    has_action_tags = bool(re.search(r'<\w+>.*?</\w+>', last_response, re.DOTALL))
+    if not has_action_tags:
+        logger.debug(f"[WALLET_GUARD] No actions in response, treating as conversation complete")
+        break
+```
+
+### Logic
+- If model returns text WITHOUT any `<tag>...</tag>` patterns → it's just conversing
+- Models that use CodeAct will have action tags → continue iterating
+- Models that don't → complete after first response
+
+### Status
+**FIXED** - Free models now complete after responding instead of looping.
