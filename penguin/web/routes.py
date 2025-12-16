@@ -99,6 +99,17 @@ class SystemConfigRequest(BaseModel):
     path: str
 
 
+# LLM Configuration for Link integration
+class LLMConfigRequest(BaseModel):
+    """Request model for configuring LLM endpoint and Link integration."""
+    base_url: Optional[str] = None  # LLM API endpoint (e.g., Link proxy URL)
+    link_user_id: Optional[str] = None  # Link user ID for billing attribution
+    link_session_id: Optional[str] = None  # Link session ID for tracking
+    link_agent_id: Optional[str] = None  # Link agent ID for multi-agent scenarios
+    link_workspace_id: Optional[str] = None  # Link workspace ID for org billing
+    link_api_key: Optional[str] = None  # Link API key for production auth
+
+
 # Memory API models
 class MemoryStoreRequest(BaseModel):
     content: str
@@ -2374,6 +2385,90 @@ async def set_execution_mode(request: SystemConfigRequest, core: PenguinCore = D
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error setting execution mode: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/v1/system/config/llm")
+async def set_llm_config(request: LLMConfigRequest, core: PenguinCore = Depends(get_core)):
+    """Configure LLM endpoint and Link integration at runtime.
+    
+    This endpoint is called by Link when starting a Penguin session to:
+    1. Point Penguin at Link's inference proxy (base_url)
+    2. Pass user context for billing attribution (link_user_id, etc.)
+    
+    Only non-None values in the request will update the configuration.
+    
+    Example request from Link:
+        POST /api/v1/system/config/llm
+        {
+            "base_url": "http://localhost:3001/api/v1",
+            "link_user_id": "user-123",
+            "link_session_id": "sess-456"
+        }
+    """
+    try:
+        # Get or create LLM client with Link support
+        llm_client = getattr(core, '_llm_client', None)
+        
+        if llm_client is None:
+            # Initialize LLM client if not present
+            from penguin.llm.client import LLMClient, LLMClientConfig, LinkConfig
+            
+            config = LLMClientConfig(
+                base_url=request.base_url,
+                link=LinkConfig(
+                    user_id=request.link_user_id,
+                    session_id=request.link_session_id,
+                    agent_id=request.link_agent_id,
+                    workspace_id=request.link_workspace_id,
+                    api_key=request.link_api_key,
+                ),
+            )
+            llm_client = LLMClient(core.model_config, config)
+            core._llm_client = llm_client
+        else:
+            # Update existing client configuration
+            llm_client.update_config(
+                base_url=request.base_url,
+                link_user_id=request.link_user_id,
+                link_session_id=request.link_session_id,
+                link_agent_id=request.link_agent_id,
+                link_workspace_id=request.link_workspace_id,
+                link_api_key=request.link_api_key,
+            )
+        
+        return {
+            "status": "success",
+            "config": llm_client.get_status(),
+        }
+    except Exception as e:
+        logger.error(f"Error setting LLM config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/system/config/llm")
+async def get_llm_config(core: PenguinCore = Depends(get_core)):
+    """Get current LLM configuration and Link integration status.
+    
+    Returns information about:
+    - Current base_url (OpenRouter or Link proxy)
+    - Whether Link integration is configured
+    - Link user/session/agent IDs (if set)
+    """
+    try:
+        llm_client = getattr(core, '_llm_client', None)
+        
+        if llm_client is None:
+            return {
+                "status": "not_configured",
+                "message": "LLM client not initialized. Using default OpenRouter configuration.",
+                "base_url": "https://openrouter.ai/api/v1",
+                "link_configured": False,
+            }
+        
+        return {"status": "configured", "config": llm_client.get_status()}
+    except Exception as e:
+        logger.error(f"Error getting LLM config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

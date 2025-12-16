@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 class OpenRouterGateway:
     """
     A gateway to interact with the OpenRouter API using the OpenAI SDK compatibility.
+    
+    Supports configurable base_url for Link proxy integration:
+    - Default: https://openrouter.ai/api/v1 (direct OpenRouter)
+    - Link proxy: http://localhost:3001/api/v1 (local dev)
+    - Production: https://linkplatform.ai/api/v1
+    
+    Extra headers (X-Link-*) can be injected for billing attribution.
 
     Handles chat completions (streaming and non-streaming) and token counting.
     """
@@ -45,6 +52,8 @@ class OpenRouterGateway:
         model_config: ModelConfig,
         site_url: Optional[str] = None,
         site_title: Optional[str] = None,
+        base_url: Optional[str] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
         **kwargs: Any
     ):
         """
@@ -54,6 +63,10 @@ class OpenRouterGateway:
             model_config: Configuration object for the model.
             site_url: Optional site URL for OpenRouter leaderboards ('HTTP-Referer').
             site_title: Optional site title for OpenRouter leaderboards ('X-Title').
+            base_url: Optional base URL override. Defaults to OpenRouter.
+                      Set to Link proxy URL for billing integration.
+            extra_headers: Optional additional headers to include in requests.
+                           Used for X-Link-* headers for billing attribution.
             **kwargs: Additional keyword arguments.
         """
         self.model_config = model_config
@@ -76,13 +89,20 @@ class OpenRouterGateway:
             self.logger.error("OpenRouter API key not found in model_config or OPENROUTER_API_KEY env var.")
             raise ValueError("Missing OpenRouter API Key.")
 
+        # --- Determine Base URL ---
+        # Priority: explicit param > env var > default OpenRouter
+        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or "https://openrouter.ai/api/v1"
+        
+        if self.base_url != "https://openrouter.ai/api/v1":
+            self.logger.info(f"Using custom base URL: {self.base_url}")
+
         # --- Initialize OpenAI Client for OpenRouter ---
         try:
             self.client = AsyncOpenAI(
-                base_url="https://openrouter.ai/api/v1",
+                base_url=self.base_url,
                 api_key=api_key,
             )
-            self.logger.info(f"OpenRouterGateway initialized for model: {model_config.model}")
+            self.logger.info(f"OpenRouterGateway initialized for model: {model_config.model} at {self.base_url}")
             self.logger.info(f"Site URL: {self.site_url}, Site Title: {self.site_title}")
 
         except Exception as e:
@@ -90,15 +110,21 @@ class OpenRouterGateway:
             raise ValueError(f"Could not initialize OpenRouter client: {e}") from e
 
         # --- Prepare Headers ---
-        self.extra_headers = {}
+        self.extra_headers: Dict[str, str] = {}
+        
+        # Add site headers for OpenRouter leaderboards
         if self.site_url:
             self.extra_headers["HTTP-Referer"] = self.site_url
         if self.site_title:
             self.extra_headers["X-Title"] = self.site_title
-        if not self.extra_headers:
-             self.logger.debug("No extra headers (Site URL/Title) provided for OpenRouter.")
-        else:
-             self.logger.debug(f"Using extra headers: {self.extra_headers}")
+            
+        # Merge in any additional headers (e.g., X-Link-* for billing)
+        if extra_headers:
+            self.extra_headers.update(extra_headers)
+            self.logger.info(f"Added {len(extra_headers)} extra headers for requests")
+            
+        if self.extra_headers:
+            self.logger.debug(f"Request headers configured: {list(self.extra_headers.keys())}")
 
     def _parse_openrouter_error(self, error_text: str, status_code: int) -> str:
         """
@@ -529,11 +555,13 @@ class OpenRouterGateway:
                             except Exception:
                                 pass
                             # debug_stream_chunk(request_id, {'chunk': new_content_segment, 'type': 'content'}, "content")
+                            # WALLET_GUARD FIX: Always call stream_callback, even for whitespace
+                            # The downstream handle_streaming_chunk has WALLET_GUARD logic to handle it
+                            # Previously: `if new_content_segment.strip():` skipped whitespace, bypassing fixes
                             if stream_callback:
                                 try:
-                                    if new_content_segment.strip():
-                                        self.logger.debug(f"[OpenRouterGateway] Calling stream_callback with content segment: '{new_content_segment}'")
-                                        await stream_callback(new_content_segment, "assistant")
+                                    self.logger.debug(f"[OpenRouterGateway] Calling stream_callback with content segment: '{new_content_segment}'")
+                                    await stream_callback(new_content_segment, "assistant")
                                 except Exception as cb_err:
                                     self.logger.error(f"[OpenRouterGateway] Error in content stream_callback: {cb_err}", exc_info=True)
                         

@@ -1807,6 +1807,57 @@ class PenguinCore:
         if self.api_client:
             self.api_client.set_system_prompt(prompt)
         self.conversation_manager.set_system_prompt(prompt)
+    
+    def set_llm_config(
+        self,
+        base_url: Optional[str] = None,
+        link_user_id: Optional[str] = None,
+        link_session_id: Optional[str] = None,
+        link_agent_id: Optional[str] = None,
+        link_workspace_id: Optional[str] = None,
+        link_api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Configure LLM endpoint and Link integration at runtime.
+        
+        This method is typically called by Link when starting a Penguin session
+        to route LLM requests through Link's inference proxy for billing.
+        
+        Args:
+            base_url: LLM API endpoint (e.g., "http://localhost:3001/api/v1")
+            link_user_id: Link user ID for billing attribution
+            link_session_id: Link session ID for tracking
+            link_agent_id: Link agent ID for multi-agent scenarios
+            link_workspace_id: Link workspace ID for org billing
+            link_api_key: Link API key for production auth
+            
+        Returns:
+            Dict with current LLM client status
+        """
+        from penguin.llm.client import LLMClient, LLMClientConfig, LinkConfig
+        
+        if not hasattr(self, '_llm_client') or self._llm_client is None:
+            config = LLMClientConfig(
+                base_url=base_url,
+                link=LinkConfig(
+                    user_id=link_user_id,
+                    session_id=link_session_id,
+                    agent_id=link_agent_id,
+                    workspace_id=link_workspace_id,
+                    api_key=link_api_key,
+                ),
+            )
+            self._llm_client = LLMClient(self.model_config, config)
+        else:
+            self._llm_client.update_config(
+                base_url=base_url,
+                link_user_id=link_user_id,
+                link_session_id=link_session_id,
+                link_agent_id=link_agent_id,
+                link_workspace_id=link_workspace_id,
+                link_api_key=link_api_key,
+            )
+        
+        return self._llm_client.get_status()
 
     def _check_interrupt(self) -> bool:
         """Check if execution has been interrupted"""
@@ -3177,21 +3228,33 @@ class PenguinCore:
             message_type = "assistant"
             
         if not chunk:
-            # Don't initialize streaming or emit events for truly empty chunks
-            # Only track empty chunks if streaming is already active
-            if self._streaming_state["active"]:
-                self._streaming_state["empty_response_count"] += 1
-                if self._streaming_state["empty_response_count"] > 3:
-                    if not self._streaming_state["error"]:
-                        self._streaming_state["error"] = "Multiple empty responses received"
-                    logger.warning(f"PenguinCore: Multiple empty responses ({self._streaming_state['empty_response_count']}) received during streaming")
-            return
+            # WALLET_GUARD: Even truly empty chunks must activate streaming
+            # so finalize_streaming_message can run and add placeholder
+            if not self._streaming_state["active"]:
+                logger.debug(f"[WALLET_GUARD] First chunk is empty, activating streaming anyway")
+                self._streaming_state["active"] = True
+                self._streaming_state["content"] = ""
+                self._streaming_state["reasoning_content"] = ""
+                self._streaming_state["message_type"] = message_type or "assistant"
+                self._streaming_state["role"] = role
+                self._streaming_state["metadata"] = {}
+                self._streaming_state["start_time"] = datetime.now()
 
-        # Allow whitespace-only chunks (like spaces) if streaming is already active
-        # This fixes word merging where spaces between words were being dropped
+            # Track empty chunks
+            self._streaming_state["empty_response_count"] += 1
+            if self._streaming_state["empty_response_count"] > 3:
+                if not self._streaming_state["error"]:
+                    self._streaming_state["error"] = "Multiple empty responses received"
+                logger.warning(f"PenguinCore: Multiple empty responses ({self._streaming_state['empty_response_count']}) received during streaming")
+            return  # Still return - no content to append - but streaming is now active
+
+        # WALLET_GUARD FIX: Even whitespace-only first chunks must activate streaming
+        # Otherwise finalize_streaming_message() never runs and context doesn't advance
+        # We still skip emitting to UI for pure whitespace, but we MUST track the response
         if not chunk.strip() and not self._streaming_state["active"]:
-            # Only skip whitespace chunks if we haven't started streaming yet
-            return
+            # Activate streaming but mark as whitespace-only so UI emission is skipped
+            logger.debug(f"[WALLET_GUARD] First chunk is whitespace-only, activating streaming anyway: {repr(chunk)}")
+            # Fall through to activate streaming - the WALLET_GUARD in finalize will handle it
         
         # Reset empty counter if we got actual content
         self._streaming_state["empty_response_count"] = 0

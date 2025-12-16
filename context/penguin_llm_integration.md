@@ -2,8 +2,10 @@
 
 > **Purpose:** Guide for configuring Penguin to route LLM requests through Link's inference proxy for unified billing, analytics, and future RL/finetuning data collection.
 >
-> **Last Updated:** 2025-12-15
+> **Last Updated:** 2025-12-15 (Implementation Complete)
 > **Link Version:** MVP (auth middleware added)
+>
+> **Implementation Status:** ✅ IMPLEMENTED - See `penguin/llm/client.py`
 
 ---
 
@@ -33,6 +35,8 @@ Link's inference proxy at `/api/v1/chat/completions` is **fully OpenAI-compatibl
 ---
 
 ## Quick Start
+
+> ✅ **Implemented** in `penguin/llm/client.py` and `penguin/llm/openrouter_gateway.py`
 
 ### Minimal Configuration
 
