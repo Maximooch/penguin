@@ -254,6 +254,70 @@ class TestOpenRouterGatewayLinkIntegration:
                 os.environ["OPENAI_BASE_URL"] = old_val
 
 
+# --- Live Integration Test ---
+
+class TestLiveIntegration:
+    """Live integration tests that make real API calls to OpenRouter.
+    
+    Uses anthropic/claude-haiku-4.5 (cheap model) for cost efficiency.
+    """
+    
+    def _get_live_model_config(self) -> ModelConfig:
+        """Create ModelConfig for live testing."""
+        api_key = os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENROUTER_API_KEY not set")
+        
+        return ModelConfig(
+            model="anthropic/claude-haiku-4.5",
+            provider="openrouter",
+            client_preference="openrouter",
+            api_key=api_key,
+            streaming_enabled=True,
+        )
+    
+    def test_live_request_with_link_headers(self):
+        """Test a live request with Link headers configured.
+        
+        This verifies:
+        1. The gateway works with Link headers configured
+        2. OpenRouter accepts requests with extra headers (they're ignored)
+        3. The response is properly formatted
+        """
+        model_config = self._get_live_model_config()
+        
+        link_config = LinkConfig(
+            user_id="test-live-user",
+            session_id="test-live-session",
+        )
+        
+        config = LLMClientConfig(
+            base_url=None,  # Use default OpenRouter
+            link=link_config,
+        )
+        
+        client = LLMClient(model_config, config)
+        
+        messages = [
+            {"role": "user", "content": "Say exactly: 'Link integration test successful'"}
+        ]
+        
+        # Run async test
+        async def do_request():
+            return await client.chat_completion(
+                messages=messages,
+                max_output_tokens=50,
+                temperature=0,
+                stream=False,
+            )
+        
+        response = asyncio.run(do_request())
+        
+        assert "content" in response, f"Response missing 'content': {response}"
+        assert len(response["content"]) > 0, "Empty response content"
+        logger.info(f"Live test response: {response['content'][:100]}")
+
+
 # --- Standalone Test Runner ---
 
 def run_tests():
@@ -403,6 +467,21 @@ def run_tests():
         print(f"  ✗ test_gateway_default_base_url: {e}")
         failed += 1
     
+    # Live integration test (if API key available)
+    if os.getenv("OPENROUTER_API_KEY"):
+        print("\n--- Testing Live API Call ---\n")
+        
+        try:
+            t = TestLiveIntegration()
+            t.test_live_request_with_link_headers()
+            print("  ✓ test_live_request_with_link_headers")
+            passed += 1
+        except Exception as e:
+            print(f"  ✗ test_live_request_with_link_headers: {e}")
+            failed += 1
+    else:
+        print("\n--- Skipping Live API Test (no OPENROUTER_API_KEY) ---\n")
+    
     # Summary
     print("\n" + "=" * 60)
     print(f"Results: {passed} passed, {failed} failed")
@@ -410,13 +489,6 @@ def run_tests():
     
     if failed > 0:
         sys.exit(1)
-    
-    # Check for live test capability
-    if os.getenv("OPENROUTER_API_KEY"):
-        print("\nOPENROUTER_API_KEY found. Run live tests with:")
-        print("  pytest penguin/llm/test_link_integration.py -v")
-    else:
-        print("\nNote: Set OPENROUTER_API_KEY to run live integration tests.")
 
 
 if __name__ == "__main__":

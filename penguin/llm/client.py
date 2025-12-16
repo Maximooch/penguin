@@ -351,8 +351,8 @@ class LLMClient:
             else:
                 gateway.extra_headers = link_headers
         
-        # Forward to gateway
-        return await gateway.chat_completion(
+        # Forward to gateway - OpenRouterGateway uses get_response which returns a string
+        response_text = await gateway.get_response(
             messages=messages,
             max_output_tokens=max_output_tokens,
             temperature=temperature,
@@ -360,6 +360,12 @@ class LLMClient:
             stream_callback=stream_callback,
             **kwargs,
         )
+        
+        # Wrap in dict format for consistency
+        return {
+            "content": response_text,
+            "model": self.model_config.model,
+        }
     
     async def count_tokens(self, messages: List[Dict[str, Any]]) -> int:
         """Count tokens in messages using the gateway's token counter."""
