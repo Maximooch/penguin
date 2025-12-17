@@ -975,7 +975,7 @@ class RunMode:
                 
                 # Provide helpful guidance to the user
                 user_message = (
-                    f"🐧 Penguin: I encountered an error - the model returned empty responses.\n\n"
+                    f"I encountered an error - the model returned empty responses.\n\n"
                     f"This may indicate:\n"
                     f"  1. Context window exceeded (conversation too long)\n"
                     f"  2. API quota or rate limit reached\n"

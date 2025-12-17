@@ -865,7 +865,7 @@ User: "Analyze the auth system"
 [You execute read_file silently]
 [You execute workspace_search silently]
 [You execute read_file again silently]
-🐧 Penguin: The auth system uses JWT tokens with... [ONE comprehensive response]
+The auth system uses JWT tokens with... [ONE comprehensive response]
 ```
 
 **Example - Implementation Mode (Correct):**
@@ -873,7 +873,7 @@ User: "Analyze the auth system"
 User: "Fix the login bug"
 [You execute apply_diff]
 Tool Result: Successfully applied diff to auth.py
-🐧 Penguin: Fixed the login bug by correcting the token validation logic in auth.py
+Fixed the login bug by correcting the token validation logic in auth.py
 ```
 
 {META_COMMENTARY_WARNING}
