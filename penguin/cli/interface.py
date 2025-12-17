@@ -343,11 +343,13 @@ class PenguinInterface:
             # Create a copy to avoid modifying the original
             normalized = result.copy()
 
-            # Handle field name differences (Engine uses action_name, CLI expects action)
+            # Backwards compatibility: legacy action_name → standardized action
+            # (Engine now uses "action" consistently, but keep fallback for old data)
             if "action_name" in normalized and "action" not in normalized:
                 normalized["action"] = normalized["action_name"]
 
-            # Handle output field (Engine uses output, CLI expects result)
+            # Backwards compatibility: legacy output → standardized result
+            # (Engine now uses "result" consistently, but keep fallback for old data)
             if "output" in normalized and "result" not in normalized:
                 normalized["result"] = normalized["output"]
 

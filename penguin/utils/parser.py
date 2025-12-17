@@ -383,7 +383,7 @@ class ActionExecutor:
                             "id": action_id,
                             "status": "completed",
                             "result": result if isinstance(result, str) else str(result),
-                            "action_name": action.action_type.value,
+                            "action": action.action_type.value,  # Standardized field name
                         },
                     )
                 except Exception as e:
@@ -403,7 +403,7 @@ class ActionExecutor:
                             "id": action_id,
                             "status": "error",
                             "result": error_message,
-                            "action_name": action.action_type.value,
+                            "action": action.action_type.value,  # Standardized field name
                         },
                     )
                 except Exception as ee:
@@ -1019,8 +1019,8 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                     metadata={**metadata, **({"channel": channel} if channel else {})},
                 )
                 metadata = {**metadata, "delegation_id": delegation_id}
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to add delegation_id to metadata: {e}")
 
         try:
             await core.send_to_agent(

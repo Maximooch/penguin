@@ -2058,7 +2058,7 @@ class PenguinTextualApp(App):
             elif event_type == "tool_result":
                 # Markdown render with preview + details
                 result_str = data.get("result", "")
-                action_name = data.get("action_name", data.get("name", "unknown"))
+                action_name = data.get("action", data.get("action_name", data.get("name", "unknown")))
                 status = str(data.get("status", "completed")).lower()
                 if status == "error":
                     msg = self.add_message(f"```text\n{result_str}\n```", "system")
