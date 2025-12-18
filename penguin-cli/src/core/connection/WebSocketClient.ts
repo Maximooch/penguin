@@ -156,9 +156,9 @@ export class ChatClient {
       include_reasoning: true, // Enable reasoning tokens from backend
     };
 
-    // Add image path if provided
+    // Add image paths if provided (backend expects array)
     if (options?.image_path) {
-      payload.image_path = options.image_path;
+      payload.image_paths = [options.image_path];
     }
 
     this.ws.send(JSON.stringify(payload));

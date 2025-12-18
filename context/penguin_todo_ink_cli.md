@@ -1,7 +1,7 @@
 # Penguin Ink CLI Migration Plan
 
-**Last Updated:** 2025-10-18
-**Status:** Planning Phase
+**Last Updated:** 2025-12-17
+**Status:** Phase 2 - Active Development
 **Goal:** Migrate Penguin's CLI from Python (Rich/Typer) to TypeScript + Ink (React for Terminal)
 
 ---
@@ -65,21 +65,21 @@
 
 ## Migration Phases
 
-### Phase 1: Proof of Concept (Current Phase)
+### Phase 1: Proof of Concept ✅ COMPLETE
 **Goal:** Validate Ink + FastAPI integration with basic chat
 
 #### Tasks
 - [x] Research Ink documentation
-- [ ] Create `penguin-cli/` directory structure
-- [ ] Initialize TypeScript project with Ink template
-- [ ] Build WebSocket client connecting to `/api/v1/chat/stream`
-- [ ] Implement basic chat UI:
-  - User input component
+- [x] Create `penguin-cli/` directory structure
+- [x] Initialize TypeScript project with Ink template
+- [x] Build WebSocket client connecting to `/api/v1/chat/stream`
+- [x] Implement basic chat UI:
+  - User input component (MultiLineInput)
   - Streaming response display
   - Basic styling with colors
-- [ ] Compare DX with current Rich implementation
+- [x] Compare DX with current Rich implementation
 
-#### Success Criteria
+#### Success Criteria ✅
 - WebSocket connection works reliably
 - Streaming text displays correctly
 - Code is significantly simpler than Python version
@@ -87,35 +87,44 @@
 
 ---
 
-### Phase 2: Core Features
+### Phase 2: Core Features (IN PROGRESS)
 **Goal:** Port main interactive session features
 
 #### Tasks
-- [ ] Streaming message display with micro-batching (50ms or 5 tokens)
-- [ ] Syntax highlighting - use `ink-syntax-highlight` (ANSI output) or `ink-markdown` for code blocks
-  - **Note:** Avoid DOM-only packages like `react-syntax-highlighter`
-- [ ] Multi-line input handling (Ink's `useInput` + buffer)
-- [ ] Tool execution display with real-time stdout/stderr streaming
-  - Use `child_process.spawn` for subprocess output
-  - Display `@inkjs/ui` Spinner during execution
-  - Handle binary output (save to temp, show path)
+- [x] Streaming message display with accumulator pattern (Static item freezing)
+- [x] Markdown rendering component
+- [x] Multi-line input handling (MultiLineInput component)
+- [x] Tool execution display with phase-based indicators
+- [x] Progress indicators
+- [x] Error handling
+- [x] Session state management (useChatState hook)
+- [x] Major refactor - ChatSession reduced from 1,124 to ~470 lines
 - [ ] Diff rendering using `diff` package + Chalk (git-style colored output)
-- [ ] Progress indicators and spinners (use `@inkjs/ui` components)
-- [ ] Error handling and retry logic
 - [ ] Backend crash detection and auto-restart with telemetry
-- [ ] Session state management
 - [ ] Conversation pagination (last 50 messages, "Load more" button)
+- [ ] Syntax highlighting for code blocks
 
-#### Components to Build
+#### Component Hierarchy (Implemented)
 ```typescript
 <ChatSession />
-  └─ <MessageList />
-       ├─ <UserMessage />
-       ├─ <AssistantMessage />
-       │    ├─ <StreamingText />
-       │    └─ <CodeBlock language="python" />
-       └─ <ToolResult />
-  └─ <InputPrompt />
+  └─ useChatState()        // Consolidated UI state
+  └─ useChatAccumulator()  // Static/dynamic message split
+  └─ useChatCommands()     // Command handling
+  └─ useRunMode()          // Autonomous execution
+  └─ <ChatMessageArea />
+       ├─ <Static items={staticItems}>   // Frozen history (never re-renders)
+       │    ├─ <UserMessage />
+       │    ├─ <AssistantMessage />
+       │    ├─ <ToolCallMessage phase="finished" />
+       │    ├─ <ReasoningMessage />
+       │    ├─ <ErrorMessage />
+       │    └─ <StatusMessage />
+       └─ {dynamicItems.map(...)}        // In-flight content
+            ├─ <AssistantMessage phase="streaming" />
+            └─ <ToolCallMessage phase="running" />
+  └─ <MultiLineInput />
+  └─ <StatusPanel />
+  └─ Modal components...
 ```
 
 ---
@@ -157,6 +166,102 @@
 
 ---
 
+## Patterns Learned from Letta-Code
+
+**Reference:** [Letta Code CLI](https://github.com/letta-ai/letta-code) - Apache 2.0
+
+### 1. Static Item Freezing (Critical for Performance)
+
+**Problem:** Terminal flickering caused by full buffer redraws (see [claude-code issue #769](https://github.com/anthropics/claude-code/issues/769))
+
+**Solution:** Use Ink's `<Static>` component for finished messages that never change.
+
+```typescript
+const [staticItems, setStaticItems] = useState<StaticItem[]>([]);
+const [dynamicItems, setDynamicItems] = useState<Line[]>([]);
+
+// Static items render ONCE and never re-render
+<Static items={staticItems}>{renderItem}</Static>
+// Dynamic items re-render normally during streaming
+{dynamicItems.map(item => <MessageComponent key={item.id} item={item} />)}
+```
+
+**Commit Flow:**
+1. Line starts as dynamic (streaming/running)
+2. When finished, commit to staticItems
+3. Remove from dynamicItems
+4. Static never re-renders → no flickering
+
+### 2. Accumulator Pattern for Transcript State
+
+**Data Structure:** Dual-structure for efficient operations
+```typescript
+interface Buffers {
+  order: string[];              // Maintains insertion order for rendering
+  byId: Map<string, Line>;      // O(1) lookups and in-place updates
+  toolCallIdToLineId: Map<string, string>;  // Correlates tool returns
+  tokenCount: number;
+  usage: UsageStats;
+}
+```
+
+**Line Types:**
+- `user` - User messages (always finished)
+- `assistant` - AI responses (streaming → finished)
+- `tool_call` - Tool executions (streaming → ready → running → finished)
+- `reasoning` - Internal thinking (streaming → finished)
+- `error` - Error messages
+- `status` - System status updates
+- `separator` - Visual separators
+
+### 3. useSyncedState Hook
+
+**Problem:** Stale closures in async callbacks (streaming, approvals)
+
+**Solution:** Keep state and ref in sync
+```typescript
+function useSyncedState<T>(initialValue: T): [T, (v: T) => void, Ref<T>] {
+  const [state, setState] = useState(initialValue);
+  const ref = useRef(initialValue);
+
+  const setSyncedState = useCallback((value: T) => {
+    ref.current = value;  // Always current
+    setState(value);       // Triggers re-render
+  }, []);
+
+  return [state, setSyncedState, ref];
+}
+```
+
+### 4. Tool Phase Tracking
+
+**Phases:** `streaming` → `ready` → `running` → `finished`
+
+**Visual Indicators:**
+- `.` streaming (parsing args)
+- `?` ready (awaiting approval)
+- `*` running (executing)
+- `+` finished_ok
+- `x` finished_error
+
+### 5. Two-Column Layout
+
+**Pattern:** Fixed 2-char gutter + flexible content
+```typescript
+const GUTTER_WIDTH = 2;
+
+<Box flexDirection="row">
+  <Box width={GUTTER_WIDTH} flexShrink={0}>
+    <Text color={phaseColor}>{indicator}</Text>
+  </Box>
+  <Box flexGrow={1}>
+    <Text wrap="wrap">{content}</Text>
+  </Box>
+</Box>
+```
+
+---
+
 ## Technical Decisions
 
 ### Distribution Strategy
@@ -170,30 +275,73 @@
   - **Fallback:** `nexe` or maintained `pkg` fork (`@yao-pkg/pkg`) if SEA limitations block
   - **Alternative:** Docker container with both runtimes
 
-### Project Structure
+### Project Structure (Updated)
 ```
 penguin/
-├── penguin/              # Python backend (existing)
-│   ├── api/             # FastAPI server
-│   ├── core.py          # PenguinCore logic
-│   ├── tools/           # Tool implementations
-│   └── llm/             # LLM adapters
-├── penguin-cli/         # New TypeScript CLI
+├── penguin/                    # Python backend (existing)
+│   ├── api/                   # FastAPI server
+│   ├── core.py                # PenguinCore logic
+│   ├── tools/                 # Tool implementations
+│   └── llm/                   # LLM adapters
+├── penguin-cli/               # TypeScript CLI
 │   ├── src/
-│   │   ├── components/  # Ink React components
-│   │   ├── hooks/       # Custom React hooks
-│   │   ├── api/         # WebSocket/REST client
-│   │   └── index.tsx    # Entry point
+│   │   ├── core/
+│   │   │   ├── accumulator/   # Transcript state management
+│   │   │   │   ├── types.ts   # Line types, Buffers
+│   │   │   │   ├── accumulator.ts
+│   │   │   │   ├── stream.ts
+│   │   │   │   └── index.ts
+│   │   │   ├── api/           # REST clients (Session, Project, Run, Model)
+│   │   │   ├── connection/    # WebSocket client
+│   │   │   └── types.ts       # Domain types
+│   │   ├── ui/
+│   │   │   ├── components/
+│   │   │   │   ├── messages/  # Message components (two-column layout)
+│   │   │   │   │   ├── UserMessage.tsx
+│   │   │   │   │   ├── AssistantMessage.tsx
+│   │   │   │   │   ├── ToolCallMessage.tsx
+│   │   │   │   │   ├── ReasoningMessage.tsx
+│   │   │   │   │   ├── ErrorMessage.tsx
+│   │   │   │   │   └── StatusMessage.tsx
+│   │   │   │   ├── ChatSession.tsx      # ~470 lines (refactored)
+│   │   │   │   ├── ChatMessageArea.tsx  # Static pattern
+│   │   │   │   ├── MultiLineInput.tsx
+│   │   │   │   ├── Markdown.tsx
+│   │   │   │   └── ... modals, status
+│   │   │   ├── hooks/
+│   │   │   │   ├── useChatAccumulator.ts  # Static/dynamic split
+│   │   │   │   ├── useChatState.ts        # UI state reducer
+│   │   │   │   ├── useChatCommands.ts     # Command handling
+│   │   │   │   ├── useRunMode.ts          # Autonomous execution
+│   │   │   │   ├── useSyncedState.ts      # Async closure fix
+│   │   │   │   └── useTerminalWidth.ts    # Reactive width
+│   │   │   ├── contexts/      # React contexts
+│   │   │   └── theme/         # Theme tokens
+│   │   ├── config/            # Configuration loader
+│   │   └── index.tsx          # Entry point
 │   ├── package.json
 │   └── tsconfig.json
 ├── pyproject.toml
 └── README.md
 ```
 
-### State Management
-- **Option A:** Plain React hooks (useState, useReducer) - Start here
-- **Option B:** Zustand (lightweight, no Provider needed)
-- **Option C:** React Query (if complex caching needed)
+### State Management (Implemented)
+
+**Decision:** Hybrid approach with specialized hooks
+
+1. **Accumulator Pattern** for transcript state
+   - `useChatAccumulator` - manages Buffers with static/dynamic split
+   - Order array + Map for O(1) updates
+   - Static item freezing for performance
+
+2. **useReducer** for UI state
+   - `useChatState` - modal state, pagination, flags
+   - Centralized dispatch for predictable updates
+
+3. **Extracted domain hooks**
+   - `useChatCommands` - command handling (~580 lines)
+   - `useRunMode` - autonomous execution
+   - `useSyncedState` - async closure safety
 
 ### WebSocket Client Pattern
 ```typescript

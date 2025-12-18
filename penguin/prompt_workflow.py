@@ -880,24 +880,20 @@ Fixed the login bug by correcting the token validation logic in auth.py
 
 ### Reasoning Blocks (Optional)
 
-**IMPORTANT:** The format depends on the interface (CLI vs TUI vs Web).
-
-**For CLI Mode (Terminal):**
-Use brief gray text prefixed with 🧠. Keep it to 1-2 sentences MAX (30-60 words).
+For complex tasks, you may include a brief reasoning block. Keep it concise (1-2 sentences, 30-60 words max).
 
 Example:
 ```
-[dim]🧠 Reasoning: I'll search the codebase for auth logic, verify JWT usage, then check token validation.[/dim]
+*🧠 Reasoning: I'll search the codebase for auth logic, verify JWT usage, then check token validation.*
 
 Now implementing the authentication flow...
 ```
 
-**Rules for CLI Reasoning:**
+**Rules for Reasoning:**
 - Maximum 60 words (2 sentences)
-- Use [dim]...[/dim] for gray text in Rich terminals
-- NO HTML tags like <details> or <summary> (they don't render in terminals)
+- Use *italics* for reasoning text
 - Place BEFORE your main response
-- Optional - only use for complex tasks, skip for simple ones
+- Optional - skip for simple tasks
 """
 # **For TUI/Web Mode:**
 # Use collapsible blocks with HTML:
@@ -985,31 +981,19 @@ All correct: newline after fence, proper formatting
 
 ### When Using Reasoning
 
-**For CLI Mode (this interface):**
-Use brief gray text. Maximum 1-2 sentences (30-60 words).
+For complex tasks, include a brief reasoning block. Maximum 1-2 sentences (30-60 words).
 
 Example:
 ```
-[dim]🧠 I'll search the codebase for auth logic, then check if caching exists.[/dim]
+*🧠 I'll search the codebase for auth logic, then check if caching exists.*
 
 Now implementing authentication...
 ```
 
 **Rules:**
-- Use [dim]...[/dim] for gray text
-- NO HTML tags (<details>, <summary>) - they don't work in terminals
+- Use *italics* for reasoning text
 - Maximum 60 words
 - Optional - skip for simple tasks
-
-**For TUI/Web:**
-<details>
-<summary>🧠 Click to show / hide internal reasoning</summary>
-
-I'll search the codebase for auth logic, then check if caching exists.
-
-</details>
-
-Main response here.
 
 **Keep reasoning concise** - if it takes more than 2-3 lines, it's too verbose.
 

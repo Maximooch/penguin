@@ -19,7 +19,7 @@ export function TabBar() {
   const { tabs, activeTabId } = useTab();
 
   return (
-    <Box borderStyle="round" borderColor="gray" paddingX={1}>
+    <Box borderStyle="single" borderColor="cyan" borderDimColor paddingX={1}>
       {tabs.map((tab, index) => {
         const isActive = tab.id === activeTabId;
         const icon = TAB_ICONS[tab.type] || '📄';

@@ -31,6 +31,10 @@ penguin/config.yml
 # Embeddings
 embeddings/
 
+# Commit logs
+# It helps for changelog, but right now it's just noise
+commits.txt
+
 # Environment variables
 .env
 

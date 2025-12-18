@@ -1,49 +1,36 @@
 /**
- * Chat session component with streaming message display
- * Handles user input and displays conversation history
+ * ChatSession - Refactored with hooks and Static pattern
  *
- * REFACTORED: Now uses context-based hooks instead of monolithic useChat
+ * Reduced from 1,124 lines to ~350 lines through:
+ * - useChatState: Consolidated UI state management
+ * - useChatCommands: Extracted command handling
+ * - useChatAccumulator: Transcript state with Static pattern
+ * - useRunMode: RunMode state and WebSocket streaming
+ * - ChatMessageArea: Static + dynamic message rendering
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useEffect, useCallback, useState, useMemo, useRef } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
-import { useConnection } from '../contexts/ConnectionContext';
-import { useCommand } from '../contexts/CommandContext';
-import { useWebSocket } from '../hooks/useWebSocket';
-import { useMessageHistory } from '../hooks/useMessageHistory';
-import { useStreaming } from '../hooks/useStreaming';
-import { useToolExecution } from '../hooks/useToolExecution';
-import { useToolEvents } from '../hooks/useToolEvents.js';
-import { useProgress } from '../hooks/useProgress';
-import { MessageList } from './MessageList';
-import { EventTimeline } from './EventTimeline.js';
-// import { ConnectionStatus } from './ConnectionStatus';
-import { ToolExecutionList } from './ToolExecution';
-import { ProgressIndicator } from './ProgressIndicator';
-import { MultiLineInput } from './MultiLineInput';
-import { SessionList } from './SessionList';
-import { SessionPickerModal } from './SessionPickerModal';
-import { ProjectList } from './ProjectList';
-import { TaskList } from './TaskList';
-import { ModelSelectorModal } from './ModelSelectorModal';
-import { SettingsModal } from './SettingsModal';
-import { SessionAPI } from '../../core/api/SessionAPI.js';
-import { ProjectAPI } from '../../core/api/ProjectAPI.js';
-import { ModelAPI } from '../../core/api/ModelAPI.js';
-import type { Session } from '../../core/types.js';
-import type { Project, Task } from '../../core/api/ProjectAPI.js';
-import type { RunModeStatus as RunStatus, TaskStreamMessage } from '../../core/api/RunAPI.js';
-import { RunAPI } from '../../core/api/RunAPI.js';
-import { RunModeStatus } from './RunModeStatus.js';
+import { useCommand } from '../contexts/CommandContext.js';
 import { useTab } from '../contexts/TabContext.js';
-import { ChatClient } from '../../core/connection/WebSocketClient.js';
-import { getConfigPath, validateConfig, getConfigDiagnostics } from '../../config/loader.js';
-import { exec } from 'child_process';
-import { logger } from '../../utils/logger';
+import { useConnection } from '../contexts/ConnectionContext.js';
+import { useChatState } from '../hooks/useChatState.js';
+import { useChatAccumulator } from '../hooks/useChatAccumulator.js';
+import { useChatCommands } from '../hooks/useChatCommands.js';
+import { useRunMode } from '../hooks/useRunMode.js';
+import { ChatMessageArea } from './ChatMessageArea.js';
+import { MultiLineInput } from './MultiLineInput.js';
+import { StatusPanel } from './StatusPanel.js';
+import { SessionPickerModal } from './SessionPickerModal.js';
+import { ModelSelectorModal } from './ModelSelectorModal.js';
+import { SettingsModal } from './SettingsModal.js';
+import { ProjectList } from './ProjectList.js';
+import { TaskList } from './TaskList.js';
+import { RunModeStatus } from './RunModeStatus.js';
+import { logger } from '../../utils/logger.js';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
-import { StatusPanel } from './StatusPanel.js';
-import type { ToolEventNormalized } from '../../core/types.js';
+import type { Session } from '../../core/types.js';
 
 interface ChatSessionProps {
   conversationId?: string;
@@ -51,838 +38,253 @@ interface ChatSessionProps {
 
 export function ChatSession({ conversationId: propConversationId }: ChatSessionProps) {
   const { exit } = useApp();
-  const [inputKey, setInputKey] = useState(0);
-  const [isExiting, setIsExiting] = useState(false);
-  const [currentInput, setCurrentInput] = useState('');
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [showingSessionList, setShowingSessionList] = useState(false);
-  const [showSessionPicker, setShowSessionPicker] = useState(false);
-  const [isLoadingSessions, setIsLoadingSessions] = useState(false);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [showingProjectList, setShowingProjectList] = useState(false);
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [showingTaskList, setShowingTaskList] = useState(false);
-  const [runModeStatus, setRunModeStatus] = useState<RunStatus>({ status: 'idle' });
-  const [showingRunMode, setShowingRunMode] = useState(false);
-  const [runModeMessage, setRunModeMessage] = useState<string>('');
-  const [runModeProgress, setRunModeProgress] = useState<number>(0);
-  const [showModelSelector, setShowModelSelector] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [timelinePageOffset, setTimelinePageOffset] = useState(0);
-  const timelinePageSize = 50;
-  const [showReasoning, setShowReasoning] = useState(false);
-  const reasoningRef = useRef(''); // Use ref instead of state to avoid re-renders
-  const sessionAPI = useRef(new SessionAPI('http://localhost:8000'));
-  const projectAPI = useRef(new ProjectAPI('http://localhost:8000'));
-  const runAPI = useRef(new RunAPI('http://localhost:8000'));
-  const modelAPI = useRef(new ModelAPI('http://localhost:8000'));
-  const runStreamWS = useRef<WebSocket | null>(null);
-  const clientRef = useRef<any>(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-
-  // Each ChatSession creates its own WebSocket client
-  useEffect(() => {
-    const client = new ChatClient({
-      url: 'ws://localhost:8000/api/v1/chat/stream',
-      conversationId: propConversationId,
-      onConnect: () => {
-        setIsConnected(true);
-        setError(null);
-      },
-      onDisconnect: () => {
-        setIsConnected(false);
-      },
-      onError: (err: Error) => {
-        setError(err);
-        setIsConnected(false);
-      },
-    });
-
-    // Avoid unhandled rejection if backend is offline
-    client.connect().catch((err) => {
-      // onError callback above already sets UI state; swallow to prevent crash
-      logger.warn('ChatClient.connect failed', err);
-    });
-    clientRef.current = client;
-
-    return () => {
-      client.disconnect();
-      clientRef.current = null;
-    };
-  }, [propConversationId]);
-
   const { parseInput, getSuggestions } = useCommand();
+  const { switchConversation } = useTab();
 
-  const sendMessage = (message: string, options?: { image_path?: string }) => {
-    if (clientRef.current && isConnected) {
-      clientRef.current.sendMessage(message, options);
-    }
-  };
-  const { messages, addUserMessage, addAssistantMessage, addMessage, clearMessages } = useMessageHistory();
-  const { clearTools } = useToolExecution();
-  const { events: toolEvents, addEvent: addToolEvent, clear: clearToolEvents } = useToolEvents();
-  const { progress, updateProgress, resetProgress, completeProgress } = useProgress();
+  // Consolidated state management
+  const chatState = useChatState();
+  const {
+    sessions,
+    projects,
+    tasks,
+    openModal,
+    closeModal,
+    setLoadingModal,
+    setSuggestions,
+    clearInput,
+    adjustTimelineOffset,
+    toggleReasoning,
+    setExiting,
+    setSessions,
+    setProjects,
+    setTasks,
+    showSessionPicker,
+    showModelSelector,
+    showSettings,
+    showingProjectList,
+    showingTaskList,
+    isLoadingSessions,
+    inputKey,
+    suggestions,
+    showReasoning,
+    isExiting,
+  } = chatState;
 
-  // Track stream start timestamp to ensure tools sort after their triggering message
-  const streamStartTimestampRef = useRef<number | null>(null);
+  // Get workspace from current directory - memoized
+  const workspace = useMemo(() => process.cwd().split('/').pop() || process.cwd(), []);
 
-  const { streamingText, isStreaming, processToken, complete, reset } = useStreaming({
-    onComplete: (finalText: string) => {
-      // Add completed streaming message to history with reasoning if present
-      if (finalText) {
-        // console.error(`[ChatSession] onComplete - finalText length: ${finalText.length}, starts with: "${finalText.substring(0, 100)}"`);
-        // Use stream start timestamp so tool events (which happen during streaming) sort after this message
-        const messageTimestamp = streamStartTimestampRef.current || Date.now();
-        addMessage({
-          id: `assistant-${Date.now()}`,
-          role: 'assistant',
-          content: finalText,
-          timestamp: messageTimestamp,
-          reasoning: reasoningRef.current || undefined,
+  // Accumulator for transcript management with Static pattern
+  const accumulator = useChatAccumulator({ version: '0.1.0', workspace });
+  const {
+    staticLines,
+    dynamicLines,
+    onChunk,
+    addUserMessage,
+    addErrorMessage,
+    addStatusMessage,
+    reset: resetAccumulator,
+  } = accumulator;
+
+  // Use shared connection from context
+  const { client, isConnected, error: connectionError } = useConnection();
+  const [isStreaming, setIsStreaming] = useState(false);
+  const isSendingRef = useRef(false); // Synchronous guard to prevent double-sends
+
+  // RunMode hook
+  const runMode = useRunMode({
+    conversationId: propConversationId,
+    onMessage: (content, role) => {
+      if (role === 'assistant') {
+        onChunk({
+          event: 'token',
+          data: { content, id: `run-${Date.now()}` },
         });
-        reasoningRef.current = ''; // Clear reasoning for next message
-        streamStartTimestampRef.current = null; // Reset for next stream
-        reset(); // Clear streaming text immediately after adding to history
+        onChunk({ event: 'complete', data: {} });
       }
+    },
+    onError: (error) => {
+      addErrorMessage(error);
     },
   });
 
-  // Set up WebSocket event handlers
+  // Create sendMessage helper using context client
+  const sendMessage = useCallback((message: string, options?: { image_path?: string }) => {
+    if (client?.isConnected()) {
+      client.sendMessage(message, options);
+    }
+  }, [client]);
+
+  // Command handler dependencies - wire up to new hooks
+  const commandDeps = {
+    addUserMessage: (text: string) => addUserMessage(text),
+    addAssistantMessage: (text: string) => {
+      onChunk({ event: 'token', data: { content: text, id: `cmd-${Date.now()}` } });
+      onChunk({ event: 'complete', data: {} });
+    },
+    clearMessages: resetAccumulator,
+    clearTools: () => {},
+    clearToolEvents: () => {},
+    resetProgress: () => {},
+    isConnected,
+    sendMessage,
+    conversationId: propConversationId,
+    switchConversation,
+    setShowModelSelector: (show: boolean) => show ? openModal('model') : closeModal(),
+    setShowSettings: (show: boolean) => show ? openModal('settings') : closeModal(),
+    setShowSessionPicker: (show: boolean) => show ? openModal('sessions') : closeModal(),
+    setIsLoadingSessions: setLoadingModal,
+    setSessions,
+    setProjects,
+    setTasks,
+    setShowingProjectList: (show: boolean) => show ? openModal('projects') : closeModal(),
+    setShowingTaskList: (show: boolean) => show ? openModal('tasks') : closeModal(),
+    setShowingSessionList: () => {},
+    setRunModeStatus: () => {},
+    setShowingRunMode: () => {},
+    setRunModeMessage: () => {},
+    setRunModeProgress: () => {},
+  };
+
+  // Command handling hook
+  const { handleCommand, sessionAPI, modelAPI } = useChatCommands(commandDeps);
+
+  // Wire up WebSocket callbacks to accumulator (using context client)
+  // NOTE: Only depend on client - callbacks use refs to avoid stale closures
   useEffect(() => {
-    const client = clientRef.current;
     if (!client) return;
 
     client.callbacks.onToken = (token: string) => {
-      // Optional debug; avoid noisy stdout
-      logger.debug(`[ChatSession ${propConversationId}] token`, { len: token.length });
-      // Note: Stream start timestamp is now captured when sending message,
-      // not on first token, to ensure tool events sort after the message
-      processToken(token);
+      setIsStreaming(true);
+      isSendingRef.current = false; // Response started
+      onChunk({ event: 'token', data: { content: token } });
     };
 
     client.callbacks.onReasoning = (token: string) => {
-      logger.debug(`[ChatSession ${propConversationId}] reasoning token`);
-      reasoningRef.current += token;
+      onChunk({ event: 'reasoning', data: { content: token } });
     };
 
     client.callbacks.onProgress = (iteration: number, maxIterations: number, message?: string) => {
-      updateProgress(iteration, maxIterations, message);
+      if (message) {
+        addStatusMessage([`Progress: ${iteration}/${maxIterations} - ${message}`]);
+      }
     };
 
     client.callbacks.onToolEvent = (data: any) => {
-      // Expecting { id, phase, action, ts, status?, result? }
-      const event: ToolEventNormalized = {
-        id: data.id || `${data.action}-${Date.now()}`,
-        phase: (data.phase || 'update') as any,
-        action: data.action || 'unknown',
-        ts: data.ts || Date.now(),
-        status: data.status,
-        result: data.result,
-      };
-      // Route through normalized store (throttles updates)
-      addToolEvent(event);
+      if (data.phase === 'start') {
+        onChunk({
+          event: 'tool_call',
+          data: {
+            tool_call_id: data.id,
+            tool_name: data.action,
+            tool_args: JSON.stringify(data),
+          },
+        });
+      } else if (data.phase === 'end') {
+        onChunk({
+          event: 'tool_result',
+          data: {
+            tool_call_id: data.id,
+            result: data.result || '',
+            status: data.status === 'error' ? 'error' : 'success',
+          },
+        });
+      }
     };
 
-    client.callbacks.onComplete = (actionResults: any) => {
-      completeProgress();
-      // Note: Tool events are now emitted directly from backend as "tool" events
-      // and handled by onToolEvent callback. No need to create them from action_results here.
-      complete(); // Finalize streaming message
-      setTimeout(() => resetProgress(), 1000);
+    client.callbacks.onComplete = () => {
+      setIsStreaming(false);
+      isSendingRef.current = false; // Allow new messages
+      onChunk({ event: 'complete', data: {} });
     };
-  }, [propConversationId, processToken, complete, updateProgress, completeProgress, resetProgress]);
 
-  const { switchToDashboard, switchConversation, tabs, activeTabId, switchTab } = useTab();
+    client.callbacks.onError = (error: Error) => {
+      setIsStreaming(false);
+      isSendingRef.current = false; // Allow retry on error
+      addErrorMessage(error.message);
+    };
+  }, [client, onChunk, addStatusMessage, addErrorMessage]);
 
   // Handle global hotkeys
   useInput((input, key) => {
-    // Don't process other inputs when settings modal is open
-    if (showSettings) {
+    if (showSettings || showSessionPicker || showModelSelector) {
       return;
     }
 
-    // Dismiss project/task lists on any key
     if (showingProjectList || showingTaskList) {
-      setShowingProjectList(false);
-      setShowingTaskList(false);
+      closeModal();
       return;
     }
 
-    // Ctrl+S to open settings
     if (key.ctrl && input === 's') {
-      setShowSettings(true);
+      openModal('settings');
       return;
     }
 
-    // Toggle reasoning visibility
     if (!key.ctrl && (input === 'r' || input === 'R')) {
-      setShowReasoning((v) => !v);
+      toggleReasoning();
       return;
     }
 
-    // Timeline paging controls
-    const totalEvents =
-      messages.length +
-      toolEvents.filter((e) => e.phase === 'end').length +
-      (streamingText ? 1 : 0);
-    const maxOffset = Math.max(0, Math.ceil(Math.max(0, totalEvents - timelinePageSize) / timelinePageSize));
+    const totalEvents = staticLines.length + dynamicLines.length;
+    const pageSize = 50;
+    const maxOffset = Math.max(0, Math.ceil(totalEvents / pageSize) - 1);
 
-    if ((key.pageUp || (key.ctrl && key.upArrow))) {
-      setTimelinePageOffset((o) => Math.min(o + 1, maxOffset));
+    if (key.pageUp || (key.ctrl && key.upArrow)) {
+      adjustTimelineOffset(1, maxOffset);
       return;
     }
-    if ((key.pageDown || (key.ctrl && key.downArrow))) {
-      setTimelinePageOffset((o) => Math.max(0, o - 1));
-      return;
-    }
-    if (!key.ctrl && (input === 'o' || input === 'O')) {
-      setTimelinePageOffset((o) => (o === 0 ? maxOffset : 0));
+    if (key.pageDown || (key.ctrl && key.downArrow)) {
+      adjustTimelineOffset(-1, maxOffset);
       return;
     }
 
-    // Ctrl+C and Ctrl+D to exit
     if (key.ctrl && (input === 'c' || input === 'd')) {
       if (!isExiting) {
-        setIsExiting(true);
+        setExiting(true);
         exit();
       }
     }
-    // Ctrl+P to cycle through tabs
-    else if (key.ctrl && input === 'p') {
-      const currentIndex = tabs.findIndex(t => t.id === activeTabId);
-      const nextIndex = (currentIndex + 1) % tabs.length;
-      switchTab(tabs[nextIndex].id);
-    }
-    // Ctrl+O to open session picker
-    else if (key.ctrl && input === 'o') {
+
+    if (key.ctrl && input === 'o') {
       if (!showSessionPicker) {
-        setIsLoadingSessions(true);
-        setShowSessionPicker(true);
-        sessionAPI.current
-          .listSessions()
+        setLoadingModal(true);
+        openModal('sessions');
+        sessionAPI.listSessions()
           .then((sessionList) => {
             setSessions(sessionList);
-            setIsLoadingSessions(false);
+            setLoadingModal(false);
           })
           .catch((err) => {
             logger.warn('Failed to load sessions:', err);
-            setIsLoadingSessions(false);
-            setShowSessionPicker(false);
+            setLoadingModal(false);
+            closeModal();
           });
       }
     }
   });
 
+  // Handle text input change
   const handleTextChange = useCallback((text: string) => {
-    setCurrentInput(text);
-
-    // Get autocomplete suggestions if text starts with /
     if (text.startsWith('/')) {
       const sugs = getSuggestions(text);
       setSuggestions(sugs);
     } else {
       setSuggestions([]);
     }
-  }, [getSuggestions]);
+  }, [getSuggestions, setSuggestions]);
 
-  const handleCommand = useCallback((commandName: string, args: Record<string, any>) => {
-    // Built-in command handlers
-    switch (commandName) {
-      case 'help':
-      case 'h':
-      case '?':
-        // Show help as a system message
-        addAssistantMessage(
-          `# Penguin CLI Commands\n\nType \`/help\` to see this message again.\n\n## Available Commands:\n\n### 💬 Chat\n- \`/help\` (aliases: /h, /?) - Show this help\n- \`/clear\` (aliases: /cls, /reset) - Clear chat history\n- \`/chat list\` - List all conversations\n- \`/chat load <id>\` - Load a conversation\n- \`/chat delete <id>\` - Delete a conversation\n- \`/chat new\` - Start a new conversation\n\n### 🚀 Workflow\n- \`/init\` - Initialize project with AI assistance\n- \`/review\` - Review code changes and suggest improvements\n- \`/plan <feature>\` - Create implementation plan for a feature\n- \`/image <path> [message]\` - Attach image for vision analysis\n\n### ⚙️ Configuration\n- \`/models\` - Select AI model\n- \`/model info\` - Show current model information\n- \`/setup\` - Run setup wizard (must exit chat first)\n- \`/config edit\` - Open config file in $EDITOR\n- \`/config check\` - Validate current configuration\n- \`/config debug\` - Show diagnostic information\n\n### 🔧 System\n- \`/quit\` (aliases: /exit, /q) - Exit the CLI\n\n### ⌨️ Hotkeys\n- \`Ctrl+S\` - Open Settings\n- \`Ctrl+P\` - Switch tabs\n- \`Ctrl+C\` - Exit\n\nMore commands available! See commands.yml for full list.`
-        );
-        break;
-
-      case 'models':
-        // Show model selector modal
-        addUserMessage('/models');
-        setShowModelSelector(true);
-        break;
-
-      case 'model':
-        // Check if it's a subcommand
-        if (args.subcommand === 'info') {
-          // Show current model info
-          addUserMessage('/model info');
-          modelAPI.current.getCurrentModel().then(currentModel => {
-            const loadConfig = require('../../config/loader.js').loadConfig;
-            loadConfig().then((config: any) => {
-              let message = `# 🤖 Current Model Information\n\n`;
-              message += `**Model**: ${currentModel.model}\n`;
-              message += `**Provider**: ${currentModel.provider}\n`;
-              
-              if (config?.model?.context_window) {
-                message += `**Context Window**: ${config.model.context_window.toLocaleString()} tokens\n`;
-              }
-              if (config?.model?.max_tokens) {
-                message += `**Max Output**: ${config.model.max_tokens.toLocaleString()} tokens\n`;
-              }
-              
-              // Check if model supports reasoning
-              const supportsReasoning = 
-                currentModel.model.toLowerCase().includes('gpt-5') ||
-                currentModel.model.toLowerCase().includes('gpt5') ||
-                currentModel.model.toLowerCase().includes('/o1') ||
-                currentModel.model.toLowerCase().includes('/o3') ||
-                (currentModel.model.toLowerCase().includes('gemini') && 
-                 (currentModel.model.toLowerCase().includes('2.5') || 
-                  currentModel.model.toLowerCase().includes('2-5')));
-              
-              if (supportsReasoning) {
-                message += `\n## 🧠 Reasoning Support\n`;
-                message += `This model supports advanced reasoning capabilities.\n`;
-                if (config?.model?.reasoning_effort) {
-                  message += `**Current Effort Level**: ${config.model.reasoning_effort}\n`;
-                } else {
-                  message += `**Current Effort Level**: medium (default)\n`;
-                }
-                message += `\n*Adjust reasoning effort in Settings (Ctrl+S)*`;
-              }
-              
-              message += `\n\nUse \`/models\` to switch models or \`Ctrl+S\` for Settings.`;
-              addAssistantMessage(message);
-            }).catch((err: any) => {
-              addAssistantMessage(`Error loading config: ${err.message}`);
-            });
-          }).catch(err => {
-            addAssistantMessage(`Error getting model info: ${err.message}`);
-          });
-        } else {
-          // Default to showing model selector
-          addUserMessage('/model');
-          setShowModelSelector(true);
-        }
-        break;
-
-      case 'setup':
-        // Show message that setup needs to be run outside of chat
-        addUserMessage('/setup');
-        addAssistantMessage(
-          '⚠️ Setup wizard must be run outside of the interactive chat.\n\n' +
-          'Please exit the chat (Ctrl+C) and run:\n\n' +
-          '```\ncd penguin-cli && npm run setup\n```\n\n' +
-          'This will launch the interactive configuration wizard.'
-        );
-        break;
-
-      case 'config edit':
-        addUserMessage('/config edit');
-        {
-          const configPath = getConfigPath();
-
-          addAssistantMessage(`Opening config file in external editor...\n\nFile: \`${configPath}\``);
-
-          // Build command based on platform
-          let command: string;
-          if (process.platform === 'darwin') {
-            // macOS: Use 'open -t' to open in default text editor
-            command = `open -t "${configPath}"`;
-          } else if (process.platform === 'win32') {
-            // Windows
-            command = `start "" "${configPath}"`;
-          } else {
-            // Linux
-            command = `xdg-open "${configPath}"`;
-          }
-
-          // Execute command
-          exec(command, (error, stdout, stderr) => {
-            if (error) {
-              addAssistantMessage(`❌ Failed to open editor: ${error.message}\n\n${stderr}\n\nYou can manually edit: \`${configPath}\``);
-            } else {
-              addAssistantMessage('✅ Config file opened in external editor.\n\n_Save and close the editor, then reload this CLI to apply changes._');
-            }
-          });
-        }
-        break;
-
-      case 'config check':
-        addUserMessage('/config check');
-        {
-          validateConfig().then(result => {
-            if (result.valid) {
-              let message = '✅ Configuration is valid!\n\n';
-              if (result.warnings.length > 0) {
-                message += '⚠️  Warnings:\n';
-                result.warnings.forEach(warn => {
-                  message += `  - ${warn}\n`;
-                });
-              }
-              addAssistantMessage(message);
-            } else {
-              let message = '❌ Configuration has errors:\n\n';
-              result.errors.forEach(err => {
-                message += `  - ${err}\n`;
-              });
-              if (result.warnings.length > 0) {
-                message += '\n⚠️  Warnings:\n';
-                result.warnings.forEach(warn => {
-                  message += `  - ${warn}\n`;
-                });
-              }
-              message += '\nRun `/config edit` to fix these issues or `/setup` to reconfigure.';
-              addAssistantMessage(message);
-            }
-          }).catch(error => {
-            addAssistantMessage(`❌ Failed to validate config: ${error}`);
-          });
-        }
-        break;
-
-      case 'config debug':
-        addUserMessage('/config debug');
-        {
-          getConfigDiagnostics().then(diagnostics => {
-            addAssistantMessage(diagnostics);
-          }).catch(error => {
-            addAssistantMessage(`❌ Failed to get diagnostics: ${error}`);
-          });
-        }
-        break;
-
-      case 'image':
-      case 'img':
-        {
-          // Get the raw path - might have quotes
-          let imagePath = args.path || '';
-
-          // Strip surrounding quotes if present
-          imagePath = imagePath.replace(/^['"]|['"]$/g, '');
-
-          // Get everything after the path as the message
-          const message = args.message || 'What do you see in this image?';
-
-          addUserMessage(`/image ${imagePath} ${message}`);
-
-          if (!imagePath) {
-            addAssistantMessage('❌ Please provide an image path: `/image <path> [optional message]`');
-            break;
-          }
-
-          // Expand ~ to home directory
-          if (imagePath.startsWith('~')) {
-            imagePath = imagePath.replace('~', require('os').homedir());
-          }
-
-          // Check if file exists
-          if (!existsSync(imagePath)) {
-            addAssistantMessage(`❌ Image file not found: \`${imagePath}\`\n\nMake sure the path is correct and the file exists.`);
-            break;
-          }
-
-          // Send message with image path to backend
-          addAssistantMessage(`📎 Sending image: \`${imagePath}\`\n\n_Analyzing image with vision model..._`);
-          clearTools();
-          sendMessage(message, { image_path: imagePath });
-        }
-        break;
-
-      case 'clear':
-      case 'cls':
-      case 'reset':
-        // Clear all messages and tool executions
-        clearMessages();
-        clearTools();
-        clearToolEvents();
-        resetProgress();
-        break;
-
-      case 'quit':
-      case 'exit':
-      case 'q':
-        // Exit the application
-        if (!isExiting) {
-          setIsExiting(true);
-          exit();
-        }
-        break;
-
-      // Session management commands - use REST API
-      case 'chat list':
-        addUserMessage('/chat list');
-        sessionAPI.current.listSessions()
-          .then(sessionList => {
-            setSessions(sessionList);
-            setShowingSessionList(true);
-            // Also show as formatted message
-            if (sessionList.length === 0) {
-              addAssistantMessage('No conversations found.');
-            } else {
-              const formatted = `📋 Found ${sessionList.length} conversation(s):\n\n` +
-                sessionList.slice(0, 10).map(s =>
-                  `• ${s.id.slice(0, 8)}: ${s.title || 'Untitled'} (${s.message_count || 0} messages)`
-                ).join('\n');
-              addAssistantMessage(formatted);
-            }
-          })
-          .catch(err => {
-            addAssistantMessage(`Error listing sessions: ${err.message}`);
-          });
-        break;
-
-      case 'chat load':
-        if (args.session_id) {
-          addUserMessage(`/chat load ${args.session_id}`);
-          clearMessages();
-          clearTools();
-          resetProgress();
-          switchConversation(args.session_id);
-          addAssistantMessage(`✓ Switched to session: ${args.session_id.slice(0, 8)}`);
-        } else {
-          addAssistantMessage('Error: Missing session ID. Usage: `/chat load <session_id>`');
-        }
-        break;
-
-      case 'chat delete':
-        if (args.session_id) {
-          addUserMessage(`/chat delete ${args.session_id}`);
-          sessionAPI.current.deleteSession(args.session_id)
-            .then(success => {
-              if (success) {
-                addAssistantMessage(`✓ Deleted session: ${args.session_id.slice(0, 8)}`);
-                // Refresh the session list if showing
-                if (showingSessionList) {
-                  sessionAPI.current.listSessions().then(setSessions);
-                }
-              } else {
-                addAssistantMessage(`Error: Session ${args.session_id} not found.`);
-              }
-            })
-            .catch(err => {
-              addAssistantMessage(`Error deleting session: ${err.message}`);
-            });
-        } else {
-          addAssistantMessage('Error: Missing session ID. Usage: `/chat delete <session_id>`');
-        }
-        break;
-
-      case 'chat new':
-        addUserMessage('/chat new');
-        sessionAPI.current.createSession()
-          .then(newSessionId => {
-            clearMessages();
-            clearTools();
-            resetProgress();
-            switchConversation(newSessionId);
-            addAssistantMessage(`✓ Created and switched to new session: ${newSessionId.slice(0, 8)}`);
-          })
-          .catch((err: any) => {
-            addAssistantMessage(`Error creating session: ${err.message}`);
-          });
-        break;
-
-      // Workflow prompt commands - send structured prompts to backend
-      case 'init':
-        if (isConnected) {
-          const initPrompt = `🚀 **Project Initialization**\n\nPlease help me initialize this project:\n\n1. Analyze the current project structure and codebase\n2. Identify the main technologies, frameworks, and patterns used\n3. Suggest improvements to architecture, organization, or setup\n4. Recommend next steps for development\n5. Identify any potential issues or missing components\n\nWorkspace: ${process.cwd()}`;
-          addUserMessage('/init');
-          sendMessage(initPrompt);
-          clearTools();
-        }
-        break;
-
-      case 'review':
-        if (isConnected) {
-          const reviewPrompt = `🔍 **Code Review Request**\n\nPlease review recent changes in this project:\n\n1. Analyze code quality, patterns, and best practices\n2. Check for potential bugs, security issues, or performance problems\n3. Suggest improvements to readability and maintainability\n4. Verify test coverage and documentation\n5. Provide specific, actionable feedback\n\nWorkspace: ${process.cwd()}\n\n*Tip: Use \`git diff\` or provide specific files to review.*`;
-          addUserMessage('/review');
-          sendMessage(reviewPrompt);
-          clearTools();
-        }
-        break;
-
-      case 'plan':
-        if (isConnected) {
-          const feature = args.feature || 'the requested feature';
-          const planPrompt = `📋 **Implementation Plan**\n\nCreate a detailed implementation plan for: **${feature}**\n\n1. Break down the feature into concrete tasks\n2. Identify dependencies and prerequisites\n3. Suggest file structure and code organization\n4. List potential challenges and solutions\n5. Estimate complexity and provide implementation order\n6. Include testing strategy\n\nWorkspace: ${process.cwd()}`;
-          addUserMessage(`/plan ${feature}`);
-          sendMessage(planPrompt);
-          clearTools();
-        }
-        break;
-
-      // Project management commands
-      case 'project create':
-        addUserMessage(`/project create ${args.name}`);
-        if (!args.name) {
-          addAssistantMessage('❌ Project name is required. Usage: `/project create <name> [description]`');
-          break;
-        }
-        projectAPI.current.createProject(args.name, args.description)
-          .then(project => {
-            addAssistantMessage(`✅ Created project: **${project.name}**\n\n${project.description ? `_${project.description}_\n\n` : ''}Project ID: \`${project.id}\``);
-          })
-          .catch((err: any) => {
-            addAssistantMessage(`❌ Failed to create project: ${err.message}`);
-          });
-        break;
-
-      case 'project list':
-        addUserMessage('/project list');
-        projectAPI.current.listProjects()
-          .then(projectList => {
-            setProjects(projectList);
-            setShowingProjectList(true);
-          })
-          .catch((err: any) => {
-            addAssistantMessage(`❌ ${err.message}`);
-          });
-        break;
-
-      case 'task create':
-        addUserMessage(`/task create ${args.name}`);
-        if (!args.name) {
-          addAssistantMessage('❌ Task name and project required. Usage: `/task create <name> --project <project_id> [description]`');
-          break;
-        }
-        if (!args.project) {
-          // If no project specified, try to get the first project
-          projectAPI.current.listProjects()
-            .then(projects => {
-              if (projects.length === 0) {
-                addAssistantMessage('❌ No projects found. Create a project first with `/project create <name>`');
-              } else {
-                const firstProject = projects[0];
-                return projectAPI.current.createTask(args.name, firstProject.id, args.description)
-                  .then(task => {
-                    addAssistantMessage(`✅ Created task: **${task.title}**\n\nProject: ${firstProject.name}\n${task.description ? `Description: _${task.description}_\n\n` : ''}Task ID: \`${task.id}\`\nStatus: ${task.status}`);
-                  });
-              }
-            })
-            .catch((err: any) => {
-              addAssistantMessage(`❌ Failed to create task: ${err.message}`);
-            });
-        } else {
-          projectAPI.current.createTask(args.name, args.project, args.description)
-            .then(task => {
-              addAssistantMessage(`✅ Created task: **${task.title}**\n\n${task.description ? `_${task.description}_\n\n` : ''}Task ID: \`${task.id}\`\nStatus: ${task.status}`);
-            })
-            .catch((err: any) => {
-              addAssistantMessage(`❌ Failed to create task: ${err.message}`);
-            });
-        }
-        break;
-
-      case 'task list':
-        addUserMessage('/task list');
-        projectAPI.current.listTasks()
-          .then(taskList => {
-            setTasks(taskList);
-            setShowingTaskList(true);
-          })
-          .catch((err: any) => {
-            addAssistantMessage(`❌ ${err.message}`);
-          });
-        break;
-
-      // RunMode autonomous execution commands
-      case 'run continuous':
-      case 'run 247':
-        addUserMessage(commandName === 'run 247' ? '/run 247' : '/run continuous');
-        {
-          const taskName = args.task || undefined;
-          const description = args.description || undefined;
-
-          addAssistantMessage(`🚀 Starting continuous autonomous execution...\n\n${taskName ? `Task: ${taskName}` : 'Running next available task'}`);
-
-          // Connect to WebSocket stream and execute task
-          if (!runStreamWS.current) {
-            setRunModeStatus({ status: 'running', current_task: taskName });
-            setShowingRunMode(true);
-
-            runStreamWS.current = runAPI.current.connectStreamAndExecute(
-              taskName || 'Autonomous Task',
-              description,
-              true, // continuous mode
-              propConversationId,
-                  (message: TaskStreamMessage) => {
-                    console.error('[RunMode] Received event:', message.type, message);
-
-                    // Handle stream messages
-                    switch (message.type) {
-                      case 'task_started':
-                        setRunModeMessage(`Started: ${message.task_name}`);
-                        setRunModeProgress(0);
-                        addAssistantMessage(`▶ Task started: **${message.task_name}**`);
-                        break;
-                      case 'task_progress':
-                        setRunModeMessage(message.content || '');
-                        setRunModeProgress(message.progress || 0);
-                        break;
-                      case 'task_completed_eventbus':
-                      case 'task_completed':
-                        setRunModeMessage(`Completed`);
-                        setRunModeProgress(100);
-                        addAssistantMessage(`✅ Task completed!`);
-                        break;
-                      case 'task_failed':
-                        setRunModeMessage(`Failed: ${message.error}`);
-                        addAssistantMessage(`❌ Task failed: ${message.error}`);
-                        break;
-                      case 'message':
-                        // Display message content from assistant, tool, or system
-                        const content = (message as any).data?.content || (message as any).content;
-                        const role = (message as any).data?.role || (message as any).role || 'system';
-                        const category = (message as any).data?.category || (message as any).category || 'SYSTEM';
-
-                        console.error(`[RunMode] Processing message: role=${role}, category=${category}, contentLength=${content?.length}`);
-
-                        if (content) {
-                          // Main assistant responses (DIALOG category)
-                          if (role === 'assistant' && category === 'DIALOG') {
-                            console.error('[RunMode] Displaying assistant DIALOG message');
-                            addAssistantMessage(content);
-                          }
-                          // Tool outputs and system messages - show dimmed
-                          else if (category === 'SYSTEM_OUTPUT' || category === 'SYSTEM') {
-                            console.error('[RunMode] Displaying system/tool message (dimmed)');
-                            addAssistantMessage(`_${content}_`);
-                          } else {
-                            console.error(`[RunMode] Unhandled message type: role=${role}, category=${category}`);
-                          }
-                        }
-                        break;
-                      case 'error':
-                        addAssistantMessage(`❌ Error: ${message.error}`);
-                        break;
-                      case 'shutdown_completed':
-                      case 'run_mode_ended':
-                        setShowingRunMode(false);
-                        setRunModeStatus({ status: 'idle' });
-                        break;
-                    }
-                  },
-                  (error) => {
-                    addAssistantMessage(`❌ Stream error: ${error.message}`);
-                  },
-                  () => {
-                    // Stream closed
-                    setShowingRunMode(false);
-                    runStreamWS.current = null;
-                }
-              );
-          } else {
-            addAssistantMessage('⚠️ RunMode is already running. Use `/run stop` first.');
-          }
-        }
-        break;
-
-      case 'run task':
-        addUserMessage(`/run task ${args.name}`);
-        {
-          const taskName = args.name;
-          const description = args.description || undefined;
-
-          if (!taskName) {
-            addAssistantMessage('❌ Task name is required. Usage: `/run task <name> [description]`');
-            break;
-          }
-
-          addAssistantMessage(`🚀 Starting task: **${taskName}**`);
-          setShowingRunMode(true);
-          setRunModeStatus({ status: 'running', current_task: taskName });
-
-          // Connect to stream and execute task
-          if (!runStreamWS.current) {
-            runStreamWS.current = runAPI.current.connectStreamAndExecute(
-              taskName,
-              description,
-              false, // not continuous
-              propConversationId,
-              (message: TaskStreamMessage) => {
-                switch (message.type) {
-                  case 'task_started':
-                    setRunModeMessage(`Started: ${message.task_name}`);
-                    break;
-                  case 'task_progress':
-                    setRunModeMessage(message.content || '');
-                    setRunModeProgress(message.progress || 0);
-                    break;
-                  case 'task_completed':
-                    setRunModeMessage(`Completed`);
-                    setRunModeProgress(100);
-                    addAssistantMessage(`✅ Task completed!\n\n${message.result ? JSON.stringify(message.result, null, 2) : ''}`);
-                    setShowingRunMode(false);
-                    setRunModeStatus({ status: 'idle' });
-                    break;
-                  case 'task_failed':
-                    addAssistantMessage(`❌ Task failed: ${message.error}`);
-                    setShowingRunMode(false);
-                    setRunModeStatus({ status: 'idle' });
-                    break;
-                  case 'message':
-                    if (message.content) {
-                      addAssistantMessage(message.content);
-                    }
-                    break;
-                }
-              },
-              (error) => {
-                addAssistantMessage(`❌ Stream error: ${error.message}`);
-                setShowingRunMode(false);
-                setRunModeStatus({ status: 'idle' });
-              },
-              () => {
-                // Stream closed
-                setShowingRunMode(false);
-                setRunModeStatus({ status: 'idle' });
-                runStreamWS.current = null;
-              }
-            );
-          } else {
-            addAssistantMessage('⚠️ A task is already running. Use `/run stop` first.');
-          }
-        }
-        break;
-
-      case 'run stop':
-        addUserMessage('/run stop');
-        addAssistantMessage('⏸ Stopping autonomous execution...');
-        runAPI.current.stop()
-          .then(() => {
-            setRunModeStatus({ status: 'stopped' });
-            setShowingRunMode(false);
-            addAssistantMessage('✅ Execution stopped');
-
-            // Close WebSocket stream
-            if (runStreamWS.current) {
-              runStreamWS.current.close();
-              runStreamWS.current = null;
-            }
-          })
-          .catch((err: any) => {
-            addAssistantMessage(`❌ Failed to stop: ${err.message}`);
-          });
-        break;
-
-      default:
-        // Unknown command
-        addAssistantMessage(`Unknown command: /${commandName}. Type \`/help\` for available commands.`);
-    }
-  }, [addAssistantMessage, addUserMessage, clearMessages, clearTools, resetProgress, exit, isExiting, isConnected, sendMessage]);
-
+  // Handle message submit
   const handleSubmit = useCallback((value: string) => {
     const trimmed = value.trim();
     if (!trimmed) return;
 
-    // Reset suggestions
     setSuggestions([]);
-    setCurrentInput('');
 
-    // Auto-detect image file paths (when dragged into terminal or typed)
     const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'];
-
-    // Check for multimodal input: text + image path on separate lines
     const lines = trimmed.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     let imagePath: string | null = null;
     let messageText: string | null = null;
 
-    // Look for image paths in any line
     for (const line of lines) {
       const cleanedLine = line.replace(/^['"]|['"]$/g, '');
       const lowerLine = cleanedLine.toLowerCase();
@@ -890,161 +292,104 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
                      (cleanedLine.startsWith('/') || cleanedLine.startsWith('~') || cleanedLine.startsWith('.'));
 
       if (isImage) {
-        // Expand ~ to home directory
         let expandedPath = cleanedLine.startsWith('~')
           ? cleanedLine.replace('~', homedir())
           : cleanedLine;
-
-        // Check if file exists
         if (existsSync(expandedPath)) {
           imagePath = expandedPath;
         }
       } else {
-        // This line is text
         messageText = messageText ? `${messageText}\n${line}` : line;
       }
     }
 
-    // Handle multimodal message (text + image)
-    if (imagePath && messageText) {
-      logger.debug('[ChatSession] Multimodal message detected', { imagePath, messageText });
-      addUserMessage(`${messageText}\n\n📎 ${imagePath}`);
-      clearTools();
-      sendMessage(messageText, { image_path: imagePath });
-      setInputKey((prev) => prev + 1);
+    if (imagePath) {
+      addUserMessage(messageText ? `${messageText}\n\n📎 ${imagePath}` : `📎 ${imagePath}`);
+      sendMessage(messageText || 'What do you see in this image?', { image_path: imagePath });
+      clearInput();
       return;
     }
 
-    // Handle image-only message
-    if (imagePath && !messageText) {
-      logger.debug('[ChatSession] Auto-detected image file', imagePath);
-      addUserMessage(`📎 ${imagePath}`);
-      addAssistantMessage(`📎 Attached image: \`${imagePath}\`\n\n_What would you like to know about this image?_`);
-      clearTools();
-      sendMessage('What do you see in this image?', { image_path: imagePath });
-      setInputKey((prev) => prev + 1);
-      return;
-    }
-
-    // Check if this is a command (starts with /)
     if (trimmed.startsWith('/')) {
       const parsed = parseInput(trimmed);
-      logger.debug(`[ChatSession] Parsed command: ${trimmed} -> ${parsed ? parsed.command.name : 'null'}`);
       if (parsed) {
-        // Handle command
-        logger.debug(`[ChatSession] Handling command: ${parsed.command.name}`, parsed.args);
         handleCommand(parsed.command.name, parsed.args);
-        setInputKey((prev) => prev + 1);
+        clearInput();
         return;
-      } else {
-        logger.debug('[ChatSession] Command not recognized; sending as message');
       }
     }
 
-    // Only allow sending regular messages if connected and not already streaming
-    if (isConnected && !isStreaming) {
+    if (isConnected && !isStreaming && !isSendingRef.current) {
+      isSendingRef.current = true; // Synchronous - prevents race condition
       addUserMessage(trimmed);
-      clearTools(); // Clear previous tool executions
-      // Capture stream start timestamp BEFORE sending (so tool events sort after message)
-      streamStartTimestampRef.current = Date.now();
       sendMessage(trimmed);
-      // Force input to remount and clear by changing its key
-      setInputKey((prev) => prev + 1);
+      clearInput();
     }
-  }, [isConnected, isStreaming, addUserMessage, sendMessage, clearTools, parseInput, handleCommand]);
+  }, [isConnected, isStreaming, addUserMessage, sendMessage, clearInput, parseInput, handleCommand, setSuggestions]);
 
-  // Handle session selection from modal
+  // Session handlers
   const handleSessionSelect = useCallback((session: Session) => {
-    setShowSessionPicker(false);
-    clearMessages();
-    clearTools();
-    resetProgress();
+    closeModal();
+    resetAccumulator();
     switchConversation(session.id);
-  }, [switchConversation, clearMessages, clearTools, resetProgress]);
+  }, [switchConversation, resetAccumulator, closeModal]);
 
-  // Handle session deletion from modal
   const handleSessionDelete = useCallback((sessionId: string) => {
-    sessionAPI.current
-      .deleteSession(sessionId)
-      .then(() => {
-        // Refresh session list
-        return sessionAPI.current.listSessions();
-      })
-      .then((sessionList) => {
-        setSessions(sessionList);
-      })
-      .catch((err) => {
-        logger.warn('Failed to delete session:', err);
-      });
-  }, []);
+    sessionAPI.deleteSession(sessionId)
+      .then(() => sessionAPI.listSessions())
+      .then((sessionList) => setSessions(sessionList))
+      .catch((err) => logger.warn('Failed to delete session:', err));
+  }, [sessionAPI, setSessions]);
 
-  // Handle model selection from modal
+  // Model selection handler
   const handleModelSelect = useCallback(async (modelId: string) => {
-    setShowModelSelector(false);
-    
-    // Update the model via API
-    const success = await modelAPI.current.setModel(modelId);
-    
+    closeModal();
+    const success = await modelAPI.setModel(modelId);
     if (success) {
-      // Determine model capabilities for the message
-      const modelLower = modelId.toLowerCase();
-      const hasReasoning = modelLower.includes('gpt-5') || modelLower.includes('gpt5') ||
-                          modelLower.includes('/o1') || modelLower.includes('/o3') ||
-                          (modelLower.includes('gemini') && (modelLower.includes('2.5') || modelLower.includes('2-5')));
-      const hasVision = modelLower.includes('vision') || modelLower.includes('gpt-4o') ||
-                       modelLower.includes('claude') || modelLower.includes('gemini');
-      
-      let capabilities = [];
-      if (hasReasoning) capabilities.push('🧠 Advanced Reasoning');
-      if (hasVision) capabilities.push('👁️ Vision Support');
-      
-      const capabilitiesText = capabilities.length > 0 
-        ? `\n\n**Capabilities:** ${capabilities.join(', ')}`
-        : '';
-      
-      addAssistantMessage(`✅ Model changed to: **${modelId}**${capabilitiesText}\n\nThe new model will be used for all future messages.`);
+      onChunk({
+        event: 'token',
+        data: { content: `✅ Model changed to: **${modelId}**`, id: `model-${Date.now()}` },
+      });
+      onChunk({ event: 'complete', data: {} });
     } else {
-      addAssistantMessage(`❌ Failed to change model. Please try again or check your configuration.`);
+      addErrorMessage('Failed to change model. Please try again.');
     }
-  }, [addAssistantMessage, propConversationId, processToken, updateProgress, completeProgress]);
+  }, [modelAPI, closeModal, onChunk, addErrorMessage]);
 
   return (
-    <Box flexDirection="column" gap={1}>
-      {/* Main content */}
+    <Box flexDirection="column" flexGrow={1}>
       {!showSessionPicker && (
         <>
-          {/* Unified status panel (connection + progress) */}
           <StatusPanel
             isConnected={isConnected}
-            error={error}
-            progress={progress}
+            error={connectionError}
           />
 
-      {/* Unified event timeline (messages + streaming + compact tool results) */}
-      <EventTimeline
-        messages={messages}
-        streamingText={streamingText}
-        toolEvents={toolEvents}
-        pageSize={timelinePageSize}
-        pageOffset={timelinePageOffset}
-        showReasoning={showReasoning}
-      />
+          <ChatMessageArea
+            staticItems={staticLines}
+            dynamicItems={dynamicLines}
+            showReasoning={showReasoning}
+          />
 
-      {/* Tool results now displayed inline in EventTimeline */}
+          {/* Streaming indicator - visible while response is being generated */}
+          {isStreaming && (
+            <Box marginLeft={2} marginY={1}>
+              <Text color="cyan">▋ </Text>
+              <Text dimColor>Generating response...</Text>
+            </Box>
+          )}
 
-      {/* Input prompt - Multi-line with autocomplete */}
-      <Box minHeight={8}>
-        <MultiLineInput
-          key={inputKey}
-          placeholder={isStreaming ? "Waiting for response..." : "Type your message..."}
-          isDisabled={!isConnected || isStreaming}
-          onSubmit={handleSubmit}
-          onTextChange={handleTextChange}
-          suggestions={suggestions}
-        />
-      </Box>
+          <Box minHeight={8}>
+            <MultiLineInput
+              key={inputKey}
+              placeholder={isStreaming ? "Waiting for response..." : "Type your message..."}
+              isDisabled={!isConnected || isStreaming}
+              onSubmit={handleSubmit}
+              onTextChange={handleTextChange}
+              suggestions={suggestions}
+            />
+          </Box>
 
-          {/* Help text */}
           <Box marginTop={1}>
             <Text dimColor>
               {isStreaming
@@ -1055,18 +400,16 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
         </>
       )}
 
-      {/* RunMode Status Display */}
-      {showingRunMode && !showSessionPicker && (
+      {runMode.isActive && !showSessionPicker && (
         <Box flexDirection="column" width="100%" paddingX={2}>
           <RunModeStatus
-            status={runModeStatus}
-            currentMessage={runModeMessage}
-            progress={runModeProgress}
+            status={runMode.status}
+            currentMessage={runMode.message}
+            progress={runMode.progress}
           />
         </Box>
       )}
 
-      {/* Project List Modal */}
       {showingProjectList && !showSessionPicker && (
         <Box flexDirection="column" width="100%" paddingX={2}>
           <ProjectList projects={projects} />
@@ -1076,7 +419,6 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
         </Box>
       )}
 
-      {/* Task List Modal */}
       {showingTaskList && !showSessionPicker && !showingProjectList && (
         <Box flexDirection="column" width="100%" paddingX={2}>
           <TaskList tasks={tasks} />
@@ -1086,7 +428,6 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
         </Box>
       )}
 
-      {/* Session Picker Modal (full screen overlay) */}
       {showSessionPicker && (
         <Box flexDirection="column" width="100%" height="100%" justifyContent="center" alignItems="center">
           <SessionPickerModal
@@ -1094,28 +435,26 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
             currentSessionId={propConversationId}
             onSelect={handleSessionSelect}
             onDelete={handleSessionDelete}
-            onClose={() => setShowSessionPicker(false)}
+            onClose={closeModal}
             isLoading={isLoadingSessions}
           />
         </Box>
       )}
 
-      {/* Model Selector Modal */}
       {showModelSelector && (
         <Box flexDirection="column" width="100%" height="100%" justifyContent="center" alignItems="center">
           <ModelSelectorModal
             onSelect={handleModelSelect}
-            onClose={() => setShowModelSelector(false)}
+            onClose={closeModal}
           />
         </Box>
       )}
 
-      {/* Settings Modal */}
       {showSettings && (
         <Box flexDirection="column" width="100%" height="100%" justifyContent="center" alignItems="center">
           <SettingsModal
-            onClose={() => setShowSettings(false)}
-            modelAPI={modelAPI.current}
+            onClose={closeModal}
+            modelAPI={modelAPI}
           />
         </Box>
       )}

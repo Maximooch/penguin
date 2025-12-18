@@ -16,6 +16,7 @@ import { CommandProvider } from './ui/contexts/CommandContext';
 import { TabProvider } from './ui/contexts/TabContext';
 import { ThemeProvider } from './ui/theme/ThemeContext.js';
 import { isSetupComplete } from './config/loader.js';
+import { waitForBannerImage } from './ui/components/messages/WelcomeMessage.js';
 import chalk from 'chalk';
 
 // Clear the terminal on startup
@@ -56,7 +57,11 @@ async function checkSetup() {
   }
 }
 
-function startApp() {
+async function startApp() {
+  // Wait for banner image to load before rendering
+  // This ensures the image is cached before the Static component renders
+  await waitForBannerImage();
+
   // Parse command line arguments
   const args = process.argv.slice(2);
   const providedConversationId = args.find(arg => arg.startsWith('--conversation='))?.split('=')[1];

@@ -11,6 +11,7 @@ interface ConnectionContextValue extends ConnectionState {
   client: ChatClient | null;
   switchConversation: (newConversationId: string) => Promise<void>;
   currentConversationId: string | undefined;
+  sendMessage: (text: string) => void;
 }
 
 const ConnectionContext = createContext<ConnectionContextValue | null>(null);
@@ -37,6 +38,7 @@ export function ConnectionProvider({
     client: null,
     currentConversationId: conversationId,
     switchConversation: async () => {}, // Will be set properly below
+    sendMessage: () => {}, // Will be set properly below
   });
 
   useEffect(() => {
@@ -82,7 +84,14 @@ export function ConnectionProvider({
       setConversationId(newConversationId);
     };
 
-    setState((s) => ({ ...s, client, isConnecting: true, switchConversation }));
+    const sendMessage = (text: string) => {
+      if (!client?.isConnected()) {
+        throw new Error('Not connected to server');
+      }
+      client.sendMessage(text);
+    };
+
+    setState((s) => ({ ...s, client, isConnecting: true, switchConversation, sendMessage }));
 
     client.connect().catch((error) => {
       setState((s) => ({
