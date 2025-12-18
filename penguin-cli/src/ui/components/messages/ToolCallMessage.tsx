@@ -40,39 +40,34 @@ export function ToolCallMessage({ line, contentWidth, expanded = false }: ToolCa
 
   // Truncate tool name if needed
   const toolName = line.name || 'tool';
-  const maxNameLength = 30;
+  const maxNameLength = 40;
   const displayName = toolName.length > maxNameLength
     ? toolName.slice(0, maxNameLength - 3) + '...'
     : toolName;
 
+  // Compact single-line format like letta-code
   return (
-    <Box flexDirection="column" paddingLeft={2} marginTop={1}>
-      {/* Tool header line */}
-      <Text>
-        <Text color={color}>{indicator} </Text>
-        <Text color={theme.brand.accent} bold>{displayName}</Text>
-        <Text color={theme.text.muted}> ({label})</Text>
+    <Box flexDirection="column">
+      {/* Tool header - compact, dimmed */}
+      <Text dimColor>
+        <Text color={color}>{indicator}</Text>
+        <Text> {displayName}</Text>
+        {line.phase !== 'finished' && <Text color={theme.text.muted}> {label}</Text>}
       </Text>
 
-      {/* Tool arguments (if expanded or streaming) */}
-      {(expanded || line.phase === 'streaming') && line.argsText && (
-        <Box paddingLeft={2}>
-          <Text color={theme.text.secondary} dimColor wrap="wrap">
-            {formatArgs(line.argsText)}
-          </Text>
-        </Box>
+      {/* Only show result on error (collapsed by default) */}
+      {line.phase === 'finished' && line.resultOk === false && line.resultText && (
+        <Text color={theme.status.error} dimColor>
+          ⎿ {formatResult(line.resultText, false)}
+        </Text>
       )}
 
-      {/* Tool result (if finished and expanded, or if error) */}
-      {line.phase === 'finished' && line.resultText && (expanded || line.resultOk === false) && (
-        <Box paddingLeft={2}>
-          <Text
-            color={line.resultOk === false ? theme.status.error : theme.text.secondary}
-            wrap="wrap"
-          >
-            {formatResult(line.resultText, line.resultOk)}
-          </Text>
-        </Box>
+      {/* Show args/result if explicitly expanded */}
+      {expanded && line.argsText && (
+        <Text dimColor>  args: {formatArgs(line.argsText).slice(0, 100)}</Text>
+      )}
+      {expanded && line.phase === 'finished' && line.resultText && line.resultOk !== false && (
+        <Text dimColor>  ⎿ {formatResult(line.resultText, true)}</Text>
       )}
     </Box>
   );

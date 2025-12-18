@@ -155,6 +155,8 @@ export interface PenguinStreamEvent {
     id?: string;
     /** Token content for streaming */
     content?: string;
+    /** Token field (used by backend for reasoning events) */
+    token?: string;
     /** Tool call information */
     tool_call_id?: string;
     tool_name?: string;

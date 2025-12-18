@@ -17,10 +17,11 @@ interface ErrorMessageProps {
 export function ErrorMessage({ line, contentWidth }: ErrorMessageProps) {
   const { theme } = useTheme();
 
+  // Compact error display
   return (
-    <Box flexDirection="column" paddingLeft={2} marginTop={1}>
+    <Box flexDirection="column">
       <Text color={theme.status.error}>
-        <Text bold>✗ Error: </Text>
+        <Text bold>✗ </Text>
         <Text wrap="wrap">{line.text}</Text>
       </Text>
     </Box>

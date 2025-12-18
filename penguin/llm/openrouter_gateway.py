@@ -84,8 +84,8 @@ class OpenRouterGateway:
         self._last_tool_call: Optional[Dict[str, Any]] = None
 
         # --- Determine Base URL (before API key check) ---
-        # Priority: explicit param > env var > default OpenRouter
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or "https://openrouter.ai/api/v1"
+        # Priority: explicit param > model_config > env var > default OpenRouter
+        self.base_url = base_url or model_config.api_base or os.getenv("OPENAI_BASE_URL") or "https://openrouter.ai/api/v1"
         
         # Check if we're using Link proxy (localhost:3001 or contains 'link')
         is_link_proxy = "localhost:3001" in self.base_url or "127.0.0.1:3001" in self.base_url or "link" in self.base_url.lower()
@@ -103,10 +103,6 @@ class OpenRouterGateway:
         # For Link proxy without API key, use a placeholder (Link handles auth)
         if not api_key and is_link_proxy:
             api_key = "link-proxy-placeholder"
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL") or "https://openrouter.ai/api/v1"
-        
-        if self.base_url != "https://openrouter.ai/api/v1":
-            self.logger.info(f"Using custom base URL: {self.base_url}")
 
         # --- Initialize OpenAI Client for OpenRouter ---
         try:
@@ -799,7 +795,7 @@ class OpenRouterGateway:
             **extra_headers
         }
         
-        url = "https://openrouter.ai/api/v1/chat/completions"
+        url = f"{self.base_url}/chat/completions"
 
         try:
             # Longer timeout for cold-starting models (GPT-5, new models may take minutes to warm up)

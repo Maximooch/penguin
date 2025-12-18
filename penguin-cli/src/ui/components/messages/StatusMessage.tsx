@@ -17,8 +17,9 @@ interface StatusMessageProps {
 export function StatusMessage({ line, contentWidth }: StatusMessageProps) {
   const { theme } = useTheme();
 
+  // Compact status - no padding, just dimmed text
   return (
-    <Box flexDirection="column" paddingLeft={2}>
+    <Box flexDirection="column">
       {line.lines.map((text, index) => (
         <Text key={index} color={theme.text.muted} dimColor wrap="wrap">
           {text}

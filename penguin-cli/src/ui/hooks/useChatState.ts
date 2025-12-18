@@ -62,7 +62,7 @@ const initialUIState: UIState = {
   inputKey: 0,
   suggestions: [],
   timelinePageOffset: 0,
-  showReasoning: false,
+  showReasoning: true, // Show reasoning by default, toggle with 'r' key
   isExiting: false,
 };
 

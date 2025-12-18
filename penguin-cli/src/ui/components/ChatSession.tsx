@@ -220,7 +220,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
       return;
     }
 
-    if (!key.ctrl && (input === 'r' || input === 'R')) {
+    if (key.ctrl && input === 'r') {
       toggleReasoning();
       return;
     }
@@ -394,7 +394,7 @@ export function ChatSession({ conversationId: propConversationId }: ChatSessionP
             <Text dimColor>
               {isStreaming
                 ? 'Waiting for response... • Ctrl+C to exit'
-                : 'Enter: Send • Ctrl+P: Dashboard • Ctrl+O: Sessions • Ctrl+S: Settings • Ctrl+C: Exit'}
+                : `Enter: Send • Ctrl+R: ${showReasoning ? 'Hide' : 'Show'} Reasoning • Ctrl+O: Sessions • Ctrl+S: Settings`}
             </Text>
           </Box>
         </>

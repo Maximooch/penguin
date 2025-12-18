@@ -27,13 +27,36 @@ function uid(prefix: string): string {
 }
 
 /**
- * Strip action tags from content that should be consumed by backend
- * These are control tags that shouldn't be displayed to users
+ * Strip action tags and tool result markers from content
+ * These are control elements that shouldn't be displayed (tools render separately)
  */
 const ACTION_TAG_PATTERN = /<\/?(?:finish_response|finish_task|emergency_stop)[^>]*>/gi;
 
+// Backend includes these in assistant text, but CLI renders tools separately
+const TOOL_RESULT_PATTERNS = [
+  /\[Tool Execution Result\][^\n]*\n?/gi,
+  /\[Tool Result\][^\n]*\n?/gi,
+  /^\s*\[Tool Result\].*$/gim,
+];
+
+// Strip execute blocks since tool calls show separately
+const EXECUTE_BLOCK_PATTERN = /```[\s\S]*?#\s*<execute>[\s\S]*?#\s*<\/execute>[\s\S]*?```\s*/gi;
+
 function stripActionTags(content: string): string {
-  return content.replace(ACTION_TAG_PATTERN, '');
+  let result = content.replace(ACTION_TAG_PATTERN, '');
+
+  // Strip tool result markers (backend includes these but CLI renders tools separately)
+  for (const pattern of TOOL_RESULT_PATTERNS) {
+    result = result.replace(pattern, '');
+  }
+
+  // Strip execute code blocks (rendered as ToolCallMessage)
+  result = result.replace(EXECUTE_BLOCK_PATTERN, '');
+
+  // Clean up excessive whitespace from removals
+  result = result.replace(/\n{3,}/g, '\n\n');
+
+  return result.trim();
 }
 
 /**
@@ -242,10 +265,12 @@ export function onChunk(b: Buffers, event: PenguinStreamEvent): void {
         phase: 'streaming',
       }));
 
-      if (data.content) {
-        const updatedText = line.text + data.content;
+      // Backend sends 'token' field, but some events may use 'content'
+      const reasoningToken = data.content || data.token;
+      if (reasoningToken) {
+        const updatedText = line.text + reasoningToken;
         updateLine<ReasoningLine>(b, id, { text: updatedText });
-        b.usage.reasoningTokens += data.content.length;
+        b.usage.reasoningTokens += reasoningToken.length;
       }
       break;
     }

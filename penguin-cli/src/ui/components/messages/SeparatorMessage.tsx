@@ -22,9 +22,10 @@ export function SeparatorMessage({ line, contentWidth }: SeparatorMessageProps) 
   const separatorWidth = Math.max(20, contentWidth || 60);
   const separatorLine = separatorChar.repeat(separatorWidth);
 
+  // Minimal separator - just a thin line
   return (
-    <Box marginY={1}>
-      <Text color={theme.border.default}>{separatorLine}</Text>
+    <Box>
+      <Text color={theme.border.default} dimColor>{separatorLine}</Text>
     </Box>
   );
 }

@@ -2,8 +2,8 @@
 
 > **Purpose:** Guide for configuring Penguin to route LLM requests through Link's inference proxy for unified billing, analytics, and future RL/finetuning data collection.
 >
-> **Last Updated:** 2025-12-16
-> **Link Version:** MVP (auth middleware added)
+> **Last Updated:** 2025-12-18
+> **Link Version:** MVP (auth middleware + user API keys)
 
 ---
 
@@ -34,18 +34,48 @@ Link's inference proxy at `/api/v1/chat/completions` is **fully OpenAI-compatibl
 
 ## Quick Start
 
-### Minimal Configuration
+### Option 1: Penguin config.yml (Recommended)
 
-Set these environment variables in Penguin:
+Configure Penguin's `config.yml` to route through Link:
+
+```yaml
+# penguin/config.yml
+
+model:
+  model: anthropic/claude-sonnet-4
+  provider: openrouter  # Keep as openrouter - Link's proxy is OpenRouter-compatible
+  client_preference: openrouter
+  streaming_enabled: true
+  temperature: 0.5
+  context_window: 200000
+  max_output_tokens: 64000
+
+api:
+  base_url: http://localhost:3001/api/v1  # Point to Link's inference proxy
+  # Production: base_url: https://your-link-domain.com/api/v1
+```
+
+And in Penguin's `.env`:
+
+```bash
+# Use your Link API key (create in Settings → API Keys → Link API Keys)
+OPENROUTER_API_KEY=sk-link-xxxxxxxxxxxxxxxx
+```
+
+**Why this works:** Link's inference proxy is OpenRouter-compatible, so `provider: openrouter` format works. The `sk-link-*` API key tells Link which user to bill.
+
+### Option 2: Environment Variables Only
 
 ```bash
 # Point to Link's inference proxy
 OPENAI_BASE_URL=http://localhost:3001/api/v1  # Local dev
 # OPENAI_BASE_URL=https://linkplatform.ai/api/v1  # Production
 
-# No API key needed for internal traffic (uses X-Link-* headers)
-# For production, set Link's inference API key:
-# LINK_INFERENCE_API_KEY=your-api-key
+# Use your Link API key
+OPENROUTER_API_KEY=sk-link-xxxxxxxxxxxxxxxx
+
+# Or for internal traffic (no API key needed):
+# LINK_USER_ID=your-user-id
 ```
 
 That's it for MVP. Penguin's OpenAI SDK calls will automatically route through Link.
@@ -166,30 +196,43 @@ def _get_link_headers():
     return headers
 ```
 
-### Option B: Config File
+### Option B: Config File (config.yml)
 
-Add LLM configuration to Penguin's config:
+Penguin's actual `config.yml` format (see [config.example.yml](https://github.com/Maximooch/penguin/blob/main/penguin/config.example.yml)):
 
 ```yaml
-# penguin.yaml or .penguin/config.yaml
-llm:
-  # Primary endpoint (Link proxy)
-  base_url: ${OPENAI_BASE_URL:-http://localhost:3001/api/v1}
-  api_key: ${OPENROUTER_API_KEY}
+# penguin/config.yml
 
-  # Link integration
-  link:
-    user_id: ${LINK_USER_ID}
-    session_id: ${LINK_SESSION_ID}
-    agent_id: ${LINK_AGENT_ID}
-    api_key: ${LINK_INFERENCE_API_KEY}
+model:
+  model: anthropic/claude-sonnet-4
+  provider: openrouter  # Keep as openrouter - Link proxy is OpenRouter-compatible
+  client_preference: openrouter
+  streaming_enabled: true
+  temperature: 0.5
+  context_window: 200000
+  max_output_tokens: 64000
 
-  # Fallback configuration
-  fallback:
-    enabled: true
-    base_url: https://openrouter.ai/api/v1
-    timeout_ms: 5000
+api:
+  base_url: http://localhost:3001/api/v1  # Link's inference proxy
+
+# Agent-specific overrides (optional)
+agents:
+  researcher:
+    model: anthropic/claude-haiku-4.5
+    provider: openrouter
+  implementer:
+    model: anthropic/claude-sonnet-4
+    provider: openrouter
 ```
+
+Combined with `.env`:
+
+```bash
+# Link API key (created in Settings → API Keys)
+OPENROUTER_API_KEY=sk-link-xxxxxxxxxxxxxxxx
+```
+
+**Note:** The `provider: openrouter` setting is correct because Link's proxy accepts OpenRouter-format requests. The `sk-link-*` API key is validated by Link and used for billing attribution.
 
 ### Option C: Runtime API
 
@@ -320,19 +363,79 @@ const env = {
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OPENAI_BASE_URL` | `https://openrouter.ai/api/v1` | LLM API base URL |
-| `OPENROUTER_API_KEY` | - | API key for OpenRouter (used by Link or fallback) |
-| `LINK_USER_ID` | - | User ID for billing attribution |
+| `OPENROUTER_API_KEY` | - | API key for OpenRouter (or Link `sk-link-*` key) |
+| `LINK_USER_ID` | - | User ID for billing attribution (internal headers) |
 | `LINK_SESSION_ID` | - | Session ID for usage tracking |
 | `LINK_AGENT_ID` | - | Agent ID for multi-agent scenarios |
-| `LINK_INFERENCE_API_KEY` | - | API key for Link inference proxy (production) |
 
 ### Link Backend Environment
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENROUTER_API_KEY` | - | Link's OpenRouter API key |
-| `LINK_INFERENCE_API_KEY` | - | API key for external clients |
+| `OPENROUTER_API_KEY` | - | Link's OpenRouter API key (for proxying to OpenRouter) |
+| `LINK_INFERENCE_API_KEY` | - | Admin API key for server-to-server auth |
 | `INFERENCE_ALLOW_ANONYMOUS` | `false` | Allow requests without auth (dev only) |
+
+---
+
+## Cloud Container Deployment (Future)
+
+For Penguin instances running in cloud containers:
+
+### Per-Container Configuration
+
+Each container gets its own `config.yml`:
+
+```yaml
+# Container config
+api:
+  base_url: https://link.yourplatform.com/api/v1  # Production Link proxy
+
+model:
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+```
+
+With environment variable for the Link API key:
+
+```bash
+# Each container uses a Link API key
+OPENROUTER_API_KEY=sk-link-container-specific-key
+```
+
+### Multi-Tenant with User Context
+
+For multi-tenant scenarios (one Penguin serving multiple users), use internal headers:
+
+```bash
+# Container env
+OPENAI_BASE_URL=https://link.yourplatform.com/api/v1
+```
+
+And pass user context per-request via headers:
+
+```python
+# Per-request user context
+headers = {
+    "X-Link-User-Id": current_user_id,
+    "X-Link-Session-Id": session_id,
+}
+```
+
+### Future: Runtime Config API
+
+Penguin could add a runtime config endpoint for Link to configure per-session:
+
+```python
+# Proposed: POST /api/v1/system/config/llm
+{
+    "base_url": "https://link.yourplatform.com/api/v1",
+    "link_user_id": "user-123",
+    "link_session_id": "session-456"
+}
+```
+
+This would allow Link to dynamically configure Penguin instances without container restarts.
 
 ---
 
@@ -347,7 +450,7 @@ curl -X POST http://localhost:3001/api/v1/chat/completions \
   -H "X-Link-User-Id: test-user" \
   -H "X-Link-Session-Id: test-session" \
   -d '{
-    "model": "anthropic/claude-haiku-4.5",
+    "model": "anthropic/claude-3.5-haiku",
     "messages": [{"role": "user", "content": "Hello!"}],
     "max_tokens": 100
   }'
@@ -389,7 +492,7 @@ def test_link_integration():
     )
 
     response = client.chat.completions.create(
-        model="anthropic/claude-haiku-4.5",
+        model="anthropic/claude-3.5-haiku",
         messages=[{"role": "user", "content": "Hello"}],
         max_tokens=10,
     )
@@ -401,7 +504,7 @@ def test_link_integration():
 To verify requests are hitting Link, check the backend logs:
 
 ```
-[OpenRouter] Non-streaming chat completion: anthropic/claude-haiku-4.5 (user: test-user, auth: internal-headers)
+[OpenRouter] Non-streaming chat completion: anthropic/claude-3.5-haiku (user: test-user, auth: internal-headers)
 ```
 
 ### 4. Verify billing
@@ -445,6 +548,12 @@ Check the billing queue logs:
 ---
 
 ## Changelog
+
+### 2025-12-18
+- Added Penguin `config.yml` examples with actual format from config.example.yml
+- Updated Quick Start with recommended config.yml approach
+- Clarified that `provider: openrouter` works because Link proxy is OpenRouter-compatible
+- Added reference to Penguin's config.example.yml on GitHub
 
 ### 2025-12-16
 - Added Google OAuth login page for agentboard-web

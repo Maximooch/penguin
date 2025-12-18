@@ -18,9 +18,10 @@ interface UserMessageProps {
 export function UserMessage({ line, contentWidth }: UserMessageProps) {
   const { theme } = useTheme();
 
+  // User messages get a small top margin for visual separation from assistant output
   return (
     <Box flexDirection="row" marginTop={1}>
-      <Text color={theme.brand.primary} bold>{'> '}</Text>
+      <Text color={theme.brand.primary} bold>{'❯ '}</Text>
       <Text color={theme.text.primary} wrap="wrap">
         {line.text}
       </Text>

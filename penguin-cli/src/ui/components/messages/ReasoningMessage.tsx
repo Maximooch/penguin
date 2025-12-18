@@ -1,8 +1,8 @@
 /**
  * ReasoningMessage Component
  *
- * Renders internal reasoning/thinking text with "💭 Internal Reasoning" header.
- * Can be collapsed/expanded by user preference.
+ * Renders internal reasoning/thinking text in a bordered collapsible box.
+ * Toggle visibility with 'r' hotkey.
  */
 
 import React from 'react';
@@ -28,16 +28,36 @@ export function ReasoningMessage({ line, contentWidth, visible = true }: Reasoni
   // Show streaming cursor when content is arriving
   const displayText = isStreaming ? line.text + '▋' : line.text;
 
-  return (
-    <Box flexDirection="column" paddingLeft={2} marginTop={1}>
-      {/* Header - collapsible indicator */}
-      <Text color={theme.text.muted}>💭 Internal Reasoning</Text>
+  // Don't render empty reasoning
+  if (!line.text && !isStreaming) {
+    return null;
+  }
 
-      {/* Reasoning content - indented and dimmed */}
-      <Box paddingLeft={2} width={contentWidth}>
-        <Text color={theme.text.muted} dimColor wrap="wrap">
-          {displayText || (isStreaming ? '▋' : '')}
+  // Calculate box width - use contentWidth or default
+  const boxWidth = contentWidth ? Math.min(contentWidth, 100) : 80;
+
+  return (
+    <Box flexDirection="column" marginY={0}>
+      {/* Bordered reasoning box like the screenshot */}
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={theme.text.muted}
+        paddingX={1}
+        paddingY={0}
+        width={boxWidth}
+      >
+        {/* Header */}
+        <Text color={theme.text.muted} dimColor>
+          💭 Internal Reasoning
         </Text>
+
+        {/* Content - dimmed and wrapped */}
+        <Box marginTop={0}>
+          <Text color={theme.text.muted} dimColor wrap="wrap">
+            {displayText || (isStreaming ? '▋' : '')}
+          </Text>
+        </Box>
       </Box>
     </Box>
   );
