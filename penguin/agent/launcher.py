@@ -66,6 +66,11 @@ class AgentLauncher:
     # ------------------------------------------------------------------
     def _get_agent_class(self, agent_config: AgentConfig) -> Type[BaseAgent]:
         class_path = agent_config.type
+        if not class_path:
+            raise ValueError(
+                f"Agent '{agent_config.name}' has no 'type' field. "
+                "YAML-based agents require a fully-qualified class path."
+            )
         if class_path in self._agent_classes:
             return self._agent_classes[class_path]
 

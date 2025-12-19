@@ -804,29 +804,45 @@ Move to `conversation_manager`:
 
 ---
 
-## Implementation Order
+## Implementation Order (Updated 2025-12-18)
 
-1. **Phase 1: Agent Architecture** (Biggest win)
-   - Add `AgentConfig` dataclass (can live in core.py or config.py)
-   - Update `process()` to accept `agent` parameter
-   - Deprecate `register_agent()` → `ensure_agent_conversation()`
+### Phase 1: Agent Architecture (CURRENT - Hard Break)
+
+**Strategy:** Raise `NotImplementedError`, update all callers, delete state dicts.
+
+1. ✅ Move `agent/` to `penguin/agent/`
+2. ✅ Extend `AgentConfig` in `agent/schema.py`
+3. **In core.py:**
+   - Add `ensure_agent_conversation()` method
+   - Add `delete_agent_conversation()` method
+   - Update `set_agent_paused()` / `is_agent_paused()` to use conversation metadata
+   - Replace `register_agent()` body with `raise NotImplementedError`
+   - Replace `unregister_agent()` body with call to `delete_agent_conversation()`
    - Delete 5 state dictionaries
-   - Delete config resolution helper methods
-   - Test agent/persona functionality
+   - Delete helper methods: `_lookup_persona_config`, `_flatten_model_overrides`, etc.
+4. **Update callers (production code):**
+   - `penguin/api_client.py`
+   - `penguin/web/routes.py`
+   - `penguin/cli/interface.py`
+   - `penguin/cli/cli.py`
+   - `penguin/cli/commands.py`
+   - `penguin/multi/coordinator.py`
+   - `penguin/agent/__init__.py`
+5. Let tests/scripts fail (fix in follow-up)
 
-2. **Phase 2: Streaming extraction**
+### Phase 2: Streaming extraction
    - Create `streaming/stream_handler.py`
    - Update core.py to use StreamHandler
    - Remove `_streaming_state` dict
    - Test streaming in CLI
 
-3. **Phase 3: Model simplification**
+### Phase 3: Model simplification
    - Add `fetch_openrouter_specs()` to `model_config.py`
    - Simplify `load_model()` to 10 lines
    - Delete hardcoded model specs
    - Test model switching
 
-4. **Phase 4: Cleanup**
+### Phase 4: Cleanup
    - Create `utils/callbacks.py`
    - Remove deprecated methods
    - Remove legacy UI subscriber pattern
@@ -907,3 +923,113 @@ After refactoring, verify:
 | Sandboxed execution | `AgentLauncher` + Docker | Complex |
 
 **The MessageBus pattern for agent communication is overkill** for most use cases. Keep it only for scenarios that truly need pub/sub (e.g., parallel agents sharing findings).
+
+---
+
+## Refactoring Decisions (2025-12-18)
+
+### Approach: Hard Break (No Silent Deprecation)
+
+**Decision:** Loud failures over silent warnings. Break things now, fix them completely.
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| `register_agent()` behavior | **Raise `NotImplementedError`** | Force migration, no half-working state |
+| Caller updates | **Update all 22 callers now** | Clean break, complete migration |
+| `Engine.register_agent()` | **Keep as-is** | Different method, different purpose |
+| Tests accessing internal dicts | **Let them fail** | Fix later, prioritize core changes |
+
+### Pre-Refactor Completed
+
+- [x] Move `agent/` to `penguin/agent/`
+- [x] Extend `AgentConfig` in `agent/schema.py` for persona support
+  - Added: `system_prompt`, `model_id`, `permissions`, `share_session_with`, `share_context_window_with`
+  - Added: `from_persona()` and `from_persona_name()` class methods
+  - Made `type` optional (only required for YAML-based agents)
+
+### Callers of `register_agent()` to Update (22 files)
+
+**Production code:**
+| File | Lines | Migration |
+|------|-------|-----------|
+| `penguin/api_client.py` | 509, 588-590 | → `ensure_agent_conversation()` |
+| `penguin/web/routes.py` | 511, 540, 633 | → `ensure_agent_conversation()` |
+| `penguin/cli/interface.py` | 1687, 1739 | → `ensure_agent_conversation()` |
+| `penguin/cli/cli.py` | 1904, 1980, 3955 | → `ensure_agent_conversation()` |
+| `penguin/cli/commands.py` | 442 | → `ensure_agent_conversation()` |
+| `penguin/multi/coordinator.py` | 126 | → `ensure_agent_conversation()` |
+| `penguin/agent/__init__.py` | 143, 153 | → `ensure_agent_conversation()` |
+
+**Tests/Scripts (let fail, fix later):**
+- `tests/test_sub_agents.py`
+- `tests/test_agent_persona_configuration.py`
+- `tests/test_api_client.py`
+- `tests/test_multi_agents_phase2.py`
+- `scripts/verify_*.py`, `scripts/phase*.py`, `scripts/smoke*.py`, `scripts/demo*.py`
+
+### State Dictionaries to Delete
+
+```python
+# Lines in core.py to remove:
+self._agent_bus_handlers: Dict[str, Any] = {}           # Line 609
+self._agent_api_clients: Dict[str, APIClient] = {}      # Line 611
+self._agent_model_overrides: Dict[str, ModelConfig] = {}# Line 612
+self._agent_tool_defaults: Dict[str, Sequence[str]] = {}# Line 613
+self._agent_paused: Dict[str, bool] = {}                # Line 690
+```
+
+### New API Surface
+
+```python
+class PenguinCore:
+    # NEW: Simple agent conversation management
+    def ensure_agent_conversation(
+        self,
+        agent_id: str,
+        system_prompt: Optional[str] = None,
+        **kwargs  # Accept but ignore legacy params for now
+    ) -> None:
+        """Ensure a conversation exists for an agent."""
+        conv = self.conversation_manager.get_agent_conversation(agent_id, create_if_missing=True)
+        if system_prompt:
+            conv.set_system_prompt(system_prompt)
+
+    # NEW: Simple agent removal
+    def delete_agent_conversation(self, agent_id: str) -> bool:
+        """Delete an agent's conversation."""
+        return self.conversation_manager.delete_agent_conversation(agent_id)
+
+    # UPDATED: Pause state moves to conversation metadata
+    def set_agent_paused(self, agent_id: str, paused: bool = True) -> None:
+        conv = self.conversation_manager.get_agent_conversation(agent_id)
+        if conv and hasattr(conv, 'session'):
+            conv.session.metadata["paused"] = paused
+
+    def is_agent_paused(self, agent_id: str) -> bool:
+        conv = self.conversation_manager.get_agent_conversation(agent_id)
+        if conv and hasattr(conv, 'session'):
+            return conv.session.metadata.get("paused", False)
+        return False
+
+    # REMOVED: Raises error
+    def register_agent(self, *args, **kwargs) -> None:
+        raise NotImplementedError(
+            "register_agent() has been removed. Use ensure_agent_conversation() instead. "
+            "See context/architecture/core-refactor-plan.md for migration guide."
+        )
+```
+
+### Methods to Delete from Core.py
+
+| Method | Lines | Replacement |
+|--------|-------|-------------|
+| `register_agent()` | 1128-1400 | `ensure_agent_conversation()` |
+| `unregister_agent()` | 1539-1570 | `delete_agent_conversation()` |
+| `create_sub_agent()` | ~40 lines | Use conversation_manager directly |
+| `_lookup_persona_config()` | ~12 lines | `AgentConfig.from_persona_name()` |
+| `_flatten_model_overrides()` | ~35 lines | `ModelConfig.for_model()` |
+| `_resolve_model_config_for_agent()` | ~45 lines | `ModelConfig.for_model()` |
+| `_get_model_config_dict()` | ~12 lines | Inline |
+| `_summarize_model_config()` | ~15 lines | `ModelConfig.get_config()` |
+| `get_agent_roster()` | ~55 lines | Simplify to query conversations |
+| `get_agent_profile()` | ~5 lines | Query conversation metadata |

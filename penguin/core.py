@@ -605,13 +605,6 @@ class PenguinCore:
         except Exception:
             self.system_prompt = SYSTEM_PROMPT
 
-        # Track MessageBus handlers per agent for teardown
-        self._agent_bus_handlers: Dict[str, Any] = {}
-        # Cache per-agent runtime overrides (API clients, model config, tool defaults)
-        self._agent_api_clients: Dict[str, APIClient] = {}
-        self._agent_model_overrides: Dict[str, ModelConfig] = {}
-        self._agent_tool_defaults: Dict[str, Sequence[str]] = {}
-
         # Initialize streaming primitives immediately (before Engine/handlers can use them)
         self.current_stream = None
         self.stream_lock = asyncio.Lock()
@@ -685,9 +678,6 @@ class PenguinCore:
             ui_event_callback=self.emit_ui_event,
         )
         self.current_runmode_status_summary: str = "RunMode idle." # New attribute
-
-        # Track paused state for agents (sub-agents as tools)
-        self._agent_paused: Dict[str, bool] = {}
 
         # Register MessageBus human adapter to forward to UI
         try:
@@ -898,133 +888,8 @@ class PenguinCore:
         #     self.action_executor.reset()
 
     # ------------------------------------------------------------------
-    # Multi-agent helpers (Core ↔ Engine wiring)
+    # Multi-agent helpers
     # ------------------------------------------------------------------
-
-    def _lookup_persona_config(
-        self,
-        persona: Optional[str],
-        *,
-        fallback_agent_id: str,
-    ) -> Optional[AgentPersonaConfig]:
-        """Return a persona config using the provided name or fallback agent id."""
-
-        personas = getattr(self.config, "agent_personas", {}) or {}
-        if persona and persona in personas:
-            return personas[persona]
-        return personas.get(fallback_agent_id)
-
-    @staticmethod
-    def _flatten_model_overrides(data: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
-        """Normalise model override dictionaries into ``ModelConfig`` kwargs."""
-
-        if not isinstance(data, Mapping):
-            return {}
-
-        flattened: Dict[str, Any] = {}
-        for key, value in data.items():
-            if value is None:
-                continue
-            if key in {"id", "name"}:
-                continue
-            if key == "max_tokens":
-                flattened["max_output_tokens"] = value  # Legacy key -> new canonical key
-                continue
-            if key == "context_window":
-                flattened["max_context_window_tokens"] = value
-                continue
-            if key == "reasoning" and isinstance(value, Mapping):
-                enabled = value.get("enabled")
-                if enabled is not None:
-                    flattened["reasoning_enabled"] = bool(enabled)
-                effort = value.get("effort")
-                if effort is not None:
-                    flattened["reasoning_effort"] = effort
-                max_tokens = value.get("max_tokens")
-                if max_tokens is not None:
-                    flattened["reasoning_max_tokens"] = max_tokens
-                exclude = value.get("exclude")
-                if exclude is not None:
-                    flattened["reasoning_exclude"] = bool(exclude)
-                continue
-            flattened[key] = value
-
-        return {k: v for k, v in flattened.items() if k in MODEL_CONFIG_FIELD_NAMES}
-
-    def _get_model_config_dict(self, model_id: str) -> Dict[str, Any]:
-        """Fetch a model configuration mapping by identifier."""
-
-        model_configs = getattr(self.config, "model_configs", {}) or {}
-        config_entry = model_configs.get(model_id)
-        if config_entry is None:
-            raise ValueError(f"Model id '{model_id}' is not defined in config.model_configs")
-        if not isinstance(config_entry, dict):
-            raise ValueError(f"Model config for '{model_id}' must be a mapping, got {type(config_entry)!r}")
-        payload = dict(config_entry)
-        payload.setdefault("model", model_id)
-        return payload
-
-    def _resolve_model_config_for_agent(
-        self,
-        *,
-        persona_model: Optional[AgentModelSettings],
-        model_config: Optional[ModelConfig],
-        model_config_id: Optional[str],
-        model_overrides: Optional[Dict[str, Any]],
-    ) -> Optional[ModelConfig]:
-        """Construct a per-agent ``ModelConfig`` if overrides are supplied."""
-
-        if model_config is not None:
-            # Create an isolated copy so future mutations do not bleed across agents.
-            return ModelConfig(**asdict(model_config))  # type: ignore[arg-type]
-
-        persona_overrides: Dict[str, Any] = {}
-        resolved_model_id = model_config_id
-
-        if persona_model is not None:
-            persona_overrides = persona_model.to_dict()
-            resolved_model_id = resolved_model_id or persona_overrides.get("id")
-
-        if model_overrides:
-            persona_overrides = {**persona_overrides, **model_overrides}
-
-        source_conf: Dict[str, Any] = {}
-        if resolved_model_id:
-            source_conf = self._get_model_config_dict(str(resolved_model_id))
-
-        merged_kwargs = self._flatten_model_overrides(source_conf)
-        merged_kwargs.update(self._flatten_model_overrides(persona_overrides))
-
-        if not merged_kwargs:
-            return None
-
-        base_model = self.model_config or getattr(self.config, "model_config", None)
-        if base_model is None:
-            raise RuntimeError("Base model configuration is not available")
-
-        base_kwargs = {
-            key: value
-            for key, value in asdict(base_model).items()
-            if key in MODEL_CONFIG_FIELD_NAMES
-        }
-        base_kwargs.update(merged_kwargs)
-        return ModelConfig(**base_kwargs)  # type: ignore[arg-type]
-
-    @staticmethod
-    def _summarize_model_config(model_config: Optional[ModelConfig]) -> Optional[Dict[str, Any]]:
-        """Return a sanitized snapshot of a model configuration for display."""
-
-        if not model_config:
-            return None
-        return {
-            "model": model_config.model,
-            "provider": model_config.provider,
-            "client_preference": model_config.client_preference,
-            "max_output_tokens": getattr(model_config, "max_output_tokens", None),
-            "max_context_window_tokens": getattr(model_config, "max_context_window_tokens", None),
-            "temperature": getattr(model_config, "temperature", None),
-            "streaming_enabled": getattr(model_config, "streaming_enabled", None),
-        }
 
     def get_persona_catalog(self) -> List[Dict[str, Any]]:
         """Return configured personas as serialisable dictionaries."""
@@ -1045,8 +910,10 @@ class PenguinCore:
         return catalog
 
     def get_agent_roster(self) -> List[Dict[str, Any]]:
-        """Describe registered agents, sub-agent hierarchy, and persona metadata."""
+        """Return list of registered agents with their conversation metadata.
 
+        Simplified version - derives all state from conversation metadata.
+        """
         cm = getattr(self, "conversation_manager", None)
         if cm is None:
             return []
@@ -1063,56 +930,41 @@ class PenguinCore:
 
         roster: List[Dict[str, Any]] = []
         for agent_id in agent_ids:
-            conv = None
-            try:
-                conv = cm.agent_sessions.get(agent_id)
-            except Exception:
-                conv = None
+            conv = cm.get_agent_conversation(agent_id)
 
             metadata: Dict[str, Any] = {}
             system_prompt = None
             if conv is not None:
-                if hasattr(conv, "system_prompt") and conv.system_prompt:
-                    system_prompt = conv.system_prompt
+                system_prompt = getattr(conv, "system_prompt", None)
                 session = getattr(conv, "session", None)
                 if session is not None:
-                    raw_meta = getattr(session, "metadata", {}) or {}
-                    metadata = dict(raw_meta)
+                    metadata = dict(getattr(session, "metadata", {}) or {})
 
             persona_name = metadata.get("persona")
             persona_config = personas.get(persona_name) if persona_name else None
             persona_description = metadata.get("persona_description")
             if not persona_description and persona_config:
-                persona_description = persona_config.description
-
-            model_override = self._agent_model_overrides.get(agent_id)
-            model_info = self._summarize_model_config(model_override or self.model_config)
+                persona_description = getattr(persona_config, "description", None)
 
             parent = parent_map.get(agent_id)
             children = list(children_map.get(agent_id, [])) if isinstance(children_map, dict) else []
-            default_tools = list(self._agent_tool_defaults.get(agent_id, ()))
 
             preview = None
             if system_prompt:
                 preview = system_prompt if len(system_prompt) <= 80 else system_prompt[:77] + "..."
 
-            roster.append(
-                {
-                    "id": agent_id,
-                    "persona": persona_name,
-                    "persona_description": persona_description,
-                    "persona_defined": bool(persona_config),
-                    "model": model_info,
-                    "model_override": bool(model_override),
-                    "parent": parent,
-                    "children": children,
-                    "default_tools": default_tools,
-                    "active": agent_id == active_agent,
-                    "paused": bool(getattr(self, "_agent_paused", {}).get(agent_id, False)),
-                    "is_sub_agent": parent is not None,
-                    "system_prompt_preview": preview,
-                }
-            )
+            roster.append({
+                "id": agent_id,
+                "persona": persona_name,
+                "persona_description": persona_description,
+                "persona_defined": bool(persona_config),
+                "parent": parent,
+                "children": children,
+                "active": agent_id == active_agent,
+                "paused": self.is_agent_paused(agent_id),
+                "is_sub_agent": parent is not None,
+                "system_prompt_preview": preview,
+            })
 
         roster.sort(key=lambda entry: (entry["parent"] or "", entry["id"]))
         return roster
@@ -1125,277 +977,26 @@ class PenguinCore:
                 return entry
         return None
 
-    def register_agent(
-        self,
-        agent_id: str,
-        *,
-        system_prompt: Optional[str] = None,
-        activate: bool = False,
-        share_session_with: Optional[str] = None,
-        share_context_window_with: Optional[str] = None,
-        shared_context_window_max_tokens: Optional[int] = None,
-        model_output_max_tokens: Optional[int] = None,
-        persona: Optional[str] = None,
-        model_config: Optional[ModelConfig] = None,
-        model_config_id: Optional[str] = None,
-        model_overrides: Optional[Dict[str, Any]] = None,
-        default_tools: Optional[Sequence[str]] = None,
-    ) -> None:
-        """Register an agent with a per-agent ActionExecutor bound to its conversation.
+    def register_agent(self, *args, **kwargs) -> None:
+        """REMOVED: Use ensure_agent_conversation() instead.
 
-        - Ensures an agent-scoped ConversationSystem exists in ConversationManager
-        - Creates an ActionExecutor that targets that agent's conversation
-        - Registers the agent with Engine, overriding the action executor for that agent
+        This method has been removed as part of the core.py refactoring.
+        See context/architecture/core-refactor-plan.md for migration guide.
 
-        Args:
-            agent_id: Unique agent identifier
-            system_prompt: Optional system prompt override for the agent
-            activate: If True, makes this the active/default agent for subsequent calls
+        Migration:
+            # Old:
+            core.register_agent("analyzer", system_prompt="...", persona="code_analyzer")
+
+            # New:
+            core.ensure_agent_conversation("analyzer", system_prompt="...")
         """
-        if not getattr(self, "engine", None):
-            raise RuntimeError("Engine is not initialized; cannot register agents")
-
-        persona_config = self._lookup_persona_config(persona, fallback_agent_id=agent_id)
-        persona_model_settings = persona_config.model if persona_config else None
-
-        if persona_config:
-            if system_prompt is None and persona_config.system_prompt:
-                system_prompt = persona_config.system_prompt
-            if share_session_with is None and persona_config.share_session_with:
-                share_session_with = persona_config.share_session_with
-            if share_context_window_with is None and persona_config.share_context_window_with:
-                share_context_window_with = persona_config.share_context_window_with
-            if shared_context_window_max_tokens is None and persona_config.shared_context_window_max_tokens is not None:
-                shared_context_window_max_tokens = persona_config.shared_context_window_max_tokens
-            if model_output_max_tokens is None and persona_config.model_output_max_tokens is not None:
-                model_output_max_tokens = persona_config.model_output_max_tokens
-            if default_tools is None and persona_config.default_tools:
-                default_tools = tuple(persona_config.default_tools)
-
-        agent_model_config = self._resolve_model_config_for_agent(
-            persona_model=persona_model_settings,
-            model_config=model_config,
-            model_config_id=model_config_id,
-            model_overrides=model_overrides,
+        raise NotImplementedError(
+            "register_agent() has been removed. Use ensure_agent_conversation() instead.\n"
+            "See context/architecture/core-refactor-plan.md for migration guide.\n\n"
+            "Quick migration:\n"
+            "  OLD: core.register_agent(agent_id, system_prompt=..., persona=...)\n"
+            "  NEW: core.ensure_agent_conversation(agent_id, system_prompt=...)"
         )
-
-        if agent_model_config and model_output_max_tokens is None and agent_model_config.max_output_tokens is not None:
-            model_output_max_tokens = agent_model_config.max_output_tokens
-        if (
-            agent_model_config
-            and shared_context_window_max_tokens is None
-            and agent_model_config.max_output_tokens is not None
-            and (share_session_with or share_context_window_with)
-        ):
-            shared_context_window_max_tokens = agent_model_config.max_output_tokens
-
-        # Provision agent or sub-agent
-        effective_cw_cap = None
-        if shared_context_window_max_tokens is not None and model_output_max_tokens is not None:
-            effective_cw_cap = min(int(shared_context_window_max_tokens), int(model_output_max_tokens))
-        elif shared_context_window_max_tokens is not None:
-            effective_cw_cap = int(shared_context_window_max_tokens)
-        elif model_output_max_tokens is not None:
-            effective_cw_cap = int(model_output_max_tokens)
-
-        if share_session_with or share_context_window_with:
-            parent = share_session_with or share_context_window_with
-            self.conversation_manager.create_sub_agent(
-                agent_id,
-                parent_agent_id=parent,
-                share_session=bool(share_session_with),
-                share_context_window=bool(share_session_with or share_context_window_with),
-                shared_context_window_max_tokens=effective_cw_cap,
-            )
-            conv = self.conversation_manager.get_agent_conversation(agent_id)
-        else:
-            conv = self.conversation_manager.get_agent_conversation(agent_id, create_if_missing=True)
-
-        if system_prompt:
-            conv.set_system_prompt(system_prompt)
-
-        if getattr(conv, "session", None):
-            try:
-                if persona_config:
-                    conv.session.metadata["persona"] = persona_config.name
-                    if persona_config.description:
-                        conv.session.metadata["persona_description"] = persona_config.description
-                    else:
-                        conv.session.metadata.pop("persona_description", None)
-                else:
-                    conv.session.metadata.pop("persona", None)
-                    conv.session.metadata.pop("persona_description", None)
-            except Exception:
-                pass
-
-        if agent_model_config:
-            try:
-                agent_cw = self.conversation_manager.agent_context_windows.get(agent_id)
-                if agent_cw is None:
-                    baseline = (
-                        self.conversation_manager.agent_context_windows.get(share_session_with or share_context_window_with)
-                        or self.conversation_manager.agent_context_windows.get("default")
-                        or self.conversation_manager.context_window
-                    )
-                    if baseline is not None:
-                        self.conversation_manager.agent_context_windows[agent_id] = baseline
-                        agent_cw = baseline
-                if agent_cw is not None:
-                    if hasattr(agent_cw, "model_config"):
-                        agent_cw.model_config = agent_model_config
-                    if (
-                        agent_model_config.max_output_tokens is not None
-                        and hasattr(agent_cw, "max_context_window_tokens")
-                        and agent_model_config.max_output_tokens
-                    ):
-                        agent_cw.max_context_window_tokens = agent_model_config.max_output_tokens
-            except Exception as exc:  # pragma: no cover - defensive logging
-                logger.debug(f"Failed to apply model config to context window for '{agent_id}': {exc}")
-
-        agent_action_executor = ActionExecutor(
-            self.tool_manager,
-            self.project_manager,
-            conv,
-            ui_event_callback=self.emit_ui_event,
-        )
-
-        if getattr(conv, "session", None):
-            try:
-                target_model = agent_model_config or self.model_config
-                if target_model:
-                    conv.session.metadata["model"] = target_model.model
-                    conv.session.metadata["model_provider"] = target_model.provider
-                    conv.session.metadata["model_client"] = target_model.client_preference
-                else:
-                    conv.session.metadata.pop("model", None)
-                    conv.session.metadata.pop("model_provider", None)
-                    conv.session.metadata.pop("model_client", None)
-            except Exception:
-                pass
-
-        per_agent_api_client: Optional[APIClient] = None
-        if agent_model_config:
-            per_agent_api_client = APIClient(model_config=agent_model_config)
-            try:
-                per_agent_api_client.set_system_prompt(system_prompt or self.system_prompt)
-            except Exception:
-                pass
-            self._agent_api_clients[agent_id] = per_agent_api_client
-            self._agent_model_overrides[agent_id] = agent_model_config
-        else:
-            self._agent_api_clients.pop(agent_id, None)
-            self._agent_model_overrides.pop(agent_id, None)
-
-        if default_tools:
-            tools_tuple: Tuple[str, ...]
-            if isinstance(default_tools, (str, bytes)):
-                tools_tuple = (str(default_tools),)
-            else:
-                tools_tuple = tuple(str(item) for item in default_tools)
-            self._agent_tool_defaults[agent_id] = tools_tuple
-        else:
-            self._agent_tool_defaults.pop(agent_id, None)
-
-        try:
-            self.engine.register_agent(
-                agent_id=agent_id,
-                conversation_manager=self.conversation_manager,
-                action_executor=agent_action_executor,
-                api_client=per_agent_api_client,
-            )
-        except Exception as e:  # pragma: no cover - critical failure should surface
-            logger.error(f"Failed to register agent '{agent_id}' with Engine: {e}")
-            raise
-
-        activate_agent = activate or (persona_config.activate_by_default if persona_config else False)
-        if activate_agent:
-            self.set_active_agent(agent_id)
-
-        # Register MessageBus inbox for this agent (route messages to conversation)
-        if MessageBus and ProtocolMessage:
-            try:
-                bus = MessageBus.get_instance()
-
-                if agent_id in self._agent_bus_handlers:
-                    try:
-                        bus.unregister_handler(agent_id)
-                    except Exception:
-                        pass
-
-                async def _agent_inbox(msg: ProtocolMessage, *, _agent_id: str = agent_id):
-                    try:
-                        logger.info(f"[SUB-AGENT-DEBUG] _agent_inbox called for agent '{_agent_id}'")
-                        logger.info(f"[SUB-AGENT-DEBUG] Message from: {msg.sender}, content length: {len(str(msg.content))}")
-
-                        self.conversation_manager.set_current_agent(_agent_id)
-                        conv_local = self.conversation_manager.get_agent_conversation(_agent_id)
-                        conv_local.add_message(
-                            role="user",
-                            content=msg.content,
-                            category=MessageCategory.DIALOG,
-                            metadata={
-                                "via": "message_bus",
-                                "from": msg.sender,
-                                **({"channel": msg.channel} if getattr(msg, "channel", None) else {}),
-                                **(msg.metadata or {}),
-                            },
-                            message_type=msg.message_type or "message",
-                        )
-                        self.conversation_manager.save()
-                        logger.info(f"[SUB-AGENT-DEBUG] Message added to conversation for '{_agent_id}'")
-
-                        await self.emit_ui_event("message", {
-                            "role": "user",
-                            "content": msg.content,
-                            "category": MessageCategory.DIALOG.name,
-                            "message_type": msg.message_type or "message",
-                            "metadata": {"via": "message_bus", "from": msg.sender}
-                        })
-
-                        # Trigger sub-agent processing if this is a sub-agent (has parent)
-                        # and auto_process is enabled (default for initial_prompt)
-                        should_process = msg.metadata.get("auto_process", True) if msg.metadata else True
-                        parent_map = getattr(self.conversation_manager, "sub_agent_parent", {}) or {}
-                        is_sub_agent = _agent_id in parent_map
-                        has_engine = getattr(self, "engine", None) is not None
-
-                        logger.info(f"[SUB-AGENT-DEBUG] should_process={should_process}, is_sub_agent={is_sub_agent}, has_engine={has_engine}")
-                        logger.info(f"[SUB-AGENT-DEBUG] parent_map keys: {list(parent_map.keys())}")
-
-                        if should_process and is_sub_agent and has_engine:
-                            try:
-                                logger.info(f"[SUB-AGENT-DEBUG] Calling engine.run_agent_turn for '{_agent_id}'")
-                                # Run the sub-agent turn asynchronously
-                                response = await self.engine.run_agent_turn(
-                                    _agent_id,
-                                    msg.content,
-                                    tools_enabled=True,
-                                )
-                                logger.info(f"[SUB-AGENT-DEBUG] run_agent_turn completed, response length: {len(str(response)) if response else 0}")
-
-                                # Send response back to parent
-                                parent_id = parent_map.get(_agent_id)
-                                if parent_id and response:
-                                    logger.info(f"[SUB-AGENT-DEBUG] Sending response to parent '{parent_id}'")
-                                    await self.send_to_agent(
-                                        parent_id,
-                                        f"[Sub-agent {_agent_id} response]:\n{response}",
-                                        metadata={"from_sub_agent": _agent_id, "auto_process": False}
-                                    )
-                                    logger.info(f"[SUB-AGENT-DEBUG] Response sent to parent")
-                                else:
-                                    logger.warning(f"[SUB-AGENT-DEBUG] No response or no parent_id: parent_id={parent_id}, response={bool(response)}")
-                            except Exception as proc_err:
-                                logger.error(f"[SUB-AGENT-DEBUG] Sub-agent '{_agent_id}' processing failed: {proc_err}", exc_info=True)
-                        else:
-                            logger.info(f"[SUB-AGENT-DEBUG] Skipping processing: should_process={should_process}, is_sub_agent={is_sub_agent}, has_engine={has_engine}")
-                    except Exception as e:
-                        logger.error(f"[SUB-AGENT-DEBUG] Agent inbox handler failed: {e}", exc_info=True)
-
-                bus.register_handler(agent_id, _agent_inbox)
-                self._agent_bus_handlers[agent_id] = _agent_inbox
-            except Exception as e:
-                logger.debug(f"MessageBus agent inbox not registered: {e}")
 
     def set_active_agent(self, agent_id: str) -> None:
         """Switch the active agent across ConversationManager and Engine."""
@@ -1467,11 +1068,11 @@ class PenguinCore:
     # Sub-agent paused state helpers
     # ------------------------------
     def set_agent_paused(self, agent_id: str, paused: bool = True) -> None:
-        """Mark an agent as paused/resumed and add a system note."""
-        try:
-            self._agent_paused[agent_id] = bool(paused)
-        except Exception:
-            self._agent_paused = {agent_id: bool(paused)}
+        """Mark an agent as paused/resumed using conversation metadata."""
+        conv = self.conversation_manager.get_agent_conversation(agent_id)
+        if conv and hasattr(conv, 'session') and conv.session:
+            conv.session.metadata["paused"] = bool(paused)
+        # Also add system note for visibility
         try:
             note = "Paused" if paused else "Resumed"
             self.conversation_manager.add_system_note(
@@ -1483,10 +1084,80 @@ class PenguinCore:
             pass
 
     def is_agent_paused(self, agent_id: str) -> bool:
-        try:
-            return bool(self._agent_paused.get(agent_id, False))
-        except Exception:
-            return False
+        """Check if agent is paused via conversation metadata."""
+        conv = self.conversation_manager.get_agent_conversation(agent_id)
+        if conv and hasattr(conv, 'session') and conv.session:
+            return bool(conv.session.metadata.get("paused", False))
+        return False
+
+    # ------------------------------
+    # Agent conversation management (NEW API)
+    # ------------------------------
+    def ensure_agent_conversation(
+        self,
+        agent_id: str,
+        system_prompt: Optional[str] = None,
+        **kwargs,  # Accept legacy params but ignore them
+    ) -> None:
+        """Ensure a conversation exists for an agent.
+
+        This is the new simplified API that replaces register_agent().
+        Only the conversation is persistent - all other agent state
+        (model config, API clients) is derived at runtime.
+
+        Args:
+            agent_id: Unique identifier for the agent
+            system_prompt: Optional system prompt for the agent
+            **kwargs: Ignored (for backward compatibility with legacy callers)
+        """
+        conv = self.conversation_manager.get_agent_conversation(agent_id, create_if_missing=True)
+        if system_prompt and conv:
+            conv.set_system_prompt(system_prompt)
+
+        # Register with Engine if available (just conversation, no API client)
+        if getattr(self, "engine", None):
+            try:
+                # Create a minimal action executor for this agent
+                action_executor = ActionExecutor(
+                    self.tool_manager,
+                    self.project_manager,
+                    conv,
+                    ui_event_callback=self.emit_ui_event,
+                )
+                self.engine.register_agent(
+                    agent_id=agent_id,
+                    conversation_manager=self.conversation_manager,
+                    action_executor=action_executor,
+                )
+            except Exception as e:
+                logger.debug(f"Engine registration for '{agent_id}' failed: {e}")
+
+    def delete_agent_conversation(self, agent_id: str) -> bool:
+        """Delete an agent's conversation.
+
+        This is the new simplified API that replaces unregister_agent().
+
+        Args:
+            agent_id: Agent to remove
+
+        Returns:
+            True if agent was removed, False otherwise
+        """
+        if agent_id == "default":
+            raise ValueError("Cannot delete the default agent")
+
+        removed = self.conversation_manager.remove_agent(agent_id)
+
+        if getattr(self, "engine", None):
+            try:
+                self.engine.unregister_agent(agent_id)
+            except Exception as e:
+                logger.debug(f"Engine unregister_agent failed for '{agent_id}': {e}")
+
+        if self.conversation_manager.current_agent_id == agent_id:
+            self.set_active_agent("default")
+
+        return removed
 
     def create_sub_agent(
         self,
@@ -1497,75 +1168,31 @@ class PenguinCore:
         share_session: bool = True,
         share_context_window: bool = True,
         shared_context_window_max_tokens: Optional[int] = None,
-        model_output_max_tokens: Optional[int] = None,
-        activate: bool = False,
-        persona: Optional[str] = None,
-        model_config: Optional[ModelConfig] = None,
-        model_config_id: Optional[str] = None,
-        model_overrides: Optional[Dict[str, Any]] = None,
-        default_tools: Optional[Sequence[str]] = None,
+        **kwargs,  # Accept but ignore legacy params
     ) -> None:
-        """Convenience wrapper for registering a sub-agent."""
-        share_session_with = parent_agent_id if share_session else None
-        share_context_with = parent_agent_id if share_context_window else None
-        self.register_agent(
+        """Create a sub-agent linked to a parent agent."""
+        # Create sub-agent via conversation manager
+        self.conversation_manager.create_sub_agent(
             agent_id,
-            system_prompt=system_prompt,
-            activate=activate,
-            share_session_with=share_session_with,
-            share_context_window_with=share_context_with,
+            parent_agent_id=parent_agent_id,
+            share_session=share_session,
+            share_context_window=share_context_window,
             shared_context_window_max_tokens=shared_context_window_max_tokens,
-            model_output_max_tokens=model_output_max_tokens,
-            persona=persona,
-            model_config=model_config,
-            model_config_id=model_config_id,
-            model_overrides=model_overrides,
-            default_tools=default_tools,
         )
-        # Ensure parent↔child mapping is recorded even when not sharing session/CW
-        try:
-            parent_map = getattr(self.conversation_manager, "sub_agent_parent", {}) or {}
-            if parent_map.get(agent_id) != parent_agent_id:
-                self.conversation_manager.create_sub_agent(
-                    agent_id,
-                    parent_agent_id=parent_agent_id,
-                    share_session=share_session,
-                    share_context_window=share_context_window,
-                    shared_context_window_max_tokens=shared_context_window_max_tokens,
-                )
-        except Exception as e:
-            logger.debug(f"create_sub_agent mapping ensure failed for '{agent_id}': {e}")
+        # Ensure conversation exists
+        self.ensure_agent_conversation(agent_id, system_prompt=system_prompt)
 
     def unregister_agent(self, agent_id: str, *, preserve_conversation: bool = False) -> bool:
-        """Unregister an agent and clean up associated resources."""
-        if agent_id == "default":
-            raise ValueError("Cannot unregister the default agent")
-
-        self._agent_api_clients.pop(agent_id, None)
-        self._agent_model_overrides.pop(agent_id, None)
-        self._agent_tool_defaults.pop(agent_id, None)
-
-        removed = True
-        if not preserve_conversation:
-            removed = self.conversation_manager.remove_agent(agent_id)
-
-        if getattr(self, "engine", None):
-            try:
-                self.engine.unregister_agent(agent_id)
-            except Exception as e:
-                logger.debug(f"Engine unregister_agent failed for '{agent_id}': {e}")
-
-        if MessageBus and agent_id in self._agent_bus_handlers:
-            try:
-                MessageBus.get_instance().unregister_handler(agent_id)
-            except Exception:
-                pass
-            self._agent_bus_handlers.pop(agent_id, None)
-
-        if self.conversation_manager.current_agent_id == agent_id:
-            self.set_active_agent("default")
-
-        return removed
+        """Unregister an agent. Delegates to delete_agent_conversation()."""
+        if preserve_conversation:
+            # Just unregister from Engine, keep conversation
+            if getattr(self, "engine", None):
+                try:
+                    self.engine.unregister_agent(agent_id)
+                except Exception as e:
+                    logger.debug(f"Engine unregister_agent failed for '{agent_id}': {e}")
+            return True
+        return self.delete_agent_conversation(agent_id)
 
     # ------------------------------
     # Message routing via MessageBus

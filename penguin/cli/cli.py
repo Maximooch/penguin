@@ -1883,8 +1883,6 @@ def agent_spawn(
             )
             raise typer.Exit(code=1)
 
-        tools_tuple = tuple(default_tools) if default_tools else None
-
         try:
             if parent_agent_id:
                 _core.create_sub_agent(
@@ -1894,22 +1892,19 @@ def agent_spawn(
                     share_session=share_session,
                     share_context_window=share_context_window,
                     shared_context_window_max_tokens=shared_context_window_max_tokens,
-                    model_output_max_tokens=model_output_max_tokens,
-                    persona=persona,
-                    model_config_id=model_config_id,
-                    default_tools=tools_tuple,
-                    activate=activate,
                 )
             else:
-                _core.register_agent(
-                    agent_id,
-                    system_prompt=system_prompt,
-                    activate=activate,
-                    model_output_max_tokens=model_output_max_tokens,
-                    persona=persona,
-                    model_config_id=model_config_id,
-                    default_tools=tools_tuple,
-                )
+                _core.ensure_agent_conversation(agent_id, system_prompt=system_prompt)
+
+            # Store persona in conversation metadata if specified
+            if persona:
+                conv = _core.conversation_manager.get_agent_conversation(agent_id)
+                if conv and hasattr(conv, 'session') and conv.session:
+                    conv.session.metadata["persona"] = persona
+
+            if activate:
+                _core.set_active_agent(agent_id)
+
             console.print(
                 f"[green]Registered agent[/green] {agent_id}{f' using persona {persona}' if persona else ''}."
             )
@@ -1960,8 +1955,6 @@ def agent_set_persona(
             )
             raise typer.Exit(code=1)
 
-        tools_tuple = tuple(default_tools) if default_tools else None
-
         parent_map = getattr(_core.conversation_manager, "sub_agent_parent", {}) or {}
         parent = parent_map.get(agent_id)
 
@@ -1971,20 +1964,18 @@ def agent_set_persona(
                     agent_id,
                     parent_agent_id=parent,
                     system_prompt=system_prompt,
-                    persona=persona,
-                    model_config_id=model_config_id,
-                    default_tools=tools_tuple,
-                    activate=activate,
                 )
             else:
-                _core.register_agent(
-                    agent_id,
-                    system_prompt=system_prompt,
-                    activate=activate,
-                    persona=persona,
-                    model_config_id=model_config_id,
-                    default_tools=tools_tuple,
-                )
+                _core.ensure_agent_conversation(agent_id, system_prompt=system_prompt)
+
+            # Store persona in conversation metadata
+            conv = _core.conversation_manager.get_agent_conversation(agent_id)
+            if conv and hasattr(conv, 'session') and conv.session:
+                conv.session.metadata["persona"] = persona
+
+            if activate:
+                _core.set_active_agent(agent_id)
+
             console.print(
                 f"[green]Applied persona[/green] {persona} to agent {agent_id}."
             )
@@ -3952,11 +3943,11 @@ Welcome to Penguin!
                     # If it's a persona but not yet spawned, spawn it
                     if target_agent in personas and target_agent not in roster_ids:
                         try:
-                            self.core.register_agent(
-                                target_agent,
-                                persona=target_agent,
-                                activate=False
-                            )
+                            self.core.ensure_agent_conversation(target_agent)
+                            # Store persona in conversation metadata
+                            conv = self.core.conversation_manager.get_agent_conversation(target_agent)
+                            if conv and hasattr(conv, 'session') and conv.session:
+                                conv.session.metadata["persona"] = target_agent
                             self.display_message(f"Spawned agent '{target_agent}' from persona", "system")
                         except Exception as e:
                             self.display_message(f"Failed to spawn agent: {e}", "error")

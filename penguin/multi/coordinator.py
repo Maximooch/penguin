@@ -93,67 +93,40 @@ class MultiAgentCoordinator:
         *,
         role: str,
         system_prompt: Optional[str] = None,
-        model_output_max_tokens: Optional[int] = None,
         activate: bool = False,
-        persona: Optional[str] = None,
-        model_config_id: Optional[str] = None,
-        model_overrides: Optional[Dict[str, Any]] = None,
-        default_tools: Optional[Sequence[str]] = None,
         permissions: Optional[Dict[str, Any]] = None,
         parent_agent_id: Optional[str] = None,
-        shared_context_window_max_tokens: Optional[int] = None,
-        share_session_with: Optional[str] = None,
-        share_context_window_with: Optional[str] = None,
+        **kwargs,  # Legacy params - persona, model_config, etc.
     ) -> None:
         """Spawn a new agent with optional permission restrictions.
-        
+
         Args:
             agent_id: Unique identifier for the agent
             role: Agent's role (e.g., "analyzer", "implementer")
             system_prompt: Custom system prompt
-            model_output_max_tokens: Output token limit
             activate: Whether to make this the active agent
-            persona: Persona config name to apply
-            model_config_id: Model configuration override
-            model_overrides: Additional model parameter overrides
-            default_tools: Tool name restrictions (legacy)
             permissions: Permission config dict (mode, operations, paths)
             parent_agent_id: Parent agent for permission inheritance
-            shared_context_window_max_tokens: Shared context window token limit
-            share_session_with: Agent ID to share session with
-            share_context_window_with: Agent ID to share context window with
+            **kwargs: Legacy parameters (persona, model_config, etc.) - accepted but no longer stored
         """
-        self.core.register_agent(
-            agent_id,
-            system_prompt=system_prompt,
-            activate=activate,
-            model_output_max_tokens=model_output_max_tokens,
-            persona=persona,
-            model_config_id=model_config_id,
-            model_overrides=model_overrides,
-            default_tools=default_tools,
-            shared_context_window_max_tokens=shared_context_window_max_tokens,
-            share_session_with=share_session_with,
-            share_context_window_with=share_context_window_with,
-        )
+        self.core.ensure_agent_conversation(agent_id, system_prompt=system_prompt)
+        if activate:
+            self.core.set_active_agent(agent_id)
+
         info = AgentInfo(
             agent_id=agent_id,
             role=role,
             system_prompt=system_prompt,
-            model_output_max_tokens=model_output_max_tokens,
-            persona=persona,
-            model_config_id=model_config_id,
-            default_tools=tuple(default_tools) if default_tools else None,
             permissions=dict(permissions) if permissions else None,
             parent_agent_id=parent_agent_id,
         )
         self.agents_by_role.setdefault(role, []).append(info)
         self._rr_index.setdefault(role, 0)
-        
+
         # Register agent permission policy if permissions specified
         if permissions:
             self._register_agent_permissions(agent_id, permissions, parent_agent_id)
-        
+
         logger.info("Spawned agent '%s' with role '%s'", agent_id, role)
     
     def _register_agent_permissions(

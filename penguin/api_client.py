@@ -495,31 +495,16 @@ class PenguinClient:
         *,
         system_prompt: Optional[str] = None,
         activate: bool = False,
-        share_session_with: Optional[str] = None,
-        share_context_window_with: Optional[str] = None,
-        shared_cw_max_output_tokens: Optional[int] = None,
-        model_max_output_tokens: Optional[int] = None,
-        persona: Optional[str] = None,
-        model_config: Optional[ModelConfig] = None,
-        model_config_id: Optional[str] = None,
-        model_overrides: Optional[Dict[str, Any]] = None,
-        default_tools: Optional[Sequence[str]] = None,
+        **kwargs,  # Legacy params - persona, model config, etc. stored in metadata
     ) -> None:
-        """Register a new agent."""
-        self.core.register_agent(
-            agent_id,
-            system_prompt=system_prompt,
-            activate=activate,
-            share_session_with=share_session_with,
-            share_context_window_with=share_context_window_with,
-            shared_context_window_max_tokens=shared_context_window_max_tokens,
-            model_output_max_tokens=model_output_max_tokens,
-            persona=persona,
-            model_config=model_config,
-            model_config_id=model_config_id,
-            model_overrides=model_overrides,
-            default_tools=default_tools,
-        )
+        """Register a new agent.
+
+        Note: Legacy parameters (persona, model_config, etc.) are accepted but
+        no longer stored in Core state. Agent config should be derived at runtime.
+        """
+        self.core.ensure_agent_conversation(agent_id, system_prompt=system_prompt)
+        if activate:
+            self.core.set_active_agent(agent_id)
 
     def create_sub_agent(
         self,
@@ -529,14 +514,9 @@ class PenguinClient:
         system_prompt: Optional[str] = None,
         share_session: bool = True,
         share_context_window: bool = True,
-        shared_cw_max_output_tokens: Optional[int] = None,
-        model_max_output_tokens: Optional[int] = None,
+        shared_context_window_max_tokens: Optional[int] = None,
         activate: bool = False,
-        persona: Optional[str] = None,
-        model_config: Optional[ModelConfig] = None,
-        model_config_id: Optional[str] = None,
-        model_overrides: Optional[Dict[str, Any]] = None,
-        default_tools: Optional[Sequence[str]] = None,
+        **kwargs,  # Legacy params
     ) -> None:
         """Register a sub-agent bound to a parent agent."""
         self.core.create_sub_agent(
@@ -546,14 +526,9 @@ class PenguinClient:
             share_session=share_session,
             share_context_window=share_context_window,
             shared_context_window_max_tokens=shared_context_window_max_tokens,
-            model_output_max_tokens=model_output_max_tokens,
-            activate=activate,
-            persona=persona,
-            model_config=model_config,
-            model_config_id=model_config_id,
-            model_overrides=model_overrides,
-            default_tools=default_tools,
         )
+        if activate:
+            self.core.set_active_agent(agent_id)
 
     def list_agents(self) -> List[str]:
         """List registered agent identifiers."""

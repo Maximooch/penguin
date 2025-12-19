@@ -485,42 +485,23 @@ async def list_agents(core: PenguinCore = Depends(get_core), simple: Optional[bo
 async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_core)):
     _validate_agent_id(req.id)
     try:
-        # Enforce model id presence; accept overrides only as fallback
-        model_id = (req.model_config_id or "").strip()
-        overrides = req.model_overrides if isinstance(req.model_overrides, dict) else None
-        if not model_id and not overrides:
-            raise HTTPException(status_code=400, detail="model_config_id is required (or model_overrides as fallback)")
-
         parent = (req.parent or "").strip() or None
-        try:
-            if parent:
-                core.create_sub_agent(
-                    req.id,
-                    parent_agent_id=parent,
-                    system_prompt=req.system_prompt,
-                    share_session=bool(req.share_session),
-                    share_context_window=bool(req.share_context_window),
-                    shared_context_window_max_tokens=req.shared_cw_max_tokens,  # Web API uses short name for compat
-                    persona=req.persona,
-                    model_config_id=model_id or None,
-                    model_overrides=overrides,
-                    default_tools=tuple(req.default_tools) if req.default_tools else None,
-                    activate=req.activate,
-                )
-            else:
-                core.register_agent(
-                    req.id,
-                    system_prompt=req.system_prompt,
-                    persona=req.persona,
-                    model_config_id=model_id or None,
-                    model_overrides=overrides,
-                    default_tools=tuple(req.default_tools) if req.default_tools else None,
-                    activate=req.activate,
-                )
-        except ValueError as ve:
-            available = list((getattr(core.config, "model_configs", {}) or {}).keys())
-            detail = f"{ve}. Available model ids: {available or 'none'}"
-            raise HTTPException(status_code=400, detail=detail)
+        if parent:
+            core.create_sub_agent(
+                req.id,
+                parent_agent_id=parent,
+                system_prompt=req.system_prompt,
+                share_session=bool(req.share_session),
+                share_context_window=bool(req.share_context_window),
+                shared_context_window_max_tokens=req.shared_cw_max_tokens,
+            )
+        else:
+            core.ensure_agent_conversation(req.id, system_prompt=req.system_prompt)
+
+        if req.activate:
+            core.set_active_agent(req.id)
+
+# TODO: where the hell is register agent?
 
         if req.initial_prompt:
             await core.send_to_agent(req.id, req.initial_prompt)

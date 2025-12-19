@@ -435,15 +435,18 @@ async def agent_command(core: Any, args: List[str]) -> Dict[str, Any]:
             core.create_sub_agent(
                 agent_id,
                 parent_agent_id=parent,
-                persona=persona,
-                activate=activate
             )
         else:
-            core.register_agent(
-                agent_id,
-                persona=persona,
-                activate=activate
-            )
+            core.ensure_agent_conversation(agent_id)
+
+        # Store persona in conversation metadata if specified
+        if persona:
+            conv = core.conversation_manager.get_agent_conversation(agent_id)
+            if conv and hasattr(conv, 'session') and conv.session:
+                conv.session.metadata["persona"] = persona
+
+        if activate:
+            core.set_active_agent(agent_id)
 
         return {"status": f"Spawned agent {agent_id}"}
 

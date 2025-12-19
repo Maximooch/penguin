@@ -1,218 +1,337 @@
-"""High-level PenguinAgent wrapper around PenguinCore."""
+"""PenguinAgent – high-level convenience wrapper
+
+This module provides a tiny *ergonomic* façade on top of PenguinCore so that
+end-users can get started with one or two lines of code without having to deal
+with `asyncio`, builders, or the full Core/Engine vocabulary.
+
+Example (sync):
+    from penguin import PenguinAgent
+
+    agent = PenguinAgent()
+    print(agent.chat("Hello Penguin!"))
+
+Example (async):
+    from penguin.agent import PenguinAgentAsync
+
+    agent = await PenguinAgentAsync.create()
+    await agent.chat("Hi async world")
+
+The wrapper is intentionally thin: it defers *all* heavy lifting to the
+existing `PenguinCore` + `Engine` stack.
+"""
+
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, AsyncGenerator, Dict, Generator, List, Optional
 
-from penguin.api_client import PenguinClient
-from penguin.config import WORKSPACE_PATH, Config
 from penguin.core import PenguinCore
-from penguin.constants import get_engine_max_iterations_default
+from penguin.config import MAX_TASK_ITERATIONS
+
+# Concrete agent implementations
+from .basic_agent import BasicPenguinAgent
+from .container_executor import ContainerExecutor
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _run_sync(coro):
+    """Run *coro* in a fresh event-loop or the current running loop if inside
+    another async context.  This mirrors Trio's *blocking portal* pattern and
+    avoids *RuntimeError: This event loop is already running* when the caller
+    happens to be inside a notebook or FastAPI handler.
+    """
+    try:
+        return asyncio.run(coro)
+    except RuntimeError:  # already inside a running loop
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            return loop.create_task(coro)  # type: ignore[return-value]
+        else:
+            return loop.run_until_complete(coro)
 
 
-class PenguinAgent:
-    """Synchronous convenience wrapper for :class:`PenguinCore`.
+# ---------------------------------------------------------------------------
+# Sync wrapper
+# ---------------------------------------------------------------------------
 
-    Parameters
-    ----------
-    workspace_path:
-        Base workspace directory. Defaults to the configured Penguin workspace.
-    model, provider:
-        Optional overrides forwarded to :class:`PenguinClient` / :meth:`PenguinCore.create`.
-    charter_path:
-        Path to a shared charter/instructions file. If omitted PenguinAgent attempts to
-        discover one automatically (``context/TASK_CHARTER.md`` or ``context/SMOKE_CHARTER.md``).
-    auto_load_docs:
-        When ``True`` (default) project documentation such as ``PENGUIN.md`` and ``AGENTS.md``
-        is automatically loaded as context for every chat.
-    default_agent_id:
-        Agent identifier to use when one is not supplied explicitly to :meth:`chat`.
-    config:
-        Optional :class:`~penguin.config.Config` instance to reuse (advanced use only).
+class PenguinAgent:  # pylint: disable=too-few-public-methods
+    """Blocking convenience API.
+
+    Parameters mirror `PenguinCore.create` but are optional – sensible defaults
+    are read from *config.yml* if omitted.
     """
 
-    #: default files checked for project documentation (in priority order)
-    PROJECT_DOC_CANDIDATES: Sequence[str] = ("PENGUIN.md", "AGENTS.md", "README.md")
-
+    # NOTE: keep signature minimal; advanced users can switch to the async
+    # class or the builder for full control.
     def __init__(
         self,
-        *,
-        workspace_path: Optional[str | Path] = None,
         model: Optional[str] = None,
         provider: Optional[str] = None,
-        charter_path: Optional[str | Path] = None,
-        auto_load_docs: bool = True,
-        default_agent_id: str = "default",
-        config: Optional[Config] = None,
+        workspace: Optional[str] = None,
     ) -> None:
-        self.workspace_path = Path(workspace_path or WORKSPACE_PATH).resolve()
-        self.workspace_path.mkdir(parents=True, exist_ok=True)
-        (self.workspace_path / "projects").mkdir(exist_ok=True)
-        (self.workspace_path / "context").mkdir(exist_ok=True)
+        self._core: PenguinCore = _run_sync(
+            PenguinCore.create(
+                model=model,
+                provider=provider,
+                workspace_path=workspace,
+                enable_cli=False,
+            )
+        )
 
-        self._loop = asyncio.new_event_loop()
-        self._client = PenguinClient(
+    # ------------------------------------------------------------------
+    # Public helper methods (blocking)
+    # ------------------------------------------------------------------
+
+    def chat(self, message: str, *, streaming: bool = False) -> str:
+        """Single-turn chat – returns full assistant response."""
+        async def _chat_async() -> str:
+            # NOTE: `streaming` flag passed to run_single_turn for provider hints
+            # but the full response is awaited and returned. For a streaming
+            # response, use the `.stream()` method.
+            response_data = await self._core.engine.run_single_turn(
+                prompt=message,
+                streaming=streaming,
+            )
+            return response_data.get("assistant_response", "")
+
+        return _run_sync(_chat_async())
+
+    def stream(self, message: str) -> Generator[str, None, None]:
+        """Yield chunks **synchronously** for immediate printing."""
+        agen = self._core.engine.stream(prompt=message)
+
+        while True:
+            try:
+                chunk = _run_sync(agen.__anext__())
+                yield chunk
+            except StopAsyncIteration:
+                break
+
+    def run_task(self, prompt: str, *, max_iterations: int = MAX_TASK_ITERATIONS) -> Dict[str, Any]:
+        """Multi-step reasoning using Engine.run_task (blocking)."""
+        return _run_sync(self._core.engine.run_task(prompt, max_iterations=max_iterations))
+
+    # ------------------------------------------------------------------
+    # Convenience helpers
+    # ------------------------------------------------------------------
+
+    def checkpoint(self, name: Optional[str] = None, description: Optional[str] = None) -> str:
+        return _run_sync(self._core.create_checkpoint(name=name, description=description)) or ""
+
+    # Add more thin wrappers as needed...
+
+    # ------------------------------------------------------------------
+    # Conversation helpers
+    # ------------------------------------------------------------------
+    def new_conversation(self) -> str:
+        return _run_sync(self._core.create_conversation())
+    
+    def list_conversations(self, *, limit: int = 20, offset: int = 0):
+        return self._core.list_conversations(limit=limit, offset=offset)
+
+    def load_conversation(self, conversation_id: str) -> bool:
+        return _run_sync(self._core.conversation_manager.load(conversation_id))  # type: ignore[attr-defined]
+
+    def delete_conversation(self, conversation_id: str) -> bool:
+        return self._core.delete_conversation(conversation_id)
+
+    def conversation_stats(self):
+        return self._core.get_conversation_stats()
+
+    # ------------------------------------------------------------------
+    # Checkpoint helpers
+    # ------------------------------------------------------------------
+    def list_checkpoints(self, session_id: Optional[str] = None, limit: int = 50):
+        return self._core.list_checkpoints(session_id=session_id, limit=limit)
+
+    def rollback(self, checkpoint_id: str) -> bool:
+        return _run_sync(self._core.rollback_to_checkpoint(checkpoint_id))
+
+    def branch(self, checkpoint_id: str, *, name: Optional[str] = None, description: Optional[str] = None):
+        return _run_sync(self._core.branch_from_checkpoint(checkpoint_id, name=name, description=description))
+
+    # ------------------------------------------------------------------
+    # Model helpers
+    # ------------------------------------------------------------------
+    def list_models(self):
+        return self._core.list_available_models()
+
+    def switch_model(self, model_id: str) -> bool:
+        return _run_sync(self._core.load_model(model_id))
+
+    def current_model(self):
+        mc = self._core.model_config
+        if not mc:
+            return None
+        return {
+            "model": mc.model,
+            "provider": mc.provider,
+            "client_preference": mc.client_preference,
+            "max_tokens": mc.max_tokens,
+        }
+
+    # ------------------------------------------------------------------
+    # Tools & context helpers
+    # ------------------------------------------------------------------
+    def list_tools(self):
+        return [tool.get("name") for tool in getattr(self._core.tool_manager, "tools", [])]
+
+    def run_tool(self, tool_name: str, tool_input: dict):
+        return self._core.tool_manager.execute_tool(tool_name, tool_input)
+
+    def list_context_files(self):
+        return self._core.list_context_files()
+
+    def attach_context_file(self, file_path: str) -> bool:
+        return _run_sync(self._core.conversation_manager.load_context_file(file_path))  # type: ignore[attr-defined]
+
+    # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+    def token_usage(self):
+        return self._core.get_token_usage()
+
+
+# ---------------------------------------------------------------------------
+# Async class – thin pass-through
+# ---------------------------------------------------------------------------
+
+class PenguinAgentAsync:
+    """Full-async wrapper for advanced users / servers."""
+
+    def __init__(self, core: PenguinCore):
+        self._core = core
+
+    # ------------------------------------------------------------------
+    # Factory helpers
+    # ------------------------------------------------------------------
+    @classmethod
+    async def create(
+        cls,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        workspace: Optional[str] = None,
+    ) -> "PenguinAgentAsync":
+        core = await PenguinCore.create(
             model=model,
             provider=provider,
-            workspace_path=str(self.workspace_path),
+            workspace_path=workspace,
+            enable_cli=False,
         )
-        if config is not None:
-            self._client.config = config
-
-        self._run(self._client.initialize())
-        self.core: PenguinCore = self._client._core  # type: ignore[attr-defined]
-        self.default_agent_id = default_agent_id
-
-        self.charter_path = self._resolve_charter(charter_path)
-        self.project_docs: List[str] = self._discover_project_docs() if auto_load_docs else []
+        return cls(core)
 
     # ------------------------------------------------------------------
-    # Lifecycle helpers
+    # Public async methods mirror the sync API (chat / stream / run_task)
     # ------------------------------------------------------------------
-    def __enter__(self) -> "PenguinAgent":
-        return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:  # noqa: D401 - standard signature
-        self.close()
-
-    async def aclose(self) -> None:
-        await self._client.close()
-        self._loop.close()
-
-    def close(self) -> None:
-        """Synchronously close the underlying client/event loop."""
-        try:
-            self._run(self._client.close())
-        finally:
-            if not self._loop.is_closed():
-                self._loop.close()
-
-    # ------------------------------------------------------------------
-    # High-level operations
-    # ------------------------------------------------------------------
-    def chat(
-        self,
-        message: str,
-        *,
-        agent_id: Optional[str] = None,
-        context: Optional[Dict[str, Any]] = None,
-        context_files: Optional[Iterable[str]] = None,
-        max_iterations: int = None,  # Uses config default
-        multi_step: bool = True,
-    ) -> Dict[str, Any]:
-        """Send a message to the assistant and return the structured response."""
-
-        effective_agent = agent_id or self.default_agent_id
-        files = self._prepare_context_files(context_files)
-        payload: Dict[str, Any] = {"text": message}
-        if max_iterations is None:
-            max_iterations = get_engine_max_iterations_default()
-        return self._run(
-            self.core.process(
-                payload,
-                context=context,
-                agent_id=effective_agent,
-                context_files=files,
-                max_iterations=max_iterations,
-                multi_step=multi_step,
-            )
+    async def chat(self, message: str, *, streaming: bool = False) -> str:
+        """Single-turn chat – returns full assistant response."""
+        # NOTE: `streaming` flag passed for provider hints, but the full
+        # response is awaited and returned. For a streaming response,
+        # use the `.stream()` method.
+        response_data = await self._core.engine.run_single_turn(
+            prompt=message,
+            streaming=streaming,
         )
+        return response_data.get("assistant_response", "")
 
-    def send_to_agent(
-        self,
-        target_agent_id: str,
-        content: Any,
-        *,
-        message_type: str = "message",
-        metadata: Optional[Dict[str, Any]] = None,
-        channel: Optional[str] = None,
-    ) -> bool:
-        """Route a structured message to another agent using the shared MessageBus."""
+    async def stream(self, message: str):  # -> AsyncGenerator[str, None]
+        async for chunk in self._core.engine.stream(prompt=message):
+            yield chunk
 
-        return self._run(
-            self.core.send_to_agent(
-                target_agent_id,
-                content,
-                message_type=message_type,
-                metadata=metadata,
-                channel=channel,
-            )
-        )
+    async def run_task(self, prompt: str, *, max_iterations: int = MAX_TASK_ITERATIONS):
+        return await self._core.engine.run_task(prompt, max_iterations=max_iterations)
 
-    def register_agent(
-        self,
-        agent_id: str,
-        *,
-        system_prompt: Optional[str] = None,
-        activate: bool = False,
-        **kwargs: Any,
-    ) -> None:
-        """Register an additional persona on the underlying core."""
-
-        self.core.register_agent(
-            agent_id,
-            system_prompt=system_prompt,
-            activate=activate,
-            **kwargs,
-        )
-
-    def create_sub_agent(self, agent_id: str, *, parent_agent_id: str, **kwargs: Any) -> None:
-        self.core.create_sub_agent(agent_id, parent_agent_id=parent_agent_id, **kwargs)
-
-    def list_agents(self) -> List[str]:
-        return self.core.list_agents()
+    async def checkpoint(self, name: Optional[str] = None, description: Optional[str] = None):
+        return await self._core.create_checkpoint(name=name, description=description)
 
     # ------------------------------------------------------------------
-    # Introspection helpers
+    # Conversation helpers (async)
     # ------------------------------------------------------------------
-    def get_charter(self) -> Optional[str]:
-        return self.charter_path.read_text(encoding="utf-8") if self.charter_path and self.charter_path.exists() else None
+    async def new_conversation(self) -> str:
+        return await self._core.create_conversation()
 
-    def project_documents(self) -> List[str]:
-        return list(self.project_docs)
+    async def list_conversations(self, *, limit: int = 20, offset: int = 0):
+        return self._core.list_conversations(limit=limit, offset=offset)
+
+    async def load_conversation(self, conversation_id: str) -> bool:
+        return await self._core.conversation_manager.load(conversation_id)  # type: ignore[attr-defined]
+
+    async def delete_conversation(self, conversation_id: str) -> bool:
+        return self._core.delete_conversation(conversation_id)
+
+    async def conversation_stats(self):
+        return self._core.get_conversation_stats()
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Checkpoint helpers (async)
     # ------------------------------------------------------------------
-    def _run(self, coro):
-        return self._loop.run_until_complete(coro)
+    async def list_checkpoints(self, session_id: Optional[str] = None, limit: int = 50):
+        return self._core.list_checkpoints(session_id=session_id, limit=limit)
 
-    def _resolve_charter(self, explicit: Optional[str | Path]) -> Optional[Path]:
-        if explicit:
-            candidate = Path(explicit).resolve()
-            return candidate if candidate.exists() else None
-        for rel in ["context/TASK_CHARTER.md", "context/SMOKE_CHARTER.md"]:
-            candidate = (self.workspace_path / rel).resolve()
-            if candidate.exists():
-                return candidate
-        return None
+    async def rollback(self, checkpoint_id: str) -> bool:
+        return await self._core.rollback_to_checkpoint(checkpoint_id)
 
-    def _discover_project_docs(self) -> List[str]:
-        docs: List[str] = []
-        for name in self.PROJECT_DOC_CANDIDATES:
-            candidate = (self.workspace_path / name).resolve()
-            if candidate.exists():
-                docs.append(candidate.as_posix())
-        return docs
+    async def branch(self, checkpoint_id: str, *, name: Optional[str] = None, description: Optional[str] = None):
+        return await self._core.branch_from_checkpoint(checkpoint_id, name=name, description=description)
 
-    def _prepare_context_files(self, extra: Optional[Iterable[str]]) -> List[str]:
-        files: List[str] = []
-        if self.charter_path and self.charter_path.exists():
-            files.append(self.charter_path.as_posix())
-        files.extend(self.project_docs)
-        if extra:
-            for item in extra:
-                path = Path(item).resolve()
-                if path.exists():
-                    files.append(path.as_posix())
-        # Preserve order while removing duplicates
-        seen = set()
-        unique: List[str] = []
-        for path in files:
-            if path not in seen:
-                seen.add(path)
-                unique.append(path)
-        return unique
+    # ------------------------------------------------------------------
+    # Model helpers (async)
+    # ------------------------------------------------------------------
+    async def list_models(self):
+        return self._core.list_available_models()
 
-__all__ = ["PenguinAgent"]
+    async def switch_model(self, model_id: str) -> bool:
+        return await self._core.load_model(model_id)
+
+    async def current_model(self):
+        mc = self._core.model_config
+        if not mc:
+            return None
+        return {
+            "model": mc.model,
+            "provider": mc.provider,
+            "client_preference": mc.client_preference,
+            "max_tokens": mc.max_tokens,
+        }
+
+    # ------------------------------------------------------------------
+    # Tools & context helpers (async)
+    # ------------------------------------------------------------------
+    async def list_tools(self):
+        return [tool.get("name") for tool in getattr(self._core.tool_manager, "tools", [])]
+
+    async def run_tool(self, tool_name: str, tool_input: dict):
+        # ToolManager.execute_tool is sync – run in default loop executor
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._core.tool_manager.execute_tool, tool_name, tool_input)
+
+    async def list_context_files(self):
+        return self._core.list_context_files()
+
+    async def attach_context_file(self, file_path: str) -> bool:
+        return await self._core.conversation_manager.load_context_file(file_path)  # type: ignore[attr-defined]
+
+    # ------------------------------------------------------------------
+    # Diagnostics (async)
+    # ------------------------------------------------------------------
+    async def token_usage(self):
+        return self._core.get_token_usage() 
+
+__all__ = [
+     "BasicPenguinAgent",
+     "ContainerExecutor",
+     "PenguinAgent",
+     "PenguinAgentAsync",
+     "AgentConfig",
+     "BaseAgent",
+     "AgentLauncher",
+     # Core re-exports added at top-level package, not here.
+ ]
+
+# Re-export advanced agent runtime symbols for convenience
+from penguin.agent.schema import AgentConfig  # noqa: E402  (after sys.path tweaks)
+from penguin.agent.base import BaseAgent  # noqa: E402
+from penguin.agent.launcher import AgentLauncher  # noqa: E402 

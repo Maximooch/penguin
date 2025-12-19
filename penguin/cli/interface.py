@@ -1667,7 +1667,6 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
             if options["model_id"] and options["model_id"] not in model_configs:
                 return {"error": f"Model id '{options['model_id']}' not found"}
 
-            tools_tuple = tuple(options["tools"]) if options["tools"] else None
             try:
                 if options["parent"]:
                     self.core.create_sub_agent(
@@ -1677,22 +1676,14 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                         share_session=options["share_session"],
                         share_context_window=options["share_context"],
                         shared_context_window_max_tokens=options["shared_cw_max"],
-                        model_output_max_tokens=options["model_max"],
-                        persona=options["persona"],
-                        model_config_id=options["model_id"],
-                        default_tools=tools_tuple,
-                        activate=options["activate"],
                     )
                 else:
-                    self.core.register_agent(
+                    self.core.ensure_agent_conversation(
                         agent_id,
                         system_prompt=options["system_prompt"],
-                        activate=options["activate"],
-                        model_output_max_tokens=options["model_max"],
-                        persona=options["persona"],
-                        model_config_id=options["model_id"],
-                        default_tools=tools_tuple,
                     )
+                if options["activate"]:
+                    self.core.set_active_agent(agent_id)
                 roster = self.core.get_agent_roster()
                 return {
                     "status": f"Spawned agent {agent_id}",
@@ -1719,31 +1710,19 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
             if options["model_id"] and options["model_id"] not in model_configs:
                 return {"error": f"Model id '{options['model_id']}' not found"}
 
-            tools_tuple = tuple(options["tools"]) if options["tools"] else None
-
-            parent_map = getattr(self.core.conversation_manager, "sub_agent_parent", {}) or {}
-            parent = parent_map.get(agent_id)
-
             try:
-                if parent:
-                    self.core.create_sub_agent(
-                        agent_id,
-                        parent_agent_id=parent,
-                        system_prompt=options["system_prompt"],
-                        persona=persona_name,
-                        model_config_id=options["model_id"],
-                        default_tools=tools_tuple,
-                        activate=options["activate"],
-                    )
-                else:
-                    self.core.register_agent(
-                        agent_id,
-                        system_prompt=options["system_prompt"],
-                        activate=options["activate"],
-                        persona=persona_name,
-                        model_config_id=options["model_id"],
-                        default_tools=tools_tuple,
-                    )
+                # For persona application, we just ensure conversation exists and store
+                # persona in metadata. The actual persona config is applied at runtime.
+                self.core.ensure_agent_conversation(
+                    agent_id,
+                    system_prompt=options["system_prompt"],
+                )
+                # Store persona name in conversation metadata
+                conv = self.core.conversation_manager.get_agent_conversation(agent_id)
+                if conv and hasattr(conv, 'session') and conv.session:
+                    conv.session.metadata["persona"] = persona_name
+                if options["activate"]:
+                    self.core.set_active_agent(agent_id)
                 roster = self.core.get_agent_roster()
                 return {
                     "status": f"Applied persona {persona_name} to {agent_id}",
