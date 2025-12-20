@@ -1,8 +1,8 @@
 # Core.py Refactoring Plan
 
 *Created: 2025-12-18*
-*Updated: 2025-12-18*
-*Target: Reduce `penguin/core.py` from 3,802 lines to ~1,900 lines (50% reduction)*
+*Updated: 2025-12-19*
+*Current: 2,834 lines (was 3,802) — Target: ~1,900 lines (50% reduction)*
 
 ---
 
@@ -956,73 +956,101 @@ Handler signature: `async def handler(event_type: str, data: Dict[str, Any]) -> 
 - Lines moved: ~144 lines
 
 **Final Line Counts:**
-| File | Before Phase 4 | After Phase 4 | Change |
-|------|----------------|---------------|--------|
-| core.py | 3,057 | 2,897 | **-160 lines** |
-| engine.py | 1,662 | 1,850 | +188 lines |
-| agent/manager.py | 0 | 175 | +175 (new) |
+| File | Before Phase 4 | After Phase 4 | After Phase 5a | Change |
+|------|----------------|---------------|----------------|--------|
+| core.py | 3,057 | 2,897 | 2,834 | **-223 lines total** |
+| engine.py | 1,662 | 1,850 | 1,850 | +188 lines |
+| agent/manager.py | 0 | 175 | 175 | +175 (new) |
 
 **Phase 4 Summary:** Core.py reduced by 160 lines. Code is now better organized with:
 - MessageBus in Engine (where inter-agent communication belongs)
 - Agent roster queries in dedicated AgentManager module
 - Cleaner delegation patterns throughout
 
+**Cumulative Progress:** 3,802 → 2,834 = **-968 lines (25% reduction)**
+
 ---
 
-### Phase 5: Future Improvements (PLANNED)
+### Phase 5: Streaming & Cleanup ✅ PARTIALLY COMPLETED
 
-**Status:** Not started. These are potential improvements for future work.
+**Status:** 5a completed 2025-12-19. Core.py reduced from 2,897 to 2,834 lines (-63 lines).
 
-#### 5a. Streaming State Simplification
+#### 5a. Streaming State Simplification ✅ COMPLETED
 
-**Current:** `_streaming_state` dict in core.py is a compatibility shim for external callers (api/routes.py, web/routes.py).
+**Approach:** "Hard break" - updated all callers (production + tests) to use new property API.
 
-**Opportunity:** Replace with property accessors that delegate to `StreamingStateManager`:
-```python
-@property
-def streaming_active(self) -> bool:
-    return self._streaming_manager.is_active
+**Changes Made:**
+- ✅ Added 4 streaming property accessors to core.py:
+  - `streaming_active` → delegates to `_stream_manager.is_active`
+  - `streaming_content` → delegates to `_stream_manager.content`
+  - `streaming_reasoning_content` → delegates to `_stream_manager.reasoning_content`
+  - `streaming_stream_id` → delegates to `_stream_manager.stream_id`
+- ✅ Updated `penguin/web/routes.py` to use new properties
+- ✅ Updated `penguin/api/routes.py` to use new properties (legacy file)
+- ✅ Updated `get_system_status()` to use `streaming_active` property
+- ✅ Removed `_streaming_state` dict initialization (~15 lines)
+- ✅ Removed `_sync_streaming_state_from_manager()` method (~12 lines)
+- ✅ Removed dict reset in `finalize_streaming_message()` (~15 lines)
+- ✅ Updated 4 test/script files to mock `_stream_manager` instead of `_streaming_state`
 
-@property
-def streaming_content(self) -> str:
-    return self._streaming_manager.content
-```
+**Files Updated:**
+| File | Change |
+|------|--------|
+| `penguin/core.py` | Added properties, removed legacy dict/sync |
+| `penguin/web/routes.py` | Use `streaming_reasoning_content`, `streaming_active` |
+| `penguin/api/routes.py` | Use `streaming_active` (legacy file) |
+| `tests/test_core_system_diagnostics.py` | Mock `_stream_manager` |
+| `tests/test_multi_agent_smoke.py` | Mock `_stream_manager` |
+| `scripts/phase0_multi_agent_validation.py` | Mock `_stream_manager` |
+| `scripts/phase0_interactive_example.py` | Mock `_stream_manager` |
 
-**Impact:** ~50 lines removal, cleaner API
+**Line Counts:**
+- Before: 2,897 lines
+- After: 2,834 lines
+- **Saved: 63 lines**
 
-#### 5b. Diagnostics/Telemetry Extraction
+**Tests:** 127 passing
+
+#### 5b. Diagnostics/Telemetry Extraction (PLANNED)
 
 **Current:** `smoke_check_agents()` and related diagnostics are in core.py (~100 lines).
 
-**Opportunity:** Move to `penguin/diagnostics/` module.
+**Opportunity:** Move to `AgentManager` in `penguin/agent/manager.py` (already created in Phase 4e).
 
-#### 5c. Checkpoint/Snapshot Delegation
+#### 5c. Checkpoint/Snapshot Delegation (SKIP)
 
-**Current:** Core.py has thin wrappers for checkpoint operations that could be further simplified.
+**Current:** Core.py has thin wrappers for checkpoint operations.
 
-**Opportunity:** Expose checkpoint manager directly or consolidate wrappers.
+**Assessment:** Already thin wrappers - no further action needed.
 
-#### 5d. Process Methods Consolidation
+#### 5d. Process Methods Consolidation (DEFERRED)
 
 **Current:** `process()`, `process_message()`, `get_response()` have overlapping logic.
 
-**Opportunity:** Consolidate into Engine.run_* methods with core.py as pure delegation.
+**Risk:** High - many callers, complex interactions. Defer to separate effort.
 
-#### 5e. Model Loading Simplification
+#### 5e. Model Loading Simplification (PLANNED)
 
 **Current:** `load_model()` and `_apply_new_model_config()` have complex logic (~100 lines).
 
 **Opportunity:** Move to `ModelConfig` class methods or a dedicated `ModelManager`.
 
-#### 5f. Capability Improvements
+#### 5f. API Routes Consolidation (NEW - PLANNED)
 
-Beyond refactoring, potential capability enhancements:
+**Discovery:** During 5a work, found that `penguin/api/routes.py` contains security/approval endpoints that were never migrated to `penguin/web/routes.py`.
 
-1. **Agent Orchestration:** Leverage Engine's MessageBus for multi-agent workflows
-2. **Streaming WebSockets:** Replace polling with real-time streaming in web UI
-3. **Parallel Tool Execution:** Execute independent tool calls concurrently
-4. **Context Window Management:** Smarter summarization when approaching limits
-5. **Incremental Checkpoints:** Auto-checkpoint at key decision points
+**Impact:** If using web routes (the active file) with permission system enabled, there's no way to approve/deny tool executions via API.
+
+**Action Required:**
+1. Migrate security/approval endpoints from api/routes.py to web/routes.py
+2. Delete api/routes.py after migration
+
+**See:** `context/architecture/api-routes-audit.md` for full migration plan.
+
+**Endpoints to Migrate:**
+- `/api/v1/approvals/*` (7 endpoints) - approval flow
+- `/api/v1/security/*` (5 endpoints) - security config
+- `ApprovalWebSocketManager` class - real-time notifications
 
 ---
 

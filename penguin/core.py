@@ -593,7 +593,7 @@ class PenguinCore:
             frequency=1,  # Checkpoint every message
             planes={"conversation": True, "tasks": False, "code": False},
             retention={"keep_all_hours": 24, "keep_every_nth": 10, "max_age_days": 30},
-            max_auto_checkpoints=1000
+            max_auto_checkpoints=1000 #TODO: review magic numbers and at least put them into constants.py or parametrize them via Config
         )
         
         self.conversation_manager = ConversationManager(

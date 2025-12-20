@@ -1167,6 +1167,10 @@ Get comprehensive model and system capabilities.
 
 Penguin provides security endpoints for managing permissions, approvals, and audit logs.
 
+:::note Migration Status
+The security and approval endpoints are currently implemented in `penguin/api/routes.py` and are being migrated to `penguin/web/routes.py`. See `context/architecture/api-routes-audit.md` for the full migration plan. Both router files are functional, but `web/routes.py` is the primary active file.
+:::
+
 #### GET `/api/v1/security/audit`
 
 Get recent permission audit log entries.

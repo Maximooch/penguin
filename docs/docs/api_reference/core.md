@@ -4,14 +4,15 @@ The `PenguinCore` class serves as the central coordinator for the entire Penguin
 
 ## Overview
 
-PenguinCore v0.4.0 acts as an integration point between:
+PenguinCore acts as an integration point between:
 - **Engine (Optional)**: A high-level coordinator for reasoning/action loops (used when available).
 - **ConversationManager**: Handles messages, context, conversation state, and checkpointing.
 - **ToolManager**: Provides access to available tools and actions with lazy initialization.
 - **ActionExecutor**: Executes actions and processes results with UI event callbacks.
 - **ProjectManager**: Manages projects and tasks with SQLite persistence.
 - **APIClient**: Handles direct communication with LLMs with streaming support.
-- **Event System**: Coordinates UI updates and real-time streaming across components.
+- **EventBus**: Centralized event system for UI updates and real-time streaming.
+- **StreamingStateManager**: Manages streaming state with coalescing and buffering.
 
 Rather than implementing functionality directly, PenguinCore focuses on coordination. It initializes and holds references to these components. **Crucially, if the `Engine` is successfully initialized, `PenguinCore` delegates the primary reasoning and execution loops to it.** Otherwise, it falls back to managing the loop internally using `get_response`.
 
@@ -34,11 +35,13 @@ classDiagram
         +action_executor
         +project_manager
         +api_client
-        +event_system
+        +event_bus
+        +streaming_active : bool
+        +streaming_content : str
         +create()
         +process_message()
         +process()
-        +get_response() // Legacy fallback method
+        +get_response()
         +start_run_mode()
         +create_checkpoint()
         +rollback_to_checkpoint()
@@ -90,11 +93,18 @@ classDiagram
         +streaming_enabled
     }
 
-    class EventSystem {
-        +ui_subscribers
-        +emit_ui_event()
-        +stream_chunk
-        +token_update
+    class EventBus {
+        +subscribers
+        +subscribe()
+        +unsubscribe()
+        +emit()
+    }
+
+    class StreamingStateManager {
+        +is_active
+        +content
+        +reasoning_content
+        +stream_id
     }
 
     PenguinCore --> Engine : delegates to (optional)
@@ -103,12 +113,13 @@ classDiagram
     PenguinCore --> ActionExecutor : manages
     PenguinCore --> ProjectManager : manages
     PenguinCore --> APIClient : manages
-    PenguinCore --> EventSystem : coordinates
+    PenguinCore --> EventBus : emits events
+    PenguinCore --> StreamingStateManager : manages streaming
     Engine --> APIClient : uses
     Engine --> ActionExecutor : uses
     Engine --> ConversationManager : uses
     ConversationManager --> CheckpointManager : manages
-    ActionExecutor --> EventSystem : emits events
+    ActionExecutor --> EventBus : emits events
 ```
 
 ## Processing Flow
@@ -404,42 +415,81 @@ Switches to a different model at runtime with automatic configuration updates.
 
 ## Event System Methods
 
+PenguinCore uses an `EventBus` for all UI event delivery. The legacy `register_ui`/`unregister_ui` methods have been removed in favor of the centralized EventBus pattern.
+
 ### `emit_ui_event`
 
 ```python
 async def emit_ui_event(self, event_type: str, data: Dict[str, Any]) -> None
 ```
 
-Emits UI events to all registered subscribers.
+Emits UI events via the EventBus to all subscribed handlers.
 
 **Parameters**
 
 - `event_type` – Type of event (stream_chunk, token_update, message, etc.)
 - `data` – Event data relevant to the event type
 
-### `register_ui`
+### Using EventBus Directly
+
+For components that need to receive events, subscribe via the EventBus:
 
 ```python
-def register_ui(self, handler: Callable[[str, Dict[str, Any]], Any]) -> None
+from penguin.cli.events import EventBus, EventType
+
+# Get the singleton EventBus
+event_bus = EventBus.get_sync()
+
+# Subscribe to specific events
+async def my_handler(event_type: str, data: dict):
+    print(f"Received {event_type}: {data}")
+
+for event_type in EventType:
+    event_bus.subscribe(event_type.value, my_handler)
+
+# Unsubscribe when done
+event_bus.unsubscribe("stream_chunk", my_handler)
 ```
 
-Registers a UI component to receive events.
+## Streaming Properties
 
-**Parameters**
+PenguinCore provides read-only properties for accessing streaming state:
 
-- `handler` – Function or coroutine to handle events
-
-### `unregister_ui`
+### `streaming_active`
 
 ```python
-def unregister_ui(self, handler: EventHandler) -> None
+@property
+def streaming_active(self) -> bool
 ```
 
-Unregisters a UI component from receiving events.
+Returns whether streaming is currently active.
 
-**Parameters**
+### `streaming_content`
 
-- `handler` – Handler function to remove
+```python
+@property
+def streaming_content(self) -> str
+```
+
+Returns the accumulated assistant content from the current stream.
+
+### `streaming_reasoning_content`
+
+```python
+@property
+def streaming_reasoning_content(self) -> str
+```
+
+Returns the accumulated reasoning content from the current stream (for models with extended thinking).
+
+### `streaming_stream_id`
+
+```python
+@property
+def streaming_stream_id(self) -> Optional[str]
+```
+
+Returns the unique ID of the current stream, or None if not streaming.
 
 ## Conversation Management
 
@@ -648,15 +698,24 @@ success = await core.rollback_to_checkpoint(checkpoint_id)
 ### Event-Driven UI Integration
 
 ```python
-# Register for real-time updates
-def handle_stream_chunk(event_type, data):
-    if event_type == "stream_chunk":
-        print(f"Streaming: {data['chunk']}")
+from penguin.cli.events import EventBus, EventType
 
-core.register_ui(handle_stream_chunk)
+# Get the EventBus singleton
+event_bus = EventBus.get_sync()
+
+# Register for real-time updates
+async def handle_stream_chunk(event_type, data):
+    if event_type == "stream_chunk":
+        print(f"Streaming: {data.get('content', '')}")
+
+event_bus.subscribe(EventType.STREAM_CHUNK.value, handle_stream_chunk)
 
 # Events will be emitted automatically during processing
 response = await core.process("Hello!", streaming=True)
+
+# Check streaming state via properties
+if core.streaming_active:
+    print(f"Current content: {core.streaming_content}")
 ```
 
 ### Advanced Configuration
