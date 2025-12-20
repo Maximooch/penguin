@@ -179,15 +179,15 @@ def test_conversation_reformatting():
         # Verify specific transformations
         assert len(reformed) == len(test_messages), "Should preserve all messages"
 
-        # Check that ALL tool messages are converted (aggressive fix for SDK compatibility)
+        # Check that ALL tool messages are converted to user role (prevents model from echoing format)
         tool_msg_reformed = reformed[2]  # Third message (tool without tool_call_id)
-        assert tool_msg_reformed["role"] == "assistant", "Tool message should be converted to assistant"
-        assert "[Tool Result]" in tool_msg_reformed["content"], "Tool result should be prefixed"
+        assert tool_msg_reformed["role"] == "user", "Tool message should be converted to user role"
+        assert "[Tool Result]" not in tool_msg_reformed["content"], "Tool result should NOT have prefix"
 
         # Check that even "proper" tool messages are converted (aggressive approach)
         proper_tool_msg = reformed[3]  # Fourth message (tool with tool_call_id)
-        assert proper_tool_msg["role"] == "assistant", "All tool messages converted to assistant for SDK compatibility"
-        assert "[Tool Result]" in proper_tool_msg["content"], "Tool result should be prefixed"
+        assert proper_tool_msg["role"] == "user", "All tool messages converted to user role"
+        assert "[Tool Result]" not in proper_tool_msg["content"], "Tool result should NOT have prefix"
         assert "tool_call_id" not in proper_tool_msg, "tool_call_id should be removed for plain text format"
 
         # Check that call_id was cleaned

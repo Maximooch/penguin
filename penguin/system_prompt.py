@@ -140,7 +140,7 @@ IMPLEMENTATION TASKS (implement, fix, create, refactor):
 **--- Critical Reminders ---**
 
 -   **ALWAYS call `<finish_response>` when you're done** - whether after answering a question, completing a task, or providing information. Never just stop without calling it. It's essential for proper turn termination.
--   Action results appear in the **next** message as "[Tool Execution Result]". Acknowledge the result, then either continue working or call `<finish_response>` if done.
+-   Action results will appear in the next system message. Acknowledge the result, then either continue working or call `<finish_response>` if done.
 -   Keep `<execute>` scripts **short, focused, and safe.** Adhere strictly to the safety mandate.
 -   Plan detailed steps, including verification checks, in a **scratchpad** file *before* execution.
 

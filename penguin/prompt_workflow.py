@@ -64,7 +64,7 @@ CODE_FORMATTING_RULES = """
 TOOL_RESULT_HANDLING = """
 **Tool Result Handling:**
 
-Tool results appear in the next message marked with "[Tool Execution Result]". You MUST respond to every tool result.
+Tool results will appear in the next system message. You MUST respond to every tool result.
 
 **For Exploration Tasks (analyze, understand, research, examine):**
 - Execute all necessary tools to gather information

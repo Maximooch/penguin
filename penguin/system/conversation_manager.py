@@ -613,6 +613,7 @@ class ConversationManager:
                             last_chunk = chunk
                             
                         # After streaming completes, add the full response to conversation
+                        # add_assistant_message automatically strips action tags
                         self.conversation.add_assistant_message(last_chunk)
                         self.save()
                     

@@ -1644,6 +1644,7 @@ class Engine:
                 message_already_added = False
 
             if not message_already_added:
+                # add_assistant_message automatically strips action tags
                 cm.conversation.add_assistant_message(assistant_response)
                 logger.debug(f"Added assistant message to conversation ({len(assistant_response)} chars)")
 
@@ -1808,6 +1809,7 @@ class Engine:
             )
 
             # Persist full assistant response now that streaming done
+            # add_assistant_message automatically strips action tags
             cm.conversation.add_assistant_message(full_response)
             cm.save()
 

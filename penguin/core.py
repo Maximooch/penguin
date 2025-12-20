@@ -1486,6 +1486,7 @@ class PenguinCore:
                 # Add assistant response to conversation
                 # Ensure we add the complete response, even if it was streamed.
                 # The APIClient should return the full string after streaming completes.
+                # Note: add_assistant_message automatically strips action tags
                 self.conversation_manager.conversation.add_assistant_message(assistant_response)
             
             # Parse actions and continue with action handling

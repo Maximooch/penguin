@@ -189,6 +189,77 @@ def parse_action(content: str) -> List[CodeActAction]:
         return []
 
 
+def strip_action_tags(content: str) -> str:
+    """Strip action tags from content, returning clean text for conversation history.
+
+    This removes all valid action tags (e.g., <execute_command>...</execute_command>,
+    <finish_response>...</finish_response>) from the content, leaving only the
+    narrative/conversational text.
+
+    Args:
+        content: The string content containing action tags
+
+    Returns:
+        Content with action tags removed and whitespace cleaned up
+    """
+    if not content:
+        return content
+
+    # Build pattern for all valid action types
+    action_tag_pattern = "|".join([action_type.value for action_type in ActionType])
+    # Match complete tag pairs: <action_type>...</action_type>
+    pattern = f"<({action_tag_pattern})>.*?</\\1>"
+
+    # Remove all action tags
+    cleaned = re.sub(pattern, "", content, flags=re.DOTALL | re.IGNORECASE)
+
+    # Clean up excessive whitespace left behind
+    # Replace multiple newlines with at most two
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    # Strip leading/trailing whitespace
+    cleaned = cleaned.strip()
+
+    return cleaned
+
+
+def strip_incomplete_action_tags(content: str) -> str:
+    """Strip incomplete/unclosed action tags from the end of content.
+
+    When streaming is interrupted after detecting a complete action tag,
+    there may be additional incomplete tags in the buffer (e.g., `<finish_response>`
+    without its closing tag). This function removes such trailing fragments.
+
+    Args:
+        content: The string content that may have trailing incomplete tags
+
+    Returns:
+        Content with trailing incomplete tags removed
+    """
+    if not content:
+        return content
+
+    # Build pattern for valid action types
+    action_tag_pattern = "|".join([action_type.value for action_type in ActionType])
+
+    # Match incomplete opening tags at the end: <action_type> without </action_type>
+    # This pattern finds <tag> or <tag>content... at the end without closing tag
+    incomplete_pattern = f"<({action_tag_pattern})>(?:(?!</\\1>).)*$"
+
+    # Remove trailing incomplete tags
+    cleaned = re.sub(incomplete_pattern, "", content, flags=re.DOTALL | re.IGNORECASE)
+
+    # Also remove partially-started opening tags at the end (e.g., <finish_ or <execute)
+    # This handles cases where streaming was interrupted mid-tag
+    partial_tag_pattern = f"<(?:{action_tag_pattern})?[^>]*$"
+    cleaned = re.sub(partial_tag_pattern, "", cleaned, flags=re.IGNORECASE)
+
+    # Also remove orphaned closing tags at the start (from previous incomplete)
+    orphan_close_pattern = f"^\\s*</({action_tag_pattern})>"
+    cleaned = re.sub(orphan_close_pattern, "", cleaned, flags=re.IGNORECASE)
+
+    return cleaned.strip()
+
+
 class ActionExecutor:
     def __init__(
         self,

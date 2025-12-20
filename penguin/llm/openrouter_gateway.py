@@ -327,11 +327,12 @@ class OpenRouterGateway:
                         reformatted_message[key] = value
             
             elif message.get('role') == 'tool':
-                # Convert ALL tool messages to assistant messages with prefixed content
-                self.logger.debug(f"Converting tool result message to assistant message")
+                # Convert tool messages to user role (standard pattern for tool results)
+                # Using user role prevents the model from echoing the format as its own output
+                self.logger.debug(f"Converting tool result message to user message")
                 reformatted_message = {
-                    'role': 'assistant', 
-                    'content': f"[Tool Result] {message.get('content', '')}"
+                    'role': 'user',
+                    'content': message.get('content', '')
                 }
                 # Copy other fields but exclude tool_call_id
                 for key, value in message.items():
@@ -584,7 +585,11 @@ class OpenRouterGateway:
                                         self._telemetry["interrupts"] += 1
                                     except Exception:
                                         pass
-                                    return full_response_content
+                                    # Strip any incomplete action tags that were buffered after the complete one
+                                    from penguin.utils.parser import strip_incomplete_action_tags
+                                    cleaned = strip_incomplete_action_tags(full_response_content)
+                                    self.logger.debug(f"[OpenRouterGateway] Stripped incomplete tags: {len(full_response_content)} -> {len(cleaned)} chars")
+                                    return cleaned
                         except Exception as _int_err:
                             self.logger.debug(f"[OpenRouterGateway] interrupt_on_action check failed: {_int_err}")
 
@@ -938,6 +943,10 @@ class OpenRouterGateway:
                                             self._telemetry["interrupts"] += 1
                                         except Exception:
                                             pass
+                                        # Strip any incomplete action tags that were buffered after the complete one
+                                        from penguin.utils.parser import strip_incomplete_action_tags
+                                        full_content = strip_incomplete_action_tags(full_content)
+                                        self.logger.debug(f"[OpenRouterGateway] Stripped incomplete tags from direct API response")
                                         break
                             except Exception as _int_err:
                                 self.logger.debug(f"[OpenRouterGateway] interrupt_on_action check failed: {_int_err}")
