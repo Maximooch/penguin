@@ -169,6 +169,14 @@ def create_app() -> "FastAPI":
             if index_path.exists():
                 return FileResponse(str(index_path))
             return {"message": "Penguin API is running. Web UI not found."}
+
+        @app.get("/dashboard")
+        async def read_dashboard():
+            """Serve the dashboard UI."""
+            dashboard_path = static_dir / "dashboard.html"
+            if dashboard_path.exists():
+                return FileResponse(str(dashboard_path))
+            return {"message": "Dashboard not found."}
     else:
         @app.get("/")
         async def api_root():

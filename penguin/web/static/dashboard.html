@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Penguin Dashboard</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --background: 224 71% 4%;
+            --foreground: 213 31% 91%;
+            --primary: 210 40% 98%;
+            --primary-foreground: 222.2 47.4% 1.2%;
+            --muted: 223 47% 11%;
+            --muted-foreground: 215.4 16.3% 56.9%;
+            --border: 216 34% 17%;
+            --accent: 217 91% 60%;
+            --success: 142 76% 36%;
+            --warning: 38 92% 50%;
+            --danger: 0 84% 60%;
+            --radius: 0.5rem;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: hsl(var(--background));
+            color: hsl(var(--foreground));
+        }
+
+        .panel {
+            background-color: hsl(var(--muted));
+            border: 1px solid hsl(var(--border));
+            border-radius: var(--radius);
+            padding: 1rem;
+        }
+
+        .panel-header {
+            font-weight: 600;
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: hsl(var(--muted-foreground));
+            margin-bottom: 0.75rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .progress-bar-bg {
+            background-color: hsl(var(--background));
+            border-radius: 4px;
+            height: 8px;
+            overflow: hidden;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s ease, background-color 0.3s ease;
+        }
+
+        .category-row {
+            display: grid;
+            grid-template-columns: 100px 1fr 60px;
+            gap: 0.75rem;
+            align-items: center;
+            padding: 0.5rem 0;
+        }
+
+        .category-label {
+            font-size: 0.75rem;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
+        }
+
+        .token-count {
+            font-size: 0.75rem;
+            color: hsl(var(--muted-foreground));
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .status-dot.active { background-color: hsl(var(--success)); }
+        .status-dot.idle { background-color: hsl(var(--muted-foreground)); }
+        .status-dot.paused { background-color: hsl(var(--warning)); }
+
+        .agent-card {
+            background-color: hsl(var(--background));
+            border: 1px solid hsl(var(--border));
+            border-radius: var(--radius);
+            padding: 0.75rem;
+            text-align: center;
+            min-width: 80px;
+        }
+
+        .agent-card.active {
+            border-color: hsl(var(--accent));
+            box-shadow: 0 0 0 1px hsl(var(--accent));
+        }
+
+        .nav-tab {
+            padding: 0.5rem 1rem;
+            border-radius: var(--radius);
+            font-weight: 500;
+            transition: background-color 0.2s;
+            text-decoration: none;
+            color: hsl(var(--foreground));
+        }
+
+        .nav-tab:hover {
+            background-color: hsl(var(--muted));
+        }
+
+        .nav-tab.active {
+            background-color: hsl(var(--primary));
+            color: hsl(var(--primary-foreground));
+        }
+
+        .timeline-item {
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            gap: 1rem;
+            padding: 0.5rem 0.75rem;
+            border-left: 2px solid hsl(var(--border));
+            margin-left: 0.5rem;
+        }
+
+        .timeline-item:hover {
+            background-color: hsl(var(--background));
+            border-radius: 0 var(--radius) var(--radius) 0;
+        }
+
+        .badge {
+            font-size: 0.625rem;
+            padding: 0.125rem 0.375rem;
+            border-radius: 9999px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge-success { background-color: hsl(var(--success) / 0.2); color: hsl(var(--success)); }
+        .badge-warning { background-color: hsl(var(--warning) / 0.2); color: hsl(var(--warning)); }
+        .badge-danger { background-color: hsl(var(--danger) / 0.2); color: hsl(var(--danger)); }
+        .badge-info { background-color: hsl(var(--accent) / 0.2); color: hsl(var(--accent)); }
+
+        .trimming-log {
+            max-height: 120px;
+            overflow-y: auto;
+            font-size: 0.75rem;
+        }
+
+        .trimming-entry {
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            background-color: hsl(var(--background));
+            margin-bottom: 0.25rem;
+        }
+
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        .live-indicator {
+            animation: pulse-glow 2s ease-in-out infinite;
+        }
+
+        .tooltip {
+            position: relative;
+        }
+
+        .tooltip:hover::after {
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 0.25rem 0.5rem;
+            background-color: hsl(var(--foreground));
+            color: hsl(var(--background));
+            font-size: 0.75rem;
+            border-radius: 4px;
+            white-space: nowrap;
+            z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="app" class="min-h-screen" v-cloak>
+        <!-- Navigation -->
+        <nav class="border-b border-border px-6 py-3 flex items-center justify-between">
+            <div class="flex items-center gap-4">
+                <h1 class="text-xl font-semibold">Penguin</h1>
+                <div class="flex gap-2">
+                    <a href="/" class="nav-tab">Chat</a>
+                    <a href="/dashboard" class="nav-tab active">Dashboard</a>
+                </div>
+            </div>
+            <div class="flex items-center gap-4">
+                <span v-if="connected" class="flex items-center gap-2 text-sm text-green-400">
+                    <span class="status-dot active live-indicator"></span>
+                    Live
+                </span>
+                <span v-else class="flex items-center gap-2 text-sm text-yellow-400">
+                    <span class="status-dot paused"></span>
+                    Reconnecting...
+                </span>
+                <span class="text-sm text-muted-foreground">{{ currentModel }}</span>
+            </div>
+        </nav>
+
+        <!-- Dashboard Grid -->
+        <div class="p-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+            <!-- Token Budget Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>Token Budget</span>
+                    <span class="text-xs font-normal">
+                        {{ formatNumber(tokenUsage.total) }} / {{ formatNumber(tokenUsage.max) }}
+                    </span>
+                </div>
+
+                <!-- Overall Progress -->
+                <div class="mb-4">
+                    <div class="progress-bar-bg h-3">
+                        <div
+                            class="progress-bar-fill"
+                            :style="{
+                                width: overallPercentage + '%',
+                                backgroundColor: getProgressColor(overallPercentage)
+                            }"
+                        ></div>
+                    </div>
+                    <div class="flex justify-between mt-1 text-xs text-muted-foreground">
+                        <span>{{ overallPercentage.toFixed(1) }}% used</span>
+                        <span>{{ formatNumber(tokenUsage.max - tokenUsage.total) }} remaining</span>
+                    </div>
+                </div>
+
+                <!-- Category Breakdown -->
+                <div class="space-y-1">
+                    <div
+                        v-for="(cat, key) in tokenUsage.categories"
+                        :key="key"
+                        class="category-row tooltip"
+                        :data-tooltip="getCategoryTooltip(key, cat)"
+                    >
+                        <span class="category-label" :style="{ color: getCategoryColor(key) }">
+                            {{ formatCategoryName(key) }}
+                        </span>
+                        <div class="progress-bar-bg">
+                            <div
+                                class="progress-bar-fill"
+                                :style="{
+                                    width: getCategoryPercentage(cat) + '%',
+                                    backgroundColor: getCategoryColor(key)
+                                }"
+                            ></div>
+                        </div>
+                        <span class="token-count">{{ formatNumber(cat.tokens) }}</span>
+                    </div>
+                </div>
+
+                <!-- Trimming Events -->
+                <div v-if="trimmingEvents.length > 0" class="mt-4">
+                    <div
+                        class="flex items-center justify-between cursor-pointer text-xs text-muted-foreground"
+                        @click="showTrimmingLog = !showTrimmingLog"
+                    >
+                        <span>Recent Trimming ({{ trimmingEvents.length }})</span>
+                        <span>{{ showTrimmingLog ? '▼' : '▶' }}</span>
+                    </div>
+                    <div v-if="showTrimmingLog" class="trimming-log mt-2">
+                        <div
+                            v-for="(event, idx) in trimmingEvents"
+                            :key="idx"
+                            class="trimming-entry flex justify-between"
+                        >
+                            <span class="text-muted-foreground">{{ formatCategoryName(event.category) }}</span>
+                            <span class="text-red-400">-{{ formatNumber(event.tokens_removed) }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agent Status Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <span>Agents</span>
+                    <span class="text-xs font-normal">{{ agents.length }} registered</span>
+                </div>
+
+                <div class="flex flex-wrap gap-3 mb-4">
+                    <div
+                        v-for="agent in agents"
+                        :key="agent.id"
+                        class="agent-card"
+                        :class="{ active: agent.id === activeAgent }"
+                    >
+                        <div class="flex items-center justify-center gap-1 mb-1">
+                            <span class="status-dot" :class="getAgentStatusClass(agent)"></span>
+                            <span class="text-xs font-medium">{{ agent.id }}</span>
+                        </div>
+                        <div class="text-xs text-muted-foreground">
+                            {{ agent.message_count || 0 }} msgs
+                        </div>
+                    </div>
+                </div>
+
+                <div class="text-sm space-y-2">
+                    <div class="flex justify-between">
+                        <span class="text-muted-foreground">Active Agent</span>
+                        <span class="font-medium">{{ activeAgent || 'none' }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-muted-foreground">Total Messages</span>
+                        <span class="font-medium">{{ totalMessages }}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-muted-foreground">Tool Calls</span>
+                        <span class="font-medium">{{ totalToolCalls }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Engine Loop Panel -->
+            <div class="panel lg:col-span-2">
+                <div class="panel-header">
+                    <span>Engine Loop</span>
+                    <div class="flex items-center gap-3">
+                        <span class="badge" :class="getEngineBadgeClass()">
+                            {{ engineState.status }}
+                        </span>
+                        <span class="text-xs font-normal">
+                            Iteration {{ engineState.iteration }} / {{ engineState.maxIterations }}
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Progress Bar -->
+                <div class="mb-4">
+                    <div class="progress-bar-bg h-2">
+                        <div
+                            class="progress-bar-fill bg-blue-500"
+                            :style="{ width: engineProgress + '%' }"
+                        ></div>
+                    </div>
+                </div>
+
+                <!-- Current Step -->
+                <div class="space-y-2">
+                    <div
+                        v-for="(step, idx) in engineState.steps"
+                        :key="idx"
+                        class="flex items-center gap-3 text-sm"
+                    >
+                        <span class="w-5 text-center">
+                            <span v-if="step.status === 'complete'" class="text-green-400">✓</span>
+                            <span v-else-if="step.status === 'running'" class="text-blue-400 live-indicator">●</span>
+                            <span v-else class="text-muted-foreground">○</span>
+                        </span>
+                        <span :class="{ 'text-muted-foreground': step.status === 'pending' }">
+                            {{ step.name }}
+                        </span>
+                        <span v-if="step.detail" class="text-muted-foreground text-xs">
+                            {{ step.detail }}
+                        </span>
+                        <span v-if="step.duration" class="text-xs text-muted-foreground ml-auto">
+                            {{ step.duration }}
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tool Execution Timeline -->
+            <div class="panel lg:col-span-2">
+                <div class="panel-header">
+                    <span>Tool Execution Timeline</span>
+                    <span class="text-xs font-normal">Last {{ toolExecutions.length }} calls</span>
+                </div>
+
+                <div class="space-y-1" v-if="toolExecutions.length > 0">
+                    <div
+                        v-for="(tool, idx) in toolExecutions"
+                        :key="idx"
+                        class="timeline-item"
+                    >
+                        <div class="flex items-center gap-2">
+                            <span class="font-medium text-sm">{{ tool.name }}</span>
+                            <span v-if="tool.args" class="text-xs text-muted-foreground truncate max-w-xs">
+                                {{ tool.args }}
+                            </span>
+                        </div>
+                        <span class="text-xs text-muted-foreground font-mono">
+                            {{ tool.duration }}
+                        </span>
+                        <span class="badge" :class="getToolBadgeClass(tool.status)">
+                            {{ tool.status }}
+                        </span>
+                    </div>
+                </div>
+                <div v-else class="text-center text-muted-foreground text-sm py-4">
+                    No tool executions yet
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        const { createApp, ref, computed, onMounted, onUnmounted } = Vue
+
+        createApp({
+            setup() {
+                // Connection state
+                const connected = ref(false)
+                const ws = ref(null)
+                const currentModel = ref('Loading...')
+
+                // Token usage data - matches API response from /api/v1/token-usage
+                const tokenUsage = ref({
+                    total: 0,
+                    max: 128000,
+                    available: 128000,
+                    usage_percentage: 0,
+                    categories: {
+                        system: { tokens: 0, budget_pct: 10 },
+                        context: { tokens: 0, budget_pct: 35 },
+                        dialog: { tokens: 0, budget_pct: 50 },
+                        system_output: { tokens: 0, budget_pct: 5 }
+                    }
+                })
+                const trimmingEvents = ref([])
+                const showTrimmingLog = ref(false)
+
+                // Category key mapping from API to display
+                const categoryKeyMap = {
+                    'MessageCategory.SYSTEM': 'system',
+                    'MessageCategory.CONTEXT': 'context',
+                    'MessageCategory.DIALOG': 'dialog',
+                    'MessageCategory.SYSTEM_OUTPUT': 'system_output',
+                    'SYSTEM': 'system',
+                    'CONTEXT': 'context',
+                    'DIALOG': 'dialog',
+                    'SYSTEM_OUTPUT': 'system_output'
+                }
+
+                // Budget percentages for each category (default allocation)
+                const categoryBudgets = {
+                    system: 10,
+                    context: 35,
+                    dialog: 50,
+                    system_output: 5
+                }
+
+                // Agent data
+                const agents = ref([])
+                const activeAgent = ref('default')
+                const totalMessages = ref(0)
+                const totalToolCalls = ref(0)
+
+                // Engine state
+                const engineState = ref({
+                    status: 'idle',
+                    iteration: 0,
+                    maxIterations: 5000,
+                    steps: [
+                        { name: 'Prepare Context', status: 'pending' },
+                        { name: 'LLM Request', status: 'pending', detail: '' },
+                        { name: 'Parse Actions', status: 'pending' },
+                        { name: 'Execute Tools', status: 'pending' },
+                        { name: 'Check Stop Conditions', status: 'pending' }
+                    ]
+                })
+
+                // Tool executions
+                const toolExecutions = ref([])
+
+                // Computed
+                const overallPercentage = computed(() => {
+                    if (tokenUsage.value.max === 0) return 0
+                    return (tokenUsage.value.total / tokenUsage.value.max) * 100
+                })
+
+                const engineProgress = computed(() => {
+                    if (engineState.value.maxIterations === 0) return 0
+                    return (engineState.value.iteration / engineState.value.maxIterations) * 100
+                })
+
+                // Methods
+                const formatNumber = (n) => {
+                    if (n === undefined || n === null) return '0'
+                    return n.toLocaleString()
+                }
+
+                const formatCategoryName = (key) => {
+                    const names = {
+                        system: 'System',
+                        context: 'Context',
+                        dialog: 'Dialog',
+                        system_output: 'Sys Out'
+                    }
+                    return names[key] || key
+                }
+
+                const getCategoryColor = (key) => {
+                    const colors = {
+                        system: '#f59e0b',      // amber
+                        context: '#3b82f6',     // blue
+                        dialog: '#10b981',      // green
+                        system_output: '#6b7280' // gray
+                    }
+                    return colors[key] || '#6b7280'
+                }
+
+                const getCategoryPercentage = (cat) => {
+                    const maxForCategory = (tokenUsage.value.max * cat.budget_pct) / 100
+                    if (maxForCategory === 0) return 0
+                    return Math.min(100, (cat.tokens / maxForCategory) * 100)
+                }
+
+                const getCategoryTooltip = (key, cat) => {
+                    const maxForCategory = Math.floor((tokenUsage.value.max * cat.budget_pct) / 100)
+                    return `${formatNumber(cat.tokens)} / ${formatNumber(maxForCategory)} (${cat.budget_pct}% budget)`
+                }
+
+                const getProgressColor = (pct) => {
+                    if (pct >= 95) return '#ef4444'  // red
+                    if (pct >= 80) return '#f59e0b'  // amber
+                    return '#3b82f6'  // blue
+                }
+
+                const getAgentStatusClass = (agent) => {
+                    if (agent.paused) return 'paused'
+                    if (agent.id === activeAgent.value) return 'active'
+                    return 'idle'
+                }
+
+                const getEngineBadgeClass = () => {
+                    const status = engineState.value.status
+                    if (status === 'running') return 'badge-info'
+                    if (status === 'completed') return 'badge-success'
+                    if (status === 'error') return 'badge-danger'
+                    return 'badge-warning'
+                }
+
+                const getToolBadgeClass = (status) => {
+                    if (status === 'success') return 'badge-success'
+                    if (status === 'error') return 'badge-danger'
+                    if (status === 'running') return 'badge-info'
+                    return 'badge-warning'
+                }
+
+                // Data fetching
+                const fetchInitialData = async () => {
+                    try {
+                        // Fetch token usage
+                        const tokenRes = await fetch('/api/v1/token-usage')
+                        if (tokenRes.ok) {
+                            const data = await tokenRes.json()
+                            if (data.usage) {
+                                updateTokenUsage(data.usage)
+                            }
+                        }
+
+                        // Fetch agents
+                        const agentsRes = await fetch('/api/v1/agents')
+                        if (agentsRes.ok) {
+                            const data = await agentsRes.json()
+                            agents.value = data.agents || data || []
+                        }
+
+                        // Fetch current model
+                        const modelsRes = await fetch('/api/v1/models')
+                        if (modelsRes.ok) {
+                            const data = await modelsRes.json()
+                            const current = (data.models || []).find(m => m.current)
+                            currentModel.value = current?.name || current?.id || 'Unknown'
+                        }
+
+                        // Fetch telemetry
+                        const telemetryRes = await fetch('/api/v1/telemetry')
+                        if (telemetryRes.ok) {
+                            const data = await telemetryRes.json()
+                            updateFromTelemetry(data)
+                        }
+                    } catch (err) {
+                        console.error('Error fetching initial data:', err)
+                    }
+                }
+
+                const updateTokenUsage = (usage) => {
+                    // Handle various API response formats
+                    // Format 1: { total, max, available, MessageCategory.X: n }
+                    // Format 2: { total_tokens, max_context_window, categories: {...} }
+                    // Format 3: { current_total_tokens, max_context_window_tokens, categories: {...} }
+
+                    if (usage.total !== undefined) {
+                        tokenUsage.value.total = usage.total
+                    } else if (usage.total_tokens !== undefined) {
+                        tokenUsage.value.total = usage.total_tokens
+                    } else if (usage.current_total_tokens !== undefined) {
+                        tokenUsage.value.total = usage.current_total_tokens
+                    }
+
+                    if (usage.max !== undefined) {
+                        tokenUsage.value.max = usage.max
+                    } else if (usage.max_context_window !== undefined) {
+                        tokenUsage.value.max = usage.max_context_window
+                    } else if (usage.max_context_window_tokens !== undefined) {
+                        tokenUsage.value.max = usage.max_context_window_tokens
+                    }
+
+                    if (usage.available !== undefined) {
+                        tokenUsage.value.available = usage.available
+                    } else if (usage.available_tokens !== undefined) {
+                        tokenUsage.value.available = usage.available_tokens
+                    }
+
+                    if (usage.usage_percentage !== undefined) {
+                        tokenUsage.value.usage_percentage = usage.usage_percentage
+                    } else if (usage.percentage !== undefined) {
+                        tokenUsage.value.usage_percentage = usage.percentage
+                    }
+
+                    // Parse category tokens from various formats
+                    if (usage.categories) {
+                        // Format: { categories: { SYSTEM: n, CONTEXT: n, ... } }
+                        for (const [key, value] of Object.entries(usage.categories)) {
+                            const normalizedKey = categoryKeyMap[key] || key.toLowerCase()
+                            if (tokenUsage.value.categories[normalizedKey]) {
+                                tokenUsage.value.categories[normalizedKey].tokens = value
+                            }
+                        }
+                    } else {
+                        // Format: { "MessageCategory.SYSTEM": n, ... } or { SYSTEM: n, ... }
+                        for (const [key, value] of Object.entries(usage)) {
+                            const normalizedKey = categoryKeyMap[key]
+                            if (normalizedKey && typeof value === 'number') {
+                                if (!tokenUsage.value.categories[normalizedKey]) {
+                                    tokenUsage.value.categories[normalizedKey] = {
+                                        tokens: 0,
+                                        budget_pct: categoryBudgets[normalizedKey] || 10
+                                    }
+                                }
+                                tokenUsage.value.categories[normalizedKey].tokens = value
+                            }
+                        }
+                    }
+
+                    if (usage.trimming_events) {
+                        trimmingEvents.value = usage.trimming_events.slice(-10)
+                    }
+                }
+
+                const updateFromTelemetry = (data) => {
+                    if (data.tokens) {
+                        updateTokenUsage(data.tokens)
+                    }
+                    if (data.agents) {
+                        // Update agent stats
+                        const agentData = data.agents
+                        for (const [id, stats] of Object.entries(agentData)) {
+                            const agent = agents.value.find(a => a.id === id)
+                            if (agent && stats) {
+                                agent.message_count = stats.message_count || 0
+                            }
+                        }
+                    }
+                    if (data.active_agent) {
+                        activeAgent.value = data.active_agent
+                    }
+                    if (data.total_messages !== undefined) {
+                        totalMessages.value = data.total_messages
+                    }
+                    if (data.total_tool_calls !== undefined) {
+                        totalToolCalls.value = data.total_tool_calls
+                    }
+                }
+
+                // WebSocket connection
+                const connectWebSocket = () => {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+                    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws/telemetry?interval=2`
+
+                    ws.value = new WebSocket(wsUrl)
+
+                    ws.value.onopen = () => {
+                        connected.value = true
+                        console.log('Dashboard WebSocket connected')
+                    }
+
+                    ws.value.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data)
+                            updateFromTelemetry(data)
+                        } catch (err) {
+                            console.error('Error parsing telemetry:', err)
+                        }
+                    }
+
+                    ws.value.onclose = () => {
+                        connected.value = false
+                        console.log('Dashboard WebSocket closed, reconnecting...')
+                        setTimeout(connectWebSocket, 3000)
+                    }
+
+                    ws.value.onerror = (err) => {
+                        console.error('Dashboard WebSocket error:', err)
+                    }
+                }
+
+                // Also connect to events WebSocket for tool executions
+                const connectEventsWebSocket = () => {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+                    const eventsUrl = `${protocol}//${window.location.host}/api/v1/events/ws`
+
+                    const eventsWs = new WebSocket(eventsUrl)
+
+                    eventsWs.onmessage = (event) => {
+                        try {
+                            const data = JSON.parse(event.data)
+                            if (data.event === 'tool') {
+                                // Add tool execution to timeline
+                                toolExecutions.value.unshift({
+                                    name: data.data?.tool || data.data?.name || 'unknown',
+                                    args: data.data?.args ? JSON.stringify(data.data.args).slice(0, 50) : '',
+                                    duration: data.data?.duration || '—',
+                                    status: data.data?.status || 'success'
+                                })
+                                // Keep only last 20
+                                if (toolExecutions.value.length > 20) {
+                                    toolExecutions.value.pop()
+                                }
+                                totalToolCalls.value++
+                            }
+                            if (data.event === 'progress') {
+                                engineState.value.iteration = data.data?.iteration || 0
+                                engineState.value.maxIterations = data.data?.max_iterations || 5000
+                                engineState.value.status = 'running'
+                            }
+                        } catch (err) {
+                            console.error('Error parsing event:', err)
+                        }
+                    }
+
+                    eventsWs.onclose = () => {
+                        setTimeout(connectEventsWebSocket, 3000)
+                    }
+                }
+
+                // Lifecycle
+                onMounted(() => {
+                    fetchInitialData()
+                    connectWebSocket()
+                    connectEventsWebSocket()
+
+                    // Demo data fallback - shown when API returns no data
+                    // This helps visualize the dashboard even when Penguin isn't actively running
+                    setTimeout(() => {
+                        if (tokenUsage.value.total === 0) {
+                            // Use updateTokenUsage to properly parse the mock data
+                            updateTokenUsage({
+                                total: 45231,
+                                max: 128000,
+                                available: 82769,
+                                usage_percentage: 35.3,
+                                'MessageCategory.SYSTEM': 2100,
+                                'MessageCategory.CONTEXT': 15800,
+                                'MessageCategory.DIALOG': 22500,
+                                'MessageCategory.SYSTEM_OUTPUT': 4831
+                            })
+                        }
+                        if (agents.value.length === 0) {
+                            agents.value = [
+                                { id: 'default', message_count: 24 },
+                                { id: 'planner', message_count: 8, paused: true },
+                                { id: 'qa', message_count: 3 }
+                            ]
+                            totalMessages.value = 35
+                            totalToolCalls.value = 12
+                        }
+                        if (toolExecutions.value.length === 0) {
+                            toolExecutions.value = [
+                                { name: 'read_file', args: 'src/core.py', duration: '45ms', status: 'success' },
+                                { name: 'grep_search', args: '"def process"', duration: '120ms', status: 'success' },
+                                { name: 'write_file', args: 'src/utils.py', duration: '30ms', status: 'success' }
+                            ]
+                        }
+                    }, 1500)
+                })
+
+                onUnmounted(() => {
+                    if (ws.value) {
+                        ws.value.close()
+                    }
+                })
+
+                return {
+                    connected,
+                    currentModel,
+                    tokenUsage,
+                    trimmingEvents,
+                    showTrimmingLog,
+                    overallPercentage,
+                    agents,
+                    activeAgent,
+                    totalMessages,
+                    totalToolCalls,
+                    engineState,
+                    engineProgress,
+                    toolExecutions,
+                    formatNumber,
+                    formatCategoryName,
+                    getCategoryColor,
+                    getCategoryPercentage,
+                    getCategoryTooltip,
+                    getProgressColor,
+                    getAgentStatusClass,
+                    getEngineBadgeClass,
+                    getToolBadgeClass
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+</html>
