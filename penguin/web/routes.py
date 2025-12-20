@@ -1197,8 +1197,8 @@ async def stream_chat(
                     "response": process_result.get("assistant_response", ""),
                     "action_results": process_result.get("action_results", [])
                 }
-                if include_reasoning and hasattr(core, "_streaming_state"):
-                    complete_payload["reasoning"] = core._streaming_state.get("reasoning_content", "")
+                if include_reasoning:
+                    complete_payload["reasoning"] = getattr(core, 'streaming_reasoning_content', "")
 
                 try:
                     await websocket.send_json({"event": "complete", "data": complete_payload})
@@ -2527,7 +2527,7 @@ async def get_system_status(core: PenguinCore = Depends(get_core)):
             "status": "active",
             "runmode_status": getattr(core, 'current_runmode_status_summary', 'RunMode idle.'),
             "continuous_mode": getattr(core, '_continuous_mode', False),
-            "streaming_active": getattr(core, '_streaming_state', {}).get('active', False),
+            "streaming_active": getattr(core, 'streaming_active', False),
             "token_usage": core.get_token_usage(),
             "timestamp": datetime.now().isoformat()
         }

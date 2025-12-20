@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from penguin.core import PenguinCore
 from penguin.system.state import MessageCategory
@@ -175,7 +175,13 @@ def _build_core(cm: ScenarioConversationManager, engine: ScenarioEngine) -> Peng
     core.engine = engine
     core.emit_ui_event = AsyncMock()
     core._handle_stream_chunk = AsyncMock()
-    core._streaming_state = {"active": False}
+    # Mock StreamingStateManager for streaming property accessors
+    stream_mgr = MagicMock()
+    stream_mgr.is_active = False
+    stream_mgr.content = ""
+    stream_mgr.reasoning_content = ""
+    stream_mgr.stream_id = None
+    core._stream_manager = stream_mgr
     core.event_types = {"message"}
     core._interrupted = False
     return core

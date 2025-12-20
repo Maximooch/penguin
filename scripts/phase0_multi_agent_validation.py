@@ -119,18 +119,13 @@ def _build_core_with_stubs(cm: StubConversationManager, engine: StubEngine) -> P
         return None
 
     core._handle_stream_chunk = _noop_stream  # type: ignore[attr-defined]
-    core._streaming_state = {
-        "active": False,
-        "content": "",
-        "reasoning_content": "",
-        "message_type": None,
-        "role": None,
-        "metadata": {},
-        "started_at": None,
-        "last_update": None,
-        "empty_response_count": 0,
-        "error": None,
-    }
+    # Mock StreamingStateManager for streaming property accessors
+    from unittest.mock import MagicMock
+    core._stream_manager = MagicMock()
+    core._stream_manager.is_active = False
+    core._stream_manager.content = ""
+    core._stream_manager.reasoning_content = ""
+    core._stream_manager.stream_id = None
     core.event_types = {"message", "token_update", "error"}
     core._interrupted = False
     return core

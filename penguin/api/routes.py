@@ -1176,7 +1176,7 @@ async def get_system_status(core: PenguinCore = Depends(get_core)):
             "status": "active",
             "runmode_status": getattr(core, 'current_runmode_status_summary', 'RunMode idle.'),
             "continuous_mode": getattr(core, '_continuous_mode', False),
-            "streaming_active": getattr(core, '_streaming_state', {}).get('active', False),
+            "streaming_active": getattr(core, 'streaming_active', False),
             "token_usage": core.get_token_usage(),
             "timestamp": datetime.now().isoformat()
         }

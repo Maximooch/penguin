@@ -570,23 +570,6 @@ class PenguinCore:
         # StreamingStateManager handles all streaming state, coalescing, and event generation
         self._stream_manager = StreamingStateManager()
 
-        # Compatibility layer: _streaming_state dict for legacy access
-        # TODO: Remove once all code uses _stream_manager directly
-        self._streaming_state = {
-            "active": False,
-            "content": "",
-            "reasoning_content": "",
-            "message_type": None,
-            "role": None,
-            "metadata": {},
-            "started_at": None,
-            "last_update": None,
-            "empty_response_count": 0,
-            "error": None,
-            "emit_buffer": "",
-            "last_emit_ts": 0.0,
-        }
-
         # RunMode state for UI streaming bridges
         self._runmode_stream_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
         self._runmode_active: bool = False
@@ -1254,6 +1237,30 @@ class PenguinCore:
         except Exception:
             return 0
 
+    # ------------------------------------------------------------------
+    # Streaming State Properties (delegate to StreamingStateManager)
+    # ------------------------------------------------------------------
+
+    @property
+    def streaming_active(self) -> bool:
+        """Whether streaming is currently active."""
+        return self._stream_manager.is_active
+
+    @property
+    def streaming_content(self) -> str:
+        """Accumulated assistant content from current stream."""
+        return self._stream_manager.content
+
+    @property
+    def streaming_reasoning_content(self) -> str:
+        """Accumulated reasoning content from current stream."""
+        return self._stream_manager.reasoning_content
+
+    @property
+    def streaming_stream_id(self) -> Optional[str]:
+        """Unique ID of the current stream, or None if not streaming."""
+        return self._stream_manager.stream_id
+
     def get_token_usage(self) -> Dict[str, Dict[str, int]]:
         """Get token usage via conversation manager"""
         try:
@@ -1836,7 +1843,7 @@ class PenguinCore:
                 "status": "active",
                 "runmode_status": getattr(self, 'current_runmode_status_summary', 'RunMode idle.'),
                 "continuous_mode": getattr(self, '_continuous_mode', False),
-                "streaming_active": getattr(self, '_streaming_state', {}).get('active', False),
+                "streaming_active": getattr(self, 'streaming_active', False),
                 "token_usage": self.get_token_usage(),
                 "timestamp": datetime.now().isoformat(),
                 "initialization": {
@@ -2557,9 +2564,6 @@ class PenguinCore:
         # Delegate to StreamingStateManager
         events = self._stream_manager.handle_chunk(chunk, message_type=message_type, role=role)
 
-        # Sync legacy _streaming_state for compatibility
-        self._sync_streaming_state_from_manager()
-
         # Emit events and invoke RunMode callback
         for event in events:
             await self.emit_ui_event(event.event_type, event.data)
@@ -2569,19 +2573,6 @@ class PenguinCore:
                     event.data["chunk"],
                     event.data.get("message_type", "assistant")
                 )
-
-    def _sync_streaming_state_from_manager(self) -> None:
-        """Sync legacy _streaming_state dict from StreamingStateManager."""
-        mgr = self._stream_manager
-        self._streaming_state["active"] = mgr.is_active
-        self._streaming_state["content"] = mgr.content
-        self._streaming_state["reasoning_content"] = mgr.reasoning_content
-        self._streaming_state["id"] = mgr.stream_id
-        self._streaming_state["empty_response_count"] = mgr.empty_response_count
-        self._streaming_state["error"] = mgr.error
-        # These are internal to manager now
-        if mgr.is_active:
-            self._streaming_state["metadata"] = {"is_streaming": True}
 
     def finalize_streaming_message(self) -> Optional[Dict[str, Any]]:
         """
@@ -2639,22 +2630,6 @@ class PenguinCore:
                 asyncio.create_task(
                     self._invoke_runmode_stream_callback("", "assistant", callback_ref)
                 )
-
-        # Reset legacy _streaming_state dict
-        self._streaming_state = {
-            "active": False,
-            "content": "",
-            "reasoning_content": "",
-            "message_type": None,
-            "role": None,
-            "metadata": {},
-            "started_at": None,
-            "last_update": None,
-            "empty_response_count": 0,
-            "error": None,
-            "emit_buffer": "",
-            "last_emit_ts": 0.0,
-        }
 
         return message.to_dict()
 

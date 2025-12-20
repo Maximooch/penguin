@@ -78,34 +78,51 @@ def mock_engine():
 
 
 @pytest.fixture
-def mock_core(mock_model_config, mock_conversation_manager, mock_tool_manager, mock_engine):
+def mock_stream_manager():
+    """Fixture to mock StreamingStateManager."""
+    manager = MagicMock()
+    manager.is_active = False
+    manager.content = ""
+    manager.reasoning_content = ""
+    manager.stream_id = None
+    return manager
+
+
+@pytest.fixture
+def mock_core(mock_model_config, mock_conversation_manager, mock_tool_manager, mock_engine, mock_stream_manager):
     """Fixture to create a mock PenguinCore with system diagnostics functionality."""
     core = MagicMock(spec=PenguinCore)
-    
+
     # Set up core attributes
     core.model_config = mock_model_config
     core.conversation_manager = mock_conversation_manager
     core.tool_manager = mock_tool_manager
     core.engine = mock_engine
+    core._stream_manager = mock_stream_manager
     core.initialized = True
     core._continuous_mode = False
-    core._streaming_state = {"active": False}
     core.current_runmode_status_summary = "RunMode idle."
-    
+
     # Mock checkpoint stats
     core.get_checkpoint_stats = MagicMock(return_value={"enabled": True})
-    
+
     # Mock memory provider status
     core.get_memory_provider_status = MagicMock(return_value={
         "status": "initialized",
         "provider": "LanceProvider"
     })
-    
+
     # Set up the actual methods we're testing
     core.get_system_info = PenguinCore.get_system_info.__get__(core)
     core.get_system_status = PenguinCore.get_system_status.__get__(core)
     core.get_token_usage = PenguinCore.get_token_usage.__get__(core)
-    
+
+    # Set streaming properties as direct attributes (for testing)
+    # In real code these are properties that delegate to _stream_manager
+    core.streaming_active = mock_stream_manager.is_active
+    core.streaming_content = mock_stream_manager.content
+    core.streaming_reasoning_content = mock_stream_manager.reasoning_content
+
     return core
 
 
@@ -215,26 +232,26 @@ class TestPenguinCoreSystemDiagnostics:
     def test_get_system_status_active_states(self, mock_core):
         """Test system status with active streaming and continuous mode."""
         mock_core._continuous_mode = True
-        mock_core._streaming_state = {"active": True}
+        mock_core.streaming_active = True  # Set streaming to active
         mock_core.current_runmode_status_summary = "Running task: Create web server"
-        
+
         result = mock_core.get_system_status()
-        
+
         assert result["continuous_mode"] is True
         assert result["streaming_active"] is True
         assert result["runmode_status"] == "Running task: Create web server"
-    
+
     def test_get_system_status_missing_attributes(self, mock_core):
         """Test system status with missing optional attributes."""
         # Remove optional attributes
         del mock_core._continuous_mode
-        del mock_core._streaming_state
+        del mock_core.streaming_active  # Remove streaming property to test fallback
         del mock_core.current_runmode_status_summary
         del mock_core.initialized
         mock_core.tool_manager = None
-        
+
         result = mock_core.get_system_status()
-        
+
         # Should use default values
         assert result["continuous_mode"] is False
         assert result["streaming_active"] is False
