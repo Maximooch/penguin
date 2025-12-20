@@ -804,50 +804,225 @@ Move to `conversation_manager`:
 
 ---
 
-## Implementation Order (Updated 2025-12-18)
+## Implementation Order (Updated 2025-12-19)
 
-### Phase 1: Agent Architecture (CURRENT - Hard Break)
+### Phase 1: Agent Architecture (DEFERRED)
 
-**Strategy:** Raise `NotImplementedError`, update all callers, delete state dicts.
+**Status:** Prep work done. Full migration deferred to separate effort.
 
 1. ✅ Move `agent/` to `penguin/agent/`
 2. ✅ Extend `AgentConfig` in `agent/schema.py`
-3. **In core.py:**
-   - Add `ensure_agent_conversation()` method
-   - Add `delete_agent_conversation()` method
-   - Update `set_agent_paused()` / `is_agent_paused()` to use conversation metadata
-   - Replace `register_agent()` body with `raise NotImplementedError`
-   - Replace `unregister_agent()` body with call to `delete_agent_conversation()`
-   - Delete 5 state dictionaries
-   - Delete helper methods: `_lookup_persona_config`, `_flatten_model_overrides`, etc.
-4. **Update callers (production code):**
-   - `penguin/api_client.py`
-   - `penguin/web/routes.py`
-   - `penguin/cli/interface.py`
-   - `penguin/cli/cli.py`
-   - `penguin/cli/commands.py`
-   - `penguin/multi/coordinator.py`
-   - `penguin/agent/__init__.py`
-5. Let tests/scripts fail (fix in follow-up)
+3. ⏸️ **Deferred:** Core.py changes and caller updates (large scope, separate PR)
 
-### Phase 2: Streaming extraction
-   - Create `streaming/stream_handler.py`
-   - Update core.py to use StreamHandler
-   - Remove `_streaming_state` dict
-   - Test streaming in CLI
+### Phase 2: Streaming Extraction ✅ COMPLETED
 
-### Phase 3: Model simplification
-   - Add `fetch_openrouter_specs()` to `model_config.py`
-   - Simplify `load_model()` to 10 lines
-   - Delete hardcoded model specs
-   - Test model switching
+**Status:** Completed 2025-12-18. 88 tests passing.
 
-### Phase 4: Cleanup
-   - Create `utils/callbacks.py`
-   - Remove deprecated methods
-   - Remove legacy UI subscriber pattern
-   - Inline minor methods
-   - Final testing
+- ✅ Created `penguin/llm/stream_handler.py` with `StreamingStateManager`
+- ✅ Created `StreamingConfig` dataclass for configuration
+- ✅ Updated core.py to use StreamingStateManager
+- ✅ Comprehensive test coverage in `tests/llm/test_streaming.py`
+
+### Phase 3: Model Management ✅ COMPLETED
+
+**Status:** Completed 2025-12-18. 21 tests passing.
+
+- ✅ Created `ModelSpecsService` with memory + disk caching
+- ✅ Consolidated into `model_config.py` (was separate `model_specs.py`)
+- ✅ Updated `model_selector.py` to use shared service
+- ✅ Simplified `load_model()` in core.py (~100 → ~43 lines)
+- ✅ Removed hardcoded `fallback_specs` from core.py
+- ✅ Test coverage in `tests/llm/test_model_specs.py`
+
+### Phase 4: Cleanup ✅ COMPLETED
+
+**Status:** Completed 2025-12-19. Core.py reduced from 3,057 to 2,897 lines (-160 lines).
+
+#### 4a. Callback Utilities ✅ COMPLETED
+- ✅ Created `penguin/utils/callbacks.py` with `adapt_stream_callback()`
+- ✅ Updated core.py `_prepare_runmode_stream_callback()` (~35 → 2 lines)
+- ✅ Updated api_client.py callback handling (~55 → 2 lines)
+
+#### 4b. UI Event Migration ✅ COMPLETED
+
+**Strategy:** Hard break - migrate ALL callers (production + tests) to `event_bus`. No suppressed errors.
+
+##### BUG DISCOVERED: Double Event Delivery
+
+**Finding:** `cli/ui.py` registers the SAME handler via BOTH systems:
+```python
+# Line 248-249: Subscribes to event_bus for each EventType
+for event_type in EventType:
+    event_bus.subscribe(event_type.value, self.handle_event)
+
+# Line 254: ALSO registers via legacy pattern
+self.core.register_ui(self.handle_event)
+```
+
+**Impact:** When `emit_ui_event()` is called:
+1. `event_bus.emit()` → handler called via event_bus subscription
+2. Legacy loop iterates `ui_subscribers` → SAME handler called AGAIN
+
+**Result:** Handlers receive duplicate events, causing potential double-rendering issues.
+
+##### Current State Analysis
+
+| File | Uses event_bus? | Uses register_ui? | Issue |
+|------|-----------------|-------------------|-------|
+| `cli/ui.py` | ✅ Yes (all EventTypes) | ✅ Yes | **BUG: double calls** |
+| `cli/cli.py` | ❌ No | ✅ Yes | Legacy only |
+| `cli/tui.py` | ❌ No | ✅ Yes | Legacy only |
+| `web/routes.py` | ✅ Yes (handlers) | ✅ Yes | Mixed - needs analysis |
+| Tests | ❌ No | ✅ Yes | Legacy only |
+
+##### EventBus API (from `penguin/cli/events.py`)
+
+```python
+class EventBus:
+    @classmethod
+    def get_sync(cls) -> 'EventBus':  # Used by core.py
+
+    def subscribe(self, event_type: str, handler: EventHandler) -> None
+    def unsubscribe(self, event_type: str, handler: EventHandler) -> None
+    async def emit(self, event_type: str, data: Dict[str, Any]) -> None
+```
+
+Handler signature: `async def handler(event_type: str, data: Dict[str, Any]) -> None`
+(Same signature as legacy `register_ui` - compatible!)
+
+##### Migration Plan
+
+**Production Callers:**
+| File | Lines | Current State | Action |
+|------|-------|---------------|--------|
+| `penguin/cli/ui.py` | 248-254 | Double registration | Remove `register_ui()` call (already uses event_bus) |
+| `penguin/cli/cli.py` | 2787 | Legacy only | Add `event_bus.subscribe()`, remove `register_ui()` |
+| `penguin/cli/tui.py` | 1738 | Legacy only | Add `event_bus.subscribe()`, remove `register_ui()` |
+| `penguin/web/routes.py` | 284, 292, 1118-1219 | Mixed | Analyze and consolidate |
+
+**Test Callers:**
+| File | Action |
+|------|--------|
+| `tests/runmode/test_persistence_behavior.py` | → `event_bus.subscribe()` |
+| `tests/runmode/stress_test_stream_burst.py` | → `event_bus.subscribe()` |
+| `tests/runmode/test_stream_mixed_types.py` | → `event_bus.subscribe()` |
+| `tests/runmode/stress_test_event_fanout.py` | → `event_bus.subscribe()` |
+| `tests/test_runmode_streaming.py` | → `event_bus.subscribe()` |
+| `scripts/verify_ui_events.py` | → `event_bus.subscribe()` |
+
+**Steps:**
+1. ✅ Verified `event_bus` API - compatible with legacy signature
+2. ✅ Fix `cli/ui.py` - remove redundant `register_ui()` call
+3. ✅ Update `cli/cli.py` and `cli/tui.py` - add event_bus subscription
+4. ✅ Analyze and fix `web/routes.py` - consolidate mixed usage
+5. ✅ Update ALL test callers to use `event_bus.subscribe()`
+6. ✅ Simplify `emit_ui_event()` to only use `event_bus`
+7. ✅ Remove `ui_subscribers`, `register_ui()`, `unregister_ui()` from core.py
+8. ✅ Run full test suite - 109 LLM tests pass, all runmode tests pass
+
+**Additional Fixes Applied:**
+- Fixed EventBus to pass through stream_chunk events directly (was blocking due to separate streaming state machine)
+- Removed unused streaming coalescing code from EventBus (redundant with StreamingStateManager)
+- Fixed test dummy engines to accept new `agent_id` and `agent_role` parameters
+
+#### 4c. Deprecated Methods ✅ COMPLETED
+- ✅ Removed `multi_step_process()` - deprecated wrapper with no callers
+- ✅ Removed DEBUG print statements (lines 671-674)
+- ✅ Removed legacy phrase detection comment (line 1647-1648)
+- ✅ Removed stale "MODIFIED PART" comments (lines 1590-1608)
+- ✅ Removed commented super().execute_action (line 1727)
+- **core.py reduced from 3057 to 3005 lines (-52 lines)**
+- Note: `_streaming_state` compatibility layer still needed (external callers in api/routes.py, web/routes.py)
+
+#### 4d. Final Testing ✅ COMPLETED
+- ✅ CLI streaming verified working
+- ✅ All 109 LLM tests pass
+- ✅ All runmode tests pass (streaming, mixed types, stress tests)
+- ✅ UI events verification script passes
+
+#### 4e. Code Migration ✅ COMPLETED
+
+**Agent Roster Methods → `penguin/agent/manager.py`:**
+- ✅ Created `AgentManager` class with `get_roster()` and `get_profile()`
+- ✅ Exported from `penguin/agent/__init__.py`
+- ✅ Updated core.py to delegate (local import to avoid circular dependency)
+- Lines moved: ~66 lines
+
+**MessageBus Integration → `penguin/engine.py`:**
+- ✅ Added `setup_message_bus()` for handler registration
+- ✅ Added `route_message()`, `send_to_agent()`, `send_to_human()`, `human_reply()`
+- ✅ Removed inline MessageBus setup from core.py `__init__`
+- ✅ Updated core.py to delegate messaging methods to Engine
+- Lines moved: ~144 lines
+
+**Final Line Counts:**
+| File | Before Phase 4 | After Phase 4 | Change |
+|------|----------------|---------------|--------|
+| core.py | 3,057 | 2,897 | **-160 lines** |
+| engine.py | 1,662 | 1,850 | +188 lines |
+| agent/manager.py | 0 | 175 | +175 (new) |
+
+**Phase 4 Summary:** Core.py reduced by 160 lines. Code is now better organized with:
+- MessageBus in Engine (where inter-agent communication belongs)
+- Agent roster queries in dedicated AgentManager module
+- Cleaner delegation patterns throughout
+
+---
+
+### Phase 5: Future Improvements (PLANNED)
+
+**Status:** Not started. These are potential improvements for future work.
+
+#### 5a. Streaming State Simplification
+
+**Current:** `_streaming_state` dict in core.py is a compatibility shim for external callers (api/routes.py, web/routes.py).
+
+**Opportunity:** Replace with property accessors that delegate to `StreamingStateManager`:
+```python
+@property
+def streaming_active(self) -> bool:
+    return self._streaming_manager.is_active
+
+@property
+def streaming_content(self) -> str:
+    return self._streaming_manager.content
+```
+
+**Impact:** ~50 lines removal, cleaner API
+
+#### 5b. Diagnostics/Telemetry Extraction
+
+**Current:** `smoke_check_agents()` and related diagnostics are in core.py (~100 lines).
+
+**Opportunity:** Move to `penguin/diagnostics/` module.
+
+#### 5c. Checkpoint/Snapshot Delegation
+
+**Current:** Core.py has thin wrappers for checkpoint operations that could be further simplified.
+
+**Opportunity:** Expose checkpoint manager directly or consolidate wrappers.
+
+#### 5d. Process Methods Consolidation
+
+**Current:** `process()`, `process_message()`, `get_response()` have overlapping logic.
+
+**Opportunity:** Consolidate into Engine.run_* methods with core.py as pure delegation.
+
+#### 5e. Model Loading Simplification
+
+**Current:** `load_model()` and `_apply_new_model_config()` have complex logic (~100 lines).
+
+**Opportunity:** Move to `ModelConfig` class methods or a dedicated `ModelManager`.
+
+#### 5f. Capability Improvements
+
+Beyond refactoring, potential capability enhancements:
+
+1. **Agent Orchestration:** Leverage Engine's MessageBus for multi-agent workflows
+2. **Streaming WebSockets:** Replace polling with real-time streaming in web UI
+3. **Parallel Tool Execution:** Execute independent tool calls concurrently
+4. **Context Window Management:** Smarter summarization when approaching limits
+5. **Incremental Checkpoints:** Auto-checkpoint at key decision points
 
 ---
 
@@ -856,7 +1031,8 @@ Move to `conversation_manager`:
 After refactoring, verify:
 
 - [ ] Single-turn chat works
-- [ ] Multi-step reasoning works (RunMode)
+- [ ] Multi-step reasoning works (non-runmode, just run_response)
+- [ ] RunMode works
 - [ ] Streaming displays correctly in CLI
 - [ ] Model switching works (`/model` command)
 - [ ] Persona-based agents work (`agent="code_analyzer"`)

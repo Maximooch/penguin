@@ -19,6 +19,7 @@ from PIL import Image  # type: ignore
 
 from .model_config import ModelConfig
 from penguin.constants import get_default_max_history_tokens
+from penguin.utils.callbacks import adapt_stream_callback
 from .adapters import get_adapter # Keep for native preference
 # Lazy import gateways to avoid import overhead
 # from .litellm_gateway import LiteLLMGateway
@@ -259,69 +260,9 @@ class APIClient:
                  self.logger.error(f"CRITICAL: Client handler {type(self.client_handler).__name__} missing required 'get_response' method!")
                  return f"[Error: Handler {type(self.client_handler).__name__} interface mismatch]"
 
-            # <<< ADD LOGGING HERE >>>
-            effective_callback = stream_callback if use_streaming else None
-            self.logger.debug(f"[APIClient:{request_id_api}] Calling {type(self.client_handler).__name__}.get_response. Streaming: {use_streaming}. Callback Provided: {effective_callback is not None}")
-            
-            # Ensure the callback is async and handles the new signature if provided
-            if effective_callback and not asyncio.iscoroutinefunction(effective_callback):
-                # Convert to async function if it's not already
-                original_callback = effective_callback
-                self.logger.debug(f"[APIClient:{request_id_api}] Converting non-async callback to async")
-                
-                async def async_callback_wrapper(chunk: str, message_type: str = "assistant"):
-                    # Call the original callback in an asyncio-friendly way
-                    try:
-                        # Check if the original callback accepts message_type parameter
-                        import inspect
-                        sig = inspect.signature(original_callback)
-                        params = list(sig.parameters.keys())
-                        
-                        if len(params) >= 2:
-                            # Callback accepts message_type
-                            if asyncio.iscoroutinefunction(original_callback):
-                                await original_callback(chunk, message_type)
-                            else:
-                                # Run sync callback in thread pool to avoid blocking
-                                await asyncio.get_event_loop().run_in_executor(
-                                    None, original_callback, chunk, message_type
-                                )
-                        else:
-                            # Legacy callback that only accepts chunk
-                            if asyncio.iscoroutinefunction(original_callback):
-                                await original_callback(chunk)
-                            else:
-                                await asyncio.get_event_loop().run_in_executor(
-                                    None, original_callback, chunk
-                                )
-                    except Exception as e:
-                        self.logger.error(f"[APIClient:{request_id_api}] Error in callback: {e}")
-                
-                effective_callback = async_callback_wrapper
-            elif effective_callback and asyncio.iscoroutinefunction(effective_callback):
-                # Already async, but we need to ensure it handles the signature properly
-                original_async_callback = effective_callback
-                
-                async def async_signature_wrapper(chunk: str, message_type: str = "assistant"):
-                    try:
-                        # Check if the async callback accepts message_type parameter
-                        import inspect
-                        sig = inspect.signature(original_async_callback)
-                        params = list(sig.parameters.keys())
-                        
-                        if len(params) >= 2:
-                            await original_async_callback(chunk, message_type)
-                        else:
-                            # Legacy async callback
-                            await original_async_callback(chunk)
-                    except Exception as e:
-                        self.logger.error(f"[APIClient:{request_id_api}] Error in async callback: {e}")
-                
-                effective_callback = async_signature_wrapper
-            
-            if effective_callback:
-                 self.logger.debug(f"[APIClient:{request_id_api}] Callback object details: {effective_callback}")
-            # <<< END LOGGING >>>
+            # Normalize callback to async (chunk, message_type) signature
+            effective_callback = adapt_stream_callback(stream_callback) if use_streaming else None
+            self.logger.debug(f"[APIClient:{request_id_api}] Calling {type(self.client_handler).__name__}.get_response. Streaming: {use_streaming}. Callback: {effective_callback is not None}")
 
             self.logger.info(f"[APIClient:{request_id_api}] PRE-CALL TO HANDLER: use_streaming={use_streaming}, effective_callback is {effective_callback}")
 

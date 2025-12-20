@@ -7,6 +7,7 @@ import asyncio
 from typing import Any, Dict, Optional, Awaitable, Callable
 
 from penguin.core import PenguinCore
+from penguin.cli.events import EventBus, EventType
 
 
 class _BurstEngine:
@@ -27,6 +28,8 @@ class _BurstEngine:
         completion_phrases: Optional[list[str]] = None,
         enable_events: bool = True,
         message_callback: Optional[Callable[[str, str, Optional[str]], Awaitable[None]]] = None,
+        agent_id: Optional[str] = None,
+        agent_role: Optional[str] = None,
     ) -> Dict[str, Any]:
         if message_callback:
             # Emit many tiny assistant chunks
@@ -50,7 +53,9 @@ async def _run() -> int:
     async def handler(event_type: str, data: Dict[str, Any]) -> None:
         events.append((event_type, data))
 
-    core.register_ui(handler)
+    event_bus = EventBus.get_sync()
+    for ev_type in EventType:
+        event_bus.subscribe(ev_type.value, handler)
 
     await core.start_run_mode(
         name="burst_stream",

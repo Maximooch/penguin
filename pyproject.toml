@@ -238,3 +238,9 @@ line_length = 88
 [tool.ruff]
 line-length = 88
 target-version = "py39" 
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-asyncio>=1.1.0",
+]

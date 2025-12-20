@@ -328,10 +328,14 @@ __all__ = [
      "AgentConfig",
      "BaseAgent",
      "AgentLauncher",
+     "AgentManager",
+     "get_agent_roster",
+     "get_agent_profile",
      # Core re-exports added at top-level package, not here.
  ]
 
 # Re-export advanced agent runtime symbols for convenience
 from penguin.agent.schema import AgentConfig  # noqa: E402  (after sys.path tweaks)
 from penguin.agent.base import BaseAgent  # noqa: E402
-from penguin.agent.launcher import AgentLauncher  # noqa: E402 
+from penguin.agent.launcher import AgentLauncher  # noqa: E402
+from penguin.agent.manager import AgentManager, get_agent_roster, get_agent_profile  # noqa: E402 

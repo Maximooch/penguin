@@ -244,16 +244,11 @@ class CLIRenderer:
         from penguin.cli.events import EventBus, EventType
         event_bus = EventBus.get_sync()
 
-        # Subscribe to relevant event types
+        # Subscribe to all event types via unified event bus
         for event_type in EventType:
             event_bus.subscribe(event_type.value, self.handle_event)
         logger.debug("Subscribed to unified event bus for all UI events")
 
-        # Also register with Core for backward compatibility
-        if self.core:
-            self.core.register_ui(self.handle_event)
-            logger.debug("Also registered with Core for backward compatibility")
-        
         # Call update once to build initial state
         self.update_token_stats(None)
         logger.debug("CLIRenderer initialization complete")

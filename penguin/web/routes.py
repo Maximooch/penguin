@@ -18,7 +18,8 @@ from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
 from penguin import __version__
 from penguin.constants import get_engine_max_iterations_default
-from penguin.utils.events import EventBus
+from penguin.utils.events import EventBus as UtilsEventBus
+from penguin.cli.events import EventBus as CLIEventBus, EventType
 from penguin.web.health import get_health_monitor
 from penguin.utils.errors import AgentNotFoundError, PenguinError
 
@@ -231,8 +232,10 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
     include_ui = (params.get("include_ui", "true").lower() != "false")
     include_bus = (params.get("include_bus", "true").lower() != "false")
 
-    event_bus = EventBus.get_instance()
+    utils_event_bus = UtilsEventBus.get_instance()
+    cli_event_bus = CLIEventBus.get_sync()
     handlers = []
+    ui_handlers = []
 
     async def _send(event: str, payload: Dict[str, Any]):
         try:
@@ -250,7 +253,7 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
             # Client closed or other transient error
             return
 
-    # EventBus: bus.message
+    # UtilsEventBus: bus.message
     async def _on_bus_message(data):
         if not include_bus:
             return
@@ -263,10 +266,10 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
         except Exception:
             pass
 
-    event_bus.subscribe("bus.message", _on_bus_message)
+    utils_event_bus.subscribe("bus.message", _on_bus_message)
     handlers.append(("bus.message", _on_bus_message))
 
-    # Core UI events
+    # CLI EventBus: UI events
     async def _on_ui_event(event_type: str, data: Dict[str, Any]):
         if not include_ui:
             return
@@ -281,7 +284,10 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
         except Exception:
             pass
 
-    core.register_ui(_on_ui_event)
+    # Subscribe to all event types via CLI event bus
+    for event_type in EventType:
+        cli_event_bus.subscribe(event_type.value, _on_ui_event)
+        ui_handlers.append((event_type.value, _on_ui_event))
 
     try:
         while True:
@@ -289,10 +295,16 @@ async def events_ws(websocket: WebSocket, core: PenguinCore = Depends(get_core))
     except WebSocketDisconnect:
         pass
     finally:
-        core.unregister_ui(_on_ui_event)
+        # Unsubscribe from CLI event bus
+        for ev, h in ui_handlers:
+            try:
+                cli_event_bus.unsubscribe(ev, h)
+            except Exception:
+                pass
+        # Unsubscribe from utils event bus
         for ev, h in handlers:
             try:
-                event_bus.unsubscribe(ev, h)
+                utils_event_bus.unsubscribe(ev, h)
             except Exception:
                 pass
 
@@ -1115,9 +1127,13 @@ async def stream_chat(
                         logger.error(f"Error sending UI event via WebSocket: {e}")
 
                 ui_event_handler = _stream_ui_event_handler
-                if hasattr(core, "register_ui"):
-                    core.register_ui(ui_event_handler)
-                    logger.debug("Registered UI event handler for tool events")
+                # Subscribe to all event types via CLI event bus
+                stream_cli_event_bus = CLIEventBus.get_sync()
+                stream_ui_handlers = []
+                for ev_type in EventType:
+                    stream_cli_event_bus.subscribe(ev_type.value, ui_event_handler)
+                    stream_ui_handlers.append((ev_type.value, ui_event_handler))
+                logger.debug("Subscribed UI event handler to event bus for tool events")
 
                 await websocket.send_json({"event": "start", "data": {}}) # Signal start to client
                 logger.info("Sent 'start' event to client.")
@@ -1213,13 +1229,14 @@ async def stream_chat(
                 # Clean up progress callback
                 if hasattr(core, "progress_callbacks") and progress_callback in core.progress_callbacks:
                     core.progress_callbacks.remove(progress_callback)
-                # Clean up UI event handler
-                if ui_event_handler and hasattr(core, "unregister_ui"):
-                    try:
-                        core.unregister_ui(ui_event_handler)
-                        logger.debug("Unregistered UI event handler")
-                    except Exception as e:
-                        logger.warning(f"Error unregistering UI event handler: {e}")
+                # Clean up UI event handler - unsubscribe from event bus
+                if ui_event_handler and stream_ui_handlers:
+                    for ev, h in stream_ui_handlers:
+                        try:
+                            stream_cli_event_bus.unsubscribe(ev, h)
+                        except Exception:
+                            pass
+                    logger.debug("Unsubscribed UI event handler from event bus")
                 # Ensure tasks are awaited/cancelled if they are still running (e.g., due to early exit)
                 if process_task and not process_task.done(): process_task.cancel()
                 if sender_task and not sender_task.done(): sender_task.cancel()

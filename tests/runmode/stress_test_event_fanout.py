@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict
 
 from penguin.core import PenguinCore
+from penguin.cli.events import EventBus, EventType
 
 
 async def _dummy_handler(event_type: str, data: Dict[str, Any]) -> None:
@@ -19,9 +20,11 @@ async def _dummy_handler(event_type: str, data: Dict[str, Any]) -> None:
 async def _run() -> int:
     core = await PenguinCore.create(fast_startup=True, show_progress=False)
 
-    # Register 10 handlers
+    # Subscribe 10 handlers to event bus
+    event_bus = EventBus.get_sync()
     for _ in range(10):
-        core.register_ui(_dummy_handler)
+        for ev_type in EventType:
+            event_bus.subscribe(ev_type.value, _dummy_handler)
 
     # Emit 5k events quickly
     t0 = time.time()

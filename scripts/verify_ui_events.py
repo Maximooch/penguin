@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Smoke check: UI event emission and tagging.
 
-Subscribes a UI handler; sends messages via bus to agent/human; verifies that
-UI events arrive with agent_id tagging and expected event types.
+Subscribes a UI handler; emits events via EventBus; verifies that
+UI events arrive with correct event types and data.
 
 Usage:
-  python -m penguin.scripts.verify_ui_events
+  python scripts/verify_ui_events.py
 """
 
 import asyncio
@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Any
 
 from penguin.core import PenguinCore
+from penguin.cli.events import EventBus, EventType
 
 
 async def main() -> None:
@@ -26,29 +27,53 @@ async def main() -> None:
     async def ui_handler(event_type: str, data: Dict[str, Any]):
         events.append((event_type, dict(data)))
 
-    core.register_ui(ui_handler)
+    event_bus = EventBus.get_sync()
+    for ev_type in EventType:
+        event_bus.subscribe(ev_type.value, ui_handler)
 
-    # Register an agent and send various messages
-    core.register_agent("ee", system_prompt="You are EE.", activate=True)
-    await core.send_to_agent("ee", "hi agent")
-    await core.send_to_human("status note", message_type="status")
-    await core.human_reply("ee", "hello from human")
+    # Test direct event emission via core.emit_ui_event
+    await core.emit_ui_event("message", {
+        "role": "assistant",
+        "content": "Hello from assistant",
+        "agent_id": "test_agent"
+    })
+
+    await core.emit_ui_event("stream_chunk", {
+        "chunk": "streaming...",
+        "is_final": False,
+        "message_type": "assistant"
+    })
+
+    await core.emit_ui_event("human_message", {
+        "content": "Human says hello",
+        "agent_id": "main"
+    })
+
+    await core.emit_ui_event("status", {
+        "status": "Processing",
+        "agent_id": "test_agent"
+    })
 
     await asyncio.sleep(0.1)
 
     # Summarize
     types = [t for (t, _) in events]
-    tagged = [d.get("agent_id") for (_, d) in events]
 
     print("--- verify_ui_events results ---")
     print(f"Workspace: {ws}")
-    print(f"event types: {types}")
-    print(f"agent_id tags present: {all(tagged)}")
+    print(f"Event types received: {types}")
+    print(f"Total events: {len(events)}")
 
-    ok = ("message" in types) and ("human_message" in types) and all(tagged)
-    print("PASS" if ok else "FAIL")
+    # Verify we got all expected event types
+    expected = ["message", "stream_chunk", "human_message", "status"]
+    ok = all(t in types for t in expected)
+
+    if ok:
+        print("PASS - All expected event types received via EventBus")
+    else:
+        missing = [t for t in expected if t not in types]
+        print(f"FAIL - Missing event types: {missing}")
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-

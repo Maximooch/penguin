@@ -174,6 +174,7 @@ from penguin.cli.interface import PenguinInterface
 from penguin.cli.widgets import ToolExecutionWidget, StreamingStateMachine, StreamState
 from penguin.cli.widgets.unified_display import UnifiedExecution, ExecutionAdapter, ExecutionStatus, ExecutionType
 from penguin.cli.command_registry import CommandRegistry
+from penguin.cli.events import EventBus, EventType
 
 
 # ------------------------------------------------------------------
@@ -1735,8 +1736,11 @@ class PenguinTextualApp(App):
             self.core = await PenguinCore.create(fast_startup=True, show_progress=False)
             
             self.status_text = "Setting up interface..."
-            self.core.register_ui(self.handle_core_event)
-            self.debug_messages.append("Registered UI event handler with core")
+            # Subscribe to all event types via unified event bus
+            self._event_bus = EventBus.get_sync()
+            for event_type in EventType:
+                self._event_bus.subscribe(event_type.value, self.handle_core_event)
+            self.debug_messages.append("Subscribed to event bus for all UI events")
             
             self.interface = PenguinInterface(self.core)
             

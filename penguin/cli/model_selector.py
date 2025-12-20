@@ -1,21 +1,18 @@
 """
 Model selector for the /models command.
 Provides an autocomplete interface for selecting models without conflicts with the main chat session.
-Always fetches fresh data to ensure new models are available.
+Uses ModelSpecsService for cached API access.
 """
 
-import asyncio
-import json
-import httpx
-from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.styles import Style
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.keys import Keys
 from rich.console import Console
+
+from penguin.llm.model_config import get_model_specs_service
 
 console = Console()
 
@@ -118,41 +115,18 @@ class ModelCompleter(Completer):
                 style='class:completion'
             )
 
-async def fetch_models_from_openrouter() -> List[Dict[str, Any]]:
-    """Fetch models from OpenRouter API"""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get("https://openrouter.ai/api/v1/models", timeout=10.0)
-            response.raise_for_status()
-            data = response.json()
-            return data.get("data", [])
-    except Exception as e:
-        console.print(f"[bold red]⚠️ Failed to fetch models from OpenRouter:[/bold red] {e}")
-        return []
-
-async def interactive_model_selector(current_model: Optional[str] = None) -> Optional[str]: 
+async def interactive_model_selector(current_model: Optional[str] = None) -> Optional[str]:
     """
     Interactive model selector using prompt_toolkit autocomplete.
     Returns the selected model ID or None if cancelled.
     """
     console.print("\n[bold cyan]🤖 Model Selection[/bold cyan]")
-    
-    # Always fetch fresh data to get the latest models
-    with console.status("[cyan]Fetching latest models...[/cyan]", spinner="dots"):
-        models = await fetch_models_from_openrouter()
-        if not models:
-            console.print("[yellow]⚠️ Using fallback model list[/yellow]")
-            # Fallback models (including Claude 4)
-            models = [
-                {"id": "anthropic/claude-4-opus", "context_length": 200000, "name": "Claude 4 Opus"},
-                {"id": "anthropic/claude-4-sonnet", "context_length": 200000, "name": "Claude 4 Sonnet"},
-                {"id": "anthropic/claude-3-5-sonnet-20240620", "context_length": 200000, "name": "Claude 3.5 Sonnet"},
-                {"id": "openai/o3-mini", "context_length": 128000, "name": "O3 Mini"},
-                {"id": "google/gemini-2-5-pro-preview", "context_length": 1000000, "name": "Gemini 2.5 Pro"},
-                {"id": "mistral/devstral", "context_length": 32000, "name": "Devstral"},
-                {"id": "deepseek/deepseek-chat", "context_length": 163840, "name": "DeepSeek V3"},
-            ]
-    
+
+    # Use cached ModelSpecsService
+    with console.status("[cyan]Fetching models...[/cyan]", spinner="dots"):
+        service = get_model_specs_service()
+        models = await service.get_all_models(force_refresh=True)
+
     if not models:
         console.print("[red]❌ No models available[/red]")
         return None

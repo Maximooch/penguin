@@ -259,6 +259,7 @@ from penguin.cli.commands import CommandRegistry
 from penguin.cli.typer_bridge import TyperBridge, integrate_with_existing_app
 from penguin.cli.renderer import UnifiedRenderer, RenderStyle
 from penguin.cli.streaming_display import StreamingDisplay
+from penguin.cli.events import EventBus, EventType
 
 try:
     # Prefer relative import to support repo and installed layouts
@@ -2783,8 +2784,10 @@ class PenguinCLI:
         self.conversation_menu = ConversationMenu(self.console)
         self.core.register_progress_callback(self.on_progress_update)
 
-        # Add direct Core event subscription for improved event flow
-        self.core.register_ui(self.handle_event)
+        # Subscribe to all event types via unified event bus
+        self._event_bus = EventBus.get_sync()
+        for event_type in EventType:
+            self._event_bus.subscribe(event_type.value, self.handle_event)
 
         # Single Live display for better rendering
         self.live_display = None

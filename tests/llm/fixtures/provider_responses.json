@@ -1,0 +1,159 @@
+{
+  "_description": "Provider response fixtures for replay testing. Each fixture represents a realistic provider response pattern.",
+
+  "openai_simple": {
+    "description": "Simple OpenAI-style response with small token chunks",
+    "provider": "openai",
+    "chunks": [
+      {"content": "Hello", "type": "assistant"},
+      {"content": ",", "type": "assistant"},
+      {"content": " I'm", "type": "assistant"},
+      {"content": " an", "type": "assistant"},
+      {"content": " AI", "type": "assistant"},
+      {"content": " assistant", "type": "assistant"},
+      {"content": ".", "type": "assistant"}
+    ],
+    "expected_content": "Hello, I'm an AI assistant.",
+    "expected_reasoning": ""
+  },
+
+  "gemini_larger_chunks": {
+    "description": "Gemini-style response with larger chunks",
+    "provider": "gemini",
+    "chunks": [
+      {"content": "Based on my analysis, ", "type": "assistant"},
+      {"content": "here are the key findings:\n\n", "type": "assistant"},
+      {"content": "1. The code is well-structured\n", "type": "assistant"},
+      {"content": "2. Performance is optimal\n", "type": "assistant"},
+      {"content": "3. No security issues found", "type": "assistant"}
+    ],
+    "expected_content": "Based on my analysis, here are the key findings:\n\n1. The code is well-structured\n2. Performance is optimal\n3. No security issues found",
+    "expected_reasoning": ""
+  },
+
+  "anthropic_with_reasoning": {
+    "description": "Anthropic response with thinking/reasoning tokens",
+    "provider": "anthropic",
+    "chunks": [
+      {"content": "Let me analyze this step by step...", "type": "reasoning"},
+      {"content": "First, I'll check the input format.", "type": "reasoning"},
+      {"content": "Then verify the business logic.", "type": "reasoning"},
+      {"content": "The solution is: ", "type": "assistant"},
+      {"content": "implement the retry mechanism ", "type": "assistant"},
+      {"content": "with exponential backoff.", "type": "assistant"}
+    ],
+    "expected_content": "The solution is: implement the retry mechanism with exponential backoff.",
+    "expected_reasoning": "Let me analyze this step by step...First, I'll check the input format.Then verify the business logic."
+  },
+
+  "interleaved_reasoning": {
+    "description": "Response with interleaved reasoning and assistant content",
+    "provider": "mixed",
+    "chunks": [
+      {"content": "Initial thought...", "type": "reasoning"},
+      {"content": "Here's my first point: ", "type": "assistant"},
+      {"content": "Reconsidering...", "type": "reasoning"},
+      {"content": "Actually, let me revise that. ", "type": "assistant"},
+      {"content": "Final consideration.", "type": "reasoning"},
+      {"content": "The answer is X.", "type": "assistant"}
+    ],
+    "expected_content": "Here's my first point: Actually, let me revise that. The answer is X.",
+    "expected_reasoning": "Initial thought...Reconsidering...Final consideration."
+  },
+
+  "empty_first_chunk": {
+    "description": "Provider sends empty first chunk (common with some providers)",
+    "provider": "edge_case",
+    "chunks": [
+      {"content": "", "type": "assistant"},
+      {"content": "", "type": "assistant"},
+      {"content": "Hello", "type": "assistant"},
+      {"content": " world", "type": "assistant"}
+    ],
+    "expected_content": "Hello world",
+    "expected_reasoning": ""
+  },
+
+  "whitespace_chunks": {
+    "description": "Response with whitespace-only chunks mixed in",
+    "provider": "edge_case",
+    "chunks": [
+      {"content": "Start", "type": "assistant"},
+      {"content": "   ", "type": "assistant"},
+      {"content": "Middle", "type": "assistant"},
+      {"content": "\n\n", "type": "assistant"},
+      {"content": "End", "type": "assistant"}
+    ],
+    "expected_content": "Start   Middle\n\nEnd",
+    "expected_reasoning": ""
+  },
+
+  "unicode_heavy": {
+    "description": "Response with heavy unicode content",
+    "provider": "any",
+    "chunks": [
+      {"content": "Hello! 👋 ", "type": "assistant"},
+      {"content": "今日は ", "type": "assistant"},
+      {"content": "Привет ", "type": "assistant"},
+      {"content": "🎉🎊🎁", "type": "assistant"}
+    ],
+    "expected_content": "Hello! 👋 今日は Привет 🎉🎊🎁",
+    "expected_reasoning": ""
+  },
+
+  "code_block_response": {
+    "description": "Response containing code blocks",
+    "provider": "any",
+    "chunks": [
+      {"content": "Here's the code:\n\n```python\n", "type": "assistant"},
+      {"content": "def hello():\n", "type": "assistant"},
+      {"content": "    print('Hello')\n", "type": "assistant"},
+      {"content": "```\n\n", "type": "assistant"},
+      {"content": "This function prints a greeting.", "type": "assistant"}
+    ],
+    "expected_content": "Here's the code:\n\n```python\ndef hello():\n    print('Hello')\n```\n\nThis function prints a greeting.",
+    "expected_reasoning": ""
+  },
+
+  "very_long_single_chunk": {
+    "description": "Provider sends one very long chunk",
+    "provider": "edge_case",
+    "chunks": [
+      {"content": "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.", "type": "assistant"}
+    ],
+    "expected_content": "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.",
+    "expected_reasoning": ""
+  },
+
+  "all_empty_response": {
+    "description": "Provider returns only empty chunks (should trigger WALLET_GUARD)",
+    "provider": "edge_case",
+    "chunks": [
+      {"content": "", "type": "assistant"},
+      {"content": "", "type": "assistant"},
+      {"content": "", "type": "assistant"}
+    ],
+    "expected_content": "[Empty response from model]",
+    "expected_reasoning": "",
+    "expected_was_empty": true
+  },
+
+  "rapid_small_tokens": {
+    "description": "Rapid small token chunks (simulates GPT tokenization)",
+    "provider": "openai",
+    "chunks": [
+      {"content": "The", "type": "assistant"},
+      {"content": " quick", "type": "assistant"},
+      {"content": " brown", "type": "assistant"},
+      {"content": " fox", "type": "assistant"},
+      {"content": " jumps", "type": "assistant"},
+      {"content": " over", "type": "assistant"},
+      {"content": " the", "type": "assistant"},
+      {"content": " lazy", "type": "assistant"},
+      {"content": " dog", "type": "assistant"},
+      {"content": ".", "type": "assistant"}
+    ],
+    "expected_content": "The quick brown fox jumps over the lazy dog.",
+    "expected_reasoning": ""
+  }
+}

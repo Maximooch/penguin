@@ -29,6 +29,13 @@ from penguin.constants import get_engine_max_iterations_default
 
 import logging
 
+# MessageBus for inter-agent communication (optional import)
+try:
+    from penguin.system.message_bus import MessageBus, ProtocolMessage
+except ImportError:
+    MessageBus = None  # type: ignore
+    ProtocolMessage = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -296,6 +303,187 @@ class Engine:
     def get_conversation_manager(self, agent_id: Optional[str] = None) -> Optional[ConversationManager]:
         agent = self.get_agent(agent_id or self.current_agent_id)
         return agent.conversation_manager if agent else None
+
+    # ------------------------------------------------------------------
+    # MessageBus integration
+    # ------------------------------------------------------------------
+
+    def setup_message_bus(
+        self,
+        ui_event_callback: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+    ) -> None:
+        """Register MessageBus handlers for inter-agent communication.
+
+        Call this after Engine initialization to enable message routing.
+
+        Args:
+            ui_event_callback: Optional callback to emit UI events (e.g., core.emit_ui_event)
+        """
+        if not (MessageBus and ProtocolMessage):
+            logger.debug("MessageBus not available, skipping setup")
+            return
+
+        try:
+            bus = MessageBus.get_instance()
+
+            async def _human_handler(msg: ProtocolMessage) -> None:
+                """Forward messages to 'human' recipient to UI."""
+                if ui_event_callback:
+                    payload = {
+                        "agent_id": msg.sender,
+                        "recipient_id": msg.recipient,
+                        "content": msg.content,
+                        "message_type": msg.message_type,
+                        "metadata": msg.metadata,
+                        "session_id": msg.session_id,
+                        "message_id": msg.message_id,
+                    }
+                    await ui_event_callback("human_message", payload)
+
+            bus.register_handler("human", _human_handler)
+            logger.debug("MessageBus human handler registered")
+        except Exception as e:
+            logger.debug(f"MessageBus setup failed: {e}")
+
+    async def route_message(
+        self,
+        recipient_id: str,
+        content: Any,
+        *,
+        message_type: str = "message",
+        metadata: Optional[Dict[str, Any]] = None,
+        agent_id: Optional[str] = None,
+        channel: Optional[str] = None,
+    ) -> bool:
+        """Route a message to another agent or recipient via MessageBus.
+
+        Args:
+            recipient_id: Target agent or "human"
+            content: Message content
+            message_type: Type of message (default: "message")
+            metadata: Optional metadata dict
+            agent_id: Sender agent ID (defaults to current agent)
+            channel: Optional channel identifier
+
+        Returns:
+            True if message was sent, False otherwise
+        """
+        try:
+            if not (MessageBus and ProtocolMessage):
+                logger.warning("MessageBus not available for routing")
+                return False
+
+            sender = agent_id or self.current_agent_id or self.default_agent_id
+            session_id = None
+            try:
+                cm = self.get_conversation_manager(sender)
+                if cm:
+                    session = cm.get_current_session()
+                    session_id = getattr(session, "id", None)
+            except Exception:
+                pass
+
+            msg = ProtocolMessage(
+                sender=sender,
+                recipient=recipient_id,
+                content=content,
+                message_type=message_type,
+                metadata=metadata or {},
+                session_id=session_id,
+                channel=channel,
+            )
+            await MessageBus.get_instance().send(msg)
+            return True
+        except Exception as e:
+            logger.error(f"route_message failed: {e}")
+            return False
+
+    async def send_to_agent(
+        self,
+        agent_id: str,
+        content: Any,
+        *,
+        message_type: str = "message",
+        metadata: Optional[Dict[str, Any]] = None,
+        channel: Optional[str] = None,
+    ) -> bool:
+        """Send a message to an agent."""
+        return await self.route_message(
+            agent_id,
+            content,
+            message_type=message_type,
+            metadata=metadata,
+            channel=channel,
+        )
+
+    async def send_to_human(
+        self,
+        content: Any,
+        *,
+        message_type: str = "status",
+        metadata: Optional[Dict[str, Any]] = None,
+        channel: Optional[str] = None,
+    ) -> bool:
+        """Send a message to the human (UI)."""
+        return await self.route_message(
+            "human",
+            content,
+            message_type=message_type,
+            metadata=metadata,
+            channel=channel,
+        )
+
+    async def human_reply(
+        self,
+        agent_id: str,
+        content: Any,
+        *,
+        message_type: str = "message",
+        metadata: Optional[Dict[str, Any]] = None,
+        channel: Optional[str] = None,
+    ) -> bool:
+        """Send a reply from human to an agent.
+
+        This forces the sender identity to "human" in the envelope.
+        """
+        try:
+            if not (MessageBus and ProtocolMessage):
+                # Fallback: add as user message to the conversation
+                cm = self.get_conversation_manager(agent_id)
+                if cm and cm.conversation:
+                    cm.conversation.add_message(
+                        role="user",
+                        content=content,
+                        category=MessageCategory.DIALOG,
+                        metadata={"via": "human_reply", **(metadata or {})},
+                        message_type=message_type,
+                    )
+                    cm.save()
+                return True
+
+            session_id = None
+            try:
+                cm = self.get_conversation_manager(agent_id)
+                if cm:
+                    session = cm.get_current_session()
+                    session_id = getattr(session, "id", None)
+            except Exception:
+                pass
+
+            msg = ProtocolMessage(
+                sender="human",
+                recipient=agent_id,
+                content=content,
+                message_type=message_type,
+                metadata=metadata or {},
+                session_id=session_id,
+                channel=channel,
+            )
+            await MessageBus.get_instance().send(msg)
+            return True
+        except Exception as e:
+            logger.error(f"human_reply failed: {e}")
+            return False
 
     def _resolve_components(
         self, agent_id: Optional[str] = None

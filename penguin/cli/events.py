@@ -107,18 +107,12 @@ class EventBus:
 
     def __init__(self):
         self.subscribers: Dict[str, List[EventHandler]] = {}
-        self.streaming_state = StreamingState()
         self.event_types: Set[str] = {e.value for e in EventType}
 
         # Event deduplication
         self._dedup_window = 0.05  # 50ms window
         self._recent_events: List[Tuple[str, str, float]] = []
         self._max_recent = 50
-
-        # Streaming coalescing
-        self._stream_buffer: str = ""
-        self._last_stream_emit: float = 0
-        self._stream_emit_interval = 0.05  # Emit every 50ms max
 
         logger.debug("EventBus initialized")
 
@@ -160,27 +154,19 @@ class EventBus:
         """
         Emit an event to all subscribers.
 
-        Handles deduplication and streaming coalescing automatically.
+        Handles deduplication automatically. Streaming events are passed through
+        directly since core.py's StreamingStateManager handles coalescing.
         """
-        # Validate event type
+        # Validate event type - add unknown types dynamically
         if event_type not in self.event_types:
-            logger.warning(f"Unknown event type: {event_type}")
-            return
+            self.event_types.add(event_type)
+            logger.debug(f"Added dynamic event type: {event_type}")
 
-        # Check for duplicate events
+        # Check for duplicate events (skip dedup for streaming/token events)
         if self._is_duplicate(event_type, data):
             return
 
-        # Handle streaming events specially
-        if event_type == EventType.STREAM_CHUNK.value:
-            await self._handle_stream_chunk(data)
-            return
-        elif event_type == EventType.STREAM_START.value:
-            await self._handle_stream_start(data)
-        elif event_type == EventType.STREAM_END.value:
-            await self._handle_stream_end(data)
-
-        # Emit to all subscribers
+        # Emit directly to all subscribers - core.py handles streaming state
         await self._emit_to_subscribers(event_type, data)
 
     async def _emit_to_subscribers(self, event_type: str, data: Dict[str, Any]) -> None:
@@ -229,82 +215,6 @@ class EventBus:
 
         return False
 
-    async def _handle_stream_start(self, data: Dict[str, Any]) -> None:
-        """Handle stream start event"""
-        self.streaming_state.reset()
-        self.streaming_state.active = True
-        self.streaming_state.stream_id = data.get("stream_id")
-        self.streaming_state.role = data.get("role", "assistant")
-        self.streaming_state.started_at = datetime.now()
-        self.streaming_state.metadata = data.get("metadata", {})
-
-        # Clear buffer
-        self._stream_buffer = ""
-
-        await self._emit_to_subscribers(EventType.STREAM_START.value, data)
-
-    async def _handle_stream_chunk(self, data: Dict[str, Any]) -> None:
-        """Handle stream chunk with coalescing"""
-        if not self.streaming_state.active:
-            return
-
-        chunk = data.get("chunk", "")
-        is_reasoning = data.get("is_reasoning", False)
-
-        # Update state
-        if is_reasoning:
-            self.streaming_state.reasoning_content += chunk
-        else:
-            self.streaming_state.content += chunk
-
-        self.streaming_state.chunks_received += 1
-        self.streaming_state.last_update = datetime.now()
-
-        # Buffer chunk for coalescing
-        self._stream_buffer += chunk
-
-        # Check if we should emit
-        current_time = time.time()
-        if current_time - self._last_stream_emit >= self._stream_emit_interval:
-            # Emit buffered content
-            if self._stream_buffer:
-                emit_data = {
-                    "content_so_far": self.streaming_state.content,
-                    "reasoning_so_far": self.streaming_state.reasoning_content,
-                    "chunk": self._stream_buffer,
-                    "is_reasoning": is_reasoning,
-                    "stream_id": self.streaming_state.stream_id,
-                    "role": self.streaming_state.role,
-                    "metadata": self.streaming_state.metadata
-                }
-                await self._emit_to_subscribers(EventType.STREAM_CHUNK.value, emit_data)
-                self._stream_buffer = ""
-                self._last_stream_emit = current_time
-
-    async def _handle_stream_end(self, data: Dict[str, Any]) -> None:
-        """Handle stream end event"""
-        # Flush any remaining buffer
-        if self._stream_buffer:
-            await self._handle_stream_chunk({"chunk": "", "is_reasoning": False})
-
-        # Create final message event
-        final_data = {
-            "role": self.streaming_state.role,
-            "content": self.streaming_state.content,
-            "reasoning": self.streaming_state.reasoning_content,
-            "metadata": self.streaming_state.metadata,
-            "stream_id": self.streaming_state.stream_id,
-            "chunks_received": self.streaming_state.chunks_received,
-            "duration": (datetime.now() - self.streaming_state.started_at).total_seconds()
-            if self.streaming_state.started_at else 0
-        }
-
-        # Emit stream end
-        await self._emit_to_subscribers(EventType.STREAM_END.value, final_data)
-
-        # Reset state
-        self.streaming_state.reset()
-
     async def emit_message(self, role: str, content: str,
                           category: Optional[str] = None,
                           metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -339,9 +249,7 @@ class EventBus:
 
     def reset(self) -> None:
         """Reset all state (useful for tests)"""
-        self.streaming_state.reset()
         self._recent_events.clear()
-        self._stream_buffer = ""
 
 
 # Singleton instance getter for backward compatibility
