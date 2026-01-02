@@ -209,7 +209,10 @@ class ToolManager:
             self._pydoll_browser_interaction_tool = None
             self._pydoll_browser_screenshot_tool = None
             self._pydoll_browser_scroll_tool = None
-            
+
+            # PenguinCore reference for sub-agent tools
+            self._core = None
+
             # Permission enforcer (lazy initialized)
             self._permission_enforcer = None
             self._permission_enabled = os.environ.get("PENGUIN_YOLO", "").lower() not in ("1", "true", "yes")
@@ -986,7 +989,7 @@ class ToolManager:
                 }
             },
             {
-                "name": "create_and_switch_branch", 
+                "name": "create_and_switch_branch",
                 "description": "Create a new git branch and switch to it in a GitHub repository. Use this before making changes that you want to turn into a PR.",
                 "input_schema": {
                     "type": "object",
@@ -1005,6 +1008,277 @@ class ToolManager:
                         }
                     },
                     "required": ["repo_owner", "repo_name", "branch_name"]
+                }
+            },
+            # ================================================================
+            # Sub-Agent / Multi-Agent Tools
+            # ================================================================
+            {
+                "name": "send_message",
+                "description": "Send a message to another agent or broadcast to a channel. Use for inter-agent coordination.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "description": "The message content to send"
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "Single recipient agent ID (e.g., 'planner', 'implementer'). Omit to reach human operator."
+                        },
+                        "targets": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Multiple recipient agent IDs for broadcasting"
+                        },
+                        "channel": {
+                            "type": "string",
+                            "description": "Logical channel/room identifier (e.g., 'dev-room')"
+                        },
+                        "message_type": {
+                            "type": "string",
+                            "enum": ["message", "status", "action", "event"],
+                            "description": "Type of message (default: 'message')"
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "description": "Arbitrary key/value metadata to attach"
+                        }
+                    },
+                    "required": ["content"]
+                }
+            },
+            {
+                "name": "spawn_sub_agent",
+                "description": "Create a new sub-agent with isolated or shared session/context. The sub-agent can be used for parallel tasks.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "Unique identifier for the sub-agent (required)"
+                        },
+                        "parent": {
+                            "type": "string",
+                            "description": "Parent agent ID (default: current agent)"
+                        },
+                        "persona": {
+                            "type": "string",
+                            "description": "Persona configuration name to apply"
+                        },
+                        "system_prompt": {
+                            "type": "string",
+                            "description": "Custom system prompt for the sub-agent"
+                        },
+                        "share_session": {
+                            "type": "boolean",
+                            "description": "Share parent's session (default: false)"
+                        },
+                        "share_context_window": {
+                            "type": "boolean",
+                            "description": "Share parent's context window (default: false)"
+                        },
+                        "shared_context_window_max_tokens": {
+                            "type": "integer",
+                            "description": "Token limit when using isolated context window"
+                        },
+                        "model_config_id": {
+                            "type": "string",
+                            "description": "Model configuration override"
+                        },
+                        "model_overrides": {
+                            "type": "object",
+                            "description": "Model parameter overrides"
+                        },
+                        "model_output_max_tokens": {
+                            "type": "integer",
+                            "description": "Max output tokens for the sub-agent"
+                        },
+                        "default_tools": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of tool names available to sub-agent (metadata only)"
+                        },
+                        "initial_prompt": {
+                            "type": "string",
+                            "description": "Initial message to send to the sub-agent after spawn"
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": "Run agent in background (default: false). When true with initial_prompt, agent executes concurrently."
+                        }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "stop_sub_agent",
+                "description": "Pause a running sub-agent. Messages still log but engine-driven actions stop.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "The sub-agent ID to pause"
+                        }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "resume_sub_agent",
+                "description": "Resume a paused sub-agent.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "The sub-agent ID to resume"
+                        }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "get_agent_status",
+                "description": "Get status of background agents. Query a specific agent or get all agent statuses.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "Specific agent ID to query (optional, returns all if omitted)"
+                        },
+                        "include_result": {
+                            "type": "boolean",
+                            "description": "Include result content in response (default: false)"
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "wait_for_agents",
+                "description": "Wait for one or more background agents to complete.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "List of agent IDs to wait for (waits for all if omitted)"
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "description": "Timeout in seconds (optional)"
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "get_context_info",
+                "description": "Get context window sharing information for agents.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "Agent ID to query (default: current agent)"
+                        },
+                        "include_stats": {
+                            "type": "boolean",
+                            "description": "Include token usage stats (default: false)"
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
+                "name": "sync_context",
+                "description": "Synchronize context from parent to child agent (for agents with isolated context windows).",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "parent": {
+                            "type": "string",
+                            "description": "Parent agent ID (source)"
+                        },
+                        "child": {
+                            "type": "string",
+                            "description": "Child agent ID (destination)"
+                        },
+                        "replace": {
+                            "type": "boolean",
+                            "description": "Replace existing context (default: false, appends)"
+                        }
+                    },
+                    "required": ["parent", "child"]
+                }
+            },
+            {
+                "name": "delegate",
+                "description": "Send a task to a specific sub-agent with delegation tracking.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "child": {
+                            "type": "string",
+                            "description": "Target sub-agent ID"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Task content to delegate"
+                        },
+                        "parent": {
+                            "type": "string",
+                            "description": "Parent agent ID (default: current agent)"
+                        },
+                        "channel": {
+                            "type": "string",
+                            "description": "Logical channel for the delegation"
+                        },
+                        "metadata": {
+                            "type": "object",
+                            "description": "Additional metadata (e.g., priority, deadline)"
+                        },
+                        "background": {
+                            "type": "boolean",
+                            "description": "Run delegated task in background (default: false)"
+                        },
+                        "wait": {
+                            "type": "boolean",
+                            "description": "Wait for result when background=true (default: false)"
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "description": "Timeout in seconds when wait=true"
+                        }
+                    },
+                    "required": ["child", "content"]
+                }
+            },
+            {
+                "name": "delegate_explore_task",
+                "description": "Spawn a lightweight sub-agent to autonomously explore a codebase. Returns a summary.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "task": {
+                            "type": "string",
+                            "description": "What to explore/analyze (e.g., 'Summarize the architecture')"
+                        },
+                        "directory": {
+                            "type": "string",
+                            "description": "Starting directory (default: current)"
+                        },
+                        "max_iterations": {
+                            "type": "integer",
+                            "description": "Max tool rounds (default: 100, max: 100)"
+                        }
+                    },
+                    "required": ["task"]
                 }
             },
         ]
@@ -2013,6 +2287,37 @@ class ToolManager:
                 "task_completed": lambda: self.task_tools.task_completed(
                     tool_input.get("summary", "")
                 ),
+                # Sub-agent / Multi-agent tools
+                "send_message": lambda: self._execute_async_tool(
+                    self._execute_send_message(tool_input)
+                ),
+                "spawn_sub_agent": lambda: self._execute_async_tool(
+                    self._execute_spawn_sub_agent(tool_input)
+                ),
+                "stop_sub_agent": lambda: self._execute_async_tool(
+                    self._execute_stop_sub_agent(tool_input)
+                ),
+                "resume_sub_agent": lambda: self._execute_async_tool(
+                    self._execute_resume_sub_agent(tool_input)
+                ),
+                "get_agent_status": lambda: self._execute_async_tool(
+                    self._execute_get_agent_status(tool_input)
+                ),
+                "wait_for_agents": lambda: self._execute_async_tool(
+                    self._execute_wait_for_agents(tool_input)
+                ),
+                "get_context_info": lambda: self._execute_async_tool(
+                    self._execute_get_context_info(tool_input)
+                ),
+                "sync_context": lambda: self._execute_async_tool(
+                    self._execute_sync_context(tool_input)
+                ),
+                "delegate": lambda: self._execute_async_tool(
+                    self._execute_delegate(tool_input)
+                ),
+                "delegate_explore_task": lambda: self._execute_async_tool(
+                    self._execute_delegate_explore_task(tool_input)
+                ),
             }
 
             logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
@@ -2996,3 +3301,668 @@ class ToolManager:
             "indexing_completed": getattr(self, "_indexing_completed", False),
             "lazy_initialized": self._lazy_initialized.copy(),
         }
+
+    # ------------------------------------------------------------------
+    # Sub-Agent / Multi-Agent Tools
+    # ------------------------------------------------------------------
+
+    def set_core(self, core: Any) -> None:
+        """Inject PenguinCore reference for sub-agent tools.
+
+        Args:
+            core: The PenguinCore instance
+        """
+        self._core = core
+
+    async def _execute_send_message(self, tool_input: Dict[str, Any]) -> str:
+        """Execute send_message tool via MessageBus.
+
+        Args:
+            tool_input: Dict with content, target/targets, channel, message_type, metadata
+
+        Returns:
+            JSON string with result
+        """
+        content = tool_input.get("content", "")
+        target = tool_input.get("target")
+        targets = tool_input.get("targets", [])
+        channel = tool_input.get("channel")
+        message_type = tool_input.get("message_type", "message")
+        metadata = tool_input.get("metadata", {})
+
+        # Normalize targets
+        if target and not targets:
+            targets = [target]
+        if not targets:
+            targets = ["human"]  # Default to human operator
+
+        # Get MessageBus instance
+        try:
+            from penguin.system.message_bus import MessageBus, ProtocolMessage
+            bus = MessageBus.get_instance()
+        except Exception as e:
+            return json.dumps({"error": f"MessageBus unavailable: {e}"})
+
+        results = []
+        for tgt in targets:
+            msg = ProtocolMessage(
+                sender=None,  # Will be set by context
+                recipient=tgt,
+                content=content,
+                message_type=message_type,
+                metadata=metadata,
+                channel=channel,
+            )
+            try:
+                await bus.send(msg)
+                results.append(tgt)
+            except Exception as e:
+                results.append(f"{tgt} (failed: {e})")
+
+        return json.dumps({"sent_to": results, "status": "ok"})
+
+    async def _execute_spawn_sub_agent(self, tool_input: Dict[str, Any]) -> str:
+        """Execute spawn_sub_agent tool.
+
+        Args:
+            tool_input: Dict with agent configuration
+
+        Returns:
+            JSON string with result
+        """
+        agent_id = tool_input.get("id", "").strip()
+        if not agent_id:
+            return json.dumps({"error": "spawn_sub_agent requires 'id'"})
+
+        if self._core is None:
+            return json.dumps({"error": "Core unavailable for spawn_sub_agent. Call set_core() first."})
+
+        parent_id = tool_input.get("parent", "default")
+        share_session = bool(tool_input.get("share_session", False))
+        share_cw = bool(tool_input.get("share_context_window", False))
+        shared_cw_max = tool_input.get("shared_context_window_max_tokens")
+        background = bool(tool_input.get("background", False))
+
+        kwargs = {}
+        for key in ("persona", "system_prompt", "model_config_id", "model_output_max_tokens", "default_tools"):
+            if key in tool_input:
+                kwargs[key] = tool_input[key]
+        if isinstance(tool_input.get("model_overrides"), dict):
+            kwargs["model_overrides"] = tool_input["model_overrides"]
+
+        try:
+            # Use core's create_sub_agent if available
+            if hasattr(self._core, "create_sub_agent"):
+                self._core.create_sub_agent(
+                    agent_id,
+                    parent_agent_id=parent_id,
+                    share_session=share_session,
+                    share_context_window=share_cw,
+                    shared_context_window_max_tokens=shared_cw_max,
+                    **kwargs,
+                )
+            else:
+                # Fallback: use conversation_manager directly
+                if hasattr(self._core, "conversation_manager"):
+                    self._core.conversation_manager.create_sub_agent(
+                        agent_id,
+                        parent_id=parent_id,
+                        share_session=share_session,
+                        share_context_window=share_cw,
+                        shared_context_window_max_tokens=shared_cw_max,
+                    )
+                else:
+                    return json.dumps({"error": "Core has no create_sub_agent method"})
+        except Exception as e:
+            return json.dumps({"error": f"Failed to spawn sub-agent: {e}"})
+
+        # Handle initial_prompt if provided
+        initial_prompt = tool_input.get("initial_prompt")
+        if initial_prompt:
+            if background:
+                # Run agent in background using AgentExecutor
+                try:
+                    from penguin.multi.executor import get_executor, set_executor, AgentExecutor
+                    executor = get_executor()
+                    if executor is None:
+                        # Initialize executor with core
+                        executor = AgentExecutor(self._core)
+                        set_executor(executor)
+
+                    await executor.spawn_agent(
+                        agent_id,
+                        initial_prompt,
+                        metadata={
+                            "parent": parent_id,
+                            "share_session": share_session,
+                            "share_context_window": share_cw,
+                        }
+                    )
+                    return json.dumps({
+                        "status": "ok",
+                        "agent_id": agent_id,
+                        "parent": parent_id,
+                        "share_session": share_session,
+                        "share_context_window": share_cw,
+                        "background": True,
+                        "message": f"Agent '{agent_id}' spawned and running in background",
+                    })
+                except Exception as e:
+                    logger.error(f"Failed to spawn background agent {agent_id}: {e}")
+                    return json.dumps({"error": f"Failed to spawn background agent: {e}"})
+            else:
+                # Synchronous: send message and wait
+                try:
+                    if hasattr(self._core, "send_to_agent"):
+                        await self._core.send_to_agent(agent_id, initial_prompt)
+                except Exception as e:
+                    logger.warning(f"Failed to send initial_prompt to {agent_id}: {e}")
+
+        return json.dumps({
+            "status": "ok",
+            "agent_id": agent_id,
+            "parent": parent_id,
+            "share_session": share_session,
+            "share_context_window": share_cw,
+            "background": background,
+        })
+
+    async def _execute_stop_sub_agent(self, tool_input: Dict[str, Any]) -> str:
+        """Execute stop_sub_agent tool.
+
+        Args:
+            tool_input: Dict with agent id
+
+        Returns:
+            JSON string with result
+        """
+        agent_id = tool_input.get("id", "").strip()
+        if not agent_id:
+            return json.dumps({"error": "stop_sub_agent requires 'id'"})
+
+        if self._core is None:
+            return json.dumps({"error": "Core unavailable"})
+
+        cancelled_background = False
+        try:
+            # Try to cancel background task if running in executor
+            from penguin.multi.executor import get_executor
+            executor = get_executor()
+            if executor:
+                status = executor.get_status(agent_id)
+                if status and status.get("state") in ("pending", "running"):
+                    cancelled_background = await executor.cancel(agent_id)
+
+            # Also pause in conversation manager
+            if hasattr(self._core, "set_agent_paused"):
+                self._core.set_agent_paused(agent_id, True)
+            elif hasattr(self._core, "conversation_manager"):
+                cm = self._core.conversation_manager
+                if hasattr(cm, "set_agent_paused"):
+                    cm.set_agent_paused(agent_id, True)
+
+            return json.dumps({
+                "status": "ok",
+                "agent_id": agent_id,
+                "paused": True,
+                "background_cancelled": cancelled_background,
+            })
+        except Exception as e:
+            return json.dumps({"error": f"Failed to pause agent: {e}"})
+
+    async def _execute_resume_sub_agent(self, tool_input: Dict[str, Any]) -> str:
+        """Execute resume_sub_agent tool.
+
+        Args:
+            tool_input: Dict with agent id
+
+        Returns:
+            JSON string with result
+        """
+        agent_id = tool_input.get("id", "").strip()
+        if not agent_id:
+            return json.dumps({"error": "resume_sub_agent requires 'id'"})
+
+        if self._core is None:
+            return json.dumps({"error": "Core unavailable"})
+
+        try:
+            if hasattr(self._core, "set_agent_paused"):
+                self._core.set_agent_paused(agent_id, False)
+            elif hasattr(self._core, "conversation_manager"):
+                cm = self._core.conversation_manager
+                if hasattr(cm, "set_agent_paused"):
+                    cm.set_agent_paused(agent_id, False)
+            return json.dumps({"status": "ok", "agent_id": agent_id, "resumed": True})
+        except Exception as e:
+            return json.dumps({"error": f"Failed to resume agent: {e}"})
+
+    async def _execute_get_agent_status(self, tool_input: Dict[str, Any]) -> str:
+        """Get status of background agents.
+
+        Args:
+            tool_input: Dict with optional 'id' and 'include_result'
+
+        Returns:
+            JSON string with agent status(es)
+        """
+        from penguin.multi.executor import get_executor
+
+        agent_id = tool_input.get("id", "").strip()
+        include_result = bool(tool_input.get("include_result", False))
+
+        executor = get_executor()
+        if executor is None:
+            return json.dumps({
+                "status": "ok",
+                "agents": {},
+                "message": "No executor initialized - no background agents running"
+            })
+
+        if agent_id:
+            # Query specific agent
+            status = executor.get_status(agent_id)
+            if status is None:
+                return json.dumps({"error": f"Agent '{agent_id}' not found in executor"})
+
+            if not include_result:
+                status = {k: v for k, v in status.items() if k != "result"}
+
+            return json.dumps({"status": "ok", "agent": status})
+        else:
+            # Query all agents
+            all_status = executor.get_all_status()
+            if not include_result:
+                all_status = {
+                    aid: {k: v for k, v in st.items() if k != "result"}
+                    for aid, st in all_status.items()
+                }
+
+            stats = executor.get_stats()
+            return json.dumps({
+                "status": "ok",
+                "agents": all_status,
+                "stats": stats,
+            })
+
+    async def _execute_wait_for_agents(self, tool_input: Dict[str, Any]) -> str:
+        """Wait for background agents to complete.
+
+        Args:
+            tool_input: Dict with optional 'ids' (list) and 'timeout'
+
+        Returns:
+            JSON string with results
+        """
+        from penguin.multi.executor import get_executor
+
+        agent_ids = tool_input.get("ids")
+        timeout = tool_input.get("timeout")
+
+        executor = get_executor()
+        if executor is None:
+            return json.dumps({
+                "status": "ok",
+                "results": {},
+                "message": "No executor initialized - no background agents to wait for"
+            })
+
+        try:
+            results = await executor.wait_for_all(agent_ids, timeout=timeout)
+            return json.dumps({
+                "status": "ok",
+                "results": results,
+                "completed": len(results),
+            })
+        except asyncio.TimeoutError:
+            # Return partial results on timeout
+            partial = {}
+            ids_to_check = agent_ids or list(executor._tasks.keys())
+            for aid in ids_to_check:
+                status = executor.get_status(aid)
+                if status:
+                    partial[aid] = {
+                        "state": status.get("state"),
+                        "result": status.get("result") if status.get("state") == "completed" else None,
+                    }
+            return json.dumps({
+                "status": "timeout",
+                "results": partial,
+                "message": f"Timeout after {timeout}s waiting for agents",
+            })
+
+    async def _execute_get_context_info(self, tool_input: Dict[str, Any]) -> str:
+        """Get context window sharing information for an agent.
+
+        Args:
+            tool_input: Dict with optional 'id' and 'include_stats'
+
+        Returns:
+            JSON string with context sharing info
+        """
+        if self._core is None:
+            return json.dumps({"error": "Core unavailable"})
+
+        agent_id = tool_input.get("id", "").strip() or "default"
+        include_stats = bool(tool_input.get("include_stats", False))
+
+        try:
+            cm = self._core.conversation_manager
+            if not hasattr(cm, "get_context_sharing_info"):
+                return json.dumps({"error": "Context sharing info not available"})
+
+            info = cm.get_context_sharing_info(agent_id)
+
+            if include_stats and hasattr(cm, "get_context_window_stats"):
+                stats = cm.get_context_window_stats(agent_id)
+                if stats:
+                    info["token_stats"] = stats
+
+            # Add list of agents sharing same context window
+            if hasattr(cm, "get_shared_context_agents"):
+                shared_with = cm.get_shared_context_agents(agent_id)
+                info["shares_context_with"] = shared_with
+
+            return json.dumps({"status": "ok", **info})
+        except Exception as e:
+            return json.dumps({"error": f"Failed to get context info: {e}"})
+
+    async def _execute_sync_context(self, tool_input: Dict[str, Any]) -> str:
+        """Synchronize context from parent to child agent.
+
+        Args:
+            tool_input: Dict with 'parent', 'child', optional 'replace'
+
+        Returns:
+            JSON string with result
+        """
+        if self._core is None:
+            return json.dumps({"error": "Core unavailable"})
+
+        parent = tool_input.get("parent", "").strip()
+        child = tool_input.get("child", "").strip()
+        replace = bool(tool_input.get("replace", False))
+
+        if not parent or not child:
+            return json.dumps({"error": "sync_context requires 'parent' and 'child'"})
+
+        try:
+            cm = self._core.conversation_manager
+            if not hasattr(cm, "sync_context_to_child"):
+                return json.dumps({"error": "Context sync not available"})
+
+            success = cm.sync_context_to_child(parent, child, replace_existing=replace)
+            if success:
+                return json.dumps({
+                    "status": "ok",
+                    "synced_from": parent,
+                    "synced_to": child,
+                    "replaced": replace,
+                })
+            else:
+                return json.dumps({"error": "Context sync failed"})
+        except Exception as e:
+            return json.dumps({"error": f"Failed to sync context: {e}"})
+
+    async def _execute_delegate(self, tool_input: Dict[str, Any]) -> str:
+        """Execute delegate tool.
+
+        Args:
+            tool_input: Dict with child, content, parent, channel, metadata, background, wait, timeout
+
+        Returns:
+            JSON string with result
+        """
+        child = tool_input.get("child", "").strip()
+        content = tool_input.get("content")
+        if not child or content is None:
+            return json.dumps({"error": "delegate requires 'child' and 'content'"})
+
+        if self._core is None:
+            return json.dumps({"error": "Core unavailable"})
+
+        parent = tool_input.get("parent", "default")
+        channel = tool_input.get("channel")
+        metadata = tool_input.get("metadata", {})
+        background = bool(tool_input.get("background", False))
+        wait = bool(tool_input.get("wait", False))
+        timeout = tool_input.get("timeout")
+
+        try:
+            if background:
+                # Run delegated task in background using AgentExecutor
+                from penguin.multi.executor import get_executor, set_executor, AgentExecutor
+                executor = get_executor()
+                if executor is None:
+                    executor = AgentExecutor(self._core)
+                    set_executor(executor)
+
+                # Check if agent is already registered in executor
+                status = executor.get_status(child)
+                if status and status.get("state") in ("pending", "running"):
+                    return json.dumps({
+                        "error": f"Agent '{child}' is already running a background task"
+                    })
+
+                # Spawn background task
+                await executor.spawn_agent(
+                    child,
+                    str(content),
+                    metadata={
+                        "parent": parent,
+                        "channel": channel,
+                        **(metadata or {}),
+                    }
+                )
+
+                if wait:
+                    # Wait for result
+                    try:
+                        result = await executor.wait_for(child, timeout=timeout)
+                        return json.dumps({
+                            "status": "ok",
+                            "delegated_to": child,
+                            "from": parent,
+                            "background": True,
+                            "waited": True,
+                            "result": result,
+                        })
+                    except asyncio.TimeoutError:
+                        return json.dumps({
+                            "status": "timeout",
+                            "delegated_to": child,
+                            "from": parent,
+                            "background": True,
+                            "message": f"Agent '{child}' timed out after {timeout}s",
+                        })
+                else:
+                    return json.dumps({
+                        "status": "ok",
+                        "delegated_to": child,
+                        "from": parent,
+                        "background": True,
+                        "message": f"Task delegated to '{child}' running in background",
+                    })
+            else:
+                # Synchronous delegation via message passing
+                if hasattr(self._core, "send_to_agent"):
+                    await self._core.send_to_agent(
+                        child,
+                        content,
+                        message_type="message",
+                        metadata=metadata,
+                        channel=channel,
+                    )
+                else:
+                    # Fallback via MessageBus
+                    from penguin.system.message_bus import MessageBus, ProtocolMessage
+                    bus = MessageBus.get_instance()
+                    msg = ProtocolMessage(
+                        sender=parent,
+                        recipient=child,
+                        content=content,
+                        message_type="message",
+                        metadata=metadata,
+                        channel=channel,
+                    )
+                    await bus.send(msg)
+
+                return json.dumps({
+                    "status": "ok",
+                    "delegated_to": child,
+                    "from": parent,
+                })
+        except Exception as e:
+            return json.dumps({"error": f"Failed to delegate: {e}"})
+
+    async def _execute_delegate_explore_task(self, tool_input: Dict[str, Any]) -> str:
+        """Execute delegate_explore_task using haiku for autonomous exploration.
+
+        Args:
+            tool_input: Dict with task, directory, max_iterations
+
+        Returns:
+            JSON string with exploration results
+        """
+        from penguin.constants import DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP
+        from penguin.constants import get_engine_max_iterations_default
+        from pathlib import Path
+        import re
+
+        task = tool_input.get("task", "").strip()
+        if not task:
+            return json.dumps({"error": "delegate_explore_task requires 'task'"})
+
+        start_dir = tool_input.get("directory", ".")
+        requested_max = tool_input.get("max_iterations", get_engine_max_iterations_default())
+        max_iterations = min(int(requested_max), int(DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP))
+
+        cwd = os.getcwd()
+
+        # Simple tool implementations for the exploration sub-agent
+        def execute_list_files(path: str) -> str:
+            try:
+                p = Path(path)
+                if not p.exists():
+                    return f"Directory not found: {path}"
+                if not p.is_dir():
+                    return f"Not a directory: {path}"
+                items = []
+                for item in sorted(p.iterdir())[:50]:
+                    if item.name.startswith('.'):
+                        continue
+                    prefix = "D " if item.is_dir() else "F "
+                    size = f" ({item.stat().st_size}b)" if item.is_file() else ""
+                    items.append(f"{prefix}{item.name}{size}")
+                return f"Contents of {path}:\n" + "\n".join(items) if items else f"{path} is empty"
+            except Exception as e:
+                return f"Error listing {path}: {e}"
+
+        def execute_read_file(path: str, max_lines: int = 200) -> str:
+            try:
+                p = Path(path)
+                if not p.exists():
+                    return f"File not found: {path}"
+                if not p.is_file():
+                    return f"Not a file: {path}"
+                if p.stat().st_size > 100000:  # 100KB limit
+                    return f"File too large: {path}"
+                content = p.read_text(errors='replace')
+                lines = content.splitlines()[:max_lines]
+                if len(content.splitlines()) > max_lines:
+                    lines.append("... (truncated)")
+                return f"=== {path} ===\n" + "\n".join(lines)
+            except Exception as e:
+                return f"Error reading {path}: {e}"
+
+        def execute_search(pattern: str, path: str = ".") -> str:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["grep", "-rn", "--include=*.py", "--include=*.js", "--include=*.ts",
+                     "--include=*.md", "--include=*.json", pattern, path],
+                    capture_output=True, text=True, timeout=10
+                )
+                matches = result.stdout.strip().splitlines()[:20]
+                return f"Search results for '{pattern}':\n" + "\n".join(matches) if matches else f"No matches for '{pattern}'"
+            except Exception as e:
+                return f"Search error: {e}"
+
+        def execute_tool(name: str, args: dict) -> str:
+            if name == "list_files":
+                return execute_list_files(args.get("path", "."))
+            elif name == "read_file":
+                return execute_read_file(args.get("path", ""), args.get("max_lines", 200))
+            elif name == "search":
+                return execute_search(args.get("pattern", ""), args.get("path", "."))
+            return f"Unknown tool: {name}"
+
+        system_prompt = f"""You are a codebase exploration assistant.
+
+You have these tools:
+- list_files: List directory contents
+- read_file: Read a file (max 200 lines)
+- search: Search for patterns in files
+
+Current directory: {cwd}
+Starting directory: {start_dir}
+
+To use a tool, respond with JSON:
+```json
+{{"tool": "tool_name", "args": {{"param": "value"}}}}
+```
+
+When done exploring, provide your final summary WITHOUT any tool calls."""
+
+        try:
+            from penguin.llm.openrouter_gateway import OpenRouterGateway
+            from penguin.llm.model_config import ModelConfig
+
+            model_config = ModelConfig(
+                model="anthropic/claude-haiku-4.5",
+                provider="openrouter",
+                max_output_tokens=2000,
+            )
+            gateway = OpenRouterGateway(model_config)
+
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": task},
+            ]
+
+            final_content = ""
+            for iteration in range(max_iterations):
+                response = await gateway.get_response(messages=messages)
+
+                content = ""
+                if isinstance(response, dict):
+                    content = response.get("content", "")
+                    if not content and "choices" in response:
+                        choices = response.get("choices", [])
+                        if choices:
+                            content = choices[0].get("message", {}).get("content", "")
+                elif hasattr(response, "content"):
+                    content = response.content
+                else:
+                    content = str(response)
+
+                final_content = content
+
+                # Check for tool calls
+                tool_match = re.search(r'```json\s*({[^`]+})\s*```', content, re.DOTALL)
+                if tool_match:
+                    try:
+                        tool_json = json.loads(tool_match.group(1))
+                        tool_name = tool_json.get("tool")
+                        tool_args = tool_json.get("args", {})
+                        result = execute_tool(tool_name, tool_args)
+                        messages.append({"role": "assistant", "content": content})
+                        messages.append({"role": "user", "content": f"Tool result:\n{result}"})
+                    except json.JSONDecodeError:
+                        return f"[Haiku Explorer]:\n{content}"
+                else:
+                    return f"[Haiku Explorer]:\n{content}"
+
+            return f"[Haiku Explorer] (max iterations reached):\n{final_content}"
+        except Exception as e:
+            return json.dumps({"error": f"delegate_explore_task failed: {e}"})

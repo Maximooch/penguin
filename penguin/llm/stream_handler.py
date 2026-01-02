@@ -418,6 +418,222 @@ class StreamingStateManager:
         )
 
 
+# --- Multi-Agent Streaming Support ---
+
+class AgentStreamingStateManager:
+    """Manages per-agent StreamingStateManager instances.
+
+    This allows multiple agents to stream simultaneously without interference.
+    Each agent gets its own StreamingStateManager with isolated state.
+
+    Usage:
+        manager = AgentStreamingStateManager()
+
+        # Process chunks for different agents in parallel
+        events1 = manager.handle_chunk("Hello ", agent_id="agent1")
+        events2 = manager.handle_chunk("World ", agent_id="agent2")
+
+        # Finalize each agent independently
+        msg1, events1 = manager.finalize(agent_id="agent1")
+        msg2, events2 = manager.finalize(agent_id="agent2")
+
+    Backward Compatibility:
+        - Methods without agent_id use the default agent
+        - Properties delegate to the default agent's manager
+        - Single-agent usage remains unchanged
+    """
+
+    DEFAULT_AGENT_ID = "default"
+
+    def __init__(self, config: Optional[StreamingConfig] = None):
+        """Initialize with optional shared configuration.
+
+        Args:
+            config: StreamingConfig to use for all agent managers.
+                    If None, each manager gets default config.
+        """
+        self._config = config
+        self._managers: Dict[str, StreamingStateManager] = {}
+
+    def get_manager(self, agent_id: Optional[str] = None) -> StreamingStateManager:
+        """Get or create a StreamingStateManager for the given agent.
+
+        Args:
+            agent_id: Agent identifier. Uses DEFAULT_AGENT_ID if None.
+
+        Returns:
+            StreamingStateManager for the agent.
+        """
+        aid = agent_id or self.DEFAULT_AGENT_ID
+        if aid not in self._managers:
+            self._managers[aid] = StreamingStateManager(self._config)
+        return self._managers[aid]
+
+    def handle_chunk(
+        self,
+        chunk: str,
+        agent_id: Optional[str] = None,
+        message_type: Optional[str] = None,
+        role: str = "assistant",
+    ) -> List[StreamEvent]:
+        """Process a chunk for a specific agent.
+
+        Args:
+            chunk: The content chunk to process
+            agent_id: Agent identifier (default: DEFAULT_AGENT_ID)
+            message_type: Type of message - "assistant", "reasoning", etc.
+            role: The role of the message (default: "assistant")
+
+        Returns:
+            List of StreamEvent objects to emit
+        """
+        manager = self.get_manager(agent_id)
+        events = manager.handle_chunk(chunk, message_type=message_type, role=role)
+
+        # Tag events with agent_id for routing
+        for event in events:
+            event.data["agent_id"] = agent_id or self.DEFAULT_AGENT_ID
+
+        return events
+
+    def finalize(
+        self, agent_id: Optional[str] = None
+    ) -> Tuple[Optional[FinalizedMessage], List[StreamEvent]]:
+        """Finalize streaming for a specific agent.
+
+        Args:
+            agent_id: Agent identifier (default: DEFAULT_AGENT_ID)
+
+        Returns:
+            Tuple of (FinalizedMessage or None, list of events to emit)
+        """
+        aid = agent_id or self.DEFAULT_AGENT_ID
+        manager = self.get_manager(aid)
+        message, events = manager.finalize()
+
+        # Tag events with agent_id
+        for event in events:
+            event.data["agent_id"] = aid
+
+        return message, events
+
+    def force_activate(
+        self,
+        agent_id: Optional[str] = None,
+        message_type: str = "assistant",
+        role: str = "assistant",
+    ) -> None:
+        """Force activation of streaming for a specific agent.
+
+        Args:
+            agent_id: Agent identifier (default: DEFAULT_AGENT_ID)
+            message_type: Type of message
+            role: Role of the message
+        """
+        manager = self.get_manager(agent_id)
+        manager.force_activate(message_type=message_type, role=role)
+
+    def abort(self, agent_id: Optional[str] = None) -> List[StreamEvent]:
+        """Abort streaming for a specific agent.
+
+        Args:
+            agent_id: Agent identifier (default: DEFAULT_AGENT_ID)
+
+        Returns:
+            List of events to emit
+        """
+        aid = agent_id or self.DEFAULT_AGENT_ID
+        manager = self.get_manager(aid)
+        events = manager.abort()
+
+        for event in events:
+            event.data["agent_id"] = aid
+
+        return events
+
+    # --- Agent State Queries ---
+
+    def is_agent_active(self, agent_id: str) -> bool:
+        """Check if a specific agent is currently streaming.
+
+        Args:
+            agent_id: Agent identifier
+
+        Returns:
+            True if the agent is actively streaming
+        """
+        manager = self._managers.get(agent_id)
+        return manager.is_active if manager else False
+
+    def get_agent_content(self, agent_id: str) -> str:
+        """Get accumulated content for a specific agent.
+
+        Args:
+            agent_id: Agent identifier
+
+        Returns:
+            Accumulated content string
+        """
+        manager = self._managers.get(agent_id)
+        return manager.content if manager else ""
+
+    def get_agent_reasoning(self, agent_id: str) -> str:
+        """Get accumulated reasoning content for a specific agent.
+
+        Args:
+            agent_id: Agent identifier
+
+        Returns:
+            Accumulated reasoning content string
+        """
+        manager = self._managers.get(agent_id)
+        return manager.reasoning_content if manager else ""
+
+    def get_active_agents(self) -> List[str]:
+        """Get list of currently streaming agent IDs.
+
+        Returns:
+            List of agent IDs that are actively streaming
+        """
+        return [aid for aid, mgr in self._managers.items() if mgr.is_active]
+
+    def cleanup_agent(self, agent_id: str) -> None:
+        """Remove an agent's streaming state (for agent termination).
+
+        Args:
+            agent_id: Agent identifier to remove
+        """
+        self._managers.pop(agent_id, None)
+
+    # --- Backward Compatibility Properties ---
+    # These delegate to the default agent for single-agent usage
+
+    @property
+    def is_active(self) -> bool:
+        """Whether streaming is active for the default agent."""
+        return self.get_manager().is_active
+
+    @property
+    def content(self) -> str:
+        """Accumulated content for the default agent."""
+        return self.get_manager().content
+
+    @property
+    def reasoning_content(self) -> str:
+        """Accumulated reasoning content for the default agent."""
+        return self.get_manager().reasoning_content
+
+    @property
+    def stream_id(self) -> Optional[str]:
+        """Stream ID for the default agent."""
+        return self.get_manager().stream_id
+
+    @property
+    def state(self) -> StreamState:
+        """State for the default agent."""
+        return self.get_manager().state
+
+
 # --- Legacy Abstract Classes (kept for backward compatibility) ---
 
 class StreamHandler(ABC):
@@ -465,6 +681,7 @@ __all__ = [
     "StreamingConfig",
     "FinalizedMessage",
     "StreamingStateManager",
+    "AgentStreamingStateManager",
     "StreamHandler",
     "DefaultStreamHandler",
 ]

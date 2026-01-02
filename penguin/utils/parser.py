@@ -731,6 +731,7 @@ class ActionExecutor:
           - share_session (bool, default False), share_context_window (bool, default False)
           - shared_context_window_max_tokens (int, optional), model_* overrides (optional), default_tools (optional)
           - initial_prompt (optional)
+          - background (bool, default False): Run agent in background with initial_prompt
         """
         try:
             payload = json.loads(params) if params.strip() else {}
@@ -749,6 +750,7 @@ class ActionExecutor:
         parent_id = str(payload.get("parent") or getattr(conversation, "current_agent_id", None) or "default").strip()
         share_session = bool(payload.get("share_session", False))
         share_cw = bool(payload.get("share_context_window", False))
+        background = bool(payload.get("background", False))
         shared_context_window_max_tokens = payload.get("shared_context_window_max_tokens", payload.get("shared_cw_max_tokens"))  # Accept both keys
         try:
             shared_context_window_max_tokens = int(shared_context_window_max_tokens) if shared_context_window_max_tokens is not None else None
@@ -776,16 +778,33 @@ class ActionExecutor:
 
         initial_prompt = payload.get("initial_prompt")
         if initial_prompt:
-            try:
-                import logging
-                _logger = logging.getLogger(__name__)
-                _logger.info(f"[SUB-AGENT-DEBUG] Sending initial_prompt to '{agent_id}': {initial_prompt[:100]}...")
-                result = await core.send_to_agent(agent_id, initial_prompt)
-                _logger.info(f"[SUB-AGENT-DEBUG] send_to_agent returned: {result}")
-            except Exception as e:
-                import logging
-                _logger = logging.getLogger(__name__)
-                _logger.error(f"[SUB-AGENT-DEBUG] Failed to send initial_prompt: {e}", exc_info=True)
+            if background:
+                # Run agent in background using AgentExecutor
+                try:
+                    from penguin.multi.executor import get_executor, set_executor, AgentExecutor
+                    executor = get_executor()
+                    if executor is None:
+                        executor = AgentExecutor(core)
+                        set_executor(executor)
+
+                    await executor.spawn_agent(
+                        agent_id,
+                        initial_prompt,
+                        metadata={
+                            "parent": parent_id,
+                            "share_session": share_session,
+                            "share_context_window": share_cw,
+                        }
+                    )
+                    return f"Spawned sub-agent '{agent_id}' running in background (parent='{parent_id}')"
+                except Exception as e:
+                    return f"Failed to spawn background agent '{agent_id}': {e}"
+            else:
+                # Synchronous: send message and wait
+                try:
+                    await core.send_to_agent(agent_id, initial_prompt)
+                except Exception as e:
+                    logger.warning(f"Failed to send initial_prompt to {agent_id}: {e}")
 
         return f"Spawned sub-agent '{agent_id}' (parent='{parent_id}', share_session={share_session}, share_context_window={share_cw})"
 
@@ -1018,6 +1037,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
 
 
     async def _stop_sub_agent(self, params: str) -> str:
+        """Stop/pause a sub-agent. Also cancels background tasks if running."""
         try:
             payload = json.loads(params) if params.strip() else {}
         except Exception as e:
@@ -1029,9 +1049,26 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         core = getattr(conversation, "core", None)
         if core is None:
             return "Core unavailable for stop_sub_agent"
+
+        cancelled_background = False
         try:
+            # Try to cancel background task if running in executor
+            from penguin.multi.executor import get_executor
+            executor = get_executor()
+            if executor:
+                status = executor.get_status(agent_id)
+                if status and status.get("state") in ("pending", "running"):
+                    cancelled_background = await executor.cancel(agent_id)
+        except Exception as e:
+            logger.debug(f"Failed to cancel background task for '{agent_id}': {e}")
+
+        try:
+            # Also pause in conversation manager
             if hasattr(core, "set_agent_paused"):
                 core.set_agent_paused(agent_id, True)
+
+            if cancelled_background:
+                return f"Stopped sub-agent '{agent_id}' (background task cancelled)"
             return f"Paused sub-agent '{agent_id}'"
         except Exception as e:
             return f"Failed to pause sub-agent '{agent_id}': {e}"
@@ -1056,6 +1093,18 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             return f"Failed to resume sub-agent '{agent_id}': {e}"
 
     async def _delegate(self, params: str) -> str:
+        """Delegate a task to a sub-agent.
+
+        JSON body:
+          - child (required): Target sub-agent ID
+          - content (required): Task content
+          - parent (optional): Parent agent ID
+          - channel (optional): Logical channel
+          - metadata (optional): Additional metadata
+          - background (bool, default False): Run in background
+          - wait (bool, default False): Wait for result when background=true
+          - timeout (float, optional): Timeout in seconds when wait=true
+        """
         try:
             payload = json.loads(params) if params.strip() else {}
         except Exception as e:
@@ -1074,6 +1123,9 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         parent = str(payload.get("parent") or getattr(conversation, "current_agent_id", None) or "default").strip()
         channel = payload.get("channel")
         metadata = payload.get("metadata") or {}
+        background = bool(payload.get("background", False))
+        wait = bool(payload.get("wait", False))
+        timeout = payload.get("timeout")
 
         # Record delegation event in both parent and child logs (best-effort)
         try:
@@ -1093,17 +1145,55 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         except Exception as e:
             logger.debug(f"Failed to add delegation_id to metadata: {e}")
 
-        try:
-            await core.send_to_agent(
-                child,
-                content,
-                message_type="message",
-                metadata=metadata,
-                channel=channel,
-            )
-            return f"Delegated to '{child}' from '{parent}'"
-        except Exception as e:
-            return f"Failed to delegate to '{child}': {e}"
+        if background:
+            # Run delegated task in background using AgentExecutor
+            try:
+                from penguin.multi.executor import get_executor, set_executor, AgentExecutor
+                import asyncio
+
+                executor = get_executor()
+                if executor is None:
+                    executor = AgentExecutor(core)
+                    set_executor(executor)
+
+                # Check if agent is already running
+                status = executor.get_status(child)
+                if status and status.get("state") in ("pending", "running"):
+                    return f"Agent '{child}' is already running a background task"
+
+                await executor.spawn_agent(
+                    child,
+                    str(content),
+                    metadata={
+                        "parent": parent,
+                        "channel": channel,
+                        **(metadata or {}),
+                    }
+                )
+
+                if wait:
+                    try:
+                        result = await executor.wait_for(child, timeout=timeout)
+                        return f"Delegated to '{child}' (background, waited): {result}"
+                    except asyncio.TimeoutError:
+                        return f"Delegated to '{child}' (background, timed out after {timeout}s)"
+                else:
+                    return f"Delegated to '{child}' running in background"
+            except Exception as e:
+                return f"Failed to delegate background task to '{child}': {e}"
+        else:
+            # Synchronous delegation via message passing
+            try:
+                await core.send_to_agent(
+                    child,
+                    content,
+                    message_type="message",
+                    metadata=metadata,
+                    channel=channel,
+                )
+                return f"Delegated to '{child}' from '{parent}'"
+            except Exception as e:
+                return f"Failed to delegate to '{child}': {e}"
 
     def _workspace_search(self, params: str) -> str:
         parts = params.split(":", 1)

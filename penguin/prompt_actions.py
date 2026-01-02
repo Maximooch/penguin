@@ -6,6 +6,8 @@ especially regarding safety and verification.
 # Import shared formatting rules
 from penguin.prompt_workflow import SAFETY_RULES, CODE_FORMATTING_RULES, TOOL_RESULT_HANDLING
 
+
+# TODO: Do we still need the TUI formatting rules here, or does it need to be something else? If not just removed to let the UI layer handle it?
 _ACTION_SYNTAX_TEMPLATE = r"""
 ## Action Syntax
 

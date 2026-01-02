@@ -3,9 +3,11 @@ import base64
 import io
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Union
 
+import httpx
 import yaml  # type: ignore
 import tiktoken  # type: ignore
 
@@ -27,6 +29,191 @@ from .adapters import get_adapter # Keep for native preference
 # from penguin.llm.provider_adapters import get_provider_adapter # Seems unused
 
 logger = logging.getLogger(__name__)
+
+
+# ==============================================================================
+# Connection Pool Management for Parallel LLM Calls
+# ==============================================================================
+
+class ConnectionPoolConfig:
+    """Configuration for HTTP connection pools."""
+
+    def __init__(
+        self,
+        max_keepalive_connections: int = 20,
+        max_connections: int = 100,
+        keepalive_expiry: float = 30.0,
+        connect_timeout: float = 10.0,
+        read_timeout: float = 300.0,  # Long for cold-start models
+        write_timeout: float = 10.0,
+    ):
+        self.max_keepalive_connections = max_keepalive_connections
+        self.max_connections = max_connections
+        self.keepalive_expiry = keepalive_expiry
+        self.connect_timeout = connect_timeout
+        self.read_timeout = read_timeout
+        self.write_timeout = write_timeout
+
+    def to_limits(self) -> httpx.Limits:
+        return httpx.Limits(
+            max_keepalive_connections=self.max_keepalive_connections,
+            max_connections=self.max_connections,
+            keepalive_expiry=self.keepalive_expiry,
+        )
+
+    def to_timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(
+            timeout=self.read_timeout,  # Default for unspecified values
+            connect=self.connect_timeout,
+            read=self.read_timeout,
+            write=self.write_timeout,
+        )
+
+
+class ConnectionPoolManager:
+    """Manages shared HTTP connection pools per provider/base_url.
+
+    Singleton pattern ensures connection reuse across all LLM clients.
+    This enables efficient parallel LLM calls by reusing connections.
+
+    Usage:
+        # Get the global pool instance
+        pool = ConnectionPoolManager.get_instance()
+
+        # Get a pooled client for a specific base URL
+        client = await pool.get_client("https://openrouter.ai/api/v1")
+
+        # Or use the context manager
+        async with pool.client_context("https://openrouter.ai/api/v1") as client:
+            response = await client.post(url, json=payload)
+
+        # On shutdown, close all pools
+        await pool.close_all()
+    """
+
+    _instance: Optional["ConnectionPoolManager"] = None
+    _lock: asyncio.Lock = asyncio.Lock()
+
+    @classmethod
+    def get_instance(cls, config: Optional[ConnectionPoolConfig] = None) -> "ConnectionPoolManager":
+        """Get the singleton instance (sync accessor).
+
+        Args:
+            config: Optional configuration for new instances
+
+        Returns:
+            The global ConnectionPoolManager instance
+        """
+        if cls._instance is None:
+            cls._instance = cls(config or ConnectionPoolConfig())
+        return cls._instance
+
+    @classmethod
+    async def get_instance_async(cls, config: Optional[ConnectionPoolConfig] = None) -> "ConnectionPoolManager":
+        """Get the singleton instance (async accessor with lock).
+
+        Args:
+            config: Optional configuration for new instances
+
+        Returns:
+            The global ConnectionPoolManager instance
+        """
+        if cls._instance is None:
+            async with cls._lock:
+                if cls._instance is None:
+                    cls._instance = cls(config or ConnectionPoolConfig())
+        return cls._instance
+
+    def __init__(self, config: Optional[ConnectionPoolConfig] = None):
+        """Initialize the connection pool manager.
+
+        Args:
+            config: Configuration for pool limits and timeouts
+        """
+        self._config = config or ConnectionPoolConfig()
+        self._clients: Dict[str, httpx.AsyncClient] = {}
+        self._client_locks: Dict[str, asyncio.Lock] = {}
+
+    async def get_client(self, base_url: str) -> httpx.AsyncClient:
+        """Get or create a pooled client for the given base URL.
+
+        Args:
+            base_url: The base URL for the API (e.g., "https://openrouter.ai/api/v1")
+
+        Returns:
+            Shared AsyncClient with connection pooling
+        """
+        if base_url not in self._clients:
+            # Create lock for this base_url if needed
+            if base_url not in self._client_locks:
+                self._client_locks[base_url] = asyncio.Lock()
+
+            async with self._client_locks[base_url]:
+                # Double-check after acquiring lock
+                if base_url not in self._clients:
+                    self._clients[base_url] = httpx.AsyncClient(
+                        limits=self._config.to_limits(),
+                        timeout=self._config.to_timeout(),
+                    )
+                    logger.info(f"Created connection pool for {base_url}")
+
+        return self._clients[base_url]
+
+    @asynccontextmanager
+    async def client_context(self, base_url: str):
+        """Context manager for using a pooled client.
+
+        Unlike the per-request pattern, this reuses connections:
+
+        Old (inefficient):
+            async with httpx.AsyncClient() as client:
+                response = await client.post(...)
+
+        New (connection pooling):
+            pool = ConnectionPoolManager.get_instance()
+            async with pool.client_context(base_url) as client:
+                response = await client.post(...)
+
+        Args:
+            base_url: The base URL for the API
+
+        Yields:
+            Shared AsyncClient instance
+        """
+        client = await self.get_client(base_url)
+        try:
+            yield client
+        except httpx.PoolTimeout:
+            logger.warning(f"Connection pool timeout for {base_url}, request may be delayed")
+            raise
+
+    async def close_all(self) -> None:
+        """Close all pooled clients. Call during shutdown."""
+        for base_url, client in list(self._clients.items()):
+            try:
+                await client.aclose()
+                logger.info(f"Closed connection pool for {base_url}")
+            except Exception as e:
+                logger.warning(f"Error closing client for {base_url}: {e}")
+        self._clients.clear()
+        self._client_locks.clear()
+
+    def get_stats(self) -> Dict[str, Dict]:
+        """Get connection pool statistics for monitoring.
+
+        Returns:
+            Dict mapping base_url to pool stats
+        """
+        stats = {}
+        for base_url in self._clients:
+            stats[base_url] = {
+                "active": True,
+                "limits": {
+                    "max_keepalive": self._config.max_keepalive_connections,
+                    "max_connections": self._config.max_connections,
+                }
+            }
+        return stats
 
 
 def load_config() -> Dict[str, Any]:

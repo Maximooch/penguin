@@ -569,5 +569,335 @@ class TestIntegration:
         assert m.state == StreamState.INACTIVE
 
 
+# =============================================================================
+# AGENT STREAMING STATE MANAGER TESTS
+# =============================================================================
+
+from penguin.llm.stream_handler import AgentStreamingStateManager
+
+
+@pytest.fixture
+def agent_manager():
+    """Create a fresh AgentStreamingStateManager for each test."""
+    return AgentStreamingStateManager()
+
+
+@pytest.fixture
+def agent_manager_with_config():
+    """Create AgentStreamingStateManager with fast coalesce config."""
+    config = StreamingConfig(
+        min_emit_interval=0.001,
+        min_emit_chars=1,
+    )
+    return AgentStreamingStateManager(config)
+
+
+class TestAgentStreamingStateManagerBasic:
+    """Test basic AgentStreamingStateManager functionality."""
+
+    def test_default_agent_id_constant(self, agent_manager):
+        """Test that DEFAULT_AGENT_ID is defined."""
+        assert AgentStreamingStateManager.DEFAULT_AGENT_ID == "default"
+
+    def test_initial_state_no_managers(self, agent_manager):
+        """Test that manager starts with no agent managers."""
+        assert len(agent_manager._managers) == 0
+
+    def test_get_manager_creates_new(self, agent_manager):
+        """Test that get_manager creates a new manager for new agent."""
+        manager = agent_manager.get_manager("agent1")
+
+        assert manager is not None
+        assert "agent1" in agent_manager._managers
+
+    def test_get_manager_returns_same(self, agent_manager):
+        """Test that get_manager returns same manager for same agent."""
+        manager1 = agent_manager.get_manager("agent1")
+        manager2 = agent_manager.get_manager("agent1")
+
+        assert manager1 is manager2
+
+    def test_get_manager_default_agent(self, agent_manager):
+        """Test get_manager with None uses default agent."""
+        manager1 = agent_manager.get_manager(None)
+        manager2 = agent_manager.get_manager()
+
+        assert manager1 is manager2
+        assert "default" in agent_manager._managers
+
+
+class TestAgentStreamingStateManagerHandleChunk:
+    """Test handle_chunk for multiple agents."""
+
+    def test_handle_chunk_creates_manager(self, agent_manager_with_config):
+        """Test that handle_chunk creates manager for new agent."""
+        events = agent_manager_with_config.handle_chunk("Hello", agent_id="agent1")
+
+        assert "agent1" in agent_manager_with_config._managers
+        assert len(events) >= 1
+
+    def test_handle_chunk_tags_events_with_agent_id(self, agent_manager_with_config):
+        """Test that events are tagged with agent_id."""
+        events = agent_manager_with_config.handle_chunk("Hello", agent_id="test-agent")
+
+        for event in events:
+            assert event.data["agent_id"] == "test-agent"
+
+    def test_handle_chunk_default_agent_id(self, agent_manager_with_config):
+        """Test that handle_chunk without agent_id uses default."""
+        events = agent_manager_with_config.handle_chunk("Hello")
+
+        for event in events:
+            assert event.data["agent_id"] == "default"
+
+    def test_handle_chunk_multiple_agents(self, agent_manager_with_config):
+        """Test handling chunks for multiple agents simultaneously."""
+        agent_manager_with_config.handle_chunk("Hello from agent 1", agent_id="agent1")
+        agent_manager_with_config.handle_chunk("Hello from agent 2", agent_id="agent2")
+
+        content1 = agent_manager_with_config.get_agent_content("agent1")
+        content2 = agent_manager_with_config.get_agent_content("agent2")
+
+        assert "agent 1" in content1
+        assert "agent 2" in content2
+
+
+class TestAgentStreamingStateManagerFinalize:
+    """Test finalize for multiple agents."""
+
+    def test_finalize_specific_agent(self, agent_manager_with_config):
+        """Test finalizing a specific agent."""
+        agent_manager_with_config.handle_chunk("Content for agent1", agent_id="agent1")
+        agent_manager_with_config.handle_chunk("Content for agent2", agent_id="agent2")
+
+        msg1, events1 = agent_manager_with_config.finalize(agent_id="agent1")
+
+        assert msg1 is not None
+        assert "agent1" in msg1.content or "Content for agent1" in msg1.content
+
+        # Agent 2 should still have content
+        assert agent_manager_with_config.is_agent_active("agent2") or \
+               agent_manager_with_config.get_agent_content("agent2") != ""
+
+    def test_finalize_tags_events_with_agent_id(self, agent_manager_with_config):
+        """Test that finalize events are tagged with agent_id."""
+        agent_manager_with_config.handle_chunk("Hello", agent_id="test-agent")
+        _, events = agent_manager_with_config.finalize(agent_id="test-agent")
+
+        for event in events:
+            assert event.data["agent_id"] == "test-agent"
+
+
+class TestAgentStreamingStateManagerAbort:
+    """Test abort for agents."""
+
+    def test_abort_specific_agent(self, agent_manager_with_config):
+        """Test aborting a specific agent."""
+        agent_manager_with_config.handle_chunk("Content 1", agent_id="agent1")
+        agent_manager_with_config.handle_chunk("Content 2", agent_id="agent2")
+
+        events = agent_manager_with_config.abort(agent_id="agent1")
+
+        # Agent 1 should be aborted
+        assert not agent_manager_with_config.is_agent_active("agent1")
+
+        # Abort events should be tagged
+        for event in events:
+            assert event.data["agent_id"] == "agent1"
+
+    def test_abort_tags_events(self, agent_manager_with_config):
+        """Test that abort events are tagged with agent_id."""
+        agent_manager_with_config.handle_chunk("Hello", agent_id="abort-test")
+        events = agent_manager_with_config.abort(agent_id="abort-test")
+
+        for event in events:
+            assert event.data["agent_id"] == "abort-test"
+
+
+class TestAgentStreamingStateManagerQueries:
+    """Test agent state query methods."""
+
+    def test_is_agent_active(self, agent_manager_with_config):
+        """Test is_agent_active returns correct state."""
+        assert not agent_manager_with_config.is_agent_active("agent1")
+
+        agent_manager_with_config.handle_chunk("Hello", agent_id="agent1")
+
+        assert agent_manager_with_config.is_agent_active("agent1")
+
+    def test_get_agent_content(self, agent_manager_with_config):
+        """Test get_agent_content returns accumulated content."""
+        agent_manager_with_config.handle_chunk("Hello ", agent_id="agent1")
+        agent_manager_with_config.handle_chunk("world", agent_id="agent1")
+
+        content = agent_manager_with_config.get_agent_content("agent1")
+
+        assert content == "Hello world"
+
+    def test_get_agent_content_nonexistent(self, agent_manager):
+        """Test get_agent_content returns empty for nonexistent agent."""
+        content = agent_manager.get_agent_content("nonexistent")
+        assert content == ""
+
+    def test_get_agent_reasoning(self, agent_manager_with_config):
+        """Test get_agent_reasoning returns reasoning content."""
+        agent_manager_with_config.handle_chunk(
+            "Thinking...",
+            agent_id="agent1",
+            message_type="reasoning"
+        )
+
+        reasoning = agent_manager_with_config.get_agent_reasoning("agent1")
+
+        assert "Thinking" in reasoning
+
+    def test_get_active_agents(self, agent_manager_with_config):
+        """Test get_active_agents returns list of active agents."""
+        agent_manager_with_config.handle_chunk("Hello", agent_id="agent1")
+        agent_manager_with_config.handle_chunk("Hello", agent_id="agent2")
+
+        active = agent_manager_with_config.get_active_agents()
+
+        assert "agent1" in active
+        assert "agent2" in active
+
+    def test_get_active_agents_after_finalize(self, agent_manager_with_config):
+        """Test get_active_agents excludes finalized agents."""
+        agent_manager_with_config.handle_chunk("Hello", agent_id="agent1")
+        agent_manager_with_config.handle_chunk("Hello", agent_id="agent2")
+
+        agent_manager_with_config.finalize(agent_id="agent1")
+
+        active = agent_manager_with_config.get_active_agents()
+
+        assert "agent1" not in active
+        assert "agent2" in active
+
+
+class TestAgentStreamingStateManagerCleanup:
+    """Test cleanup operations."""
+
+    def test_cleanup_agent(self, agent_manager_with_config):
+        """Test cleanup_agent removes agent's manager."""
+        agent_manager_with_config.handle_chunk("Hello", agent_id="agent1")
+
+        assert "agent1" in agent_manager_with_config._managers
+
+        agent_manager_with_config.cleanup_agent("agent1")
+
+        assert "agent1" not in agent_manager_with_config._managers
+
+    def test_cleanup_nonexistent_agent(self, agent_manager):
+        """Test cleanup_agent handles nonexistent agent."""
+        # Should not raise
+        agent_manager.cleanup_agent("nonexistent")
+
+
+class TestAgentStreamingStateManagerBackwardCompat:
+    """Test backward compatibility properties."""
+
+    def test_is_active_property(self, agent_manager_with_config):
+        """Test is_active property delegates to default agent."""
+        assert not agent_manager_with_config.is_active
+
+        agent_manager_with_config.handle_chunk("Hello")  # No agent_id = default
+
+        assert agent_manager_with_config.is_active
+
+    def test_content_property(self, agent_manager_with_config):
+        """Test content property delegates to default agent."""
+        agent_manager_with_config.handle_chunk("Hello world")
+
+        assert agent_manager_with_config.content == "Hello world"
+
+    def test_reasoning_content_property(self, agent_manager_with_config):
+        """Test reasoning_content property delegates to default agent."""
+        agent_manager_with_config.handle_chunk(
+            "Thinking...",
+            message_type="reasoning"
+        )
+
+        assert "Thinking" in agent_manager_with_config.reasoning_content
+
+    def test_stream_id_property(self, agent_manager):
+        """Test stream_id property delegates to default agent."""
+        # Before any streaming
+        assert agent_manager.stream_id is None
+
+        agent_manager.handle_chunk("Hello")
+
+        assert agent_manager.stream_id is not None
+
+    def test_state_property(self, agent_manager):
+        """Test state property delegates to default agent."""
+        assert agent_manager.state == StreamState.INACTIVE
+
+        agent_manager.handle_chunk("Hello")
+
+        assert agent_manager.state == StreamState.ACTIVE
+
+
+class TestAgentStreamingStateManagerParallel:
+    """Test parallel streaming scenarios."""
+
+    def test_parallel_agents_isolated(self, agent_manager_with_config):
+        """Test that parallel agents have isolated state."""
+        # Start streaming for multiple agents
+        agent_manager_with_config.handle_chunk("A1: ", agent_id="agent1")
+        agent_manager_with_config.handle_chunk("A2: ", agent_id="agent2")
+        agent_manager_with_config.handle_chunk("A3: ", agent_id="agent3")
+
+        # Continue streaming
+        agent_manager_with_config.handle_chunk("more", agent_id="agent1")
+        agent_manager_with_config.handle_chunk("data", agent_id="agent2")
+
+        # Finalize one
+        msg2, _ = agent_manager_with_config.finalize(agent_id="agent2")
+
+        # Check states
+        assert agent_manager_with_config.is_agent_active("agent1")
+        assert not agent_manager_with_config.is_agent_active("agent2")
+        assert agent_manager_with_config.is_agent_active("agent3")
+
+        # Check content isolation
+        assert "A1:" in agent_manager_with_config.get_agent_content("agent1")
+        assert "A2:" in msg2.content
+        assert "A3:" in agent_manager_with_config.get_agent_content("agent3")
+
+    def test_many_parallel_agents(self, agent_manager_with_config):
+        """Test handling many parallel agents."""
+        num_agents = 20
+
+        # Start all agents
+        for i in range(num_agents):
+            agent_manager_with_config.handle_chunk(
+                f"Agent {i} content",
+                agent_id=f"agent_{i}"
+            )
+
+        # All should be active
+        active = agent_manager_with_config.get_active_agents()
+        assert len(active) == num_agents
+
+        # Finalize all
+        for i in range(num_agents):
+            msg, _ = agent_manager_with_config.finalize(agent_id=f"agent_{i}")
+            assert f"Agent {i}" in msg.content
+
+        # None should be active
+        assert len(agent_manager_with_config.get_active_agents()) == 0
+
+
+class TestAgentStreamingStateManagerForceActivate:
+    """Test force_activate for agents."""
+
+    def test_force_activate_specific_agent(self, agent_manager):
+        """Test force_activate for specific agent."""
+        agent_manager.force_activate(agent_id="agent1")
+
+        assert agent_manager.is_agent_active("agent1")
+        assert "agent1" in agent_manager._managers
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

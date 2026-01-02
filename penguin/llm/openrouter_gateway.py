@@ -16,6 +16,9 @@ import openai # type: ignore
 import tiktoken # type: ignore
 from openai import AsyncOpenAI, APIError # type: ignore
 
+# Connection pooling for parallel LLM calls
+from penguin.llm.api_client import ConnectionPoolManager
+
 # Assuming ModelConfig is in the same directory or adjust import path
 try:
     from .model_config import ModelConfig
@@ -803,9 +806,10 @@ class OpenRouterGateway:
         url = f"{self.base_url}/chat/completions"
 
         try:
-            # Longer timeout for cold-starting models (GPT-5, new models may take minutes to warm up)
-            # OpenRouter sends `: OPENROUTER PROCESSING` keep-alive comments during warmup
-            async with httpx.AsyncClient(timeout=300.0) as client:
+            # Use connection pool for efficient parallel LLM calls
+            # The pool handles timeouts via ConnectionPoolConfig (default: 300s read timeout)
+            pool = ConnectionPoolManager.get_instance()
+            async with pool.client_context(self.base_url) as client:
                 if use_streaming:
                     return await self._handle_streaming_response(
                         client, url, headers, direct_params, stream_callback

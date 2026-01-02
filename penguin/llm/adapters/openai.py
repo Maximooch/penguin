@@ -7,10 +7,12 @@ import mimetypes
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+import httpx  # type: ignore
 import tiktoken  # type: ignore
 from openai import AsyncOpenAI  # type: ignore
 
 from ..model_config import ModelConfig
+from ..api_client import ConnectionPoolManager
 from .base import BaseAdapter
 
 logger = logging.getLogger(__name__)
@@ -402,43 +404,45 @@ class OpenAIAdapter(BaseAdapter):
 
         accumulated_content: List[str] = []
 
-        async with httpx.AsyncClient(timeout=60.0) as http:
-            async with http.stream("POST", url, headers=headers, json=payload) as resp:
-                if resp.status_code != 200:
-                    text = (await resp.aread()).decode()
-                    logger.error(f"Responses SSE failed {resp.status_code}: {text}")
-                    return ""
-                async for line in resp.aiter_lines():
-                    if not line or not line.strip():
-                        continue
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        data = json.loads(data_str)
-                        etype = data.get("type")
-                        if etype == "response.output_text.delta":
-                            delta = data.get("delta", "")
-                            if delta:
-                                accumulated_content.append(delta)
-                                if stream_callback:
-                                    await self._safe_invoke_callback(
-                                        stream_callback, delta, "assistant"
-                                    )
-                        elif etype in (
-                            "response.thinking.delta",
-                            "response.reasoning.delta",
-                        ):
-                            delta = data.get("delta", "")
-                            if delta and stream_callback:
+        # Use connection pool for efficient parallel LLM calls
+        pool = ConnectionPoolManager.get_instance()
+        http = await pool.get_client(base_url_str.rstrip("/"))
+        async with http.stream("POST", url, headers=headers, json=payload) as resp:
+            if resp.status_code != 200:
+                text = (await resp.aread()).decode()
+                logger.error(f"Responses SSE failed {resp.status_code}: {text}")
+                return ""
+            async for line in resp.aiter_lines():
+                if not line or not line.strip():
+                    continue
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    data = json.loads(data_str)
+                    etype = data.get("type")
+                    if etype == "response.output_text.delta":
+                        delta = data.get("delta", "")
+                        if delta:
+                            accumulated_content.append(delta)
+                            if stream_callback:
                                 await self._safe_invoke_callback(
-                                    stream_callback, delta, "reasoning"
+                                    stream_callback, delta, "assistant"
                                 )
-                    except Exception:
-                        # Skip malformed lines
-                        continue
+                    elif etype in (
+                        "response.thinking.delta",
+                        "response.reasoning.delta",
+                    ):
+                        delta = data.get("delta", "")
+                        if delta and stream_callback:
+                            await self._safe_invoke_callback(
+                                stream_callback, delta, "reasoning"
+                            )
+                except Exception:
+                    # Skip malformed lines
+                    continue
         return "".join(accumulated_content)
 
     async def _safe_invoke_callback(

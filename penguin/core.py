@@ -158,7 +158,7 @@ from penguin._version import __version__ as PENGUIN_VERSION
 # LLM and API
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig, safe_context_window, fetch_model_specs
-from penguin.llm.stream_handler import StreamingStateManager, StreamingConfig
+from penguin.llm.stream_handler import StreamingStateManager, AgentStreamingStateManager, StreamingConfig
 
 MODEL_CONFIG_FIELD_NAMES = {field.name for field in fields(ModelConfig)}
 
@@ -567,8 +567,9 @@ class PenguinCore:
         self.current_stream = None
         self.stream_lock = asyncio.Lock()
 
-        # StreamingStateManager handles all streaming state, coalescing, and event generation
-        self._stream_manager = StreamingStateManager()
+        # AgentStreamingStateManager handles per-agent streaming state, coalescing, and event generation
+        # This allows multiple agents to stream simultaneously without interference
+        self._stream_manager = AgentStreamingStateManager()
 
         # RunMode state for UI streaming bridges
         self._runmode_stream_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
@@ -690,6 +691,10 @@ class PenguinCore:
 
         # Streaming primitives are initialized in __init__ now
         self.current_runmode_status_summary: str = "RunMode idle."
+
+        # Inject core reference into tool_manager for sub-agent tools
+        if self.tool_manager and hasattr(self.tool_manager, 'set_core'):
+            self.tool_manager.set_core(self)
 
     # ------------------------------------------------------------------
     # Coordinator accessor (singleton per Core)
@@ -1238,28 +1243,79 @@ class PenguinCore:
             return 0
 
     # ------------------------------------------------------------------
-    # Streaming State Properties (delegate to StreamingStateManager)
+    # Streaming State Properties (delegate to AgentStreamingStateManager)
     # ------------------------------------------------------------------
 
     @property
     def streaming_active(self) -> bool:
-        """Whether streaming is currently active."""
+        """Whether streaming is currently active for the default agent."""
         return self._stream_manager.is_active
 
     @property
     def streaming_content(self) -> str:
-        """Accumulated assistant content from current stream."""
+        """Accumulated assistant content from default agent's stream."""
         return self._stream_manager.content
 
     @property
     def streaming_reasoning_content(self) -> str:
-        """Accumulated reasoning content from current stream."""
+        """Accumulated reasoning content from default agent's stream."""
         return self._stream_manager.reasoning_content
 
     @property
     def streaming_stream_id(self) -> Optional[str]:
-        """Unique ID of the current stream, or None if not streaming."""
+        """Unique ID of the default agent's stream, or None if not streaming."""
         return self._stream_manager.stream_id
+
+    # --- Agent-Specific Streaming Methods ---
+
+    def is_agent_streaming(self, agent_id: str) -> bool:
+        """Check if a specific agent is currently streaming.
+
+        Args:
+            agent_id: The agent identifier to check
+
+        Returns:
+            True if the agent is actively streaming
+        """
+        return self._stream_manager.is_agent_active(agent_id)
+
+    def get_agent_streaming_content(self, agent_id: str) -> str:
+        """Get accumulated streaming content for a specific agent.
+
+        Args:
+            agent_id: The agent identifier
+
+        Returns:
+            Accumulated content string (empty if agent not found or not streaming)
+        """
+        return self._stream_manager.get_agent_content(agent_id)
+
+    def get_agent_streaming_reasoning(self, agent_id: str) -> str:
+        """Get accumulated reasoning content for a specific agent.
+
+        Args:
+            agent_id: The agent identifier
+
+        Returns:
+            Accumulated reasoning content string
+        """
+        return self._stream_manager.get_agent_reasoning(agent_id)
+
+    def get_active_streaming_agents(self) -> List[str]:
+        """Get list of agent IDs that are currently streaming.
+
+        Returns:
+            List of agent IDs with active streams
+        """
+        return self._stream_manager.get_active_agents()
+
+    def cleanup_agent_streaming(self, agent_id: str) -> None:
+        """Clean up streaming state for a terminated agent.
+
+        Args:
+            agent_id: The agent identifier to clean up
+        """
+        self._stream_manager.cleanup_agent(agent_id)
 
     def get_token_usage(self) -> Dict[str, Dict[str, int]]:
         """Get token usage via conversation manager"""
@@ -2552,18 +2608,31 @@ class PenguinCore:
 
         return filtered_data
 
-    async def _handle_stream_chunk(self, chunk: str, message_type: Optional[str] = None, role: str = "assistant") -> None:
+    async def _handle_stream_chunk(
+        self,
+        chunk: str,
+        message_type: Optional[str] = None,
+        role: str = "assistant",
+        agent_id: Optional[str] = None,
+    ) -> None:
         """
         Central handler for all streaming content chunks from any source.
-        Delegates to StreamingStateManager and emits events.
+        Delegates to AgentStreamingStateManager and emits events.
 
         Args:
             chunk: The content chunk to add
             message_type: Type of message - "assistant", "reasoning", "tool_output", etc.
             role: The role of the message (default: "assistant")
+            agent_id: Optional agent identifier for per-agent streaming (default: current agent)
         """
-        # Delegate to StreamingStateManager
-        events = self._stream_manager.handle_chunk(chunk, message_type=message_type, role=role)
+        # Resolve agent_id from conversation_manager if not provided
+        if agent_id is None:
+            agent_id = getattr(self.conversation_manager, 'current_agent_id', 'default')
+
+        # Delegate to AgentStreamingStateManager
+        events = self._stream_manager.handle_chunk(
+            chunk, agent_id=agent_id, message_type=message_type, role=role
+        )
 
         # Emit events and invoke RunMode callback
         for event in events:
@@ -2575,16 +2644,24 @@ class PenguinCore:
                     event.data.get("message_type", "assistant")
                 )
 
-    def finalize_streaming_message(self) -> Optional[Dict[str, Any]]:
+    def finalize_streaming_message(self, agent_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
-        Finalizes the current streaming message, adds it to ConversationManager,
-        and resets the streaming state. Emits a final event with is_final=True.
+        Finalizes the current streaming message for a specific agent, adds it to
+        ConversationManager, and resets the streaming state. Emits a final event
+        with is_final=True.
+
+        Args:
+            agent_id: Optional agent identifier (defaults to current agent)
 
         Returns:
             The finalized message dict or None if no streaming was active
         """
-        # Delegate to StreamingStateManager
-        message, events = self._stream_manager.finalize()
+        # Resolve agent_id from conversation_manager if not provided
+        if agent_id is None:
+            agent_id = getattr(self.conversation_manager, 'current_agent_id', 'default')
+
+        # Delegate to AgentStreamingStateManager
+        message, events = self._stream_manager.finalize(agent_id=agent_id)
 
         if message is None:
             return None
@@ -2592,7 +2669,7 @@ class PenguinCore:
         # Log WALLET_GUARD warning if empty
         if message.was_empty:
             logger.warning(
-                f"[WALLET_GUARD] Empty response from LLM, forcing context advance."
+                f"[WALLET_GUARD] Empty response from LLM for agent '{agent_id}', forcing context advance."
             )
 
         # Determine message category
@@ -2603,14 +2680,25 @@ class PenguinCore:
         else:
             category = MessageCategory.DIALOG
 
-        # Add to conversation manager
+        # Add to the correct agent's conversation
         if hasattr(self, "conversation_manager") and self.conversation_manager:
-            self.conversation_manager.conversation.add_message(
-                role=message.role,
-                content=message.content,
-                category=category,
-                metadata=message.metadata
-            )
+            try:
+                # Try to get agent-specific conversation if available
+                conv = self.conversation_manager.get_agent_conversation(agent_id)
+                conv.add_message(
+                    role=message.role,
+                    content=message.content,
+                    category=category,
+                    metadata=message.metadata
+                )
+            except (KeyError, AttributeError):
+                # Fallback to current conversation
+                self.conversation_manager.conversation.add_message(
+                    role=message.role,
+                    content=message.content,
+                    category=category,
+                    metadata=message.metadata
+                )
 
             # For WebSocket streaming (RunMode), emit a message event
             if hasattr(self, '_temp_ws_callback') and self._temp_ws_callback:
@@ -2619,7 +2707,8 @@ class PenguinCore:
                     "role": message.role,
                     "content": message.content,
                     "category": category,
-                    "metadata": message.metadata
+                    "metadata": message.metadata,
+                    "agent_id": agent_id,
                 }))
 
         # Emit events from manager

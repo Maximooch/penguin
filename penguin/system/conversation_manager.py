@@ -1158,6 +1158,136 @@ class ConversationManager:
             return {parent_agent_id: list(subs)}
         return {parent: list(children) for parent, children in self.parent_sub_agents.items()}
 
+    # ------------------------------------------------------------------
+    # Shared Context Window Management
+    # ------------------------------------------------------------------
+    def shares_context_window(self, agent_id_1: str, agent_id_2: str) -> bool:
+        """Check if two agents share the same context window object.
+
+        Args:
+            agent_id_1: First agent ID
+            agent_id_2: Second agent ID
+
+        Returns:
+            True if both agents point to the same ContextWindowManager object
+        """
+        cw1 = self.agent_context_windows.get(agent_id_1)
+        cw2 = self.agent_context_windows.get(agent_id_2)
+        if cw1 is None or cw2 is None:
+            return False
+        return cw1 is cw2
+
+    def get_context_sharing_info(self, agent_id: str) -> Dict[str, Any]:
+        """Get information about an agent's context sharing relationships.
+
+        Args:
+            agent_id: The agent to query
+
+        Returns:
+            Dict with:
+                - has_context_window: Whether agent has a CWM
+                - parent: Parent agent ID (if sub-agent)
+                - shares_with_parent: Whether shares CWM with parent
+                - children: List of child agent IDs
+                - shares_with_children: List of children that share CWM
+        """
+        result: Dict[str, Any] = {
+            "agent_id": agent_id,
+            "has_context_window": agent_id in self.agent_context_windows,
+            "parent": None,
+            "shares_with_parent": False,
+            "children": [],
+            "shares_with_children": [],
+        }
+
+        # Check parent relationship
+        parent = self.sub_agent_parent.get(agent_id)
+        if parent:
+            result["parent"] = parent
+            result["shares_with_parent"] = self.shares_context_window(agent_id, parent)
+
+        # Check children relationships
+        children = self.parent_sub_agents.get(agent_id, [])
+        result["children"] = list(children)
+        result["shares_with_children"] = [
+            child for child in children
+            if self.shares_context_window(agent_id, child)
+        ]
+
+        return result
+
+    def get_context_window_stats(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Get token usage statistics for an agent's context window.
+
+        Args:
+            agent_id: The agent to query
+
+        Returns:
+            Dict with token counts and limits, or None if no CWM
+        """
+        cw = self.agent_context_windows.get(agent_id)
+        if cw is None:
+            return None
+
+        return {
+            "agent_id": agent_id,
+            "max_context_window_tokens": getattr(cw, "max_context_window_tokens", None),
+            "current_tokens": getattr(cw, "current_tokens", None),
+            "reserved_tokens": getattr(cw, "reserved_tokens", None),
+        }
+
+    def sync_context_to_child(
+        self,
+        parent_agent_id: str,
+        child_agent_id: str,
+        *,
+        categories: Optional[List[MessageCategory]] = None,
+        replace_existing: bool = False,
+    ) -> bool:
+        """Synchronize context from parent to child agent.
+
+        This is useful for agents with isolated context windows that need
+        to receive updates from their parent.
+
+        Args:
+            parent_agent_id: Source agent
+            child_agent_id: Destination agent
+            categories: Message categories to sync (default: SYSTEM, CONTEXT)
+            replace_existing: If True, replace child's messages in those categories
+
+        Returns:
+            True if sync succeeded
+        """
+        try:
+            self.partial_share_context(
+                parent_agent_id,
+                child_agent_id,
+                categories=categories,
+                replace_child_context=replace_existing,
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to sync context from '{parent_agent_id}' to '{child_agent_id}': {e}")
+            return False
+
+    def get_shared_context_agents(self, agent_id: str) -> List[str]:
+        """Get all agents that share the same context window as the given agent.
+
+        Args:
+            agent_id: The agent to query
+
+        Returns:
+            List of agent IDs that share the same CWM object
+        """
+        cw = self.agent_context_windows.get(agent_id)
+        if cw is None:
+            return []
+
+        return [
+            aid for aid, other_cw in self.agent_context_windows.items()
+            if other_cw is cw and aid != agent_id
+        ]
+
     def remove_agent(self, agent_id: str) -> bool:
         """Remove an agent and associated structures.
 

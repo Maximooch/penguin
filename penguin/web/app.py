@@ -14,7 +14,7 @@ from typing import Optional, Dict, Any, List, AsyncGenerator, Callable, Awaitabl
 from penguin import __version__
 from penguin.config import config, Config, _ensure_env_loaded
 from penguin.core import PenguinCore
-from penguin.llm.api_client import APIClient
+from penguin.llm.api_client import APIClient, ConnectionPoolManager
 from penguin.llm.model_config import ModelConfig
 from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
@@ -84,7 +84,25 @@ def create_app() -> "FastAPI":
             "Install with: pip install penguin-ai[web]"
         )
 
+    # Lifespan context manager for startup/shutdown hooks
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app: "FastAPI"):
+        # Startup
+        logger.info("Penguin web application starting up...")
+        yield
+        # Shutdown: close connection pools
+        logger.info("Penguin web application shutting down...")
+        try:
+            pool = ConnectionPoolManager.get_instance()
+            await pool.close_all()
+            logger.info("Connection pools closed successfully")
+        except Exception as e:
+            logger.warning(f"Error closing connection pools: {e}")
+
     app = FastAPI(
+        lifespan=lifespan,
         title="Penguin AI",
         description="AI Assistant with reasoning, memory, and tool use capabilities",
         version=__version__,
