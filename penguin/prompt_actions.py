@@ -548,7 +548,11 @@ The message is routed through the MessageBus, recorded in each agent's transcrip
 
 Use these to manage child agents directly. Defaults are conservative: sub-agents are created with isolated session and isolated context-window. Initial SYSTEM/CONTEXT is copied once; subsequent turns diverge. No permission engine is enforced; any `default_tools` provided are recorded as metadata only.
 
-1) Spawn Sub-Agent (`<spawn_sub_agent>`)
+**Background Execution:** Sub-agents can run in the background using the `AgentExecutor`. This enables true parallel agent execution with concurrency control (default max: 10 concurrent agents, configurable via `PENGUIN_MAX_CONCURRENT_TASKS`).
+
+---
+
+#### 1) Spawn Sub-Agent (`<spawn_sub_agent>`)
 
 Body must be JSON. Fields:
 - `id` (required): child agent id
@@ -560,8 +564,9 @@ Body must be JSON. Fields:
 - `model_config_id`, `model_overrides`, `model_output_max_tokens` (optional)
 - `default_tools` (optional list) – recorded only; not enforced
 - `initial_prompt` (optional) – message sent to the child after spawn
+- `background` (default false) – run agent in background via AgentExecutor
 
-Example:
+Example (foreground):
 ```actionxml
 <spawn_sub_agent>{
   "id": "researcher",
@@ -574,14 +579,61 @@ Example:
 }</spawn_sub_agent>
 ```
 
-2) Pause / Resume Sub-Agent
+Example (background execution):
+```actionxml
+<spawn_sub_agent>{
+  "id": "analyzer",
+  "initial_prompt": "Analyze all Python files for security issues",
+  "background": true
+}</spawn_sub_agent>
+```
+
+---
+
+#### 2) Pause / Resume / Stop Sub-Agent
 
 ```actionxml
 <stop_sub_agent>{"id": "researcher"}</stop_sub_agent>
 <resume_sub_agent>{"id": "researcher"}</resume_sub_agent>
 ```
 
-3) Delegate Work to Existing Agent (`<delegate>`)
+For background agents, `stop_sub_agent` cancels the running task.
+
+---
+
+#### 3) Get Agent Status (`<get_agent_status>`)
+
+Query the status of a background agent.
+
+```actionxml
+<get_agent_status>{"agent_id": "analyzer"}</get_agent_status>
+```
+
+Returns:
+- `state`: pending, running, paused, completed, failed, cancelled
+- `result`: Output if completed
+- `error`: Error message if failed
+
+---
+
+#### 4) Wait for Agents (`<wait_for_agents>`)
+
+Block until one or more background agents complete.
+
+```actionxml
+<wait_for_agents>{
+  "agent_ids": ["analyzer", "researcher"],
+  "timeout": 60.0
+}</wait_for_agents>
+```
+
+Parameters:
+- `agent_ids` (required): List of agent IDs to wait for
+- `timeout` (optional): Max seconds to wait (default: no timeout)
+
+---
+
+#### 5) Delegate Work to Existing Agent (`<delegate>`)
 
 Send a task to a specific agent and record a delegation event.
 
@@ -595,8 +647,25 @@ Send a task to a specific agent and record a delegation event.
 }</delegate>
 ```
 
+**Background delegation:**
+```actionxml
+<delegate>{
+  "child": "researcher",
+  "content": "Analyze the test suite",
+  "background": true,
+  "wait": false,
+  "timeout": 30.0
+}</delegate>
+```
 
-4) Delegate Exploration Task (`<delegate_explore_task>`)
+Parameters:
+- `background` (default false): Run delegation in background
+- `wait` (default false): Wait for background task to complete
+- `timeout` (optional): Timeout in seconds when waiting
+
+---
+
+#### 6) Delegate Exploration Task (`<delegate_explore_task>`)
 
 Spawn a haiku sub-agent to autonomously explore a codebase. The sub-agent can list directories, read files, and search - then returns a summary.
 
@@ -618,14 +687,60 @@ The sub-agent uses claude-haiku-4.5 for cost efficiency and has access to:
 - `read_file`: Read file contents (max 200 lines)
 - `search`: Grep for patterns in code files
 
-Example tasks:
-- "Explore this codebase and summarize the architecture"
-- "Find all API endpoints and document them"
-- "Identify the main entry points and how they connect"
-- "Search for authentication/security patterns"
+---
 
-Notes:
+#### 7) Context Sharing Tools
+
+**Get Context Info (`<get_context_info>`):**
+
+Query context sharing relationships for an agent.
+
+```actionxml
+<get_context_info>{"agent_id": "researcher"}</get_context_info>
+```
+
+Returns:
+- `has_context_window`: Whether agent has a context window
+- `parent`: Parent agent ID (if sub-agent)
+- `shares_with_parent`: Whether shares context with parent
+- `children`: List of child agent IDs
+- `shares_with_children`: Children that share context
+
+**Sync Context (`<sync_context>`):**
+
+Synchronize context from parent to child (for isolated context windows).
+
+```actionxml
+<sync_context>{
+  "parent_agent_id": "primary",
+  "child_agent_id": "researcher",
+  "categories": ["SYSTEM", "CONTEXT"]
+}</sync_context>
+```
+
+---
+
+#### Example: Parallel Agent Workflow
+
+```actionxml
+<!-- Spawn multiple background agents -->
+<spawn_sub_agent>{"id": "analyzer", "initial_prompt": "Analyze src/", "background": true}</spawn_sub_agent>
+<spawn_sub_agent>{"id": "tester", "initial_prompt": "Review tests/", "background": true}</spawn_sub_agent>
+
+<!-- Do other work while they run... -->
+
+<!-- Check status -->
+<get_agent_status>{"agent_id": "analyzer"}</get_agent_status>
+
+<!-- Wait for all to complete -->
+<wait_for_agents>{"agent_ids": ["analyzer", "tester"], "timeout": 120}</wait_for_agents>
+```
+
+---
+
+**Notes:**
 - For general multi-agent chatter, use `<send_message>` with `target`/`targets` and optional `channel`.
+- Background agents are managed by `AgentExecutor` with semaphore-based concurrency control.
 - Cross-parent channel rooms are a future consideration; prefer direct `target` for sub-agent flows today.
 
 ---
