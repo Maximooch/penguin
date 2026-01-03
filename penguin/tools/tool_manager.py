@@ -3921,7 +3921,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             model_config = ModelConfig(
                 model="anthropic/claude-haiku-4.5",
                 provider="openrouter",
-                max_output_tokens=2000,
+                max_output_tokens=64000,  # Haiku 4.5 supports 64k output tokens
             )
             gateway = OpenRouterGateway(model_config)
 
