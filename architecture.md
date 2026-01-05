@@ -73,6 +73,26 @@ Penguin is a sophisticated AI coding assistant built on a modular, event-driven 
 └──────────┴──────────┴──────────┴──────────┴────────────────────┘
 ```
 
+<!-- ### CLI Agent Commands (`cli/cli.py`)
+
+The CLI provides visualization commands for multi-agent monitoring:
+
+| Command | Description |
+|---------|-------------|
+| `penguin agent status [id]` | Show agent states (IDLE/RUNNING/PAUSED/COMPLETED/FAILED) |
+| `penguin agent tree` | Visualize agent hierarchy with context sharing indicators |
+| `penguin agent tasks` | Show background tasks with stats (running/completed/failed) |
+
+**Options:**
+- `--watch` / `-w`: Live refresh every 2 seconds
+- `--json`: Machine-readable JSON output
+
+**Tree Legend:**
+- `●` active agent
+- `⏸` paused agent
+- `⟷` shares context with parent
+- `○` isolated context -->
+
 ## Core Components
 
 ### 1. PenguinCore (`core.py`)
@@ -162,6 +182,15 @@ class ConversationManager:
 - **CheckpointManager**: Branch/restore conversation states
 - **ConversationSystem**: Per-agent conversation contexts
 
+**Context Sharing Utilities:**
+| Function | Description |
+|----------|-------------|
+| `shares_context_window(agent1, agent2)` | Check if two agents share the same CWM |
+| `get_context_sharing_info(agent_id)` | Get sharing relationships for an agent |
+| `get_context_window_stats(agent_id)` | Get token usage stats for agent's context |
+| `sync_context_to_child(parent, child)` | Copy context snapshot to isolated child |
+| `get_shared_context_agents(agent_id)` | List all agents sharing context with given agent |
+
 ## Data Flow
 
 ### 1. Message Processing Flow
@@ -205,6 +234,22 @@ Complete response assembled
 Added to conversation history
 ```
 
+**Per-Agent Streaming (`llm/stream_handler.py`):**
+
+The `AgentStreamingStateManager` enables parallel streaming from multiple agents:
+
+```python
+AgentStreamingStateManager:
+  ├── Per-agent StreamingStateManager instances
+  ├── Isolation: Each agent's stream is independent
+  ├── Backward compatibility: Default agent fallback
+  └── Methods:
+      ├── handle_chunk(chunk, agent_id) → events tagged with agent_id
+      ├── finalize(agent_id) → complete message for specific agent
+      ├── is_agent_active(agent_id) → check streaming state
+      └── get_active_agents() → list currently streaming agents
+```
+
 ## Key Subsystems
 
 ### 1. Tool System (`tools/`)
@@ -222,8 +267,23 @@ ToolManager:
       ├── Search (grep, workspace, web)
       ├── Memory (declarative notes, retrieval)
       ├── Project Management (tasks, resources)
-      └── Browser Automation (PyDoll, navigation)
+      ├── Browser Automation (PyDoll, navigation)
+      └── Sub-Agent Tools (multi-agent coordination)
 ```
+
+**Sub-Agent Tools:**
+| Tool | Description |
+|------|-------------|
+| `spawn_sub_agent` | Create child agent with optional `background=True` |
+| `stop_sub_agent` | Cancel a running agent |
+| `resume_sub_agent` | Resume a paused agent |
+| `get_agent_status` | Query agent state, result, or error |
+| `wait_for_agents` | Block until agents complete (with timeout) |
+| `delegate` | Send task to specific agent |
+| `delegate_explore_task` | Spawn haiku agent for codebase exploration |
+| `send_message` | Inter-agent messaging via MessageBus |
+| `get_context_info` | Query context sharing relationships |
+| `sync_context` | Sync context from parent to child |
 
 **Tool Execution Pipeline:**
 1. Action parsed from LLM response
@@ -291,6 +351,40 @@ Default Agent
       ├── Shared Session (same conversation)
       ├── Shared Context Window (limited view)
       └── Independent (isolated context)
+```
+
+### Parallel Execution System
+
+The multi-agent system supports true parallel execution via `AgentExecutor` (`multi/executor.py`):
+
+```python
+AgentExecutor:
+  ├── Semaphore-based concurrency control (PENGUIN_MAX_CONCURRENT_TASKS)
+  ├── Background task spawning (asyncio.Task management)
+  ├── State machine: PENDING → RUNNING → COMPLETED/FAILED/CANCELLED
+  ├── Pause/Resume support for long-running agents
+  └── Wait operations (single agent, multiple agents, all agents)
+```
+
+**Agent States:**
+- `PENDING`: Queued, waiting for semaphore slot
+- `RUNNING`: Actively processing
+- `PAUSED`: Suspended, can be resumed
+- `COMPLETED`: Finished successfully with result
+- `FAILED`: Terminated with error
+- `CANCELLED`: Stopped by request
+
+**Background Execution Pattern:**
+```python
+# Spawn agents in background (non-blocking)
+spawn_sub_agent(agent_id="worker-1", initial_prompt="...", background=True)
+spawn_sub_agent(agent_id="worker-2", initial_prompt="...", background=True)
+
+# Wait for specific agents or all
+wait_for_agents(agent_ids=["worker-1", "worker-2"], timeout=30000)
+
+# Query status
+get_agent_status(agent_id="worker-1")  # Returns state, result, error
 ```
 
 ### Agent Registration
@@ -556,6 +650,29 @@ The engine's `run_response` and `run_task` methods use explicit termination sign
 - Background indexing
 - Stream processing
 - Event-driven updates
+
+### 4. Connection Pooling (`llm/api_client.py`)
+
+The `ConnectionPoolManager` provides efficient HTTP connection reuse for parallel LLM calls:
+
+```python
+ConnectionPoolManager (Singleton):
+  ├── Per-URL client caching (reuse connections to same endpoint)
+  ├── Configurable limits:
+  │   ├── PENGUIN_MAX_CONNECTIONS (default: 100)
+  │   ├── PENGUIN_MAX_KEEPALIVE_CONNECTIONS (default: 20)
+  │   ├── PENGUIN_CONNECT_TIMEOUT (default: 10s)
+  │   └── PENGUIN_READ_TIMEOUT (default: 300s)
+  ├── Automatic cleanup on shutdown
+  └── Thread-safe singleton access
+```
+
+**Usage:**
+```python
+pool = ConnectionPoolManager.get_instance()
+async with pool.client("https://api.openai.com") as client:
+    response = await client.post("/v1/chat/completions", ...)
+```
 
 ## Extension Points
 
