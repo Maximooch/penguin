@@ -15,7 +15,7 @@ _ACTION_SYNTAX_TEMPLATE = r"""
 
 ### Output Formatting (MANDATORY)
 
-To ensure perfect TUI rendering, follow all of the below:
+To ensure perfect rendering, follow all of the below:
 
 1) Fence all multi-line content with triple backticks and a language:
    - `python`, `javascript`, `json`, `bash` (or `sh`), `toml`, `yaml`, `ini`, `diff`, `xml`.
@@ -203,83 +203,11 @@ Executes a shell command in the workspace root. **Use sparingly and cautiously.*
 
 ---
 
-### File Editing Operations
+## File Editing Operations
 
 **CRITICAL:** These tools edit files directly. Always verify the current state first.
 
-1.  **Apply Unified Diff (`<apply_diff>`):**
-    `<apply_diff>file_path:diff_content:backup</apply_diff>`
-    -   **Edit a single file** with unified diff format for precise line-based changes.
-    -   **Applies immediately** (no dry-run mode). Backups are created by default (`backup=true`).
-    -   Tip: If your diff content contains colons, omit the optional `:backup` parameter and rely on the default.
-
-    **Example (applies immediately):**
-    ```actionxml
-    <apply_diff>src/main.py:--- a/src/main.py
-    +++ b/src/main.py
-    @@ -1,3 +1,4 @@
-     def hello():
-    +    \"\"\"Say hello.\"\"\"
-         print("Hello")
-    </apply_diff>
-    ```
-
-2.  **Multi-File Editing (`<multiedit>`):**
-    `<multiedit>content</multiedit>`
-    -   **Apply multiple diffs atomically** - all succeed or none are applied.
-    -   **DRY-RUN BY DEFAULT** - shows what would change without applying.
-    -   **Creates automatic backups** for all modified files.
-    -   Supports **per-file block format only** (standard unified multi-file patches are not accepted by this tool).
-    -   Add `apply=true` as the first line inside the tag to actually apply.
-    
-    **Per-File Blocks (supported):**
-    ```actionxml
-    <multiedit>
-    path/to/file1.py:
-    --- a/path/to/file1.py
-    +++ b/path/to/file1.py
-    @@ -1,2 +1,3 @@
-     import os
-    +from pathlib import Path
-     print("hi")
-    
-    path/to/new_file.txt:
-    @@ -0,0 +1,2 @@
-    +hello
-    +world
-    </multiedit>
-    ```
-    
-    **Apply Mode Example:**
-    ```actionxml
-    <multiedit>
-    apply=true
-    src/config.py:
-    @@ -10,11 +10,12 @@
-     DEBUG = False
-    +LOG_LEVEL = "INFO"
-     PORT = 8080
-    
-    src/main.py:
-    @@ -1,2 +1,3 @@
-    +#!/usr/bin/env python3
-     import config
-    </multiedit>
-    ```
-    
-    **Notes:**
-    -   All edits are validated before any are applied
-    -   Failed validation shows errors for all problematic edits
-    -   Automatic rollback if any edit fails during application
-    -   Preserves file permissions and attributes
-
-3.  **Pattern-Based Editing (`<edit_with_pattern>`):**
-    `<edit_with_pattern>file_path:search_pattern:replacement:backup</edit_with_pattern>`
-    -   **Uses regex patterns** for find-and-replace operations.
-    -   Safer than manual string replacement.
-    -   Example: `<edit_with_pattern>config.py:DEBUG = False:DEBUG = True:true</edit_with_pattern>`
-
----
+Just use <execute> with Python/common libraries (and subprocess) for complex logic, multiple files, conditional edits, and safety.
 
 ### File Comparison and Analysis
 
@@ -882,6 +810,85 @@ Description: Run code in the terminal, using iPython or shell/bash (depending on
 
 
 """
+
+
+
+# **CRITICAL:** These tools edit files directly. Always verify the current state first.
+
+# 1.  **Apply Unified Diff (`<apply_diff>`):**
+#     `<apply_diff>file_path:diff_content:backup</apply_diff>`
+#     -   **Edit a single file** with unified diff format for precise line-based changes.
+#     -   **Applies immediately** (no dry-run mode). Backups are created by default (`backup=true`).
+#     -   Tip: If your diff content contains colons, omit the optional `:backup` parameter and rely on the default.
+
+#     **Example (applies immediately):**
+#     ```actionxml
+#     <apply_diff>src/main.py:--- a/src/main.py
+#     +++ b/src/main.py
+#     @@ -1,3 +1,4 @@
+#      def hello():
+#     +    \"\"\"Say hello.\"\"\"
+#          print("Hello")
+#     </apply_diff>
+#     ```
+
+# 2.  **Multi-File Editing (`<multiedit>`):**
+#     `<multiedit>content</multiedit>`
+#     -   **Apply multiple diffs atomically** - all succeed or none are applied.
+#     -   **DRY-RUN BY DEFAULT** - shows what would change without applying.
+#     -   **Creates automatic backups** for all modified files.
+#     -   Supports **per-file block format only** (standard unified multi-file patches are not accepted by this tool).
+#     -   Add `apply=true` as the first line inside the tag to actually apply.
+    
+#     **Per-File Blocks (supported):**
+#     ```actionxml
+#     <multiedit>
+#     path/to/file1.py:
+#     --- a/path/to/file1.py
+#     +++ b/path/to/file1.py
+#     @@ -1,2 +1,3 @@
+#      import os
+#     +from pathlib import Path
+#      print("hi")
+    
+#     path/to/new_file.txt:
+#     @@ -0,0 +1,2 @@
+#     +hello
+#     +world
+#     </multiedit>
+#     ```
+    
+#     **Apply Mode Example:**
+#     ```actionxml
+#     <multiedit>
+#     apply=true
+#     src/config.py:
+#     @@ -10,11 +10,12 @@
+#      DEBUG = False
+#     +LOG_LEVEL = "INFO"
+#      PORT = 8080
+    
+#     src/main.py:
+#     @@ -1,2 +1,3 @@
+#     +#!/usr/bin/env python3
+#      import config
+#     </multiedit>
+#     ```
+    
+#     **Notes:**
+#     -   All edits are validated before any are applied
+#     -   Failed validation shows errors for all problematic edits
+#     -   Automatic rollback if any edit fails during application
+#     -   Preserves file permissions and attributes
+
+# 3.  **Pattern-Based Editing (`<edit_with_pattern>`):**
+#     `<edit_with_pattern>file_path:search_pattern:replacement:backup</edit_with_pattern>`
+#     -   **Uses regex patterns** for find-and-replace operations.
+#     -   Safer than manual string replacement.
+#     -   Example: `<edit_with_pattern>config.py:DEBUG = False:DEBUG = True:true</edit_with_pattern>`
+
+# ---
+
 
 
 # def generate_tools_section(loader: ToolLoader):

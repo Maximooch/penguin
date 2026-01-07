@@ -1,6 +1,25 @@
 """
 Prompt Builder - Composes prompts from modular components.
+
 Phase 1 implementation with basic mode support.
+
+## Runtime Import Pattern
+
+This module intentionally imports certain constants at runtime (not at module load time)
+to enable hot-reloading during development. This allows developers to modify
+prompt_workflow.py without restarting the application.
+
+Runtime imports in this module:
+- `FORBIDDEN_PHRASES_DETECTION` and `INCREMENTAL_EXECUTION_RULE` in `_build_direct()`
+- `get_output_formatting()` in `build()` (called on every build)
+
+All other components are loaded via `load_components()` and cached in `PromptComponents`.
+This separation is intentional:
+- Static components (loaded once): base_prompt, workflow_section, etc.
+- Dynamic components (refreshed on build): output_formatting, forbidden_phrases, incremental_execution
+
+When modifying prompt_workflow.py, only dynamic components are picked up without restart.
+For changes to static components, you must restart the application.
 """
 from typing import Dict, Any, Optional
 from dataclasses import dataclass

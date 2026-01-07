@@ -8,6 +8,7 @@
 import React from 'react';
 import { Box, Text } from 'ink';
 import { useTheme } from '../../theme/ThemeContext.js';
+import { Markdown } from '../Markdown.js';
 import type { ReasoningLine } from './types.js';
 
 interface ReasoningMessageProps {
@@ -24,9 +25,6 @@ export function ReasoningMessage({ line, contentWidth, visible = true }: Reasoni
   if (!visible) {
     return null;
   }
-
-  // Show streaming cursor when content is arriving
-  const displayText = isStreaming ? line.text + '▋' : line.text;
 
   // Don't render empty reasoning
   if (!line.text && !isStreaming) {
@@ -52,11 +50,16 @@ export function ReasoningMessage({ line, contentWidth, visible = true }: Reasoni
           💭 Internal Reasoning
         </Text>
 
-        {/* Content - dimmed and wrapped */}
+        {/* Content - dimmed and wrapped, with markdown parsing */}
         <Box marginTop={0}>
-          <Text color={theme.text.muted} dimColor wrap="wrap">
-            {displayText || (isStreaming ? '▋' : '')}
-          </Text>
+          {isStreaming && !line.text ? (
+            <Text color={theme.text.muted} dimColor>▋</Text>
+          ) : (
+            <>
+              <Markdown content={line.text} dimColor color={theme.text.muted} />
+              {isStreaming && <Text color={theme.text.muted} dimColor>▋</Text>}
+            </>
+          )}
         </Box>
       </Box>
     </Box>

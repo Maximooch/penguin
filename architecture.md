@@ -9,8 +9,9 @@
 6. [Multi-Agent Architecture](#multi-agent-architecture)
 7. [Memory & Persistence](#memory--persistence)
 8. [Tool System](#tool-system)
-9. [Communication Layers](#communication-layers)
-10. [Execution Flow](#execution-flow)
+9. [Prompt System](#prompt-system)
+10. [Communication Layers](#communication-layers)
+11. [Execution Flow](#execution-flow)
 
 ## Overview
 
@@ -771,3 +772,69 @@ Penguin's architecture represents a sophisticated orchestration of specialized s
 - **Flexibility**: Multiple interfaces and deployment modes
 
 The system's strength lies not in any single component but in the seamless integration of its parts, creating an AI assistant that can handle complex, multi-step software development tasks while maintaining context, learning from interactions, and adapting to different workflows and requirements.
+
+
+### 3. Prompt System (`prompt/`)
+
+Modular prompt architecture with hot-reloading support:
+
+```python
+Prompt Architecture:
+  ├── PromptBuilder (composition engine)
+  │   ├── PromptComponents (dataclass container)
+  │   ├── Runtime import pattern (hot-reloading)
+  │   └── Mode-specific assembly (direct, terse, explain, etc.)
+  ├── system_prompt.py (BASE_PROMPT)
+  ├── prompt_workflow.py (shared constants & guides)
+  │   ├── CODE_FORMATTING_RULES (single source of truth)
+  │   ├── SAFETY_RULES
+  │   ├── FORBIDDEN_PHRASES_DETECTION
+  │   ├── INCREMENTAL_EXECUTION_RULE
+  │   └── OUTPUT_STYLE_* (steps_final, plain, json_guided)
+  └── prompt_actions.py (ACTION_SYNTAX)
+     └── Interpolates shared constants
+```
+
+**Prompt Assembly Flow:**
+1. `system_prompt.py` loads components into `PromptBuilder`
+2. `PromptBuilder.load_components()` caches static components
+3. `PromptBuilder.build()` refreshes dynamic components at runtime
+4. Mode-specific methods assemble final prompt
+5. Permission context injected via `set_permission_context_from_config()`
+
+**Runtime Import Pattern:**
+The prompt system uses runtime imports to enable hot-reloading during development:
+- `FORBIDDEN_PHRASES_DETECTION` and `INCREMENTAL_EXECUTION_RULE` are imported in `_build_direct()`
+- `get_output_formatting()` is called on every build in `build()`
+- These are NOT passed via `load_components()` to pick up changes without restart
+- Static components (base_prompt, workflow_section, etc.) require restart to update
+
+**Deduplication Strategy:**
+Single sources of truth eliminate duplicate code:
+- `CODE_FORMATTING_RULES` in `prompt_workflow.py` is the only definition
+- `ACTION_SYNTAX` in `prompt_actions.py` includes it via f-string interpolation
+- `OUTPUT_STYLE_*` in `prompt_workflow.py` includes it via f-string interpolation
+- Duplicate sections removed from `system_prompt.py` (e.g., "Code Formatting Standard")
+
+**Prompt Modes:**
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| `direct` | Standard full prompt | Default conversational mode |
+| `bench_minimal` | Minimal benchmark prompt | Compatibility testing |
+| `terse` | Ultra-minimal | Quick tasks |
+| `explain` | Educational mode | Teaching/learning |
+| `review` | Code review focused | Quality assurance |
+| `implement` | Spec-first, incremental | Feature development |
+| `test` | Testing/validation focused | Test-driven workflows |
+
+**Shared Constants:**
+```python
+# All in prompt_workflow.py
+EMPIRICAL_FIRST           # Empirical investigation guidance
+SAFETY_RULES              # Non-negotiable safety rules
+CODE_FORMATTING_RULES      # Single source of truth for formatting
+TOOL_RESULT_HANDLING       # How to handle tool results
+FORBIDDEN_PHRASES_DETECTION  # Process explanation detection
+INCREMENTAL_EXECUTION_RULE     # ReAct pattern guidance
+META_COMMENTARY_WARNING    # No meta-commentary rule
+```

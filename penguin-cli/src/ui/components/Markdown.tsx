@@ -16,6 +16,8 @@ import { Box, Text } from 'ink';
 
 interface MarkdownProps {
   content: string;
+  dimColor?: boolean;
+  color?: string;
 }
 
 interface MarkdownLine {
@@ -119,13 +121,26 @@ function parseMarkdown(content: string): MarkdownLine[] {
       }
     }
 
-    // List items
-    if (line.trim().startsWith('-') || line.trim().startsWith('*')) {
-      const content = line.trim().substring(1).trim();
+    // List items (bullet or numbered)
+    const trimmedLine = line.trim();
+    const bulletMatch = trimmedLine.match(/^[-*]\s+(.*)$/);
+    const numberedMatch = trimmedLine.match(/^(\d+)\.\s+(.*)$/);
+
+    if (bulletMatch) {
       parsed.push({
         type: 'list',
-        content,
+        content: bulletMatch[1],
         raw: line,
+      });
+      continue;
+    }
+
+    if (numberedMatch) {
+      parsed.push({
+        type: 'list',
+        content: numberedMatch[2],
+        raw: line,
+        level: parseInt(numberedMatch[1], 10), // Store the number for rendering
       });
       continue;
     }
@@ -212,12 +227,14 @@ function processBold(text: string, startKey: number): React.ReactNode[] {
   return parts;
 }
 
-export function Markdown({ content }: MarkdownProps) {
+export function Markdown({ content, dimColor, color }: MarkdownProps) {
   if (!content || content.trim() === '') {
     return null;
   }
 
   const lines = parseMarkdown(content);
+  // Use provided color or default based on dimColor
+  const textColor = color || (dimColor ? 'gray' : undefined);
 
   return (
     <Box flexDirection="column">
@@ -226,24 +243,28 @@ export function Markdown({ content }: MarkdownProps) {
           case 'header':
             return (
               <Box key={index} marginY={line.level === 1 || line.level === 2 ? 1 : 0}>
-                <Text bold color={line.level === 1 ? 'cyan' : line.level === 2 ? 'blue' : 'white'}>
+                <Text bold dimColor={dimColor} color={dimColor ? textColor : (line.level === 1 ? 'cyan' : line.level === 2 ? 'blue' : 'white')}>
                   {formatInlineMarkdown(line.content)}
                 </Text>
               </Box>
             );
 
           case 'list':
+            // Show number for numbered lists, bullet for others
+            const listMarker = line.level ? `${line.level}. ` : '• ';
             return (
-              <Box key={index} marginLeft={2}>
-                <Text color="gray">• </Text>
-                <Text>{formatInlineMarkdown(line.content)}</Text>
+              <Box key={index} marginLeft={2} flexDirection="row">
+                <Text color={textColor || 'gray'} dimColor={dimColor}>{listMarker}</Text>
+                <Box flexShrink={1}>
+                  <Text wrap="wrap" color={textColor} dimColor={dimColor}>{formatInlineMarkdown(line.content)}</Text>
+                </Box>
               </Box>
             );
 
           case 'code':
             return (
               <Box key={index} marginY={1} paddingX={2} borderStyle="round" borderColor="gray">
-                <Text color="green">{line.content}</Text>
+                <Text color={dimColor ? textColor : 'green'} dimColor={dimColor}>{line.content}</Text>
               </Box>
             );
 
@@ -251,12 +272,12 @@ export function Markdown({ content }: MarkdownProps) {
             if (!line.tableData) return null;
             const { headers, rows } = line.tableData;
             return (
-              <Box key={index} flexDirection="column" marginY={1} borderStyle="single" borderColor="cyan">
+              <Box key={index} flexDirection="column" marginY={1} borderStyle="single" borderColor={dimColor ? 'gray' : 'cyan'}>
                 {/* Table headers */}
-                <Box borderStyle="single" borderColor="cyan">
+                <Box borderStyle="single" borderColor={dimColor ? 'gray' : 'cyan'}>
                   {headers.map((header, hi) => (
                     <Box key={hi} width={20} paddingX={1}>
-                      <Text bold color="cyan">{header}</Text>
+                      <Text bold color={dimColor ? textColor : 'cyan'} dimColor={dimColor}>{header}</Text>
                     </Box>
                   ))}
                 </Box>
@@ -265,7 +286,7 @@ export function Markdown({ content }: MarkdownProps) {
                   <Box key={ri}>
                     {row.map((cell, ci) => (
                       <Box key={ci} width={20} paddingX={1}>
-                        <Text>{cell}</Text>
+                        <Text color={textColor} dimColor={dimColor}>{cell}</Text>
                       </Box>
                     ))}
                   </Box>
@@ -278,7 +299,7 @@ export function Markdown({ content }: MarkdownProps) {
 
           case 'text':
           default:
-            return <Text key={index}>{formatInlineMarkdown(line.content)}</Text>;
+            return <Text key={index} wrap="wrap" color={textColor} dimColor={dimColor}>{formatInlineMarkdown(line.content)}</Text>;
         }
       })}
     </Box>
