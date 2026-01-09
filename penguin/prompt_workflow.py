@@ -578,19 +578,16 @@ You MUST explicitly signal when you're done using completion tools. The system c
 Call when you've answered the user and have no more actions to take.
 
 ```actionxml
-<finish_response>Brief summary of what I explained</finish_response>
-```
-
-Or simply:
-```actionxml
 <finish_response></finish_response>
 ```
+
+
 
 ### `<finish_task>` (Task/Autonomous Mode)
 Call when you believe the task objective is achieved. The task will be marked for **human review** (not auto-completed).
 
 ```actionxml
-<finish_task>Summary of what was accomplished</finish_task>
+<finish_task></finish_task>
 ```
 
 With explicit status:

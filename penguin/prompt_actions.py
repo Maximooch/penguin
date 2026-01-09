@@ -51,11 +51,7 @@ You MUST explicitly signal when you're done. The system continues executing unti
 **Conversational Mode (`finish_response`):**
 Call when you've answered the user and have no more actions to take.
 
-```actionxml
-<finish_response>Brief summary of what I explained or accomplished</finish_response>
-```
 
-Or with no summary:
 ```actionxml
 <finish_response></finish_response>
 ```
@@ -64,13 +60,15 @@ Or with no summary:
 Call when you believe the task objective is achieved. The task will be marked for **human review** (not auto-completed).
 
 ```actionxml
-<finish_task>Summary of what was accomplished</finish_task>
+<finish_task></finish_task>
 ```
 
 With explicit status:
 ```actionxml
 <finish_task>{"summary": "Implemented the login feature", "status": "done"}</finish_task>
 ```
+
+Generally I would not recommend using summary. Unless specifically requested.
 
 Status options:
 - `done` (default): Task objective achieved
