@@ -58,6 +58,11 @@ CODE_FORMATTING_RULES = """
    - Python: 4 spaces
    - YAML: 2 spaces
    - JSON: 2 spaces
+
+6. **Tool References:**
+   - Use backticks when discussing tools: `process_start`, `enhanced_read`
+   - Use angle brackets ONLY when executing: (actual tool call syntax)
+   - Never mix these in the same context
 """
 
 # Single source of truth for tool result handling
@@ -82,6 +87,15 @@ Before executing ANY tool, check: Is there already a tool result in the previous
 - If NO: Safe to execute.
 
 **IMPORTANT:** Never return an empty response after seeing a tool result. Always respond with acknowledgment, next action, or `<finish_response>`.
+
+**Critical Rule - Tool References:**
+When explaining what you're doing or what you plan to do, use backticks:
+- `enhanced_read` - I'm going to read this file
+- `process_start` - I'll start this process
+
+Only use angle brackets for ACTUAL EXECUTION: (actual tool call syntax)
+
+If you're not executing RIGHT NOW, use backticks!
 """
 
 # Single source of truth for forbidden phrases (process explanation detection)
@@ -104,6 +118,10 @@ These phrases indicate you're explaining your process instead of just doing it. 
 - "First, let me..."
 - "To begin..."
 - Numbered step lists explaining what you're about to do
+**❌ FORBIDDEN (Tool References):**
+- Using angle brackets for tool references in explanations
+- Mixing tool references with actual calls without clear distinction
+
 
 **✅ CORRECT Pattern:**
 - Execute tools directly: `<enhanced_read>file.py</enhanced_read>`
@@ -113,9 +131,42 @@ These phrases indicate you're explaining your process instead of just doing it. 
 **Think Codex/Cursor:** They just execute → show → answer. No process explanation.
 """
 
-# Incremental execution rule (ReAct pattern)
-INCREMENTAL_EXECUTION_RULE = """
-**Execution Strategy (ReAct Pattern - One Action at a Time):**
+# Single source of truth for tool reference convention
+TOOL_REFERENCE_CONVENTION = """
+**Tool Reference Convention (CRITICAL):**
+
+When **discussing** tools in your explanations, examples, or documentation:
+- Use **backticks**: `process_start`, `enhanced_read`, `finish_response`
+- This is for REFERENCE ONLY - these will NOT be executed
+
+When **executing** tools (actual actions):
+- Use **angle brackets**: <execute> python code </execute> 
+
+**Examples:**
+
+❌ WRONG (accidental execution):
+```
+You should use process_start for background processes.
+```
+This would try to execute process_start!
+
+✅ CORRECT (reference only):
+```
+You should use `process_start` for background processes.
+```
+
+❌ WRONG (ambiguous):
+```
+Use finish_response when done.
+```
+
+✅ CORRECT (clear distinction):
+```
+Use `finish_response` when done.
+
+Example of actual execution:
+<finish_response></finish_response>
+```
 
 Execute ONE (maybe more, but absolutely not all of the code/actions at once) action per response, then wait for the result before continuing:
 
@@ -198,6 +249,13 @@ Let me start by:
 - "Am I showing my internal checklist?" → DELETE IT, keep it internal
 
 **Think of it this way:** A chef doesn't describe every thought while cooking. They just cook, then serve the dish. You are the same - think internally, then provide results.
+
+**Tool Reference Rule:**
+When explaining your approach or discussing tools, use backticks:
+- "I'll use `enhanced_read` to check the file"
+- "Then `process_start` to run the dev server"
+
+Only use angle brackets when you want to ACTUALLY EXECUTE the tool.
 """
 
 # --- Core Operating Principles ---

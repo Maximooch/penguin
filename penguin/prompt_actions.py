@@ -274,6 +274,8 @@ Manage long-running background processes.
 -   `<process_exit></process_exit >`
 
 **Notes:** Check status/list before start/stop. Always `process_exit`.
+Use `process_start` for background processes like dev servers.
+Use `process_status` to check if a process is running.
 
 ---
 

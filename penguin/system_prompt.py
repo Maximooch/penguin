@@ -254,7 +254,8 @@ _builder.load_components(
     large_codebase_guide=prompt_workflow.LARGE_CODEBASE_GUIDE,
     tool_learning_guide=prompt_workflow.TOOL_LEARNING_GUIDE,
     code_analysis_guide=prompt_workflow.CODE_ANALYSIS_GUIDE,
-    python_guide=prompt_workflow.PYTHON_SPECIFIC_GUIDE
+    python_guide=prompt_workflow.PYTHON_SPECIFIC_GUIDE,
+    tool_reference_convention=prompt_workflow.TOOL_REFERENCE_CONVENTION
 )
 
 # Initialize permission context from security config
