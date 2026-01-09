@@ -40,6 +40,7 @@ class PromptComponents:
     tool_learning_guide: str
     code_analysis_guide: str
     python_guide: str
+    documentation_research: str = ""  # Optional, defaults to empty string
     tool_reference_convention: str = ""  # Optional, defaults to empty string
 
 class PromptBuilder:
@@ -70,6 +71,7 @@ class PromptBuilder:
                        tool_learning_guide: str,
                        code_analysis_guide: str,
                        python_guide: str,
+                       documentation_research: str = "",
                        tool_reference_convention: str = "") -> None:
         """Load all prompt components"""
         self.components = PromptComponents(
@@ -86,6 +88,7 @@ class PromptBuilder:
             tool_learning_guide=tool_learning_guide,
             code_analysis_guide=code_analysis_guide,
             python_guide=python_guide,
+            documentation_research=documentation_research,
             tool_reference_convention=tool_reference_convention
         )
     
@@ -232,6 +235,7 @@ Match Codex/Cursor directness: Answer → Evidence → Done
             self.components.multi_turn_investigation +
             self.components.action_syntax +
             self.output_formatting +
+            self.components.documentation_research +
             self.components.advice_section +
             self.components.completion_phrases +
             self.components.large_codebase_guide +

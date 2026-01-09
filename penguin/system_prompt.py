@@ -250,6 +250,7 @@ _builder.load_components(
     multi_turn_investigation=prompt_workflow.MULTI_TURN_INVESTIGATION,
     action_syntax=prompt_actions.ACTION_SYNTAX,
     advice_section=prompt_workflow.ADVICE_PROMPT,
+    documentation_research=prompt_workflow.DOCUMENTATION_RESEARCH_STRATEGY,
     completion_phrases=prompt_workflow.COMPLETION_PHRASES_GUIDE,
     large_codebase_guide=prompt_workflow.LARGE_CODEBASE_GUIDE,
     tool_learning_guide=prompt_workflow.TOOL_LEARNING_GUIDE,

@@ -142,3 +142,9 @@ cwm*.json
 *~
 .aider*
 movie.mp4
+
+# Documentation cache - user-specific research artifacts
+context/docs_cache/**/*
+!context/docs_cache/.gitkeep
+!context/docs_cache/README.md
+

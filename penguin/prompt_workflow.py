@@ -559,6 +559,126 @@ Assistant: The auth system likely uses standard JWT practices... [WRONG - no con
 - Any task where making assumptions would be dangerous
 '''
 
+
+
+DOCUMENTATION_RESEARCH_STRATEGY = '''
+## Documentation Research Strategy
+
+When working with technical documentation (API docs, language references, framework guides, SDK guides):
+
+### Progressive Disclosure Pattern
+
+1. **Get structure first** - Navigate to main documentation page and extract table of contents/navigation
+2. **Identify relevant sections** - Use the TOC to find sections related to your query
+3. **Load on-demand** - Fetch only the specific sections you need, not entire documentation
+4. **Cache for reuse** - Store both TOC and loaded sections to `context/docs_cache/<source>/`
+
+### Tool Selection
+
+- **Static documentation** (GitHub Pages, ReadTheDocs, Sphinx): Use `requests` + `BeautifulSoup` via Python execute blocks
+- **Interactive/JavaScript-heavy docs**: Use `pydoll_browser_*` tools (navigate, screenshot, interact)
+- **Search within page**: Use `pydoll_browser_find` or BeautifulSoup text search
+
+### Caching Convention
+
+```
+context/docs_cache/
+├── python_requests/
+│   ├── toc.json              # Table of contents structure
+│   ├── user_quickstart.md    # Loaded section
+│   └── api_session.md        # Another loaded section
+├── react_docs/
+│   ├── hooks_useeffect.md
+│   └── components_props.md
+└── project_internal/
+    ├── architecture_overview.md
+    └── api_endpoints.md
+```
+
+### TOC Format (JSON)
+
+```json
+[
+  {
+    "level": 1,
+    "text": "Installation of Requests",
+    "href": "user/install/"
+  },
+  {
+    "level": 2,
+    "text": "Get the Source Code",
+    "href": "user/install/#get-the-source-code"
+  }
+]
+```
+
+### Section Format (Markdown)
+
+```markdown
+# Section Title
+
+Source: https://docs.example.com/path/to/section
+
+---
+
+[Extracted content here]
+```
+
+### Cache Management
+
+**When to Refresh Cache:**
+- Documentation version mismatch (e.g., "v2.0" in TOC vs "v2.1" in project)
+- "Last Updated" timestamp > 7 days old
+- Section content appears outdated or missing examples
+- Explicit user request: "refresh the docs cache"
+
+**Cache Refresh Workflow:**
+1. Check `toc.json` for `last_updated` timestamp
+2. Compare with current date - if > 7 days, re-fetch TOC
+3. When loading a section, verify URL is still accessible
+4. If 404 or major structure change, clear cache and rebuild
+
+**Cache Metadata Format (in toc.json):**
+```json
+{
+  "source_url": "https://requests.readthedocs.io/en/latest/",
+  "last_updated": "2025-01-15T10:30:00Z",
+  "version": "2.32.0",
+  "entries": [
+    {"level": 1, "text": "...", "href": "..."}
+  ]
+}
+```
+
+### Quality Signals
+
+- Prefer official documentation over tutorials, blog posts, or third-party guides
+- Check "Last Updated" timestamps or version numbers
+- Cross-reference code examples with current version being used
+- Verify documentation version matches your project's version
+
+### Workflow Example
+
+**Query:** "How do I handle JSON responses in Python requests?"
+
+1. Navigate to https://requests.readthedocs.io/en/latest/
+2. Extract TOC to `context/docs_cache/requests_docs/toc.json`
+3. Search TOC for "JSON" → find "JSON Response Content" section
+4. Load only that section: `user/quickstart/#json-response-content`
+5. Cache to `context/docs_cache/requests_docs/user_quickstart_-json-response-content.md`
+6. Use cached content to answer query
+7. Reference source URL in response
+
+### Context Window Management
+
+- Store TOC as lightweight JSON (minimal tokens)
+- Load content sections only when referenced
+- After reading a section, store summary in cache file
+- Keep only section references in conversation, not full content
+- When context fills, reference cached files by path instead of repeating content
+'''
+
+
 TOOL_USAGE_GUIDANCE = '''
 ## Tool Usage (Quick Guide)
 
