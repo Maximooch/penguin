@@ -167,6 +167,11 @@ Use `finish_response` when done.
 Example of actual execution:
 <finish_response></finish_response>
 ```
+"""
+
+# Incremental execution rule (ReAct pattern)
+INCREMENTAL_EXECUTION_RULE = """
+**Execution Strategy (ReAct Pattern - One Action at a Time):**
 
 Execute ONE (maybe more, but absolutely not all of the code/actions at once) action per response, then wait for the result before continuing:
 

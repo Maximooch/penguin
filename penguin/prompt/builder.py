@@ -40,6 +40,7 @@ class PromptComponents:
     tool_learning_guide: str
     code_analysis_guide: str
     python_guide: str
+    tool_reference_convention: str = ""  # Optional, defaults to empty string
 
 class PromptBuilder:
     """
@@ -68,7 +69,8 @@ class PromptBuilder:
                        large_codebase_guide: str,
                        tool_learning_guide: str,
                        code_analysis_guide: str,
-                       python_guide: str) -> None:
+                       python_guide: str,
+                       tool_reference_convention: str = "") -> None:
         """Load all prompt components"""
         self.components = PromptComponents(
             base_prompt=base_prompt,
@@ -83,7 +85,8 @@ class PromptBuilder:
             large_codebase_guide=large_codebase_guide,
             tool_learning_guide=tool_learning_guide,
             code_analysis_guide=code_analysis_guide,
-            python_guide=python_guide
+            python_guide=python_guide,
+            tool_reference_convention=tool_reference_convention
         )
     
     def set_permission_context(
@@ -234,7 +237,8 @@ Match Codex/Cursor directness: Answer → Evidence → Done
             self.components.large_codebase_guide +
             self.components.tool_learning_guide +
             self.components.code_analysis_guide +
-            self.components.python_guide
+            self.components.python_guide +
+            self.components.tool_reference_convention
         )
     
     def _build_terse(self) -> str:
