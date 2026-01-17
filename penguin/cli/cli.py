@@ -4394,7 +4394,7 @@ Welcome to Penguin!
                             try:
                                 import shlex
 
-                                # Parse arguments: /image <path> [description words...]
+                                # Parse arguments: /image <path> [description...]
                                 # Use shlex so quoted paths with spaces work correctly.
                                 raw = user_input[1:]  # drop leading "/"
                                 try:
@@ -4402,48 +4402,107 @@ Welcome to Penguin!
                                 except ValueError:
                                     tokens = raw.split()
 
-                                # tokens[0] should be "image"
-                                image_path = tokens[1] if len(tokens) > 1 else None
-                                description = " ".join(tokens[2:]) if len(tokens) > 2 else ""
+                                args = tokens[1:] if len(tokens) > 1 else []
+                                valid_ext = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+                                image_paths: List[str] = []
+                                description_parts: List[str] = []
 
-                                if not image_path:
-                                    # Ask interactively if no path provided
-                                    image_path = (
-                                        input("Drag and drop your image here: ")
-                                        .strip()
-                                        .replace("'", "")
-                                    )
+                                for token in args:
+                                    cleaned = token.strip().strip("'\"")
+                                    suffix = Path(cleaned).suffix.lower()
+                                    if suffix in valid_ext and os.path.exists(cleaned):
+                                        image_paths.append(cleaned)
+                                    else:
+                                        description_parts.append(token)
+
+                                if not image_paths:
+                                    # Ask interactively if no path provided (prompt_toolkit)
+                                    try:
+                                        prompt_html = HTML(
+                                            "<prompt>Drag and drop your image here: </prompt>"
+                                        )
+                                        prompted = (
+                                            await self.session.prompt_async(prompt_html)
+                                        ).strip().strip("'\"")
+                                    except KeyboardInterrupt:
+                                        self.display_message("Image input cancelled.", "system")
+                                        continue
+                                    if prompted:
+                                        image_paths = [prompted]
 
                                 # Validate the file exists
-                                if not image_path or not os.path.exists(image_path):
+                                missing = [p for p in image_paths if not os.path.exists(p)]
+                                if not image_paths or missing:
+                                    missing_label = ", ".join(missing) if missing else "(none)"
                                     self.display_message(
-                                        f"Image file not found: {image_path}", "error"
+                                        f"Image file not found: {missing_label}", "error"
                                     )
                                     continue
 
-                                if not description.strip():
-                                    description = input("Description (optional): ").strip()
-                                    image_path = (
-                                        input("Drag and drop your image here: ")
-                                        .strip()
-                                        .replace("'", "")
-                                    )
+                                description = " ".join(description_parts).strip()
+                                if not description:
+                                    try:
+                                        prompt_html = HTML(
+                                            "<prompt>Description (optional): </prompt>"
+                                        )
+                                        description = (
+                                            await self.session.prompt_async(prompt_html)
+                                        ).strip()
+                                    except KeyboardInterrupt:
+                                        description = ""
 
-                                # Validate the file exists
-                                if not image_path or not os.path.exists(image_path):
+                                if not description:
+                                    description = "Describe this image."
+
+                                # Check config-level vision flag
+                                vision_enabled = bool(
+                                    getattr(
+                                        getattr(self.core, "model_config", None),
+                                        "vision_enabled",
+                                        False,
+                                    )
+                                )
+                                client_supports = False
+                                api_client = getattr(self.core, "api_client", None)
+                                handler = getattr(api_client, "client_handler", None)
+                                for candidate in (handler, api_client):
+                                    if candidate and hasattr(candidate, "supports_vision"):
+                                        try:
+                                            client_supports = bool(candidate.supports_vision())
+                                        except Exception:
+                                            client_supports = False
+
+                                if image_paths and not (vision_enabled or client_supports):
                                     self.display_message(
-                                        f"Image file not found: {image_path}", "error"
+                                        "Vision is disabled for the current model. "
+                                        "Enable `model.vision_enabled` or switch to a vision-capable model.",
+                                        "error",
                                     )
                                     continue
 
-                                if not description.strip():
-                                    description = input("Description (optional): ").strip()
+                                # Check actual model capability from OpenRouter specs
+                                model_id = getattr(
+                                    getattr(self.core, "model_config", None),
+                                    "model",
+                                    "",
+                                )
+                                try:
+                                    from penguin.llm.model_config import ModelSpecsService
+                                    specs_service = ModelSpecsService()
+                                    specs = await specs_service.get_specs(model_id)
+                                    if specs and not specs.supports_vision:
+                                        self.display_message(
+                                            f"⚠️  Warning: Model `{model_id}` does not report vision support "
+                                            f"in OpenRouter. The image may be ignored or cause an error.",
+                                            "system",
+                                        )
+                                except Exception as spec_err:
+                                    logger.debug(f"Could not check model specs: {spec_err}")
 
-                                # Send the message through the standard interface path so all
                                 # Send the message through the standard interface path so all
                                 # normal streaming / action-result handling is reused
                                 response = await self.interface.process_input(
-                                    {"text": description, "image_path": image_path},
+                                    {"text": description, "image_paths": image_paths},
                                     stream_callback=None,
                                 )
 

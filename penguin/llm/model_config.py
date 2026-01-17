@@ -483,6 +483,8 @@ class ModelSpecsService:
                 "max_output_tokens": specs.max_output_tokens,
                 "name": specs.name,
                 "provider": specs.provider,
+                "supports_vision": specs.supports_vision,
+                "supports_reasoning": specs.supports_reasoning,
             }
         return {}
 

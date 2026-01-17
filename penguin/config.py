@@ -1469,6 +1469,14 @@ class Config:
             model_configs=model_configs_section
         )
 
+        # Apply top-level model overrides (e.g., vision_enabled).
+        # User's explicit config takes precedence over auto-detection in ModelConfig.__post_init__.
+        if isinstance(default_model_settings, dict):
+            if "vision_enabled" in default_model_settings:
+                llm_model_config.vision_enabled = bool(
+                    default_model_settings.get("vision_enabled")
+                )
+
         # Resolve agent personas (Phase 1+ configuration surface)
         raw_personas = config_data.get("agents")
         if raw_personas is None:

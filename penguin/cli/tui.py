@@ -2585,7 +2585,9 @@ class PenguinTextualApp(App):
 
             # Send through interface like CLI does, relying on core to process image
             if self.interface:
-                await self.interface.process_input({"text": description, "image_path": image_path})
+                await self.interface.process_input(
+                    {"text": description, "image_paths": [image_path]}
+                )
                 self.add_message(f"Image sent: {os.path.basename(image_path)}", "system")
         except Exception as e:
             self.add_message(f"Error handling image: {e}", "error")

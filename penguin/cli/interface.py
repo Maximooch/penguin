@@ -245,7 +245,11 @@ class PenguinInterface:
 
         return base_usage
 
-    async def process_input(self, input_data: Dict[str, Any], stream_callback: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    async def process_input(
+        self,
+        input_data: Dict[str, Any],
+        stream_callback: Optional[Callable[[str], None]] = None,
+    ) -> Dict[str, Any]:
         """
         Process a user input message and generate a response.
         
@@ -259,14 +263,33 @@ class PenguinInterface:
         try:
             logger.debug(f"Processing input: {input_data}")
 
-            # Extract input text
-            input_text = input_data.get('text', '')
-            if not input_text.strip():
-                logger.warning("Empty input text received")
+            # Normalize image inputs (support legacy "image_path" and new "image_paths")
+            image_paths = input_data.get("image_paths")
+            if image_paths is None:
+                legacy_path = input_data.get("image_path")
+                if isinstance(legacy_path, str) and legacy_path.strip():
+                    image_paths = [legacy_path.strip()]
+
+            # Handle string input and filter out empty/whitespace-only paths
+            if isinstance(image_paths, str):
+                image_paths = [image_paths.strip()] if image_paths.strip() else None
+            elif isinstance(image_paths, list):
+                image_paths = [p.strip() for p in image_paths if isinstance(p, str) and p.strip()]
+                if not image_paths:
+                    image_paths = None
+
+            # Prepare input text (allow empty text if images are provided)
+            input_text = input_data.get("text", "")
+            if not input_text.strip() and not image_paths:
+                logger.warning("Empty input text received without images")
                 return {"assistant_response": "No input provided", "action_results": []}
 
             # Prepare the input data dictionary
             input_data_dict = input_data
+            if image_paths:
+                input_data_dict = {**input_data_dict, "image_paths": image_paths}
+                if "image_path" in input_data_dict:
+                    input_data_dict.pop("image_path", None)
             logger.debug(f"Input data dict prepared: {input_data_dict}")
 
             # Always enable streaming for better UX, but rely on event system for display

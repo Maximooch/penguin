@@ -1974,7 +1974,19 @@ class PenguinCore:
             image_paths = None
         else:
             message = input_data.get("text", "")
-            image_paths = input_data.get("image_paths")  # List of image paths
+            image_paths = input_data.get("image_paths")
+            if not image_paths:
+                legacy_path = input_data.get("image_path")
+                if isinstance(legacy_path, str) and legacy_path.strip():
+                    image_paths = [legacy_path.strip()]
+
+            # Handle string input and filter out empty/whitespace-only paths
+            if isinstance(image_paths, str):
+                image_paths = [image_paths.strip()] if image_paths.strip() else None
+            elif isinstance(image_paths, list):
+                image_paths = [p.strip() for p in image_paths if isinstance(p, str) and p.strip()]
+                if not image_paths:
+                    image_paths = None
 
         if not message and not image_paths:
             return {"assistant_response": "No input provided", "action_results": []}
@@ -2438,15 +2450,30 @@ class PenguinCore:
             max_output = model_specs.get("max_output_tokens") or safe_window
 
             # Build and apply new ModelConfig
+            model_configs = getattr(self.config, 'model_configs', None) or {}
             new_model_config = ModelConfig.for_model(
                 model_name=model_id,
                 provider=provider,
                 client_preference=client_pref,
-                model_configs=getattr(self.config, 'model_configs', None),
+                model_configs=model_configs,
             )
+
+            # Apply vision support from actual model specs, but respect explicit user config.
+            # Only auto-enable if user hasn't explicitly set vision_enabled in model_configs.
+            user_model_conf = model_configs.get(model_id, {})
+            user_explicit_vision = user_model_conf.get("vision_enabled")
+            if user_explicit_vision is not None:
+                # User explicitly configured vision - respect their choice
+                new_model_config.vision_enabled = bool(user_explicit_vision)
+                logger.info(f"Model '{model_id}' vision set to {new_model_config.vision_enabled} (user config)")
+            elif model_specs.get("supports_vision"):
+                # No explicit user config, auto-enable based on model capability
+                new_model_config.vision_enabled = True
+                logger.info(f"Model '{model_id}' supports vision (auto-detected)")
+
             self._apply_new_model_config(new_model_config, context_window_tokens=safe_window)
 
-            logger.info(f"Switched to model '{model_id}' (context: {safe_window} tokens)")
+            logger.info(f"Switched to model '{model_id}' (context: {safe_window} tokens, vision: {new_model_config.vision_enabled})")
             return True
 
         except Exception as e:
