@@ -89,9 +89,9 @@ class TestCLIDisplayMethods:
     
     def test_format_code_block_exists(self):
         """Verify code block formatting exists"""
-        from penguin.cli.cli import PenguinCLI
+        from penguin.cli.display_manager import DisplayManager
         
-        assert hasattr(PenguinCLI, '_format_code_block')
+        assert hasattr(DisplayManager, 'format_code_block')
     
     def test_display_diff_result_exists(self):
         """Verify diff display exists"""
@@ -140,14 +140,15 @@ class TestCLIEventHandling:
     def test_handle_event_exists(self):
         """Verify event handlers exist (after Phase 3 migration)"""
         from penguin.cli.cli import PenguinCLI
+        from penguin.cli.event_manager import EventManager
         
         # After Phase 3, handle_event is deleted
-        # Individual event handlers are now subscribed directly to EventBus
-        assert hasattr(PenguinCLI, '_handle_stream_chunk_event')
-        assert hasattr(PenguinCLI, '_handle_tool_event')
-        assert hasattr(PenguinCLI, '_handle_message_event')
-        assert hasattr(PenguinCLI, '_handle_status_event')
-        assert hasattr(PenguinCLI, '_handle_error_event')
+        # Individual event handlers are now in EventManager
+        assert hasattr(EventManager, 'handle_stream_chunk_event')
+        assert hasattr(EventManager, 'handle_tool_event')
+        assert hasattr(EventManager, 'handle_message_event')
+        assert hasattr(EventManager, 'handle_status_event')
+        assert hasattr(EventManager, 'handle_error_event')
     
     def test_events_module_exists(self):
         """Verify events module is available"""
