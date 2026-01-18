@@ -262,6 +262,7 @@ from penguin.cli.streaming_display import StreamingDisplay
 from penguin.cli.events import EventBus, EventType
 from penguin.cli.session_manager import SessionManager
 from penguin.cli.display_manager import DisplayManager
+from penguin.cli.streaming_manager import StreamingManager
 
 try:
     # Prefer relative import to support repo and installed layouts
@@ -3091,6 +3092,9 @@ class PenguinCLI:
             self.panel_padding,
         )
 
+        # Initialize streaming manager
+        self.streaming_manager = StreamingManager(self.streaming_display)
+
         # Initialize new StreamingDisplay for smooth Rich.Live rendering
         self.streaming_display = StreamingDisplay(
             console=self.console,
@@ -3200,11 +3204,11 @@ class PenguinCLI:
 
     def _handle_interrupt(self, sig, frame):
         """Handle SIGINT (Ctrl+C) - clean up progress but let the event loop handle the interrupt."""
-        self._safely_stop_progress()
+        self.streaming_manager.safely_stop_progress()
         # Clean up any streaming in progress
         if hasattr(self, "_streaming_started") and self._streaming_started:
             try:
-                self._finalize_streaming()
+                self.streaming_manager.finalize_streaming()
             except Exception:
                 pass
         # Let the KeyboardInterrupt propagate naturally to be caught by chat_loop's handlers
@@ -3994,7 +3998,7 @@ class PenguinCLI:
         """Handle progress updates without interfering with execution"""
         if not self.progress and iteration > 0:
             # Only show progress if not already processing
-            self._safely_stop_progress()
+            self.streaming_manager.safely_stop_progress()
             self.progress = Progress(
                 SpinnerColumn(),
                 TextColumn("[bold blue]{task.description}"),
@@ -4027,7 +4031,7 @@ class PenguinCLI:
 
     def _ensure_progress_cleared(self):
         """Make absolutely sure no progress indicator is active before showing input prompt"""
-        self._safely_stop_progress()
+        self.streaming_manager.safely_stop_progress()
 
         # Force redraw the prompt area
         print("\033[2K", end="\r")  # Clear the current line
@@ -4311,7 +4315,7 @@ Welcome to Penguin!
                                     hasattr(self, "_streaming_started")
                                     and self._streaming_started
                                 ):
-                                    self._finalize_streaming()
+                                    self.streaming_manager.finalize_streaming()
 
                                 # Display any action results (e.g. vision-tool output)
                                 if (
@@ -4504,7 +4508,7 @@ Welcome to Penguin!
 
                     # Make sure to finalize any streaming that might still be in progress
                     if hasattr(self, "_streaming_started") and self._streaming_started:
-                        self._finalize_streaming()
+                        self.streaming_manager.finalize_streaming()
 
                     # Action results are now handled via the event system (SYSTEM_OUTPUT category)
                     # No need to display them here - that would cause duplication
@@ -4521,10 +4525,10 @@ Welcome to Penguin!
                 except KeyboardInterrupt:
                     # Handle interrupt during processing - don't exit, just cancel current operation
                     self.console.print("\n[yellow]Processing interrupted[/yellow]")
-                    self._safely_stop_progress()
+                    self.streaming_manager.safely_stop_progress()
                     # Cleanup any streaming in progress
                     if hasattr(self, "_streaming_started") and self._streaming_started:
-                        self._finalize_streaming()
+                        self.streaming_manager.finalize_streaming()
                     # Don't raise - continue to next prompt iteration
                     continue
                 except Exception as e:
@@ -4532,9 +4536,9 @@ Welcome to Penguin!
                     self.display_manager.display_message(traceback.format_exc(), "error")
                 finally:
                     # Always clean up progress display and streaming
-                    self._safely_stop_progress()
+                    self.streaming_manager.safely_stop_progress()
                     if hasattr(self, "_streaming_started") and self._streaming_started:
-                        self._finalize_streaming()
+                        self.streaming_manager.finalize_streaming()
 
                 # Save conversation after each message exchange
                 self.message_count += 1
@@ -4734,7 +4738,7 @@ Welcome to Penguin!
             self.streaming_reasoning_buffer = ""
 
             # CRITICAL: Stop ALL active progress displays FIRST
-            self._safely_stop_progress()
+            self.streaming_manager.safely_stop_progress()
 
             # Stop the "Thinking..." indicator from chat_loop
             if hasattr(self, "_thinking_progress"):
@@ -4960,7 +4964,7 @@ Welcome to Penguin!
             self.run_mode_status = f"Task '{task_name}' started"
 
             # CRITICAL: Reset streaming state when RunMode starts to avoid conflicts
-            self._finalize_streaming()
+            self.streaming_manager.finalize_streaming()
             self.is_streaming = False
             self.streaming_buffer = ""
             self.streaming_reasoning_buffer = ""
@@ -4990,7 +4994,7 @@ Welcome to Penguin!
 
             # CRITICAL: Finalize any active streaming when task completes
             if self._active_stream_id is not None or self.is_streaming:
-                self._finalize_streaming()
+                self.streaming_manager.finalize_streaming()
 
             # Clear streaming display status
             if self.streaming_display.is_active:
