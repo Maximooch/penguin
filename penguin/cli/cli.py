@@ -3002,10 +3002,9 @@ class PenguinCLI:
 
         # Initialize new StreamingDisplay for smooth Rich.Live rendering
         self.streaming_display = StreamingDisplay(
-            self.console,
-            self.renderer,
-            show_timestamps=False,
-            show_metadata=False,
+            console=self.console,
+            panel_padding=self.panel_padding,
+            borderless=True,
         )
 
         # Initialize streaming manager (requires streaming_display)
