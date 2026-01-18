@@ -3095,7 +3095,11 @@ class PenguinCLI:
         # Subscribe to all event types via unified event bus
         self._event_bus = EventBus.get_sync()
         for event_type in EventType:
-            self._event_bus.subscribe(event_type.value, self.handle_event)
+            self._event_bus.subscribe("stream_chunk", self._handle_stream_chunk_event)
+        event_bus.subscribe("tool", self._handle_tool_event)
+        event_bus.subscribe("message", self._handle_message_event)
+        event_bus.subscribe("status", self._handle_status_event)
+        event_bus.subscribe("error", self._handle_error_event)
 
         # Single Live display for better rendering
         self.live_display = None
@@ -4717,336 +4721,321 @@ Welcome to Penguin!
         self._streaming_session_id = None
         self._active_stream_id = None
 
-    def handle_event(self, event_type: str, data: Dict[str, Any]) -> None:
-        """
-        Handle events from Core and update the display accordingly.
-        This creates a direct connection between Core and UI.
+    def _handle_stream_chunk_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Handle stream_chunk events for live text streaming."""
+        # ------------------------------------------------------------------
+        # NEW: Unified streaming handler using StreamingDisplay with Rich.Live
+        # ------------------------------------------------------------------
+        stream_id = data.get("stream_id")
+        chunk = data.get("chunk", "")
+        is_final = data.get("is_final", False)
+        self.streaming_role = data.get("role", "assistant")
+        is_reasoning = data.get("is_reasoning", False)
 
-        Args:
-            event_type: Type of event (e.g., "stream_chunk", "token_update")
-            data: Event data
-        """
-        try:
-            if event_type == "stream_chunk":
-                # ------------------------------------------------------------------
-                # NEW: Unified streaming handler using StreamingDisplay with Rich.Live
-                # ------------------------------------------------------------------
-                stream_id = data.get("stream_id")
-                chunk = data.get("chunk", "")
-                is_final = data.get("is_final", False)
-                self.streaming_role = data.get("role", "assistant")
-                is_reasoning = data.get("is_reasoning", False)
+        # Ignore chunks with no stream_id (should not happen after refactor)
+        if stream_id is None:
+            return
 
-                # Ignore chunks with no stream_id (should not happen after refactor)
-                if stream_id is None:
-                    return
+        # First chunk of a new streaming message -> start StreamingDisplay
+        if self._active_stream_id is None:
+            self._active_stream_id = stream_id
+            self._streaming_started = True
+            self.is_streaming = True
+            self.streaming_buffer = ""
+            self.streaming_reasoning_buffer = ""
 
-                # First chunk of a new streaming message -> start StreamingDisplay
-                if self._active_stream_id is None:
-                    self._active_stream_id = stream_id
-                    self._streaming_started = True
-                    self.is_streaming = True
-                    self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""
+            # CRITICAL: Stop ALL active progress displays FIRST
+            self._safely_stop_progress()
 
-                    # CRITICAL: Stop ALL active progress displays FIRST
-                    self._safely_stop_progress()
+            # Stop the "Thinking..." indicator from chat_loop
+            if hasattr(self, "_thinking_progress"):
+                try:
+                    self._thinking_progress.stop()
+                    delattr(self, "_thinking_progress")
+                except Exception:
+                    pass
 
-                    # Stop the "Thinking..." indicator from chat_loop
-                    if hasattr(self, "_thinking_progress"):
-                        try:
-                            self._thinking_progress.stop()
-                            delattr(self, "_thinking_progress")
-                        except Exception:
-                            pass
+            # Start new streaming display with Rich.Live
+            self.streaming_display.start_message(role=self.streaming_role)
 
-                    # Start new streaming display with Rich.Live
-                    self.streaming_display.start_message(role=self.streaming_role)
+        # Ignore chunks that belong to an old or foreign stream
+        if stream_id != self._active_stream_id:
+            return
 
-                # Ignore chunks that belong to an old or foreign stream
-                if stream_id != self._active_stream_id:
-                    return
+        # Skip empty non-final chunks
+        if not chunk and not is_final:
+            return
 
-                # Skip empty non-final chunks
-                if not chunk and not is_final:
-                    return
+        # Process chunk for display
+        if chunk:
+            # Append to buffers for deduplication tracking
+            if is_reasoning:
+                self.streaming_reasoning_buffer += chunk
+            else:
+                self.streaming_buffer += chunk
 
-                # Process chunk for display
-                if chunk:
-                    # Append to buffers for deduplication tracking
-                    if is_reasoning:
-                        self.streaming_reasoning_buffer += chunk
-                    else:
-                        self.streaming_buffer += chunk
-                    
-                    # Append to StreamingDisplay
-                    self.streaming_display.append_text(chunk, is_reasoning=is_reasoning)
+            # Append to StreamingDisplay
+            self.streaming_display.append_text(chunk, is_reasoning=is_reasoning)
 
-                if is_final:
-                    # Final chunk received - finalize streaming
-                    self.is_streaming = False
-                    
-                    # Filter verbose code blocks before finalizing
-                    if self.streaming_buffer:
-                        filtered_buffer = self._filter_verbose_code_blocks(self.streaming_buffer)
-                        # Update the display's content buffer with filtered version
-                        self.streaming_display.content_buffer = filtered_buffer
-                    
-                    # Stop streaming display (will show final formatted version)
-                    self.streaming_display.stop(finalize=True)
+        if is_final:
+            # Final chunk received - finalize streaming
+            self.is_streaming = False
 
-                    # Store for deduplication
-                    if self.streaming_buffer.strip():
-                        self.last_completed_message = self.streaming_buffer
-                        self.last_completed_message_normalized = (
-                            self._normalize_message_content(self.streaming_buffer)
-                        )
+            # Filter verbose code blocks before finalizing
+            if self.streaming_buffer:
+                filtered_buffer = self._filter_verbose_code_blocks(self.streaming_buffer)
+                # Update the display's content buffer with the filtered version
+                self.streaming_display.content_buffer = filtered_buffer
 
-                    # NOW display any pending system messages (tool results) that arrived during streaming
-                    if self.pending_system_messages:
-                        for msg_content, msg_role in self.pending_system_messages:
-                            self.display_message(msg_content, msg_role)
-                        self.pending_system_messages.clear()
+            # Stop streaming display (will show final formatted version)
+            self.streaming_display.stop(finalize=True)
 
-                    # Clear stream ID
-                    self._active_stream_id = None
-
-                    # Store completed message for deduplication
-                    if self.streaming_buffer.strip():
-                        completed_msg_key = (
-                            f"{self.streaming_role}:{self.streaming_buffer[:50]}"
-                        )
-                        self.processed_messages.add(completed_msg_key)
-                        self.message_turn_map[completed_msg_key] = (
-                            self.current_conversation_turn
-                        )
-
-                    # Reset buffers
-                    self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""
-                    return
-
-            elif event_type == "token_update":
-                # Could update a token display here if we add one
-                pass
-
-            elif event_type == "tool":
-                # Handle tool execution events - update streaming display
-                phase = data.get("phase", "")
-                tool_name = data.get("action", data.get("tool_name", ""))
-                
-                if phase == "start" and tool_name:
-                    # Show tool execution indicator
-                    if self.streaming_display.is_active:
-                        self.streaming_display.set_tool(tool_name)
-                
-                elif phase == "end":
-                    # Clear tool indicator
-                    if self.streaming_display.is_active:
-                        self.streaming_display.clear_tool()
-                    
-                    # Optionally display tool result (if not verbose)
-                    result = data.get("result", "")
-                    if result and not self.is_streaming:
-                        # Only show if not currently streaming assistant response
-                        tool_summary = f"✓ {tool_name}" if len(result) < 50 else f"✓ {tool_name}: {result[:47]}..."
-                        self.display_message(tool_summary, "system")
-
-            elif event_type == "message":
-                # A new message has been added to the conversation
-                role = data.get("role", "unknown")
-                content = data.get("content", "")
-                category = data.get("category", MessageCategory.DIALOG)
-                metadata = data.get("metadata", {}) if isinstance(data, dict) else {}
-
-                # Buffer system output messages (tool results) if streaming is active
-                if (
-                    category == MessageCategory.SYSTEM_OUTPUT
-                    or category == "SYSTEM_OUTPUT"
-                ):
-                    if not self.show_tool_results:
-                        return
-                    # Check if this is a verbose tool result that should be suppressed
-                    tool_name = metadata.get("tool_name", "")
-                    action_type = metadata.get("action_type", "")
-
-                    # Suppress verbose tool output (reads, lists, writes)
-                    SUPPRESS_VERBOSE_TOOLS = {
-                        "read_file", "enhanced_read", "list_files_filtered",
-                        "write_file", "enhanced_write", "list_files"
-                    }
-
-                    if tool_name in SUPPRESS_VERBOSE_TOOLS or action_type in SUPPRESS_VERBOSE_TOOLS:
-                        # Show compact summary instead of full output
-                        summary = self._create_tool_summary(tool_name or action_type, content, metadata)
-                        if summary:
-                            if self.is_streaming or self._active_stream_id is not None:
-                                self.pending_system_messages.append((summary, "system"))
-                            else:
-                                self.display_message(summary, "system")
-                        return
-
-                    # Show full output for important tools (execute, diff, etc.)
-                    if self.is_streaming or self._active_stream_id is not None:
-                        # Buffer for display after streaming completes
-                        self.pending_system_messages.append((content, "system"))
-                        return
-                    else:
-                        # Not streaming, display immediately
-                        self.display_message(content, "system")
-                        return
-
-                # Skip other internal system messages
-                if category == MessageCategory.SYSTEM or category == "SYSTEM":
-                    return
-
-                # Suppress verbose tool payloads for read actions; action results already summarized
-                if (
-                    role == "tool"
-                    and isinstance(metadata, dict)
-                    and metadata.get("action_type") in self.FILE_READ_ACTIONS
-                ):
-                    msg_key = f"{role}:{content[:50]}"
-                    self.processed_messages.add(msg_key)
-                    self.message_turn_map[msg_key] = self.current_conversation_turn
-                    return
-
-                # Generate a message key and check if we've already processed this message
-                msg_key = f"{role}:{content[:50]}"
-                incoming_normalized = (
-                    self._normalize_message_content(content)
-                    if role == "assistant"
-                    else ""
+            # Store for deduplication
+            if self.streaming_buffer.strip():
+                self.last_completed_message = self.streaming_buffer
+                self.last_completed_message_normalized = (
+                    self._normalize_message_content(self.streaming_buffer)
                 )
-                if msg_key in self.processed_messages:
-                    return
 
-                # If this is a user message, it's the start of a new conversation turn
-                if role == "user":
-                    # Increment conversation turn counter
-                    self.current_conversation_turn += 1
+            # NOW display any pending system messages (tool results) that arrived during streaming
+            if self.pending_system_messages:
+                for msg_content, msg_role in self.pending_system_messages:
+                    self.display_message(msg_content, msg_role)
+                self.pending_system_messages.clear()
 
-                    # Clear streaming state for new turn
-                    self.is_streaming = False
-                    self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""
-                    self.last_completed_message = ""
-                    self.last_completed_message_normalized = ""
+            # Clear stream ID
+            self._active_stream_id = None
 
-                # For assistant messages, check if this was already displayed via streaming
-                if role == "assistant":
-                    # Skip if this message was already displayed via streaming
-                    # Use startswith to handle minor formatting differences
-                    if self.last_completed_message and (
-                        content == self.last_completed_message or
-                        content.startswith(self.last_completed_message[:50]) or
-                        self.last_completed_message.startswith(content[:50])
-                    ):
-                        # Add to processed messages to avoid future duplicates
-                        self.processed_messages.add(msg_key)
-                        self.message_turn_map[msg_key] = self.current_conversation_turn
-                        return
+            # Store completed message for deduplication
+            if self.streaming_buffer.strip():
+                completed_msg_key = (
+                    f"{self.streaming_role}:{self.streaming_buffer[:50]}"
+                )
+                self.processed_messages.add(completed_msg_key)
+                self.message_turn_map[completed_msg_key] = (
+                    self.current_conversation_turn
+                )
 
-                    if (
-                        self.last_completed_message_normalized
-                        and incoming_normalized
-                        and incoming_normalized == self.last_completed_message_normalized
-                    ):
-                        self.processed_messages.add(msg_key)
-                        self.message_turn_map[msg_key] = self.current_conversation_turn
-                        return
+            # Reset buffers
+            self.streaming_buffer = ""
+            self.streaming_reasoning_buffer = ""
+            return
 
-                # Add to processed messages and map to current turn
+
+    def _handle_tool_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Handle tool execution events."""
+        phase = data.get("phase", "")
+        tool_name = data.get("action", data.get("tool_name", ""))
+
+        if phase == "start" and tool_name:
+            # Show tool execution indicator
+            if self.streaming_display.is_active:
+                self.streaming_display.set_tool(tool_name)
+
+        elif phase == "end":
+            # Clear tool indicator
+            if self.streaming_display.is_active:
+                self.streaming_display.clear_tool()
+
+            # Optionally display tool result (if not verbose)
+            result = data.get("result", "")
+            if result and not self.is_streaming:
+                # Only show if not currently streaming assistant response
+                tool_summary = f"✓ {tool_name}" if len(result) < 50 else f"✓ {tool_name}: {result[:47]}..."
+                self.display_message(tool_summary, "system")
+
+
+    def _handle_message_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Handle message events for displaying conversation messages."""
+        role = data.get("role", "unknown")
+        message_content = data.get("content", "")
+        category = data.get("category", MessageCategory.DIALOG)
+        metadata = data.get("metadata", {}) if isinstance(data, dict) else {}
+
+        # Buffer system output messages (tool results) if streaming is active
+        if (
+            category == MessageCategory.SYSTEM_OUTPUT
+            or category == "SYSTEM_OUTPUT"
+        ):
+            if not self.show_tool_results:
+                return
+            # Check if this is a verbose tool result that should be suppressed
+            tool_name = metadata.get("tool_name", "")
+            action_type = metadata.get("action_type", "")
+
+            # Suppress verbose tool output (reads, lists, writes)
+            SUPPRESS_VERBOSE_TOOLS = {
+                "read_file", "enhanced_read", "list_files_filtered",
+                "write_file", "enhanced_write", "list_files"
+            }
+
+            if tool_name in SUPPRESS_VERBOSE_TOOLS or action_type in SUPPRESS_VERBOSE_TOOLS:
+                # Show compact summary instead of full output
+                summary = self._create_tool_summary(tool_name or action_type, message_content, metadata)
+                if summary:
+                    if self.is_streaming or self._active_stream_id is not None:
+                        self.pending_system_messages.append((summary, "system"))
+                    else:
+                        self.display_message(summary, "system")
+                return
+
+            # Show full output for important tools (execute, diff, etc.)
+            if self.is_streaming or self._active_stream_id is not None:
+                # Buffer for display after streaming completes
+                self.pending_system_messages.append((message_content, "system"))
+                return
+            else:
+                # Not streaming, display immediately
+                self.display_message(message_content, "system")
+                return
+
+        # Skip other internal system messages
+        if category == MessageCategory.SYSTEM or category == "SYSTEM":
+            return
+
+        # Suppress verbose tool payloads for read actions; action results already summarized
+        if (
+            role == "tool"
+            and isinstance(metadata, dict)
+            and metadata.get("action_type") in self.FILE_READ_ACTIONS
+        ):
+            msg_key = f"{role}:{message_content[:50]}"
+            self.processed_messages.add(msg_key)
+            self.message_turn_map[msg_key] = self.current_conversation_turn
+            return
+
+        # Generate a message key and check if we've already processed this message
+        msg_key = f"{role}:{message_content[:50]}"
+        incoming_normalized = (
+            self._normalize_message_content(message_content)
+            if role == "assistant"
+            else ""
+        )
+        if msg_key in self.processed_messages:
+            return
+
+        # If this is a user message, it's start of a new conversation turn
+        if role == "user":
+            # Increment conversation turn counter
+            self.current_conversation_turn += 1
+
+            # Clear streaming state for new turn
+            self.is_streaming = False
+            self.streaming_buffer = ""
+            self.streaming_reasoning_buffer = ""
+            self.last_completed_message = ""
+            self.last_completed_message_normalized = ""
+
+        # For assistant messages, check if this was already displayed via streaming
+        if role == "assistant":
+            # Skip if this message was already displayed via streaming
+            # Use startswith to handle minor formatting differences
+            if self.last_completed_message and (
+                message_content == self.last_completed_message or
+                message_content.startswith(self.last_completed_message[:50]) or
+                self.last_completed_message.startswith(message_content[:50])
+            ):
+                # Add to processed messages to avoid future duplicates
                 self.processed_messages.add(msg_key)
                 self.message_turn_map[msg_key] = self.current_conversation_turn
+                return
 
-                # Display the message
-                self.display_message(content, role)
+            if (
+                self.last_completed_message_normalized
+                and incoming_normalized
+                and incoming_normalized == self.last_completed_message_normalized
+            ):
+                self.processed_messages.add(msg_key)
+                self.message_turn_map[msg_key] = self.current_conversation_turn
+                return
 
-                if role == "assistant":
-                    self.last_completed_message = content
-                    self.last_completed_message_normalized = incoming_normalized
+        # Add to processed messages and map to current turn
+        self.processed_messages.add(msg_key)
+        self.message_turn_map[msg_key] = self.current_conversation_turn
 
-            elif event_type == "status":
-                # Handle status events like RunMode updates
-                status_type = data.get("status_type", "")
+        # Display message
+        self.display_message(message_content, role)
 
-                # Update RunMode status
-                if "task_started" in status_type:
-                    self.run_mode_active = True
-                    task_name = data.get("data", {}).get("task_name", "Unknown task")
-                    self.run_mode_status = f"Task '{task_name}' started"
-                    
-                    # CRITICAL: Reset streaming state when RunMode starts to avoid conflicts
-                    self._finalize_streaming()
-                    self.is_streaming = False
-                    self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""
-                    self._active_stream_id = None
-                    
-                    # Update streaming display status
-                    if self.streaming_display.is_active:
-                        self.streaming_display.set_status(f"Starting task: {task_name}")
-                    else:
-                        self.display_message(f"Starting task: {task_name}", "system")
+        if role == "assistant":
+            self.last_completed_message = message_content
+            self.last_completed_message_normalized = incoming_normalized
 
-                elif "task_progress" in status_type:
-                    self.run_mode_active = True
-                    iteration = data.get("data", {}).get("iteration", "?")
-                    max_iter = data.get("data", {}).get("max_iterations", "?")
-                    progress = data.get("data", {}).get("progress", 0)
-                    self.run_mode_status = (
-                        f"Progress: {progress}% (Iter: {iteration}/{max_iter})"
-                    )
-                    
-                    # Update streaming display if active
-                    if self.streaming_display.is_active:
-                        self.streaming_display.set_status(self.run_mode_status)
+    def _handle_status_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Handle status events like RunMode updates."""
+        status_type = data.get("status_type", "")
 
-                elif "task_completed" in status_type or "run_mode_ended" in status_type:
-                    self.run_mode_active = False
-                    
-                    # CRITICAL: Finalize any active streaming when task completes
-                    if self._active_stream_id is not None or self.is_streaming:
-                        self._finalize_streaming()
-                    
-                    # Clear streaming display status
-                    if self.streaming_display.is_active:
-                        self.streaming_display.clear_status()
-                    
-                    if "task_completed" in status_type:
-                        task_name = data.get("data", {}).get(
-                            "task_name", "Unknown task"
-                        )
-                        self.run_mode_status = f"Task '{task_name}' completed"
-                        self.display_message(f"Task '{task_name}' completed", "system")
-                    else:
-                        self.run_mode_status = "RunMode ended"
-                        self.display_message("RunMode ended", "system")
+        # Update RunMode status
+        if "task_started" in status_type:
+            self.run_mode_active = True
+            task_name = data.get("data", {}).get("task_name", "Unknown task")
+            self.run_mode_status = f"Task '{task_name}' started"
 
-                elif "clarification_needed" in status_type:
-                    self.run_mode_active = True
-                    prompt = data.get("data", {}).get("prompt", "Input needed")
-                    self.run_mode_status = f"Clarification needed: {prompt}"
-                    
-                    # Update streaming display if active
-                    if self.streaming_display.is_active:
-                        self.streaming_display.set_status(self.run_mode_status)
-                    else:
-                        self.display_message(f"Clarification needed: {prompt}", "system")
+            # CRITICAL: Reset streaming state when RunMode starts to avoid conflicts
+            self._finalize_streaming()
+            self.is_streaming = False
+            self.streaming_buffer = ""
+            self.streaming_reasoning_buffer = ""
+            self._active_stream_id = None
 
-            elif event_type == "error":
-                # Handle error events
-                error_msg = data.get("message", "Unknown error")
-                source = data.get("source", "")
-                details = data.get("details", "")
+            # Update streaming display status
+            if self.streaming_display.is_active:
+                self.streaming_display.set_status(f"Starting task: {task_name}")
+            else:
+                self.display_message(f"Starting task: {task_name}", "system")
 
-                # Display error message
-                self.display_message(f"Error: {error_msg}\n{details}", "error")
+        elif "task_progress" in status_type:
+            self.run_mode_active = True
+            iteration = data.get("data", {}).get("iteration", "?")
+            max_iter = data.get("data", {}).get("max_iterations", "?")
+            progress = data.get("data", {}).get("progress", 0)
+            self.run_mode_status = (
+                f"Progress: {progress}% (Iter: {iteration}/{max_iter})"
+            )
 
-        except Exception as e:
-            # Handle exception in event processing
-            self.display_message(f"Error processing event: {e!s}", "error")
+            # Update streaming display if active
+            if self.streaming_display.is_active:
+                self.streaming_display.set_status(self.run_mode_status)
+
+        elif "task_completed" in status_type or "run_mode_ended" in status_type:
+            self.run_mode_active = False
+
+            # CRITICAL: Finalize any active streaming when task completes
+            if self._active_stream_id is not None or self.is_streaming:
+                self._finalize_streaming()
+
+            # Clear streaming display status
+            if self.streaming_display.is_active:
+                self.streaming_display.clear_status()
+
+            if "task_completed" in status_type:
+                task_name = data.get("data", {}).get(
+                    "task_name", "Unknown task"
+                )
+                self.run_mode_status = f"Task '{task_name}' completed"
+                self.display_message(f"Task '{task_name}' completed", "system")
+            else:
+                self.run_mode_status = "RunMode ended"
+                self.display_message("RunMode ended", "system")
+
+        elif "clarification_needed" in status_type:
+            self.run_mode_active = True
+            prompt = data.get("data", {}).get("prompt", "Input needed")
+            self.run_mode_status = f"Clarification needed: {prompt}"
+
+            # Update streaming display if active
+            if self.streaming_display.is_active:
+                self.streaming_display.set_status(self.run_mode_status)
+            else:
+                self.display_message(f"Clarification needed: {prompt}", "system")
+
+    def _handle_error_event(self, event_type: str, data: Dict[str, Any]) -> None:
+        """Handle error events."""
+        error_msg = data.get("message", "Unknown error")
+        source = data.get("source", "")
+        details = data.get("details", "")
+
+        # Display error message
+        self.display_message(f"Error: {error_msg}\n{details}", "error")
 
     def set_streaming(self, enabled: bool = True) -> None:
         """

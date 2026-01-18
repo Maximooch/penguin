@@ -138,10 +138,16 @@ class TestCLIEventHandling:
     """Test event system integration"""
     
     def test_handle_event_exists(self):
-        """Verify the 331-line event handler exists"""
+        """Verify event handlers exist (after Phase 3 migration)"""
         from penguin.cli.cli import PenguinCLI
         
-        assert hasattr(PenguinCLI, 'handle_event')
+        # After Phase 3, handle_event is deleted
+        # Individual event handlers are now subscribed directly to EventBus
+        assert hasattr(PenguinCLI, '_handle_stream_chunk_event')
+        assert hasattr(PenguinCLI, '_handle_tool_event')
+        assert hasattr(PenguinCLI, '_handle_message_event')
+        assert hasattr(PenguinCLI, '_handle_status_event')
+        assert hasattr(PenguinCLI, '_handle_error_event')
     
     def test_events_module_exists(self):
         """Verify events module is available"""
