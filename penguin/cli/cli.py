@@ -3057,68 +3057,10 @@ class PenguinCLI:
     
 
     # Language detection patterns for auto-detection
-    LANGUAGE_DETECTION_PATTERNS = [
-        # Python
-        (r"import\s+[\w.]+|def\s+\w+\s*\(|class\s+\w+\s*[:\(]|print\s*\(", "python"),
-        # JavaScript
-        (
-            r"function\s+\w+\s*\(|const\s+\w+\s*=|let\s+\w+\s*=|var\s+\w+\s*=|console\.log\(",
-            "javascript",
-        ),
-        # HTML
-        (r"<!DOCTYPE\s+html>|<html>|<body>|<div>|<span>|<p>", "html"),
-        # CSS
-        (r"body\s*{|\.[\w-]+\s*{|#[\w-]+\s*{|\@media", "css"),
-        # Java
-        (r"public\s+class|private\s+\w+\(|protected|System\.out\.print", "java"),
-        # C++
-        (r"#include\s+<\w+>|std::|namespace\s+\w+|template\s*<", "cpp"),
-        # C#
-        (r"using\s+System;|namespace\s+\w+|public\s+class|Console\.Write", "csharp"),
-        # TypeScript
-        (r"interface\s+\w+|type\s+\w+\s*=|export\s+class", "typescript"),
-        # Ruby
-        (r"require\s+[\'\"][\w./]+[\'\"]|def\s+\w+(\s*\|\s*.*?\s*\|)?|puts\s+", "ruby"),
-        # Go
-        (r"package\s+\w+|func\s+\w+|import\s+\(|fmt\.Print", "go"),
-        # Rust
-        (r"fn\s+\w+|let\s+mut|struct\s+\w+|impl\s+", "rust"),
-        # PHP
-        (r"<\?php|\$\w+\s*=|echo\s+|function\s+\w+\s*\(", "php"),
-        # Swift
-        (
-            r"import\s+\w+|var\s+\w+\s*:|func\s+\w+\s*\(|class\s+\w+\s*:|\@IBOutlet",
-            "swift",
-        ),
-        # Kotlin
-        (r"fun\s+\w+\s*\(|val\s+\w+\s*:|var\s+\w+\s*:|class\s+\w+\s*[:\(]", "kotlin"),
-        # Bash
-        (r"#!/bin/bash|#!/bin/sh|^\s*if\s+\[\s+|^\s*for\s+\w+\s+in", "bash"),
-        # SQL
-        (r"SELECT\s+.*?\s+FROM|CREATE\s+TABLE|INSERT\s+INTO|UPDATE\s+.*?\s+SET", "sql"),
-    ]
+    # LANGUAGE_DETECTION_PATTERNS moved to UnifiedRenderer.detect_language()
 
     # Language display names (for panel titles)
-    LANGUAGE_DISPLAY_NAMES = {
-        "python": "Python",
-        "javascript": "JavaScript",
-        "html": "HTML",
-        "css": "CSS",
-        "java": "Java",
-        "cpp": "C++",
-        "csharp": "C#",
-        "typescript": "TypeScript",
-        "ruby": "Ruby",
-        "go": "Go",
-        "rust": "Rust",
-        "php": "PHP",
-        "swift": "Swift",
-        "kotlin": "Kotlin",
-        "bash": "Shell/Bash",
-        "sql": "SQL",
-        "diff": "Diff/Patch",
-        "text": "Code",
-    }
+    # LANGUAGE_DISPLAY_NAMES moved to UnifiedRenderer
 
 
     def __init__(self, core):
@@ -3415,59 +3357,11 @@ class PenguinCLI:
 
     def _format_code_block(self, message, code, language, original_block):
         """Format a code block with syntax highlighting and return updated message"""
-        # Get the display name for the language or use language code as fallback
-        lang_display = self.LANGUAGE_DISPLAY_NAMES.get(language, language.capitalize())
-
-        # CRITICAL: Detect diff content and override language to get proper coloring
-        # Check for unified diff markers: ---, +++, @@, or lines starting with + or -
-        if language in ["text", "actionxml"] or not language:
-            if self._looks_like_diff(code):
-                language = "diff"
-                lang_display = "Diff"
-
-        # If language is 'text', try to auto-detect
-        if language == "text" and code.strip():
-            detected_lang = self._detect_language(code)
-            if detected_lang != "text":
-                language = detected_lang
-                lang_display = self.LANGUAGE_DISPLAY_NAMES.get(
-                    language, language.capitalize()
-                )
-
-        # Choose theme based on language
-        theme = "monokai"  # Default
-        if language in ["html", "xml"]:
-            theme = "github-dark"
-        elif language in ["bash", "shell"]:
-            theme = "native"
-        elif language == "diff":
-            theme = "monokai"  # monokai has good diff colors
-
-        # Create a syntax highlighted version
-        highlighted_code = Syntax(
-            code.strip(),
-            language,
-            theme=theme,
-            line_numbers=True,
-            word_wrap=True,
-            code_width=min(
-                100, self.console.width - 20
-            ),  # Limit width for better readability
-        )
-
-        # Create a panel for the code
-        code_panel = Panel(
-            highlighted_code,
-            title=f"📋 {lang_display} Code",
-            title_align="left",
-            border_style=self.CODE_COLOR,
-            padding=(1, 2),
-        )
-
-        # Display the code block separately
-        self.console.print(code_panel)
+        # Delegate to UnifiedRenderer for code block rendering
+        self.renderer.render_code_block(code, language)
 
         # Replace in original message with a note
+        lang_display = self.renderer.get_language_display_name(language)
         placeholder = f"[Code block displayed above ({lang_display})]"
         return message.replace(original_block, placeholder)
 
@@ -4099,61 +3993,8 @@ class PenguinCLI:
 
     def _render_diff_message(self, message: str) -> bool:
         """Render system messages that contain diff content."""
-        if not self._looks_like_diff(message):
-            return False
-
-        summary, blocks = self._split_diff_sections(message)
-        if summary.strip():
-            summary_panel = Panel(
-                Markdown(summary.strip()),
-                title="Diff Update",
-                title_align="left",
-                border_style=self.TOOL_COLOR,
-                width=self.console.width - 8,
-                padding=(1, 1),
-            )
-            self.console.print(summary_panel)
-
-        if not blocks:
-            # Try rendering whole message as diff if parsing failed
-            blocks = [message]
-
-        for block in blocks:
-            stats = self._compute_diff_stats(block)
-            stats_label = f"+{stats['adds']} / -{stats['deletes']}"
-            if stats["hunks"]:
-                stats_label += f" · {stats['hunks']} hunk{'s' if stats['hunks'] != 1 else ''}"
-
-            try:
-                renderable = Syntax(
-                    block,
-                    "diff",
-                    theme="monokai",
-                    line_numbers=False,
-                    word_wrap=False,
-                    code_width=min(120, self.console.width - 12),
-                )
-            except Exception:
-                renderable = Syntax(
-                    block,
-                    "text",
-                    theme="monokai",
-                    line_numbers=False,
-                    word_wrap=False,
-                    code_width=min(120, self.console.width - 12),
-                )
-
-            panel = Panel(
-                renderable,
-                title=f"Diff ({stats_label})",
-                title_align="left",
-                border_style=self.TOOL_COLOR,
-                width=self.console.width - 8,
-                padding=(1, 1),
-            )
-            self.console.print(panel)
-
-        return True
+        # Delegate to UnifiedRenderer
+        return self.renderer.render_diff_message(message)
 
     def on_progress_update(
         self, iteration: int, max_iterations: int, message: Optional[str] = None

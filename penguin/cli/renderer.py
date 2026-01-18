@@ -1175,6 +1175,238 @@ class UnifiedRenderer:
         return Text(f"{icon} {message}", style=style)
 
 
+
+    # =========================================================================
+    # DIFF RENDERING
+    # =========================================================================
+
+    def render_diff_result(self,
+                          result_text: str,
+                          action_type: str = "action",
+                          status_icon: str = "🔧") -> bool:
+        """
+        Render diff output with syntax highlighting when possible.
+
+        Args:
+            result_text: Text containing diff output
+            action_type: Type of action that produced the diff
+            status_icon: Icon to display in the title
+
+        Returns:
+            True if diff was rendered, False otherwise
+        """
+        summary_text, diff_blocks = self._split_diff_sections(result_text)
+
+        if diff_blocks:
+            if summary_text.strip():
+                summary_panel = Panel(
+                    Markdown(summary_text.strip()),
+                    title=f"{status_icon} Result from {action_type}",
+                    title_align="left",
+                    border_style=THEME_COLORS.get("tool", "magenta"),
+                    width=self.console.width - 8,
+                    padding=(1, 1),
+                )
+                self.console.print(summary_panel)
+
+            total_blocks = len(diff_blocks)
+            for index, block in enumerate(diff_blocks, start=1):
+                stats = self._compute_diff_stats(block)
+                stats_label = f"+{stats['adds']} / -{stats['deletes']}"
+                if stats["hunks"]:
+                    stats_label += f" · {stats['hunks']} hunk{'s' if stats['hunks'] != 1 else ''}"
+
+                title_suffix = (
+                    f" [{index}/{total_blocks}]" if total_blocks > 1 else ""
+                )
+                diff_title = (
+                    f"{status_icon} Diff {title_suffix} ({stats_label}) from {action_type}"
+                )
+
+                try:
+                    diff_renderable = Syntax(
+                        block,
+                        "diff",
+                        theme="monokai",
+                        line_numbers=False,
+                        word_wrap=False,
+                        code_width=min(120, self.console.width - 12),
+                    )
+                except Exception:
+                    diff_renderable = Syntax(
+                        block,
+                        "text",
+                        theme="monokai",
+                        line_numbers=False,
+                        word_wrap=False,
+                        code_width=min(120, self.console.width - 12),
+                    )
+
+                diff_panel = Panel(
+                    diff_renderable,
+                    title=diff_title,
+                    title_align="left",
+                    border_style=THEME_COLORS.get("tool", "magenta"),
+                    width=self.console.width - 8,
+                    padding=(1, 1),
+                )
+                self.console.print(diff_panel)
+
+            return True
+
+        if self.is_diff(result_text):
+            from rich.text import Text
+
+            diff_display = Text()
+            for line in result_text.splitlines():
+                if line.startswith("+") and not line.startswith("+++"):
+                    diff_display.append(line + "\n", style="green")
+                elif line.startswith("-") and not line.startswith("---"):
+                    diff_display.append(line + "\n", style="red")
+                elif line.startswith("@@"):
+                    diff_display.append(line + "\n", style="cyan bold")
+                elif line.startswith("+++") or line.startswith("---"):
+                    diff_display.append(line + "\n", style="yellow bold")
+                else:
+                    diff_display.append(line + "\n", style="dim")
+
+            diff_panel = Panel(
+                diff_display,
+                title=f"{status_icon} Diff Result from {action_type}",
+                title_align="left",
+                border_style=THEME_COLORS.get("tool", "magenta"),
+                width=self.console.width - 8,
+                padding=(1, 1),
+            )
+            self.console.print(diff_panel)
+            return True
+
+        return False
+
+    def render_diff_message(self, message: str) -> bool:
+        """
+        Render system messages that contain diff content.
+
+        Args:
+            message: Message containing diff content
+
+        Returns:
+            True if diff was rendered, False otherwise
+        """
+        if not self.is_diff(message):
+            return False
+
+        summary, blocks = self._split_diff_sections(message)
+        if summary.strip():
+            summary_panel = Panel(
+                Markdown(summary.strip()),
+                title="Diff Update",
+                title_align="left",
+                border_style=THEME_COLORS.get("tool", "magenta"),
+                width=self.console.width - 8,
+                padding=(1, 1),
+            )
+            self.console.print(summary_panel)
+
+        if not blocks:
+            # Try rendering whole message as diff if parsing failed
+            blocks = [message]
+
+        for block in blocks:
+            stats = self._compute_diff_stats(block)
+            stats_label = f"+{stats['adds']} / -{stats['deletes']}"
+            if stats["hunks"]:
+                stats_label += f" · {stats['hunks']} hunk{'s' if stats['hunks'] != 1 else ''}"
+
+            try:
+                renderable = Syntax(
+                    block,
+                    "diff",
+                    theme="monokai",
+                    line_numbers=False,
+                    word_wrap=False,
+                    code_width=min(120, self.console.width - 12),
+                )
+            except Exception:
+                renderable = Syntax(
+                    block,
+                    "text",
+                    theme="monokai",
+                    line_numbers=False,
+                    word_wrap=False,
+                    code_width=min(120, self.console.width - 12),
+                )
+
+            panel = Panel(
+                renderable,
+                title=f"Diff ({stats_label})",
+                title_align="left",
+                border_style=THEME_COLORS.get("tool", "magenta"),
+                width=self.console.width - 8,
+                padding=(1, 1),
+            )
+            self.console.print(panel)
+
+        return True
+
+    def _split_diff_sections(self, text: str) -> Tuple[str, List[str]]:
+        """
+        Separate diff blocks from surrounding narrative text.
+
+        Args:
+            text: Text containing diff blocks and narrative
+
+        Returns:
+            Tuple of (narrative_text, list_of_diff_blocks)
+        """
+        diff_blocks: List[str] = []
+
+        # Extract fenced blocks first (```diff```, ```patch```)
+        fenced_pattern = re.compile(r"```(?:diff|patch)\s*\n(.*?)```", re.IGNORECASE | re.DOTALL)
+
+        def _capture_fenced(match: re.Match) -> str:
+            block = match.group(1).strip()
+            if block:
+                diff_blocks.append(block)
+            return ""
+
+        remainder = fenced_pattern.sub(_capture_fenced, text)
+
+        # Extract inline unified diff blocks
+        inline_pattern = re.compile(
+            r"(?ms)^---\s.+?\n\+\+\+\s.+?\n(?:@@.*\n)?(?:[ \t\+\-].*\n)+"
+        )
+        inline_matches = list(inline_pattern.finditer(remainder))
+        for match in inline_matches:
+            block = match.group(0).strip()
+            if block:
+                diff_blocks.append(block)
+        remainder = inline_pattern.sub("", remainder)
+
+        return remainder, diff_blocks
+
+    def _compute_diff_stats(self, diff_text: str) -> Dict[str, int]:
+        """
+        Compute statistics for a diff block.
+
+        Args:
+            diff_text: Diff text to analyze
+
+        Returns:
+            Dictionary with 'adds', 'deletes', and 'hunks' counts
+        """
+        adds = deletes = hunks = 0
+        for line in diff_text.splitlines():
+            if line.startswith("@@"):
+                hunks += 1
+            elif line.startswith("+") and not line.startswith("+++"):
+                adds += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                deletes += 1
+        return {"adds": adds, "deletes": deletes, "hunks": hunks}
+
+
+
 # =============================================================================
 # SINGLETON INSTANCE
 # =============================================================================

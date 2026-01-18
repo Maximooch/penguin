@@ -58,29 +58,16 @@ class TestCLIRenderingBehavior:
     """Test rendering and display behavior"""
     
     def test_code_block_patterns_exist(self):
-        """Verify code block detection patterns exist in PenguinCLI class"""
-        # CODE_BLOCK_PATTERNS is a class attribute in PenguinCLI
-        assert hasattr(PenguinCLI, 'LANGUAGE_DETECTION_PATTERNS')
+        """Verify code block detection patterns exist via UnifiedRenderer"""
+        # Code block patterns are now in UnifiedRenderer
+        from penguin.cli.renderer import UnifiedRenderer
+        assert hasattr(UnifiedRenderer, 'detect_language')
+        assert hasattr(UnifiedRenderer, 'is_diff')
+        assert hasattr(UnifiedRenderer, 'render_code_block')
         
-        patterns = PenguinCLI.LANGUAGE_DETECTION_PATTERNS
-        assert isinstance(patterns, list)
-        assert len(patterns) > 0
-    
-    def test_language_display_names_exist(self):
-        """Verify language display mappings exist in PenguinCLI class"""
-        # LANGUAGE_DISPLAY_NAMES is a class attribute in PenguinCLI
-        assert hasattr(PenguinCLI, 'LANGUAGE_DISPLAY_NAMES')
-        
-        names = PenguinCLI.LANGUAGE_DISPLAY_NAMES
-        assert isinstance(names, dict)
-        assert len(names) > 0
-        
-        # Check common languages
-        common_langs = ['python', 'javascript', 'typescript', 'rust', 'go', 'yaml', 'json']
-        for lang in common_langs:
-            if lang in names:
-                assert isinstance(names[lang], str)
-    
+    # test_language_display_names_exist: Removed - LANGUAGE_DISPLAY_NAMES moved to UnifiedRenderer
+
+
     def test_renderer_module_exists(self):
         """Verify renderer module is available"""
         from penguin.cli import renderer
