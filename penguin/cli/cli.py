@@ -3000,11 +3000,16 @@ class PenguinCLI:
             self.panel_padding,
         )
 
-        # Initialize streaming manager
-        self.streaming_manager = StreamingManager(self.streaming_display)
-
         # Initialize new StreamingDisplay for smooth Rich.Live rendering
         self.streaming_display = StreamingDisplay(
+            self.console,
+            self.renderer,
+            show_timestamps=False,
+            show_metadata=False,
+        )
+
+        # Initialize streaming manager (requires streaming_display)
+        self.streaming_manager = StreamingManager(self.streaming_display)
             console=self.console,
             panel_padding=self.panel_padding,
             borderless=True,
