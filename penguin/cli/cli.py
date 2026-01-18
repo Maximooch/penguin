@@ -260,6 +260,7 @@ from penguin.cli.typer_bridge import TyperBridge, integrate_with_existing_app
 from penguin.cli.renderer import UnifiedRenderer, RenderStyle
 from penguin.cli.streaming_display import StreamingDisplay
 from penguin.cli.events import EventBus, EventType
+from penguin.cli.session_manager import SessionManager
 
 try:
     # Prefer relative import to support repo and installed layouts
@@ -3132,7 +3133,13 @@ class PenguinCLI:
         self.progress = None
 
         # Create prompt_toolkit session
-        self.session = self._create_prompt_session()
+        # Initialize session manager
+        self.session_manager = SessionManager(
+            self.console,
+            self.USER_COLOR,
+            self.PENGUIN_COLOR
+        )
+        self.session = self.session_manager.create_prompt_session()
 
         # NOTE: We intentionally do NOT register a custom SIGINT handler.
         # prompt_toolkit handles Ctrl+C natively by raising KeyboardInterrupt,
@@ -4363,13 +4370,13 @@ Welcome to Penguin!
                             # Handle specialized displays FIRST (before generic status)
                             # These have both data and status, show the rich display
                             elif "checkpoints" in response:
-                                self._display_checkpoints_response(response)
+                                self.session_manager.display_checkpoints_response(response)
 
                             elif "truncations" in response:
-                                self._display_truncations_response(response)
+                                self.session_manager.display_truncations_response(response)
 
                             elif "token_usage" in response or "token_usage_detailed" in response:
-                                self._display_token_usage_response(response)
+                                self.session_manager.display_token_usage_response(response)
 
                             # Handle conversation list
                             elif "conversations" in response:
@@ -4448,15 +4455,15 @@ Welcome to Penguin!
 
                             # Handle token usage display (enhanced)
                             elif "token_usage" in response or "token_usage_detailed" in response:
-                                self._display_token_usage_response(response)
+                                self.session_manager.display_token_usage_response(response)
 
                             # Handle checkpoints list display
                             elif "checkpoints" in response:
-                                self._display_checkpoints_response(response)
+                                self.session_manager.display_checkpoints_response(response)
 
                             # Handle truncations display
                             elif "truncations" in response:
-                                self._display_truncations_response(response)
+                                self.session_manager.display_truncations_response(response)
 
                             # Handle model list
                             elif "models_list" in response:
