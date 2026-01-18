@@ -7,7 +7,9 @@ Extracted from PenguinCLI during Phase 4, Stage 1.
 from rich.table import Table
 from rich.panel import Panel
 from typing import Dict, Any
-from prompt_toolkit import PromptSession, KeyBindings, Keys
+from prompt_toolkit import PromptSession
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.styles import Style
 
 
