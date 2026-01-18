@@ -3070,45 +3070,6 @@ class PenguinCLI:
         self._active_stream_id = None  # NEW – authoritative stream identifier from Core
         self._last_processed_turn = None
 
-    def _create_prompt_session(self):
-        """Create and configure a prompt_toolkit session with multi-line support"""
-        # Define key bindings
-        kb = KeyBindings()
-
-        # Add keybinding for Alt+Enter to create a new line
-        @kb.add(Keys.Escape, Keys.Enter)
-        def _(event):
-            """Insert a new line when Alt (or Option) + Enter is pressed."""
-            event.current_buffer.insert_text("\n")
-
-        # Add keybinding for Enter to submit
-        @kb.add(Keys.Enter)
-        def _(event):
-            """Submit the input when Enter is pressed without modifiers."""
-            # If there's already text and cursor is at the end, submit
-            buffer = event.current_buffer
-            if buffer.text and buffer.cursor_position == len(buffer.text):
-                buffer.validate_and_handle()
-            else:
-                # Otherwise insert a new line
-                buffer.insert_text("\n")
-
-        # Add a custom style
-        style = Style.from_dict(
-            {
-                "prompt": f"bold {self.USER_COLOR}",
-            }
-        )
-
-        # Create the PromptSession
-        return PromptSession(
-            key_bindings=kb,
-            style=style,
-            multiline=True,  # Enable multi-line editing
-            vi_mode=False,  # Use Emacs keybindings by default
-            wrap_lines=True,  # Wrap long lines
-            complete_in_thread=True,
-        )
 
     def _handle_interrupt(self, sig, frame):
         """Handle SIGINT (Ctrl+C) - clean up progress but let the event loop handle the interrupt."""
