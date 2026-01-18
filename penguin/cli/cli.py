@@ -3434,7 +3434,8 @@ class PenguinCLI:
     def _display_code_output_panel(
         self, code_output: str, language: str, title: str = "Output"
     ):
-        lang_display = self.LANGUAGE_DISPLAY_NAMES.get(language, language.capitalize())
+        # Delegate to UnifiedRenderer for language display name
+        lang_display = self.renderer.get_language_display_name(language)
         output_panel = Panel(
             Syntax(code_output, language, theme="monokai", word_wrap=True),
             title=f"📤 {lang_display} {title}",
@@ -3745,9 +3746,7 @@ class PenguinCLI:
             return
 
         if is_code_output:
-            lang_display = self.LANGUAGE_DISPLAY_NAMES.get(
-                detected_lang, detected_lang.capitalize()
-            )
+            lang_display = self.renderer.get_language_display_name(detected_lang)
             content_renderable = Syntax(
                 result_text,
                 detected_lang,
