@@ -261,6 +261,7 @@ from penguin.cli.renderer import UnifiedRenderer, RenderStyle
 from penguin.cli.streaming_display import StreamingDisplay
 from penguin.cli.events import EventBus, EventType
 from penguin.cli.session_manager import SessionManager
+from penguin.cli.display_manager import DisplayManager
 
 try:
     # Prefer relative import to support repo and installed layouts
@@ -3083,6 +3084,13 @@ class PenguinCLI:
             panel_padding=self.panel_padding,
         )
 
+        # Initialize display manager
+        self.display_manager = DisplayManager(
+            self.console,
+            self.renderer,
+            self.panel_padding,
+        )
+
         # Initialize new StreamingDisplay for smooth Rich.Live rendering
         self.streaming_display = StreamingDisplay(
             console=self.console,
@@ -3366,15 +3374,7 @@ class PenguinCLI:
         if panel:  # Only print if not filtered as duplicate
             self.console.print(panel)
 
-    def _format_code_block(self, message, code, language, original_block):
-        """Format a code block with syntax highlighting and return updated message"""
-        # Delegate to UnifiedRenderer for code block rendering
-        self.renderer.render_code_block(code, language)
-
-        # Replace in original message with a note
-        lang_display = self.renderer.get_language_display_name(language)
-        placeholder = f"[Code block displayed above ({lang_display})]"
-        return message.replace(original_block, placeholder)
+    
 
     def _create_tool_summary(self, tool_name: str, content: str, metadata: Dict) -> str:
         """
@@ -3442,25 +3442,7 @@ class PenguinCLI:
         # Default to text if no patterns matched
         return "text"
 
-    def _display_code_output_panel(
-        self, code_output: str, language: str, title: str = "Output"
-    ):
-        # Delegate to UnifiedRenderer for language display name
-        lang_display = self.renderer.get_language_display_name(language)
-        output_panel = Panel(
-            Syntax(code_output, language, theme="monokai", word_wrap=True),
-            title=f"📤 {lang_display} {title}",
-            title_align="left",
-            border_style="green",  # Or self.RESULT_COLOR
-            padding=(1, 2),
-            width=self.console.width - 8 if self.console else None,
-        )
-        if self.console:
-            self.console.print(output_panel)
-        else:  # Fallback if console not available (e.g. direct prompt mode context)
-            print(f"--- {lang_display} {title} ---")
-            print(code_output)
-            print(f"--- End {lang_display} {title} ---")
+    
 
     def _display_list_response(self, response: Dict[str, Any]):
         """Display the /list command response in a nicely formatted way"""
@@ -3475,11 +3457,11 @@ class PenguinCLI:
             summary_text = f"**Summary**: {summary.get('total_projects', 0)} projects, "
             summary_text += f"{summary.get('total_tasks', 0)} tasks "
             summary_text += f"({summary.get('active_tasks', 0)} active)"
-            self.display_message(summary_text, "system")
+            self.display_manager.display_message(summary_text, "system")
 
             # Display projects table if any exist
             if projects:
-                self.display_message("## Projects", "system")
+                self.display_manager.display_message("## Projects", "system")
                 table = Table(show_header=True, header_style="bold magenta")
                 table.add_column("ID", style="dim", width=8)
                 table.add_column("Name", style="cyan")
@@ -3502,7 +3484,7 @@ class PenguinCLI:
 
             # Display tasks table if any exist
             if tasks:
-                self.display_message("## Tasks", "system")
+                self.display_manager.display_message("## Tasks", "system")
                 table = Table(show_header=True, header_style="bold magenta")
                 table.add_column("ID", style="dim", width=8)
                 table.add_column("Title", style="white")
@@ -3530,7 +3512,7 @@ class PenguinCLI:
 
             # If no projects or tasks
             if not projects and not tasks:
-                self.display_message(
+                self.display_manager.display_message(
                     "No projects or tasks found. Create some with `/project create` or `/task create`.",
                     "system",
                 )
@@ -3538,7 +3520,7 @@ class PenguinCLI:
         except Exception as e:
             # Fallback to simple text display
             logger.error(f"Error displaying list response: {e}")
-            self.display_message(
+            self.display_manager.display_message(
                 f"Projects and Tasks:\n{json.dumps(response, indent=2)}", "system"
             )
 
@@ -3550,7 +3532,7 @@ class PenguinCLI:
             checkpoints = response.get("checkpoints", [])
             
             if not checkpoints:
-                self.display_message("No checkpoints found", "system")
+                self.display_manager.display_message("No checkpoints found", "system")
                 return
             
             # Create table for checkpoints
@@ -3587,14 +3569,14 @@ class PenguinCLI:
                 )
             
             self.console.print(table)
-            self.display_message(
+            self.display_manager.display_message(
                 f"\nUse `/rollback <id>` to restore or `/branch <id>` to create a new branch",
                 "system"
             )
             
         except Exception as e:
             logger.error(f"Error displaying checkpoints: {e}")
-            self.display_message(f"Checkpoints:\n{json.dumps(response, indent=2)}", "system")
+            self.display_manager.display_message(f"Checkpoints:\n{json.dumps(response, indent=2)}", "system")
 
     def _display_truncations_response(self, response: Dict[str, Any]):
         """Display truncation events in a nicely formatted table"""
@@ -3605,7 +3587,7 @@ class PenguinCLI:
             truncations = response.get("truncations", [])
             
             if not truncations:
-                self.display_message("✓ No truncation events - context window is within budget", "system")
+                self.display_manager.display_message("✓ No truncation events - context window is within budget", "system")
                 return
             
             # Show summary panel first
@@ -3656,7 +3638,7 @@ class PenguinCLI:
             
         except Exception as e:
             logger.error(f"Error displaying truncations: {e}")
-            self.display_message(f"Truncations:\n{json.dumps(response, indent=2)}", "system")
+            self.display_manager.display_message(f"Truncations:\n{json.dumps(response, indent=2)}", "system")
 
     def _display_token_usage_response(self, response: Dict[str, Any]):
         """Display enhanced token usage with categories"""
@@ -3713,7 +3695,7 @@ class PenguinCLI:
                 
         except Exception as e:
             logger.error(f"Error displaying token usage: {e}")
-            self.display_message(f"Token usage:\n{json.dumps(response, indent=2)}", "system")
+            self.display_manager.display_message(f"Token usage:\n{json.dumps(response, indent=2)}", "system")
 
     def display_action_result(self, result: Dict[str, Any]):
         """Display action results in a more readable format"""
@@ -3736,7 +3718,7 @@ class PenguinCLI:
         # Special handling for file read operations - acknowledge without dumping content
         is_file_read = action_type in self.FILE_READ_ACTIONS
         if is_file_read:
-            self._display_file_read_result(result, result_text, action_type, status_icon)
+            self.display_manager.display_file_read_result(result, result_text, action_type, status_icon)
             return
 
         # If result_text is code-like, use Syntax highlighting
@@ -3753,7 +3735,7 @@ class PenguinCLI:
             detected_lang = self._detect_language(result_text)
 
         # Check if this is a diff output (from edit tools) - display with enhanced visualization
-        if self._display_diff_result(result_text, action_type, status_icon):
+        if self.display_manager.display_diff_result(result_text, action_type, status_icon):
             return
 
         if is_code_output:
@@ -4126,7 +4108,7 @@ Welcome to Penguin!
 
                 # DON'T display user input here - let event system handle it
                 # (Prevents duplicate display: once here, once from Core event)
-                # self.display_message(user_input, "user")
+                # self.display_manager.display_message(user_input, "user")
 
                 # Add user message to processed messages to prevent duplication
                 user_msg_key = f"user:{user_input[:50]}"
@@ -4141,11 +4123,11 @@ Welcome to Penguin!
                     message_content = parts[1].strip() if len(parts) > 1 else ""
 
                     if not target_agent:
-                        self.display_message("Usage: @agent-name <message>", "error")
+                        self.display_manager.display_message("Usage: @agent-name <message>", "error")
                         continue
 
                     if not message_content:
-                        self.display_message(f"Please provide a message for @{target_agent}", "error")
+                        self.display_manager.display_message(f"Please provide a message for @{target_agent}", "error")
                         continue
 
                     # Check if agent exists (either as persona or registered agent)
@@ -4154,7 +4136,7 @@ Welcome to Penguin!
 
                     if target_agent not in personas and target_agent not in roster_ids:
                         available = sorted(personas | roster_ids - {None})
-                        self.display_message(
+                        self.display_manager.display_message(
                             f"Unknown agent '@{target_agent}'. Available: {', '.join(available)}", 
                             "error"
                         )
@@ -4168,20 +4150,20 @@ Welcome to Penguin!
                             conv = self.core.conversation_manager.get_agent_conversation(target_agent)
                             if conv and hasattr(conv, 'session') and conv.session:
                                 conv.session.metadata["persona"] = target_agent
-                            self.display_message(f"Spawned agent '{target_agent}' from persona", "system")
+                            self.display_manager.display_message(f"Spawned agent '{target_agent}' from persona", "system")
                         except Exception as e:
-                            self.display_message(f"Failed to spawn agent: {e}", "error")
+                            self.display_manager.display_message(f"Failed to spawn agent: {e}", "error")
                             continue
 
                     # Send message to the target agent
                     try:
                         success = await self.core.send_to_agent(target_agent, message_content)
                         if success:
-                            self.display_message(f"Message sent to @{target_agent}", "system")
+                            self.display_manager.display_message(f"Message sent to @{target_agent}", "system")
                         else:
-                            self.display_message(f"Failed to send message to @{target_agent}", "error")
+                            self.display_manager.display_message(f"Failed to send message to @{target_agent}", "error")
                     except Exception as e:
-                        self.display_message(f"Error sending to @{target_agent}: {e}", "error")
+                        self.display_manager.display_message(f"Error sending to @{target_agent}: {e}", "error")
                     continue
 
                 # Handle commands
@@ -4243,7 +4225,7 @@ Welcome to Penguin!
                                             await self.session.prompt_async(prompt_html)
                                         ).strip().strip("'\"")
                                     except KeyboardInterrupt:
-                                        self.display_message("Image input cancelled.", "system")
+                                        self.display_manager.display_message("Image input cancelled.", "system")
                                         continue
                                     if prompted:
                                         image_paths = [prompted]
@@ -4252,7 +4234,7 @@ Welcome to Penguin!
                                 missing = [p for p in image_paths if not os.path.exists(p)]
                                 if not image_paths or missing:
                                     missing_label = ", ".join(missing) if missing else "(none)"
-                                    self.display_message(
+                                    self.display_manager.display_message(
                                         f"Image file not found: {missing_label}", "error"
                                     )
                                     continue
@@ -4291,7 +4273,7 @@ Welcome to Penguin!
                                             client_supports = False
 
                                 if image_paths and not (vision_enabled or client_supports):
-                                    self.display_message(
+                                    self.display_manager.display_message(
                                         "Vision is disabled for the current model. "
                                         "Enable `model.vision_enabled` or switch to a vision-capable model.",
                                         "error",
@@ -4309,7 +4291,7 @@ Welcome to Penguin!
                                     specs_service = ModelSpecsService()
                                     specs = await specs_service.get_specs(model_id)
                                     if specs and not specs.supports_vision:
-                                        self.display_message(
+                                        self.display_manager.display_message(
                                             f"⚠️  Warning: Model `{model_id}` does not report vision support "
                                             f"in OpenRouter. The image may be ignored or cause an error.",
                                             "system",
@@ -4346,14 +4328,14 @@ Welcome to Penguin!
                                                 )
                                             if "status" not in result:
                                                 result["status"] = "completed"
-                                            self.display_action_result(result)
+                                            self.display_manager.display_action_result(result)
                                         else:
-                                            self.display_message(str(result), "system")
+                                            self.display_manager.display_message(str(result), "system")
                             except Exception as e:
-                                self.display_message(
+                                self.display_manager.display_message(
                                     f"Error processing image command: {e!s}", "error"
                                 )
-                                self.display_message(traceback.format_exc(), "error")
+                                self.display_manager.display_message(traceback.format_exc(), "error")
                             continue  # Skip default command processing for /image
                         else:
                             # Regular command handling
@@ -4365,7 +4347,7 @@ Welcome to Penguin!
                         if isinstance(response, dict):
                             # Handle error responses
                             if "error" in response:
-                                self.display_message(response["error"], "error")
+                                self.display_manager.display_message(response["error"], "error")
 
                             # Handle specialized displays FIRST (before generic status)
                             # These have both data and status, show the rich display
@@ -4391,17 +4373,17 @@ Welcome to Penguin!
                                         f"chat load {selected_id}"
                                     )
                                     if "status" in load_result:
-                                        self.display_message(
+                                        self.display_manager.display_message(
                                             load_result["status"], "system"
                                         )
                                     elif "error" in load_result:
-                                        self.display_message(
+                                        self.display_manager.display_message(
                                             load_result["error"], "error"
                                         )
 
                             # Handle list command response
                             elif "projects" in response and "tasks" in response:
-                                self._display_list_response(response)
+                                self.display_manager.display_list_response(response)
 
                             # Handle model list
                             elif "models_list" in response:
@@ -4412,11 +4394,11 @@ Welcome to Penguin!
                                         "→ " if model.get("current", False) else "  "
                                     )
                                     models_msg += f"{current_marker}{model.get('name')} ({model.get('provider')})\n"
-                                self.display_message(models_msg, "system")
+                                self.display_manager.display_message(models_msg, "system")
 
                             # Handle generic status messages LAST (fallback)
                             elif "status" in response:
-                                self.display_message(response["status"], "system")
+                                self.display_manager.display_message(response["status"], "system")
 
                             # Handle help messages
                             elif "help" in response:
@@ -4445,11 +4427,11 @@ Welcome to Penguin!
                                         f"chat load {selected_id}"
                                     )
                                     if "status" in load_result:
-                                        self.display_message(
+                                        self.display_manager.display_message(
                                             load_result["status"], "system"
                                         )
                                     elif "error" in load_result:
-                                        self.display_message(
+                                        self.display_manager.display_message(
                                             load_result["error"], "error"
                                         )
 
@@ -4474,14 +4456,14 @@ Welcome to Penguin!
                                         "→ " if model.get("current", False) else "  "
                                     )
                                     models_msg += f"{current_marker}{model.get('name')} ({model.get('provider')})\n"
-                                self.display_message(models_msg, "system")
+                                self.display_manager.display_message(models_msg, "system")
 
                             # Handle list command response
                             elif "projects" in response and "tasks" in response:
-                                self._display_list_response(response)
+                                self.display_manager.display_list_response(response)
                     except Exception as e:
-                        self.display_message(f"Error executing command: {e!s}", "error")
-                        self.display_message(traceback.format_exc(), "error")
+                        self.display_manager.display_message(f"Error executing command: {e!s}", "error")
+                        self.display_manager.display_message(traceback.format_exc(), "error")
 
                     continue  # Back to prompt after command processing
 
@@ -4530,11 +4512,11 @@ Welcome to Penguin!
                     #
                     # if isinstance(response, dict) and "action_results" in response:
                     #     for result in response["action_results"]:
-                    #         self.display_action_result(result)
+                    #         self.display_manager.display_action_result(result)
 
                     # If the response itself is a string (unlikely but possible), display it.
                     elif isinstance(response, str):
-                        self.display_message(response)
+                        self.display_manager.display_message(response)
 
                 except KeyboardInterrupt:
                     # Handle interrupt during processing - don't exit, just cancel current operation
@@ -4546,8 +4528,8 @@ Welcome to Penguin!
                     # Don't raise - continue to next prompt iteration
                     continue
                 except Exception as e:
-                    self.display_message(f"Error processing input: {e!s}", "error")
-                    self.display_message(traceback.format_exc(), "error")
+                    self.display_manager.display_message(f"Error processing input: {e!s}", "error")
+                    self.display_manager.display_message(traceback.format_exc(), "error")
                 finally:
                     # Always clean up progress display and streaming
                     self._safely_stop_progress()
@@ -4569,7 +4551,7 @@ Welcome to Penguin!
                 break
 
             except Exception as e:
-                self.display_message(f"Chat loop error: {e!s}", "error")
+                self.display_manager.display_message(f"Chat loop error: {e!s}", "error")
                 logger.error(f"Chat loop error: {traceback.format_exc()}")
 
         # Final save before exit to ensure all messages are persisted
@@ -4585,7 +4567,7 @@ Welcome to Penguin!
     async def handle_conversation_command(self, command_parts: List[str]) -> None:
         """Handle conversation-related commands"""
         if len(command_parts) < 2:
-            self.display_message(
+            self.display_manager.display_message(
                 "Usage:\n"
                 " • /chat list - Show available conversations\n"
                 " • /chat load - Load a previous conversation\n"
@@ -4677,9 +4659,9 @@ Welcome to Penguin!
             if session_id:
                 try:
                     self.core.conversation_manager.load(session_id)
-                    self.display_message("Conversation loaded successfully", "system")
+                    self.display_manager.display_message("Conversation loaded successfully", "system")
                 except Exception as e:
-                    self.display_message(f"Error loading conversation: {e!s}", "error")
+                    self.display_manager.display_message(f"Error loading conversation: {e!s}", "error")
 
         elif action == "load":
             # Same as list for now, might add direct session_id loading later
@@ -4699,10 +4681,10 @@ Welcome to Penguin!
             conversation = self.core.get_conversation(command_parts[2])
             if conversation and hasattr(self.core, "run_mode_messages"):
                 # Need to handle this differently with new conversation system
-                self.display_message("Task execution completed", "system")
+                self.display_manager.display_message("Task execution completed", "system")
 
         else:
-            self.display_message(f"Unknown conversation action: {action}", "error")
+            self.display_manager.display_message(f"Unknown conversation action: {action}", "error")
 
     # Legacy stream_callback method removed - now using event system only
 
@@ -4807,7 +4789,7 @@ Welcome to Penguin!
             # NOW display any pending system messages (tool results) that arrived during streaming
             if self.pending_system_messages:
                 for msg_content, msg_role in self.pending_system_messages:
-                    self.display_message(msg_content, msg_role)
+                    self.display_manager.display_message(msg_content, msg_role)
                 self.pending_system_messages.clear()
 
             # Clear stream ID
@@ -4849,7 +4831,7 @@ Welcome to Penguin!
             if result and not self.is_streaming:
                 # Only show if not currently streaming assistant response
                 tool_summary = f"✓ {tool_name}" if len(result) < 50 else f"✓ {tool_name}: {result[:47]}..."
-                self.display_message(tool_summary, "system")
+                self.display_manager.display_message(tool_summary, "system")
 
 
     def _handle_message_event(self, event_type: str, data: Dict[str, Any]) -> None:
@@ -4883,7 +4865,7 @@ Welcome to Penguin!
                     if self.is_streaming or self._active_stream_id is not None:
                         self.pending_system_messages.append((summary, "system"))
                     else:
-                        self.display_message(summary, "system")
+                        self.display_manager.display_message(summary, "system")
                 return
 
             # Show full output for important tools (execute, diff, etc.)
@@ -4893,7 +4875,7 @@ Welcome to Penguin!
                 return
             else:
                 # Not streaming, display immediately
-                self.display_message(message_content, "system")
+                self.display_manager.display_message(message_content, "system")
                 return
 
         # Skip other internal system messages
@@ -4961,7 +4943,7 @@ Welcome to Penguin!
         self.message_turn_map[msg_key] = self.current_conversation_turn
 
         # Display message
-        self.display_message(message_content, role)
+        self.display_manager.display_message(message_content, role)
 
         if role == "assistant":
             self.last_completed_message = message_content
@@ -4988,7 +4970,7 @@ Welcome to Penguin!
             if self.streaming_display.is_active:
                 self.streaming_display.set_status(f"Starting task: {task_name}")
             else:
-                self.display_message(f"Starting task: {task_name}", "system")
+                self.display_manager.display_message(f"Starting task: {task_name}", "system")
 
         elif "task_progress" in status_type:
             self.run_mode_active = True
@@ -5019,10 +5001,10 @@ Welcome to Penguin!
                     "task_name", "Unknown task"
                 )
                 self.run_mode_status = f"Task '{task_name}' completed"
-                self.display_message(f"Task '{task_name}' completed", "system")
+                self.display_manager.display_message(f"Task '{task_name}' completed", "system")
             else:
                 self.run_mode_status = "RunMode ended"
-                self.display_message("RunMode ended", "system")
+                self.display_manager.display_message("RunMode ended", "system")
 
         elif "clarification_needed" in status_type:
             self.run_mode_active = True
@@ -5033,7 +5015,7 @@ Welcome to Penguin!
             if self.streaming_display.is_active:
                 self.streaming_display.set_status(self.run_mode_status)
             else:
-                self.display_message(f"Clarification needed: {prompt}", "system")
+                self.display_manager.display_message(f"Clarification needed: {prompt}", "system")
 
     def _handle_error_event(self, event_type: str, data: Dict[str, Any]) -> None:
         """Handle error events."""
@@ -5042,7 +5024,7 @@ Welcome to Penguin!
         details = data.get("details", "")
 
         # Display error message
-        self.display_message(f"Error: {error_msg}\n{details}", "error")
+        self.display_manager.display_message(f"Error: {error_msg}\n{details}", "error")
 
     def set_streaming(self, enabled: bool = True) -> None:
         """
