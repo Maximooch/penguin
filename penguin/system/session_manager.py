@@ -179,21 +179,42 @@ class SessionManager:
         """Save all modified sessions."""
         modified_sessions = []
         
-        # Find all modified sessions
+        # Find all modified sessions in cache
         for session_id, (session, is_modified) in list(self.sessions.items()):
             if is_modified:
                 modified_sessions.append(session)
                 
         # Save each modified session
+        saved_count = 0
         for session in modified_sessions:
-            self.save_session(session)
-            # Mark as not modified in the cache
-            if session.id in self.sessions:
-                self.sessions[session.id] = (session, False)
-                
-        # If current session is modified, save it too
-        if self.current_session and self.current_session.id not in self.sessions:
-            self.save_session(self.current_session)
+            if self.save_session(session):
+                saved_count += 1
+                # Mark as not modified in the cache
+                if session.id in self.sessions:
+                    self.sessions[session.id] = (session, False)
+                    
+        # Also ensure current_session is saved if it exists
+        # This handles edge cases where current_session might not be in cache
+        # or where the modified flag wasn't properly synced
+        if self.current_session:
+            # Check if current session is in cache
+            if self.current_session.id in self.sessions:
+                cached_session, is_modified = self.sessions[self.current_session.id]
+                # If it's already been saved above, skip
+                if is_modified:
+                    # This shouldn't happen if the loop above worked, but safety check
+                    if self.save_session(self.current_session):
+                        saved_count += 1
+                        self.sessions[self.current_session.id] = (self.current_session, False)
+            else:
+                # Current session not in cache - save it
+                if self.save_session(self.current_session):
+                    saved_count += 1
+                    # Add to cache as not modified
+                    self._add_to_session_cache(self.current_session.id, self.current_session)
+                    
+        if saved_count > 0:
+            logger.debug(f"Auto-saved {saved_count} session(s)")
     
     def create_session(self) -> Session:
         """
@@ -727,10 +748,20 @@ class SessionManager:
             return False
     
     def mark_session_modified(self, session_id: str) -> None:
-        """Mark a session as modified in the cache."""
+        """Mark a session as modified in the cache.
+        
+        If the session is not in the cache but is the current_session,
+        it will be added to the cache and marked as modified.
+        """
         if session_id in self.sessions:
             session, _ = self.sessions[session_id]
             self.sessions[session_id] = (session, True)
+        elif self.current_session and self.current_session.id == session_id:
+            # Session not in cache but is current_session - add it
+            # This handles edge cases where session was created outside create_session()
+            self._add_to_session_cache(session_id, self.current_session)
+            self.sessions[session_id] = (self.current_session, True)
+            logger.debug(f"Added current_session {session_id} to cache and marked modified")
     
     def __del__(self):
         """Clean up resources."""

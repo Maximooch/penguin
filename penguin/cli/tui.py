@@ -2303,6 +2303,14 @@ class PenguinTextualApp(App):
             # Process the input through interface
             await self.interface.process_input(payload)
             self.status_text = "Ready"
+            
+            # Save conversation after successful message processing
+            try:
+                if self.core and hasattr(self.core, 'conversation_manager'):
+                    self.core.conversation_manager.save()
+                    logger.debug("TUI: Conversation saved after message processing")
+            except Exception as save_err:
+                logger.warning(f"TUI: Failed to save conversation: {save_err}")
         except Exception as e:
             self.status_text = "Error"
             error_msg = f"Error processing input: {e}"
@@ -2965,6 +2973,13 @@ class PenguinTextualApp(App):
 
     def action_quit(self) -> None:
         """Quit the application."""
+        # Save conversation before quitting
+        try:
+            if self.core and hasattr(self.core, 'conversation_manager'):
+                self.core.conversation_manager.save()
+                logger.info("TUI: Final conversation save on quit")
+        except Exception as e:
+            logger.warning(f"TUI: Failed to save conversation on quit: {e}")
         self.exit()
 
     # ---------------------------

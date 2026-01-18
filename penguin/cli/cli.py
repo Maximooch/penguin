@@ -3054,40 +3054,7 @@ class PenguinCLI:
     LARGE_STREAM_RENDER_THRESHOLD = 6000  # characters
 
     # Language detection and mapping
-    CODE_BLOCK_PATTERNS = [
-        # Standard markdown code blocks with language specification
-        (r"```(\w+)(.*?)```", "{}"),  # Captures language and code
-        # Execute blocks (for backward compatibility)
-        (r"<execute>(.*?)</execute>", "python"),
-        # Diff/Edit action tags (will be auto-detected as diff if they contain diff content)
-        (r"<apply_diff>(.*?)</apply_diff>", "text"),  # Will auto-detect as diff
-        (r"<multiedit>(.*?)</multiedit>", "text"),  # Will auto-detect as diff
-        (r"<enhanced_diff>(.*?)</enhanced_diff>", "text"),  # Will auto-detect as diff
-        # Language-specific tags
-        (r"<python>(.*?)</python>", "python"),
-        (r"<javascript>(.*?)</javascript>", "javascript"),
-        (r"<js>(.*?)</js>", "javascript"),
-        (r"<html>(.*?)</html>", "html"),
-        (r"<css>(.*?)</css>", "css"),
-        (r"<java>(.*?)</java>", "java"),
-        (r"<c\+\+>(.*?)</c\+\+>", "cpp"),
-        (r"<cpp>(.*?)</cpp>", "cpp"),
-        (r"<c#>(.*?)</c#>", "csharp"),
-        (r"<csharp>(.*?)</csharp>", "csharp"),
-        (r"<typescript>(.*?)</typescript>", "typescript"),
-        (r"<ts>(.*?)</ts>", "typescript"),
-        (r"<ruby>(.*?)</ruby>", "ruby"),
-        (r"<go>(.*?)</go>", "go"),
-        (r"<rust>(.*?)</rust>", "rust"),
-        (r"<php>(.*?)</php>", "php"),
-        (r"<swift>(.*?)</swift>", "swift"),
-        (r"<kotlin>(.*?)</kotlin>", "kotlin"),
-        (r"<shell>(.*?)</shell>", "bash"),
-        (r"<bash>(.*?)</bash>", "bash"),
-        (r"<sql>(.*?)</sql>", "sql"),
-        # Default code block (no language specified)
-        (r"<code>(.*?)</code>", "text"),
-    ]
+    
 
     # Language detection patterns for auto-detection
     LANGUAGE_DETECTION_PATTERNS = [
@@ -4738,6 +4705,12 @@ Welcome to Penguin!
 
                 # Save conversation after each message exchange
                 self.message_count += 1
+                try:
+                    if hasattr(self, 'core') and self.core and hasattr(self.core, 'conversation_manager'):
+                        self.core.conversation_manager.save()
+                        logger.debug(f"Conversation saved after message {self.message_count}")
+                except Exception as save_err:
+                    logger.warning(f"Failed to save conversation: {save_err}")
 
             except KeyboardInterrupt:
                 # Fallback handler - should rarely be hit now
@@ -4748,6 +4721,14 @@ Welcome to Penguin!
                 self.display_message(f"Chat loop error: {e!s}", "error")
                 logger.error(f"Chat loop error: {traceback.format_exc()}")
 
+        # Final save before exit to ensure all messages are persisted
+        try:
+            if hasattr(self, 'core') and self.core and hasattr(self.core, 'conversation_manager'):
+                self.core.conversation_manager.save()
+                logger.info("Final conversation save on exit")
+        except Exception as save_err:
+            logger.warning(f"Failed to save conversation on exit: {save_err}")
+            
         console.print("\nGoodbye! 👋")
 
     async def handle_conversation_command(self, command_parts: List[str]) -> None:

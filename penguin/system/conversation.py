@@ -62,9 +62,15 @@ class ConversationSystem:
         if session_manager and session_manager.current_session:
             self.session = session_manager.current_session
         else:
-            self.session = Session()
+            # BUGFIX: Use session_manager.create_session() to ensure the session
+            # is added to the sessions cache. Previously, Session() was created
+            # directly which bypassed the cache, causing mark_session_modified()
+            # to silently fail and preventing auto-save from working.
             if session_manager:
-                session_manager.current_session = self.session
+                self.session = session_manager.create_session()
+            else:
+                # Fallback if no session_manager (testing/isolated usage)
+                self.session = Session()
         
         # Track if save is needed
         self._modified = False
@@ -134,6 +140,13 @@ class ConversationSystem:
         # Add to current session
         self.session.messages.append(message)
         self._modified = True
+        
+        # Sync modified state to SessionManager's cache for auto-save reliability
+        if self.session_manager and self.session:
+            try:
+                self.session_manager.mark_session_modified(self.session.id)
+            except Exception:
+                pass  # Best-effort sync, don't fail message addition
 
         # Phase 3: publish protocol message to MessageBus (best-effort)
         try:

@@ -548,7 +548,18 @@ class OpenRouterGateway:
                         full_reasoning_content = _gateway_accumulated_reasoning
 
                     # Handle content tokens
-                    elif content_delta:
+                    # BUGFIX: Changed from 'elif' to 'if' to handle chunks that have BOTH
+                    # reasoning_delta AND content_delta simultaneously (common during transitions).
+                    # With 'elif', content was dropped when both were present in the same chunk.
+                    if content_delta:
+                        # Log transition chunks (debugging abrupt terminations)
+                        if reasoning_delta and content_delta:
+                            self.logger.info(
+                                f"[OpenRouterGateway] TRANSITION CHUNK: Both reasoning ({len(reasoning_delta)} chars) "
+                                f"and content ({len(content_delta)} chars) in same chunk. "
+                                f"Reasoning preview: '{reasoning_delta[:50]}...'"
+                            )
+                        
                         # Mark reasoning phase as complete when we start getting content
                         if not reasoning_phase_complete and _gateway_accumulated_reasoning:
                             reasoning_phase_complete = True
@@ -596,7 +607,9 @@ class OpenRouterGateway:
                         except Exception as _int_err:
                             self.logger.debug(f"[OpenRouterGateway] interrupt_on_action check failed: {_int_err}")
 
-                    elif tool_calls_delta:
+                    # Handle tool_calls deltas
+                    # BUGFIX: Changed from 'elif' to 'if' to allow tool_calls with content in same chunk
+                    if tool_calls_delta:
                          self.logger.debug(f"[OpenRouterGateway] Received tool_calls delta: {tool_calls_delta}.")
                          # Accumulate name/arguments from delta (best-effort)
                          try:
@@ -633,7 +646,9 @@ class OpenRouterGateway:
                                  return _gateway_accumulated_content
                          except Exception as _tool_int_err:
                              self.logger.debug(f"[OpenRouterGateway] interrupt_on_tool_call check failed: {_tool_int_err}")
-                    else:
+                    
+                    # Log if no delta was found (all three types were empty)
+                    if not reasoning_delta and not content_delta and not tool_calls_delta:
                         self.logger.debug(f"[OpenRouterGateway] Chunk {chunk_index-1} had no text/reasoning/tool delta.")
 
                 # self.logger.info(f"[OpenRouterGateway] Finished stream [{request_id}]. Accumulated reasoning length: {len(full_reasoning_content)}, content length: {len(full_response_content)}")
