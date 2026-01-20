@@ -122,6 +122,12 @@ class DisplayManager:
             return
 
         # Display action info
+        # Skip verbose display for finish_response actions
+        if action_type.lower() == "finish_response":
+            # Don't show a big panel for completion
+            self.console.print("[dim]✓[/dim]", end=" ")
+            return
+
         action_panel = Panel(
             f"[bold]Action:[/bold] {action_name}\n[bold]Status:[/bold] {status}",
             title=f"🔧 {action_type}",

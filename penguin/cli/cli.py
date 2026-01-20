@@ -3566,6 +3566,9 @@ Welcome to Penguin!
                                 # Use shlex so quoted paths with spaces work correctly.
                                 raw = user_input[1:]  # drop leading "/"
 
+                                # Normalize: remove line continuation backslashes
+                                raw = raw.replace("\\n", "").replace("\\r\\n", "")
+
                                 # Normalize drag-and-drop input
                                 # Remove line continuation backslashes and join multiline paths
                                 raw = raw.replace("\ ", " ")
