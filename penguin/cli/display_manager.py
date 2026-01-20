@@ -323,34 +323,26 @@ class DisplayManager:
         # Create table for truncations
         table = Table(show_header=True, header_style="bold magenta", title="📉 Truncation Events")
         table.add_column("Time", style="dim", width=12)
-        table.add_column("Type", style="cyan")
-        table.add_column("Resource", style="white", max_width=30)
-        table.add_column("Result", style="bold")
-        table.add_column("Reason", max_width=35)
+        table.add_column("Category", style="cyan")
+        table.add_column("Messages Removed", style="white", justify="right")
+        table.add_column("Tokens Freed", style="green", justify="right")
+        table.add_column("Before", style="dim", justify="right")
+        table.add_column("After", style="dim", justify="right")
 
         for truncation in truncations:
             # Parse timestamp to show just time
             time_str = truncation.timestamp.split("T")[1][:8] if "T" in truncation.timestamp else truncation.timestamp[:8]
 
-            # Color result
-            result_color = {"allow": "green", "ask": "yellow", "deny": "red"}.get(truncation.result, "white")
-            result_display = f"[{result_color}]{truncation.result.upper()}[/{result_color}]"
-
-            # Truncate resource if needed
-            resource = truncation.resource
-            if len(resource) > 30:
-                resource = "..." + resource[-27:]
-
             table.add_row(
                 time_str,
-                truncation.operation,
-                resource,
-                result_display,
-                truncation.reason[:35] + "..." if len(truncation.reason) > 35 else truncation.reason,
+                str(truncation.category.value),
+                str(truncation.messages_removed),
+                str(truncation.tokens_freed),
+                str(truncation.total_messages_before),
+                str(truncation.total_messages_after),
             )
 
         self.console.print(table)
-
     def display_code_output_panel(
         self, code_output: str, language: str, title: str = "Output"
     ) -> None:

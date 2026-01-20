@@ -1100,6 +1100,67 @@ def main_entry(
         asyncio.run(_async_init_and_run())
 
 
+
+async def _handle_session_management(
+    continue_last: bool,
+    resume_session: Optional[str],
+    prompt: Optional[str] = None,
+    output_format: str = "text",
+) -> None:
+    """
+    Handle session management flags by loading the appropriate conversation.
+
+    Args:
+        continue_last: Whether to continue the last session
+        resume_session: Session ID to resume
+        prompt: Optional prompt to run after loading session
+        output_format: Output format (text, json, etc.)
+    """
+    global _core
+
+    if not _core:
+        logger.error("Core not initialized for session management.")
+        console.print("[red]Error: Core not initialized[/red]")
+        return
+
+    # Resume specific session
+    if resume_session:
+        try:
+            _core.load_conversation(resume_session)
+            console.print(f"[green]Resumed session: {resume_session}[/green]")
+        except Exception as e:
+            console.print(f"[red]Error resuming session: {e}[/red]")
+            return
+
+    # Continue last session
+    elif continue_last:
+        try:
+            # Get most recent checkpoint
+            checkpoints = _core.list_checkpoints()
+            checkpoint_list = checkpoints.get("checkpoints", [])
+
+            if checkpoint_list:
+                last_checkpoint = checkpoint_list[0]["id"]
+                _core.load_conversation(last_checkpoint)
+                console.print(f"[green]Continued last session: {last_checkpoint}[/green]")
+            else:
+                console.print("[yellow]No previous session found. Starting fresh.[/yellow]")
+        except Exception as e:
+            console.print(f"[red]Error continuing last session: {e}[/red]")
+            return
+
+    # Run prompt if provided
+    if prompt:
+        # Use direct prompt mode for non-interactive execution
+        await _run_penguin_direct_prompt(prompt, output_format)
+    else:
+        # Enter interactive mode
+        cli = PenguinCLI(_core)
+        await cli.chat_loop()
+
+
+
+
 async def _handle_run_mode(
     task_name: Optional[str],
     continuous: bool,
@@ -1222,6 +1283,7 @@ async def _handle_run_mode(
         console.print(traceback.format_exc())
 
 
+@config_app.command("setup")
 def config_setup():
     """Run the setup wizard to configure Penguin"""
     console.print("[bold cyan]🐧 Penguin Setup Wizard[/bold cyan]")
@@ -3327,9 +3389,6 @@ class PenguinCLI:
                     iteration, max_iterations - 1
                 ),  # Never mark fully complete
             )
-
-        """Safely stop and clear the progress bar"""
-        self.streaming_manager.safely_stop_progress()
         self._progress_task_id = None
 
     def _ensure_progress_cleared(self):
