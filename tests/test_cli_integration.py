@@ -95,16 +95,14 @@ class TestCLIDisplayMethods:
     
     def test_display_diff_result_exists(self):
         """Verify diff display exists"""
-        from penguin.cli.cli import PenguinCLI
+        from penguin.cli.display_manager import DisplayManager
         
-        assert hasattr(PenguinCLI, '_display_diff_result')
-    
+        assert hasattr(DisplayManager, 'display_diff_result')
     def test_render_diff_message_exists(self):
         """Verify diff message rendering exists"""
-        from penguin.cli.cli import PenguinCLI
+        from penguin.cli.display_manager import DisplayManager
         
-        assert hasattr(PenguinCLI, '_render_diff_message')
-
+        assert hasattr(DisplayManager, 'render_diff_message')
 
 class TestCLIStreamingBehavior:
     """Test streaming and progress display behavior"""

@@ -3296,75 +3296,9 @@ class PenguinCLI:
         # For other tools, show nothing (will use default display)
         return ""
 
-    def _detect_language(self, code: str) -> str:
-        """Automatically detect the programming language of the code.
 
-        Args:
-            code: Code snippet to analyze.
 
-        Returns:
-            Detected language identifier.
-        """
-        return self.renderer.detect_language(code)
 
-    
-
-    def display_action_result(self, result: Dict[str, Any]) -> None:
-        """Display action results in a more readable format.
-
-        Args:
-            result: Action result payload.
-        """
-        action_type = result.get(
-            "action", result.get("action_name", result.get("action_type", "unknown"))
-        )
-        output = result.get("result", result.get("output", ""))
-
-        if action_type in self.FILE_READ_ACTIONS:
-            metadata = {
-                "file_path": result.get("file")
-                or result.get("path")
-                or result.get("source")
-                or ""
-            }
-            summary = self._create_tool_summary(action_type, str(output), metadata)
-            if summary:
-                self.display_manager.display_message(summary, "system")
-                return
-
-        self.display_manager.display_action_result(result)
-
-    def _display_diff_result(
-        self,
-        result_text: str,
-        action_type: str,
-        status_icon: str,
-    ) -> bool:
-        """Render diff output with syntax highlighting when possible.
-
-        Args:
-            result_text: Diff content to render.
-            action_type: Action name that produced the diff.
-            status_icon: Icon to display in the panel title.
-
-        Returns:
-            True if a diff was rendered, False otherwise.
-        """
-        return self.display_manager.display_diff_result(
-            result_text, action_type, status_icon
-        )
-
-    def _render_diff_message(self, message: str) -> bool:
-        """Render system messages that contain diff content.
-
-        Args:
-            message: Message content containing diff blocks.
-
-        Returns:
-            True if a diff was rendered, False otherwise.
-        """
-        # Delegate to UnifiedRenderer
-        return self.renderer.render_diff_message(message)
 
     def on_progress_update(
         self, iteration: int, max_iterations: int, message: Optional[str] = None
@@ -3394,14 +3328,13 @@ class PenguinCLI:
                 ),  # Never mark fully complete
             )
 
-    def _safely_stop_progress(self):
         """Safely stop and clear the progress bar"""
         self.streaming_manager.safely_stop_progress()
         self._progress_task_id = None
 
     def _ensure_progress_cleared(self):
         """Make absolutely sure no progress indicator is active before showing input prompt"""
-        self._safely_stop_progress()
+        self.streaming_manager.safely_stop_progress()
 
         # Force redraw the prompt area
         print("\033[2K", end="\r")  # Clear the current line
