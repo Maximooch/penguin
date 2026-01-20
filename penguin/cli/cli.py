@@ -259,6 +259,7 @@ from penguin.cli.commands import CommandRegistry
 from penguin.cli.typer_bridge import TyperBridge, integrate_with_existing_app
 from penguin.cli.renderer import UnifiedRenderer, RenderStyle
 from penguin.cli.streaming_display import StreamingDisplay
+from penguin.cli.event_manager import EventManager
 from penguin.cli.events import EventBus, EventType
 from penguin.cli.session_manager import SessionManager
 from penguin.cli.display_manager import DisplayManager
@@ -3009,22 +3010,28 @@ class PenguinCLI:
 
         # Initialize streaming manager (requires streaming_display)
         self.streaming_manager = StreamingManager(self.streaming_display)
-            console=self.console,
-            panel_padding=self.panel_padding,
-            borderless=True,
-        )
 
         self.conversation_menu = ConversationMenu(self.console)
         self.core.register_progress_callback(self.on_progress_update)
 
         # Subscribe to all event types via unified event bus
+        self.event_manager = EventManager(self)
         self._event_bus = EventBus.get_sync()
-        for event_type in EventType:
-            self._event_bus.subscribe("stream_chunk", self._handle_stream_chunk_event)
-        event_bus.subscribe("tool", self._handle_tool_event)
-        event_bus.subscribe("message", self._handle_message_event)
-        event_bus.subscribe("status", self._handle_status_event)
-        event_bus.subscribe("error", self._handle_error_event)
+        self._event_bus.subscribe(
+            EventType.STREAM_CHUNK.value, self.event_manager.handle_stream_chunk_event
+        )
+        self._event_bus.subscribe(
+            EventType.MESSAGE.value, self.event_manager.handle_message_event
+        )
+        self._event_bus.subscribe(
+            EventType.STATUS.value, self.event_manager.handle_status_event
+        )
+        self._event_bus.subscribe(
+            EventType.TOOL.value, self.event_manager.handle_tool_event
+        )
+        self._event_bus.subscribe(
+            EventType.ERROR.value, self.event_manager.handle_error_event
+        )
 
         # Single Live display for better rendering
         self.live_display = None
@@ -3039,12 +3046,6 @@ class PenguinCLI:
         self.current_conversation_turn = 0
         self.message_turn_map = {}
 
-        # Add streaming state tracking
-        self.is_streaming = False
-        self.streaming_buffer = ""
-        self.streaming_reasoning_buffer = ""  # Separate buffer for reasoning tokens
-        self.streaming_role = "assistant"
-
         # Buffer for pending system messages (tool results) during streaming
         self.pending_system_messages: List[
             Tuple[str, str]
@@ -3054,7 +3055,8 @@ class PenguinCLI:
         self.run_mode_active = False
         self.run_mode_status = "Idle"
 
-        self.progress = None
+        self._streaming_started = False
+        self._progress_task_id = None
 
         # Create prompt_toolkit session
         # Initialize session manager
@@ -3219,8 +3221,13 @@ class PenguinCLI:
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         return cleaned
 
-    def display_message(self, message: str, role: str = "assistant"):
-        """Display a message using the unified renderer"""
+    def display_message(self, message: str, role: str = "assistant") -> None:
+        """Display a message using the unified renderer.
+
+        Args:
+            message: Message content to display.
+            role: Message role (user, assistant, system, error).
+        """
         # Skip if this is a duplicate of a recently processed message
         message_key = f"{role}:{message[:50]}"
 
@@ -3247,9 +3254,7 @@ class PenguinCLI:
 
         # Use unified renderer for all message rendering
         # Render with current style (no special case for welcome message)
-        panel = self.renderer.render_message(filtered_message, role=role, as_panel=True)
-        if panel:  # Only print if not filtered as duplicate
-            self.console.print(panel)
+        self.display_manager.display_message(filtered_message, role)
 
     
 
@@ -3291,431 +3296,43 @@ class PenguinCLI:
         # For other tools, show nothing (will use default display)
         return ""
 
-    def _detect_language(self, code):
-        """Automatically detect the programming language of the code"""
-        # Default to text if we can't determine the language
-        if not code or len(code.strip()) < 5:
-            return "text"
+    def _detect_language(self, code: str) -> str:
+        """Automatically detect the programming language of the code.
 
-        # Try to detect based on patterns
-        for pattern, language in self.LANGUAGE_DETECTION_PATTERNS:
-            if re.search(pattern, code, re.IGNORECASE | re.MULTILINE):
-                return language
+        Args:
+            code: Code snippet to analyze.
 
-        # If no specific patterns matched, use some heuristics
-        if code.count("#include") > 0:
-            return "cpp"
-        if code.count("def ") > 0 or code.count("import ") > 0:
-            return "python"
-        if (
-            code.count("function") > 0
-            or code.count("var ") > 0
-            or code.count("const ") > 0
-        ):
-            return "javascript"
-        if code.count("<html") > 0 or code.count("<div") > 0:
-            return "html"
-
-        # Default to text if no patterns matched
-        return "text"
+        Returns:
+            Detected language identifier.
+        """
+        return self.renderer.detect_language(code)
 
     
 
-    def _display_list_response(self, response: Dict[str, Any]):
-        """Display the /list command response in a nicely formatted way"""
-        try:
-            from rich.table import Table
+    def display_action_result(self, result: Dict[str, Any]) -> None:
+        """Display action results in a more readable format.
 
-            projects = response.get("projects", [])
-            tasks = response.get("tasks", [])
-            summary = response.get("summary", {})
+        Args:
+            result: Action result payload.
+        """
+        action_type = result.get(
+            "action", result.get("action_name", result.get("action_type", "unknown"))
+        )
+        output = result.get("result", result.get("output", ""))
 
-            # Display summary
-            summary_text = f"**Summary**: {summary.get('total_projects', 0)} projects, "
-            summary_text += f"{summary.get('total_tasks', 0)} tasks "
-            summary_text += f"({summary.get('active_tasks', 0)} active)"
-            self.display_manager.display_message(summary_text, "system")
-
-            # Display projects table if any exist
-            if projects:
-                self.display_manager.display_message("## Projects", "system")
-                table = Table(show_header=True, header_style="bold magenta")
-                table.add_column("ID", style="dim", width=8)
-                table.add_column("Name", style="cyan")
-                table.add_column("Status", style="green")
-                table.add_column("Tasks", style="yellow", width=6)
-                table.add_column("Created", style="dim")
-
-                for project in projects:
-                    table.add_row(
-                        project.get("id", "")[:8],
-                        project.get("name", ""),
-                        project.get("status", ""),
-                        str(project.get("task_count", 0)),
-                        project.get("created_at", "")[:16]
-                        if project.get("created_at")
-                        else "",
-                    )
-
-                self.console.print(table)
-
-            # Display tasks table if any exist
-            if tasks:
-                self.display_manager.display_message("## Tasks", "system")
-                table = Table(show_header=True, header_style="bold magenta")
-                table.add_column("ID", style="dim", width=8)
-                table.add_column("Title", style="white")
-                table.add_column("Status", style="green")
-                table.add_column("Priority", style="yellow", width=8)
-                table.add_column("Project", style="cyan", width=8)
-                table.add_column("Created", style="dim")
-
-                for task in tasks:
-                    project_id = task.get("project_id", "")
-                    project_display = project_id[:8] if project_id else "Independent"
-
-                    table.add_row(
-                        task.get("id", "")[:8],
-                        task.get("title", ""),
-                        task.get("status", ""),
-                        str(task.get("priority", 0)),
-                        project_display,
-                        task.get("created_at", "")[:16]
-                        if task.get("created_at")
-                        else "",
-                    )
-
-                self.console.print(table)
-
-            # If no projects or tasks
-            if not projects and not tasks:
-                self.display_manager.display_message(
-                    "No projects or tasks found. Create some with `/project create` or `/task create`.",
-                    "system",
-                )
-
-        except Exception as e:
-            # Fallback to simple text display
-            logger.error(f"Error displaying list response: {e}")
-            self.display_manager.display_message(
-                f"Projects and Tasks:\n{json.dumps(response, indent=2)}", "system"
-            )
-
-    def _display_checkpoints_response(self, response: Dict[str, Any]):
-        """Display checkpoints in a nicely formatted table"""
-        try:
-            from rich.table import Table
-            
-            checkpoints = response.get("checkpoints", [])
-            
-            if not checkpoints:
-                self.display_manager.display_message("No checkpoints found", "system")
+        if action_type in self.FILE_READ_ACTIONS:
+            metadata = {
+                "file_path": result.get("file")
+                or result.get("path")
+                or result.get("source")
+                or ""
+            }
+            summary = self._create_tool_summary(action_type, str(output), metadata)
+            if summary:
+                self.display_manager.display_message(summary, "system")
                 return
-            
-            # Create table for checkpoints
-            table = Table(show_header=True, header_style="bold magenta", title="📍 Checkpoints")
-            table.add_column("ID", style="cyan", width=12)
-            table.add_column("Type", style="blue", width=8)
-            table.add_column("Name", style="green")
-            table.add_column("Timestamp", style="yellow")
-            table.add_column("Messages", style="dim", width=8)
-            
-            for cp in checkpoints:
-                checkpoint_id = cp.get("id", "")[:12]
-                checkpoint_type = cp.get("type", "auto")
-                name = cp.get("name") or "-"
-                timestamp = cp.get("timestamp", "")
-                
-                # Format timestamp if it's an ISO string
-                try:
-                    if "T" in timestamp:
-                        from datetime import datetime
-                        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                        timestamp = dt.strftime("%Y-%m-%d %H:%M")
-                except:
-                    pass
-                
-                message_count = cp.get("message_count", "?")
-                
-                table.add_row(
-                    checkpoint_id,
-                    checkpoint_type,
-                    name,
-                    timestamp,
-                    str(message_count)
-                )
-            
-            self.console.print(table)
-            self.display_manager.display_message(
-                f"\nUse `/rollback <id>` to restore or `/branch <id>` to create a new branch",
-                "system"
-            )
-            
-        except Exception as e:
-            logger.error(f"Error displaying checkpoints: {e}")
-            self.display_manager.display_message(f"Checkpoints:\n{json.dumps(response, indent=2)}", "system")
 
-    def _display_truncations_response(self, response: Dict[str, Any]):
-        """Display truncation events in a nicely formatted table"""
-        try:
-            from rich.table import Table
-            from rich.panel import Panel
-            
-            truncations = response.get("truncations", [])
-            
-            if not truncations:
-                self.display_manager.display_message("✓ No truncation events - context window is within budget", "system")
-                return
-            
-            # Show summary panel first
-            total_removed = response.get("total_messages_removed", 0)
-            total_freed = response.get("total_tokens_freed", 0)
-            total_events = response.get("total_events", 0)
-            
-            summary_panel = Panel(
-                f"**Total Events**: {total_events}\n"
-                f"**Messages Removed**: {total_removed}\n"
-                f"**Tokens Freed**: {total_freed:,}",
-                title="[yellow]Context Trimming Summary[/yellow]",
-                border_style="yellow",
-                padding=(0, 2)
-            )
-            self.console.print(summary_panel)
-            
-            # Create table for truncation events
-            table = Table(show_header=True, header_style="bold magenta", title="Recent Truncation Events")
-            table.add_column("Category", style="cyan")
-            table.add_column("Messages", style="red", justify="right")
-            table.add_column("Tokens Freed", style="green", justify="right")
-            table.add_column("Timestamp", style="yellow")
-            
-            for event in truncations:
-                category = event.get("category", "unknown")
-                messages_removed = event.get("messages_removed", 0)
-                tokens_freed = event.get("tokens_freed", 0)
-                timestamp = event.get("timestamp", "")
-                
-                # Format timestamp if it's an ISO string
-                try:
-                    if "T" in timestamp:
-                        from datetime import datetime
-                        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                        timestamp = dt.strftime("%H:%M:%S")
-                except:
-                    pass
-                
-                table.add_row(
-                    category,
-                    str(messages_removed),
-                    f"{tokens_freed:,}",
-                    timestamp
-                )
-            
-            self.console.print(table)
-            
-        except Exception as e:
-            logger.error(f"Error displaying truncations: {e}")
-            self.display_manager.display_message(f"Truncations:\n{json.dumps(response, indent=2)}", "system")
-
-    def _display_token_usage_response(self, response: Dict[str, Any]):
-        """Display enhanced token usage with categories"""
-        try:
-            from rich.table import Table
-            from rich.panel import Panel
-            
-            token_data = response.get("token_usage", response.get("token_usage_detailed", {}))
-            
-            # Create main usage table
-            table = Table(show_header=True, header_style="bold magenta", title="📊 Token Usage")
-            table.add_column("Category", style="cyan")
-            table.add_column("Tokens", style="green", justify="right")
-            table.add_column("Percentage", style="yellow", justify="right")
-            
-            # Get category breakdown if available
-            categories = token_data.get("categories", {})
-            max_context_tokens = token_data.get("max_context_window_tokens", token_data.get("max_tokens", 0))  # Context window capacity
-            
-            for category_name, tokens in categories.items():
-                percentage = (tokens / max_context_tokens * 100) if max_context_tokens > 0 else 0
-                table.add_row(
-                    category_name,
-                    f"{tokens:,}",
-                    f"{percentage:.1f}%"
-                )
-            
-            # Add total row
-            total = token_data.get("current_total_tokens", 0)
-            pct = token_data.get("percentage", 0)
-            
-            table.add_row(
-                "TOTAL",
-                f"{total:,} / {max_context_tokens:,}",  # Context window usage
-                f"{pct:.1f}%",
-                style="bold"
-            )
-            
-            self.console.print(table)
-            
-            # Show truncation warning if active
-            truncations = token_data.get("truncations", {})
-            if truncations and truncations.get("total_truncations", 0) > 0:
-                warning_panel = Panel(
-                    f"⚠️ Context trimming is active\n"
-                    f"Messages removed: {truncations.get('messages_removed', 0)}\n"
-                    f"Tokens freed: {truncations.get('tokens_freed', 0):,}\n"
-                    f"Use `/truncations` to see details",
-                    title="[yellow]Truncation Active[/yellow]",
-                    border_style="yellow",
-                    padding=(0, 2)
-                )
-                self.console.print(warning_panel)
-                
-        except Exception as e:
-            logger.error(f"Error displaying token usage: {e}")
-            self.display_manager.display_message(f"Token usage:\n{json.dumps(response, indent=2)}", "system")
-
-    def display_action_result(self, result: Dict[str, Any]):
-        """Display action results in a more readable format"""
-        # This method is part of PenguinCLI, used in interactive mode.
-        # For direct prompt mode, _run_penguin_direct_prompt handles its own output.
-        if not self.console:  # Should not happen in interactive mode
-            logger.warning("display_action_result called without a console.")
-            return
-
-        action_type = result.get("action", result.get("action_name", "unknown"))
-        result_text = str(
-            result.get("result", result.get("output", ""))
-        )  # Ensure string
-        status = result.get("status", "unknown")
-
-        status_icon = (
-            "✓" if status == "completed" else ("⏳" if status == "pending" else "❌")
-        )
-
-        # Special handling for file read operations - acknowledge without dumping content
-        is_file_read = action_type in self.FILE_READ_ACTIONS
-        if is_file_read:
-            self.display_manager.display_file_read_result(result, result_text, action_type, status_icon)
-            return
-
-        # If result_text is code-like, use Syntax highlighting
-        is_code_output = False
-        detected_lang = "text"
-        if result_text.strip() and (
-            "\n" in result_text
-            or any(
-                kw in result_text
-                for kw in ["def ", "class ", "import ", "function ", "const ", "let "]
-            )
-        ):
-            is_code_output = True
-            detected_lang = self._detect_language(result_text)
-
-        # Check if this is a diff output (from edit tools) - display with enhanced visualization
-        if self.display_manager.display_diff_result(result_text, action_type, status_icon):
-            return
-
-        if is_code_output:
-            lang_display = self.renderer.get_language_display_name(detected_lang)
-            content_renderable = Syntax(
-                result_text,
-                detected_lang,
-                theme="monokai",
-                word_wrap=True,
-                line_numbers=True,
-            )
-            title_for_panel = f"{status_icon} {lang_display} Output from {action_type}"
-        else:
-            content_renderable = Markdown(
-                result_text if result_text.strip() else "(No textual output)"
-            )
-            title_for_panel = f"{status_icon} Result from {action_type}"
-
-        # Create and display panel (moved outside the if/else blocks)
-        panel = Panel(
-            content_renderable,
-            title=title_for_panel,
-            title_align="left",
-            border_style=self.TOOL_COLOR if status != "error" else "red",
-            width=self.console.width - 8,
-            padding=(1, 1),
-        )
-        self.console.print(panel)
-
-    def _display_file_read_result(
-        self,
-        result: Dict[str, Any],
-        result_text: str,
-        action_type: str,
-        status_icon: str,
-    ) -> None:
-        """Render file-read tool output as a concise preview."""
-        file_info = result.get("file") or result.get("path") or result.get("source") or action_type
-
-        lines = result_text.splitlines()
-        line_count = len(lines)
-        char_count = len(result_text)
-
-        summary_lines = [f"**File:** `{file_info}`"]
-        if line_count:
-            summary_lines.append(
-                f"**Size:** {line_count} lines · {char_count:,} characters"
-            )
-        else:
-            summary_lines.append("**Size:** empty file")
-
-        summary_lines.append(
-            "**Preview:** content suppressed to keep the console concise; open the file directly if you need full contents."
-        )
-
-        summary_panel = Panel(
-            Markdown("\n".join(summary_lines)),
-            title=f"{status_icon} File Read",
-            title_align="left",
-            border_style=self.TOOL_COLOR,
-            width=self.console.width - 8,
-            padding=(1, 1),
-        )
-        self.console.print(summary_panel)
-
-        if not line_count:
-            self.console.print("[dim]No content to display.[/dim]")
-
-    def _guess_language_from_filename(self, file_info: Any) -> str:
-        """Best-effort guess of syntax language from file extension."""
-        try:
-            suffix = Path(str(file_info)).suffix.lower()
-        except Exception:
-            return "text"
-
-        extension_map = {
-            ".py": "python",
-            ".js": "javascript",
-            ".ts": "typescript",
-            ".tsx": "typescript",
-            ".jsx": "javascript",
-            ".json": "json",
-            ".yml": "yaml",
-            ".yaml": "yaml",
-            ".html": "html",
-            ".htm": "html",
-            ".css": "css",
-            ".sh": "bash",
-            ".bash": "bash",
-            ".zsh": "bash",
-            ".rb": "ruby",
-            ".go": "go",
-            ".rs": "rust",
-            ".java": "java",
-            ".cs": "csharp",
-            ".cpp": "cpp",
-            ".cxx": "cpp",
-            ".cc": "cpp",
-            ".c": "c",
-            ".sql": "sql",
-            ".md": "markdown",
-        }
-        return extension_map.get(suffix, "text")
+        self.display_manager.display_action_result(result)
 
     def _display_diff_result(
         self,
@@ -3723,145 +3340,29 @@ class PenguinCLI:
         action_type: str,
         status_icon: str,
     ) -> bool:
-        """Render diff output with syntax highlighting when possible."""
-        summary_text, diff_blocks = self._split_diff_sections(result_text)
+        """Render diff output with syntax highlighting when possible.
 
-        if diff_blocks:
-            if summary_text.strip():
-                summary_panel = Panel(
-                    Markdown(summary_text.strip()),
-                    title=f"{status_icon} Result from {action_type}",
-                    title_align="left",
-                    border_style=self.TOOL_COLOR,
-                    width=self.console.width - 8,
-                    padding=(1, 1),
-                )
-                self.console.print(summary_panel)
+        Args:
+            result_text: Diff content to render.
+            action_type: Action name that produced the diff.
+            status_icon: Icon to display in the panel title.
 
-            total_blocks = len(diff_blocks)
-            for index, block in enumerate(diff_blocks, start=1):
-                stats = self._compute_diff_stats(block)
-                stats_label = f"+{stats['adds']} / -{stats['deletes']}"
-                if stats["hunks"]:
-                    stats_label += f" · {stats['hunks']} hunk{'s' if stats['hunks'] != 1 else ''}"
-
-                title_suffix = (
-                    f" [{index}/{total_blocks}]" if total_blocks > 1 else ""
-                )
-                diff_title = (
-                    f"{status_icon} Diff {title_suffix} ({stats_label}) from {action_type}"
-                )
-
-                try:
-                    diff_renderable = Syntax(
-                        block,
-                        "diff",
-                        theme="monokai",
-                        line_numbers=False,
-                        word_wrap=False,
-                        code_width=min(120, self.console.width - 12),
-                    )
-                except Exception:
-                    diff_renderable = Syntax(
-                        block,
-                        "text",
-                        theme="monokai",
-                        line_numbers=False,
-                        word_wrap=False,
-                        code_width=min(120, self.console.width - 12),
-                    )
-
-                diff_panel = Panel(
-                    diff_renderable,
-                    title=diff_title,
-                    title_align="left",
-                    border_style=self.TOOL_COLOR,
-                    width=self.console.width - 8,
-                    padding=(1, 1),
-                )
-                self.console.print(diff_panel)
-
-            return True
-
-        if self._looks_like_diff(result_text):
-            from rich.text import Text
-
-            diff_display = Text()
-            for line in result_text.splitlines():
-                if line.startswith("+") and not line.startswith("+++"):
-                    diff_display.append(line + "\n", style="green")
-                elif line.startswith("-") and not line.startswith("---"):
-                    diff_display.append(line + "\n", style="red")
-                elif line.startswith("@@"):
-                    diff_display.append(line + "\n", style="cyan bold")
-                elif line.startswith("+++") or line.startswith("---"):
-                    diff_display.append(line + "\n", style="yellow bold")
-                else:
-                    diff_display.append(line + "\n", style="dim")
-
-            diff_panel = Panel(
-                diff_display,
-                title=f"{status_icon} Diff Result from {action_type}",
-                title_align="left",
-                border_style=self.TOOL_COLOR,
-                width=self.console.width - 8,
-                padding=(1, 1),
-            )
-            self.console.print(diff_panel)
-            return True
-
-        return False
-
-    def _split_diff_sections(self, text: str) -> Tuple[str, List[str]]:
-        """Separate diff blocks from surrounding narrative text."""
-        diff_blocks: List[str] = []
-
-        # Extract fenced blocks first (```diff```, ```patch```)
-        fenced_pattern = re.compile(r"```(?:diff|patch)\s*\n(.*?)```", re.IGNORECASE | re.DOTALL)
-
-        def _capture_fenced(match: re.Match) -> str:
-            block = match.group(1).strip()
-            if block:
-                diff_blocks.append(block)
-            return ""
-
-        remainder = fenced_pattern.sub(_capture_fenced, text)
-
-        # Extract inline unified diff blocks
-        inline_pattern = re.compile(
-            r"(?ms)^---\s.+?\n\+\+\+\s.+?\n(?:@@.*\n)?(?:[ \t\+\-].*\n)+"
+        Returns:
+            True if a diff was rendered, False otherwise.
+        """
+        return self.display_manager.display_diff_result(
+            result_text, action_type, status_icon
         )
-        inline_matches = list(inline_pattern.finditer(remainder))
-        for match in inline_matches:
-            block = match.group(0).strip()
-            if block:
-                diff_blocks.append(block)
-        remainder = inline_pattern.sub("", remainder)
-
-        return remainder, diff_blocks
-
-    def _compute_diff_stats(self, diff_text: str) -> Dict[str, int]:
-        adds = deletes = hunks = 0
-        for line in diff_text.splitlines():
-            if line.startswith("@@"):
-                hunks += 1
-            elif line.startswith("+") and not line.startswith("+++"):
-                adds += 1
-            elif line.startswith("-") and not line.startswith("---"):
-                deletes += 1
-        return {"adds": adds, "deletes": deletes, "hunks": hunks}
-
-    def _looks_like_diff(self, text: str) -> bool:
-        if "```diff" in text.lower() or "```patch" in text.lower():
-            return True
-        if re.search(r"^---\s", text, re.MULTILINE) and re.search(r"^\+\+\+\s", text, re.MULTILINE):
-            return True
-        if re.search(r"^@@", text, re.MULTILINE):
-            return True
-        return False
 
     def _render_diff_message(self, message: str) -> bool:
-        """Render system messages that contain diff content."""
+        """Render system messages that contain diff content.
+
+        Args:
+            message: Message content containing diff blocks.
+
+        Returns:
+            True if a diff was rendered, False otherwise.
+        """
         # Delegate to UnifiedRenderer
         return self.renderer.render_diff_message(message)
 
@@ -3869,23 +3370,24 @@ class PenguinCLI:
         self, iteration: int, max_iterations: int, message: Optional[str] = None
     ):
         """Handle progress updates without interfering with execution"""
-        if not self.progress and iteration > 0:
+        if not self.streaming_manager.progress and iteration > 0:
             # Only show progress if not already processing
             self.streaming_manager.safely_stop_progress()
-            self.progress = Progress(
+            progress = Progress(
                 SpinnerColumn(),
                 TextColumn("[bold blue]{task.description}"),
                 console=self.console,
             )
-            self.progress.start()
-            self.progress_task = self.progress.add_task(
+            progress.start()
+            self.streaming_manager.progress = progress
+            self._progress_task_id = progress.add_task(
                 f"Thinking... (Step {iteration}/{max_iterations})", total=max_iterations
             )
 
-        if self.progress:
+        if self.streaming_manager.progress and self._progress_task_id is not None:
             # Update without completing to prevent early termination
-            self.progress.update(
-                self.progress_task,
+            self.streaming_manager.progress.update(
+                self._progress_task_id,
                 description=f"{message or 'Processing'} (Step {iteration}/{max_iterations})",
                 completed=min(
                     iteration, max_iterations - 1
@@ -3894,17 +3396,12 @@ class PenguinCLI:
 
     def _safely_stop_progress(self):
         """Safely stop and clear the progress bar"""
-        if self.progress:
-            try:
-                self.progress.stop()
-            except Exception:
-                pass  # Suppress any errors during progress cleanup
-            finally:
-                self.progress = None
+        self.streaming_manager.safely_stop_progress()
+        self._progress_task_id = None
 
     def _ensure_progress_cleared(self):
         """Make absolutely sure no progress indicator is active before showing input prompt"""
-        self.streaming_manager.safely_stop_progress()
+        self._safely_stop_progress()
 
         # Force redraw the prompt area
         print("\033[2K", end="\r")  # Clear the current line
@@ -3977,9 +3474,11 @@ Welcome to Penguin!
                 # Increment conversation turn for new user input
                 self.current_conversation_turn += 1
                 # Reset streaming state
-                self.is_streaming = False
-                self.streaming_buffer = ""
-                self.streaming_reasoning_buffer = ""
+                self.streaming_manager.set_streaming(False)
+                self.streaming_manager.streaming_buffer = ""
+                self.streaming_manager.streaming_reasoning_buffer = ""
+                self.streaming_manager.streaming_role = "assistant"
+                self.streaming_manager._active_stream_id = None
                 self.last_completed_message = ""
                 self.last_completed_message_normalized = ""
 
@@ -4444,11 +3943,10 @@ Welcome to Penguin!
     def _finalize_streaming(self):
         """Finalize streaming and clean up the StreamingDisplay"""
         # Stop the StreamingDisplay
-        if self.streaming_display and self.streaming_display.is_active:
-            try:
-                self.streaming_display.stop(finalize=True)
-            except Exception as e:
-                logger.error(f"Error stopping streaming display: {e}")
+        try:
+            self.streaming_manager.finalize_streaming()
+        except Exception as e:
+            logger.error(f"Error stopping streaming display: {e}")
 
         # Legacy cleanup for backward compatibility
         if hasattr(self, "streaming_live") and self.streaming_live:
@@ -4459,7 +3957,6 @@ Welcome to Penguin!
                 pass  # Suppress any errors during cleanup
 
         self._streaming_started = False
-        self.is_streaming = False
         self._streaming_session_id = None
         self._active_stream_id = None
 

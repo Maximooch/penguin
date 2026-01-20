@@ -4,11 +4,15 @@ Display Manager - Handle all display logic for CLI.
 Extracted from PenguinCLI during Phase 4, Stage 2.
 """
 
-from rich.table import Table
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+
+from rich.console import Console
 from rich.panel import Panel
 from rich.syntax import Syntax
-from typing import Dict, Any, List, Tuple, Optional
-from penguin.system.state import MessageCategory
+from rich.table import Table
+
+if TYPE_CHECKING:
+    from penguin.cli.renderer import UnifiedRenderer
 
 
 class DisplayManager:
@@ -25,7 +29,12 @@ class DisplayManager:
     - Code output panels
     """
 
-    def __init__(self, console, renderer, panel_padding=None):
+    def __init__(
+        self,
+        console: Console,
+        renderer: "UnifiedRenderer",
+        panel_padding: Optional[Tuple[int, int]] = None,
+    ) -> None:
         """Initialize DisplayManager.
 
         Args:
@@ -37,17 +46,20 @@ class DisplayManager:
         self.renderer = renderer
         self.panel_padding = panel_padding
 
-    def display_message(self, content: str, role: str = "assistant") -> None:
+    def display_message(self, content: Any, role: str = "assistant") -> None:
         """Display a message with appropriate styling.
 
         Args:
             content: Message content to display
             role: Message role (user, assistant, system, error)
         """
-        # Delegate to UnifiedRenderer
-        self.renderer.render_message(content, role)
+        rendered = self.renderer.render_message(content, role=role, as_panel=True)
+        if rendered is not None:
+            self.console.print(rendered)
 
-    def format_code_block(self, message: str, code: str, language: str, original_block: str) -> str:
+    def format_code_block(
+        self, message: str, code: str, language: str, original_block: str
+    ) -> str:
         """Format a code block with syntax highlighting and return updated message.
 
         Args:
@@ -59,8 +71,9 @@ class DisplayManager:
         Returns:
             Updated message with code block replaced by placeholder
         """
-        # Delegate to UnifiedRenderer
-        self.renderer.render_code_block(code, language)
+        rendered = self.renderer.render_code_block(code, language)
+        if rendered is not None:
+            self.console.print(rendered)
 
         # Replace in original message with a note
         lang_display = self.renderer.get_language_display_name(language)
@@ -74,18 +87,20 @@ class DisplayManager:
             result_text: File read result text
         """
         # Extract file path and content
-        lines = result_text.split('\n')
+        lines = result_text.split("\n")
         if not lines:
             return
 
         file_path = lines[0].strip()
-        content = '\n'.join(lines[1:])
+        content = "\n".join(lines[1:])
 
         # Detect language
         language = self.renderer.detect_language(content)
 
         # Display code with syntax highlighting
-        self.renderer.render_code_block(content, language)
+        rendered = self.renderer.render_code_block(content, language)
+        if rendered is not None:
+            self.console.print(rendered)
 
         # Display file path info
         self.console.print(f"[dim]Read from: {file_path}[/dim]")
@@ -118,10 +133,12 @@ class DisplayManager:
         # Display output if available
         if output and isinstance(output, str):
             # Check if it's code
-            if '```' in output or '<code>' in output:
+            if "```" in output or "<code>" in output:
                 # Extract and format code block
                 language = self.renderer.detect_language(output)
-                self.renderer.render_code_block(output, language)
+                rendered = self.renderer.render_code_block(output, language)
+                if rendered is not None:
+                    self.console.print(rendered)
             else:
                 # Display as plain text
                 output_panel = Panel(
@@ -138,6 +155,73 @@ class DisplayManager:
         Args:
             response: List response dictionary
         """
+        projects = response.get("projects")
+        tasks = response.get("tasks")
+        if isinstance(projects, list) and isinstance(tasks, list):
+            summary = response.get("summary", {})
+            summary_text = (
+                f"**Summary**: {summary.get('total_projects', 0)} projects, "
+                f"{summary.get('total_tasks', 0)} tasks "
+                f"({summary.get('active_tasks', 0)} active)"
+            )
+            self.display_message(summary_text, "system")
+
+            if projects:
+                self.display_message("## Projects", "system")
+                table = Table(show_header=True, header_style="bold magenta")
+                table.add_column("ID", style="dim", width=8)
+                table.add_column("Name", style="cyan")
+                table.add_column("Status", style="green")
+                table.add_column("Tasks", style="yellow", width=6)
+                table.add_column("Created", style="dim")
+
+                for project in projects:
+                    table.add_row(
+                        project.get("id", "")[:8],
+                        project.get("name", ""),
+                        project.get("status", ""),
+                        str(project.get("task_count", 0)),
+                        project.get("created_at", "")[:16]
+                        if project.get("created_at")
+                        else "",
+                    )
+
+                self.console.print(table)
+
+            if tasks:
+                self.display_message("## Tasks", "system")
+                table = Table(show_header=True, header_style="bold magenta")
+                table.add_column("ID", style="dim", width=8)
+                table.add_column("Title", style="white")
+                table.add_column("Status", style="green")
+                table.add_column("Priority", style="yellow", width=8)
+                table.add_column("Project", style="cyan", width=8)
+                table.add_column("Created", style="dim")
+
+                for task in tasks:
+                    project_id = task.get("project_id", "")
+                    project_display = project_id[:8] if project_id else "Independent"
+
+                    table.add_row(
+                        task.get("id", "")[:8],
+                        task.get("title", ""),
+                        task.get("status", ""),
+                        str(task.get("priority", 0)),
+                        project_display,
+                        task.get("created_at", "")[:16]
+                        if task.get("created_at")
+                        else "",
+                    )
+
+                self.console.print(table)
+
+            if not projects and not tasks:
+                self.display_message(
+                    "No projects or tasks found. Create some with `/project create` or `/task create`.",
+                    "system",
+                )
+            return
+
         items = response.get("items", [])
         list_type = response.get("list_type", "list")
 
@@ -267,7 +351,9 @@ class DisplayManager:
 
         self.console.print(table)
 
-    def display_code_output_panel(self, code_output: str, language: str, title: str = "Output") -> None:
+    def display_code_output_panel(
+        self, code_output: str, language: str, title: str = "Output"
+    ) -> None:
         """Display code output panel.
 
         Args:
