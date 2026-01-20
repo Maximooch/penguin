@@ -3565,6 +3565,11 @@ Welcome to Penguin!
                                 # Parse arguments: /image <path> [description...]
                                 # Use shlex so quoted paths with spaces work correctly.
                                 raw = user_input[1:]  # drop leading "/"
+
+                                # Normalize drag-and-drop input
+                                # Remove line continuation backslashes and join multiline paths
+                                raw = raw.replace("\ ", " ")
+                                raw = " ".join(raw.split())
                                 try:
                                     tokens = shlex.split(raw)
                                 except ValueError:
