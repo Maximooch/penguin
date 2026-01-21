@@ -23,17 +23,19 @@ class SessionManager:
     - Truncations display
     """
 
-    def __init__(self, console, user_color: str, penguin_color: str):
+    def __init__(self, console, user_color: str, penguin_color: str, cancel_callback=None):
         """Initialize SessionManager.
 
         Args:
             console: Rich console instance
             user_color: Color for user messages
             penguin_color: Color for Penguin messages
+            cancel_callback: Optional callback to trigger streaming cancel
         """
         self.console = console
         self.user_color = user_color
         self.penguin_color = penguin_color
+        self.cancel_callback = cancel_callback
 
     def create_prompt_session(self) -> PromptSession:
         """Create and configure a prompt_toolkit session with multi-line support"""
@@ -45,6 +47,13 @@ class SessionManager:
         def _(event):
             """Insert a new line when Alt (or Option) + Enter is pressed."""
             event.current_buffer.insert_text("\n")
+
+        # Add keybinding for ESC to cancel streaming
+        @kb.add(Keys.Escape)
+        def _(event):
+            """Cancel streaming when ESC is pressed."""
+            if self.cancel_callback:
+                self.cancel_callback()
 
         # Add keybinding for Enter to submit
         @kb.add(Keys.Enter)

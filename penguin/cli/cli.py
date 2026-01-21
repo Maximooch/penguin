@@ -3123,10 +3123,15 @@ class PenguinCLI:
         # Create prompt_toolkit session
         # Initialize session manager
         self.session_manager = SessionManager(
-            self.console,
-            self.USER_COLOR,
-            self.PENGUIN_COLOR
+            console=self.console,
+            user_color=self.USER_COLOR,
+            penguin_color=self.PENGUIN_COLOR,
+            cancel_callback=self._cancel_streaming,  # Pass cancel method
         )
+        self.console,
+        self.USER_COLOR,
+        self.PENGUIN_COLOR
+        
         self.session = self.session_manager.create_prompt_session()
 
         # NOTE: We intentionally do NOT register a custom SIGINT handler.
@@ -3454,7 +3459,7 @@ Welcome to Penguin!
                     self.console.print("\n[dim]Ctrl+C pressed. Press again to exit, or type /exit[/dim]")
                     continue
 
-                if user_input.lower() in ["exit", "quit"]:
+                if user_input.lower() in ["exit", "quit", "/cancel"]:
                     break
 
                 if not user_input.strip():
