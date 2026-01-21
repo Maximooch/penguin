@@ -259,7 +259,11 @@ from penguin.cli.commands import CommandRegistry
 from penguin.cli.typer_bridge import TyperBridge, integrate_with_existing_app
 from penguin.cli.renderer import UnifiedRenderer, RenderStyle
 from penguin.cli.streaming_display import StreamingDisplay
+from penguin.cli.event_manager import EventManager
 from penguin.cli.events import EventBus, EventType
+from penguin.cli.session_manager import SessionManager
+from penguin.cli.display_manager import DisplayManager
+from penguin.cli.streaming_manager import StreamingManager
 
 try:
     # Prefer relative import to support repo and installed layouts
@@ -354,6 +358,10 @@ agent_app = typer.Typer(help="Agent management commands")
 app.add_typer(agent_app, name="agent")
 
 # Define a type variable for better typing
+# Configuration sub-application
+config_app = typer.Typer(help="Configuration management commands")
+app.add_typer(config_app, name="config")
+
 T = TypeVar("T")
 
 # Global core components - initialized by _initialize_core_components_globally
@@ -1092,6 +1100,67 @@ def main_entry(
         asyncio.run(_async_init_and_run())
 
 
+
+async def _handle_session_management(
+    continue_last: bool,
+    resume_session: Optional[str],
+    prompt: Optional[str] = None,
+    output_format: str = "text",
+) -> None:
+    """
+    Handle session management flags by loading the appropriate conversation.
+
+    Args:
+        continue_last: Whether to continue the last session
+        resume_session: Session ID to resume
+        prompt: Optional prompt to run after loading session
+        output_format: Output format (text, json, etc.)
+    """
+    global _core
+
+    if not _core:
+        logger.error("Core not initialized for session management.")
+        console.print("[red]Error: Core not initialized[/red]")
+        return
+
+    # Resume specific session
+    if resume_session:
+        try:
+            _core.load_conversation(resume_session)
+            console.print(f"[green]Resumed session: {resume_session}[/green]")
+        except Exception as e:
+            console.print(f"[red]Error resuming session: {e}[/red]")
+            return
+
+    # Continue last session
+    elif continue_last:
+        try:
+            # Get most recent checkpoint
+            checkpoints = _core.list_checkpoints()
+            checkpoint_list = checkpoints.get("checkpoints", [])
+
+            if checkpoint_list:
+                last_checkpoint = checkpoint_list[0]["id"]
+                _core.load_conversation(last_checkpoint)
+                console.print(f"[green]Continued last session: {last_checkpoint}[/green]")
+            else:
+                console.print("[yellow]No previous session found. Starting fresh.[/yellow]")
+        except Exception as e:
+            console.print(f"[red]Error continuing last session: {e}[/red]")
+            return
+
+    # Run prompt if provided
+    if prompt:
+        # Use direct prompt mode for non-interactive execution
+        await _run_penguin_direct_prompt(prompt, output_format)
+    else:
+        # Enter interactive mode
+        cli = PenguinCLI(_core)
+        await cli.chat_loop()
+
+
+
+
 async def _handle_run_mode(
     task_name: Optional[str],
     continuous: bool,
@@ -1212,101 +1281,6 @@ async def _handle_run_mode(
         logger.error(f"Error in run mode execution: {e}", exc_info=True)
         console.print(f"[red]Error running task: {e!s}[/red]")
         console.print(traceback.format_exc())
-
-
-async def _handle_session_management(
-    continue_last: bool,
-    resume_session: Optional[str],
-    prompt: Optional[str] = None,
-    output_format: str = "text",
-) -> None:
-    """
-    Handle session management flags by loading the appropriate conversation.
-
-    Args:
-        continue_last: Whether to continue the most recent conversation
-        resume_session: Optional session ID to resume
-        prompt: Optional prompt to process in non-interactive mode
-        output_format: Output format for non-interactive mode
-    """
-    global _core
-
-    if not _core:
-        logger.error("Core not initialized for session management.")
-        console.print(
-            "[red]Error: Core components failed to initialize for session management.[/red]"
-        )
-        raise typer.Exit(code=1)
-
-    try:
-        if continue_last:
-            # Get the most recent conversation ID
-            conversations = _core.list_conversations(limit=1)
-            if not conversations:
-                console.print(
-                    "[yellow]No previous conversations found to continue.[/yellow]"
-                )
-                if prompt:
-                    # Fall back to standard processing if no conversation to continue
-                    await _run_penguin_direct_prompt(prompt, output_format)
-                else:
-                    # Fall back to new interactive session
-                    await _run_interactive_chat()
-                return
-
-            # Load the most recent conversation
-            session_id = conversations[0]["id"]
-            logger.info(f"Continuing most recent conversation: {session_id}")
-            success = _core.conversation_manager.load(session_id)
-
-            if not success:
-                console.print(
-                    "[yellow]Failed to load most recent conversation. Starting new session.[/yellow]"
-                )
-                if prompt:
-                    await _run_penguin_direct_prompt(prompt, output_format)
-                else:
-                    await _run_interactive_chat()
-                return
-
-            console.print(f"[green]Continuing conversation {session_id}[/green]")
-
-        elif resume_session:
-            # Load the specified conversation
-            logger.info(f"Resuming conversation: {resume_session}")
-            success = _core.conversation_manager.load(resume_session)
-
-            if not success:
-                console.print(
-                    f"[yellow]Failed to load conversation {resume_session}. Starting new session.[/yellow]"
-                )
-                if prompt:
-                    await _run_penguin_direct_prompt(prompt, output_format)
-                else:
-                    await _run_interactive_chat()
-                return
-
-            console.print(f"[green]Resumed conversation {resume_session}[/green]")
-
-        # Process prompt if provided, otherwise go into interactive mode
-        if prompt:
-            await _run_penguin_direct_prompt(prompt, output_format)
-        else:
-            await _run_interactive_chat()
-
-    except Exception as e:
-        logger.error(f"Error in session management: {e}", exc_info=True)
-        console.print(f"[red]Error loading conversation: {e!s}[/red]")
-        # Fall back to standard behavior
-        if prompt:
-            await _run_penguin_direct_prompt(prompt, output_format)
-        else:
-            await _run_interactive_chat()
-
-
-# Create a sub-app for config management
-config_app = typer.Typer(name="config", help="Manage Penguin configuration")
-app.add_typer(config_app, name="config")
 
 
 @config_app.command("setup")
@@ -3082,6 +3056,13 @@ class PenguinCLI:
             panel_padding=self.panel_padding,
         )
 
+        # Initialize display manager
+        self.display_manager = DisplayManager(
+            self.console,
+            self.renderer,
+            self.panel_padding,
+        )
+
         # Initialize new StreamingDisplay for smooth Rich.Live rendering
         self.streaming_display = StreamingDisplay(
             console=self.console,
@@ -3089,13 +3070,30 @@ class PenguinCLI:
             borderless=True,
         )
 
+        # Initialize streaming manager (requires streaming_display)
+        self.streaming_manager = StreamingManager(self.streaming_display)
+
         self.conversation_menu = ConversationMenu(self.console)
         self.core.register_progress_callback(self.on_progress_update)
 
         # Subscribe to all event types via unified event bus
+        self.event_manager = EventManager(self)
         self._event_bus = EventBus.get_sync()
-        for event_type in EventType:
-            self._event_bus.subscribe(event_type.value, self.handle_event)
+        self._event_bus.subscribe(
+            EventType.STREAM_CHUNK.value, self.event_manager.handle_stream_chunk_event
+        )
+        self._event_bus.subscribe(
+            EventType.MESSAGE.value, self.event_manager.handle_message_event
+        )
+        self._event_bus.subscribe(
+            EventType.STATUS.value, self.event_manager.handle_status_event
+        )
+        self._event_bus.subscribe(
+            EventType.TOOL.value, self.event_manager.handle_tool_event
+        )
+        self._event_bus.subscribe(
+            EventType.ERROR.value, self.event_manager.handle_error_event
+        )
 
         # Single Live display for better rendering
         self.live_display = None
@@ -3110,12 +3108,6 @@ class PenguinCLI:
         self.current_conversation_turn = 0
         self.message_turn_map = {}
 
-        # Add streaming state tracking
-        self.is_streaming = False
-        self.streaming_buffer = ""
-        self.streaming_reasoning_buffer = ""  # Separate buffer for reasoning tokens
-        self.streaming_role = "assistant"
-
         # Buffer for pending system messages (tool results) during streaming
         self.pending_system_messages: List[
             Tuple[str, str]
@@ -3125,10 +3117,22 @@ class PenguinCLI:
         self.run_mode_active = False
         self.run_mode_status = "Idle"
 
-        self.progress = None
+        self._streaming_started = False
+        self._progress_task_id = None
 
         # Create prompt_toolkit session
-        self.session = self._create_prompt_session()
+        # Initialize session manager
+        self.session_manager = SessionManager(
+            console=self.console,
+            user_color=self.USER_COLOR,
+            penguin_color=self.PENGUIN_COLOR,
+            cancel_callback=self._cancel_streaming,  # Pass cancel method
+        )
+        self.console,
+        self.USER_COLOR,
+        self.PENGUIN_COLOR
+        
+        self.session = self.session_manager.create_prompt_session()
 
         # NOTE: We intentionally do NOT register a custom SIGINT handler.
         # prompt_toolkit handles Ctrl+C natively by raising KeyboardInterrupt,
@@ -3139,53 +3143,25 @@ class PenguinCLI:
         self._active_stream_id = None  # NEW – authoritative stream identifier from Core
         self._last_processed_turn = None
 
-    def _create_prompt_session(self):
-        """Create and configure a prompt_toolkit session with multi-line support"""
-        # Define key bindings
-        kb = KeyBindings()
 
-        # Add keybinding for Alt+Enter to create a new line
-        @kb.add(Keys.Escape, Keys.Enter)
-        def _(event):
-            """Insert a new line when Alt (or Option) + Enter is pressed."""
-            event.current_buffer.insert_text("\n")
 
-        # Add keybinding for Enter to submit
-        @kb.add(Keys.Enter)
-        def _(event):
-            """Submit the input when Enter is pressed without modifiers."""
-            # If there's already text and cursor is at the end, submit
-            buffer = event.current_buffer
-            if buffer.text and buffer.cursor_position == len(buffer.text):
-                buffer.validate_and_handle()
-            else:
-                # Otherwise insert a new line
-                buffer.insert_text("\n")
-
-        # Add a custom style
-        style = Style.from_dict(
-            {
-                "prompt": f"bold {self.USER_COLOR}",
-            }
-        )
-
-        # Create the PromptSession
-        return PromptSession(
-            key_bindings=kb,
-            style=style,
-            multiline=True,  # Enable multi-line editing
-            vi_mode=False,  # Use Emacs keybindings by default
-            wrap_lines=True,  # Wrap long lines
-            complete_in_thread=True,
-        )
+    def _cancel_streaming(self):
+        """Cancel current streaming response from LLM."""
+        self.console.print("\n[yellow]⚠️ Response stopped by user[/yellow]")
+        self.streaming_manager.safely_stop_progress()
+        if hasattr(self, "_streaming_started") and self._streaming_started:
+            try:
+                self.streaming_manager.finalize_streaming()
+            except Exception:
+                pass
 
     def _handle_interrupt(self, sig, frame):
         """Handle SIGINT (Ctrl+C) - clean up progress but let the event loop handle the interrupt."""
-        self._safely_stop_progress()
+        self.streaming_manager.safely_stop_progress()
         # Clean up any streaming in progress
         if hasattr(self, "_streaming_started") and self._streaming_started:
             try:
-                self._finalize_streaming()
+                self.streaming_manager.finalize_streaming()
             except Exception:
                 pass
         # Let the KeyboardInterrupt propagate naturally to be caught by chat_loop's handlers
@@ -3323,8 +3299,13 @@ class PenguinCLI:
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
         return cleaned
 
-    def display_message(self, message: str, role: str = "assistant"):
-        """Display a message using the unified renderer"""
+    def display_message(self, message: str, role: str = "assistant") -> None:
+        """Display a message using the unified renderer.
+
+        Args:
+            message: Message content to display.
+            role: Message role (user, assistant, system, error).
+        """
         # Skip if this is a duplicate of a recently processed message
         message_key = f"{role}:{message[:50]}"
 
@@ -3351,19 +3332,9 @@ class PenguinCLI:
 
         # Use unified renderer for all message rendering
         # Render with current style (no special case for welcome message)
-        panel = self.renderer.render_message(filtered_message, role=role, as_panel=True)
-        if panel:  # Only print if not filtered as duplicate
-            self.console.print(panel)
+        self.display_manager.display_message(filtered_message, role)
 
-    def _format_code_block(self, message, code, language, original_block):
-        """Format a code block with syntax highlighting and return updated message"""
-        # Delegate to UnifiedRenderer for code block rendering
-        self.renderer.render_code_block(code, language)
-
-        # Replace in original message with a note
-        lang_display = self.renderer.get_language_display_name(language)
-        placeholder = f"[Code block displayed above ({lang_display})]"
-        return message.replace(original_block, placeholder)
+    
 
     def _create_tool_summary(self, tool_name: str, content: str, metadata: Dict) -> str:
         """
@@ -3403,638 +3374,42 @@ class PenguinCLI:
         # For other tools, show nothing (will use default display)
         return ""
 
-    def _detect_language(self, code):
-        """Automatically detect the programming language of the code"""
-        # Default to text if we can't determine the language
-        if not code or len(code.strip()) < 5:
-            return "text"
 
-        # Try to detect based on patterns
-        for pattern, language in self.LANGUAGE_DETECTION_PATTERNS:
-            if re.search(pattern, code, re.IGNORECASE | re.MULTILINE):
-                return language
 
-        # If no specific patterns matched, use some heuristics
-        if code.count("#include") > 0:
-            return "cpp"
-        if code.count("def ") > 0 or code.count("import ") > 0:
-            return "python"
-        if (
-            code.count("function") > 0
-            or code.count("var ") > 0
-            or code.count("const ") > 0
-        ):
-            return "javascript"
-        if code.count("<html") > 0 or code.count("<div") > 0:
-            return "html"
 
-        # Default to text if no patterns matched
-        return "text"
-
-    def _display_code_output_panel(
-        self, code_output: str, language: str, title: str = "Output"
-    ):
-        # Delegate to UnifiedRenderer for language display name
-        lang_display = self.renderer.get_language_display_name(language)
-        output_panel = Panel(
-            Syntax(code_output, language, theme="monokai", word_wrap=True),
-            title=f"📤 {lang_display} {title}",
-            title_align="left",
-            border_style="green",  # Or self.RESULT_COLOR
-            padding=(1, 2),
-            width=self.console.width - 8 if self.console else None,
-        )
-        if self.console:
-            self.console.print(output_panel)
-        else:  # Fallback if console not available (e.g. direct prompt mode context)
-            print(f"--- {lang_display} {title} ---")
-            print(code_output)
-            print(f"--- End {lang_display} {title} ---")
-
-    def _display_list_response(self, response: Dict[str, Any]):
-        """Display the /list command response in a nicely formatted way"""
-        try:
-            from rich.table import Table
-
-            projects = response.get("projects", [])
-            tasks = response.get("tasks", [])
-            summary = response.get("summary", {})
-
-            # Display summary
-            summary_text = f"**Summary**: {summary.get('total_projects', 0)} projects, "
-            summary_text += f"{summary.get('total_tasks', 0)} tasks "
-            summary_text += f"({summary.get('active_tasks', 0)} active)"
-            self.display_message(summary_text, "system")
-
-            # Display projects table if any exist
-            if projects:
-                self.display_message("## Projects", "system")
-                table = Table(show_header=True, header_style="bold magenta")
-                table.add_column("ID", style="dim", width=8)
-                table.add_column("Name", style="cyan")
-                table.add_column("Status", style="green")
-                table.add_column("Tasks", style="yellow", width=6)
-                table.add_column("Created", style="dim")
-
-                for project in projects:
-                    table.add_row(
-                        project.get("id", "")[:8],
-                        project.get("name", ""),
-                        project.get("status", ""),
-                        str(project.get("task_count", 0)),
-                        project.get("created_at", "")[:16]
-                        if project.get("created_at")
-                        else "",
-                    )
-
-                self.console.print(table)
-
-            # Display tasks table if any exist
-            if tasks:
-                self.display_message("## Tasks", "system")
-                table = Table(show_header=True, header_style="bold magenta")
-                table.add_column("ID", style="dim", width=8)
-                table.add_column("Title", style="white")
-                table.add_column("Status", style="green")
-                table.add_column("Priority", style="yellow", width=8)
-                table.add_column("Project", style="cyan", width=8)
-                table.add_column("Created", style="dim")
-
-                for task in tasks:
-                    project_id = task.get("project_id", "")
-                    project_display = project_id[:8] if project_id else "Independent"
-
-                    table.add_row(
-                        task.get("id", "")[:8],
-                        task.get("title", ""),
-                        task.get("status", ""),
-                        str(task.get("priority", 0)),
-                        project_display,
-                        task.get("created_at", "")[:16]
-                        if task.get("created_at")
-                        else "",
-                    )
-
-                self.console.print(table)
-
-            # If no projects or tasks
-            if not projects and not tasks:
-                self.display_message(
-                    "No projects or tasks found. Create some with `/project create` or `/task create`.",
-                    "system",
-                )
-
-        except Exception as e:
-            # Fallback to simple text display
-            logger.error(f"Error displaying list response: {e}")
-            self.display_message(
-                f"Projects and Tasks:\n{json.dumps(response, indent=2)}", "system"
-            )
-
-    def _display_checkpoints_response(self, response: Dict[str, Any]):
-        """Display checkpoints in a nicely formatted table"""
-        try:
-            from rich.table import Table
-            
-            checkpoints = response.get("checkpoints", [])
-            
-            if not checkpoints:
-                self.display_message("No checkpoints found", "system")
-                return
-            
-            # Create table for checkpoints
-            table = Table(show_header=True, header_style="bold magenta", title="📍 Checkpoints")
-            table.add_column("ID", style="cyan", width=12)
-            table.add_column("Type", style="blue", width=8)
-            table.add_column("Name", style="green")
-            table.add_column("Timestamp", style="yellow")
-            table.add_column("Messages", style="dim", width=8)
-            
-            for cp in checkpoints:
-                checkpoint_id = cp.get("id", "")[:12]
-                checkpoint_type = cp.get("type", "auto")
-                name = cp.get("name") or "-"
-                timestamp = cp.get("timestamp", "")
-                
-                # Format timestamp if it's an ISO string
-                try:
-                    if "T" in timestamp:
-                        from datetime import datetime
-                        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                        timestamp = dt.strftime("%Y-%m-%d %H:%M")
-                except:
-                    pass
-                
-                message_count = cp.get("message_count", "?")
-                
-                table.add_row(
-                    checkpoint_id,
-                    checkpoint_type,
-                    name,
-                    timestamp,
-                    str(message_count)
-                )
-            
-            self.console.print(table)
-            self.display_message(
-                f"\nUse `/rollback <id>` to restore or `/branch <id>` to create a new branch",
-                "system"
-            )
-            
-        except Exception as e:
-            logger.error(f"Error displaying checkpoints: {e}")
-            self.display_message(f"Checkpoints:\n{json.dumps(response, indent=2)}", "system")
-
-    def _display_truncations_response(self, response: Dict[str, Any]):
-        """Display truncation events in a nicely formatted table"""
-        try:
-            from rich.table import Table
-            from rich.panel import Panel
-            
-            truncations = response.get("truncations", [])
-            
-            if not truncations:
-                self.display_message("✓ No truncation events - context window is within budget", "system")
-                return
-            
-            # Show summary panel first
-            total_removed = response.get("total_messages_removed", 0)
-            total_freed = response.get("total_tokens_freed", 0)
-            total_events = response.get("total_events", 0)
-            
-            summary_panel = Panel(
-                f"**Total Events**: {total_events}\n"
-                f"**Messages Removed**: {total_removed}\n"
-                f"**Tokens Freed**: {total_freed:,}",
-                title="[yellow]Context Trimming Summary[/yellow]",
-                border_style="yellow",
-                padding=(0, 2)
-            )
-            self.console.print(summary_panel)
-            
-            # Create table for truncation events
-            table = Table(show_header=True, header_style="bold magenta", title="Recent Truncation Events")
-            table.add_column("Category", style="cyan")
-            table.add_column("Messages", style="red", justify="right")
-            table.add_column("Tokens Freed", style="green", justify="right")
-            table.add_column("Timestamp", style="yellow")
-            
-            for event in truncations:
-                category = event.get("category", "unknown")
-                messages_removed = event.get("messages_removed", 0)
-                tokens_freed = event.get("tokens_freed", 0)
-                timestamp = event.get("timestamp", "")
-                
-                # Format timestamp if it's an ISO string
-                try:
-                    if "T" in timestamp:
-                        from datetime import datetime
-                        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                        timestamp = dt.strftime("%H:%M:%S")
-                except:
-                    pass
-                
-                table.add_row(
-                    category,
-                    str(messages_removed),
-                    f"{tokens_freed:,}",
-                    timestamp
-                )
-            
-            self.console.print(table)
-            
-        except Exception as e:
-            logger.error(f"Error displaying truncations: {e}")
-            self.display_message(f"Truncations:\n{json.dumps(response, indent=2)}", "system")
-
-    def _display_token_usage_response(self, response: Dict[str, Any]):
-        """Display enhanced token usage with categories"""
-        try:
-            from rich.table import Table
-            from rich.panel import Panel
-            
-            token_data = response.get("token_usage", response.get("token_usage_detailed", {}))
-            
-            # Create main usage table
-            table = Table(show_header=True, header_style="bold magenta", title="📊 Token Usage")
-            table.add_column("Category", style="cyan")
-            table.add_column("Tokens", style="green", justify="right")
-            table.add_column("Percentage", style="yellow", justify="right")
-            
-            # Get category breakdown if available
-            categories = token_data.get("categories", {})
-            max_context_tokens = token_data.get("max_context_window_tokens", token_data.get("max_tokens", 0))  # Context window capacity
-            
-            for category_name, tokens in categories.items():
-                percentage = (tokens / max_context_tokens * 100) if max_context_tokens > 0 else 0
-                table.add_row(
-                    category_name,
-                    f"{tokens:,}",
-                    f"{percentage:.1f}%"
-                )
-            
-            # Add total row
-            total = token_data.get("current_total_tokens", 0)
-            pct = token_data.get("percentage", 0)
-            
-            table.add_row(
-                "TOTAL",
-                f"{total:,} / {max_context_tokens:,}",  # Context window usage
-                f"{pct:.1f}%",
-                style="bold"
-            )
-            
-            self.console.print(table)
-            
-            # Show truncation warning if active
-            truncations = token_data.get("truncations", {})
-            if truncations and truncations.get("total_truncations", 0) > 0:
-                warning_panel = Panel(
-                    f"⚠️ Context trimming is active\n"
-                    f"Messages removed: {truncations.get('messages_removed', 0)}\n"
-                    f"Tokens freed: {truncations.get('tokens_freed', 0):,}\n"
-                    f"Use `/truncations` to see details",
-                    title="[yellow]Truncation Active[/yellow]",
-                    border_style="yellow",
-                    padding=(0, 2)
-                )
-                self.console.print(warning_panel)
-                
-        except Exception as e:
-            logger.error(f"Error displaying token usage: {e}")
-            self.display_message(f"Token usage:\n{json.dumps(response, indent=2)}", "system")
-
-    def display_action_result(self, result: Dict[str, Any]):
-        """Display action results in a more readable format"""
-        # This method is part of PenguinCLI, used in interactive mode.
-        # For direct prompt mode, _run_penguin_direct_prompt handles its own output.
-        if not self.console:  # Should not happen in interactive mode
-            logger.warning("display_action_result called without a console.")
-            return
-
-        action_type = result.get("action", result.get("action_name", "unknown"))
-        result_text = str(
-            result.get("result", result.get("output", ""))
-        )  # Ensure string
-        status = result.get("status", "unknown")
-
-        status_icon = (
-            "✓" if status == "completed" else ("⏳" if status == "pending" else "❌")
-        )
-
-        # Special handling for file read operations - acknowledge without dumping content
-        is_file_read = action_type in self.FILE_READ_ACTIONS
-        if is_file_read:
-            self._display_file_read_result(result, result_text, action_type, status_icon)
-            return
-
-        # If result_text is code-like, use Syntax highlighting
-        is_code_output = False
-        detected_lang = "text"
-        if result_text.strip() and (
-            "\n" in result_text
-            or any(
-                kw in result_text
-                for kw in ["def ", "class ", "import ", "function ", "const ", "let "]
-            )
-        ):
-            is_code_output = True
-            detected_lang = self._detect_language(result_text)
-
-        # Check if this is a diff output (from edit tools) - display with enhanced visualization
-        if self._display_diff_result(result_text, action_type, status_icon):
-            return
-
-        if is_code_output:
-            lang_display = self.renderer.get_language_display_name(detected_lang)
-            content_renderable = Syntax(
-                result_text,
-                detected_lang,
-                theme="monokai",
-                word_wrap=True,
-                line_numbers=True,
-            )
-            title_for_panel = f"{status_icon} {lang_display} Output from {action_type}"
-        else:
-            content_renderable = Markdown(
-                result_text if result_text.strip() else "(No textual output)"
-            )
-            title_for_panel = f"{status_icon} Result from {action_type}"
-
-        # Create and display panel (moved outside the if/else blocks)
-        panel = Panel(
-            content_renderable,
-            title=title_for_panel,
-            title_align="left",
-            border_style=self.TOOL_COLOR if status != "error" else "red",
-            width=self.console.width - 8,
-            padding=(1, 1),
-        )
-        self.console.print(panel)
-
-    def _display_file_read_result(
-        self,
-        result: Dict[str, Any],
-        result_text: str,
-        action_type: str,
-        status_icon: str,
-    ) -> None:
-        """Render file-read tool output as a concise preview."""
-        file_info = result.get("file") or result.get("path") or result.get("source") or action_type
-
-        lines = result_text.splitlines()
-        line_count = len(lines)
-        char_count = len(result_text)
-
-        summary_lines = [f"**File:** `{file_info}`"]
-        if line_count:
-            summary_lines.append(
-                f"**Size:** {line_count} lines · {char_count:,} characters"
-            )
-        else:
-            summary_lines.append("**Size:** empty file")
-
-        summary_lines.append(
-            "**Preview:** content suppressed to keep the console concise; open the file directly if you need full contents."
-        )
-
-        summary_panel = Panel(
-            Markdown("\n".join(summary_lines)),
-            title=f"{status_icon} File Read",
-            title_align="left",
-            border_style=self.TOOL_COLOR,
-            width=self.console.width - 8,
-            padding=(1, 1),
-        )
-        self.console.print(summary_panel)
-
-        if not line_count:
-            self.console.print("[dim]No content to display.[/dim]")
-
-    def _guess_language_from_filename(self, file_info: Any) -> str:
-        """Best-effort guess of syntax language from file extension."""
-        try:
-            suffix = Path(str(file_info)).suffix.lower()
-        except Exception:
-            return "text"
-
-        extension_map = {
-            ".py": "python",
-            ".js": "javascript",
-            ".ts": "typescript",
-            ".tsx": "typescript",
-            ".jsx": "javascript",
-            ".json": "json",
-            ".yml": "yaml",
-            ".yaml": "yaml",
-            ".html": "html",
-            ".htm": "html",
-            ".css": "css",
-            ".sh": "bash",
-            ".bash": "bash",
-            ".zsh": "bash",
-            ".rb": "ruby",
-            ".go": "go",
-            ".rs": "rust",
-            ".java": "java",
-            ".cs": "csharp",
-            ".cpp": "cpp",
-            ".cxx": "cpp",
-            ".cc": "cpp",
-            ".c": "c",
-            ".sql": "sql",
-            ".md": "markdown",
-        }
-        return extension_map.get(suffix, "text")
-
-    def _display_diff_result(
-        self,
-        result_text: str,
-        action_type: str,
-        status_icon: str,
-    ) -> bool:
-        """Render diff output with syntax highlighting when possible."""
-        summary_text, diff_blocks = self._split_diff_sections(result_text)
-
-        if diff_blocks:
-            if summary_text.strip():
-                summary_panel = Panel(
-                    Markdown(summary_text.strip()),
-                    title=f"{status_icon} Result from {action_type}",
-                    title_align="left",
-                    border_style=self.TOOL_COLOR,
-                    width=self.console.width - 8,
-                    padding=(1, 1),
-                )
-                self.console.print(summary_panel)
-
-            total_blocks = len(diff_blocks)
-            for index, block in enumerate(diff_blocks, start=1):
-                stats = self._compute_diff_stats(block)
-                stats_label = f"+{stats['adds']} / -{stats['deletes']}"
-                if stats["hunks"]:
-                    stats_label += f" · {stats['hunks']} hunk{'s' if stats['hunks'] != 1 else ''}"
-
-                title_suffix = (
-                    f" [{index}/{total_blocks}]" if total_blocks > 1 else ""
-                )
-                diff_title = (
-                    f"{status_icon} Diff {title_suffix} ({stats_label}) from {action_type}"
-                )
-
-                try:
-                    diff_renderable = Syntax(
-                        block,
-                        "diff",
-                        theme="monokai",
-                        line_numbers=False,
-                        word_wrap=False,
-                        code_width=min(120, self.console.width - 12),
-                    )
-                except Exception:
-                    diff_renderable = Syntax(
-                        block,
-                        "text",
-                        theme="monokai",
-                        line_numbers=False,
-                        word_wrap=False,
-                        code_width=min(120, self.console.width - 12),
-                    )
-
-                diff_panel = Panel(
-                    diff_renderable,
-                    title=diff_title,
-                    title_align="left",
-                    border_style=self.TOOL_COLOR,
-                    width=self.console.width - 8,
-                    padding=(1, 1),
-                )
-                self.console.print(diff_panel)
-
-            return True
-
-        if self._looks_like_diff(result_text):
-            from rich.text import Text
-
-            diff_display = Text()
-            for line in result_text.splitlines():
-                if line.startswith("+") and not line.startswith("+++"):
-                    diff_display.append(line + "\n", style="green")
-                elif line.startswith("-") and not line.startswith("---"):
-                    diff_display.append(line + "\n", style="red")
-                elif line.startswith("@@"):
-                    diff_display.append(line + "\n", style="cyan bold")
-                elif line.startswith("+++") or line.startswith("---"):
-                    diff_display.append(line + "\n", style="yellow bold")
-                else:
-                    diff_display.append(line + "\n", style="dim")
-
-            diff_panel = Panel(
-                diff_display,
-                title=f"{status_icon} Diff Result from {action_type}",
-                title_align="left",
-                border_style=self.TOOL_COLOR,
-                width=self.console.width - 8,
-                padding=(1, 1),
-            )
-            self.console.print(diff_panel)
-            return True
-
-        return False
-
-    def _split_diff_sections(self, text: str) -> Tuple[str, List[str]]:
-        """Separate diff blocks from surrounding narrative text."""
-        diff_blocks: List[str] = []
-
-        # Extract fenced blocks first (```diff```, ```patch```)
-        fenced_pattern = re.compile(r"```(?:diff|patch)\s*\n(.*?)```", re.IGNORECASE | re.DOTALL)
-
-        def _capture_fenced(match: re.Match) -> str:
-            block = match.group(1).strip()
-            if block:
-                diff_blocks.append(block)
-            return ""
-
-        remainder = fenced_pattern.sub(_capture_fenced, text)
-
-        # Extract inline unified diff blocks
-        inline_pattern = re.compile(
-            r"(?ms)^---\s.+?\n\+\+\+\s.+?\n(?:@@.*\n)?(?:[ \t\+\-].*\n)+"
-        )
-        inline_matches = list(inline_pattern.finditer(remainder))
-        for match in inline_matches:
-            block = match.group(0).strip()
-            if block:
-                diff_blocks.append(block)
-        remainder = inline_pattern.sub("", remainder)
-
-        return remainder, diff_blocks
-
-    def _compute_diff_stats(self, diff_text: str) -> Dict[str, int]:
-        adds = deletes = hunks = 0
-        for line in diff_text.splitlines():
-            if line.startswith("@@"):
-                hunks += 1
-            elif line.startswith("+") and not line.startswith("+++"):
-                adds += 1
-            elif line.startswith("-") and not line.startswith("---"):
-                deletes += 1
-        return {"adds": adds, "deletes": deletes, "hunks": hunks}
-
-    def _looks_like_diff(self, text: str) -> bool:
-        if "```diff" in text.lower() or "```patch" in text.lower():
-            return True
-        if re.search(r"^---\s", text, re.MULTILINE) and re.search(r"^\+\+\+\s", text, re.MULTILINE):
-            return True
-        if re.search(r"^@@", text, re.MULTILINE):
-            return True
-        return False
-
-    def _render_diff_message(self, message: str) -> bool:
-        """Render system messages that contain diff content."""
-        # Delegate to UnifiedRenderer
-        return self.renderer.render_diff_message(message)
 
     def on_progress_update(
         self, iteration: int, max_iterations: int, message: Optional[str] = None
     ):
         """Handle progress updates without interfering with execution"""
-        if not self.progress and iteration > 0:
+        if not self.streaming_manager.progress and iteration > 0:
             # Only show progress if not already processing
-            self._safely_stop_progress()
-            self.progress = Progress(
+            self.streaming_manager.safely_stop_progress()
+            progress = Progress(
                 SpinnerColumn(),
                 TextColumn("[bold blue]{task.description}"),
                 console=self.console,
             )
-            self.progress.start()
-            self.progress_task = self.progress.add_task(
+            progress.start()
+            self.streaming_manager.progress = progress
+            self._progress_task_id = progress.add_task(
                 f"Thinking... (Step {iteration}/{max_iterations})", total=max_iterations
             )
 
-        if self.progress:
+        if self.streaming_manager.progress and self._progress_task_id is not None:
             # Update without completing to prevent early termination
-            self.progress.update(
-                self.progress_task,
+            self.streaming_manager.progress.update(
+                self._progress_task_id,
                 description=f"{message or 'Processing'} (Step {iteration}/{max_iterations})",
                 completed=min(
                     iteration, max_iterations - 1
                 ),  # Never mark fully complete
             )
-
-    def _safely_stop_progress(self):
-        """Safely stop and clear the progress bar"""
-        if self.progress:
-            try:
-                self.progress.stop()
-            except Exception:
-                pass  # Suppress any errors during progress cleanup
-            finally:
-                self.progress = None
+        self._progress_task_id = None
 
     def _ensure_progress_cleared(self):
         """Make absolutely sure no progress indicator is active before showing input prompt"""
-        self._safely_stop_progress()
+        self.streaming_manager.safely_stop_progress()
 
         # Force redraw the prompt area
         print("\033[2K", end="\r")  # Clear the current line
@@ -4095,7 +3470,7 @@ Welcome to Penguin!
                     self.console.print("\n[dim]Ctrl+C pressed. Press again to exit, or type /exit[/dim]")
                     continue
 
-                if user_input.lower() in ["exit", "quit"]:
+                if user_input.lower() in ["exit", "quit", "/cancel"]:
                     break
 
                 if not user_input.strip():
@@ -4107,15 +3482,17 @@ Welcome to Penguin!
                 # Increment conversation turn for new user input
                 self.current_conversation_turn += 1
                 # Reset streaming state
-                self.is_streaming = False
-                self.streaming_buffer = ""
-                self.streaming_reasoning_buffer = ""
+                self.streaming_manager.set_streaming(False)
+                self.streaming_manager.streaming_buffer = ""
+                self.streaming_manager.streaming_reasoning_buffer = ""
+                self.streaming_manager.streaming_role = "assistant"
+                self.streaming_manager._active_stream_id = None
                 self.last_completed_message = ""
                 self.last_completed_message_normalized = ""
 
                 # DON'T display user input here - let event system handle it
                 # (Prevents duplicate display: once here, once from Core event)
-                # self.display_message(user_input, "user")
+                # self.display_manager.display_message(user_input, "user")
 
                 # Add user message to processed messages to prevent duplication
                 user_msg_key = f"user:{user_input[:50]}"
@@ -4130,11 +3507,11 @@ Welcome to Penguin!
                     message_content = parts[1].strip() if len(parts) > 1 else ""
 
                     if not target_agent:
-                        self.display_message("Usage: @agent-name <message>", "error")
+                        self.display_manager.display_message("Usage: @agent-name <message>", "error")
                         continue
 
                     if not message_content:
-                        self.display_message(f"Please provide a message for @{target_agent}", "error")
+                        self.display_manager.display_message(f"Please provide a message for @{target_agent}", "error")
                         continue
 
                     # Check if agent exists (either as persona or registered agent)
@@ -4143,7 +3520,7 @@ Welcome to Penguin!
 
                     if target_agent not in personas and target_agent not in roster_ids:
                         available = sorted(personas | roster_ids - {None})
-                        self.display_message(
+                        self.display_manager.display_message(
                             f"Unknown agent '@{target_agent}'. Available: {', '.join(available)}", 
                             "error"
                         )
@@ -4157,20 +3534,20 @@ Welcome to Penguin!
                             conv = self.core.conversation_manager.get_agent_conversation(target_agent)
                             if conv and hasattr(conv, 'session') and conv.session:
                                 conv.session.metadata["persona"] = target_agent
-                            self.display_message(f"Spawned agent '{target_agent}' from persona", "system")
+                            self.display_manager.display_message(f"Spawned agent '{target_agent}' from persona", "system")
                         except Exception as e:
-                            self.display_message(f"Failed to spawn agent: {e}", "error")
+                            self.display_manager.display_message(f"Failed to spawn agent: {e}", "error")
                             continue
 
                     # Send message to the target agent
                     try:
                         success = await self.core.send_to_agent(target_agent, message_content)
                         if success:
-                            self.display_message(f"Message sent to @{target_agent}", "system")
+                            self.display_manager.display_message(f"Message sent to @{target_agent}", "system")
                         else:
-                            self.display_message(f"Failed to send message to @{target_agent}", "error")
+                            self.display_manager.display_message(f"Failed to send message to @{target_agent}", "error")
                     except Exception as e:
-                        self.display_message(f"Error sending to @{target_agent}: {e}", "error")
+                        self.display_manager.display_message(f"Error sending to @{target_agent}: {e}", "error")
                     continue
 
                 # Handle commands
@@ -4204,6 +3581,14 @@ Welcome to Penguin!
                                 # Parse arguments: /image <path> [description...]
                                 # Use shlex so quoted paths with spaces work correctly.
                                 raw = user_input[1:]  # drop leading "/"
+
+                                # Normalize: remove line continuation backslashes
+                                raw = raw.replace("\\n", "").replace("\\r\\n", "")
+
+                                # Normalize drag-and-drop input
+                                # Remove line continuation backslashes and join multiline paths
+                                raw = raw.replace("\ ", " ")
+                                raw = " ".join(raw.split())
                                 try:
                                     tokens = shlex.split(raw)
                                 except ValueError:
@@ -4232,7 +3617,7 @@ Welcome to Penguin!
                                             await self.session.prompt_async(prompt_html)
                                         ).strip().strip("'\"")
                                     except KeyboardInterrupt:
-                                        self.display_message("Image input cancelled.", "system")
+                                        self.display_manager.display_message("Image input cancelled.", "system")
                                         continue
                                     if prompted:
                                         image_paths = [prompted]
@@ -4241,7 +3626,7 @@ Welcome to Penguin!
                                 missing = [p for p in image_paths if not os.path.exists(p)]
                                 if not image_paths or missing:
                                     missing_label = ", ".join(missing) if missing else "(none)"
-                                    self.display_message(
+                                    self.display_manager.display_message(
                                         f"Image file not found: {missing_label}", "error"
                                     )
                                     continue
@@ -4280,7 +3665,7 @@ Welcome to Penguin!
                                             client_supports = False
 
                                 if image_paths and not (vision_enabled or client_supports):
-                                    self.display_message(
+                                    self.display_manager.display_message(
                                         "Vision is disabled for the current model. "
                                         "Enable `model.vision_enabled` or switch to a vision-capable model.",
                                         "error",
@@ -4298,7 +3683,7 @@ Welcome to Penguin!
                                     specs_service = ModelSpecsService()
                                     specs = await specs_service.get_specs(model_id)
                                     if specs and not specs.supports_vision:
-                                        self.display_message(
+                                        self.display_manager.display_message(
                                             f"⚠️  Warning: Model `{model_id}` does not report vision support "
                                             f"in OpenRouter. The image may be ignored or cause an error.",
                                             "system",
@@ -4318,7 +3703,7 @@ Welcome to Penguin!
                                     hasattr(self, "_streaming_started")
                                     and self._streaming_started
                                 ):
-                                    self._finalize_streaming()
+                                    self.streaming_manager.finalize_streaming()
 
                                 # Display any action results (e.g. vision-tool output)
                                 if (
@@ -4335,14 +3720,14 @@ Welcome to Penguin!
                                                 )
                                             if "status" not in result:
                                                 result["status"] = "completed"
-                                            self.display_action_result(result)
+                                            self.display_manager.display_action_result(result)
                                         else:
-                                            self.display_message(str(result), "system")
+                                            self.display_manager.display_message(str(result), "system")
                             except Exception as e:
-                                self.display_message(
+                                self.display_manager.display_message(
                                     f"Error processing image command: {e!s}", "error"
                                 )
-                                self.display_message(traceback.format_exc(), "error")
+                                self.display_manager.display_message(traceback.format_exc(), "error")
                             continue  # Skip default command processing for /image
                         else:
                             # Regular command handling
@@ -4354,18 +3739,18 @@ Welcome to Penguin!
                         if isinstance(response, dict):
                             # Handle error responses
                             if "error" in response:
-                                self.display_message(response["error"], "error")
+                                self.display_manager.display_message(response["error"], "error")
 
                             # Handle specialized displays FIRST (before generic status)
                             # These have both data and status, show the rich display
                             elif "checkpoints" in response:
-                                self._display_checkpoints_response(response)
+                                self.session_manager.display_checkpoints_response(response)
 
                             elif "truncations" in response:
-                                self._display_truncations_response(response)
+                                self.session_manager.display_truncations_response(response)
 
                             elif "token_usage" in response or "token_usage_detailed" in response:
-                                self._display_token_usage_response(response)
+                                self.session_manager.display_token_usage_response(response)
 
                             # Handle conversation list
                             elif "conversations" in response:
@@ -4380,17 +3765,17 @@ Welcome to Penguin!
                                         f"chat load {selected_id}"
                                     )
                                     if "status" in load_result:
-                                        self.display_message(
+                                        self.display_manager.display_message(
                                             load_result["status"], "system"
                                         )
                                     elif "error" in load_result:
-                                        self.display_message(
+                                        self.display_manager.display_message(
                                             load_result["error"], "error"
                                         )
 
                             # Handle list command response
                             elif "projects" in response and "tasks" in response:
-                                self._display_list_response(response)
+                                self.display_manager.display_list_response(response)
 
                             # Handle model list
                             elif "models_list" in response:
@@ -4401,11 +3786,11 @@ Welcome to Penguin!
                                         "→ " if model.get("current", False) else "  "
                                     )
                                     models_msg += f"{current_marker}{model.get('name')} ({model.get('provider')})\n"
-                                self.display_message(models_msg, "system")
+                                self.display_manager.display_message(models_msg, "system")
 
                             # Handle generic status messages LAST (fallback)
                             elif "status" in response:
-                                self.display_message(response["status"], "system")
+                                self.display_manager.display_message(response["status"], "system")
 
                             # Handle help messages
                             elif "help" in response:
@@ -4434,25 +3819,25 @@ Welcome to Penguin!
                                         f"chat load {selected_id}"
                                     )
                                     if "status" in load_result:
-                                        self.display_message(
+                                        self.display_manager.display_message(
                                             load_result["status"], "system"
                                         )
                                     elif "error" in load_result:
-                                        self.display_message(
+                                        self.display_manager.display_message(
                                             load_result["error"], "error"
                                         )
 
                             # Handle token usage display (enhanced)
                             elif "token_usage" in response or "token_usage_detailed" in response:
-                                self._display_token_usage_response(response)
+                                self.session_manager.display_token_usage_response(response)
 
                             # Handle checkpoints list display
                             elif "checkpoints" in response:
-                                self._display_checkpoints_response(response)
+                                self.session_manager.display_checkpoints_response(response)
 
                             # Handle truncations display
                             elif "truncations" in response:
-                                self._display_truncations_response(response)
+                                self.session_manager.display_truncations_response(response)
 
                             # Handle model list
                             elif "models_list" in response:
@@ -4463,14 +3848,14 @@ Welcome to Penguin!
                                         "→ " if model.get("current", False) else "  "
                                     )
                                     models_msg += f"{current_marker}{model.get('name')} ({model.get('provider')})\n"
-                                self.display_message(models_msg, "system")
+                                self.display_manager.display_message(models_msg, "system")
 
                             # Handle list command response
                             elif "projects" in response and "tasks" in response:
-                                self._display_list_response(response)
+                                self.display_manager.display_list_response(response)
                     except Exception as e:
-                        self.display_message(f"Error executing command: {e!s}", "error")
-                        self.display_message(traceback.format_exc(), "error")
+                        self.display_manager.display_message(f"Error executing command: {e!s}", "error")
+                        self.display_manager.display_message(traceback.format_exc(), "error")
 
                     continue  # Back to prompt after command processing
 
@@ -4511,7 +3896,7 @@ Welcome to Penguin!
 
                     # Make sure to finalize any streaming that might still be in progress
                     if hasattr(self, "_streaming_started") and self._streaming_started:
-                        self._finalize_streaming()
+                        self.streaming_manager.finalize_streaming()
 
                     # Action results are now handled via the event system (SYSTEM_OUTPUT category)
                     # No need to display them here - that would cause duplication
@@ -4519,29 +3904,29 @@ Welcome to Penguin!
                     #
                     # if isinstance(response, dict) and "action_results" in response:
                     #     for result in response["action_results"]:
-                    #         self.display_action_result(result)
+                    #         self.display_manager.display_action_result(result)
 
                     # If the response itself is a string (unlikely but possible), display it.
                     elif isinstance(response, str):
-                        self.display_message(response)
+                        self.display_manager.display_message(response)
 
-                except KeyboardInterrupt:
+                except (KeyboardInterrupt, asyncio.CancelledError):
                     # Handle interrupt during processing - don't exit, just cancel current operation
                     self.console.print("\n[yellow]Processing interrupted[/yellow]")
-                    self._safely_stop_progress()
+                    self.streaming_manager.safely_stop_progress()
                     # Cleanup any streaming in progress
                     if hasattr(self, "_streaming_started") and self._streaming_started:
-                        self._finalize_streaming()
+                        self.streaming_manager.finalize_streaming()
                     # Don't raise - continue to next prompt iteration
                     continue
                 except Exception as e:
-                    self.display_message(f"Error processing input: {e!s}", "error")
-                    self.display_message(traceback.format_exc(), "error")
+                    self.display_manager.display_message(f"Error processing input: {e!s}", "error")
+                    self.display_manager.display_message(traceback.format_exc(), "error")
                 finally:
                     # Always clean up progress display and streaming
-                    self._safely_stop_progress()
+                    self.streaming_manager.safely_stop_progress()
                     if hasattr(self, "_streaming_started") and self._streaming_started:
-                        self._finalize_streaming()
+                        self.streaming_manager.finalize_streaming()
 
                 # Save conversation after each message exchange
                 self.message_count += 1
@@ -4552,13 +3937,20 @@ Welcome to Penguin!
                 except Exception as save_err:
                     logger.warning(f"Failed to save conversation: {save_err}")
 
-            except KeyboardInterrupt:
-                # Fallback handler - should rarely be hit now
-                self.console.print("\n[yellow]Interrupted[/yellow]")
-                break
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                # Fallback handler - use double-interrupt pattern
+                _consecutive_interrupts += 1
+                if _consecutive_interrupts >= 2:
+                    self.console.print("\n[yellow]Double interrupt - exiting...[/yellow]")
+                    break
+                self.console.print("\n[yellow]⚠️ Response stopped by user[/yellow]")
+                self.streaming_manager.safely_stop_progress()
+                if hasattr(self, "_streaming_started") and self._streaming_started:
+                    self.streaming_manager.finalize_streaming()
+                continue
 
             except Exception as e:
-                self.display_message(f"Chat loop error: {e!s}", "error")
+                self.display_manager.display_message(f"Chat loop error: {e!s}", "error")
                 logger.error(f"Chat loop error: {traceback.format_exc()}")
 
         # Final save before exit to ensure all messages are persisted
@@ -4571,138 +3963,13 @@ Welcome to Penguin!
             
         console.print("\nGoodbye! 👋")
 
-    async def handle_conversation_command(self, command_parts: List[str]) -> None:
-        """Handle conversation-related commands"""
-        if len(command_parts) < 2:
-            self.display_message(
-                "Usage:\n"
-                " • /chat list - Show available conversations\n"
-                " • /chat load - Load a previous conversation\n"
-                " • /chat summary - Show current conversation summary",
-                "system",
-            )
-            return
-
-        action = command_parts[1].lower()
-
-        if action == "list":
-            # Get raw conversation list
-            raw_conversations = self.core.conversation_manager.list_conversations()
-
-            # Process each conversation to extract better titles
-            conversations = []
-            for idx, session in enumerate(raw_conversations):
-                session_id = session["id"]
-
-                # Try to get a more descriptive title
-                title = session.get("title", "")
-
-                # If no title is set, try to load the session to get the first user message
-                if not title or title.startswith("Session "):
-                    try:
-                        # Load the session object
-                        loaded_session = (
-                            self.core.conversation_manager.session_manager.load_session(
-                                session_id
-                            )
-                        )
-                        if loaded_session:
-                            # Find the first user message
-                            for msg in loaded_session.messages:
-                                if msg.role == "user":
-                                    # Use first line of first user message as title
-                                    content = msg.content
-                                    if isinstance(content, str):
-                                        first_line = content.split("\n", 1)[0]
-                                        title = (
-                                            (first_line[:37] + "...")
-                                            if len(first_line) > 40
-                                            else first_line
-                                        )
-                                        break
-                                    elif isinstance(content, list):
-                                        # Handle structured content like messages with images
-                                        for item in content:
-                                            if (
-                                                isinstance(item, dict)
-                                                and item.get("type") == "text"
-                                            ):
-                                                text = item.get("text", "")
-                                                first_line = text.split("\n", 1)[0]
-                                                title = (
-                                                    (first_line[:37] + "...")
-                                                    if len(first_line) > 40
-                                                    else first_line
-                                                )
-                                                break
-                                        if title:
-                                            break
-                    except Exception:
-                        # Fall back to session ID if there's an error
-                        title = f"Conversation {idx + 1}"
-
-                # If still no title, use default
-                if not title or title.startswith("Session "):
-                    title = f"Conversation {idx + 1}"
-
-                # Create the ConversationSummary with the extracted title
-                conversations.append(
-                    ConversationSummary(
-                        session_id=session_id,
-                        title=title,
-                        message_count=session.get("message_count", 0),
-                        # Format the datetime properly
-                        last_active=(
-                            parse_iso_datetime(session.get("last_active", "")).strftime(
-                                "%Y-%m-%d %H:%M"
-                            )
-                            if session.get("last_active")
-                            else "Unknown date"
-                        ),
-                    )
-                )
-            # Let user select a conversation
-            session_id = self.conversation_menu.select_conversation(conversations)
-            if session_id:
-                try:
-                    self.core.conversation_manager.load(session_id)
-                    self.display_message("Conversation loaded successfully", "system")
-                except Exception as e:
-                    self.display_message(f"Error loading conversation: {e!s}", "error")
-
-        elif action == "load":
-            # Same as list for now, might add direct session_id loading later
-            await self.handle_conversation_command(["conv", "list"])
-
-        elif action == "summary":
-            messages = self.core.conversation_manager.conversation.get_history()
-            self.conversation_menu.display_summary(messages)
-
-        elif action == "run":
-            # During task execution
-            await self.core.start_run_mode(
-                command_parts[2], command_parts[3] if len(command_parts) > 3 else None
-            )
-
-            # After completion
-            conversation = self.core.get_conversation(command_parts[2])
-            if conversation and hasattr(self.core, "run_mode_messages"):
-                # Need to handle this differently with new conversation system
-                self.display_message("Task execution completed", "system")
-
-        else:
-            self.display_message(f"Unknown conversation action: {action}", "error")
-
-    # Legacy stream_callback method removed - now using event system only
-
     def _finalize_streaming(self):
         """Finalize streaming and clean up the StreamingDisplay"""
         # Stop the StreamingDisplay
-        if self.streaming_display and self.streaming_display.is_active:
-            try:
-                self.streaming_display.stop(finalize=True)
-            except Exception as e:
-                logger.error(f"Error stopping streaming display: {e}")
+        try:
+            self.streaming_manager.finalize_streaming()
+        except Exception as e:
+            logger.error(f"Error stopping streaming display: {e}")
 
         # Legacy cleanup for backward compatibility
         if hasattr(self, "streaming_live") and self.streaming_live:
@@ -4713,340 +3980,8 @@ Welcome to Penguin!
                 pass  # Suppress any errors during cleanup
 
         self._streaming_started = False
-        self.is_streaming = False
         self._streaming_session_id = None
         self._active_stream_id = None
-
-    def handle_event(self, event_type: str, data: Dict[str, Any]) -> None:
-        """
-        Handle events from Core and update the display accordingly.
-        This creates a direct connection between Core and UI.
-
-        Args:
-            event_type: Type of event (e.g., "stream_chunk", "token_update")
-            data: Event data
-        """
-        try:
-            if event_type == "stream_chunk":
-                # ------------------------------------------------------------------
-                # NEW: Unified streaming handler using StreamingDisplay with Rich.Live
-                # ------------------------------------------------------------------
-                stream_id = data.get("stream_id")
-                chunk = data.get("chunk", "")
-                is_final = data.get("is_final", False)
-                self.streaming_role = data.get("role", "assistant")
-                is_reasoning = data.get("is_reasoning", False)
-
-                # Ignore chunks with no stream_id (should not happen after refactor)
-                if stream_id is None:
-                    return
-
-                # First chunk of a new streaming message -> start StreamingDisplay
-                if self._active_stream_id is None:
-                    self._active_stream_id = stream_id
-                    self._streaming_started = True
-                    self.is_streaming = True
-                    self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""
-
-                    # CRITICAL: Stop ALL active progress displays FIRST
-                    self._safely_stop_progress()
-
-                    # Stop the "Thinking..." indicator from chat_loop
-                    if hasattr(self, "_thinking_progress"):
-                        try:
-                            self._thinking_progress.stop()
-                            delattr(self, "_thinking_progress")
-                        except Exception:
-                            pass
-
-                    # Start new streaming display with Rich.Live
-                    self.streaming_display.start_message(role=self.streaming_role)
-
-                # Ignore chunks that belong to an old or foreign stream
-                if stream_id != self._active_stream_id:
-                    return
-
-                # Skip empty non-final chunks
-                if not chunk and not is_final:
-                    return
-
-                # Process chunk for display
-                if chunk:
-                    # Append to buffers for deduplication tracking
-                    if is_reasoning:
-                        self.streaming_reasoning_buffer += chunk
-                    else:
-                        self.streaming_buffer += chunk
-                    
-                    # Append to StreamingDisplay
-                    self.streaming_display.append_text(chunk, is_reasoning=is_reasoning)
-
-                if is_final:
-                    # Final chunk received - finalize streaming
-                    self.is_streaming = False
-                    
-                    # Filter verbose code blocks before finalizing
-                    if self.streaming_buffer:
-                        filtered_buffer = self._filter_verbose_code_blocks(self.streaming_buffer)
-                        # Update the display's content buffer with filtered version
-                        self.streaming_display.content_buffer = filtered_buffer
-                    
-                    # Stop streaming display (will show final formatted version)
-                    self.streaming_display.stop(finalize=True)
-
-                    # Store for deduplication
-                    if self.streaming_buffer.strip():
-                        self.last_completed_message = self.streaming_buffer
-                        self.last_completed_message_normalized = (
-                            self._normalize_message_content(self.streaming_buffer)
-                        )
-
-                    # NOW display any pending system messages (tool results) that arrived during streaming
-                    if self.pending_system_messages:
-                        for msg_content, msg_role in self.pending_system_messages:
-                            self.display_message(msg_content, msg_role)
-                        self.pending_system_messages.clear()
-
-                    # Clear stream ID
-                    self._active_stream_id = None
-
-                    # Store completed message for deduplication
-                    if self.streaming_buffer.strip():
-                        completed_msg_key = (
-                            f"{self.streaming_role}:{self.streaming_buffer[:50]}"
-                        )
-                        self.processed_messages.add(completed_msg_key)
-                        self.message_turn_map[completed_msg_key] = (
-                            self.current_conversation_turn
-                        )
-
-                    # Reset buffers
-                    self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""
-                    return
-
-            elif event_type == "token_update":
-                # Could update a token display here if we add one
-                pass
-
-            elif event_type == "tool":
-                # Handle tool execution events - update streaming display
-                phase = data.get("phase", "")
-                tool_name = data.get("action", data.get("tool_name", ""))
-                
-                if phase == "start" and tool_name:
-                    # Show tool execution indicator
-                    if self.streaming_display.is_active:
-                        self.streaming_display.set_tool(tool_name)
-                
-                elif phase == "end":
-                    # Clear tool indicator
-                    if self.streaming_display.is_active:
-                        self.streaming_display.clear_tool()
-                    
-                    # Optionally display tool result (if not verbose)
-                    result = data.get("result", "")
-                    if result and not self.is_streaming:
-                        # Only show if not currently streaming assistant response
-                        tool_summary = f"✓ {tool_name}" if len(result) < 50 else f"✓ {tool_name}: {result[:47]}..."
-                        self.display_message(tool_summary, "system")
-
-            elif event_type == "message":
-                # A new message has been added to the conversation
-                role = data.get("role", "unknown")
-                content = data.get("content", "")
-                category = data.get("category", MessageCategory.DIALOG)
-                metadata = data.get("metadata", {}) if isinstance(data, dict) else {}
-
-                # Buffer system output messages (tool results) if streaming is active
-                if (
-                    category == MessageCategory.SYSTEM_OUTPUT
-                    or category == "SYSTEM_OUTPUT"
-                ):
-                    if not self.show_tool_results:
-                        return
-                    # Check if this is a verbose tool result that should be suppressed
-                    tool_name = metadata.get("tool_name", "")
-                    action_type = metadata.get("action_type", "")
-
-                    # Suppress verbose tool output (reads, lists, writes)
-                    SUPPRESS_VERBOSE_TOOLS = {
-                        "read_file", "enhanced_read", "list_files_filtered",
-                        "write_file", "enhanced_write", "list_files"
-                    }
-
-                    if tool_name in SUPPRESS_VERBOSE_TOOLS or action_type in SUPPRESS_VERBOSE_TOOLS:
-                        # Show compact summary instead of full output
-                        summary = self._create_tool_summary(tool_name or action_type, content, metadata)
-                        if summary:
-                            if self.is_streaming or self._active_stream_id is not None:
-                                self.pending_system_messages.append((summary, "system"))
-                            else:
-                                self.display_message(summary, "system")
-                        return
-
-                    # Show full output for important tools (execute, diff, etc.)
-                    if self.is_streaming or self._active_stream_id is not None:
-                        # Buffer for display after streaming completes
-                        self.pending_system_messages.append((content, "system"))
-                        return
-                    else:
-                        # Not streaming, display immediately
-                        self.display_message(content, "system")
-                        return
-
-                # Skip other internal system messages
-                if category == MessageCategory.SYSTEM or category == "SYSTEM":
-                    return
-
-                # Suppress verbose tool payloads for read actions; action results already summarized
-                if (
-                    role == "tool"
-                    and isinstance(metadata, dict)
-                    and metadata.get("action_type") in self.FILE_READ_ACTIONS
-                ):
-                    msg_key = f"{role}:{content[:50]}"
-                    self.processed_messages.add(msg_key)
-                    self.message_turn_map[msg_key] = self.current_conversation_turn
-                    return
-
-                # Generate a message key and check if we've already processed this message
-                msg_key = f"{role}:{content[:50]}"
-                incoming_normalized = (
-                    self._normalize_message_content(content)
-                    if role == "assistant"
-                    else ""
-                )
-                if msg_key in self.processed_messages:
-                    return
-
-                # If this is a user message, it's the start of a new conversation turn
-                if role == "user":
-                    # Increment conversation turn counter
-                    self.current_conversation_turn += 1
-
-                    # Clear streaming state for new turn
-                    self.is_streaming = False
-                    self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""
-                    self.last_completed_message = ""
-                    self.last_completed_message_normalized = ""
-
-                # For assistant messages, check if this was already displayed via streaming
-                if role == "assistant":
-                    # Skip if this message was already displayed via streaming
-                    # Use startswith to handle minor formatting differences
-                    if self.last_completed_message and (
-                        content == self.last_completed_message or
-                        content.startswith(self.last_completed_message[:50]) or
-                        self.last_completed_message.startswith(content[:50])
-                    ):
-                        # Add to processed messages to avoid future duplicates
-                        self.processed_messages.add(msg_key)
-                        self.message_turn_map[msg_key] = self.current_conversation_turn
-                        return
-
-                    if (
-                        self.last_completed_message_normalized
-                        and incoming_normalized
-                        and incoming_normalized == self.last_completed_message_normalized
-                    ):
-                        self.processed_messages.add(msg_key)
-                        self.message_turn_map[msg_key] = self.current_conversation_turn
-                        return
-
-                # Add to processed messages and map to current turn
-                self.processed_messages.add(msg_key)
-                self.message_turn_map[msg_key] = self.current_conversation_turn
-
-                # Display the message
-                self.display_message(content, role)
-
-                if role == "assistant":
-                    self.last_completed_message = content
-                    self.last_completed_message_normalized = incoming_normalized
-
-            elif event_type == "status":
-                # Handle status events like RunMode updates
-                status_type = data.get("status_type", "")
-
-                # Update RunMode status
-                if "task_started" in status_type:
-                    self.run_mode_active = True
-                    task_name = data.get("data", {}).get("task_name", "Unknown task")
-                    self.run_mode_status = f"Task '{task_name}' started"
-                    
-                    # CRITICAL: Reset streaming state when RunMode starts to avoid conflicts
-                    self._finalize_streaming()
-                    self.is_streaming = False
-                    self.streaming_buffer = ""
-                    self.streaming_reasoning_buffer = ""
-                    self._active_stream_id = None
-                    
-                    # Update streaming display status
-                    if self.streaming_display.is_active:
-                        self.streaming_display.set_status(f"Starting task: {task_name}")
-                    else:
-                        self.display_message(f"Starting task: {task_name}", "system")
-
-                elif "task_progress" in status_type:
-                    self.run_mode_active = True
-                    iteration = data.get("data", {}).get("iteration", "?")
-                    max_iter = data.get("data", {}).get("max_iterations", "?")
-                    progress = data.get("data", {}).get("progress", 0)
-                    self.run_mode_status = (
-                        f"Progress: {progress}% (Iter: {iteration}/{max_iter})"
-                    )
-                    
-                    # Update streaming display if active
-                    if self.streaming_display.is_active:
-                        self.streaming_display.set_status(self.run_mode_status)
-
-                elif "task_completed" in status_type or "run_mode_ended" in status_type:
-                    self.run_mode_active = False
-                    
-                    # CRITICAL: Finalize any active streaming when task completes
-                    if self._active_stream_id is not None or self.is_streaming:
-                        self._finalize_streaming()
-                    
-                    # Clear streaming display status
-                    if self.streaming_display.is_active:
-                        self.streaming_display.clear_status()
-                    
-                    if "task_completed" in status_type:
-                        task_name = data.get("data", {}).get(
-                            "task_name", "Unknown task"
-                        )
-                        self.run_mode_status = f"Task '{task_name}' completed"
-                        self.display_message(f"Task '{task_name}' completed", "system")
-                    else:
-                        self.run_mode_status = "RunMode ended"
-                        self.display_message("RunMode ended", "system")
-
-                elif "clarification_needed" in status_type:
-                    self.run_mode_active = True
-                    prompt = data.get("data", {}).get("prompt", "Input needed")
-                    self.run_mode_status = f"Clarification needed: {prompt}"
-                    
-                    # Update streaming display if active
-                    if self.streaming_display.is_active:
-                        self.streaming_display.set_status(self.run_mode_status)
-                    else:
-                        self.display_message(f"Clarification needed: {prompt}", "system")
-
-            elif event_type == "error":
-                # Handle error events
-                error_msg = data.get("message", "Unknown error")
-                source = data.get("source", "")
-                details = data.get("details", "")
-
-                # Display error message
-                self.display_message(f"Error: {error_msg}\n{details}", "error")
-
-        except Exception as e:
-            # Handle exception in event processing
-            self.display_message(f"Error processing event: {e!s}", "error")
 
     def set_streaming(self, enabled: bool = True) -> None:
         """

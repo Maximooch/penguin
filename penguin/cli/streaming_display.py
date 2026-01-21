@@ -253,8 +253,8 @@ class StreamingDisplay:
             )
 
         # Add streaming message content
-        if self.content_buffer or self.current_message:
-            message_text = self.content_buffer or "".join(self.current_message)
+        if self.content_buffer:
+            message_text = self.content_buffer
             message_text = self._strip_finish_response_tags(message_text)
 
             # Add typing cursor if enabled

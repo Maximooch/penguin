@@ -538,12 +538,18 @@ class OpenRouterGateway:
                             # debug_stream_chunk(request_id, {'chunk': new_reasoning_segment, 'type': 'reasoning'}, "reasoning")
                             if stream_callback:
                                 try:
-                                    if new_reasoning_segment.strip():
-                                        self.logger.debug(f"[OpenRouterGateway] Calling stream_callback with reasoning segment: '{new_reasoning_segment}'")
-                                        # Use a special message type to indicate reasoning
-                                        await stream_callback(new_reasoning_segment, "reasoning")
+                                    self.logger.debug(
+                                        "[OpenRouterGateway] Calling stream_callback with reasoning segment: %r",
+                                        new_reasoning_segment,
+                                    )
+                                    # Preserve whitespace-only segments to avoid collapsing words.
+                                    await stream_callback(new_reasoning_segment, "reasoning")
                                 except Exception as cb_err:
-                                    self.logger.error(f"[OpenRouterGateway] Error in reasoning stream_callback: {cb_err}", exc_info=True)
+                                    self.logger.error(
+                                        "[OpenRouterGateway] Error in reasoning stream_callback: %s",
+                                        cb_err,
+                                        exc_info=True,
+                                    )
                         
                         full_reasoning_content = _gateway_accumulated_reasoning
 
