@@ -3144,6 +3144,17 @@ class PenguinCLI:
         self._last_processed_turn = None
 
 
+
+    def _cancel_streaming(self):
+        """Cancel current streaming response from LLM."""
+        self.console.print("\n[yellow]⚠️ Response stopped by user[/yellow]")
+        self.streaming_manager.safely_stop_progress()
+        if hasattr(self, "_streaming_started") and self._streaming_started:
+            try:
+                self.streaming_manager.finalize_streaming()
+            except Exception:
+                pass
+
     def _handle_interrupt(self, sig, frame):
         """Handle SIGINT (Ctrl+C) - clean up progress but let the event loop handle the interrupt."""
         self.streaming_manager.safely_stop_progress()
@@ -3899,7 +3910,7 @@ Welcome to Penguin!
                     elif isinstance(response, str):
                         self.display_manager.display_message(response)
 
-                except KeyboardInterrupt:
+                except (KeyboardInterrupt, asyncio.CancelledError):
                     # Handle interrupt during processing - don't exit, just cancel current operation
                     self.console.print("\n[yellow]Processing interrupted[/yellow]")
                     self.streaming_manager.safely_stop_progress()
@@ -3926,10 +3937,17 @@ Welcome to Penguin!
                 except Exception as save_err:
                     logger.warning(f"Failed to save conversation: {save_err}")
 
-            except KeyboardInterrupt:
-                # Fallback handler - should rarely be hit now
-                self.console.print("\n[yellow]Interrupted[/yellow]")
-                break
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                # Fallback handler - use double-interrupt pattern
+                _consecutive_interrupts += 1
+                if _consecutive_interrupts >= 2:
+                    self.console.print("\n[yellow]Double interrupt - exiting...[/yellow]")
+                    break
+                self.console.print("\n[yellow]⚠️ Response stopped by user[/yellow]")
+                self.streaming_manager.safely_stop_progress()
+                if hasattr(self, "_streaming_started") and self._streaming_started:
+                    self.streaming_manager.finalize_streaming()
+                continue
 
             except Exception as e:
                 self.display_manager.display_message(f"Chat loop error: {e!s}", "error")
