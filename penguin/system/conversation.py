@@ -512,21 +512,53 @@ class ConversationSystem:
             return True
         
     def load_context_file(self, file_path: str) -> bool:
-        """
-        Load a context file into the conversation.
-        
+        """ Load a context file into the conversation.
+
         Args:
             file_path: Path to the file to load
-            
+
         Returns:
             True if successful, False otherwise
         """
         try:
-            from penguin.config import WORKSPACE_PATH
-            full_path = os.path.join(WORKSPACE_PATH, file_path)
-            if not os.path.exists(full_path):
-                logger.warning(f"Context file not found: {full_path}")
-                return False
+            from penguin.config import WORKSPACE_PATH, config as global_config
+
+            # Try multiple locations
+            search_locations = [
+                Path(WORKSPACE_PATH) / "context" / file_path,
+                Path(file_path),  # Current directory
+            ]
+
+            # Try project root if enabled
+            context_config = global_config.get('context', {})
+            if context_config.get('load_from_project', True):
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['git', 'rev-parse', '--show-toplevel'],
+                        capture_output=True, text=True, cwd='.'
+                    )
+                    if result.returncode == 0:
+                        project_root = Path(result.stdout.strip())
+                        search_locations.append(project_root / file_path)
+                except Exception:
+                    pass
+
+            # Try each location
+            for full_path in search_locations:
+                if full_path.exists() and full_path.is_file():
+                    with open(full_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+
+                    self.add_context(content, source=file_path)
+                    logger.info(f"Loaded context file: {file_path} (from {full_path})")
+                    return True
+
+            logger.warning(f"Context file not found in any location: {file_path}")
+            return False
+        except Exception as e:
+            logger.error(f"Error loading context file {file_path}: {str(e)}")
+            return False
                 
             with open(full_path, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -539,27 +571,57 @@ class ConversationSystem:
             return False
         
     def list_context_files(self) -> List[Dict[str, Any]]:
-        """
-        List available context files in workspace.
-        
+        """ List available context files in workspace and project.
+
         Returns:
             List of file information dictionaries
         """
-        from penguin.config import WORKSPACE_PATH
-        context_dir = os.path.join(WORKSPACE_PATH, "context")
-        if not os.path.exists(context_dir):
-            return []
-            
+        from penguin.config import WORKSPACE_PATH, config as global_config
+
+        context_config = global_config.get('context', {})
+        load_from_project = context_config.get('load_from_project', True)
+
         files = []
-        for entry in os.scandir(context_dir):
-            if entry.is_file() and not entry.name.startswith('.'):
-                files.append({
-                    'path': f"context/{entry.name}",
-                    'name': entry.name,
-                    'size': entry.stat().st_size,
-                    'modified': datetime.fromtimestamp(entry.stat().st_mtime).isoformat()
-                })
-                
+
+        # 1. List files from context/ folder
+        context_dir = Path(WORKSPACE_PATH) / "context"
+        if context_dir.exists():
+            for entry in context_dir.iterdir():
+                if entry.is_file() and not entry.name.startswith('.'):
+                    files.append({
+                        'path': f"context/{entry.name}",
+                        'name': entry.name,
+                        'location': 'workspace_context',
+                        'size': entry.stat().st_size,
+                        'modified': datetime.fromtimestamp(entry.stat().st_mtime).isoformat()
+                    })
+
+        # 2. List files from project root (if enabled)
+        if load_from_project:
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ['git', 'rev-parse', '--show-toplevel'],
+                    capture_output=True, text=True, cwd='.'
+                )
+                if result.returncode == 0:
+                    project_root = Path(result.stdout.strip())
+                    doc_files = ['README.md', 'ARCHITECTURE.md', 'architecture.md', 'AGENTS.md', 'PENGUIN.md', 'CONTRIBUTING.md']
+                    for doc_file in doc_files:
+                        doc_path = project_root / doc_file
+                        if doc_path.exists() and doc_path.is_file():
+                            if not any(f['name'] == doc_file for f in files):
+                                files.append({
+                                    'path': doc_file,
+                                    'name': doc_file,
+                                    'location': 'project_root',
+                                    'size': doc_path.stat().st_size,
+                                    'modified': datetime.fromtimestamp(doc_path.stat().st_mtime).isoformat()
+                                })
+            except Exception as e:
+                logger.debug(f"Could not list project files: {e}")
+
+        files.sort(key=lambda x: x['name'])
         return files
         
     def reset(self) -> None:

@@ -1786,7 +1786,8 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
 
             # Basic list/load retained
             if action == "list":
-                return {"context_files": self.core.list_context_files()}
+                files = self.core.list_context_files()
+                return {"status": self._format_context_files(files)}
             if action == "paths":
 
                 from penguin.utils.path_utils import get_allowed_roots
@@ -1815,7 +1816,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                     lines.append("  (none)")
                 pretty = "\n".join(lines)
                 return {"status": pretty, "paths": data}
-            if action == "load" and len(args) > 1:
+            if action in ("load", "add") and len(args) > 1:
                 file_path = args[1]
                 if not hasattr(self.core, 'conversation_manager') or \
                    not hasattr(self.core.conversation_manager, 'load_context_file'):
@@ -2173,6 +2174,31 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
             except Exception as e:
                 return {"error": f"Failed to inject demo message: {e}"}
         return {"error": f"Unknown debug command: {subcmd}"}
+
+    def _format_context_files(self, files):
+        """Format context files list for display."""
+        if not files:
+            return "No context files found"
+
+        output = ["**Available Context Files:**\n"]
+
+        # Group by location
+        workspace_files = [f for f in files if f.get('location') == 'workspace_context']
+        project_files = [f for f in files if f.get('location') == 'project_root']
+
+        if workspace_files:
+            output.append("From workspace context/ folder:")
+            for f in workspace_files:
+                output.append(f"  • {f['name']}")
+            output.append("")
+
+        if project_files:
+            output.append("From project root:")
+            for f in project_files:
+                output.append(f"  • {f['name']}")
+            output.append("")
+
+        return "\n".join(output)
 
     def _initialize_streaming_settings(self) -> None:
         """

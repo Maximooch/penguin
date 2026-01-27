@@ -778,22 +778,47 @@ async def tokens_command(core: Any, args: List[str]) -> Dict[str, Any]:
     "context",
     CommandCategory.CONTEXT,
     "Manage context files",
-    usage="/context [list|load FILE]"
+    usage="/context [list|load|add FILE]"
 )
 async def context_command(core: Any, args: List[str]) -> Dict[str, Any]:
     """Manage context files"""
     if not args or args[0] == "list":
         files = core.list_context_files()
-        return {"context_files": files}
+        if not files:
+            return {"status": "No context files found"}
+        
+        # Format the output
+        output = ["**Available Context Files:**\n"]
+        
+        # Group by location
+        workspace_files = [f for f in files if f.get('location') == 'workspace_context']
+        project_files = [f for f in files if f.get('location') == 'project_root']
+        
+        if workspace_files:
+            output.append("From workspace context/ folder:")
+            for f in workspace_files:
+                output.append(f"  • {f['name']}")
+            output.append("")
+        
+        if project_files:
+            output.append("From project root:")
+            for f in project_files:
+                output.append(f"  • {f['name']}")
+            output.append("")
+        
+        return {"status": "\n".join(output)}
 
-    if args[0] == "load" and len(args) > 1:
+    if args[0] in ["load", "add"] and len(args) > 1:
         file_path = args[1]
         success = core.conversation_manager.load_context_file(file_path)
         if success:
             return {"status": f"Loaded context file: {file_path}"}
         return {"error": f"Failed to load context file: {file_path}"}
 
-    return {"error": "Unknown context command"}
+    # Provide helpful error message
+    if args:
+        return {"error": f"Unknown context subcommand: {args[0]}. Use: list, load, or add"}
+    return {"error": "Missing subcommand. Use: list, load, or add"}
 
 
 # =============================================================================

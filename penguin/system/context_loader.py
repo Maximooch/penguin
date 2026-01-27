@@ -142,13 +142,24 @@ class SimpleContextLoader:
             with open(full_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             
-            # Add to context manager
-            message = self.context_manager.add_working_memory(
-                content=content,
-                source=f"context/{file_path}"
-            )
-            logger.debug(f"Loaded context file on demand: {file_path}")
-            return message
+            # Add to context manager - use add_context with fallback
+            if hasattr(self.context_manager, 'add_context'):
+                message = self.context_manager.add_context(
+                    content=content,
+                    source=f"context/{file_path}"
+                )
+                logger.debug(f"Loaded context file on demand: {file_path}")
+                return message
+            elif hasattr(self.context_manager, 'add_working_memory'):
+                message = self.context_manager.add_working_memory(
+                    content=content,
+                    source=f"context/{file_path}"
+                )
+                logger.debug(f"Loaded context file on demand: {file_path}")
+                return message
+            else:
+                logger.warning(f"Context manager doesn't have add_context or add_working_memory methods")
+                return None
         except Exception as e:
             logger.warning(f"Failed to load context file {file_path}: {e}")
             return None

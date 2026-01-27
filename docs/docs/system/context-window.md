@@ -19,9 +19,9 @@ The ContextWindowManager is responsible for:
 Messages are categorized into five priority levels for intelligent trimming:
 
 1. **SYSTEM** (highest priority): System instructions and prompts - **never trimmed** (10% budget)
-2. **CONTEXT**: Important reference information, documentation, and context files (35% budget)
-3. **DIALOG**: Main conversation between user and assistant (50% budget)
-4. **SYSTEM_OUTPUT**: Tool outputs, code execution results, and action responses (5% budget)
+2. **CONTEXT**: Important reference information, documentation, and context files (30% budget)
+3. **DIALOG**: Main conversation between user and assistant (40% budget)
+4. **SYSTEM_OUTPUT**: Tool outputs, code execution results, and action responses (20% budget)
 5. **ERROR**: Error messages and debugging information (fallback 5% budget)
 
 ### Priority System
@@ -35,9 +35,9 @@ Messages are categorized into five priority levels for intelligent trimming:
 ```mermaid
 pie title Token Budget Allocation v0.4.0
     "SYSTEM" : 10
-    "CONTEXT" : 35
-    "DIALOG" : 50
-    "SYSTEM_OUTPUT" : 5
+    "CONTEXT" : 30
+    "DIALOG" : 40
+    "SYSTEM_OUTPUT" : 20
     "ERROR (fallback)" : 5
 ```
 
@@ -421,9 +421,9 @@ The dynamic token budget allocation system v0.4.0 includes:
 
 ### Intelligent Budget Distribution
 - **SYSTEM**: 10% (guaranteed preservation, strict minimum enforcement)
-- **CONTEXT**: 35% (documentation and reference materials)
-- **DIALOG**: 50% (main conversation, flexible allocation)
-- **SYSTEM_OUTPUT**: 5% (tool results and action outputs)
+- **CONTEXT**: 30% (documentation and reference materials)
+- **DIALOG**: 40% (main conversation, flexible allocation)
+- **SYSTEM_OUTPUT**: 20% (tool results and action outputs)
 - **ERROR**: 5% (fallback for error messages and debugging)
 
 ### Dynamic Budget Management

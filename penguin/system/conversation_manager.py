@@ -695,7 +695,7 @@ class ConversationManager:
         Returns:
             List of file information dictionaries
         """
-        return self.context_loader.list_available_files()
+        return self.conversation.list_context_files()
         
     def add_action_result(
         self, 

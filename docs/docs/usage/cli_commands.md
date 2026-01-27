@@ -112,12 +112,34 @@ When running `penguin` interactively, you can use slash‑style commands to cont
 ```
 
 ### Context & Diagnostics
+
+The `/context` command allows you to load documentation and reference files into the conversation. Files can be loaded from multiple locations:
+
+- **Workspace `context/` folder**: The main location for context files in your workspace
+- **Project root**: Automatically discovers common documentation files (README.md, ARCHITECTURE.md, etc.)
+- **Current directory**: Any file in your current working directory
+
 ```text
-/context list                     # List context files
-/context add <glob>               # Copy files into workspace context
+/context list                     # List available context files from all locations
+/context load <file>              # Load a context file into conversation
+/context add <file>               # Alias for /context load
+```
+
+**Examples:**
+```text
+/context add architecture.md      # Load from project root or context/
+/context load FILE_PICKER_FEATURE_PLAN.md  # Load from context/ folder
+/context list                     # See all available files
+```
+
+Additional context management commands:
+```text
 /context write|edit|remove|note   # Manage context artifacts
 /context clear                    # Clear current context
+```
 
+### Token Monitoring
+```text
 /tokens                           # Token usage summary
 /tokens detail                    # Detailed token breakdown
 /truncations [limit]              # Recent context window trimming events
