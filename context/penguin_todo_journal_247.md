@@ -297,6 +297,10 @@ journal:
 2. **Consider markdown?**: markdown is the industry standard, the reasons for yml can easily be done in markdown. 
 3. **Consider git config**: That way we can introduce some sort of RBAC while still keeping it very minimal
 4. **move to `.penguin`**: I think .penguin/memory (or journal) is a better spot than context/journal. Well there are reasons for keeping it where it is for auditing purposes. Kind of but not really.
+5. **amplify by consolidating**: General consolidation across multiple prompt files (system_prompt.py, prompt_workflow.py, prompt_actions.py) is needed. By having less we can give more (likely attention) given to the journal system. 
+6. **invoke commands**: commands that can invoke the Penguin to write entries manually. Then later as parts of stages we can do the same for after it finishes a phase of a project. 
+
+This also could be done in a slightly different form factor of "time logs" (or something like that) for things specific 
 
 ---
 
