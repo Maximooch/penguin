@@ -42,6 +42,7 @@ class ConversationSystem:
         session_manager=None,
         system_prompt: str = "",
         checkpoint_manager=None,
+        project_root=None,
     ):
         """
         Initialize the conversation system.
@@ -55,6 +56,20 @@ class ConversationSystem:
         self.context_window = context_window_manager
         self.session_manager = session_manager
         self.checkpoint_manager = checkpoint_manager
+
+        # Initialize journal manager if project_root provided
+        self.journal_manager = None
+        if project_root:
+            try:
+                from pathlib import Path
+                self.journal_manager = JournalManager(
+                    project_root=Path(project_root),
+                    session_id=self.session.id,
+                    agent_id="main"
+                )
+                logger.info(f"JournalManager initialized for project: {project_root}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize JournalManager: {e}")
         self.system_prompt = system_prompt
         self.system_prompt_sent = False
         

@@ -88,3 +88,5 @@ class PenguinCLI:
         # This would integrate with typer's testing functionality
         # For now, it's a placeholder
         return self.app(args) 
+# Import journal commands
+from penguin.cli.journal_commands import *
