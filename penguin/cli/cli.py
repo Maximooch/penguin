@@ -490,6 +490,25 @@ async def _initialize_core_components_globally(
             api_base = api_dict.get("base_url")
         else:
             api_base = getattr(api_dict, "base_url", None)
+    # Handle Config dataclass object (from Config.load_config())
+    elif hasattr(_loaded_config, "model_config"):
+        # It's a Config dataclass object
+        _model_cfg = _loaded_config.model_config
+        if _model_cfg:
+            model_dict = {
+                "default": getattr(_model_cfg, "model", None),
+                "provider": getattr(_model_cfg, "provider", None),
+                "client_preference": getattr(_model_cfg, "client_preference", None),
+                "streaming_enabled": getattr(_model_cfg, "streaming_enabled", True),
+                "temperature": getattr(_model_cfg, "temperature", 0.7),
+                "vision_enabled": getattr(_model_cfg, "vision_enabled", False),
+                "max_output_tokens": getattr(_model_cfg, "max_output_tokens", None),
+                "context_window": getattr(_model_cfg, "max_context_window_tokens", None),
+            }
+        else:
+            model_dict = {}
+        api_obj = getattr(_loaded_config, "api", None)
+        api_base = getattr(api_obj, "base_url", None) if api_obj else None
     elif isinstance(_loaded_config, dict):
         # Direct dictionary access
         model_dict = _loaded_config.get("model", {})
@@ -903,15 +922,15 @@ def main_entry(
                         console.print(
                             "[bold green]Setup completed successfully![/bold green]"
                         )
-                        # Force config reload to pick up new settings from setup wizard
-                        import importlib
-                        import penguin.config
-                        importlib.reload(penguin.config)
-                        # Update the imported DEFAULT_MODEL and DEFAULT_PROVIDER
-                        from penguin.config import DEFAULT_MODEL, DEFAULT_PROVIDER
-                        # Update global references used by core initialization
-                        globals()['DEFAULT_MODEL'] = DEFAULT_MODEL
-                        globals()['DEFAULT_PROVIDER'] = DEFAULT_PROVIDER
+                        # Re-read config after setup to pick up user-selected model
+                        from penguin.config import Config
+                        globals()['_loaded_config'] = Config.load_config()
+                        # Update DEFAULT_MODEL from fresh config
+                        if hasattr(globals()['_loaded_config'], 'model_config'):
+                            _mc = globals()['_loaded_config'].model_config
+                            if _mc:
+                                globals()['DEFAULT_MODEL'] = getattr(_mc, 'model', 'openai/gpt-5')
+                                globals()['DEFAULT_PROVIDER'] = getattr(_mc, 'provider', 'openai')
                         console.print("Starting Penguin...\n")
                 else:
                     console.print(
