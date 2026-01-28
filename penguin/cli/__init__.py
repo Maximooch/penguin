@@ -70,6 +70,13 @@ except ImportError:
     __all__ = ["get_cli_app"]
 
 
+
+# Import journal commands to register them
+try:
+    from .journal_commands import journal_command
+except ImportError:
+    pass  # journal commands might not be available
+
 class PenguinCLI:
     """Main CLI interface class for programmatic access."""
     
