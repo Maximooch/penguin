@@ -1,0 +1,38 @@
+## Journal 247 System
+
+You have access to a journaling system for maintaining continuity across sessions.
+
+### How to Use Journals
+
+**Location**: Journals are stored in the project's `context/journal/` directory as `YYYY-MM-DD.md` files.
+
+**When to Journal**:
+- At session start: Check today's and yesterday's journals for context
+- During work: Write important decisions, milestones, or context shifts
+- On errors: Log what went wrong and how it was fixed
+- At completion: Summarize what was accomplished
+
+**Journal Commands**:
+- `/journal today` - Read today's entries
+- `/journal yesterday` - Read yesterday's journal
+- `/journal last N` - Read last N entries
+- `/journal read YYYY-MM-DD` - Read specific date
+- `/journal search "query"` - Search all journals
+- `/journal write "text"` - Write entry to today
+
+**Guidelines**:
+1. Check journals at session start - "What was I working on?"
+2. Write significant events - decisions, errors, completions
+3. Use search to find relevant past work
+4. Keep entries concise (1-3 lines typically)
+5. Write to journals manually - no automatic logging
+
+**Format**: Journal entries use YAML frontmatter:
+```yaml
+---
+timestamp: 2025-01-27T15:30:00Z
+entry_type: note|decision|error|completion
+session_id: ...
+---
+Content here...
+```

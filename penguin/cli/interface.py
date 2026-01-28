@@ -413,6 +413,7 @@ class PenguinInterface:
             "exit": self._handle_exit_command,
             "tokens": self._handle_tokens_command,
             "context": self._handle_context_command,
+            "journal": self._handle_journal_command,
             "debug": self._handle_debug_command,
             "stream": self._handle_stream_command,  # Added stream command handler
             "model": self._handle_model_command, # For /model set only
@@ -2113,6 +2114,94 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
     def is_active(self) -> bool:
         """Check if interface is active"""
         return self._active
+
+    
+    async def _handle_journal_command(self, args: List[str]) -> Dict[str, Any]:
+        """Handle journal commands"""
+        try:
+            from pathlib import Path
+            from penguin.system.journal_manager import JournalManager
+
+            project_root = Path.cwd()
+            journal_mgr = JournalManager(project_root)
+
+            if not args:
+                args = ["today"]
+
+            cmd = args[0].lower()
+
+            if cmd == "today":
+                entries = journal_mgr.read_last_entries(50)
+                return self._format_journal_output("Today's Journal", entries)
+
+            elif cmd == "yesterday":
+                from datetime import datetime, timedelta
+                yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+                entries = journal_mgr.read_date(yesterday)
+                return self._format_journal_output(f"Journal for {yesterday}", entries)
+
+            elif cmd == "last" and len(args) > 1:
+                try:
+                    n = int(args[1])
+                    entries = journal_mgr.read_last_entries(n)
+                    return self._format_journal_output(f"Last {n} Entries", entries)
+                except ValueError:
+                    return {"error": f"Invalid number: {args[1]}"}
+
+            elif cmd == "read" and len(args) > 1:
+                date_str = args[1]
+                entries = journal_mgr.read_date(date_str)
+                return self._format_journal_output(f"Journal for {date_str}", entries)
+
+            elif cmd == "search" and len(args) > 1:
+                query = " ".join(args[1:])
+                results = journal_mgr.search(query)
+                return self._format_journal_search(query, results)
+
+            elif cmd == "write" and len(args) > 1:
+                text = " ".join(args[1:])
+                success = journal_mgr.write_entry(
+                    content=text,
+                    entry_type="manual",
+                    session_id="cli"
+                )
+                if success:
+                    return {"status": f"Wrote to journal: {text[:50]}..."}
+                return {"error": "Failed to write journal entry"}
+
+            elif cmd == "list":
+                dates = journal_mgr.list_dates()
+                if dates:
+                    output = "**Available Journal Dates:**\n\n" + "\n".join([f"• {d}" for d in dates[-20:]])
+                    return {"status": output}
+                return {"status": "No journals found"}
+
+            else:
+                return {"error": f"Unknown journal command: {cmd}"}
+
+        except Exception as e:
+            return {"error": f"Journal command failed: {str(e)}"}
+
+    def _format_journal_output(self, title: str, entries: list) -> Dict[str, Any]:
+        if not entries:
+            return {"status": f"{title}\n\nNo entries found."}
+
+        output = f"**{title}**\n\n"
+        for entry in entries:
+            time = entry.timestamp.split("T")[1][:5] if "T" in entry.timestamp else "???"
+            output += f"[{time}] ({entry.entry_type})\n{entry.content[:150]}\n\n"
+
+        return {"status": output}
+
+    def _format_journal_search(self, query: str, results: list) -> Dict[str, Any]:
+        if not results:
+            return {"status": f'No results for "{query}"'}
+
+        output = f'**Search: "{query}"**\n\n'
+        for r in results[:20]:
+            output += f"**{r['date']}** ({r['entry_type']})\n{r['content']}\n\n"
+
+        return {"status": output}
 
     async def _handle_debug_command(self, args: List[str]) -> Dict[str, Any]:
         """Handle debug commands for development purposes"""

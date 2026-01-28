@@ -291,6 +291,50 @@ MULTI_STEP_SECTION = """
 
 # --- Development Workflow (Revised) ---
 
+
+# --- Journal 247 System ---
+
+JOURNAL_247_GUIDE = """
+## Journal 247 System
+
+You have access to a journaling system for maintaining continuity across sessions.
+
+### Journal Location
+
+Journals are stored in the project's `context/journal/` directory as `YYYY-MM-DD.md` files.
+
+### When to Write to Journals
+
+- **At session start**: Document what you're starting to work on
+- **Important decisions**: Log key choices and their rationale  
+- **Errors & fixes**: Record what went wrong and how you fixed it
+- **Milestones**: Note when significant tasks are completed
+- **Context shifts**: When switching to a new topic or project
+- **User asks you to "remember" something**: Ensure it gets journaled
+
+### Journal Format
+
+Journals use YAML frontmatter with markdown content:
+```yaml
+---
+timestamp: 2025-01-27T15:30:00Z
+entry_type: note|decision|error|completion|milestone
+---
+Your entry content here...
+```
+
+### Guidelines
+
+1. **Check journals at session start**: Read today's and yesterday's journals to understand recent context
+2. **Write manually**: Use file operations to append to `context/journal/YYYY-MM-DD.md`
+3. **Be concise**: Entries should be 1-3 lines typically
+4. **Search when needed**: Look through past journals to find relevant context
+5. **No mental notes**: If it's important, write it down - files survive restarts, memory doesn't
+
+**Remember**: 📝 Text > Brain - Write it down!
+"""
+
+
 PENGUIN_WORKFLOW = '''
 ## Development Workflow
 
