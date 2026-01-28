@@ -903,6 +903,15 @@ def main_entry(
                         console.print(
                             "[bold green]Setup completed successfully![/bold green]"
                         )
+                        # Force config reload to pick up new settings from setup wizard
+                        import importlib
+                        import penguin.config
+                        importlib.reload(penguin.config)
+                        # Update the imported DEFAULT_MODEL and DEFAULT_PROVIDER
+                        from penguin.config import DEFAULT_MODEL, DEFAULT_PROVIDER
+                        # Update global references used by core initialization
+                        globals()['DEFAULT_MODEL'] = DEFAULT_MODEL
+                        globals()['DEFAULT_PROVIDER'] = DEFAULT_PROVIDER
                         console.print("Starting Penguin...\n")
                 else:
                     console.print(
