@@ -133,13 +133,13 @@ MODE_GUIDANCE = """**Task Types:**
 SAFETY_RULES = """**Safety:**
 
 - Check file existence before writing: `Path(file).exists()`
-- Use `apply_diff` or `multiedit` for edits (auto-backup)
+- Use <apply_diff> or <multiedit> for edits (auto-backup)
 - Never blind overwrite without verification
 - Respect permission boundaries
 
 **Completion Signals:**
-- `finish_response`: End conversation turn
-- `finish_task`: Mark task complete (awaits human approval)
+- <finish_response>: End conversation turn
+- <finish_task>: Mark task complete (awaits human approval)
 - Never rely on implicit completion
 """
 

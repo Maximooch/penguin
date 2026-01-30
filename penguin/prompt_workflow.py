@@ -46,7 +46,7 @@ For each feature increment:
 
 #### 2.1 Implement
 - Write minimal code to satisfy ONE acceptance criterion
-- Use `apply_diff` or `multiedit` for changes
+- Use <apply_diff> or <multiedit> for changes
 - Keep changes focused and atomic
 
 #### 2.2 Test
@@ -118,7 +118,7 @@ Focus on quality:
 4. Provide actionable feedback
 
 ### 4. File Management Best Practices
-- Always use `apply_diff` for edits (automatic backups)
+- Always use <apply_diff> for edits (automatic backups)
 - Check file existence before creating
 - Use enhanced tools for better error messages
 - Keep atomic changes for easy rollback
@@ -165,7 +165,7 @@ For each feature increment:
 
 ### 1. Implement
 Write minimal code to satisfy ONE acceptance criterion.
-- Use `apply_diff` or `multiedit` for changes
+- Use <apply_diff> or <multiedit> for changes
 - Keep changes atomic and focused
 - Match existing code style
 - Commit with descriptive message (see Git Commits below)
@@ -254,7 +254,7 @@ TOOL_RESULTS = """
 **For Implementation:**
 - Acknowledge critical modifications
 - Continue to next step
-- Call `finish_response` when done
+- Call <finish_response> when done
 
 **Critical:** Check previous message before executing—do not duplicate tool calls.
 """
@@ -343,7 +343,7 @@ CONTEXT_MANAGEMENT = """
 **Best Practices:**
 - Read relevant context files at task start
 - Update context files as understanding evolves
-- Use `add_summary_note` and `add_declarative_note` for quick captures
+- Use <add_summary_note> and <add_declarative_note> for quick captures
 - Externalize complex state to files, not prompts
 """
 
@@ -356,7 +356,7 @@ LARGE_CODEBASE = """
 
 ### Discovery First
 - Start with high-level structure: `find . -type f -name "*.py" | head -20`
-- Use `analyze_project` for dependency understanding
+- Use <analyze_project> for dependency understanding
 - Build mental map using README files and documentation
 
 ### Mapping Strategy
@@ -380,7 +380,7 @@ For files >500 lines:
 4. Document findings in context notes
 
 ### Progressive Understanding
-- Map dynamically using `list_files_filtered` and `find_files_enhanced`
+- Map dynamically using <list_files_filtered> and <find_files_enhanced>
 - Summarize hierarchy before deep dives
 - Ingest relevant parts incrementally
 - Store maps to combat amnesia

@@ -217,7 +217,7 @@ else:
 `execute`
 ```
 
-**Priority:** Prefer specialized tools (`apply_diff`, `enhanced_write`, etc.) first. Use `execute` when those don't work or for complex logic that requires Python.
+**Priority:** Prefer specialized tools (<apply_diff>, <enhanced_write>, etc.) first. Use <execute> when those don't work or for complex logic that requires Python.
 
 
 ### execute_command
@@ -230,7 +230,7 @@ Run shell commands.
 `execute_command`pytest tests/test_auth.py -xvs`execute_command`
 ```
 
-**Caution:** Use `execute` (Python) for file modifications when possible. Shell `cd` does not persist between calls—use full paths.
+**Caution:** Use <execute> (Python) for file modifications when possible. Shell `cd` does not persist between calls—use full paths.
 
 
 ### process_start
