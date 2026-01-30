@@ -1692,3 +1692,157 @@ def enhanced_read_file(path, show_line_numbers=False, max_lines=None, workspace_
 # print(enhanced_read_file("test_file.txt"))
 # print(list_files_filtered())
 # print(encode_image_to_base64("test_image.jpg"))
+
+# =============================================================================
+# REPLACE_LINES TOOL - Simpler alternative to apply_diff
+# =============================================================================
+
+def replace_lines(path: str, start_line: int, end_line: int, new_content: str, verify: bool = True) -> str:
+    """
+    Replace lines in a file with new content.
+
+    Much simpler than apply_diff - just specify line numbers and new content.
+    No need for context lines or unified diff format.
+    """
+    import os
+    import traceback
+    import hashlib
+    from pathlib import Path
+    from penguin.utils.path_utils import enforce_allowed_path, get_default_write_root
+
+    try:
+        root_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+        root_pref = root_env if root_env in ('project', 'workspace') else get_default_write_root()
+        safe_path = enforce_allowed_path(Path(path), root_pref=root_pref)
+
+        # Read original
+        with open(safe_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        # Validate line numbers
+        if start_line < 1:
+            return f"Error: start_line must be >= 1, got {start_line}"
+        if end_line > len(lines):
+            return f"Error: end_line ({end_line}) exceeds file length ({len(lines)})"
+        if start_line > end_line:
+            return f"Error: start_line ({start_line}) > end_line ({end_line})"
+
+        # Convert to 0-indexed
+        start_idx = start_line - 1
+        end_idx = end_line  # exclusive
+
+        # Create backup
+        backup_path = str(safe_path) + '.bak'
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+
+        # Replace lines
+        new_lines_list = new_content.splitlines()
+        # Ensure newline at end
+        formatted_new_lines = []
+        for i, line in enumerate(new_lines_list):
+            if i < len(new_lines_list) - 1 or (lines and lines[-1].endswith('\n')):
+                if not line.endswith('\n'):
+                    line += '\n'
+            formatted_new_lines.append(line)
+
+        result_lines = lines[:start_idx] + formatted_new_lines + lines[end_idx:]
+
+        # Write back
+        with open(safe_path, 'w', encoding='utf-8') as f:
+            f.writelines(result_lines)
+
+        # Verify if requested
+        if verify:
+            with open(safe_path, 'r', encoding='utf-8') as f:
+                verify_content = f.read()
+            new_hash = hashlib.md5(verify_content.encode()).hexdigest()[:8]
+            return f"Replaced lines {start_line}-{end_line} in {safe_path} (backup: {backup_path}) [verify: {new_hash}]"
+
+        return f"Replaced lines {start_line}-{end_line} in {safe_path} (backup: {backup_path})"
+
+    except Exception as e:
+        return f"Error in replace_lines: {str(e)}\n{traceback.format_exc()}"
+
+
+def insert_lines(path: str, after_line: int, new_content: str) -> str:
+    """Insert lines after a specific line."""
+    import os
+    import traceback
+    from pathlib import Path
+    from penguin.utils.path_utils import enforce_allowed_path, get_default_write_root
+
+    try:
+        root_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+        root_pref = root_env if root_env in ('project', 'workspace') else get_default_write_root()
+        safe_path = enforce_allowed_path(Path(path), root_pref=root_pref)
+
+        with open(safe_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        insert_idx = after_line
+
+        if insert_idx < 0 or insert_idx > len(lines):
+            return f"Error: after_line ({after_line}) out of range (0-{len(lines)})"
+
+        # Create backup
+        backup_path = str(safe_path) + '.bak'
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+
+        # Insert new lines
+        new_lines_list = new_content.splitlines()
+        formatted_new_lines = []
+        for i, line in enumerate(new_lines_list):
+            if i < len(new_lines_list) - 1 or not line.endswith('\n'):
+                line += '\n'
+            formatted_new_lines.append(line)
+
+        result_lines = lines[:insert_idx] + formatted_new_lines + lines[insert_idx:]
+
+        with open(safe_path, 'w', encoding='utf-8') as f:
+            f.writelines(result_lines)
+
+        return f"Inserted {len(new_lines_list)} lines after line {after_line} in {safe_path} (backup: {backup_path})"
+
+    except Exception as e:
+        return f"Error in insert_lines: {str(e)}\n{traceback.format_exc()}"
+
+
+def delete_lines(path: str, start_line: int, end_line: int) -> str:
+    """Delete a range of lines."""
+    import os
+    import traceback
+    from pathlib import Path
+    from penguin.utils.path_utils import enforce_allowed_path, get_default_write_root
+
+    try:
+        root_env = os.environ.get('PENGUIN_WRITE_ROOT', '').lower()
+        root_pref = root_env if root_env in ('project', 'workspace') else get_default_write_root()
+        safe_path = enforce_allowed_path(Path(path), root_pref=root_pref)
+
+        with open(safe_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        if start_line < 1 or end_line > len(lines) or start_line > end_line:
+            return f"Error: Invalid line range {start_line}-{end_line} (file has {len(lines)} lines)"
+
+        # Create backup
+        backup_path = str(safe_path) + '.bak'
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+
+        # Delete lines (convert to 0-indexed)
+        start_idx = start_line - 1
+        end_idx = end_line
+
+        deleted_count = end_line - start_line + 1
+        result_lines = lines[:start_idx] + lines[end_idx:]
+
+        with open(safe_path, 'w', encoding='utf-8') as f:
+            f.writelines(result_lines)
+
+        return f"Deleted lines {start_line}-{end_line} ({deleted_count} lines) from {safe_path} (backup: {backup_path})"
+
+    except Exception as e:
+        return f"Error in delete_lines: {str(e)}\n{traceback.format_exc()}"

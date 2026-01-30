@@ -230,6 +230,9 @@ class ToolManager:
                 'enhanced_diff': 'penguin.tools.core.support.enhanced_diff',
                 'analyze_project': 'penguin.tools.core.support.analyze_project_structure',
                 'apply_diff': 'penguin.tools.core.support.apply_diff_to_file',
+                'replace_lines': 'penguin.tools.core.support.replace_lines',
+                'insert_lines': 'penguin.tools.core.support.insert_lines',
+                'delete_lines': 'penguin.tools.core.support.delete_lines',
                 'edit_with_pattern': 'penguin.tools.core.support.edit_file_with_pattern',
                 'add_declarative_note': 'self.declarative_memory_tool.add_note',
                 'grep_search': 'self.grep_search.search',
@@ -1839,7 +1842,12 @@ class ToolManager:
 
     def _execute_apply_diff(self, tool_input: dict) -> str:
         """Execute diff application with workspace integration."""
-        from penguin.tools.core.support import apply_diff_to_file
+        from penguin.tools.core.support import (
+    apply_diff_to_file,
+    replace_lines,
+    insert_lines,
+    delete_lines,
+)
         import threading, json
         try:
             default_timeout = int(os.environ.get('PENGUIN_TOOL_TIMEOUT_EDIT', os.environ.get('PENGUIN_TOOL_TIMEOUT', '180')))
@@ -2237,6 +2245,9 @@ class ToolManager:
                 "enhanced_diff": lambda: self._execute_enhanced_diff(tool_input),
                 "analyze_project": lambda: self._execute_analyze_project(tool_input),
                 "apply_diff": lambda: self._execute_apply_diff(tool_input),
+            "replace_lines": lambda: self._execute_replace_lines(tool_input),
+            "insert_lines": lambda: self._execute_insert_lines(tool_input),
+            "delete_lines": lambda: self._execute_delete_lines(tool_input),
                 "multiedit_apply": lambda: self._execute_multiedit(tool_input),
                 "edit_with_pattern": lambda: self._execute_edit_with_pattern(tool_input),
                 # Repository management tools

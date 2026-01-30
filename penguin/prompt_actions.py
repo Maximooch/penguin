@@ -87,6 +87,59 @@ Pattern-based find-and-replace using regex.
 ```
 
 **Format:** `file_path:search_pattern:replacement:backup`
+
+
+### replace_lines
+Replace specific lines in a file with new content. Much simpler than apply_diff.
+
+**When to use:** When you know exact line numbers to replace.
+
+**Example:**
+```
+`replace_lines`src/main.py:10:15:new function content here`replace_lines`
+```
+
+**Parameters:**
+- `path` - File path
+- `start_line` - First line to replace (1-indexed)
+- `end_line` - Last line to replace (inclusive, 1-indexed)
+- `new_content` - Content to insert
+- `verify` - If True, confirms change with hash (default: true)
+
+**Returns:** Success message with backup location and verification hash
+
+
+### insert_lines
+Insert new lines after a specific line.
+
+**When to use:** Adding new code without replacing existing lines.
+
+**Example:**
+```
+`insert_lines`src/main.py:25:def new_helper():
+    pass`insert_lines`
+```
+
+**Parameters:**
+- `path` - File path
+- `after_line` - Line number to insert after (0 = at beginning)
+- `new_content` - Content to insert
+
+
+### delete_lines
+Delete a range of lines.
+
+**When to use:** Removing code blocks by line number.
+
+**Example:**
+```
+`delete_lines`src/main.py:40:50`delete_lines`
+```
+
+**Parameters:**
+- `path` - File path
+- `start_line` - First line to delete (1-indexed)
+- `end_line` - Last line to delete (inclusive, 1-indexed)
 """
 
 
