@@ -219,18 +219,18 @@ EXECUTION_WORKFLOW = """
 
 Correct (Incremental):
 ```
-`execute`Create folder`execute`
+<execute>Create folder<execute>
 ```
 [Wait for result]
 ```
-`execute`Create main.py`execute`
+<execute>Create main.py<execute>
 ```
 
 Wrong (Batch - Do not do this):
 ```
-`execute`Create folder`execute`
-`execute`Create main.py`execute`
-`execute`Create tests`execute`
+<execute>Create folder<execute>
+<execute>Create main.py<execute>
+<execute>Create tests<execute>
 ```
 
 **Exception:** Simple, related operations can be batched (e.g., creating multiple empty files).
@@ -254,7 +254,7 @@ TOOL_RESULTS = """
 **For Implementation:**
 - Acknowledge critical modifications
 - Continue to next step
-- Call <finish_response> when done
+- Call `<finish_response>` when done
 
 **Critical:** Check previous message before executing—do not duplicate tool calls.
 """
@@ -401,12 +401,12 @@ CODE_FORMATTING = """
 
 **Python Example (Good):**
 ```python
-# `execute`
+# <execute>
 import os
 
 def main():
     pass
-# `execute`
+# <execute>
 ```
 
 **YAML Example (Good):**
@@ -514,8 +514,8 @@ COMPLETION_GUIDE = """
 
 **You MUST explicitly signal when done.**
 
-- `finish_response`: End conversation turn
-- `finish_task`: Mark task complete (awaits human approval)
+- Call `<finish_response>` to end conversation turn
+- Call `<finish_task>` to mark task complete (awaits human approval)
 
 **Status options for finish_task:**
 - `done` (default): Task objective achieved
