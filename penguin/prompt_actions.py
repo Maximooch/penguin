@@ -441,35 +441,22 @@ Enable/disable detailed debugging.
 COMPLETION_TOOLS = """
 ## Completion Signals
 
+**Call these tools to signal completion. Do not output them as text.**
+
 ### finish_response
-End the current conversation turn.
+**Purpose:** End the conversation turn.  
+**When to use:** Done answering a question or providing information.  
+**Tool call syntax:** `<finish_response></finish_response>`  
+**Parameters:** None
 
-**When to use:** Done answering a question or providing information.
+### finish_task  
+**Purpose:** Mark a formal task as complete.  
+**When to use:** Finished implementing a feature or resolving a task.  
+**Tool call syntax:** `<finish_task>status</finish_task>`  
+**Parameters:**
+- `status`: "done" (default), "partial", or "blocked"
 
-**Example:**
-```
-`finish_response``finish_response`
-```
-
-**Important:** Always call this when done responding.
-
-
-### finish_task
-Mark a formal task as complete.
-
-**When to use:** Finished implementing a feature or resolving a task.
-
-**Example:**
-```
-`finish_task``finish_task`
-```
-
-**Status options:**
-- `done` (default) - Task objective achieved
-- `partial` - Made progress but not complete
-- `blocked` - Cannot proceed, need human intervention
-
-**Note:** Task is marked for human review, not auto-completed.
+**Important:** Call these tools explicitly. Never rely on implicit completion.
 """
 
 

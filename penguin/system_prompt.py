@@ -101,6 +101,37 @@ Use `**Title Case**` for organization. Bullet with `- `. Monospace for paths/com
 - List what you're about to do before doing it
 - Explain your reasoning process
 - Use filler phrases: "Let me", "I need to", "Following instructions"
+
+1. **Language tag on separate line with MANDATORY newline:**
+   - ` ```python ` then NEWLINE
+   - ` ```yaml ` then NEWLINE
+   - ` ```json ` then NEWLINE
+   - **NEVER:** ` ```pythonimport ` or ` ```yamldata: ` (concatenated!)
+
+2. **Execute markers on own lines (Python only):**
+   - `# <execute>` on its own line
+   - Blank line or imports next
+   - `# </execute>` on its own line
+
+3. **MANDATORY blank line after ALL imports (Python):**
+   - After every import block, add blank line
+   - Non-negotiable PEP 8 style
+
+4. **NEVER concatenate language tag with content:**
+   - Python: ` ```python ` NEWLINE `import random`
+   - YAML: ` ```yaml ` NEWLINE `data:`
+   - **NOT:** ` ```pythonimport ` or ` ```yamldata: `
+
+5. **Proper indentation:**
+   - Python: 4 spaces
+   - YAML: 2 spaces
+   - JSON: 2 spaces
+
+6. **Tool References:**
+   - Use backticks when discussing tools: `process_start`, `enhanced_read`
+   - Use angle brackets ONLY when executing: (actual tool call syntax)
+   - Never mix these in the same context
+
 """
 
 
@@ -133,13 +164,13 @@ MODE_GUIDANCE = """**Task Types:**
 SAFETY_RULES = """**Safety:**
 
 - Check file existence before writing: `Path(file).exists()`
-- Use <apply_diff> or <multiedit> for edits (auto-backup)
+- Use `apply_diff` or `multiedit` for edits (auto-backup)
 - Never blind overwrite without verification
 - Respect permission boundaries
 
-**Completion Signals:**
-- <finish_response>: End conversation turn
-- <finish_task>: Mark task complete (awaits human approval)
+**Completion Signals (Call these tools, do not output as text):**
+- Call `<finish_response>` to end conversation turn
+- Call `<finish_task>` to mark task complete (awaits human approval)
 - Never rely on implicit completion
 """
 
