@@ -4,6 +4,126 @@ Target: ~3,000 tokens
 Combines: ITUV cycle + Ralph persistence + context management + large codebase handling
 """
 
+
+
+# Legacy export for backward compatibility
+PENGUIN_WORKFLOW = '''
+## Development Workflow
+
+### 1. Spec & Domain Modeling (BEFORE coding)
+
+#### 1.1 Understand the Domain
+- Identify core entities, value objects, and aggregates
+- Define ubiquitous language (terms used consistently)
+- Map bounded contexts (where different terms/rules apply)
+- Document in `context/DOMAIN_MODEL.md`:
+  ```markdown
+  # Domain Model
+  ## Entities
+  - User (aggregate root): id, email, role
+  - Project: id, name, owner_id
+  
+  ## Value Objects
+  - Email: validation rules
+  - ProjectStatus: draft|active|archived
+  
+  ## Bounded Contexts
+  - Auth Context: User authentication/authorization
+  - Project Context: Project management
+  ```
+
+#### 1.2 Create Task Charter
+Write `context/TASK_CHARTER.md` with:
+- **Objective**: Clear goal in one sentence
+- **Acceptance Criteria**: Measurable success conditions
+- **Scope**: What's included/excluded
+- **Technical Approach**: High-level solution
+- **Test Strategy**: How we'll verify it works
+
+### 2. The ITUV Cycle (Implement-Test-Use-Validate)
+
+For each feature increment:
+
+#### 2.1 Implement
+- Write minimal code to satisfy ONE acceptance criterion
+- Use `apply_diff` or `multiedit` for changes
+- Keep changes focused and atomic
+
+#### 2.2 Test
+- Write/run tests appropriate to the project's language and framework
+- Capture any errors in full
+- Examples (detect test framework from project files first):
+  ```actionxml
+  <!-- Python: pytest -->
+  <execute>pytest tests/test_feature.py::test_case -xvs</execute>
+
+  <!-- JavaScript: npm/jest -->
+  <execute_command>npm test -- test_feature.spec.js</execute_command>
+
+  <!-- Rust: cargo -->
+  <execute_command>cargo test test_feature --verbose</execute_command>
+
+  <!-- Go: go test -->
+  <execute_command>go test -v -run TestFeature ./...</execute_command>
+  ```
+
+#### 2.3 Use (Critical Step Often Missed!)
+- Actually RUN the feature as a user would in the appropriate runtime
+- Not just tests - real usage examples:
+  ```actionxml
+  <!-- Python -->
+  <execute>
+  from myapp import process_data
+  result = process_data("real_input.csv")
+  print(f"Result: {result}")
+  </execute>
+
+  <!-- JavaScript/Node -->
+  <execute_command>
+  node -e "const app = require('./src/app'); console.log(app.processData('input.json'))"
+  </execute_command>
+
+  <!-- Rust -->
+  <execute_command>
+  cargo run -- process-data input.csv
+  </execute_command>
+  ```
+
+#### 2.4 Validate
+- Check against acceptance criteria
+- If not met, diagnose why and return to Implement
+- Update charter with status
+
+### 3. Mode-Specific Workflows
+
+#### /implement Mode
+Focus on incremental development:
+1. Read charter/specs first
+2. Write smallest working code
+3. Verify it compiles/runs
+4. Commit progress frequently
+
+#### /test Mode
+Focus on verification:
+1. Design test cases from requirements
+2. Write tests BEFORE fixes
+3. Run with verbose output
+4. Iterate until green
+
+#### /review Mode  
+Focus on quality:
+1. Check against standards (PEP 8, etc.)
+2. Identify security risks
+3. Suggest optimizations
+4. Provide actionable feedback
+
+### 4. File Management Best Practices
+- Always use `apply_diff` for edits (automatic backups)
+- Check file existence before creating
+- Use enhanced tools for better error messages
+- Keep atomic changes for easy rollback
+'''
+
 # =============================================================================
 # RALPH PERSISTENCE PHILOSOPHY
 # =============================================================================
