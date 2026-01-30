@@ -55,7 +55,7 @@ Apply multiple file edits atomically—all succeed or none are applied.
 
 **Example:**
 ```
-`multiedit`
+<multiedit>
 apply=true
 src/models.py:
 @@ -25,7 +25,7 @@
@@ -70,7 +70,7 @@ src/api.py:
 +from models import UserService
 
 -manager = UserManager()
-+service = UserService()`multiedit`
++service = UserService()</multiedit>
 ```
 
 **Dry-run mode:** Omit `apply=true` to preview changes without applying.
@@ -83,7 +83,7 @@ Pattern-based find-and-replace using regex.
 
 **Example:**
 ```
-`edit_with_pattern`config.py:DEBUG = False:DEBUG = True:true`edit_with_pattern`
+<edit_with_pattern>config.py:DEBUG = False:DEBUG = True:true</edit_with_pattern>
 ```
 
 **Format:** `file_path:search_pattern:replacement:backup`
@@ -96,7 +96,7 @@ Replace specific lines in a file with new content. Much simpler than apply_diff.
 
 **Example:**
 ```
-`replace_lines`src/main.py:10:15:new function content here`replace_lines`
+<replace_lines>src/main.py:10:15:new function content here</replace_lines>
 ```
 
 **Parameters:**
@@ -133,7 +133,7 @@ Delete a range of lines.
 
 **Example:**
 ```
-`delete_lines`src/main.py:40:50`delete_lines`
+<delete_lines>src/main.py:40:50</delete_lines>
 ```
 
 **Parameters:**
@@ -157,7 +157,7 @@ Read file contents with exact path resolution and optional line numbers.
 
 **Example:**
 ```
-`enhanced_read`src/main.py:true:50`enhanced_read`
+<enhanced_read>src/main.py:true:50</enhanced_read>
 ```
 
 **Parameters:**
@@ -173,13 +173,13 @@ Write file with automatic backup and diff generation for existing files.
 
 **Example:**
 ```
-`enhanced_write`README.md:# Project Name
+<enhanced_write>README.md:# Project Name
 
 Description here.
 
 ## Usage
 ...
-:true`enhanced_write`
+:true<enhanced_write>
 ```
 
 **Parameters:**
@@ -195,7 +195,7 @@ List directory contents with clutter filtering (.git, __pycache__, etc. hidden).
 
 **Example:**
 ```
-`list_files_filtered`src:true:false`list_files_filtered`
+<list_files_filtered>src:true:false</list_files_filtered>
 ```
 
 **Parameters:**
@@ -211,7 +211,7 @@ Find files using glob patterns.
 
 **Example:**
 ```
-`find_files_enhanced`*.py:src:false:file`find_files_enhanced`
+<find_files_enhanced>*.py:src:false:file<find_files_enhanced>
 ```
 
 **Parameters:**
@@ -228,7 +228,7 @@ Compare two files with contextual diff output.
 
 **Example:**
 ```
-`enhanced_diff`old_config.py:new_config.py:true`enhanced_diff`
+<enhanced_diff>old_config.py:new_config.py:true</enhanced_diff>
 ```
 
 **Parameters:**
@@ -257,7 +257,7 @@ Run Python code in IPython environment.
 
 **Example:**
 ```
-`execute`
+<execute>
 import os
 from pathlib import Path
 
@@ -267,7 +267,7 @@ if config_path.exists():
     print(f"Config size: {len(content)} chars")
 else:
     print("Config not found")
-`execute`
+</execute>
 ```
 
 **Priority:** Prefer specialized tools (<apply_diff>, <enhanced_write>, etc.) first. Use <execute> when those don't work or for complex logic that requires Python.
@@ -280,7 +280,7 @@ Run shell commands.
 
 **Example:**
 ```
-`execute_command`pytest tests/test_auth.py -xvs`execute_command`
+<execute_command>pytest tests/test_auth.py -xvs</execute_command>
 ```
 
 **Caution:** Use <execute> (Python) for file modifications when possible. Shell `cd` does not persist between calls—use full paths.
@@ -293,7 +293,7 @@ Start a long-running background process.
 
 **Example:**
 ```
-`process_start`dev-server: npm run dev`process_start`
+<process_start>dev-server: npm run dev</process_start>
 ```
 
 
@@ -302,7 +302,7 @@ Stop a running background process.
 
 **Example:**
 ```
-`process_stop`dev-server`process_stop`
+<process_stop>dev-server</process_stop>
 ```
 
 
@@ -325,7 +325,7 @@ Grep-like regex search across project files.
 
 **Example:**
 ```
-`search`def\\s+authenticate|class\\s+Auth`search`
+<search>def\\s+authenticate|class\\s+Auth</search>
 ```
 
 **Pattern syntax:** Python regex. Use `|` to OR multiple patterns.
@@ -338,7 +338,7 @@ Web search via Perplexity API.
 
 **Example:**
 ```
-`perplexity_search`FastAPI dependency injection best practices:3`perplexity_search`
+<perplexity_search>FastAPI dependency injection best practices:3<perplexity_search>
 ```
 
 **Parameters:**
@@ -353,7 +353,7 @@ Search conversation history and indexed notes.
 
 **Example:**
 ```
-`memory_search`database connection string:5:all:database,config`memory_search`
+<memory_search>database connection string:5:all:database,config</memory_search>
 ```
 
 **Parameters:**
@@ -370,7 +370,7 @@ Analyze codebase structure using AST parsing.
 
 **Example:**
 ```
-`analyze_project`src:false`analyze_project`
+<analyze_project>src:false</analyze_project>
 ```
 
 **Output:** File stats, imports, functions, classes.
@@ -391,7 +391,7 @@ Record decisions, progress, or key takeaways.
 
 **Example:**
 ```
-`add_summary_note`decisions:Chose SQLite over PostgreSQL for simplicity in MVP phase`add_summary_note`
+<add_summary_note>decisions:Chose SQLite over PostgreSQL for simplicity in MVP phase</add_summary_note>
 ```
 
 **Categories:** decisions, progress, errors, architecture
@@ -404,7 +404,7 @@ Record facts, requirements, or constraints.
 
 **Example:**
 ```
-`add_declarative_note`requirements:API must support rate limiting of 100 req/min`add_declarative_note`
+<add_declarative_note>requirements:API must support rate limiting of 100 req/min</add_declarative_note>
 ```
 
 **Categories:** requirements, constraints, preferences, api_contracts
@@ -432,7 +432,7 @@ Navigate to a URL.
 
 **Example:**
 ```
-`pydoll_browser_navigate`https://example.com`pydoll_browser_navigate`
+<pydoll_browser_navigate>https://example.com</pydoll_browser_navigate>
 ```
 
 ### pydoll_browser_interact
@@ -443,9 +443,9 @@ Interact with page elements (click, input, submit).
 
 **Examples:**
 ```
-`pydoll_browser_interact`click:button.submit:css`pydoll_browser_interact`
-`pydoll_browser_interact`input:search-box:id:search query`pydoll_browser_interact`
-`pydoll_browser_interact`submit:form#login:xpath`pydoll_browser_interact`
+<pydoll_browser_interact>click:button.submit:css</pydoll_browser_interact>
+<pydoll_browser_interact>input:search-box:id:search query</pydoll_browser_interact>
+<pydoll_browser_interact>submit:form#login:xpath</pydoll_browser_interact>  
 ```
 
 ### pydoll_browser_scroll
@@ -459,7 +459,7 @@ Scroll the page.
 
 **Example:**
 ```
-`pydoll_browser_scroll`to:bottom`pydoll_browser_scroll`
+<pydoll_browser_scroll>to:bottom</pydoll_browser_scroll>
 ```
 
 ### pydoll_browser_screenshot
@@ -467,7 +467,7 @@ Capture a screenshot of the current page.
 
 **Example:**
 ```
-`pydoll_browser_screenshot``pydoll_browser_screenshot`
+<pydoll_browser_screenshot></pydoll_browser_screenshot>
 ```
 
 ### pydoll_debug_toggle
