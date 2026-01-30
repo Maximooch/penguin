@@ -1,986 +1,492 @@
 """
-Defines the syntax for actions Penguin can take and provides critical usage guidelines,
-especially regarding safety and verification.
+Proposed Tools v2.0 - Comprehensive with Examples
+Target: ~3,000 tokens
+Clear descriptions + concrete usage examples for every tool
 """
 
-# Import shared formatting rules
-from penguin.prompt_workflow import SAFETY_RULES, CODE_FORMATTING_RULES, TOOL_RESULT_HANDLING
+# =============================================================================
+# FILE EDITING TOOLS
+# =============================================================================
 
+FILE_EDITING_TOOLS = """
+## File Editing
 
-# TODO: Do we still need the TUI formatting rules here, or does it need to be something else? If not just removed to let the UI layer handle it?
-_ACTION_SYNTAX_TEMPLATE = r"""
-## Action Syntax
+### apply_diff
+Edit a single file using unified diff format. Creates automatic backup.
 
+**When to use:** Making precise line-based changes to existing files.
 
-**CRITICAL:** These tools edit files directly. Always verify the current state first.
+**Example - Adding a function:**
+```
+`apply_diff`src/utils.py:--- a/src/utils.py
++++ b/src/utils.py
+@@ -15,6 +15,10 @@
+ def existing_func():
+     return 42
 
-1.  **Apply Unified Diff (`<apply_diff>`):**
-    `<apply_diff>file_path:diff_content:backup</apply_diff>`
-    -   **Edit a single file** with unified diff format for precise line-based changes.
-    -   **Applies immediately** (no dry-run mode). Backups are created by default (`backup=true`).
-    -   Tip: If your diff content contains colons, omit the optional `:backup` parameter and rely on the default.
-
-    **Example (applies immediately):**
-    ```actionxml
-    <apply_diff>src/main.py:--- a/src/main.py
-    +++ b/src/main.py
-    @@ -1,3 +1,4 @@
-     def hello():
-    +    \"\"\"Say hello.\"\"\"
-         print("Hello")
-    </apply_diff>
-    ```
-
-2.  **Multi-File Editing (`<multiedit>`):**
-    `<multiedit>content</multiedit>`
-    -   **Apply multiple diffs atomically** - all succeed or none are applied.
-    -   **DRY-RUN BY DEFAULT** - shows what would change without applying.
-    -   **Creates automatic backups** for all modified files.
-    -   Supports **per-file block format only** (standard unified multi-file patches are not accepted by this tool).
-    -   Add `apply=true` as the first line inside the tag to actually apply.
-    
-    **Per-File Blocks (supported):**
-    ```actionxml
-    <multiedit>
-    path/to/file1.py:
-    --- a/path/to/file1.py
-    +++ b/path/to/file1.py
-    @@ -1,2 +1,3 @@
-     import os
-    +from pathlib import Path
-     print("hi")
-    
-    path/to/new_file.txt:
-    @@ -0,0 +1,2 @@
-    +hello
-    +world
-    </multiedit>
-    ```
-    
-    **Apply Mode Example:**
-    ```actionxml
-    <multiedit>
-    apply=true
-    src/config.py:
-    @@ -10,11 +10,12 @@
-     DEBUG = False
-    +LOG_LEVEL = "INFO"
-     PORT = 8080
-    
-    src/main.py:
-    @@ -1,2 +1,3 @@
-    +#!/usr/bin/env python3
-     import config
-    </multiedit>
-    ```
-    
-    **Notes:**
-    -   All edits are validated before any are applied
-    -   Failed validation shows errors for all problematic edits
-    -   Automatic rollback if any edit fails during application
-    -   Preserves file permissions and attributes
-
-3.  **Pattern-Based Editing (`<edit_with_pattern>`):**
-    `<edit_with_pattern>file_path:search_pattern:replacement:backup</edit_with_pattern>`
-    -   **Uses regex patterns** for find-and-replace operations.
-    -   Safer than manual string replacement.
-    -   Example: `<edit_with_pattern>config.py:DEBUG = False:DEBUG = True:true</edit_with_pattern>`
-
-
----
-
-### Output Formatting (MANDATORY)
-
-To ensure perfect rendering, follow all of the below:
-
-1) Fence all multi-line content with triple backticks and a language:
-   - `python`, `javascript`, `json`, `bash` (or `sh`), `toml`, `yaml`, `ini`, `diff`, `xml`.
-   - For ActionTag/XML-like content (`<execute>`, `<apply_diff>`, `<enhanced_*`, `<tool>`, `<action>`), use the custom language `actionxml`.
-
-2) Never inline multi-line code without fences. Do not mix narrative text inside fenced JSON/code.
-
-3) Tool/Action display pattern:
-   - Start with a short caption line (what this block is), then a single fenced block with the content.
-   - Avoid duplication: if the tool will output the full content, summarize briefly and rely on the tool block; do not re-echo the same code elsewhere.
-
-4) Diff output:
-   - Use `diff` fenced blocks with standard unified headers and hunks:```diff
---- a/path
-+++ b/path
-@@ -1,3 +1,4 @@
- old
-+new
++def new_helper():
++    \"\"\"Helper function.\"\"\"
++    return True
++
+ def another_func():
+     pass`apply_diff`
 ```
 
-5) Headline then details:
-   - Begin with a one-line summary of the action/result; put the body in a fenced block immediately after.
-
-6) Long outputs:
-   - Prefer concise assistant messages. Large text should come from tool outputs; use a brief preview and say “See tool result” if necessary.
-
----
-
-### Response & Task Completion (CRITICAL)
-
-You MUST explicitly signal when you're done. The system continues executing until you call one of these tools:
-
-**Conversational Mode (`finish_response`):**
-Call when you've answered the user and have no more actions to take.
-
-
-```actionxml
-<finish_response></finish_response>
+**Example - Modifying existing code:**
+```
+`apply_diff`config.py:--- a/config.py
++++ b/config.py
+@@ -8,7 +8,7 @@
+-DEBUG = True
++DEBUG = False
+ PORT = 8080`apply_diff`
 ```
 
-**Task/Autonomous Mode (`finish_task`):**
-Call when you believe the task objective is achieved. The task will be marked for **human review** (not auto-completed).
+**Important:**
+- Uses unified diff format with `@@ -start,count +start,count @@` headers
+- Include 2-3 lines of context around changes
+- Automatic backup created (`.bak` file)
 
-```actionxml
-<finish_task></finish_task>
+
+### multiedit
+Apply multiple file edits atomically—all succeed or none are applied.
+
+**When to use:** Coordinated changes across multiple files (e.g., renaming a function used in several places).
+
+**Example:**
+```
+`multiedit`
+apply=true
+src/models.py:
+@@ -25,7 +25,7 @@
+-class UserManager:
++class UserService:
+     def get_user(self, id):
+         pass
+
+src/api.py:
+@@ -10,7 +10,7 @@
+-from models import UserManager
++from models import UserService
+
+-manager = UserManager()
++service = UserService()`multiedit`
 ```
 
-With explicit status:
-```actionxml
-<finish_task>{"summary": "Implemented the login feature", "status": "done"}</finish_task>
+**Dry-run mode:** Omit `apply=true` to preview changes without applying.
+
+
+### edit_with_pattern
+Pattern-based find-and-replace using regex.
+
+**When to use:** Simple replacements where diff format is overkill.
+
+**Example:**
+```
+`edit_with_pattern`config.py:DEBUG = False:DEBUG = True:true`edit_with_pattern`
 ```
 
-Generally I would not recommend using summary. Unless specifically requested.
+**Format:** `file_path:search_pattern:replacement:backup`
+"""
 
-Status options:
-- `done` (default): Task objective achieved
-- `partial`: Made progress but not complete
-- `blocked`: Cannot proceed, need human intervention
 
-**IMPORTANT:**
-- NEVER rely on implicit completion (e.g., just stopping without a tool call)
-- `finish_task` does NOT mark the task COMPLETED - a human must approve it
-- Use `finish_response` for conversational turns, `finish_task` for formal tasks
+# =============================================================================
+# FILE OPERATIONS
+# =============================================================================
 
----
+FILE_OPERATION_TOOLS = """
+## File Operations
 
-### Code Execution (`<execute>` and `<execute_command>`)
+### enhanced_read
+Read file contents with exact path resolution and optional line numbers.
 
-Execute code/commands in the workspace. The execution environment is typically detected from project structure.
+**When to use:** Reading source files, configs, or documentation.
 
-**Action Result Handling:**
-Results (stdout, stderr, errors) will appear in the next system message. **You MUST respond to this message.** Your *next* response must:
-1.  **Acknowledge** the result explicitly (e.g., "The file check succeeded.", "The script failed with: [error message]").
-2.  **Verify** the outcome (e.g., check file existence/content).
-3.  **Proceed** based *only* on the verified outcome, OR call `<finish_response>` if the task is complete.
+**Example:**
+```
+`enhanced_read`src/main.py:true:50`enhanced_read`
+```
 
-**Example 1: Python (when project has *.py files, pyproject.toml, etc.):**
-```python
-# <execute>
+**Parameters:**
+- `path` - File to read
+- `show_line_numbers` (true/false) - Include line numbers
+- `max_lines` (optional) - Limit to first N lines
+
+
+### enhanced_write
+Write file with automatic backup and diff generation for existing files.
+
+**When to use:** Creating new files or overwriting existing ones.
+
+**Example:**
+```
+`enhanced_write`README.md:# Project Name
+
+Description here.
+
+## Usage
+...
+:true`enhanced_write`
+```
+
+**Parameters:**
+- `path` - Target file path
+- `content` - File contents
+- `backup` (true/false) - Create `.bak` file if exists (default: true)
+
+
+### list_files_filtered
+List directory contents with clutter filtering (.git, __pycache__, etc. hidden).
+
+**When to use:** Exploring project structure.
+
+**Example:**
+```
+`list_files_filtered`src:true:false`list_files_filtered`
+```
+
+**Parameters:**
+- `path` - Directory to list
+- `group_by_type` (true/false) - Group files by extension
+- `show_hidden` (true/false) - Include hidden files
+
+
+### find_files_enhanced
+Find files using glob patterns.
+
+**When to use:** Locating specific file types or names.
+
+**Example:**
+```
+`find_files_enhanced`*.py:src:false:file`find_files_enhanced`
+```
+
+**Parameters:**
+- `pattern` - Glob pattern (e.g., `*.py`, `test_*.py`)
+- `search_path` - Directory to search
+- `include_hidden` (true/false)
+- `file_type` - "file" or "directory"
+
+
+### enhanced_diff
+Compare two files with contextual diff output.
+
+**When to use:** Reviewing changes between file versions.
+
+**Example:**
+```
+`enhanced_diff`old_config.py:new_config.py:true`enhanced_diff`
+```
+
+**Parameters:**
+- `file1` - Original file
+- `file2` - Modified file  
+- `semantic` (true/false) - For Python, show function/class changes
+"""
+
+
+# =============================================================================
+# EXECUTION TOOLS
+# =============================================================================
+
+EXECUTION_TOOLS = """
+## Execution
+
+### execute
+Run Python code in IPython environment.
+
+**When to use:** 
+- Complex logic and data processing
+- Installing libraries (`pip install`)
+- Multi-step workflows that need variables/conditionals
+- File operations **when specialized tools fail** (secondary/brute force option)
+- Anything requiring Python stdlib (pathlib, os, json, etc.)
+
+**Example:**
+```
+`execute`
 import os
 from pathlib import Path
 
-file_path = Path('src/main.py')
-print(f"Checking existence of: {file_path}")
-
-if not file_path.exists():
-    print(f"File does not exist. Creating...")
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"Ensured directory {file_path.parent} exists.")
-    content_to_write = "def main():\n    print('Hello')\n"
-    try:
-        file_path.write_text(content_to_write, encoding='utf-8')
-        print(f"Successfully created and wrote to {file_path}")
-    except Exception as e:
-        print(f"Error writing to file {file_path}: {e}")
+config_path = Path('config.yml')
+if config_path.exists():
+    content = config_path.read_text()
+    print(f"Config size: {len(content)} chars")
 else:
-    print(f"File {file_path} already exists. No action taken.")
-# </execute>
+    print("Config not found")
+`execute`
 ```
 
-**Example 2: JavaScript/Node (when project has package.json):**
-```javascript
-// Use execute_command for Node.js
-<execute_command>
-node -e "const fs = require('fs'); const path = 'src/index.js'; if (fs.existsSync(path)) { console.log('File exists:', path); } else { console.log('File does not exist:', path); }"
-</execute_command>
-```
+**Priority:** Prefer specialized tools (`apply_diff`, `enhanced_write`, etc.) first. Use `execute` when those don't work or for complex logic that requires Python.
 
-**Example 3: Shell Commands (language-agnostic checks):**
-```actionxml
-<execute_command>ls -la src/ && find . -name "*.config.*" -type f</execute_command>
-```
 
-**Example 4: Rust (when project has Cargo.toml):**
-```actionxml
-<execute_command>cargo check --verbose</execute_command>
-```
+### execute_command
+Run shell commands.
 
-**CRITICAL SAFETY WARNINGS (all languages):**
--   **NEVER write to files without FIRST checking existence**
--   For Python: use `Path(path).exists()` before `Path(path).write_text()`
--   For Shell: use `[ -f path ]` or `ls path` before redirecting output
--   If file exists, **DO NOT OVERWRITE** without verification. Prefer `apply_diff` or backups.
--   Be cautious with destructive operations (`rm`, `shutil.rmtree`, file deletion)
--   Verify targets and confirm intent before modifying/deleting
-
-**Other Notes:**
--   Keep scripts **short and focused** (one logical operation per block)
--   Include status output for verification (print, echo, logging)
--   Use `try...except` (Python) or error handling for robust scripts
--   For multi-language projects: detect language first via project files
-
----
-
-### Command Execution (`<execute_command>`)
-
-Executes a shell command in the workspace root. **Use sparingly and cautiously.**
+**When to use:** Git operations, running tests, build commands.
 
 **Example:**
-`<execute_command>ls -l discord_clone/backend/src</execute_command >`
-
-**Notes:**
--   Best for simple, **read-only** commands (`ls`, `pwd`, `git status`, `grep`).
--   **AVOID file modification commands** (`rm`, `mv`, `mkdir`, `echo > file`). Use `<execute>` with Python's `os`, `pathlib`, or `shutil` for safety and control.
--   **`cd` does NOT persist.** Use full or workspace-relative paths in commands.
--   Acknowledge and verify output in the next message. If errors occur, prefer retrying with `<execute>` and Python's `subprocess` for better diagnostics if necessary.
-
----
-
-### Enhanced File Operations
-
-**IMPORTANT:** These enhanced tools provide better path handling and feedback than basic file operations. Use these instead of raw Python file operations whenever possible.
-
-1.  **Enhanced File Reading (`<enhanced_read>`):**
-    `<enhanced_read>path:show_line_numbers:max_lines</enhanced_read>`
-    -   **Always shows exact resolved path** to prevent path confusion.
-    -   `show_line_numbers` (true/false): Include line numbers in output.
-    -   `max_lines` (optional): Limit output to first N lines.
-    -   Example: `<enhanced_read>src/main.py:true:50</enhanced_read>`
-
-2.  **Enhanced File Writing (`<enhanced_write>`):**
-    `<enhanced_write>path:content:backup</enhanced_write>`
-    -   **Creates automatic backups** and shows exact resolved path.
-    -   **Generates diff** when modifying existing files.
-    -   `backup` (true/false): Create .bak file (default: true).
-    -   Example: `<enhanced_write>config.py:print("Hello"):true</enhanced_write>`
-
-3.  **Enhanced File Listing (`<list_files_filtered>`):**
-    `<list_files_filtered>path:group_by_type:show_hidden</list_files_filtered>`
-    -   **Automatically filters clutter** (.git, __pycache__, node_modules, etc.).
-    -   `group_by_type` (true/false): Group files by extension.
-    -   `show_hidden` (true/false): Include hidden files.
-    -   Example: `<list_files_filtered>src:true:false</list_files_filtered>`
-
-4.  **Enhanced File Finding (`<find_files_enhanced>`):**
-    `<find_files_enhanced>pattern:search_path:include_hidden:file_type</find_files_enhanced>`
-    -   **Supports glob patterns** (*.py, main.py, etc.).
-    -   `pattern`: File pattern to search for.
-    -   `search_path`: Directory to search in (default: current).
-    -   `include_hidden` (true/false): Include hidden files.
-    -   `file_type`: Filter by "file" or "directory".
-    -   Example: `<find_files_enhanced>*.py:src:false:file</find_files_enhanced>`
-
----
-
-## File Editing Operations
-
-**CRITICAL:** These tools edit files directly. Always verify the current state first.
-
-Just use <execute> with Python/common libraries (and subprocess) for complex logic, multiple files, conditional edits, and safety.
-
-### File Comparison and Analysis
-
-1.  **Enhanced Diff (`<enhanced_diff>`):**
-    `<enhanced_diff>file1:file2:semantic</enhanced_diff>`
-    -   **Compare two files** with contextual diff output.
-    -   `semantic` (true/false): For Python files, shows added/removed functions/classes.
-    -   Example: `<enhanced_diff>old_config.py:new_config.py:true</enhanced_diff>`
-
-2.  **Project Structure Analysis (`<analyze_project>`):**
-    `<analyze_project>directory:include_external</analyze_project>`
-    -   **Analyzes codebase structure** using AST parsing.
-    -   Shows file stats, imports, functions, and classes.
-    -   `include_external` (true/false): Include external library imports.
-    -   Example: `<analyze_project>src:false</analyze_project>`
-
----
-
-### Search Operations
-
-Use for information retrieval. Acknowledge results before acting.
-
-1.  **Grep-like Search (`<search>`):**
-    `<search>pattern</search>`
-    -   Project-local, fast regex search over logs and files. Use `|` to OR patterns.
-    -   Example: `<search>def\s+my_function|class\s+MyClass</search>`
-
-2.  **Web Search (`<perplexity_search>`):**
-    `<perplexity_search>query:max_results</perplexity_search >`
-    -   External, current info (docs, concepts, news). Max 5 results.
-    -   Example: `<perplexity_search>python requests library usage:3</perplexity_search >`
-
-3.  **Codebase Search (`<workspace_search>`):**
-    -   Currently disabled for performance reasons in this build. Use `<search>` and `<find_files_enhanced>` instead.
-
-3.  **Memory Search (`<memory_search>`):**
-    `<memory_search>query:k:memory_type:categories</memory_search >`
-    -   Search conversation history, indexed files, and notes.
-    -   `k`, `memory_type`, `categories` (comma-separated) are optional.
-    -   Example: `<memory_search>database connection string discussion:5:all:database,config</memory_search >`
-    -   Example: `<memory_search>user preferences</memory_search >`
-
----
-
-### Workspace & Memory Management
-
--   `<analyze_codebase>directory:type</analyze_codebase>`
-    -   Analyze codebase structure. `type` can be `dependencies`, `complexity`, etc.
-    -   Example: `<analyze_codebase>src:dependencies</analyze_codebase>`
--   `<reindex_workspace>directory:force_full</reindex_workspace>`
-    -   Trigger a manual re-index of the workspace to update the memory.
-    -   Example: `<reindex_workspace>src:true</reindex_workspace>`
-
----
-
-### Interactive Terminal (`process_*` tools)
-
-Manage long-running background processes.
-
--   `<process_start>name: command</process_start >`
--   `<process_stop>name</process_stop >`
--   `<process_status>name</process_status >`
--   `<process_list></process_list >`
--   `<process_enter>name</process_enter >`
--   `<process_send>command</process_send >`
--   `<process_exit></process_exit >`
-
-**Notes:** Check status/list before start/stop. Always `process_exit`.
-Use `process_start` for background processes like dev servers.
-Use `process_status` to check if a process is running.
-
----
-
-### File Editing Best Practices
-
-**Key Principles:**
--   **Always dry-run first** - Review changes before applying
--   **Verify state before editing** - Read files to understand current content
--   **Use appropriate tool** - `apply_diff` for single files, `multiedit` for multiple
--   **Keep scripts short** - Acknowledge results, continue through recoverable errors
--   **Enhanced tools available** - File ops, search, and browser tools handle backups/safety automatically
-
----
-
-### Memory Management (`add_*_note`)
-
-Preserve context using notes.
-
--   `<add_summary_note>category:content</add_summary_note >` (Decisions, progress, errors)
--   `<add_declarative_note>category:content</add_declarative_note >` (Facts, requirements)
-
-**Notes:** Summarize proactively. Use categories (e.g., `decisions`, `errors`, `requirements`, `file_changes`).
-
----
-
-### Task Management (`project_*`, `task_*` tools)
-
-Track high-level plan progress.
-
--   Project Ops: `<project_create>`, `<project_update>`, `<project_delete>`, `<project_list>`, `<project_display>`
--   Task Ops: `<task_create>`, `<task_update>`, `<task_complete>`, `<task_delete>`, `<task_list>`, `<task_display>`
--   Dependencies: `<dependency_display>`
-
-**Notes:** Update/complete tasks *after* verifying the corresponding step is done.
-
----
-
-### Git & GitHub Operations
-
-For Git operations and PR creation, use `<execute>` with Python code:
-
-**Available libraries and credentials:**
-- `git` command-line tool (subprocess)
-- `PyGithub` library for GitHub API operations
-- GitHub App authentication is configured when these env vars are set:
-  - `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY_PATH`
-  - `GITHUB_REPOSITORY` (target repo, e.g., "owner/repo")
-
-**Example PR creation workflow:**
-```python
-# <execute>
-import subprocess
-import jwt
-import time
-from github import Auth, Github, GithubIntegration
-import os
-
-# 1. Clone repo
-subprocess.run(['git', 'clone', 'https://github.com/owner/repo.git', 'repo-dir'])
-
-# 2. Create branch, make changes, commit
-os.chdir('repo-dir')
-subprocess.run(['git', 'checkout', '-b', 'feature-branch'])
-# ... make file changes ...
-subprocess.run(['git', 'add', '.'])
-subprocess.run(['git', 'commit', '-m', 'feat: add feature'])
-
-# 3. Get GitHub App installation token
-app_id = os.getenv('GITHUB_APP_ID')
-installation_id = os.getenv('GITHUB_APP_INSTALLATION_ID')
-key_path = os.getenv('GITHUB_APP_PRIVATE_KEY_PATH')
-
-with open(key_path) as f:
-    private_key = f.read()
-    
-auth = Auth.AppAuth(app_id, private_key)
-installation_auth = auth.get_installation_auth(int(installation_id))
-token = installation_auth.token
-
-# 4. Push with token
-remote_url = f"https://x-access-token:{token}@github.com/owner/repo.git"
-subprocess.run(['git', 'remote', 'set-url', 'origin', remote_url])
-subprocess.run(['git', 'push', 'origin', 'feature-branch'])
-
-# 5. Create PR via API
-github = Github(auth=installation_auth)
-repo = github.get_repo('owner/repo')
-pr = repo.create_pull(
-    title="PR Title",
-    body="PR Description",
-    head="feature-branch",
-    base="main"
-)
-print(f"PR created: {pr.html_url}")
-# </execute>
+```
+`execute_command`pytest tests/test_auth.py -xvs`execute_command`
 ```
 
-**Notes:**
-- This approach gives you full control and visibility into each step
-- Works with any Git hosting (GitHub, GitLab, etc.) by swapping the API client
-- All GitHub App credentials are automatically available via env vars
+**Caution:** Use `execute` (Python) for file modifications when possible. Shell `cd` does not persist between calls—use full paths.
 
----
 
-**Notes:**
--   Navigate first. Use specific selectors.
--   **MANDATORY WORKFLOW:**
-    1.  After **every** successful browser action, your **immediate next step MUST be `<pydoll_browser_screenshot>`**.
-    2.  **Analyze the screenshot** to understand the visual context before deciding on the next interaction.
-    3.  After **every** `<pydoll_browser_interact>` action (like click or input), your **immediate next step MUST be `<pydoll_browser_screenshot>`** to verify the result of the interaction visually.
--   Verify state with screenshots *before* proceeding.
+### process_start
+Start a long-running background process.
 
-### PyDoll Browser Interaction (`pydoll_browser_*` tools)
+**When to use:** Starting dev servers, background workers.
 
-Enhanced browser control without WebDriver dependencies, better for sites with anti-bot measures.
+**Example:**
+```
+`process_start`dev-server: npm run dev`process_start`
+```
 
--   `<pydoll_browser_navigate>URL</pydoll_browser_navigate >`
--   `<pydoll_browser_interact>action:selector[:selector_type][:text]</pydoll_browser_interact >` (actions: `click`, `input`, `submit`, selector_types: `css`, `xpath`, `id`, `class_name`)
--   `<pydoll_browser_scroll>mode:args</pydoll_browser_scroll >` (modes: `to`, `by`, `page`, `element`)
-    - Examples:
-      - `<pydoll_browser_scroll>to:bottom</pydoll_browser_scroll>`
-      - `<pydoll_browser_scroll>page:down:2</pydoll_browser_scroll>`
-      - `<pydoll_browser_scroll>by:1200:0:1</pydoll_browser_scroll>`
-      - `<pydoll_browser_scroll>element:#results:css:smooth</pydoll_browser_scroll>`
--   `<pydoll_browser_screenshot></pydoll_browser_screenshot >`
--   `<pydoll_debug_toggle>[on|off]</pydoll_debug_toggle >` (Enable/disable detailed PyDoll logging and outputs)
 
-**Advantages over standard browser tools:**
--   **No WebDriver dependency** - eliminates compatibility issues
--   **Native captcha bypass** - better handles Cloudflare Turnstile and reCAPTCHA v3
--   **Human-like interactions** - reduces detection risk
--   **More selector options** - supports CSS, XPath, ID, and class name selectors
--   **Developer mode** - toggle detailed debugging information when troubleshooting
+### process_stop
+Stop a running background process.
 
-**Usage Notes:**
--   Use for sites with sophisticated bot detection
--   Follow the same workflow as standard browser tools (navigate → screenshot → interact → screenshot)
--   Use selector_type parameter to specify how to locate elements (default is CSS)
--   Enable debug mode when troubleshooting: `<pydoll_debug_toggle>on</pydoll_debug_toggle >`
--   Example: `<pydoll_browser_interact>click:button.search:css</pydoll_browser_interact >`
+**Example:**
+```
+`process_stop`dev-server`process_stop`
+```
 
-**Developer Mode:**
--   When enabled, provides detailed logs about browser interactions
--   Shows additional information in command outputs (page titles, element text, etc.)
--   Helps diagnose issues with selectors or page navigation
--   Toggle with: `<pydoll_debug_toggle>on</pydoll_debug_toggle >` or `<pydoll_debug_toggle>off</pydoll_debug_toggle >`
 
-### Inter-Agent Messaging (`<send_message>`)
+### process_status / process_list
+Check if process is running or list all processes.
+"""
 
-Use this action when agents need to coordinate directly or broadcast updates to a shared room. The body must be valid JSON. Required fields:
 
-- `content`: The plain-text message
-- `target` **or** `targets`: A string recipient (`"planner"`, `"qa"`, etc.) or a list of recipients. Omit to reach the human operator.
+# =============================================================================
+# SEARCH TOOLS
+# =============================================================================
 
-Optional fields:
+SEARCH_TOOLS = """
+## Search
 
-- `channel`: Logical room identifier (e.g. `"dev-room"`). Use this so other agents can filter transcripts.
-- `message_type`: Defaults to `"message"`; useful for `"status"`, `"action"`, etc.
-- `metadata`: Arbitrary key/value payload carried alongside the message.
-- `sender`: Custom sender label (defaults to the current agent).
+### search
+Grep-like regex search across project files.
+
+**When to use:** Finding code patterns, function definitions, TODOs.
+
+**Example:**
+```
+`search`def\\s+authenticate|class\\s+Auth`search`
+```
+
+**Pattern syntax:** Python regex. Use `|` to OR multiple patterns.
+
+
+### perplexity_search
+Web search via Perplexity API.
+
+**When to use:** Researching documentation, best practices, current information.
+
+**Example:**
+```
+`perplexity_search`FastAPI dependency injection best practices:3`perplexity_search`
+```
+
+**Parameters:**
+- `query` - Search query
+- `max_results` (1-5) - Number of results
+
+
+### memory_search
+Search conversation history and indexed notes.
+
+**When to use:** Recalling previous discussions, requirements, decisions.
+
+**Example:**
+```
+`memory_search`database connection string:5:all:database,config`memory_search`
+```
+
+**Parameters:**
+- `query` - Search terms
+- `k` - Number of results
+- `memory_type` - "conversation", "notes", or "all"
+- `categories` - Filter by category tags
+
+
+### analyze_project
+Analyze codebase structure using AST parsing.
+
+**When to use:** Understanding large codebases, dependency mapping.
+
+**Example:**
+```
+`analyze_project`src:false`analyze_project`
+```
+
+**Output:** File stats, imports, functions, classes.
+"""
+
+
+# =============================================================================
+# MEMORY & NOTES
+# =============================================================================
+
+MEMORY_TOOLS = """
+## Memory & Notes
+
+### add_summary_note
+Record decisions, progress, or key takeaways.
+
+**When to use:** Capturing why a decision was made, tracking progress, recording errors.
+
+**Example:**
+```
+`add_summary_note`decisions:Chose SQLite over PostgreSQL for simplicity in MVP phase`add_summary_note`
+```
+
+**Categories:** decisions, progress, errors, architecture
+
+
+### add_declarative_note
+Record facts, requirements, or constraints.
+
+**When to use:** Storing user preferences, system requirements, API contracts.
+
+**Example:**
+```
+`add_declarative_note`requirements:API must support rate limiting of 100 req/min`add_declarative_note`
+```
+
+**Categories:** requirements, constraints, preferences, api_contracts
+
+
+### reindex_workspace
+Manually trigger workspace re-indexing for memory.
+
+**When to use:** After large file changes to update search index.
+"""
+
+
+
+# =============================================================================
+# BROWSER AUTOMATION TOOLS
+# =============================================================================
+
+BROWSER_TOOLS = """
+## Browser Automation (PyDoll)
+
+Enhanced browser control without WebDriver dependencies. Better for sites with anti-bot measures.
+
+### pydoll_browser_navigate
+Navigate to a URL.
+
+**Example:**
+```
+`pydoll_browser_navigate`https://example.com`pydoll_browser_navigate`
+```
+
+### pydoll_browser_interact
+Interact with page elements (click, input, submit).
+
+**Actions:** click, input, submit  
+**Selector types:** css, xpath, id, class_name
 
 **Examples:**
-
-```actionxml
-<send_message>{
-  "target": "implementer",
-  "content": "Planner has prepared the remediation plan. See dev-room for details.",
-  "channel": "dev-room",
-  "metadata": {"plan_version": 2}
-}</send_message>
+```
+`pydoll_browser_interact`click:button.submit:css`pydoll_browser_interact`
+`pydoll_browser_interact`input:search-box:id:search query`pydoll_browser_interact`
+`pydoll_browser_interact`submit:form#login:xpath`pydoll_browser_interact`
 ```
 
-Broadcasting to multiple recipients:
+### pydoll_browser_scroll
+Scroll the page.
 
-```actionxml
-<send_message>{
-  "targets": ["planner", "qa"],
-  "content": "Implementation complete. Please review.",
-  "channel": "dev-room",
-  "message_type": "status"
-}</send_message>
+**Modes:**
+- `to:bottom` - Scroll to bottom
+- `page:down:2` - Page down twice
+- `by:1200:0:1` - Scroll by x,y pixels, speed
+- `element:#results:css:smooth` - Scroll to element
+
+**Example:**
+```
+`pydoll_browser_scroll`to:bottom`pydoll_browser_scroll`
 ```
 
-Ping the human operator when assistance is required:
+### pydoll_browser_screenshot
+Capture a screenshot of the current page.
 
-```actionxml
-<send_message>{
-  "content": "Need clarification on acceptance criteria for the telemetry dashboard.",
-  "channel": "dev-room"
-}</send_message>
+**Example:**
+```
+`pydoll_browser_screenshot``pydoll_browser_screenshot`
 ```
 
-The message is routed through the MessageBus, recorded in each agent's transcript with channel metadata, and surfaced in telemetry summaries.
+### pydoll_debug_toggle
+Enable/disable detailed debugging.
 
----
-
-### Sub-Agent Tools (Agents-as-Tools)
-
-Use these to manage child agents directly. Defaults are conservative: sub-agents are created with isolated session and isolated context-window. Initial SYSTEM/CONTEXT is copied once; subsequent turns diverge. No permission engine is enforced; any `default_tools` provided are recorded as metadata only.
-
-**Background Execution:** Sub-agents can run in the background using the `AgentExecutor`. This enables true parallel agent execution with concurrency control (default max: 10 concurrent agents, configurable via `PENGUIN_MAX_CONCURRENT_TASKS`).
-
----
-
-#### 1) Spawn Sub-Agent (`<spawn_sub_agent>`)
-
-Body must be JSON. Fields:
-- `id` (required): child agent id
-- `parent` (optional): parent agent id (defaults to current)
-- `persona`, `system_prompt` (optional)
-- `share_session` (default false) – share parent session
-- `share_context_window` (default false) – share parent context window
-- `shared_context_window_max_tokens` (optional int) – clamp when using isolated CW
-- `model_config_id`, `model_overrides`, `model_output_max_tokens` (optional)
-- `default_tools` (optional list) – recorded only; not enforced
-- `initial_prompt` (optional) – message sent to the child after spawn
-- `background` (default false) – run agent in background via AgentExecutor
-
-Example (foreground):
-```actionxml
-<spawn_sub_agent>{
-  "id": "researcher",
-  "parent": "primary",
-  "persona": "research",
-  "share_session": false,
-  "share_context_window": false,
-  "shared_context_window_max_tokens": 512,
-  "initial_prompt": "Summarize docs in /docs"
-}</spawn_sub_agent>
+**Example:**
+```
+`pydoll_debug_toggle`on`pydoll_debug_toggle`
 ```
 
-Example (background execution):
-```actionxml
-<spawn_sub_agent>{
-  "id": "analyzer",
-  "initial_prompt": "Analyze all Python files for security issues",
-  "background": true
-}</spawn_sub_agent>
-```
-
----
-
-#### 2) Pause / Resume / Stop Sub-Agent
-
-```actionxml
-<stop_sub_agent>{"id": "researcher"}</stop_sub_agent>
-<resume_sub_agent>{"id": "researcher"}</resume_sub_agent>
-```
-
-For background agents, `stop_sub_agent` cancels the running task.
-
----
-
-#### 3) Get Agent Status (`<get_agent_status>`)
-
-Query the status of a background agent.
-
-```actionxml
-<get_agent_status>{"agent_id": "analyzer"}</get_agent_status>
-```
-
-Returns:
-- `state`: pending, running, paused, completed, failed, cancelled
-- `result`: Output if completed
-- `error`: Error message if failed
-
----
-
-#### 4) Wait for Agents (`<wait_for_agents>`)
-
-Block until one or more background agents complete.
-
-```actionxml
-<wait_for_agents>{
-  "agent_ids": ["analyzer", "researcher"],
-  "timeout": 60.0
-}</wait_for_agents>
-```
-
-Parameters:
-- `agent_ids` (required): List of agent IDs to wait for
-- `timeout` (optional): Max seconds to wait (default: no timeout)
-
----
-
-#### 5) Delegate Work to Existing Agent (`<delegate>`)
-
-Send a task to a specific agent and record a delegation event.
-
-```actionxml
-<delegate>{
-  "parent": "primary",
-  "child": "researcher",
-  "content": "Audit README for gaps",
-  "channel": "dev-room",
-  "metadata": {"priority": "high"}
-}</delegate>
-```
-
-**Background delegation:**
-```actionxml
-<delegate>{
-  "child": "researcher",
-  "content": "Analyze the test suite",
-  "background": true,
-  "wait": false,
-  "timeout": 30.0
-}</delegate>
-```
-
-Parameters:
-- `background` (default false): Run delegation in background
-- `wait` (default false): Wait for background task to complete
-- `timeout` (optional): Timeout in seconds when waiting
-
----
-
-#### 6) Delegate Exploration Task (`<delegate_explore_task>`)
-
-Spawn a haiku sub-agent to autonomously explore a codebase. The sub-agent can list directories, read files, and search - then returns a summary.
-
-```actionxml
-<delegate_explore_task>{
-  "task": "Explore this codebase and summarize the architecture",
-  "directory": ".",
-  "max_iterations": 50
-}</delegate_explore_task>
-```
-
-Parameters:
-- `task` (required): What to explore/analyze
-- `directory` (optional): Starting directory (default: current)
-- `max_iterations` (optional): Max tool rounds (default: 100, max: 100)
-
-The sub-agent uses claude-haiku-4.5 for cost efficiency and has access to:
-- `list_files`: List directory contents (max 50 items)
-- `read_file`: Read file contents (max 200 lines)
-- `search`: Grep for patterns in code files
-
----
-
-#### 7) Context Sharing Tools
-
-**Get Context Info (`<get_context_info>`):**
-
-Query context sharing relationships for an agent.
-
-```actionxml
-<get_context_info>{"agent_id": "researcher"}</get_context_info>
-```
-
-Returns:
-- `has_context_window`: Whether agent has a context window
-- `parent`: Parent agent ID (if sub-agent)
-- `shares_with_parent`: Whether shares context with parent
-- `children`: List of child agent IDs
-- `shares_with_children`: Children that share context
-
-**Sync Context (`<sync_context>`):**
-
-Synchronize context from parent to child (for isolated context windows).
-
-```actionxml
-<sync_context>{
-  "parent_agent_id": "primary",
-  "child_agent_id": "researcher",
-  "categories": ["SYSTEM", "CONTEXT"]
-}</sync_context>
-```
-
----
-
-#### Example: Parallel Agent Workflow
-
-```actionxml
-<!-- Spawn multiple background agents -->
-<spawn_sub_agent>{"id": "analyzer", "initial_prompt": "Analyze src/", "background": true}</spawn_sub_agent>
-<spawn_sub_agent>{"id": "tester", "initial_prompt": "Review tests/", "background": true}</spawn_sub_agent>
-
-<!-- Do other work while they run... -->
-
-<!-- Check status -->
-<get_agent_status>{"agent_id": "analyzer"}</get_agent_status>
-
-<!-- Wait for all to complete -->
-<wait_for_agents>{"agent_ids": ["analyzer", "tester"], "timeout": 120}</wait_for_agents>
-```
-
----
-
-**Notes:**
-- For general multi-agent chatter, use `<send_message>` with `target`/`targets` and optional `channel`.
-- Background agents are managed by `AgentExecutor` with semaphore-based concurrency control.
-- Cross-parent channel rooms are a future consideration; prefer direct `target` for sub-agent flows today.
-
----
-"""
-
-# Construct ACTION_SYNTAX with shared constants at the beginning
-ACTION_SYNTAX = f"""
-## Action Syntax
-
-{SAFETY_RULES}
-
-{TOOL_RESULT_HANDLING}
-
-{CODE_FORMATTING_RULES}
-
-""" + _ACTION_SYNTAX_TEMPLATE
-
-
-PLACEHOLDER = """
-## Tools and Actions
-
-### Actions
-
-# Code, Terminal and File Management
-
-<execute>your_code_here</execute> - Run code
-Description: Run code in the terminal, using iPython or shell/bash (depending on OS)
-
-<search>query</search> - Search for patterns
-
-<process_start>name:description</process_start> - Start a new process
-<process_stop>name</process_stop> - Stop a process
-<process_status>name</process_status> - Get the status of a process
-<process_list></process_list> - List processes
-<process_enter>name</process_enter> - Enter a process
-<process_send>name:message</process_send> - Send a message to a process
-<send_message>{"target": "planner", "content": "Update", "channel": "dev-room"}</send_message> - Send inter-agent messages (JSON body)
-<send_message>{"target": "planner", "content": "Update", "channel": "dev-room"}</send_message> - Send inter-agent messages (JSON body)
-
-# Enhanced File Operations (USE THESE INSTEAD OF RAW PYTHON FILE OPS)
-
-<enhanced_read>path:show_line_numbers:max_lines</enhanced_read> - Read file with path feedback
-<enhanced_write>path:content:backup</enhanced_write> - Write file with automatic backup and diff
-<list_files_filtered>path:group_by_type:show_hidden</list_files_filtered> - List files (filters clutter)
-<find_files_enhanced>pattern:search_path:include_hidden:file_type</find_files_enhanced> - Find files with glob patterns
-<enhanced_diff>file1:file2:semantic</enhanced_diff> - Compare files with semantic analysis
-<analyze_project>directory:include_external</analyze_project> - Analyze project structure with AST
-
-# File Editing (Dry-run by default, add apply=true to apply)
-<apply_diff>file_path:diff_content:backup</apply_diff> - Edit single file with unified diff (creates backups)
-<multiedit>content</multiedit> - Apply multiple diffs atomically (all succeed or none)
-<edit_with_pattern>file_path:search_pattern:replacement:backup</edit_with_pattern> - Edit files with regex patterns
-
-# Memory
-
-<memory_search>query:max_results</memory_search> - Search memory
-<add_declarative_note>category:content</add_declarative_note> - Add a declarative memory note
-<add_summary_note>category:content</add_summary_note> - Add a summary memory note
-
-
-# Project Management
-
-<project_list></project_list> - List projects
-<project_create>name:description</project_create> - Create a project
-<project_update>name:description</project_update> - Update a project
-<project_delete>name</project_delete> - Delete a project
-<project_display>name</project_display> - Display a project
-
-
-# Task Management
-
-<task_create>name:description</task_create> - Create a task
-<task_update>name:description</task_update> - Update a task
-<task_delete>name</task_delete> - Delete a task
-<task_list></task_list> - List tasks
-<task_display>name</task_display> - Display a task
-
-
-# Web Search
-
-<perplexity_search>query</perplexity_search> - Search the web
-
-# Repository Management
-
-<get_repository_status>repo_owner:repo_name</get_repository_status> - Get repository status (branch, changes, GitHub config)
-<create_and_switch_branch>repo_owner:repo_name:branch_name</create_and_switch_branch> - Create and switch to a new git branch
-<commit_and_push_changes>repo_owner:repo_name:commit_message</commit_and_push_changes> - Commit and push current changes  
-<create_improvement_pr>repo_owner:repo_name:title:description:files_changed</create_improvement_pr> - Create PR for improvements
-<create_feature_pr>repo_owner:repo_name:feature_name:description:implementation_notes:files_modified</create_feature_pr> - Create PR for new features
-<create_bugfix_pr>repo_owner:repo_name:bug_description:fix_description:files_fixed</create_bugfix_pr> - Create PR for bug fixes
-
-
-# Browser Automation
-
-
-
-## PyDoll Browser Tools (No WebDriver Required)
-<pydoll_browser_navigate>https://www.example.com</pydoll_browser_navigate> - Navigate to a URL using PyDoll
-<pydoll_browser_interact>click:.search-button:css</pydoll_browser_interact> - Click using CSS selector
-<pydoll_browser_interact>click://button[@id='submit']:xpath</pydoll_browser_interact> - Click using XPath selector
-<pydoll_browser_interact>input:#email:css:user@example.com</pydoll_browser_interact> - Input text using CSS
-<pydoll_browser_interact>submit:form:css</pydoll_browser_interact> - Submit a form
-<pydoll_browser_screenshot></pydoll_browser_screenshot> - Take a screenshot with PyDoll
-<pydoll_debug_toggle>on</pydoll_debug_toggle> - Enable PyDoll debug mode
-<pydoll_debug_toggle>off</pydoll_debug_toggle> - Disable PyDoll debug mode
-
-# Example: Web Scraping Workflow with PyDoll
-
-## Standard workflow:
-1. Navigate to website:
-   <pydoll_browser_navigate>https://quotes.toscrape.com</pydoll_browser_navigate>
-
-2. Take a screenshot to verify the page loaded:
-   <pydoll_browser_screenshot></pydoll_browser_screenshot>
-
-3. Interact with an element (click on "Login" link):
-   <pydoll_browser_interact>click:a[href="/login"]:css</pydoll_browser_interact>
-
-4. Take another screenshot to verify the action:
-   <pydoll_browser_screenshot></pydoll_browser_screenshot>
-
-5. Fill in login form:
-   <pydoll_browser_interact>input:#username:css:user123</pydoll_browser_interact>
-   <pydoll_browser_interact>input:#password:css:password123</pydoll_browser_interact>
-
-6. Submit the form:
-   <pydoll_browser_interact>submit:form.login_form:css</pydoll_browser_interact>
-
-7. Take a final screenshot:
-   <pydoll_browser_screenshot></pydoll_browser_screenshot>
-
-# When to use PyDoll over Standard Browser Tools:
-- For sites with sophisticated bot detection
-- When dealing with captchas (Cloudflare, reCAPTCHA)
-- For more realistic human-like browsing patterns
-- When needing multiple selector types (CSS, XPath, ID, class)
-
-### Tools
-
-
+**When to use PyDoll:**
+- Sites with sophisticated bot detection (Cloudflare, reCAPTCHA v3)
+- When standard browser tools fail
+- Need human-like interactions
+
+**Workflow:** Navigate → Screenshot → Interact → Screenshot (verify result)
 """
 
 
+# =============================================================================
+# COMPLETION SIGNALS
+# =============================================================================
 
-# **CRITICAL:** These tools edit files directly. Always verify the current state first.
+COMPLETION_TOOLS = """
+## Completion Signals
 
-# 1.  **Apply Unified Diff (`<apply_diff>`):**
-#     `<apply_diff>file_path:diff_content:backup</apply_diff>`
-#     -   **Edit a single file** with unified diff format for precise line-based changes.
-#     -   **Applies immediately** (no dry-run mode). Backups are created by default (`backup=true`).
-#     -   Tip: If your diff content contains colons, omit the optional `:backup` parameter and rely on the default.
+### finish_response
+End the current conversation turn.
 
-#     **Example (applies immediately):**
-#     ```actionxml
-#     <apply_diff>src/main.py:--- a/src/main.py
-#     +++ b/src/main.py
-#     @@ -1,3 +1,4 @@
-#      def hello():
-#     +    \"\"\"Say hello.\"\"\"
-#          print("Hello")
-#     </apply_diff>
-#     ```
+**When to use:** Done answering a question or providing information.
 
-# 2.  **Multi-File Editing (`<multiedit>`):**
-#     `<multiedit>content</multiedit>`
-#     -   **Apply multiple diffs atomically** - all succeed or none are applied.
-#     -   **DRY-RUN BY DEFAULT** - shows what would change without applying.
-#     -   **Creates automatic backups** for all modified files.
-#     -   Supports **per-file block format only** (standard unified multi-file patches are not accepted by this tool).
-#     -   Add `apply=true` as the first line inside the tag to actually apply.
-    
-#     **Per-File Blocks (supported):**
-#     ```actionxml
-#     <multiedit>
-#     path/to/file1.py:
-#     --- a/path/to/file1.py
-#     +++ b/path/to/file1.py
-#     @@ -1,2 +1,3 @@
-#      import os
-#     +from pathlib import Path
-#      print("hi")
-    
-#     path/to/new_file.txt:
-#     @@ -0,0 +1,2 @@
-#     +hello
-#     +world
-#     </multiedit>
-#     ```
-    
-#     **Apply Mode Example:**
-#     ```actionxml
-#     <multiedit>
-#     apply=true
-#     src/config.py:
-#     @@ -10,11 +10,12 @@
-#      DEBUG = False
-#     +LOG_LEVEL = "INFO"
-#      PORT = 8080
-    
-#     src/main.py:
-#     @@ -1,2 +1,3 @@
-#     +#!/usr/bin/env python3
-#      import config
-#     </multiedit>
-#     ```
-    
-#     **Notes:**
-#     -   All edits are validated before any are applied
-#     -   Failed validation shows errors for all problematic edits
-#     -   Automatic rollback if any edit fails during application
-#     -   Preserves file permissions and attributes
+**Example:**
+```
+`finish_response``finish_response`
+```
 
-# 3.  **Pattern-Based Editing (`<edit_with_pattern>`):**
-#     `<edit_with_pattern>file_path:search_pattern:replacement:backup</edit_with_pattern>`
-#     -   **Uses regex patterns** for find-and-replace operations.
-#     -   Safer than manual string replacement.
-#     -   Example: `<edit_with_pattern>config.py:DEBUG = False:DEBUG = True:true</edit_with_pattern>`
-
-# ---
+**Important:** Always call this when done responding.
 
 
+### finish_task
+Mark a formal task as complete.
 
-# def generate_tools_section(loader: ToolLoader):
-#     tool_list = []
-    
-#     # Format core tools
-#     tool_list.append("## Core Tools\n")
-#     for tool in loader.core_tools:
-#         tool_list.append(f"- **{tool['name']}**: {tool['description']}")
-#         tool_list.append(f"  Parameters: {', '.join(tool['parameters'])}")
-    
-#     # Format third-party tools  
-#     if loader.third_party_tools:
-#         tool_list.append("\n## Third-Party Tools\n")
-#         for tool in loader.third_party_tools:
-#             tool_list.append(f"- {tool['name']} ({tool.get('author', 'Unknown')})")
-#             tool_list.append(f"  {tool['description']}")
-    
-#     return "\n".join(tool_list)
+**When to use:** Finished implementing a feature or resolving a task.
+
+**Example:**
+```
+`finish_task``finish_task`
+```
+
+**Status options:**
+- `done` (default) - Task objective achieved
+- `partial` - Made progress but not complete
+- `blocked` - Cannot proceed, need human intervention
+
+**Note:** Task is marked for human review, not auto-completed.
+"""
+
+
+# =============================================================================
+# ASSEMBLE FULL TOOL GUIDE
+# =============================================================================
+
+TOOL_GUIDE = "\n\n".join([
+    FILE_EDITING_TOOLS,
+FILE_OPERATION_TOOLS,
+EXECUTION_TOOLS,
+SEARCH_TOOLS,
+MEMORY_TOOLS,
+    COMPLETION_TOOLS,
+])
+
+# Export for prompt builder
+def get_tool_guide() -> str:
+    """Get the complete tool documentation."""
+    return TOOL_GUIDE
