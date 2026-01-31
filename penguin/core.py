@@ -3017,6 +3017,7 @@ class PenguinCore:
             # Emit the chunk
             if self._current_opencode_message_id and self._current_opencode_part_id:
                 try:
+                    logger.debug(f"[TUI_ADAPTER] Emitting chunk to OpenCode: {len(chunk)} chars")
                     await self._tui_adapter.on_stream_chunk(
                         self._current_opencode_message_id,
                         self._current_opencode_part_id,
