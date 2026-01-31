@@ -16,9 +16,11 @@ Edit a single file using unified diff format. Creates automatic backup.
 
 **When to use:** Making precise line-based changes to existing files.
 
+**Format:** `<apply_diff>path:diff_content[:true|false]</apply_diff>`
+
 **Example - Adding a function:**
-```
-`apply_diff`src/utils.py:--- a/src/utils.py
+```actionxml
+<apply_diff>src/utils.py:--- a/src/utils.py
 +++ b/src/utils.py
 @@ -15,6 +15,10 @@
  def existing_func():
@@ -29,22 +31,24 @@ Edit a single file using unified diff format. Creates automatic backup.
 +    return True
 +
  def another_func():
-     pass`apply_diff`
+     pass</apply_diff>
 ```
 
 **Example - Modifying existing code:**
-```
-`apply_diff`config.py:--- a/config.py
+```actionxml
+<apply_diff>config.py:--- a/config.py
 +++ b/config.py
 @@ -8,7 +8,7 @@
 -DEBUG = True
 +DEBUG = False
- PORT = 8080`apply_diff`
+ PORT = 8080</apply_diff>
 ```
 
 **Important:**
 - Uses unified diff format with `@@ -start,count +start,count @@` headers
 - Include 2-3 lines of context around changes
+- `diff_content` may be multi-line and can be wrapped in ```diff fences
+- Parser splits on the first `:` for the path; a trailing `:true`/`:false` with no newline toggles backup
 - Automatic backup created (`.bak` file)
 
 
@@ -54,7 +58,7 @@ Apply multiple file edits atomically—all succeed or none are applied.
 **When to use:** Coordinated changes across multiple files (e.g., renaming a function used in several places).
 
 **Example:**
-```
+```actionxml
 <multiedit>
 apply=true
 src/models.py:
@@ -70,7 +74,8 @@ src/api.py:
 +from models import UserService
 
 -manager = UserManager()
-+service = UserService()</multiedit>
++service = UserService()
+</multiedit>
 ```
 
 **Dry-run mode:** Omit `apply=true` to preview changes without applying.
@@ -82,7 +87,7 @@ Pattern-based find-and-replace using regex.
 **When to use:** Simple replacements where diff format is overkill.
 
 **Example:**
-```
+```actionxml
 <edit_with_pattern>config.py:DEBUG = False:DEBUG = True:true</edit_with_pattern>
 ```
 
@@ -94,10 +99,20 @@ Replace specific lines in a file with new content. Much simpler than apply_diff.
 
 **When to use:** When you know exact line numbers to replace.
 
-**Example:**
+**Format:** `<replace_lines>path:start_line:end_line:new_content[:true|false]</replace_lines>`
+
+**Example (multi-line replacement):**
+```actionxml
+<replace_lines>src/main.py:10:12:def new_function():
+    \"\"\"Docstring.\"\"\"
+    return calculate() * 2
+</replace_lines>
 ```
-<replace_lines>src/main.py:10:15:new function content here</replace_lines>
-```
+
+**Notes:**
+- `new_content` is inserted verbatim; include a trailing newline if you want to avoid concatenating the next line
+- Parser splits on the first 3 `:` characters; additional `:` are treated as content
+- A trailing `:true`/`:false` with no newline toggles verification
 
 **Parameters:**
 - `path` - File path
@@ -114,10 +129,12 @@ Insert new lines after a specific line.
 
 **When to use:** Adding new code without replacing existing lines.
 
+**Format:** `<insert_lines>path:after_line:new_content</insert_lines>`
+
 **Example:**
-```
-`insert_lines`src/main.py:25:def new_helper():
-    pass`insert_lines`
+```actionxml
+<insert_lines>src/main.py:25:def new_helper():
+    pass</insert_lines>
 ```
 
 **Parameters:**
@@ -131,8 +148,10 @@ Delete a range of lines.
 
 **When to use:** Removing code blocks by line number.
 
+**Format:** `<delete_lines>path:start_line:end_line</delete_lines>`
+
 **Example:**
-```
+```actionxml
 <delete_lines>src/main.py:40:50</delete_lines>
 ```
 
@@ -156,7 +175,7 @@ Read file contents with exact path resolution and optional line numbers.
 **When to use:** Reading source files, configs, or documentation.
 
 **Example:**
-```
+```actionxml
 <enhanced_read>src/main.py:true:50</enhanced_read>
 ```
 
@@ -172,14 +191,14 @@ Write file with automatic backup and diff generation for existing files.
 **When to use:** Creating new files or overwriting existing ones.
 
 **Example:**
-```
+```actionxml
 <enhanced_write>README.md:# Project Name
 
 Description here.
 
 ## Usage
 ...
-:true<enhanced_write>
+:true</enhanced_write>
 ```
 
 **Parameters:**
@@ -194,7 +213,7 @@ List directory contents with clutter filtering (.git, __pycache__, etc. hidden).
 **When to use:** Exploring project structure.
 
 **Example:**
-```
+```actionxml
 <list_files_filtered>src:true:false</list_files_filtered>
 ```
 
@@ -210,8 +229,8 @@ Find files using glob patterns.
 **When to use:** Locating specific file types or names.
 
 **Example:**
-```
-<find_files_enhanced>*.py:src:false:file<find_files_enhanced>
+```actionxml
+<find_files_enhanced>*.py:src:false:file</find_files_enhanced>
 ```
 
 **Parameters:**
@@ -227,7 +246,7 @@ Compare two files with contextual diff output.
 **When to use:** Reviewing changes between file versions.
 
 **Example:**
-```
+```actionxml
 <enhanced_diff>old_config.py:new_config.py:true</enhanced_diff>
 ```
 
@@ -256,7 +275,7 @@ Run Python code in IPython environment.
 - Anything requiring Python stdlib (pathlib, os, json, etc.)
 
 **Example:**
-```
+```actionxml
 <execute>
 import os
 from pathlib import Path
@@ -279,7 +298,7 @@ Run shell commands.
 **When to use:** Git operations, running tests, build commands.
 
 **Example:**
-```
+```actionxml
 <execute_command>pytest tests/test_auth.py -xvs</execute_command>
 ```
 
@@ -292,7 +311,7 @@ Start a long-running background process.
 **When to use:** Starting dev servers, background workers.
 
 **Example:**
-```
+```actionxml
 <process_start>dev-server: npm run dev</process_start>
 ```
 
@@ -301,7 +320,7 @@ Start a long-running background process.
 Stop a running background process.
 
 **Example:**
-```
+```actionxml
 <process_stop>dev-server</process_stop>
 ```
 
@@ -324,7 +343,7 @@ Grep-like regex search across project files.
 **When to use:** Finding code patterns, function definitions, TODOs.
 
 **Example:**
-```
+```actionxml
 <search>def\\s+authenticate|class\\s+Auth</search>
 ```
 
@@ -337,8 +356,8 @@ Web search via Perplexity API.
 **When to use:** Researching documentation, best practices, current information.
 
 **Example:**
-```
-<perplexity_search>FastAPI dependency injection best practices:3<perplexity_search>
+```actionxml
+<perplexity_search>FastAPI dependency injection best practices:3</perplexity_search>
 ```
 
 **Parameters:**
@@ -352,7 +371,7 @@ Search conversation history and indexed notes.
 **When to use:** Recalling previous discussions, requirements, decisions.
 
 **Example:**
-```
+```actionxml
 <memory_search>database connection string:5:all:database,config</memory_search>
 ```
 
@@ -369,7 +388,7 @@ Analyze codebase structure using AST parsing.
 **When to use:** Understanding large codebases, dependency mapping.
 
 **Example:**
-```
+```actionxml
 <analyze_project>src:false</analyze_project>
 ```
 
@@ -390,7 +409,7 @@ Record decisions, progress, or key takeaways.
 **When to use:** Capturing why a decision was made, tracking progress, recording errors.
 
 **Example:**
-```
+```actionxml
 <add_summary_note>decisions:Chose SQLite over PostgreSQL for simplicity in MVP phase</add_summary_note>
 ```
 
@@ -403,7 +422,7 @@ Record facts, requirements, or constraints.
 **When to use:** Storing user preferences, system requirements, API contracts.
 
 **Example:**
-```
+```actionxml
 <add_declarative_note>requirements:API must support rate limiting of 100 req/min</add_declarative_note>
 ```
 
@@ -415,7 +434,6 @@ Manually trigger workspace re-indexing for memory.
 
 **When to use:** After large file changes to update search index.
 """
-
 
 
 # =============================================================================
@@ -431,7 +449,7 @@ Enhanced browser control without WebDriver dependencies. Better for sites with a
 Navigate to a URL.
 
 **Example:**
-```
+```actionxml
 <pydoll_browser_navigate>https://example.com</pydoll_browser_navigate>
 ```
 
@@ -442,10 +460,10 @@ Interact with page elements (click, input, submit).
 **Selector types:** css, xpath, id, class_name
 
 **Examples:**
-```
+```actionxml
 <pydoll_browser_interact>click:button.submit:css</pydoll_browser_interact>
 <pydoll_browser_interact>input:search-box:id:search query</pydoll_browser_interact>
-<pydoll_browser_interact>submit:form#login:xpath</pydoll_browser_interact>  
+<pydoll_browser_interact>submit:form#login:xpath</pydoll_browser_interact>
 ```
 
 ### pydoll_browser_scroll
@@ -458,7 +476,7 @@ Scroll the page.
 - `element:#results:css:smooth` - Scroll to element
 
 **Example:**
-```
+```actionxml
 <pydoll_browser_scroll>to:bottom</pydoll_browser_scroll>
 ```
 
@@ -466,7 +484,7 @@ Scroll the page.
 Capture a screenshot of the current page.
 
 **Example:**
-```
+```actionxml
 <pydoll_browser_screenshot></pydoll_browser_screenshot>
 ```
 
@@ -474,8 +492,8 @@ Capture a screenshot of the current page.
 Enable/disable detailed debugging.
 
 **Example:**
-```
-`pydoll_debug_toggle`on`pydoll_debug_toggle`
+```actionxml
+<pydoll_debug_toggle>on</pydoll_debug_toggle>
 ```
 
 **When to use PyDoll:**
@@ -517,14 +535,17 @@ COMPLETION_TOOLS = """
 # ASSEMBLE FULL TOOL GUIDE
 # =============================================================================
 
-TOOL_GUIDE = "\n\n".join([
-    FILE_EDITING_TOOLS,
-FILE_OPERATION_TOOLS,
-EXECUTION_TOOLS,
-SEARCH_TOOLS,
-MEMORY_TOOLS,
-    COMPLETION_TOOLS,
-])
+TOOL_GUIDE = "\n\n".join(
+    [
+        FILE_EDITING_TOOLS,
+        FILE_OPERATION_TOOLS,
+        EXECUTION_TOOLS,
+        SEARCH_TOOLS,
+        MEMORY_TOOLS,
+        COMPLETION_TOOLS,
+    ]
+)
+
 
 # Export for prompt builder
 def get_tool_guide() -> str:

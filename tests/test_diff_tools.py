@@ -10,9 +10,13 @@ Covers:
 Run with: python test_diff_tools.py
 """
 
+import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import pytest
 
 # Ensure local penguin package is importable when run directly
 sys.path.insert(0, str(Path(__file__).parent))
@@ -25,6 +29,11 @@ from penguin.tools.core.support import (  # type: ignore
     preview_unified_diff,
     apply_unified_patch,
 )
+
+
+@pytest.fixture
+def tmp(tmp_path: Path) -> Path:
+    return tmp_path
 
 
 def assert_true(condition: bool, message: str):
@@ -46,7 +55,9 @@ def test_enhanced_diff_basic(tmp: Path) -> bool:
     return (
         assert_true("Diff between" in out, "enhanced_diff produced a diff header")
         and assert_true("@@" in out, "enhanced_diff includes unified diff hunk header")
-        and assert_true("-world" in out and "+penguin" in out, "enhanced_diff shows changed lines")
+        and assert_true(
+            "-world" in out and "+penguin" in out, "enhanced_diff shows changed lines"
+        )
     )
 
 
@@ -73,9 +84,17 @@ def bar():
 
     out = enhanced_diff(str(f1), str(f2), context_lines=2, semantic=True)
     return (
-        assert_true("Semantic changes:" in out, "semantic summary present for .py files")
-        and assert_true("Added functions:" in out and "bar" in out, "semantic summary lists new function")
-        and assert_true("Detailed diff:" in out or "@@" in out, "semantic output includes diff details")
+        assert_true(
+            "Semantic changes:" in out, "semantic summary present for .py files"
+        )
+        and assert_true(
+            "Added functions:" in out and "bar" in out,
+            "semantic summary lists new function",
+        )
+        and assert_true(
+            "Detailed diff:" in out or "@@" in out,
+            "semantic output includes diff details",
+        )
     )
 
 
@@ -89,30 +108,20 @@ def test_apply_diff_roundtrip(tmp: Path) -> bool:
     res = apply_diff_to_file(str(target), patch, backup=True)
 
     after = target.read_text(encoding="utf-8")
-    # Compare normalized lines to avoid trailing newline sensitivity
-    ok = (
-        assert_true("Successfully applied diff" in res, "diff application reported success")
-        and assert_true(after.splitlines() == updated.splitlines(), "file content matches updated after diff")
+    ok = assert_true(
+        "Successfully applied diff" in res, "diff application reported success"
+    ) and assert_true(
+        after.splitlines() == updated.splitlines(),
+        "file content matches updated after diff",
     )
 
-    # Backup exists
     backup = target.with_suffix(target.suffix + ".bak")
     return ok and assert_true(backup.exists(), "backup file created")
 
 
 def test_apply_diff_multihunk_and_context(tmp: Path) -> bool:
     target = tmp / "multi.txt"
-    original = (
-        "a1\n"
-        "a2\n"
-        "a3\n"
-        "b1\n"
-        "b2\n"
-        "b3\n"
-        "c1\n"
-        "c2\n"
-        "c3\n"
-    )
+    original = "a1\na2\na3\nb1\nb2\nb3\nc1\nc2\nc3\n"
     updated = (
         "a1\n"
         "A2\n"  # change
@@ -130,10 +139,9 @@ def test_apply_diff_multihunk_and_context(tmp: Path) -> bool:
     res = apply_diff_to_file(str(target), patch, backup=True)
     after = target.read_text(encoding="utf-8")
 
-    return (
-        assert_true("Successfully applied diff" in res, "multi-hunk diff applied")
-        and assert_true(after == updated, "multi-hunk content matches")
-    )
+    return assert_true(
+        "Successfully applied diff" in res, "multi-hunk diff applied"
+    ) and assert_true(after == updated, "multi-hunk content matches")
 
 
 def test_edit_file_with_pattern(tmp: Path) -> bool:
@@ -145,8 +153,13 @@ def test_edit_file_with_pattern(tmp: Path) -> bool:
 
     return (
         assert_true("Successfully edited" in res, "pattern edit reported success")
-        and assert_true("BETA" in after and "beta" not in after, "pattern replaced in file")
-        and assert_true(target.with_suffix(target.suffix + ".bak").exists(), "backup created for pattern edit")
+        and assert_true(
+            "BETA" in after and "beta" not in after, "pattern replaced in file"
+        )
+        and assert_true(
+            target.with_suffix(target.suffix + ".bak").exists(),
+            "backup created for pattern edit",
+        )
     )
 
 
@@ -155,22 +168,27 @@ def test_enhanced_diff_missing_file(tmp: Path) -> bool:
     b = tmp / "exists.txt"
     b.write_text("ok", encoding="utf-8")
     out = enhanced_diff(str(a), str(b))
-    return assert_true("Error: File does not exist" in out, "enhanced_diff reports missing file error")
+    return assert_true(
+        "Error: File does not exist" in out, "enhanced_diff reports missing file error"
+    )
 
 
 def test_crlf_preservation_and_patch(tmp: Path) -> bool:
     target = tmp / "crlf.txt"
     original = "Line1\r\nLine2\r\n"
     updated = "Line1\r\nLINE2\r\n"
-    # Write CRLF explicitly
     target.write_bytes(original.encode("utf-8"))
-    patch = generate_diff_patch(original.replace("\r\n", "\n"), updated.replace("\r\n", "\n"), str(target))
+    patch = generate_diff_patch(
+        original.replace("\r\n", "\n"), updated.replace("\r\n", "\n"), str(target)
+    )
     res = apply_diff_to_file(str(target), patch, backup=True)
     after_bytes = target.read_bytes()
     after = after_bytes.decode("utf-8")
     return (
         assert_true("Successfully applied diff" in res, "CRLF diff applied")
-        and assert_true("\r\n" in after and after.endswith("\r\n"), "CRLF preserved on write")
+        and assert_true(
+            "\r\n" in after and after.endswith("\r\n"), "CRLF preserved on write"
+        )
         and assert_true("LINE2\r\n" in after, "content updated under CRLF")
     )
 
@@ -183,10 +201,9 @@ def test_whitespace_only_diff(tmp: Path) -> bool:
     patch = generate_diff_patch(original, updated, str(target))
     res = apply_diff_to_file(str(target), patch, backup=True)
     after = target.read_text(encoding="utf-8")
-    return (
-        assert_true("Successfully applied diff" in res, "whitespace-only diff applied")
-        and assert_true(after == updated, "whitespace changes reflected")
-    )
+    return assert_true(
+        "Successfully applied diff" in res, "whitespace-only diff applied"
+    ) and assert_true(after == updated, "whitespace changes reflected")
 
 
 def test_stale_base_context_mismatch_rollback(tmp: Path) -> bool:
@@ -196,12 +213,88 @@ def test_stale_base_context_mismatch_rollback(tmp: Path) -> bool:
     patch_against_base = generate_diff_patch(base, "x\nyyy\nz\n", str(target))
     target.write_text(newer, encoding="utf-8")
     res = apply_diff_to_file(str(target), patch_against_base, backup=True)
-    # Should error and leave file as-is because of context mismatch
     after = target.read_text(encoding="utf-8")
-    return (
-        assert_true("Error applying diff:" in res, "stale base detected and reported")
-        and assert_true(after == newer, "file unchanged after mismatch")
+    return assert_true(
+        "Error applying diff:" in res, "stale base detected and reported"
+    ) and assert_true(after == newer, "file unchanged after mismatch")
+
+
+def test_apply_diff_fallback_git_three_way(tmp: Path) -> bool:
+    git_check = subprocess.run(["git", "--version"], capture_output=True, text=True)
+    if git_check.returncode != 0:
+        pytest.skip("git not available")
+
+    repo = tmp / "repo"
+    repo.mkdir()
+    init = subprocess.run(
+        ["git", "-C", str(repo), "init"],
+        check=False,
+        capture_output=True,
+        text=True,
     )
+    if init.returncode != 0:
+        pytest.skip("git init failed")
+
+    target = repo / "file.txt"
+    original = "line1\nline2\nline3\n"
+    updated = "line1\nline2 updated\nline3\n"
+    target.write_text(original, encoding="utf-8")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "Penguin",
+            "GIT_AUTHOR_EMAIL": "penguin@example.com",
+            "GIT_COMMITTER_NAME": "Penguin",
+            "GIT_COMMITTER_EMAIL": "penguin@example.com",
+        }
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "file.txt"],
+        check=False,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    commit = subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "init"],
+        check=False,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if commit.returncode != 0:
+        pytest.skip("git commit failed")
+
+    patch = generate_diff_patch(original, updated, "file.txt")
+    target.write_text("LINE1\nline2\nline3\n", encoding="utf-8")
+
+    old_env = {
+        "PENGUIN_PATCH_ROBUST": os.environ.get("PENGUIN_PATCH_ROBUST"),
+        "PENGUIN_PATCH_THREEWAY": os.environ.get("PENGUIN_PATCH_THREEWAY"),
+    }
+    os.environ["PENGUIN_PATCH_ROBUST"] = "1"
+    os.environ["PENGUIN_PATCH_THREEWAY"] = "1"
+    try:
+        res = apply_diff_to_file(
+            str(target),
+            patch,
+            backup=True,
+            workspace_path=str(repo),
+        )
+    finally:
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    after = target.read_text(encoding="utf-8")
+    if "does not match index" in res:
+        pytest.skip("git apply --3way requires clean index")
+    return assert_true(
+        "Error applying diff:" not in res, "fallback applied without error"
+    ) and assert_true("line2 updated" in after, "three-way fallback updated content")
 
 
 def test_idempotent_reapply(tmp: Path) -> bool:
@@ -215,7 +308,10 @@ def test_idempotent_reapply(tmp: Path) -> bool:
     after = target.read_text(encoding="utf-8")
     return (
         assert_true("Successfully applied diff" in res1, "first apply ok")
-        and assert_true("Error applying diff:" in res2 or "Successfully applied diff" in res2, "second apply is safe")
+        and assert_true(
+            "Error applying diff:" in res2 or "Successfully applied diff" in res2,
+            "second apply is safe",
+        )
         and assert_true(after == updated, "content remains updated")
     )
 
@@ -226,12 +322,15 @@ def test_preview_and_structured_result(tmp: Path) -> bool:
     updated = "A\nB\n"
     target.write_text(original, encoding="utf-8")
     patch = generate_diff_patch(original, updated, str(target))
-    # Preview
     preview = preview_unified_diff(patch)
-    ok_preview = assert_true("hunks:" in preview and "additions:" in preview, "preview summarizes diff")
-    # Structured apply
+    ok_preview = assert_true(
+        "hunks:" in preview and "additions:" in preview, "preview summarizes diff"
+    )
     res_json = apply_diff_to_file(str(target), patch, backup=True, return_json=True)
-    ok_json = assert_true('"status": "success"' in res_json and '"hunks"' in res_json, "structured result returned")
+    ok_json = assert_true(
+        '"status": "success"' in res_json and '"hunks"' in res_json,
+        "structured result returned",
+    )
     return ok_preview and ok_json
 
 
@@ -243,14 +342,12 @@ def test_unicode_emoji_and_combining(tmp: Path) -> bool:
     patch = generate_diff_patch(original, updated, str(target))
     res = apply_diff_to_file(str(target), patch, backup=True)
     after = target.read_text(encoding="utf-8")
-    return (
-        assert_true("Successfully applied diff" in res, "unicode diff applied")
-        and assert_true("🚀" in after, "emoji updated correctly")
-    )
+    return assert_true(
+        "Successfully applied diff" in res, "unicode diff applied"
+    ) and assert_true("🚀" in after, "emoji updated correctly")
 
 
 def test_multifile_patch_rejected(tmp: Path) -> bool:
-    # Create two files and a combined diff (simulated headers)
     f1 = tmp / "one.txt"
     f2 = tmp / "two.txt"
     f1.write_text("a\n", encoding="utf-8")
@@ -258,11 +355,18 @@ def test_multifile_patch_rejected(tmp: Path) -> bool:
 
     diff1 = generate_diff_patch("a\n", "A\n", str(f1))
     diff2 = generate_diff_patch("x\n", "X\n", str(f2))
-    multi = f"--- a/{f1}\n+++ b/{f1}\n" + "\n".join(diff1.splitlines()[2:]) + "\n" + \
-            f"--- a/{f2}\n+++ b/{f2}\n" + "\n".join(diff2.splitlines()[2:])
+    multi = (
+        f"--- a/{f1}\n+++ b/{f1}\n"
+        + "\n".join(diff1.splitlines()[2:])
+        + "\n"
+        + f"--- a/{f2}\n+++ b/{f2}\n"
+        + "\n".join(diff2.splitlines()[2:])
+    )
 
     res = apply_diff_to_file(str(f1), multi, backup=True)
-    return assert_true("Multi-file patches are not supported" in res, "multi-file patch rejected")
+    return assert_true(
+        "Multi-file patches are not supported" in res, "multi-file patch rejected"
+    )
 
 
 def test_apply_unified_patch_multiple_files(tmp: Path) -> bool:
@@ -273,15 +377,19 @@ def test_apply_unified_patch_multiple_files(tmp: Path) -> bool:
 
     d1 = generate_diff_patch("a\n", "A\n", str(f1))
     d2 = generate_diff_patch("x\n", "X\nY\n", str(f2))
-    # Construct a simple multi-file patch with headers
     multi = d1 + d2
-    res = apply_unified_patch(multi, workspace_path=str(tmp), backup=True, return_json=True)
+    res = apply_unified_patch(
+        multi, workspace_path=str(tmp), backup=True, return_json=True
+    )
     ok = assert_true('"status": "success"' in res, "apply_unified_patch succeeded")
-    return ok and assert_true(f1.read_text(encoding="utf-8") == "A\n" and f2.read_text(encoding="utf-8") == "X\nY\n", "both files updated")
+    return ok and assert_true(
+        f1.read_text(encoding="utf-8") == "A\n"
+        and f2.read_text(encoding="utf-8") == "X\nY\n",
+        "both files updated",
+    )
 
 
 def test_semantic_docstring_decorator_changes(tmp: Path) -> bool:
-    # Ensure enhanced_diff reports semantic additions/removals with decorators and docstrings
     a = tmp / "sem.py"
     b = tmp / "sem2.py"
     a.write_text(
@@ -289,24 +397,32 @@ def test_semantic_docstring_decorator_changes(tmp: Path) -> bool:
 def f():
     """say hi"""
     return 1
-'''.lstrip(), encoding="utf-8")
+'''.lstrip(),
+        encoding="utf-8",
+    )
     b.write_text(
         '''
 @decorator
 def g():
     """say hi loudly"""
     return 2
-'''.lstrip(), encoding="utf-8")
+'''.lstrip(),
+        encoding="utf-8",
+    )
 
     out = enhanced_diff(str(a), str(b), semantic=True)
-    return (
-        assert_true("Semantic changes:" in out, "semantic header present")
-        and assert_true("Added functions:" in out or "Removed functions:" in out, "function rename appears as add/remove")
+    return assert_true(
+        "Semantic changes:" in out, "semantic header present"
+    ) and assert_true(
+        "Added functions:" in out or "Removed functions:" in out,
+        "function rename appears as add/remove",
     )
 
 
 def main() -> int:
-    print("\n🧪 Testing diff tools (enhanced_diff, apply_diff_to_file, edit_file_with_pattern)\n")
+    print(
+        "\n🧪 Testing diff tools (enhanced_diff, apply_diff_to_file, edit_file_with_pattern)\n"
+    )
     failures = 0
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -319,11 +435,21 @@ def main() -> int:
             (test_enhanced_diff_missing_file, "enhanced_diff missing file"),
             (test_crlf_preservation_and_patch, "CRLF preservation and patch"),
             (test_whitespace_only_diff, "whitespace-only diff"),
-            (test_stale_base_context_mismatch_rollback, "stale base context mismatch rollback"),
+            (
+                test_stale_base_context_mismatch_rollback,
+                "stale base context mismatch rollback",
+            ),
+            (
+                test_apply_diff_fallback_git_three_way,
+                "apply_diff fallback via git three-way",
+            ),
             (test_idempotent_reapply, "idempotent re-apply"),
             (test_unicode_emoji_and_combining, "unicode and emoji changes"),
             (test_multifile_patch_rejected, "multi-file patch rejected"),
-            (test_semantic_docstring_decorator_changes, "semantic docstring/decorator changes"),
+            (
+                test_semantic_docstring_decorator_changes,
+                "semantic docstring/decorator changes",
+            ),
             (test_preview_and_structured_result, "preview + structured result"),
             (test_apply_unified_patch_multiple_files, "apply unified multi-file patch"),
         ]
@@ -345,5 +471,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-

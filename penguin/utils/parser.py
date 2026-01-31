@@ -53,6 +53,9 @@ class ActionType(Enum):
     APPLY_DIFF = "apply_diff"
     MULTIEDIT = "multiedit"
     EDIT_WITH_PATTERN = "edit_with_pattern"
+    REPLACE_LINES = "replace_lines"
+    INSERT_LINES = "insert_lines"
+    DELETE_LINES = "delete_lines"
     # TASK_CREATE = "task_create"
     # TASK_UPDATE = "task_update"
     # TASK_COMPLETE = "task_complete"
@@ -110,14 +113,14 @@ class ActionType(Enum):
     PYDOLL_BROWSER_SCROLL = "pydoll_browser_scroll"
     # PyDoll debug toggle
     PYDOLL_DEBUG_TOGGLE = "pydoll_debug_toggle"
-    
+
     # Sub-agent tools (agents-as-tools)
     SPAWN_SUB_AGENT = "spawn_sub_agent"
     STOP_SUB_AGENT = "stop_sub_agent"
     RESUME_SUB_AGENT = "resume_sub_agent"
     DELEGATE = "delegate"
     DELEGATE_EXPLORE_TASK = "delegate_explore_task"
-    
+
     # Repository management actions
     GET_REPOSITORY_STATUS = "get_repository_status"
     CREATE_AND_SWITCH_BRANCH = "create_and_switch_branch"
@@ -135,26 +138,28 @@ class CodeActAction:
 
 def parse_action(content: str) -> List[CodeActAction]:
     """Parse actions from content using regex pattern matching.
-    
+
     Args:
         content: The string content to parse for actions
-        
+
     Returns:
         A list of CodeActAction objects, empty if no actions found
     """
     # Remove string-based validation
     if not content.strip():
         return []
-    
+
     # Check for common action tag patterns - using the enum values directly to ensure only valid actions are detected
     action_tag_pattern = "|".join([action_type.value for action_type in ActionType])
-    action_tag_regex = f"<({action_tag_pattern})>.*?</\\1>"  # Match complete tag pairs only
-    
+    action_tag_regex = (
+        f"<({action_tag_pattern})>.*?</\\1>"  # Match complete tag pairs only
+    )
+
     if not re.search(action_tag_regex, content, re.DOTALL | re.IGNORECASE):
         # No properly formed action tags found
         logger.debug("No properly formed action tags found in content")
         return []
-        
+
     # Extract only the AI's response part
     try:
         # Use more specific pattern matching to only extract valid action types
@@ -162,13 +167,13 @@ def parse_action(content: str) -> List[CodeActAction]:
         matches = re.finditer(pattern, content, re.DOTALL)
 
         actions = []  # Initialize the actions list
-        
+
         match_found = False
         for match in matches:
             match_found = True
             action_type = match.group(1).lower()
             params = unescape(match.group(2).strip())
-            
+
             # Verify this is a valid action type
             try:
                 action_type_enum = ActionType[action_type.upper()]
@@ -179,10 +184,10 @@ def parse_action(content: str) -> List[CodeActAction]:
                 # This shouldn't happen with our updated regex, but just in case
                 logger.warning(f"Unrecognized action type: {action_type}")
                 pass
-        
+
         if not match_found:
             logger.debug("No actions matched in content despite initial regex check")
-        
+
         return actions
     except Exception as e:
         logger.error(f"Error parsing actions: {str(e)}", exc_info=True)
@@ -215,7 +220,7 @@ def strip_action_tags(content: str) -> str:
 
     # Clean up excessive whitespace left behind
     # Replace multiple newlines with at most two
-    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     # Strip leading/trailing whitespace
     cleaned = cleaned.strip()
 
@@ -266,10 +271,12 @@ class ActionExecutor:
         tool_manager: ToolManager,
         task_manager: ProjectManager,
         conversation_system=None,
-        ui_event_callback: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+        ui_event_callback: Optional[
+            Callable[[str, Dict[str, Any]], Awaitable[None]]
+        ] = None,
     ):
         """Execute parsed actions and (optionally) emit UI events.
-        
+
         Args:
             tool_manager: The ToolManager instance
             task_manager: The Project/Task manager
@@ -285,8 +292,8 @@ class ActionExecutor:
             logger.info(
                 "ActionExecutor initialized with ToolManager id=%s file_root=%s mode=%s",
                 hex(id(tool_manager)) if tool_manager else None,
-                getattr(tool_manager, '_file_root', None) if tool_manager else None,
-                getattr(tool_manager, 'file_root_mode', None) if tool_manager else None,
+                getattr(tool_manager, "_file_root", None) if tool_manager else None,
+                getattr(tool_manager, "file_root_mode", None) if tool_manager else None,
             )
         except Exception:
             pass
@@ -301,20 +308,27 @@ class ActionExecutor:
                 "ActionExecutor executing %s using ToolManager id=%s file_root=%s mode=%s",
                 action.action_type.value,
                 hex(id(self.tool_manager)) if self.tool_manager else None,
-                getattr(self.tool_manager, '_file_root', None) if self.tool_manager else None,
-                getattr(self.tool_manager, 'file_root_mode', None) if self.tool_manager else None,
+                getattr(self.tool_manager, "_file_root", None)
+                if self.tool_manager
+                else None,
+                getattr(self.tool_manager, "file_root_mode", None)
+                if self.tool_manager
+                else None,
             )
         except Exception:
             pass
         import uuid
+
         action_id = str(uuid.uuid4())[:8]
-        
+
         # --------------------------------------------------
         # Emit *start* UI event
         # --------------------------------------------------
         if self._ui_event_cb:
             try:
-                logger.debug(f"UI-emit start action id={action_id} type={action.action_type.value}")
+                logger.debug(
+                    f"UI-emit start action id={action_id} type={action.action_type.value}"
+                )
                 await self._ui_event_cb(
                     "action",
                     {
@@ -325,12 +339,12 @@ class ActionExecutor:
                 )
             except Exception as e:
                 logger.debug(f"UI event emit failed (action start): {e}")
-        
+
         action_map = {
             # ActionType.READ: lambda params: self.tool_manager.execute_tool("read_file", {"path": params}),
             # ActionType.WRITE: self._write_file,
             ActionType.EXECUTE: self._execute_code,
-            ActionType.EXECUTE_COMMAND: self._execute_command, #TODO: FULLY IMPLEMENT THIS
+            ActionType.EXECUTE_COMMAND: self._execute_command,  # TODO: FULLY IMPLEMENT THIS
             ActionType.SEARCH: lambda params: self.tool_manager.execute_tool(
                 "grep_search", {"pattern": params}
             ),
@@ -412,13 +426,16 @@ class ActionExecutor:
             ActionType.ENHANCED_WRITE: self._enhanced_write,
             ActionType.APPLY_DIFF: self._apply_diff,
             ActionType.EDIT_WITH_PATTERN: self._edit_with_pattern,
+            ActionType.REPLACE_LINES: self._replace_lines,
+            ActionType.INSERT_LINES: self._insert_lines,
+            ActionType.DELETE_LINES: self._delete_lines,
             # Repository management actions
             ActionType.GET_REPOSITORY_STATUS: self._get_repository_status,
             ActionType.CREATE_AND_SWITCH_BRANCH: self._create_and_switch_branch,
             ActionType.COMMIT_AND_PUSH_CHANGES: self._commit_and_push_changes,
             ActionType.CREATE_IMPROVEMENT_PR: self._create_improvement_pr,
             ActionType.CREATE_FEATURE_PR: self._create_feature_pr,
-            ActionType.CREATE_BUGFIX_PR: self._create_bugfix_pr
+            ActionType.CREATE_BUGFIX_PR: self._create_bugfix_pr,
         }
 
         try:
@@ -433,11 +450,13 @@ class ActionExecutor:
                 logger.debug(f"Executing async handler for {action.action_type.value}")
                 result = await handler(action.params)
             else:
-                logger.debug(f"Executing sync handler for {action.action_type.value} in thread pool")
+                logger.debug(
+                    f"Executing sync handler for {action.action_type.value} in thread pool"
+                )
                 # Offload synchronous tools to thread pool to avoid blocking the event loop
                 loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, handler, action.params)
-                
+
                 if asyncio.iscoroutine(result):
                     result = await result
 
@@ -453,7 +472,9 @@ class ActionExecutor:
                         {
                             "id": action_id,
                             "status": "completed",
-                            "result": result if isinstance(result, str) else str(result),
+                            "result": result
+                            if isinstance(result, str)
+                            else str(result),
                             "action": action.action_type.value,  # Standardized field name
                         },
                     )
@@ -595,7 +616,11 @@ class ActionExecutor:
 
     async def _send_message(self, params: str) -> str:
         try:
-            payload = json.loads(params) if params.strip().startswith("{") else {"content": params}
+            payload = (
+                json.loads(params)
+                if params.strip().startswith("{")
+                else {"content": params}
+            )
         except json.JSONDecodeError as exc:
             raise ValueError(f"send_message expects JSON payload: {exc}")
 
@@ -607,7 +632,9 @@ class ActionExecutor:
         message_type = payload.get("message_type", "message")
         metadata = payload.get("metadata") or {}
         sender = payload.get("sender")
-        raw_targets = payload.get("targets") or payload.get("target") or payload.get("recipient")
+        raw_targets = (
+            payload.get("targets") or payload.get("target") or payload.get("recipient")
+        )
 
         if raw_targets is None:
             targets = ["human"]
@@ -647,7 +674,9 @@ class ActionExecutor:
                             channel=channel,
                         )
                     except Exception as exc:  # pragma: no cover - defensive logging
-                        logger.warning("send_message core send_to_human failed: %s", exc)
+                        logger.warning(
+                            "send_message core send_to_human failed: %s", exc
+                        )
                         delivered = False
                 if not delivered and add_message_fn is not None:
                     add_message_fn(
@@ -670,7 +699,9 @@ class ActionExecutor:
                         try:
                             save_fn()
                         except Exception:  # pragma: no cover - best effort
-                            logger.debug("send_message fallback save failed", exc_info=True)
+                            logger.debug(
+                                "send_message fallback save failed", exc_info=True
+                            )
                     results.append("human (logged)")
                 else:
                     results.append("human")
@@ -687,7 +718,9 @@ class ActionExecutor:
                             channel=channel,
                         )
                     except Exception as exc:  # pragma: no cover - defensive logging
-                        logger.warning("send_message core route_message failed: %s", exc)
+                        logger.warning(
+                            "send_message core route_message failed: %s", exc
+                        )
                         delivered = False
                 if not delivered and add_message_fn is not None:
                     add_message_fn(
@@ -710,7 +743,9 @@ class ActionExecutor:
                         try:
                             save_fn()
                         except Exception:  # pragma: no cover - best effort
-                            logger.debug("send_message fallback save failed", exc_info=True)
+                            logger.debug(
+                                "send_message fallback save failed", exc_info=True
+                            )
                     results.append(f"{normalized} (logged)")
                 elif delivered:
                     results.append(normalized)
@@ -747,18 +782,34 @@ class ActionExecutor:
         if core is None:
             return "Core unavailable for spawn_sub_agent"
 
-        parent_id = str(payload.get("parent") or getattr(conversation, "current_agent_id", None) or "default").strip()
+        parent_id = str(
+            payload.get("parent")
+            or getattr(conversation, "current_agent_id", None)
+            or "default"
+        ).strip()
         share_session = bool(payload.get("share_session", False))
         share_cw = bool(payload.get("share_context_window", False))
         background = bool(payload.get("background", False))
-        shared_context_window_max_tokens = payload.get("shared_context_window_max_tokens", payload.get("shared_cw_max_tokens"))  # Accept both keys
+        shared_context_window_max_tokens = payload.get(
+            "shared_context_window_max_tokens", payload.get("shared_cw_max_tokens")
+        )  # Accept both keys
         try:
-            shared_context_window_max_tokens = int(shared_context_window_max_tokens) if shared_context_window_max_tokens is not None else None
+            shared_context_window_max_tokens = (
+                int(shared_context_window_max_tokens)
+                if shared_context_window_max_tokens is not None
+                else None
+            )
         except Exception:
             shared_context_window_max_tokens = None
 
         kwargs: Dict[str, Any] = {}
-        for key in ("persona", "system_prompt", "model_config_id", "model_output_max_tokens", "default_tools"):
+        for key in (
+            "persona",
+            "system_prompt",
+            "model_config_id",
+            "model_output_max_tokens",
+            "default_tools",
+        ):
             if key in payload:
                 kwargs[key] = payload[key]
         if isinstance(payload.get("model_overrides"), dict):
@@ -781,7 +832,12 @@ class ActionExecutor:
             if background:
                 # Run agent in background using AgentExecutor
                 try:
-                    from penguin.multi.executor import get_executor, set_executor, AgentExecutor
+                    from penguin.multi.executor import (
+                        get_executor,
+                        set_executor,
+                        AgentExecutor,
+                    )
+
                     executor = get_executor()
                     if executor is None:
                         executor = AgentExecutor(core)
@@ -794,7 +850,7 @@ class ActionExecutor:
                             "parent": parent_id,
                             "share_session": share_session,
                             "share_context_window": share_cw,
-                        }
+                        },
                     )
                     return f"Spawned sub-agent '{agent_id}' running in background (parent='{parent_id}')"
                 except Exception as e:
@@ -807,7 +863,6 @@ class ActionExecutor:
                     logger.warning(f"Failed to send initial_prompt to {agent_id}: {e}")
 
         return f"Spawned sub-agent '{agent_id}' (parent='{parent_id}', share_session={share_session}, share_context_window={share_cw})"
-
 
     async def _delegate_explore_task(self, params: str) -> str:
         """Delegate an autonomous exploration task to haiku (later general sub agent) with tool access.
@@ -866,13 +921,17 @@ class ActionExecutor:
 
                 items = []
                 for item in sorted(p.iterdir())[:50]:  # Limit to 50 items
-                    if item.name.startswith('.'):
+                    if item.name.startswith("."):
                         continue  # Skip hidden
                     prefix = "📁 " if item.is_dir() else "📄 "
                     size = f" ({item.stat().st_size} bytes)" if item.is_file() else ""
                     items.append(f"{prefix}{item.name}{size}")
 
-                return f"Contents of {path}:\n" + "\n".join(items) if items else f"{path} is empty"
+                return (
+                    f"Contents of {path}:\n" + "\n".join(items)
+                    if items
+                    else f"{path} is empty"
+                )
             except Exception as e:
                 return f"Error listing {path}: {e}"
 
@@ -886,10 +945,12 @@ class ActionExecutor:
                 if p.stat().st_size > DEFAULT_LARGE_FILE_THRESHOLD_BYTES:
                     return f"File too large: {path} ({p.stat().st_size} bytes)"
 
-                content = p.read_text(errors='replace')
+                content = p.read_text(errors="replace")
                 lines = content.splitlines()[:max_lines]
                 if len(content.splitlines()) > max_lines:
-                    lines.append(f"... (truncated, {len(content.splitlines())} total lines)")
+                    lines.append(
+                        f"... (truncated, {len(content.splitlines())} total lines)"
+                    )
 
                 return f"=== {path} ===\n" + "\n".join(lines)
             except Exception as e:
@@ -898,11 +959,24 @@ class ActionExecutor:
         def execute_search(pattern: str, path: str = ".") -> str:
             try:
                 import subprocess
+
                 result = subprocess.run(
-                    ["grep", "-rn", "--include=*.py", "--include=*.js", "--include=*.ts", 
-                     "--include=*.md", "--include=*.json", "--include=*.yaml", "--include=*.yml",
-                     pattern, path],
-                    capture_output=True, text=True, timeout=10
+                    [
+                        "grep",
+                        "-rn",
+                        "--include=*.py",
+                        "--include=*.js",
+                        "--include=*.ts",
+                        "--include=*.md",
+                        "--include=*.json",
+                        "--include=*.yaml",
+                        "--include=*.yml",
+                        pattern,
+                        path,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
                 matches = result.stdout.strip().splitlines()[:20]  # Limit results
                 if matches:
@@ -915,7 +989,9 @@ class ActionExecutor:
             if name == "list_files":
                 return execute_list_files(args.get("path", "."))
             elif name == "read_file":
-                return execute_read_file(args.get("path", ""), args.get("max_lines", 200))
+                return execute_read_file(
+                    args.get("path", ""), args.get("max_lines", 200)
+                )
             elif name == "search":
                 return execute_search(args.get("pattern", ""), args.get("path", "."))
             return f"Unknown tool: {name}"
@@ -985,7 +1061,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 final_content = content
 
                 # Check for tool calls (look for JSON blocks)
-                tool_match = re.search(r'```json\s*({[^`]+})\s*```', content, re.DOTALL)
+                tool_match = re.search(r"```json\s*({[^`]+})\s*```", content, re.DOTALL)
                 if not tool_match:
                     # Also try without code fence
                     tool_match = re.search(r'\{"tool":\s*"(\w+)"', content)
@@ -993,7 +1069,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 if tool_match:
                     try:
                         # Parse tool call
-                        if '```' in content:
+                        if "```" in content:
                             tool_json = json.loads(tool_match.group(1))
                         else:
                             # Extract full JSON object
@@ -1001,8 +1077,10 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                             depth = 0
                             end = start
                             for i, c in enumerate(content[start:]):
-                                if c == '{': depth += 1
-                                elif c == '}': depth -= 1
+                                if c == "{":
+                                    depth += 1
+                                elif c == "}":
+                                    depth -= 1
                                 if depth == 0:
                                     end = start + i + 1
                                     break
@@ -1018,7 +1096,9 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
 
                         # Add to conversation
                         messages.append({"role": "assistant", "content": content})
-                        messages.append({"role": "user", "content": f"Tool result:\n{result}"})
+                        messages.append(
+                            {"role": "user", "content": f"Tool result:\n{result}"}
+                        )
 
                     except json.JSONDecodeError as e:
                         _logger.warning(f"[DELEGATE] Failed to parse tool call: {e}")
@@ -1034,7 +1114,6 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         except Exception as e:
             _logger.error(f"delegate_explore_task failed: {e}", exc_info=True)
             return f"delegate_explore_task failed: {e}"
-
 
     async def _stop_sub_agent(self, params: str) -> str:
         """Stop/pause a sub-agent. Also cancels background tasks if running."""
@@ -1054,6 +1133,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         try:
             # Try to cancel background task if running in executor
             from penguin.multi.executor import get_executor
+
             executor = get_executor()
             if executor:
                 status = executor.get_status(agent_id)
@@ -1120,7 +1200,11 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         if core is None:
             return "Core unavailable for delegate"
 
-        parent = str(payload.get("parent") or getattr(conversation, "current_agent_id", None) or "default").strip()
+        parent = str(
+            payload.get("parent")
+            or getattr(conversation, "current_agent_id", None)
+            or "default"
+        ).strip()
         channel = payload.get("channel")
         metadata = payload.get("metadata") or {}
         background = bool(payload.get("background", False))
@@ -1132,6 +1216,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             cm = getattr(core, "conversation_manager", None)
             if cm and hasattr(cm, "log_delegation_event"):
                 import uuid as _uuid
+
                 delegation_id = _uuid.uuid4().hex[:8]
                 cm.log_delegation_event(
                     delegation_id=delegation_id,
@@ -1148,7 +1233,11 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         if background:
             # Run delegated task in background using AgentExecutor
             try:
-                from penguin.multi.executor import get_executor, set_executor, AgentExecutor
+                from penguin.multi.executor import (
+                    get_executor,
+                    set_executor,
+                    AgentExecutor,
+                )
                 import asyncio
 
                 executor = get_executor()
@@ -1168,7 +1257,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                         "parent": parent,
                         "channel": channel,
                         **(metadata or {}),
-                    }
+                    },
                 )
 
                 if wait:
@@ -1238,22 +1327,23 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             # Parse the JSON string returned by perform_memory_search
             try:
                 import json
+
                 parsed_results = json.loads(json_results)
-                
+
                 # Handle error responses
                 if isinstance(parsed_results, dict) and "error" in parsed_results:
                     return f"Memory search error: {parsed_results['error']}"
-                
+
                 # Handle "no results" response
                 if isinstance(parsed_results, dict) and "result" in parsed_results:
                     return parsed_results["result"]
-                
+
                 # Handle actual search results
                 if isinstance(parsed_results, list):
                     results = parsed_results
                 else:
                     return "Unexpected response format from memory search."
-                    
+
             except json.JSONDecodeError:
                 return f"Error parsing memory search results: {json_results}"
 
@@ -1264,48 +1354,56 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             formatted_results = []
             for i, result in enumerate(results, 1):
                 # Fix metadata field names to match actual result structure
-                metadata = result.get('metadata', {})
-                file_path = metadata.get('path', metadata.get('file_path', 'Unknown'))
-                file_type = metadata.get('file_type', metadata.get('memory_type', 'Unknown'))
-                categories = result.get('categories', metadata.get('categories', 'None'))
-                
-                formatted_results.append(
-                    f"\n{i}. From: {file_path}"
+                metadata = result.get("metadata", {})
+                file_path = metadata.get("path", metadata.get("file_path", "Unknown"))
+                file_type = metadata.get(
+                    "file_type", metadata.get("memory_type", "Unknown")
                 )
-                formatted_results.append(
-                    f"   Type: {file_type}"
+                categories = result.get(
+                    "categories", metadata.get("categories", "None")
                 )
+
+                formatted_results.append(f"\n{i}. From: {file_path}")
+                formatted_results.append(f"   Type: {file_type}")
+                formatted_results.append(f"   Categories: {categories}")
                 formatted_results.append(
-                    f"   Categories: {categories}"
+                    f"   Score: {result.get('score', result.get('relevance', 0)):.2f}"
                 )
-                formatted_results.append(f"   Score: {result.get('score', result.get('relevance', 0)):.2f}")
-                
+
                 # Enhanced preview for conversation messages
-                if file_type == 'conversation_message':
-                    role = metadata.get('message_role', 'unknown')
-                    timestamp = metadata.get('timestamp', '')
-                    session_id = metadata.get('session_id', 'unknown')
-                    
+                if file_type == "conversation_message":
+                    role = metadata.get("message_role", "unknown")
+                    timestamp = metadata.get("timestamp", "")
+                    session_id = metadata.get("session_id", "unknown")
+
                     formatted_results.append(f"   Role: {role}")
                     if timestamp:
-                        formatted_results.append(f"   Time: {timestamp[:19]}")  # YYYY-MM-DDTHH:MM:SS
+                        formatted_results.append(
+                            f"   Time: {timestamp[:19]}"
+                        )  # YYYY-MM-DDTHH:MM:SS
                     formatted_results.append(f"   Session: {session_id}")
                     formatted_results.append("   Message:")
-                    
+
                     # Get content preview with conversation context
-                    content = result.get('content', result.get('preview', 'No preview available'))
+                    content = result.get(
+                        "content", result.get("preview", "No preview available")
+                    )
                     # For conversation messages, show more content (up to 300 characters)
                     preview = content[:300] + "..." if len(content) > 300 else content
                     # Indent the content for better readability
-                    indented_preview = "\n".join(f"   > {line}" for line in preview.split('\n'))
+                    indented_preview = "\n".join(
+                        f"   > {line}" for line in preview.split("\n")
+                    )
                     formatted_results.append(indented_preview)
                 else:
                     formatted_results.append("   Preview:")
                     # Get content preview, limiting to 200 characters
-                    content = result.get('content', result.get('preview', 'No preview available'))
+                    content = result.get(
+                        "content", result.get("preview", "No preview available")
+                    )
                     preview = content[:200] + "..." if len(content) > 200 else content
                     formatted_results.append(f"   {preview}")
-                
+
                 formatted_results.append("")
 
             return "\n".join(formatted_results)
@@ -1403,27 +1501,31 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
 
     def _finish_response(self, params: str) -> str:
         """Signal that the conversational response is complete.
-        
+
         Called by the LLM when it has finished responding and has no more
         actions to take. This stops the run_response loop.
-        
+
         Format: optional summary
         """
         try:
-            return self.tool_manager.task_tools.finish_response(params.strip() if params else None)
+            return self.tool_manager.task_tools.finish_response(
+                params.strip() if params else None
+            )
         except Exception as e:
             return f"Error signaling response completion: {str(e)}"
 
     def _finish_task(self, params: str) -> str:
         """Signal that the LLM believes the task objective is achieved.
-        
+
         This transitions the task to PENDING_REVIEW status for human approval.
         The summary becomes the review note.
-        
+
         Format: summary (optional) or JSON {"summary": "...", "status": "done|partial|blocked"}
         """
         try:
-            return self.tool_manager.task_tools.finish_task(params.strip() if params else None)
+            return self.tool_manager.task_tools.finish_task(
+                params.strip() if params else None
+            )
         except Exception as e:
             return f"Error signaling task completion: {str(e)}"
 
@@ -1575,41 +1677,43 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
 
     async def _browser_interact(self, params: str) -> str:
         """Interact with browser elements. Format: action:selector:text"""
-        parts = params.split(':', 2)
+        parts = params.split(":", 2)
         if len(parts) < 2:
             return "Error: Invalid format. Use action:selector[:text]"
-        
+
         action = parts[0].strip()
         selector = parts[1].strip()
         text = parts[2].strip() if len(parts) > 2 else None
-        
-        if action not in ['click', 'input', 'submit']:
+
+        if action not in ["click", "input", "submit"]:
             return f"Error: Invalid action '{action}'. Use click, input, or submit."
-        
+
         return await self.tool_manager.execute_browser_interact(action, selector, text)
 
     async def _browser_screenshot(self, params: str) -> str:
         try:
             tool = BrowserScreenshotTool()
             result = await tool.execute()
-            
+
             if "filepath" in result:
                 # Extract description from params or use default
-                description = params.strip() if params else "What can you see in this screenshot?"
-                
+                description = (
+                    params.strip() if params else "What can you see in this screenshot?"
+                )
+
                 # Create multimodal content in the same format as the /image command result
                 multimodal_content = [
                     {"type": "text", "text": description},
-                    {"type": "image_url", "image_path": result["filepath"]}
+                    {"type": "image_url", "image_path": result["filepath"]},
                 ]
-                
+
                 # Add as a user message (matching how /image adds to conversation)
                 self.conversation_system.add_message(
                     role="user",
                     content=multimodal_content,
-                    category=MessageCategory.DIALOG
+                    category=MessageCategory.DIALOG,
                 )
-                
+
                 return f"Screenshot saved to {result['filepath']} and added to conversation"
             else:
                 return result.get("error", "Failed to capture screenshot")
@@ -1625,14 +1729,14 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         """Navigate to a URL using PyDoll browser."""
         try:
             from penguin.tools.pydoll_tools import pydoll_browser_manager
-            
+
             if not await pydoll_browser_manager.initialize(headless=False):
                 return "Failed to initialize PyDoll browser"
-            
+
             # Get a page and navigate to the URL
             page = await pydoll_browser_manager.get_page()
             await page.go_to(params.strip())
-            
+
             return f"Successfully navigated to {params.strip()} using PyDoll browser"
         except Exception as e:
             error_message = f"Error navigating with PyDoll browser: {str(e)}"
@@ -1643,19 +1747,23 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         """Interact with browser elements using PyDoll. Format: action:selector[:selector_type][:text]"""
         try:
             from penguin.tools.pydoll_tools import PyDollBrowserInteractionTool
-            
-            parts = params.split(':', 3)
+
+            parts = params.split(":", 3)
             if len(parts) < 2:
-                return "Error: Invalid format. Use action:selector[:selector_type][:text]"
-            
+                return (
+                    "Error: Invalid format. Use action:selector[:selector_type][:text]"
+                )
+
             action = parts[0].strip()
             selector = parts[1].strip()
-            selector_type = parts[2].strip() if len(parts) > 2 and parts[2].strip() else "css"
+            selector_type = (
+                parts[2].strip() if len(parts) > 2 and parts[2].strip() else "css"
+            )
             text = parts[3].strip() if len(parts) > 3 else None
-            
+
             if action not in ["click", "input", "submit"]:
                 return f"Error: Invalid action '{action}'. Use click, input, or submit."
-            
+
             # Create and execute the tool
             tool = PyDollBrowserInteractionTool()
             result = await tool.execute(action, selector, selector_type, text)
@@ -1669,44 +1777,56 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         """Take a screenshot using PyDoll browser."""
         try:
             from penguin.tools.pydoll_tools import PyDollBrowserScreenshotTool
-            
+
             # Execute the screenshot tool
             tool = PyDollBrowserScreenshotTool()
             result = await tool.execute()
-            
+
             # Debug the result
             logger.info(f"PyDoll screenshot result: {result}")
-            
+
             if "filepath" in result and os.path.exists(result["filepath"]):
                 # Extract description from params or use default
-                description = params.strip() if params else "What can you see in this PyDoll screenshot?"
-                
+                description = (
+                    params.strip()
+                    if params
+                    else "What can you see in this PyDoll screenshot?"
+                )
+
                 # Determine target 'add_message' method
                 add_message_fn = None
-                if callable(getattr(self.conversation_system, 'add_message', None)):
+                if callable(getattr(self.conversation_system, "add_message", None)):
                     add_message_fn = self.conversation_system.add_message
-                elif hasattr(self.conversation_system, 'conversation') and callable(getattr(self.conversation_system.conversation, 'add_message', None)):
+                elif hasattr(self.conversation_system, "conversation") and callable(
+                    getattr(self.conversation_system.conversation, "add_message", None)
+                ):
                     add_message_fn = self.conversation_system.conversation.add_message
-                
+
                 # Create multimodal content
                 multimodal_content = [
                     {"type": "text", "text": description},
-                    {"type": "image_url", "image_path": result["filepath"]}
+                    {"type": "image_url", "image_path": result["filepath"]},
                 ]
-                
+
                 if add_message_fn:
-                    logger.info(f"Adding PyDoll screenshot to conversation via {add_message_fn}: {multimodal_content}")
+                    logger.info(
+                        f"Adding PyDoll screenshot to conversation via {add_message_fn}: {multimodal_content}"
+                    )
                     add_message_fn(
                         role="user",
                         content=multimodal_content,
-                        category=MessageCategory.DIALOG
+                        category=MessageCategory.DIALOG,
                     )
                     return f"PyDoll screenshot saved to {result['filepath']} and added to conversation"
                 else:
-                    logger.warning("No suitable add_message method found; conversation update skipped")
+                    logger.warning(
+                        "No suitable add_message method found; conversation update skipped"
+                    )
                     return f"PyDoll screenshot saved to {result['filepath']} (conversation update skipped)"
             else:
-                error_msg = result.get("error", "Failed to capture PyDoll screenshot or file not found")
+                error_msg = result.get(
+                    "error", "Failed to capture PyDoll screenshot or file not found"
+                )
                 logger.error(f"PyDoll screenshot error: {error_msg}")
                 return error_msg
         except Exception as e:
@@ -1739,20 +1859,51 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
 
             if mode == "page":
                 direction = parts[1].strip().lower() if len(parts) >= 2 else "down"
-                repeat = int(parts[2]) if len(parts) >= 3 and parts[2].strip().isdigit() else 1
+                repeat = (
+                    int(parts[2])
+                    if len(parts) >= 3 and parts[2].strip().isdigit()
+                    else 1
+                )
                 return await tool.execute(mode="page", to=direction, repeat=repeat)
 
             if mode == "by":
-                dy = int(parts[1]) if len(parts) >= 2 and parts[1].strip().lstrip("-+").isdigit() else 800
-                dx = int(parts[2]) if len(parts) >= 3 and parts[2].strip().lstrip("-+").isdigit() else 0
-                repeat = int(parts[3]) if len(parts) >= 4 and parts[3].strip().isdigit() else 1
-                return await tool.execute(mode="by", delta_y=dy, delta_x=dx, repeat=repeat)
+                dy = (
+                    int(parts[1])
+                    if len(parts) >= 2 and parts[1].strip().lstrip("-+").isdigit()
+                    else 800
+                )
+                dx = (
+                    int(parts[2])
+                    if len(parts) >= 3 and parts[2].strip().lstrip("-+").isdigit()
+                    else 0
+                )
+                repeat = (
+                    int(parts[3])
+                    if len(parts) >= 4 and parts[3].strip().isdigit()
+                    else 1
+                )
+                return await tool.execute(
+                    mode="by", delta_y=dy, delta_x=dx, repeat=repeat
+                )
 
             if mode == "element" and len(parts) >= 2:
                 selector = parts[1]
-                selector_type = parts[2].strip().lower() if len(parts) >= 3 and parts[2].strip() else "css"
-                behavior = parts[3].strip().lower() if len(parts) >= 4 and parts[3].strip() else "auto"
-                return await tool.execute(mode="element", selector=selector, selector_type=selector_type, behavior=behavior)
+                selector_type = (
+                    parts[2].strip().lower()
+                    if len(parts) >= 3 and parts[2].strip()
+                    else "css"
+                )
+                behavior = (
+                    parts[3].strip().lower()
+                    if len(parts) >= 4 and parts[3].strip()
+                    else "auto"
+                )
+                return await tool.execute(
+                    mode="element",
+                    selector=selector,
+                    selector_type=selector_type,
+                    behavior=behavior,
+                )
 
             return "Invalid scroll command"
         except Exception as e:
@@ -1764,7 +1915,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         """Toggle PyDoll debug mode. Format: [on|off] or empty to toggle"""
         try:
             from penguin.tools.pydoll_tools import pydoll_debug_toggle
-            
+
             if params.strip().lower() == "on":
                 enabled = True
             elif params.strip().lower() == "off":
@@ -1772,7 +1923,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             else:
                 # Toggle current state if no specific instruction
                 enabled = None
-                
+
             new_state = await pydoll_debug_toggle(enabled)
             return f"PyDoll debug mode is now {'enabled' if new_state else 'disabled'}"
         except Exception as e:
@@ -1784,8 +1935,12 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         """Invoke analyze_codebase tool. Format: directory:analysis_type:include_external"""
         parts = params.split(":")
         directory = parts[0].strip() if parts and parts[0].strip() else ""
-        analysis_type = parts[1].strip() if len(parts) > 1 and parts[1].strip() else "all"
-        include_external = parts[2].strip().lower() == "true" if len(parts) > 2 else False
+        analysis_type = (
+            parts[1].strip() if len(parts) > 1 and parts[1].strip() else "all"
+        )
+        include_external = (
+            parts[2].strip().lower() == "true" if len(parts) > 2 else False
+        )
         return self.tool_manager.execute_tool(
             "analyze_codebase",
             {
@@ -1814,77 +1969,88 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         path = parts[0].strip() if parts and parts[0].strip() else "."
         group_by_type = parts[1].strip().lower() == "true" if len(parts) > 1 else False
         show_hidden = parts[2].strip().lower() == "true" if len(parts) > 2 else False
-        
-        return self.tool_manager.execute_tool("list_files", {
-            "path": path,
-            "group_by_type": group_by_type,
-            "show_hidden": show_hidden
-        })
+
+        return self.tool_manager.execute_tool(
+            "list_files",
+            {"path": path, "group_by_type": group_by_type, "show_hidden": show_hidden},
+        )
 
     def _find_files_enhanced(self, params: str) -> str:
         """Enhanced file finding. Format: pattern:search_path:include_hidden:file_type"""
         parts = params.split(":")
         if not parts or not parts[0].strip():
             return "Error: Pattern is required"
-        
+
         pattern = parts[0].strip()
         search_path = parts[1].strip() if len(parts) > 1 and parts[1].strip() else "."
         include_hidden = parts[2].strip().lower() == "true" if len(parts) > 2 else False
         file_type = parts[3].strip() if len(parts) > 3 and parts[3].strip() else None
-        
-        return self.tool_manager.execute_tool("find_file", {
-            "filename": pattern,
-            "search_path": search_path,
-            "include_hidden": include_hidden,
-            "file_type": file_type
-        })
+
+        return self.tool_manager.execute_tool(
+            "find_file",
+            {
+                "filename": pattern,
+                "search_path": search_path,
+                "include_hidden": include_hidden,
+                "file_type": file_type,
+            },
+        )
 
     def _enhanced_diff(self, params: str) -> str:
         """Compare two files with enhanced diff. Format: file1:file2:semantic"""
         parts = params.split(":")
         if len(parts) < 2:
             return "Error: Need at least two files to compare"
-        
+
         file1 = parts[0].strip()
         file2 = parts[1].strip()
         semantic = parts[2].strip().lower() == "true" if len(parts) > 2 else True
-        
-        return self.tool_manager.execute_tool("enhanced_diff", {
-            "file1": file1,
-            "file2": file2,
-            "semantic": semantic
-        })
+
+        return self.tool_manager.execute_tool(
+            "enhanced_diff", {"file1": file1, "file2": file2, "semantic": semantic}
+        )
 
     def _analyze_project(self, params: str) -> str:
         """Analyze project structure. Format: directory:include_external"""
         parts = params.split(":")
         directory = parts[0].strip() if parts and parts[0].strip() else "."
-        include_external = parts[1].strip().lower() == "true" if len(parts) > 1 else False
-        
-        return self.tool_manager.execute_tool("analyze_project", {
-            "directory": directory,
-            "include_external": include_external
-        })
+        include_external = (
+            parts[1].strip().lower() == "true" if len(parts) > 1 else False
+        )
+
+        return self.tool_manager.execute_tool(
+            "analyze_project",
+            {"directory": directory, "include_external": include_external},
+        )
 
     def _enhanced_read(self, params: str) -> str:
         """Enhanced file reading. Format: path:show_line_numbers:max_lines"""
         parts = params.split(":")
         if not parts or not parts[0].strip():
             return "Error: File path is required"
-        
+
         path = parts[0].strip()
-        show_line_numbers = parts[1].strip().lower() == "true" if len(parts) > 1 else False
-        max_lines = int(parts[2].strip()) if len(parts) > 2 and parts[2].strip().isdigit() else None
-        
-        return self.tool_manager.execute_tool("read_file", {
-            "path": path,
-            "show_line_numbers": show_line_numbers,
-            "max_lines": max_lines
-        })
+        show_line_numbers = (
+            parts[1].strip().lower() == "true" if len(parts) > 1 else False
+        )
+        max_lines = (
+            int(parts[2].strip())
+            if len(parts) > 2 and parts[2].strip().isdigit()
+            else None
+        )
+
+        return self.tool_manager.execute_tool(
+            "read_file",
+            {
+                "path": path,
+                "show_line_numbers": show_line_numbers,
+                "max_lines": max_lines,
+            },
+        )
 
     def _enhanced_write(self, params: str) -> str:
         """Enhanced file writing. Format: path:content:backup
-        
+
         Parsing strategy: Find path from start (first colon), then check if
         the content ends with :true or :false for the backup flag. This handles
         content that contains colons (e.g., CSS, URLs).
@@ -1892,17 +2058,17 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         first_sep = params.find(":")
         if first_sep == -1:
             return "Error: Need path and content (format: path:content[:backup])"
-        
+
         path = params[:first_sep].strip()
-        remainder = params[first_sep + 1:]
-        
+        remainder = params[first_sep + 1 :]
+
         if not path or not remainder:
             return "Error: Need path and content"
-        
+
         # Default backup to True
         backup = True
         content = remainder
-        
+
         # Check if remainder ends with :true or :false (backup flag)
         # Only consider it a flag if it's at the very end with no newlines
         if ":" in remainder:
@@ -1910,15 +2076,17 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             flag_stripped = flag.strip().lower()
             # Only treat as backup flag if it's exactly "true" or "false"
             # and doesn't contain newlines (to avoid matching content that ends with :something)
-            if flag_stripped in {"true", "false"} and "\n" not in flag and "\r" not in flag:
+            if (
+                flag_stripped in {"true", "false"}
+                and "\n" not in flag
+                and "\r" not in flag
+            ):
                 backup = flag_stripped == "true"
                 content = content_part
-        
-        return self.tool_manager.execute_tool("write_to_file", {
-            "path": path,
-            "content": content,
-            "backup": backup
-        })
+
+        return self.tool_manager.execute_tool(
+            "write_to_file", {"path": path, "content": content, "backup": backup}
+        )
 
     def _apply_diff(self, params: str) -> str:
         """Apply a diff to edit a file. Format: file_path:diff_content:backup"""
@@ -1938,15 +2106,18 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         if ":" in remainder:
             diff_part, flag = remainder.rsplit(":", 1)
             flag_stripped = flag.strip().lower()
-            if flag_stripped in {"true", "false"} and "\n" not in flag and "\r" not in flag:
+            if (
+                flag_stripped in {"true", "false"}
+                and "\n" not in flag
+                and "\r" not in flag
+            ):
                 backup = flag_stripped == "true"
                 diff_content = diff_part
 
-        return self.tool_manager.execute_tool("apply_diff", {
-            "file_path": file_path,
-            "diff_content": diff_content,
-            "backup": backup
-        })
+        return self.tool_manager.execute_tool(
+            "apply_diff",
+            {"file_path": file_path, "diff_content": diff_content, "backup": backup},
+        )
 
     def _multiedit(self, params: str) -> str:
         """Apply multi-file edits atomically. Content is the multiedit block or unified patch. Default dry-run."""
@@ -1955,23 +2126,26 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         do_apply = False
         m = re.match(r"^apply\s*[:=]\s*(true|false)\s*\n", content, flags=re.IGNORECASE)
         if m:
-            do_apply = m.group(1).lower() == 'true'
-            content = content[m.end():]
-        return self.tool_manager.execute_tool("multiedit_apply", {
-            "content": content,
-            "apply": do_apply,
-        })
+            do_apply = m.group(1).lower() == "true"
+            content = content[m.end() :]
+        return self.tool_manager.execute_tool(
+            "multiedit_apply",
+            {
+                "content": content,
+                "apply": do_apply,
+            },
+        )
 
     def _edit_with_pattern(self, params: str) -> str:
         """Edit file with pattern replacement. Format: file_path:search_pattern:replacement:backup
-        
+
         Note: Uses reverse split to handle colons in replacement text.
         """
         # Split from the right to handle optional backup flag first
         parts = params.rsplit(":", 1)
         backup = False
         content_parts = parts[0]
-        
+
         # Check if last part is the backup flag (true/false)
         if len(parts) == 2 and parts[1].strip().lower() in ("true", "false"):
             backup = parts[1].strip().lower() == "true"
@@ -1979,129 +2153,244 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             # No backup flag, treat entire string as content
             content_parts = params
             backup = True  # Default to backup
-        
+
         # Now split the content part into file_path:search_pattern:replacement
         # Split only on first 2 colons to preserve colons in replacement text
         parts = content_parts.split(":", 2)
         if len(parts) < 3:
             return "Error: Need file_path:search_pattern:replacement format"
-        
+
         file_path = parts[0].strip()
         search_pattern = parts[1]  # Don't strip - regex patterns may need whitespace
-        replacement = parts[2]      # Don't strip - replacement may need whitespace (and may contain colons!)
-        
-        return self.tool_manager.execute_tool("edit_with_pattern", {
-            "file_path": file_path,
-            "search_pattern": search_pattern,
-            "replacement": replacement,
-            "backup": backup
-        })
-    
+        replacement = parts[
+            2
+        ]  # Don't strip - replacement may need whitespace (and may contain colons!)
+
+        return self.tool_manager.execute_tool(
+            "edit_with_pattern",
+            {
+                "file_path": file_path,
+                "search_pattern": search_pattern,
+                "replacement": replacement,
+                "backup": backup,
+            },
+        )
+
+    def _replace_lines(self, params: str) -> str:
+        """Replace specific lines. Format: path:start_line:end_line:new_content[:verify]"""
+        parts = params.split(":", 3)
+        if len(parts) < 4:
+            return "Error: Need path:start_line:end_line:new_content format"
+
+        path = parts[0].strip()
+        start_str = parts[1].strip()
+        end_str = parts[2].strip()
+        remainder = parts[3]
+        if not path:
+            return "Error: Need path for replace_lines"
+
+        try:
+            start_line = int(start_str)
+            end_line = int(end_str)
+        except ValueError:
+            return "Error: start_line and end_line must be integers"
+
+        verify = True
+        new_content = remainder
+        if ":" in remainder:
+            content_part, flag = remainder.rsplit(":", 1)
+            flag_stripped = flag.strip().lower()
+            if (
+                flag_stripped in {"true", "false"}
+                and "\n" not in flag
+                and "\r" not in flag
+            ):
+                verify = flag_stripped == "true"
+                new_content = content_part
+
+        return self.tool_manager.execute_tool(
+            "replace_lines",
+            {
+                "path": path,
+                "start_line": start_line,
+                "end_line": end_line,
+                "new_content": new_content,
+                "verify": verify,
+            },
+        )
+
+    def _insert_lines(self, params: str) -> str:
+        """Insert lines after a specific line. Format: path:after_line:new_content"""
+        parts = params.split(":", 2)
+        if len(parts) < 3:
+            return "Error: Need path:after_line:new_content format"
+
+        path = parts[0].strip()
+        after_str = parts[1].strip()
+        new_content = parts[2]
+        if not path:
+            return "Error: Need path for insert_lines"
+
+        try:
+            after_line = int(after_str)
+        except ValueError:
+            return "Error: after_line must be an integer"
+
+        return self.tool_manager.execute_tool(
+            "insert_lines",
+            {
+                "path": path,
+                "after_line": after_line,
+                "new_content": new_content,
+            },
+        )
+
+    def _delete_lines(self, params: str) -> str:
+        """Delete a range of lines. Format: path:start_line:end_line"""
+        parts = params.split(":", 2)
+        if len(parts) < 3:
+            return "Error: Need path:start_line:end_line format"
+
+        path = parts[0].strip()
+        start_str = parts[1].strip()
+        end_str = parts[2].strip()
+        if not path:
+            return "Error: Need path for delete_lines"
+
+        try:
+            start_line = int(start_str)
+            end_line = int(end_str)
+        except ValueError:
+            return "Error: start_line and end_line must be integers"
+
+        return self.tool_manager.execute_tool(
+            "delete_lines",
+            {
+                "path": path,
+                "start_line": start_line,
+                "end_line": end_line,
+            },
+        )
+
     # Repository management action handlers
     def _get_repository_status(self, params: str) -> str:
         """Get status of a repository. Format: repo_owner:repo_name"""
         parts = params.split(":", 1)
         if len(parts) < 2:
             return "Error: Need repo_owner:repo_name format"
-        
+
         repo_owner = parts[0].strip()
         repo_name = parts[1].strip()
-        
-        return self.tool_manager.execute_tool("get_repository_status", {
-            "repo_owner": repo_owner,
-            "repo_name": repo_name
-        })
-    
+
+        return self.tool_manager.execute_tool(
+            "get_repository_status", {"repo_owner": repo_owner, "repo_name": repo_name}
+        )
+
     def _create_and_switch_branch(self, params: str) -> str:
         """Create and switch to a new git branch. Format: repo_owner:repo_name:branch_name"""
         parts = params.split(":", 2)
         if len(parts) < 3:
             return "Error: Need repo_owner:repo_name:branch_name format"
-        
+
         repo_owner = parts[0].strip()
         repo_name = parts[1].strip()
         branch_name = parts[2].strip()
-        
-        return self.tool_manager.execute_tool("create_and_switch_branch", {
-            "repo_owner": repo_owner,
-            "repo_name": repo_name,
-            "branch_name": branch_name
-        })
-    
+
+        return self.tool_manager.execute_tool(
+            "create_and_switch_branch",
+            {
+                "repo_owner": repo_owner,
+                "repo_name": repo_name,
+                "branch_name": branch_name,
+            },
+        )
+
     def _commit_and_push_changes(self, params: str) -> str:
         """Commit and push changes. Format: repo_owner:repo_name:commit_message"""
         parts = params.split(":", 2)
         if len(parts) < 3:
             return "Error: Need repo_owner:repo_name:commit_message format"
-        
+
         repo_owner = parts[0].strip()
         repo_name = parts[1].strip()
         commit_message = parts[2].strip()
-        
-        return self.tool_manager.execute_tool("commit_and_push_changes", {
-            "repo_owner": repo_owner,
-            "repo_name": repo_name,
-            "commit_message": commit_message
-        })
-    
+
+        return self.tool_manager.execute_tool(
+            "commit_and_push_changes",
+            {
+                "repo_owner": repo_owner,
+                "repo_name": repo_name,
+                "commit_message": commit_message,
+            },
+        )
+
     def _create_improvement_pr(self, params: str) -> str:
         """Create improvement PR. Format: repo_owner:repo_name:title:description:files_changed"""
         parts = params.split(":", 4)
         if len(parts) < 4:
             return "Error: Need repo_owner:repo_name:title:description format (files_changed is optional)"
-        
+
         repo_owner = parts[0].strip()
         repo_name = parts[1].strip()
         title = parts[2].strip()
         description = parts[3].strip()
         files_changed = parts[4].strip() if len(parts) > 4 else None
-        
-        return self.tool_manager.execute_tool("create_improvement_pr", {
-            "repo_owner": repo_owner,
-            "repo_name": repo_name,
-            "title": title,
-            "description": description,
-            "files_changed": files_changed
-        })
-    
+
+        return self.tool_manager.execute_tool(
+            "create_improvement_pr",
+            {
+                "repo_owner": repo_owner,
+                "repo_name": repo_name,
+                "title": title,
+                "description": description,
+                "files_changed": files_changed,
+            },
+        )
+
     def _create_feature_pr(self, params: str) -> str:
         """Create feature PR. Format: repo_owner:repo_name:feature_name:description:implementation_notes:files_modified"""
         parts = params.split(":", 5)
         if len(parts) < 4:
             return "Error: Need repo_owner:repo_name:feature_name:description format"
-        
+
         repo_owner = parts[0].strip()
         repo_name = parts[1].strip()
         feature_name = parts[2].strip()
         description = parts[3].strip()
         implementation_notes = parts[4].strip() if len(parts) > 4 else ""
         files_modified = parts[5].strip() if len(parts) > 5 else None
-        
-        return self.tool_manager.execute_tool("create_feature_pr", {
-            "repo_owner": repo_owner,
-            "repo_name": repo_name,
-            "feature_name": feature_name,
-            "description": description,
-            "implementation_notes": implementation_notes,
-            "files_modified": files_modified
-        })
-    
+
+        return self.tool_manager.execute_tool(
+            "create_feature_pr",
+            {
+                "repo_owner": repo_owner,
+                "repo_name": repo_name,
+                "feature_name": feature_name,
+                "description": description,
+                "implementation_notes": implementation_notes,
+                "files_modified": files_modified,
+            },
+        )
+
     def _create_bugfix_pr(self, params: str) -> str:
         """Create bug fix PR. Format: repo_owner:repo_name:bug_description:fix_description:files_fixed"""
         parts = params.split(":", 4)
         if len(parts) < 4:
             return "Error: Need repo_owner:repo_name:bug_description:fix_description format"
-        
+
         repo_owner = parts[0].strip()
         repo_name = parts[1].strip()
         bug_description = parts[2].strip()
         fix_description = parts[3].strip()
         files_fixed = parts[4].strip() if len(parts) > 4 else None
-        
-        return self.tool_manager.execute_tool("create_bugfix_pr", {
-            "repo_owner": repo_owner,
-            "repo_name": repo_name,
-            "bug_description": bug_description,
-            "fix_description": fix_description,
-            "files_fixed": files_fixed
-        })
+
+        return self.tool_manager.execute_tool(
+            "create_bugfix_pr",
+            {
+                "repo_owner": repo_owner,
+                "repo_name": repo_name,
+                "bug_description": bug_description,
+                "fix_description": fix_description,
+                "files_fixed": files_fixed,
+            },
+        )

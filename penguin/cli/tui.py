@@ -5,9 +5,9 @@ import traceback
 from typing import Any, Dict, Optional, List
 
 # Textual imports
-from textual.app import App, ComposeResult # type: ignore
-from textual.containers import Container, VerticalScroll # type: ignore
-from textual.reactive import reactive # type: ignore
+from textual.app import App, ComposeResult  # type: ignore
+from textual.containers import Container, VerticalScroll  # type: ignore
+from textual.reactive import reactive  # type: ignore
 
 # Header / Footer / Input etc. are always present. Expander was introduced in
 # Textual 0.8x – older installs may not export it which raises an ImportError
@@ -15,8 +15,16 @@ from textual.reactive import reactive # type: ignore
 # fall back to a sentinel so the rest of the code can degrade gracefully.
 
 # Standard Textual widgets always present
-from textual.widgets import Header, Footer, Input, Static, Markdown as TextualMarkdown, Collapsible, Button # type: ignore
-from textual.suggester import Suggester # type: ignore
+from textual.widgets import (
+    Header,
+    Footer,
+    Input,
+    Static,
+    Markdown as TextualMarkdown,
+    Collapsible,
+    Button,
+)  # type: ignore
+from textual.suggester import Suggester  # type: ignore
 
 try:
     # Available from Textual ≥ 0.53 (approx). If the current version doesn't
@@ -40,6 +48,7 @@ except ImportError:  # pragma: no cover – depends on external library version
 # ------------------------------------------------------------------
 
 if Expander is None:
+
     class SimpleExpander(Static, can_focus=True):  # type: ignore[misc]
         """Minimal expander for Textual <0.8x.
 
@@ -61,7 +70,11 @@ if Expander is None:
 
         open_state = reactive(False)
 
-        BINDINGS = [("enter", "toggle", "Toggle"), ("space", "toggle", "Toggle"), ("ctrl+r", "toggle", "Toggle")]
+        BINDINGS = [
+            ("enter", "toggle", "Toggle"),
+            ("space", "toggle", "Toggle"),
+            ("ctrl+r", "toggle", "Toggle"),
+        ]
 
         def __init__(self, summary: str, body_md: str, *, open: bool = False):  # noqa: A002 – param name mandated by API
             super().__init__()
@@ -70,6 +83,7 @@ if Expander is None:
             # Avoid mounting children before attachment; set initial flag and apply on mount
             self._initial_open = bool(open)
             self.open_state = False
+
         def on_mount(self) -> None:  # type: ignore[override]
             """Apply initial open state after the widget is attached."""
             try:
@@ -82,7 +96,9 @@ if Expander is None:
         def compose(self) -> ComposeResult:  # noqa: D401 – framework signature
             # Header line with arrow indicator
             arrow = "▼" if self.open_state else "▶"
-            yield self.SummaryLine(f"{arrow} {self._summary_text}", classes="expander-summary")
+            yield self.SummaryLine(
+                f"{arrow} {self._summary_text}", classes="expander-summary"
+            )
 
             # Body mounts are handled in watch_open_state to support nested details
             if self.open_state:
@@ -130,34 +146,49 @@ if Expander is None:
                             # Parse and mount nested details directly to ensure proper nesting in Textual 5.x
                             pos = 0
                             for m in DETAILS_RE.finditer(body_text):
-                                before = body_text[pos:m.start()]
+                                before = body_text[pos : m.start()]
                                 if before.strip():
-                                    self.mount(TextualMarkdown(before, classes="expander-body"))
+                                    self.mount(
+                                        TextualMarkdown(before, classes="expander-body")
+                                    )
                                 attrs = m.group(1) or ""
                                 summary_text = m.group(3) or "Details"
                                 inner_md = (m.group(4) or "").strip()
-                                is_open = "open" in attrs if isinstance(attrs, str) else False
-                                sub = SimpleExpander(summary_text, inner_md, open=bool(is_open))
+                                is_open = (
+                                    "open" in attrs if isinstance(attrs, str) else False
+                                )
+                                sub = SimpleExpander(
+                                    summary_text, inner_md, open=bool(is_open)
+                                )
                                 sub.add_class("expander-body")
                                 self.mount(sub)
                                 pos = m.end()
                             remainder = body_text[pos:]
                             if remainder.strip():
-                                self.mount(TextualMarkdown(remainder, classes="expander-body"))
+                                self.mount(
+                                    TextualMarkdown(remainder, classes="expander-body")
+                                )
                         else:
-                            self.mount(TextualMarkdown(body_text, classes="expander-body"))
+                            self.mount(
+                                TextualMarkdown(body_text, classes="expander-body")
+                            )
                     except Exception:
-                        self.mount(TextualMarkdown(self._body_md or "", classes="expander-body"))
+                        self.mount(
+                            TextualMarkdown(
+                                self._body_md or "", classes="expander-body"
+                            )
+                        )
             else:
                 for body in self.query(".expander-body"):
                     body.remove()
 
+
 # Rich imports
-from rich.panel import Panel # type: ignore
-from rich.text import Text # type: ignore
-from rich.console import Group # type: ignore
-from rich.markdown import Markdown as RichMarkdown # type: ignore
-from rich.syntax import Syntax # type: ignore
+from rich.panel import Panel  # type: ignore
+from rich.text import Text  # type: ignore
+from rich.console import Group  # type: ignore
+from rich.markdown import Markdown as RichMarkdown  # type: ignore
+from rich.syntax import Syntax  # type: ignore
 
 # Standard library imports
 import os
@@ -172,7 +203,12 @@ import shutil
 from penguin.core import PenguinCore
 from penguin.cli.interface import PenguinInterface
 from penguin.cli.widgets import ToolExecutionWidget, StreamingStateMachine, StreamState
-from penguin.cli.widgets.unified_display import UnifiedExecution, ExecutionAdapter, ExecutionStatus, ExecutionType
+from penguin.cli.widgets.unified_display import (
+    UnifiedExecution,
+    ExecutionAdapter,
+    ExecutionStatus,
+    ExecutionType,
+)
 from penguin.cli.command_registry import CommandRegistry
 from penguin.cli.events import EventBus, EventType
 
@@ -183,17 +219,27 @@ from penguin.cli.events import EventBus, EventType
 from functools import lru_cache
 
 # Convert HTML <details>/<summary> blocks into Textual Expanders (module-scope)
-DETAILS_RE = re.compile(r"<details(\s+[^>]*)?>\s*(<summary>(.*?)</summary>)?(.*?)</details>", re.S)
+DETAILS_RE = re.compile(
+    r"<details(\s+[^>]*)?>\s*(<summary>(.*?)</summary>)?(.*?)</details>", re.S
+)
 
 # Language guess regexes (precompiled)
-_RE_PY = re.compile(r"^\s*(from\s+\w+\s+import|import\s+\w+|def\s+\w+\(|class\s+\w+|if __name__ == '__main__')", re.M)
+_RE_PY = re.compile(
+    r"^\s*(from\s+\w+\s+import|import\s+\w+|def\s+\w+\(|class\s+\w+|if __name__ == '__main__')",
+    re.M,
+)
 _RE_JS = re.compile(r"\bfunction\s+\w+\s*\(|console\.log\(|=>\s*\w*\(")
 _RE_JSON_START = re.compile(r"^\s*[\[{]")
-_RE_SHELL = re.compile(r"^\s*#\!/?\w*sh|\b(set -e|#!/bin/sh|#!/usr/bin/env bash)\b", re.M)
+_RE_SHELL = re.compile(
+    r"^\s*#\!/?\w*sh|\b(set -e|#!/bin/sh|#!/usr/bin/env bash)\b", re.M
+)
 _RE_TOML = re.compile(r"^\[.*\]\s*$", re.M)
 _RE_TOML_ASSIGN = re.compile(r"^\w+\s*=\s*", re.M)
 _RE_DIFF = re.compile(r"^(\+\+\+|---|@@) ", re.M)
-_RE_ACTIONXML = re.compile(r"<(/)?(execute|execute_command|apply_diff|enhanced_\w+|tool|action)[^>]*>")
+_RE_ACTIONXML = re.compile(
+    r"<(/)?(execute|execute_command|apply_diff|replace_lines|insert_lines|delete_lines|multiedit|edit_with_pattern|enhanced_\w+|tool|action)[^>]*>"
+)
+
 
 @lru_cache(maxsize=256)
 def _guess_lang_cached(s: str) -> str | None:
@@ -215,6 +261,7 @@ def _guess_lang_cached(s: str) -> str | None:
     if _RE_DIFF.search(snippet):
         return "diff"
     return None
+
 
 class StatusSidebar(Static):
     """Right-docked status sidebar with compact metrics."""
@@ -243,6 +290,7 @@ class StatusSidebar(Static):
         except Exception:
             pass
 
+
 class CommandSuggester(Suggester):
     """Provides autocompletion for slash commands using CommandRegistry."""
 
@@ -259,6 +307,7 @@ class CommandSuggester(Suggester):
         except Exception:
             return None
 
+
 # Set up logging for debug purposes (file + quiet console)
 logger = logging.getLogger(__name__)
 if not logger.handlers:
@@ -267,7 +316,9 @@ if not logger.handlers:
         log_path = os.path.join(os.path.dirname(__file__), "tui_debug.log")
         fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
         fh.setLevel(logging.DEBUG)
-        fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        fh.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
         logger.addHandler(fh)
         ch = logging.StreamHandler()
         ch.setLevel(logging.WARNING)
@@ -279,12 +330,14 @@ if not logger.handlers:
 # Log Textual version as early as possible
 try:
     import importlib.metadata as _md  # py3.8+
+
     try:
         _textual_version = _md.version("textual")
     except Exception:
         _textual_version = "<unknown>"
     try:
         import textual as _textual
+
         _textual_path = getattr(_textual, "__file__", "<unknown>")
     except Exception:
         _textual_path = "<unimportable>"
@@ -294,6 +347,7 @@ except Exception:
     pass
 
 # --- Custom Widgets ---
+
 
 class ChatMessage(Static, can_focus=True):
     """A widget to display a single chat message.
@@ -308,7 +362,10 @@ class ChatMessage(Static, can_focus=True):
     #   ```\r\ncode\r\n```
     # Also handle cases where there's no newline after the language identifier
     CODE_FENCE = re.compile(r"```([^\n`]*?)[\r\n]*(.*?)```", re.S)
-    BINDINGS = [("c", "copy", "Copy to clipboard"), ("ctrl+r", "toggle_expander", "Toggle reasoning")]  # visible in footer
+    BINDINGS = [
+        ("c", "copy", "Copy to clipboard"),
+        ("ctrl+r", "toggle_expander", "Toggle reasoning"),
+    ]  # visible in footer
 
     def on_click(self, event) -> None:  # type: ignore[override]
         """Handle click on message - toggle collapse/expand."""
@@ -317,10 +374,10 @@ class ChatMessage(Static, can_focus=True):
             if self.has_class("collapsed"):
                 # Expand: remove collapsed class and summary
                 self.remove_class("collapsed")
-                if hasattr(self, '_collapse_summary'):
+                if hasattr(self, "_collapse_summary"):
                     try:
                         self._collapse_summary.remove()
-                        delattr(self, '_collapse_summary')
+                        delattr(self, "_collapse_summary")
                     except Exception:
                         pass
                 # Rebuild content to restore full message
@@ -337,24 +394,43 @@ class ChatMessage(Static, can_focus=True):
                         content = (getattr(self, "content", "") or "").strip()
                         # Extract meaningful summary (skip details/thinking blocks)
                         import re
-                        clean = re.sub(r'<details[^>]*>.*?</details>', '', content, flags=re.S)
-                        clean = re.sub(r'<thinking>.*?</thinking>', '', clean, flags=re.S)
-                        clean = re.sub(r'```[^`]*```', '', clean, flags=re.S)
+
+                        clean = re.sub(
+                            r"<details[^>]*>.*?</details>", "", content, flags=re.S
+                        )
+                        clean = re.sub(
+                            r"<thinking>.*?</thinking>", "", clean, flags=re.S
+                        )
+                        clean = re.sub(r"```[^`]*```", "", clean, flags=re.S)
                         # Also remove markdown headings for cleaner summary
-                        clean = re.sub(r'#{1,6}\s+\w+', '', clean)
-                        lines = [ln.strip() for ln in clean.strip().split('\n') if ln.strip() and not ln.strip().startswith(('#', '>', '-', '*', '🐧', '**'))]
+                        clean = re.sub(r"#{1,6}\s+\w+", "", clean)
+                        lines = [
+                            ln.strip()
+                            for ln in clean.strip().split("\n")
+                            if ln.strip()
+                            and not ln.strip().startswith(
+                                ("#", ">", "-", "*", "🐧", "**")
+                            )
+                        ]
                         if lines:
                             first = lines[0][:35]  # Shorter (was 60)
                             if len(lines[0]) > 35:
                                 first += "…"
                             summary = f"▶ {first}"
                         else:
-                            first_line = content.split('\n')[0][:35]
-                            summary = f"▶ {first_line}…" if len(content.split('\n')[0]) > 35 else f"▶ {first_line}"
-                        
-                        if not hasattr(self, '_collapse_summary'):
+                            first_line = content.split("\n")[0][:35]
+                            summary = (
+                                f"▶ {first_line}…"
+                                if len(content.split("\n")[0]) > 35
+                                else f"▶ {first_line}"
+                            )
+
+                        if not hasattr(self, "_collapse_summary"):
                             from textual.widgets import Static
-                            self._collapse_summary = Static(summary, classes="collapse-summary")
+
+                            self._collapse_summary = Static(
+                                summary, classes="collapse-summary"
+                            )
                             self.mount(self._collapse_summary)
                         else:
                             self._collapse_summary.update(summary)
@@ -372,7 +448,7 @@ class ChatMessage(Static, can_focus=True):
         self._pending_update_task = None
         self._last_update_ts = 0.0
         self._prefixed = False
-        
+
         # PERFORMANCE: Chunk buffering for markdown optimization
         self._chunk_buffer: List[str] = []
         self._buffer_size_limit = 1600  # Increased for fewer Markdown reparses
@@ -389,7 +465,12 @@ class ChatMessage(Static, can_focus=True):
                 text = self._clean_final_content(self.content)
                 try:
                     minimal_active = getattr(self.app, "_minimal_mode", False)
-                    if not minimal_active and self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not self._prefixed:
+                    if (
+                        not minimal_active
+                        and self.role == "assistant"
+                        and getattr(self.app, "_view_mode", "compact") == "compact"
+                        and not self._prefixed
+                    ):
                         text = ("🐧 " + text) if not text.startswith("🐧 ") else text
                         self._prefixed = True
                 except Exception:
@@ -401,34 +482,40 @@ class ChatMessage(Static, can_focus=True):
 
         # Pre-process bespoke tags (<execute>, <execute_command>, etc.) → fenced code
         processed_content = self.content
-        
+
         # Debug: Log the original content to see what we're getting
         if "<execute" in processed_content or "```" in processed_content:
-            logger.debug(f"ChatMessage original content (first 500 chars): {processed_content[:500]}")
-        
+            logger.debug(
+                f"ChatMessage original content (first 500 chars): {processed_content[:500]}"
+            )
+
         # Try to handle both execute tags and already-formatted code blocks
         def format_execute_block(match):
             code = match.group(1)
             # Try to detect and fix common formatting issues from LLM output
             # Fix missing spaces after imports
-            code = re.sub(r'import(\w)', r'import \1', code)
-            code = re.sub(r'from(\w)', r'from \1', code)
+            code = re.sub(r"import(\w)", r"import \1", code)
+            code = re.sub(r"from(\w)", r"from \1", code)
             # Fix missing newlines after imports
-            code = re.sub(r'(import [^\n]+)([a-z])', r'\1\n\2', code, flags=re.I)
+            code = re.sub(r"(import [^\n]+)([a-z])", r"\1\n\2", code, flags=re.I)
             # Fix concatenated function definitions
-            code = re.sub(r'(\w+)def ', r'\1\ndef ', code)
-            code = re.sub(r'(\))def ', r')\n\ndef ', code)
+            code = re.sub(r"(\w+)def ", r"\1\ndef ", code)
+            code = re.sub(r"(\))def ", r")\n\ndef ", code)
             # Fix missing newlines before common keywords
-            code = re.sub(r'(\w)if ', r'\1\nif ', code)
-            code = re.sub(r'(\w)for ', r'\1\nfor ', code)
-            code = re.sub(r'(\w)while ', r'\1\nwhile ', code)
-            code = re.sub(r'(\w)return ', r'\1\nreturn ', code)
+            code = re.sub(r"(\w)if ", r"\1\nif ", code)
+            code = re.sub(r"(\w)for ", r"\1\nfor ", code)
+            code = re.sub(r"(\w)while ", r"\1\nwhile ", code)
+            code = re.sub(r"(\w)return ", r"\1\nreturn ", code)
             # Fix comments that got concatenated
-            code = re.sub(r'([^#\n])#', r'\1\n#', code)
+            code = re.sub(r"([^#\n])#", r"\1\n#", code)
             return f"```python\n{code}\n```"
-        
-        processed_content = re.sub(r"<execute(?:_command|_code)?>(.*?)</execute(?:_command|_code)?>", 
-                                   format_execute_block, processed_content, flags=re.S)
+
+        processed_content = re.sub(
+            r"<execute(?:_command|_code)?>(.*?)</execute(?:_command|_code)?>",
+            format_execute_block,
+            processed_content,
+            flags=re.S,
+        )
 
         # --- Reasoning / Thinking tokens support -----------------------
         # Convert <thinking>...</thinking> blocks into nice markdown block-quotes
@@ -442,7 +529,12 @@ class ChatMessage(Static, can_focus=True):
             quoted_lines = ["> " + ln for ln in raw.splitlines()]
             return "\n" + "\n".join(quoted_lines) + "\n"
 
-        processed_content = re.sub(r"<thinking>(.*?)</thinking>", _convert_thinking, processed_content, flags=re.S)
+        processed_content = re.sub(
+            r"<thinking>(.*?)</thinking>",
+            _convert_thinking,
+            processed_content,
+            flags=re.S,
+        )
         # ----------------------------------------------------------------
 
         # Inline button removed: rely on the expander summary UI for toggling
@@ -455,17 +547,17 @@ class ChatMessage(Static, can_focus=True):
             logger.info(
                 "[details] parse begin expander_available=%s content_len=%s",
                 Expander is not None,
-                len(processed_content or "")
+                len(processed_content or ""),
             )
         except Exception:
             pass
         for m in DETAILS_RE.finditer(processed_content):
-            before = processed_content[pos:m.start()]
+            before = processed_content[pos : m.start()]
             if before.strip():
                 # Trim trailing blanks and apply message-content classes to avoid extra spacing
                 yield TextualMarkdown(
                     self._clean_final_content(before),
-                    classes=f"message-content {self.role}"
+                    classes=f"message-content {self.role}",
                 )
 
             attrs = m.group(1) or ""
@@ -493,7 +585,9 @@ class ChatMessage(Static, can_focus=True):
                 # Preferred rich interactive widget when available.
                 # Auto-open first details in detailed view
                 try:
-                    if getattr(self.app, "_view_mode", "compact") == "detailed" and not hasattr(self, "_opened_first_details"):
+                    if getattr(
+                        self.app, "_view_mode", "compact"
+                    ) == "detailed" and not hasattr(self, "_opened_first_details"):
                         is_open = True
                         setattr(self, "_opened_first_details", True)
                 except Exception:
@@ -520,7 +614,9 @@ class ChatMessage(Static, can_focus=True):
             else:
                 # Older Textual – use our minimal interactive fallback.
                 try:
-                    if getattr(self.app, "_view_mode", "compact") == "detailed" and not hasattr(self, "_opened_first_details"):
+                    if getattr(
+                        self.app, "_view_mode", "compact"
+                    ) == "detailed" and not hasattr(self, "_opened_first_details"):
                         is_open = True
                         setattr(self, "_opened_first_details", True)
                 except Exception:
@@ -539,32 +635,45 @@ class ChatMessage(Static, can_focus=True):
         # If we already yielded widgets for details, and no remainder, return early
         if pos > 0:
             try:
-                logger.info("[details] parse end remainder_len=%s", len(processed_content or ""))
+                logger.info(
+                    "[details] parse end remainder_len=%s", len(processed_content or "")
+                )
             except Exception:
                 pass
             if processed_content:
                 # There was some trailing text outside details block(s)
                 yield TextualMarkdown(
                     self._clean_final_content(processed_content),
-                    classes=f"message-content {self.role}"
+                    classes=f"message-content {self.role}",
                 )
             return
 
         # Compact headline for assistant messages (one-liner, toggles density)
         try:
-            if self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact":
+            if (
+                self.role == "assistant"
+                and getattr(self.app, "_view_mode", "compact") == "compact"
+            ):
                 summary = self._compute_headline(self.content)
+
                 # Small clickable header widget that toggles density for this message
                 class _HL(Static):
                     can_focus = True
+
                     def on_click(self) -> None:  # type: ignore[override]
                         try:
                             self.parent.action_toggle_density()  # type: ignore[attr-defined]
                         except Exception:
                             pass
-                    BINDINGS = [("enter", "toggle", "Toggle"), ("space", "toggle", "Toggle")]
+
+                    BINDINGS = [
+                        ("enter", "toggle", "Toggle"),
+                        ("space", "toggle", "Toggle"),
+                    ]
+
                     def action_toggle(self) -> None:
                         self.on_click()
+
                 yield _HL(Text(summary, style="bold cyan"), classes="msg-head")
         except Exception:
             pass
@@ -572,7 +681,12 @@ class ChatMessage(Static, can_focus=True):
         # Skip penguin emoji prefix in minimal mode for cleaner look
         try:
             minimal_active = getattr(self.app, "_minimal_mode", False)
-            if not minimal_active and self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not processed_content.startswith("🐧 "):
+            if (
+                not minimal_active
+                and self.role == "assistant"
+                and getattr(self.app, "_view_mode", "compact") == "compact"
+                and not processed_content.startswith("🐧 ")
+            ):
                 processed_content = f"🐧 {processed_content}"
         except Exception:
             pass
@@ -584,12 +698,17 @@ class ChatMessage(Static, can_focus=True):
             if self._looks_like_code(processed_content):
                 # Line numbers only in detailed view
                 line_nums = self._is_detailed()
-                syntax_obj = Syntax(processed_content.strip(), "python", theme="monokai", line_numbers=line_nums)
+                syntax_obj = Syntax(
+                    processed_content.strip(),
+                    "python",
+                    theme="monokai",
+                    line_numbers=line_nums,
+                )
                 yield Static(syntax_obj, classes="code-block")
             else:
                 yield TextualMarkdown(
                     self._clean_final_content(processed_content),
-                    classes=f"message-content {self.role}"
+                    classes=f"message-content {self.role}",
                 )
             return
 
@@ -600,11 +719,13 @@ class ChatMessage(Static, can_focus=True):
                 if chunk.strip():
                     yield TextualMarkdown(
                         self._clean_final_content(chunk),
-                        classes=f"message-content {self.role}"
+                        classes=f"message-content {self.role}",
                     )
             elif mod == 1:
                 # language identifier (may be empty)
-                lang = chunk.strip() or "python"  # Default to python if no language specified
+                lang = (
+                    chunk.strip() or "python"
+                )  # Default to python if no language specified
                 if idx + 1 < len(parts):
                     code = parts[idx + 1]
                     # Clean up the code a bit
@@ -621,15 +742,23 @@ class ChatMessage(Static, can_focus=True):
                                 # "actionxml" that actually contains Python preceded by the
                                 # word "python" or wrapped in <execute> tags. Extract it.
                                 import re as _re
+
                                 inner = code
                                 # Case 1: <execute>...</execute> inside the fence
-                                m = _re.search(r"<execute(?:_command|_code)?>([\s\S]*?)</execute(?:_command|_code)?>", inner)
+                                m = _re.search(
+                                    r"<execute(?:_command|_code)?>([\s\S]*?)</execute(?:_command|_code)?>",
+                                    inner,
+                                )
                                 if m:
                                     inner = m.group(1).strip()
                                 # Case 2: a leading "python" line
-                                inner = _re.sub(r"^\s*python\s*\n", "", inner, flags=_re.I)
+                                inner = _re.sub(
+                                    r"^\s*python\s*\n", "", inner, flags=_re.I
+                                )
                                 # Remove common stream artifacts
-                                inner = inner.replace("[Response may be incomplete - check logs]", "").strip()
+                                inner = inner.replace(
+                                    "[Response may be incomplete - check logs]", ""
+                                ).strip()
                                 # Decide language by content
                                 if _RE_PY.search(inner):
                                     actual_lang = "python"
@@ -640,12 +769,19 @@ class ChatMessage(Static, can_focus=True):
                             elif actual_lang == "action":
                                 # Treat generic <action> blocks similarly
                                 import re as _re
+
                                 inner = code
-                                m = _re.search(r"<action[^>]*>([\s\S]*?)</action>", inner)
+                                m = _re.search(
+                                    r"<action[^>]*>([\s\S]*?)</action>", inner
+                                )
                                 if m:
                                     inner = m.group(1).strip()
-                                inner = _re.sub(r"^\s*python\s*\n", "", inner, flags=_re.I)
-                                inner = inner.replace("[Response may be incomplete - check logs]", "").strip()
+                                inner = _re.sub(
+                                    r"^\s*python\s*\n", "", inner, flags=_re.I
+                                )
+                                inner = inner.replace(
+                                    "[Response may be incomplete - check logs]", ""
+                                ).strip()
                                 if _RE_PY.search(inner):
                                     actual_lang = "python"
                                     code = inner
@@ -658,7 +794,11 @@ class ChatMessage(Static, can_focus=True):
                             should_autocollapse = (
                                 getattr(self.app, "_view_mode", "compact") == "compact"
                                 and getattr(self.app, "_tools_compact", True)
-                                and (lang.lower() == "actionxml" or "<tool" in code or "<execute" in code)
+                                and (
+                                    lang.lower() == "actionxml"
+                                    or "<tool" in code
+                                    or "<execute" in code
+                                )
                                 and lang.lower() != "diff"
                             )
                             if should_autocollapse:
@@ -666,25 +806,49 @@ class ChatMessage(Static, can_focus=True):
                                 if len(lines) > preview_lines:
                                     head = "\n".join(lines[:preview_lines])
                                     try:
-                                        preview_syntax = Syntax(head, actual_lang, theme="monokai", line_numbers=line_nums)
+                                        preview_syntax = Syntax(
+                                            head,
+                                            actual_lang,
+                                            theme="monokai",
+                                            line_numbers=line_nums,
+                                        )
                                     except Exception:
-                                        preview_syntax = Syntax(head, "text", theme="monokai", line_numbers=line_nums)
+                                        preview_syntax = Syntax(
+                                            head,
+                                            "text",
+                                            theme="monokai",
+                                            line_numbers=line_nums,
+                                        )
                                     yield Static(preview_syntax, classes="code-block")
                                     remainder = "\n".join(lines[preview_lines:])
-                                    summary = f"Show {len(lines) - preview_lines} more lines…"
+                                    summary = (
+                                        f"Show {len(lines) - preview_lines} more lines…"
+                                    )
                                     body_md = f"```{lang}\n{remainder}\n```"
                                     if Expander is not None:
                                         expander = Expander(summary, open=False)  # type: ignore[call-arg]
                                         expander.mount(TextualMarkdown(body_md))
                                         yield expander
                                     else:
-                                        yield SimpleExpander(summary, body_md, open=False)
+                                        yield SimpleExpander(
+                                            summary, body_md, open=False
+                                        )
                                     continue
 
                             try:
-                                syntax_obj = Syntax(code, actual_lang, theme="monokai", line_numbers=line_nums)
+                                syntax_obj = Syntax(
+                                    code,
+                                    actual_lang,
+                                    theme="monokai",
+                                    line_numbers=line_nums,
+                                )
                             except Exception:
-                                syntax_obj = Syntax(code, "text", theme="monokai", line_numbers=line_nums)
+                                syntax_obj = Syntax(
+                                    code,
+                                    "text",
+                                    theme="monokai",
+                                    line_numbers=line_nums,
+                                )
                             yield Static(syntax_obj, classes="code-block")
                         except Exception as e:
                             # Fallback if syntax highlighting fails
@@ -698,11 +862,16 @@ class ChatMessage(Static, can_focus=True):
         """Append a chunk of text to the message content with buffering optimization."""
         # Clean up streaming artifacts before adding to content
         cleaned_chunk = self._clean_streaming_artifacts(chunk)
-        
+
         # Emit penguin prefix once in compact mode before first chunk (skip in minimal mode)
         try:
             minimal_active = getattr(self.app, "_minimal_mode", False)
-            if not minimal_active and self.role == "assistant" and getattr(self.app, "_view_mode", "compact") == "compact" and not self._prefixed:
+            if (
+                not minimal_active
+                and self.role == "assistant"
+                and getattr(self.app, "_view_mode", "compact") == "compact"
+                and not self._prefixed
+            ):
                 md = self._get_markdown_widget()
                 if md is not None and hasattr(md, "get_stream"):
                     if self._md_stream is None:
@@ -716,37 +885,47 @@ class ChatMessage(Static, can_focus=True):
                 self._prefixed = True
         except Exception:
             pass
-        
+
         # Update content immediately for accuracy
         self.content += cleaned_chunk
-        
+
         # PERFORMANCE FIX: Buffer chunks to reduce markdown processing frequency
         self._chunk_buffer.append(cleaned_chunk)
         current_buffer_size = sum(len(c) for c in self._chunk_buffer)
-        current_time = asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0
-        
+        current_time = (
+            asyncio.get_event_loop().time()
+            if asyncio.get_event_loop().is_running()
+            else 0
+        )
+
         # Flush buffer if it's getting large OR enough time has passed
         should_flush = (
-            current_buffer_size >= self._buffer_size_limit or
-            (current_time - self._last_buffer_flush) >= 0.2  # 200ms minimum
+            current_buffer_size >= self._buffer_size_limit
+            or (current_time - self._last_buffer_flush) >= 0.2  # 200ms minimum
         )
-        
+
         if should_flush:
             self._flush_chunk_buffer()
         else:
             # Just schedule a throttled update without immediate processing
-            self._schedule_markdown_update(min_interval=0.3)  # Increase interval during heavy streaming
+            self._schedule_markdown_update(
+                min_interval=0.3
+            )  # Increase interval during heavy streaming
 
     def _flush_chunk_buffer(self) -> None:
         """Flush buffered chunks to markdown widget for better performance."""
         if not self._chunk_buffer:
             return
-            
+
         # Process accumulated chunks at once
-        buffered_content = ''.join(self._chunk_buffer)
+        buffered_content = "".join(self._chunk_buffer)
         self._chunk_buffer.clear()
-        self._last_buffer_flush = asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0
-        
+        self._last_buffer_flush = (
+            asyncio.get_event_loop().time()
+            if asyncio.get_event_loop().is_running()
+            else 0
+        )
+
         # Prefer Textual Markdown streaming API when available
         try:
             md = self._get_markdown_widget()
@@ -762,56 +941,57 @@ class ChatMessage(Static, can_focus=True):
                         return  # Streaming API handled it
                     except Exception:
                         self._md_stream = None
-            
+
             # Fallback: schedule a regular markdown update
             self._schedule_markdown_update()
         except Exception:
             # If all else fails, schedule an update
             self._schedule_markdown_update()
-    
+
     def _clean_streaming_artifacts(self, chunk: str) -> str:
         """Clean up common streaming artifacts from different providers."""
         if not chunk:
             return chunk
-            
+
         # Remove leading/trailing whitespace while preserving intentional formatting
         cleaned = chunk
-        
+
         # Clean up orphaned block quote markers that aren't part of reasoning
         # This handles cases where > appears at start of lines but isn't reasoning
-        lines = cleaned.split('\n')
+        lines = cleaned.split("\n")
         processed_lines = []
-        
+
         for line in lines:
             # Skip cleaning if this looks like intentional markdown blockquote
-            if line.startswith('> ') and len(line) > 2:
+            if line.startswith("> ") and len(line) > 2:
                 # Check if this is likely a reasoning token artifact vs intentional quote
                 # Reasoning artifacts tend to be short or have specific patterns
-                if len(line.strip()) < 3 or line.strip() in ['> ', '>', '> \n']:
+                if len(line.strip()) < 3 or line.strip() in ["> ", ">", "> \n"]:
                     continue  # Skip likely artifacts
-                    
+
             processed_lines.append(line)
-        
-        cleaned = '\n'.join(processed_lines)
-        
+
+        cleaned = "\n".join(processed_lines)
+
         # Remove common streaming artifacts
         artifacts_to_remove = [
-            '\x00',  # Null bytes
-            '\ufffd',  # Replacement character
-            '\r',  # Carriage returns (keep \n)
+            "\x00",  # Null bytes
+            "\ufffd",  # Replacement character
+            "\r",  # Carriage returns (keep \n)
         ]
-        
+
         for artifact in artifacts_to_remove:
-            cleaned = cleaned.replace(artifact, '')
-            
+            cleaned = cleaned.replace(artifact, "")
+
         # Clean up excessive whitespace but preserve paragraph breaks
         # Remove multiple consecutive spaces (but not intentional indentation)
         import re
-        cleaned = re.sub(r' {3,}', ' ', cleaned)  # 3+ spaces -> 1 space
-        
+
+        cleaned = re.sub(r" {3,}", " ", cleaned)  # 3+ spaces -> 1 space
+
         # Clean up excessive newlines (more than 2 consecutive)
-        cleaned = re.sub(r'\n{4,}', '\n\n\n', cleaned)
-        
+        cleaned = re.sub(r"\n{4,}", "\n\n\n", cleaned)
+
         return cleaned
 
     def _get_markdown_widget(self):
@@ -827,17 +1007,27 @@ class ChatMessage(Static, can_focus=True):
         try:
             loop = asyncio.get_event_loop()
             now = loop.time()
-            
+
             # Cancel existing task if it's still pending
-            if self._pending_update_task is not None and not self._pending_update_task.done():
+            if (
+                self._pending_update_task is not None
+                and not self._pending_update_task.done()
+            ):
                 self._pending_update_task.cancel()
                 self._pending_update_task = None
-            
-            if self._pending_update_task is None and (now - self._last_update_ts) >= min_interval:
-                self._pending_update_task = loop.create_task(self._flush_markdown_update())
+
+            if (
+                self._pending_update_task is None
+                and (now - self._last_update_ts) >= min_interval
+            ):
+                self._pending_update_task = loop.create_task(
+                    self._flush_markdown_update()
+                )
             elif self._pending_update_task is None:
                 delay = max(0.0, min_interval - (now - self._last_update_ts))
-                self._pending_update_task = loop.create_task(self._flush_markdown_update(delay))
+                self._pending_update_task = loop.create_task(
+                    self._flush_markdown_update(delay)
+                )
         except Exception:
             # Don't let markdown scheduling issues crash the app
             pass
@@ -854,68 +1044,68 @@ class ChatMessage(Static, can_focus=True):
             pass
         finally:
             self._pending_update_task = None
-    
+
     def _clean_final_content(self, content: str) -> str:
         """Final cleanup of complete streamed content."""
         if not content:
             return content
-            
+
         import re
-        
+
         # Preserve <details> blocks as-is; the compose() method converts them to interactive widgets.
-        
+
         # Remove orphaned block quote markers that may have been left behind
-        lines = content.split('\n')
+        lines = content.split("\n")
         cleaned_lines = []
-        
+
         for line in lines:
             # Remove lines that are just orphaned block quote markers
-            if line.strip() in ['>', '> ', '> \n']:
+            if line.strip() in [">", "> ", "> \n"]:
                 continue
-                
+
             # Clean up lines that start with > but have minimal content (likely artifacts)
-            if line.startswith('> ') and len(line.strip()) <= 3:
+            if line.startswith("> ") and len(line.strip()) <= 3:
                 continue
-                
+
             cleaned_lines.append(line)
-        
-        content = '\n'.join(cleaned_lines)
-        
+
+        content = "\n".join(cleaned_lines)
+
         # Clean up any remaining streaming artifacts
-        content = re.sub(r'\n{3,}', '\n\n', content)  # Max 2 consecutive newlines
-        content = re.sub(r' {2,}', ' ', content)      # Max 1 space between words
-        
+        content = re.sub(r"\n{3,}", "\n\n", content)  # Max 2 consecutive newlines
+        content = re.sub(r" {2,}", " ", content)  # Max 1 space between words
+
         # Remove trailing whitespace from lines while preserving intentional formatting
-        lines = content.split('\n')
-        content = '\n'.join(line.rstrip() for line in lines)
-        
+        lines = content.split("\n")
+        content = "\n".join(line.rstrip() for line in lines)
+
         # Heuristic fix: ensure a newline after common section headings like
         # "### Final" when the model forgot a line break (e.g., "### FinalHere…").
         # Insert the newlines without losing the following character.
-        content = re.sub(r'(?mi)^(#{1,6}\s+Final)(\S)', r"\1\n\n\2", content)
+        content = re.sub(r"(?mi)^(#{1,6}\s+Final)(\S)", r"\1\n\n\2", content)
 
         # Normalize chained inline bullets of the form " - a - b - c" into
         # proper list items, but only for narrative lines (not code fences).
         def _normalize_inline_bullets(text: str) -> str:
             out = []
-            for ln in text.split('\n'):
+            for ln in text.split("\n"):
                 s = ln.strip()
                 # Skip obvious code fence lines
-                if s.startswith('```'):
+                if s.startswith("```"):
                     out.append(ln)
                     continue
                 # Convert only if there are at least two separators and line
                 # isn't already a list item
-                if ' - ' in ln and ln.count(' - ') >= 2 and not s.startswith('- '):
-                    parts = [p.strip() for p in ln.split(' - ') if p.strip()]
+                if " - " in ln and ln.count(" - ") >= 2 and not s.startswith("- "):
+                    parts = [p.strip() for p in ln.split(" - ") if p.strip()]
                     if len(parts) >= 2:
-                        out.append('- ' + '\n- '.join(parts))
+                        out.append("- " + "\n- ".join(parts))
                         continue
                 out.append(ln)
-            return '\n'.join(out)
+            return "\n".join(out)
 
         content = _normalize_inline_bullets(content)
-        
+
         # --- Markdown seam fixes (narrow, safe) ---
         # 1) Split a heading immediately followed by a code fence
         content = re.sub(r"(?m)^(#{1,6}[^\n]*?)\s*```", r"\1\n\n```", content)
@@ -940,49 +1130,52 @@ class ChatMessage(Static, can_focus=True):
         content = re.sub(r"(?<!\n)(?=```)", "\n", content)
 
         return content.strip()
-    
+
     def _process_details_tags(self, content: str) -> str:
         """Convert HTML details tags to markdown-friendly format."""
         import re
-        
+
         # Pattern to match <details><summary>...</summary>content</details>
-        details_pattern = r'<details>\s*<summary>([^<]*)</summary>\s*(.*?)</details>'
-        
+        details_pattern = r"<details>\s*<summary>([^<]*)</summary>\s*(.*?)</details>"
+
         def replace_details(match):
             summary = match.group(1).strip()
             details_content = match.group(2).strip()
-            
+
             # Remove any existing > prefixes from the content to avoid double-prefixing
-            cleaned_content = re.sub(r'^> ', '', details_content, flags=re.MULTILINE)
-            
+            cleaned_content = re.sub(r"^> ", "", details_content, flags=re.MULTILINE)
+
             # Store the original content for toggling
-            if not hasattr(self, '_original_reasoning_content'):
+            if not hasattr(self, "_original_reasoning_content"):
                 self._original_reasoning_content = cleaned_content
-            
+
             # Create a collapsible section with clear visual indicator
             return f"**{summary}** `[🧠 Reasoning - Press Ctrl+R to toggle]`\n\n> {cleaned_content.replace(chr(10), chr(10) + '> ')}"
-        
+
         # Replace all details tags
         content = re.sub(details_pattern, replace_details, content, flags=re.DOTALL)
-        
+
         return content
 
     def end_stream(self) -> None:
         """Finalize the stream, perhaps by adding a specific style."""
         self.remove_class("streaming")
-        
+
         # PERFORMANCE FIX: Flush any remaining buffered chunks before finalizing
         self._flush_chunk_buffer()
-        
+
         # Cancel any pending markdown update tasks to prevent crashes
-        if hasattr(self, '_pending_update_task') and self._pending_update_task is not None:
+        if (
+            hasattr(self, "_pending_update_task")
+            and self._pending_update_task is not None
+        ):
             if not self._pending_update_task.done():
                 self._pending_update_task.cancel()
             self._pending_update_task = None
-        
+
         # Final cleanup of the complete content
         self.content = self._clean_final_content(self.content)
-        
+
         # Update the markdown widget with cleaned content
         try:
             if self._md_stream is not None:
@@ -1001,7 +1194,7 @@ class ChatMessage(Static, can_focus=True):
         # ---------------------------------------------
         # Post-processing: ensure reasoning is properly formatted
         # ---------------------------------------------
-        # Note: With the new streaming approach, reasoning should already be 
+        # Note: With the new streaming approach, reasoning should already be
         # properly formatted in <details> blocks during streaming, so we skip
         # most of the old post-processing logic to avoid interference.
         try:
@@ -1062,20 +1255,34 @@ class ChatMessage(Static, can_focus=True):
 
         # Notify the main app so status-bar can show feedback
         try:
-            self.post_message(StatusMessage("Copied ✅" if copied else "📋 Clipboard unavailable"))
+            self.post_message(
+                StatusMessage("Copied ✅" if copied else "📋 Clipboard unavailable")
+            )
         except Exception:
             pass
 
     def _looks_like_code(self, text: str) -> bool:
         """Simple heuristic to guess if *text* is code when no fences are present."""
-        code_keywords = ["def ", "class ", "import ", "return ", "from ", "for ", "while "]
+        code_keywords = [
+            "def ",
+            "class ",
+            "import ",
+            "return ",
+            "from ",
+            "for ",
+            "while ",
+        ]
         if any(kw in text for kw in code_keywords):
             # If more than 40% of lines are indented or end with ':' assume code block
             lines = text.splitlines()
             if not lines:
                 return False
-            indented = sum(1 for ln in lines if ln.startswith(" ") or ln.startswith("\t"))
-            return indented / len(lines) > 0.4 or len(lines) < 4  # small snippets often code
+            indented = sum(
+                1 for ln in lines if ln.startswith(" ") or ln.startswith("\t")
+            )
+            return (
+                indented / len(lines) > 0.4 or len(lines) < 4
+            )  # small snippets often code
         return False
 
     # ------------------------------
@@ -1088,7 +1295,7 @@ class ChatMessage(Static, can_focus=True):
             if self.has_class("collapsed"):
                 self.remove_class("collapsed")
                 return
-            
+
             # Try to find traditional expander widgets first
             if Expander is not None:
                 exp = self.query_one(Expander)  # type: ignore[arg-type]
@@ -1153,6 +1360,7 @@ class ChatMessage(Static, can_focus=True):
                 md.update(self.content)
             except Exception:
                 pass
+
     def _compute_headline(self, text: str) -> str:
         base = text.strip().splitlines()
         if not base:
@@ -1168,14 +1376,14 @@ class ChatMessage(Static, can_focus=True):
 
     def action_toggle_density(self) -> None:
         try:
-            app = getattr(self, 'app', None)
+            app = getattr(self, "app", None)
             if not app:
                 return
             # Store per-message override flag on self
-            current = getattr(self, '_override_detailed', None)
+            current = getattr(self, "_override_detailed", None)
             if current is None:
                 # If app is compact, expand just this message to detailed; else collapse
-                app_compact = getattr(app, '_view_mode', 'compact') == 'compact'
+                app_compact = getattr(app, "_view_mode", "compact") == "compact"
                 self._override_detailed = app_compact
             else:
                 self._override_detailed = not current
@@ -1184,49 +1392,53 @@ class ChatMessage(Static, can_focus=True):
         except Exception:
             pass
 
-
     def _toggle_reasoning_content(self) -> None:
         """Toggle reasoning content visibility by modifying the content directly."""
         try:
             markdown_widget = self.query_one(TextualMarkdown)
             current_content = self.content
-            
+
             import re
-            
+
             # Check if we have a details block with reasoning
-            if '<details>' in current_content and '</details>' in current_content:
+            if "<details>" in current_content and "</details>" in current_content:
                 # Find and toggle the details block
-                details_pattern = r'<details([^>]*)>\s*(<summary>.*?</summary>)\s*(.*?)</details>'
-                
+                details_pattern = (
+                    r"<details([^>]*)>\s*(<summary>.*?</summary>)\s*(.*?)</details>"
+                )
+
                 def toggle_details(match):
                     attrs = match.group(1)
                     summary = match.group(2)
                     body = match.group(3).strip()
-                    
+
                     # Check if it's a reasoning block
-                    if '🧠' in summary:
+                    if "🧠" in summary:
                         # Toggle by adding/removing 'open' attribute
-                        if 'open' not in attrs:
+                        if "open" not in attrs:
                             # Currently closed, open it
-                            return f'<details open>\n{summary}\n\n{body}\n</details>'
+                            return f"<details open>\n{summary}\n\n{body}\n</details>"
                         else:
                             # Currently open, close it
-                            return f'<details>\n{summary}\n\n{body}\n</details>'
+                            return f"<details>\n{summary}\n\n{body}\n</details>"
                     return match.group(0)  # Return unchanged if not reasoning
-                
-                new_content = re.sub(details_pattern, toggle_details, current_content, flags=re.DOTALL)
-                
+
+                new_content = re.sub(
+                    details_pattern, toggle_details, current_content, flags=re.DOTALL
+                )
+
                 if new_content != current_content:
                     self.content = new_content
                     markdown_widget.update(self.content)
                     return
-            
+
             # Fallback (non-destructive): if no <details>, do nothing to avoid content loss
             # We no longer try to rewrite blockquote reasoning, which was destructive.
-                
+
         except Exception:
             # No reasoning content to toggle or error occurred
             pass
+
 
 # Simple status message to bubble up to PenguinTextualApp
 from textual.message import Message  # after other imports # type: ignore
@@ -1240,9 +1452,9 @@ class StatusMessage(Message):
 
 class PenguinTextualApp(App):
     """A Textual-based chat interface for Penguin AI."""
-    
+
     CSS_PATH = "tui.css"
-    
+
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
         ("ctrl+q", "quit", "Quit"),
@@ -1250,25 +1462,31 @@ class PenguinTextualApp(App):
         ("ctrl+d", "show_debug", "Debug"),
         ("ctrl+m", "toggle_minimal", "Minimal"),
     ]
-    
+
     status_text = reactive("Initializing...")
-    
+
     def __init__(self):
         super().__init__()
         self.core: Optional[PenguinCore] = None
         self.interface: Optional[PenguinInterface] = None
         self.debug_messages: list[str] = []
         self.current_streaming_widget: Optional[ChatMessage] = None
-        self.last_finalized_content: Optional[str] = None # For deduplication
+        self.last_finalized_content: Optional[str] = None  # For deduplication
         self.dedup_clear_task: Optional[asyncio.Task] = None
         self._runmode_message: Optional[ChatMessage] = None  # For RunMode output
-        self._stream_timeout_task: Optional[asyncio.Task] = None  # Stream timeout monitor
+        self._stream_timeout_task: Optional[asyncio.Task] = (
+            None  # Stream timeout monitor
+        )
         self._stream_start_time: float = 0
         self._stream_chunk_count: int = 0
         self._conversation_list: Optional[list] = None  # For conversation selection
-        self._reasoning_content: str = ""  # For accumulating reasoning content during streaming
-        self._original_reasoning_content: str = ""  # For storing original reasoning content for toggle
-        
+        self._reasoning_content: str = (
+            ""  # For accumulating reasoning content during streaming
+        )
+        self._original_reasoning_content: str = (
+            ""  # For storing original reasoning content for toggle
+        )
+
         # New: Tool execution tracking
         self._active_tools: Dict[str, ToolExecutionWidget] = {}
         self.command_registry: Optional[CommandRegistry] = None
@@ -1288,9 +1506,9 @@ class PenguinTextualApp(App):
         # Preferences (theme/layout) persisted across sessions
         self._prefs_path: str = os.path.expanduser("~/.penguin/tui_prefs.yml")
         self._theme_name: str = "ocean"  # ocean | nord | dracula
-        self._layout_mode: str = "flat"   # flat | boxed
+        self._layout_mode: str = "flat"  # flat | boxed
         self._view_mode: str = "compact"  # compact | detailed
-        self._minimal_mode: bool = False   # minimal UI chrome
+        self._minimal_mode: bool = False  # minimal UI chrome
         # Compact tool display controls
         self._tools_compact: bool = True
         self._tools_preview_lines: int = 10
@@ -1319,7 +1537,7 @@ class PenguinTextualApp(App):
 
         # Message style variants: soft | boxed | line (affects message/code visuals only)
         self._message_style: str = "soft"
-        
+
         # Whole-message collapsing (alternative to section-level collapse)
         self._collapse_whole_messages: bool = False
 
@@ -1371,8 +1589,8 @@ class PenguinTextualApp(App):
                 yield Static("", id="crumb-bar")
                 yield VerticalScroll(id="message-area")
                 yield Input(
-                    placeholder="Type your message... (/help for commands, Tab for autocomplete)", 
-                    id="input-box"
+                    placeholder="Type your message... (/help for commands, Tab for autocomplete)",
+                    id="input-box",
                 )
             yield StatusSidebar()
         yield Static(id="status-bar")
@@ -1384,12 +1602,14 @@ class PenguinTextualApp(App):
             # Log Textual version at app startup (also goes to tui_debug.log)
             try:
                 import importlib.metadata as _md  # py3.8+
+
                 try:
                     _v = _md.version("textual")
                 except Exception:
                     _v = "<unknown>"
                 try:
                     import textual as _textual
+
                     _p = getattr(_textual, "__file__", "<unknown>")
                 except Exception:
                     _p = "<unimportable>"
@@ -1450,7 +1670,9 @@ class PenguinTextualApp(App):
     def _scroll_to_bottom(self) -> None:
         """Scroll the message area to the bottom without animation."""
         try:
-            area = self._message_area_ref or self.query_one("#message-area", VerticalScroll)
+            area = self._message_area_ref or self.query_one(
+                "#message-area", VerticalScroll
+            )
             area.scroll_end(animate=False)  # immediate jump
         except Exception:
             pass
@@ -1465,6 +1687,7 @@ class PenguinTextualApp(App):
             # Cancel any pending request
             if self._scroll_request_task and not self._scroll_request_task.done():
                 self._scroll_request_task.cancel()
+
             # Schedule a new one
             async def _do_scroll_after_delay(delay_ms: int) -> None:
                 try:
@@ -1472,7 +1695,10 @@ class PenguinTextualApp(App):
                     self._scroll_to_bottom()
                 except Exception:
                     pass
-            self._scroll_request_task = loop.create_task(_do_scroll_after_delay(self._scroll_debounce_ms))
+
+            self._scroll_request_task = loop.create_task(
+                _do_scroll_after_delay(self._scroll_debounce_ms)
+            )
         except Exception:
             # Fallback to immediate scroll on error
             self._scroll_to_bottom()
@@ -1483,17 +1709,21 @@ class PenguinTextualApp(App):
         Returns True on uncertainty to avoid surprising behavior.
         """
         try:
-            message_area = self._message_area_ref or self.query_one("#message-area", VerticalScroll)
+            message_area = self._message_area_ref or self.query_one(
+                "#message-area", VerticalScroll
+            )
             virtual_size = getattr(message_area, "virtual_size", None)
             scroll_offset = getattr(message_area, "scroll_offset", None)
             size = getattr(message_area, "size", None)
             if virtual_size and scroll_offset and size:
-                remaining = getattr(virtual_size, "height", 0) - (getattr(scroll_offset, "y", 0) + getattr(size, "height", 0))
+                remaining = getattr(virtual_size, "height", 0) - (
+                    getattr(scroll_offset, "y", 0) + getattr(size, "height", 0)
+                )
                 return remaining <= max(0, threshold_px)
         except Exception:
             pass
         return True
-    
+
     def _collapse_older_assistant(self, area: Optional[VerticalScroll] = None) -> None:
         """Collapse older assistant messages, leaving the most recent N visible.
 
@@ -1501,11 +1731,19 @@ class PenguinTextualApp(App):
         For section collapsing: works on expandable sections within messages.
         """
         try:
-            area_ref = area or self._message_area_ref or self.query_one("#message-area", VerticalScroll)
-            msgs = [w for w in area_ref.children if isinstance(w, ChatMessage) and getattr(w, "role", "") == "assistant"]
+            area_ref = (
+                area
+                or self._message_area_ref
+                or self.query_one("#message-area", VerticalScroll)
+            )
+            msgs = [
+                w
+                for w in area_ref.children
+                if isinstance(w, ChatMessage) and getattr(w, "role", "") == "assistant"
+            ]
             keep = max(1, int(getattr(self, "_collapse_keep", 1)))
             to_collapse = msgs[:-keep]
-            
+
             if getattr(self, "_collapse_whole_messages", False):
                 # Whole-message collapsing: add .collapsed class to entire ChatMessage
                 for w in to_collapse:
@@ -1516,14 +1754,26 @@ class PenguinTextualApp(App):
                             content = (getattr(w, "content", "") or "").strip()
                             # Extract meaningful summary (skip details/thinking blocks)
                             import re
+
                             # Remove details blocks for summary
-                            clean = re.sub(r'<details[^>]*>.*?</details>', '', content, flags=re.S)
+                            clean = re.sub(
+                                r"<details[^>]*>.*?</details>", "", content, flags=re.S
+                            )
                             # Remove thinking blocks
-                            clean = re.sub(r'<thinking>.*?</thinking>', '', clean, flags=re.S)
+                            clean = re.sub(
+                                r"<thinking>.*?</thinking>", "", clean, flags=re.S
+                            )
                             # Remove code blocks
-                            clean = re.sub(r'```[^`]*```', '', clean, flags=re.S)
+                            clean = re.sub(r"```[^`]*```", "", clean, flags=re.S)
                             # Get first meaningful line
-                            lines = [ln.strip() for ln in clean.strip().split('\n') if ln.strip() and not ln.strip().startswith(('#', '>', '-', '*', '🐧'))]
+                            lines = [
+                                ln.strip()
+                                for ln in clean.strip().split("\n")
+                                if ln.strip()
+                                and not ln.strip().startswith(
+                                    ("#", ">", "-", "*", "🐧")
+                                )
+                            ]
                             if lines:
                                 first = lines[0][:35]  # Shorter summary (was 60)
                                 if len(lines[0]) > 35:
@@ -1531,13 +1781,20 @@ class PenguinTextualApp(App):
                                 summary = f"▶ {first}"
                             else:
                                 # Fallback to raw first line
-                                first_line = content.split('\n')[0][:35]
-                                summary = f"▶ {first_line}…" if len(content.split('\n')[0]) > 35 else f"▶ {first_line}"
-                            
+                                first_line = content.split("\n")[0][:35]
+                                summary = (
+                                    f"▶ {first_line}…"
+                                    if len(content.split("\n")[0]) > 35
+                                    else f"▶ {first_line}"
+                                )
+
                             # Create or update a summary widget
-                            if not hasattr(w, '_collapse_summary'):
+                            if not hasattr(w, "_collapse_summary"):
                                 from textual.widgets import Static
-                                w._collapse_summary = Static(summary, classes="collapse-summary")
+
+                                w._collapse_summary = Static(
+                                    summary, classes="collapse-summary"
+                                )
                                 w.mount(w._collapse_summary)
                             else:
                                 w._collapse_summary.update(summary)
@@ -1550,12 +1807,12 @@ class PenguinTextualApp(App):
                 for w in to_collapse:
                     try:
                         # Find and collapse expandable sections within this message
-                        if hasattr(w, 'query'):
+                        if hasattr(w, "query"):
                             for exp in w.query("Expander, SimpleExpander"):
                                 try:
-                                    if hasattr(exp, 'open'):
+                                    if hasattr(exp, "open"):
                                         exp.open = False
-                                    elif hasattr(exp, 'open_state'):
+                                    elif hasattr(exp, "open_state"):
                                         exp.open_state = False
                                 except Exception:
                                     pass
@@ -1563,8 +1820,10 @@ class PenguinTextualApp(App):
                         pass
         except Exception:
             pass
-    
-    def _format_system_output(self, action_name: str, result_str: str, max_lines: int = 20) -> str:
+
+    def _format_system_output(
+        self, action_name: str, result_str: str, max_lines: int = 20
+    ) -> str:
         """Format tool / action output.
 
         - Compact view: show fenced text. If longer than max_lines, include a
@@ -1587,6 +1846,7 @@ class PenguinTextualApp(App):
             # Detailed: full output with best-effort language fence
             def _guess_lang(s: str) -> str | None:
                 return _guess_lang_cached(s)
+
             lang = _guess_lang(result_str)
             fence = f"```{lang}\n" if lang else "```\n"
             return f"{fence}{result_str}\n```"
@@ -1596,14 +1856,17 @@ class PenguinTextualApp(App):
             # Compact short block
             def _guess_lang(s: str) -> str | None:
                 return _guess_lang_cached(s)
+
             lang = _guess_lang(result_str)
             fence = f"```{lang}\n" if lang else "```\n"
             return f"{fence}{result_str}\n```"
 
         preview = "\n".join(lines[:max_lines])
         remainder = "\n".join(lines[max_lines:])
+
         def _guess_lang(s: str) -> str | None:
             return _guess_lang_cached(s)
+
         lang = _guess_lang(result_str)
         fence = f"```{lang}\n" if lang else "```\n"
         content = f"{fence}{preview}\n```\n\n"
@@ -1626,6 +1889,7 @@ class PenguinTextualApp(App):
             lines = [ln.rstrip() for ln in txt.splitlines()]
             # Remove Jupyter-style echo lines and blanks
             import re as _re
+
             cleaned: list[str] = []
             seen: set[str] = set()
             for ln in lines:
@@ -1671,7 +1935,9 @@ class PenguinTextualApp(App):
         try:
             if self.last_finalized_content:
                 return str(self.last_finalized_content)
-            if self.current_streaming_widget and getattr(self.current_streaming_widget, "content", ""):
+            if self.current_streaming_widget and getattr(
+                self.current_streaming_widget, "content", ""
+            ):
                 return str(self.current_streaming_widget.content)
         except Exception:
             pass
@@ -1680,6 +1946,7 @@ class PenguinTextualApp(App):
     def _normalize_snippet(self, s: str) -> str:
         try:
             import re as _re
+
             s = s or ""
             # Drop code fences / tags common in our flow
             s = _re.sub(r"```[a-zA-Z0-9_.-]*", "", s)
@@ -1729,21 +1996,24 @@ class PenguinTextualApp(App):
             try:
                 import textual  # type: ignore
                 import rich  # type: ignore
-                logger.debug(f"Textual version: {getattr(textual, '__version__', 'unknown')}")
+
+                logger.debug(
+                    f"Textual version: {getattr(textual, '__version__', 'unknown')}"
+                )
                 logger.debug(f"Rich version: {getattr(rich, '__version__', 'unknown')}")
             except Exception:
                 pass
             self.core = await PenguinCore.create(fast_startup=True, show_progress=False)
-            
+
             self.status_text = "Setting up interface..."
             # Subscribe to all event types via unified event bus
             self._event_bus = EventBus.get_sync()
             for event_type in EventType:
                 self._event_bus.subscribe(event_type.value, self.handle_core_event)
             self.debug_messages.append("Subscribed to event bus for all UI events")
-            
+
             self.interface = PenguinInterface(self.core)
-            
+
             # Initialize command registry
             self.status_text = "Loading commands..."
             self.command_registry = CommandRegistry()
@@ -1753,14 +2023,22 @@ class PenguinTextualApp(App):
                 input_widget.suggester = CommandSuggester(self.command_registry)
             except Exception:
                 pass
-            
+
             self.status_text = "Ready"
-            welcome_panel = Panel("🐧 [bold cyan]Penguin AI[/bold cyan] is ready! Type a message or /help. Use Tab for command autocomplete.", title="Welcome", border_style="cyan")
+            welcome_panel = Panel(
+                "🐧 [bold cyan]Penguin AI[/bold cyan] is ready! Type a message or /help. Use Tab for command autocomplete.",
+                title="Welcome",
+                border_style="cyan",
+            )
             self.query_one("#message-area").mount(Static(welcome_panel))
 
         except Exception as e:
             self.status_text = f"Error initializing core: {e}"
-            error_panel = Panel(f"[bold red]Fatal Error[/bold red]\n{e}", title="Initialization Failed", border_style="red")
+            error_panel = Panel(
+                f"[bold red]Fatal Error[/bold red]\n{e}",
+                title="Initialization Failed",
+                border_style="red",
+            )
             self.query_one("#message-area").mount(Static(error_panel))
             error_details = traceback.format_exc()
             logger.error(f"TUI initialization error: {error_details}")
@@ -1785,8 +2063,11 @@ class PenguinTextualApp(App):
                 sidebar.display = visible
                 if visible:
                     # Pre-stream waiting animation (before first chunk arrives)
-                    if getattr(self, "_pending_response", False) and self.current_streaming_widget is None:
-                        frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+                    if (
+                        getattr(self, "_pending_response", False)
+                        and self.current_streaming_widget is None
+                    ):
+                        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
                         self._spinner_index = (self._spinner_index + 1) % len(frames)
                         spinner = frames[self._spinner_index]
                         payload = {"raw": f"{spinner} waiting for response..."}
@@ -1795,14 +2076,28 @@ class PenguinTextualApp(App):
                             self._last_status_payload = payload
                         await asyncio.sleep(0.1)
                         continue
-                    elapsed = int(asyncio.get_event_loop().time() - getattr(self, "_stream_start_time", 0)) if self.current_streaming_widget else int(time.time() - self._app_start_ts)
+                    elapsed = (
+                        int(
+                            asyncio.get_event_loop().time()
+                            - getattr(self, "_stream_start_time", 0)
+                        )
+                        if self.current_streaming_widget
+                        else int(time.time() - self._app_start_ts)
+                    )
                     model = None
                     if self.core and getattr(self.core, "model_config", None):
                         model = getattr(self.core.model_config, "model", None)
                     tokens = self.interface.get_token_usage() if self.interface else {}
                     cur = tokens.get("current_total_tokens", 0)
-                    max_t = tokens.get("max_context_window_tokens", tokens.get("max_tokens", 0))  # Context window capacity
-                    payload = {"model": model or "model?", "tokens_cur": cur, "tokens_max": max_t, "elapsed": elapsed}
+                    max_t = tokens.get(
+                        "max_context_window_tokens", tokens.get("max_tokens", 0)
+                    )  # Context window capacity
+                    payload = {
+                        "model": model or "model?",
+                        "tokens_cur": cur,
+                        "tokens_max": max_t,
+                        "elapsed": elapsed,
+                    }
                     if payload != getattr(self, "_last_status_payload", None):
                         sidebar.update_status(payload)
                         self._last_status_payload = payload
@@ -1814,7 +2109,9 @@ class PenguinTextualApp(App):
                                 self._crumb_text = txt
                                 if self._crumb_ref is None:
                                     try:
-                                        self._crumb_ref = self.query_one("#crumb-bar", Static)
+                                        self._crumb_ref = self.query_one(
+                                            "#crumb-bar", Static
+                                        )
                                     except Exception:
                                         self._crumb_ref = None
                                 if self._crumb_ref is not None:
@@ -1837,7 +2134,9 @@ class PenguinTextualApp(App):
 
     async def _handle_status_toggle(self) -> None:
         self._status_visible = not getattr(self, "_status_visible", True)
-        self.add_message(f"Status sidebar {'shown' if self._status_visible else 'hidden'}.", "system")
+        self.add_message(
+            f"Status sidebar {'shown' if self._status_visible else 'hidden'}.", "system"
+        )
 
     async def handle_core_event(self, event_type: str, data: Any) -> None:
         """Handle events from PenguinCore with performance optimizations."""
@@ -1849,53 +2148,73 @@ class PenguinTextualApp(App):
                 is_final = False
             # Only log every 100th chunk or final to reduce overhead
             if is_final or (getattr(self, "_stream_chunk_count", 0) % 100 == 0):
-                logger.debug(f"TUI handle_core_event {event_type} chunk #{getattr(self, '_stream_chunk_count', 0)}")
+                logger.debug(
+                    f"TUI handle_core_event {event_type} chunk #{getattr(self, '_stream_chunk_count', 0)}"
+                )
         else:
             logger.debug(f"TUI handle_core_event {event_type}")
-        
+
         # PERFORMANCE FIX: Reduce debug message overhead during streaming
         try:
             # Only keep last 50 debug messages to prevent memory bloat
             if len(self.debug_messages) > 50:
                 self.debug_messages = self.debug_messages[-25:]  # Keep last 25
-            
+
             # Simplified debug logging for stream chunks
             if event_type == "stream_chunk":
                 # Don't add debug message for every chunk - too expensive
-                pass  
+                pass
             else:
-                self.debug_messages.append(f"Event: {event_type} ({str(data)[:100]}...)" if len(str(data)) > 100 else f"Event: {event_type}")
-            
+                self.debug_messages.append(
+                    f"Event: {event_type} ({str(data)[:100]}...)"
+                    if len(str(data)) > 100
+                    else f"Event: {event_type}"
+                )
+
             if event_type == "message":
                 # A message event means Core has started working; if it's an assistant
                 # reply and streaming hasn't begun yet, mark pending for spinner.
                 try:
                     role_peek = data.get("role", "")
-                    if role_peek == "assistant" and self.current_streaming_widget is None:
+                    if (
+                        role_peek == "assistant"
+                        and self.current_streaming_widget is None
+                    ):
                         self._pending_response = True
                 except Exception:
                     pass
                 role = data.get("role", "unknown")
                 content = data.get("content", "")
                 category = data.get("category", "DIALOG")
-                
+
                 # Skip user messages that we already displayed
                 if role == "user":
-                    self.debug_messages.append(f"Skipping user message (already displayed): {content[:50]}...")
+                    self.debug_messages.append(
+                        f"Skipping user message (already displayed): {content[:50]}..."
+                    )
                     return
-                
+
                 # Check for and prevent rendering of duplicate assistant message post-stream
-                if role == "assistant" and content.strip() == (self.last_finalized_content or "").strip():
-                    self.last_finalized_content = None # Consume the dedupe key
-                    self.debug_messages.append(f"Deduplicated assistant message: {content[:50]}...")
+                if (
+                    role == "assistant"
+                    and content.strip() == (self.last_finalized_content or "").strip()
+                ):
+                    self.last_finalized_content = None  # Consume the dedupe key
+                    self.debug_messages.append(
+                        f"Deduplicated assistant message: {content[:50]}..."
+                    )
                     return
-                
+
                 # Handle system messages – but suppress duplicate "Tool Result" / "Action Result" output
                 if role == "system" or category in ("SYSTEM", "SYSTEM_OUTPUT"):
                     lowered = content.lower().lstrip()
-                    if lowered.startswith("tool result") or lowered.startswith("action result"):
+                    if lowered.startswith("tool result") or lowered.startswith(
+                        "action result"
+                    ):
                         # Already rendered via ToolExecutionWidget – skip duplicate
-                        self.debug_messages.append("Skipped duplicate system output message")
+                        self.debug_messages.append(
+                            "Skipped duplicate system output message"
+                        )
                         return
                     # Format other system messages
                     if len(content) > 500:
@@ -1921,26 +2240,30 @@ class PenguinTextualApp(App):
                     self._stream_start_time = asyncio.get_event_loop().time()
                     self._stream_chunk_count = 0
                     self._pending_response = False  # stop spinner
-                    
+
                     # Initialize reasoning content accumulator and tracking
                     self._reasoning_content = ""
                     self._reasoning_details_started = False
-                    
+
                     # Start stream timeout monitor
-                    self._stream_timeout_task = asyncio.create_task(self._monitor_stream_timeout())
+                    self._stream_timeout_task = asyncio.create_task(
+                        self._monitor_stream_timeout()
+                    )
 
                 if self.current_streaming_widget and chunk:
                     self._stream_chunk_count += 1
-                    
+
                     # PERFORMANCE FIX: Reduce time-checking overhead - only check every 50th chunk
                     if self._stream_chunk_count % 50 == 0:
                         current_time = asyncio.get_event_loop().time()
-                        if hasattr(self, '_stream_start_time'):
+                        if hasattr(self, "_stream_start_time"):
                             stream_duration = current_time - self._stream_start_time
                             # Detect potential hang (no final chunk after reasonable time)
                             if stream_duration > 30 and not is_final:
-                                self.debug_messages.append(f"Long stream detected: {stream_duration:.1f}s, {self._stream_chunk_count} chunks")
-                    
+                                self.debug_messages.append(
+                                    f"Long stream detected: {stream_duration:.1f}s, {self._stream_chunk_count} chunks"
+                                )
+
                     if not is_final:
                         # Handle different message types
                         if message_type == "reasoning":
@@ -1948,75 +2271,105 @@ class PenguinTextualApp(App):
                             if self._stream_chunk_count % 5 == 0:
                                 try:
                                     sidebar = self.query_one(StatusSidebar)
-                                    dots = ("…" * ((self._stream_chunk_count % 3) + 1))
-                                    sidebar.update_status({"raw": f"🧠 reasoning{dots}"})
+                                    dots = "…" * ((self._stream_chunk_count % 3) + 1)
+                                    sidebar.update_status(
+                                        {"raw": f"🧠 reasoning{dots}"}
+                                    )
                                 except Exception:
                                     pass  # Don't let sidebar issues stall streaming
-                            
+
                             # Stream reasoning tokens in real-time with details block
                             self._reasoning_content += chunk
-                            
+
                             # Create or update the reasoning details block
                             if not self._reasoning_details_started:
                                 # Start the reasoning details block
                                 reasoning_header = "<details>\n<summary>🧠 Click to show / hide internal reasoning</summary>\n\n"
-                                self.current_streaming_widget.stream_in(reasoning_header)
+                                self.current_streaming_widget.stream_in(
+                                    reasoning_header
+                                )
                                 self._reasoning_details_started = True
-                            
+
                             # Stream the reasoning chunk directly inside the details block
                             # The blockquote formatting will be handled by the Textual markdown renderer
                             self.current_streaming_widget.stream_in(chunk)
                         else:
-                            # Stream assistant content directly  
+                            # Stream assistant content directly
                             # If we were streaming reasoning, close the details block first
-                            if self._reasoning_details_started and message_type != "reasoning":
-                                self.current_streaming_widget.stream_in("\n\n</details>\n\n")
+                            if (
+                                self._reasoning_details_started
+                                and message_type != "reasoning"
+                            ):
+                                self.current_streaming_widget.stream_in(
+                                    "\n\n</details>\n\n"
+                                )
                                 self._reasoning_details_started = False
-                            
+
                             self.current_streaming_widget.stream_in(chunk)
                             # Keep the latest buffer for deduplication against upcoming message event
-                            self.last_finalized_content = self.current_streaming_widget.content
+                            self.last_finalized_content = (
+                                self.current_streaming_widget.content
+                            )
                             # PERFORMANCE FIX: Reduce scroll frequency to improve performance
-                            if (self._stream_chunk_count % 20) == 0:  # Increased from 10 to 20
+                            if (
+                                self._stream_chunk_count % 20
+                            ) == 0:  # Increased from 10 to 20
                                 self._request_scroll_to_bottom()
-                
+
                 if is_final and self.current_streaming_widget:
                     # Cancel timeout monitor
                     if self._stream_timeout_task:
                         self._stream_timeout_task.cancel()
                         self._stream_timeout_task = None
-                    
+
                     # Finalize the message
-                    stream_duration = asyncio.get_event_loop().time() - getattr(self, '_stream_start_time', 0)
-                    self.debug_messages.append(f"Stream completed: {stream_duration:.1f}s, {self._stream_chunk_count} chunks")
-                    
+                    stream_duration = asyncio.get_event_loop().time() - getattr(
+                        self, "_stream_start_time", 0
+                    )
+                    self.debug_messages.append(
+                        f"Stream completed: {stream_duration:.1f}s, {self._stream_chunk_count} chunks"
+                    )
+
                     # Close reasoning details block if still open
-                    if hasattr(self, '_reasoning_details_started') and self._reasoning_details_started:
+                    if (
+                        hasattr(self, "_reasoning_details_started")
+                        and self._reasoning_details_started
+                    ):
                         self.current_streaming_widget.stream_in("\n\n</details>\n\n")
                         self._reasoning_details_started = False
-                    
+
                     # Clear sidebar banner
                     try:
                         self.query_one(StatusSidebar).update_status({"raw": ""})
                     except Exception:
                         pass
-                    
+
                     # Validate final content
                     final_content = self.current_streaming_widget.content.strip()
                     if not final_content:
-                        self.debug_messages.append("Warning: Stream completed with empty content")
-                        self.current_streaming_widget.stream_in("[Stream completed with no content]")
+                        self.debug_messages.append(
+                            "Warning: Stream completed with empty content"
+                        )
+                        self.current_streaming_widget.stream_in(
+                            "[Stream completed with no content]"
+                        )
                     elif self._detect_incomplete_response(final_content):
-                        self.debug_messages.append("Warning: Stream appears to be incomplete")
-                        self.current_streaming_widget.stream_in("\n\n[Response may be incomplete - check logs]")
-                    
+                        self.debug_messages.append(
+                            "Warning: Stream appears to be incomplete"
+                        )
+                        self.current_streaming_widget.stream_in(
+                            "\n\n[Response may be incomplete - check logs]"
+                        )
+
                     self.current_streaming_widget.end_stream()
                     # Buffer already up to date; ensure dedup key is set
                     self.last_finalized_content = self.current_streaming_widget.content
-                    
+
                     self.current_streaming_widget = None
                     # Schedule the dedupe key to be cleared after a short delay
-                    self.dedup_clear_task = asyncio.create_task(self._clear_dedup_content())
+                    self.dedup_clear_task = asyncio.create_task(
+                        self._clear_dedup_content()
+                    )
                     self._request_scroll_to_bottom()
                     self._pending_response = False
 
@@ -2027,8 +2380,12 @@ class PenguinTextualApp(App):
                 if self._should_hide_call_as_duplicate(action_name, params):
                     return
                 # Keep a readable preview of parameters
-                args_s = json.dumps(params, indent=2, ensure_ascii=False) if isinstance(params, (dict, list)) else str(params)
-                md = f"```text\n<action name=\"{action_name}\">\n{args_s}\n</action>\n```"
+                args_s = (
+                    json.dumps(params, indent=2, ensure_ascii=False)
+                    if isinstance(params, (dict, list))
+                    else str(params)
+                )
+                md = f'```text\n<action name="{action_name}">\n{args_s}\n</action>\n```'
                 msg = self.add_message(md, "system")
                 try:
                     msg.add_class("tool-call")
@@ -2042,7 +2399,9 @@ class PenguinTextualApp(App):
                 if status == "error":
                     self.add_message(f"```text\n{result_str}\n```", "system")
                 else:
-                    self.add_message(self._format_system_output("Action", result_str), "system")
+                    self.add_message(
+                        self._format_system_output("Action", result_str), "system"
+                    )
                 self._prune_trailing_blank_messages()
 
             elif event_type == "tool_call":
@@ -2051,23 +2410,31 @@ class PenguinTextualApp(App):
                 tool_args = data.get("arguments", {})
                 if self._should_hide_call_as_duplicate(tool_name, tool_args):
                     return
-                args_s = json.dumps(tool_args, indent=2, ensure_ascii=False) if isinstance(tool_args, (dict, list)) else str(tool_args)
-                md = f"```text\n<tool name=\"{tool_name}\">\n{args_s}\n</tool>\n```"
+                args_s = (
+                    json.dumps(tool_args, indent=2, ensure_ascii=False)
+                    if isinstance(tool_args, (dict, list))
+                    else str(tool_args)
+                )
+                md = f'```text\n<tool name="{tool_name}">\n{args_s}\n</tool>\n```'
                 msg = self.add_message(md, "system")
                 try:
                     msg.add_class("tool-call")
                 except Exception:
                     pass
-            
+
             elif event_type == "tool_result":
                 # Markdown render with preview + details
                 result_str = data.get("result", "")
-                action_name = data.get("action", data.get("action_name", data.get("name", "unknown")))
+                action_name = data.get(
+                    "action", data.get("action_name", data.get("name", "unknown"))
+                )
                 status = str(data.get("status", "completed")).lower()
                 if status == "error":
                     msg = self.add_message(f"```text\n{result_str}\n```", "system")
                 else:
-                    msg = self.add_message(self._format_system_output(action_name, result_str), "system")
+                    msg = self.add_message(
+                        self._format_system_output(action_name, result_str), "system"
+                    )
                 try:
                     msg.add_class("tool-result")
                 except Exception:
@@ -2078,14 +2445,20 @@ class PenguinTextualApp(App):
                 # Render errors as simple markdown instead of a widget in compact mode
                 error_msg = data.get("message", "Unknown error")
                 context = data.get("context", None)
-                content = "**Error:**\n\n```text\n" + str(error_msg) + "\n" + (str(context) if context else "") + "\n```"
+                content = (
+                    "**Error:**\n\n```text\n"
+                    + str(error_msg)
+                    + "\n"
+                    + (str(context) if context else "")
+                    + "\n```"
+                )
                 self.add_message(content, "system")
 
         except Exception as e:
             error_msg = f"Error handling core event {event_type}: {e}"
             logger.error(error_msg, exc_info=True)
             self.debug_messages.append(f"Event Handler Error ({event_type}): {e}")
-            
+
             # If streaming was interrupted, clean up
             if event_type == "stream_chunk" and self.current_streaming_widget:
                 try:
@@ -2093,126 +2466,148 @@ class PenguinTextualApp(App):
                     if self._stream_timeout_task:
                         self._stream_timeout_task.cancel()
                         self._stream_timeout_task = None
-                    
-                    self.current_streaming_widget.stream_in(f"\n\n[Stream error: {str(e)}]")
+
+                    self.current_streaming_widget.stream_in(
+                        f"\n\n[Stream error: {str(e)}]"
+                    )
                     self.current_streaming_widget.end_stream()
                     self.current_streaming_widget = None
                 except:
                     pass
-            
+
             try:
                 self.add_message(error_msg, "error")
             except:
                 pass
-                
+
     def _detect_incomplete_response(self, content: str) -> bool:
         """Detect if a response appears to be incomplete."""
         if not content:
             return True
-        
+
         # Check for truncated tool calls - specific patterns from the error
         truncated_tool_patterns = [
             "<pydol",  # Specific truncation seen in logs
-            "<execute", "<tool_", "<action_", "<browse",
-            "<pydoll_browser_nav", "<pydoll_browser_scr",
-            "<pydoll_"
+            "<execute",
+            "<tool_",
+            "<action_",
+            "<browse",
+            "<pydoll_browser_nav",
+            "<pydoll_browser_scr",
+            "<pydoll_",
         ]
-        
+
         # Check if content ends with any truncated pattern
         content_lower = content.lower()
         for pattern in truncated_tool_patterns:
             if content_lower.endswith(pattern.lower()):
                 return True
             # Also check last 50 characters for mid-response truncation
-            if pattern.lower() in content_lower[-50:] and not content_lower.endswith(">"):
+            if pattern.lower() in content_lower[-50:] and not content_lower.endswith(
+                ">"
+            ):
                 return True
-        
+
         # Check for unmatched angle brackets (tool calls)
         open_brackets = content.count("<")
         close_brackets = content.count(">")
         if open_brackets > close_brackets:
             return True
-        
+
         # Check for incomplete tool call syntax
-        incomplete_patterns = [
-            "```\n\n<", "```\n<", "</", 
-            "*<", ".*<", ") <", ". <"
-        ]
+        incomplete_patterns = ["```\n\n<", "```\n<", "</", "*<", ".*<", ") <", ". <"]
         for pattern in incomplete_patterns:
             if pattern in content[-50:]:
                 return True
-        
+
         # Check for abrupt endings in the middle of a sentence or tool call
-        if content and not content[-1] in '.!?>`\n':
+        if content and not content[-1] in ".!?>`\n":
             # If it ends mid-word or with incomplete syntax
             last_chars = content[-20:]
-            if any(char in last_chars for char in ['<']) and '>' not in last_chars:
+            if any(char in last_chars for char in ["<"]) and ">" not in last_chars:
                 return True
-        
+
         # Check for common incomplete endings from the logs
         incomplete_endings = [
-            "*<pydol", ".*<pydol", ") <pydol", ". <pydol",
-            "<pydoll_browser_navigat", "<pydoll_browser_screenshot"
+            "*<pydol",
+            ".*<pydol",
+            ") <pydol",
+            ". <pydol",
+            "<pydoll_browser_navigat",
+            "<pydoll_browser_screenshot",
         ]
         for ending in incomplete_endings:
             if content.endswith(ending):
                 return True
-        
+
         return False
-    
+
     async def _monitor_stream_timeout(self) -> None:
         """Monitor stream for timeout and handle recovery."""
         try:
             # Wait for reasonable timeout (60 seconds)
             await asyncio.sleep(60)
-            
+
             # If we get here, stream timed out
             if self.current_streaming_widget:
-                self.debug_messages.append("Stream timeout detected - forcing completion")
-                
+                self.debug_messages.append(
+                    "Stream timeout detected - forcing completion"
+                )
+
                 current_content = self.current_streaming_widget.content.strip()
                 if self._detect_incomplete_response(current_content):
-                    self.current_streaming_widget.stream_in("\n\n[Stream timed out - response may be incomplete]")
+                    self.current_streaming_widget.stream_in(
+                        "\n\n[Stream timed out - response may be incomplete]"
+                    )
                 else:
-                    self.current_streaming_widget.stream_in("\n\n[Stream completed due to timeout]")
-                
+                    self.current_streaming_widget.stream_in(
+                        "\n\n[Stream completed due to timeout]"
+                    )
+
                 self.current_streaming_widget.end_stream()
                 self.last_finalized_content = self.current_streaming_widget.content
                 self.current_streaming_widget = None
                 self._request_scroll_to_bottom()
-                
+
         except asyncio.CancelledError:
             # Normal cancellation when stream completes
             pass
         except Exception as e:
             self.debug_messages.append(f"Stream timeout monitor error: {e}")
-    
+
     async def _force_stream_recovery(self) -> None:
         """Manually force recovery of a stuck stream."""
         if self.current_streaming_widget:
             self.debug_messages.append("Manual stream recovery triggered")
-            
+
             # Cancel timeout task if running
             if self._stream_timeout_task:
                 self._stream_timeout_task.cancel()
                 self._stream_timeout_task = None
-            
+
             # Check if content looks incomplete
             current_content = self.current_streaming_widget.content.strip()
             if self._detect_incomplete_response(current_content):
-                self.current_streaming_widget.stream_in("\n\n[Stream manually recovered - response may be incomplete]")
+                self.current_streaming_widget.stream_in(
+                    "\n\n[Stream manually recovered - response may be incomplete]"
+                )
             else:
-                self.current_streaming_widget.stream_in("\n\n[Stream manually recovered]")
-            
+                self.current_streaming_widget.stream_in(
+                    "\n\n[Stream manually recovered]"
+                )
+
             self.current_streaming_widget.end_stream()
             self.last_finalized_content = self.current_streaming_widget.content
             self.current_streaming_widget = None
             self._request_scroll_to_bottom()
-            
-            self.add_message("Stream recovery completed. You can continue the conversation.", "system")
+
+            self.add_message(
+                "Stream recovery completed. You can continue the conversation.",
+                "system",
+            )
         else:
             self.add_message("No active stream to recover.", "system")
-    
+
     async def _clear_dedup_content(self) -> None:
         """Clear the deduplication key after a delay."""
         await asyncio.sleep(0.5)
@@ -2223,7 +2618,7 @@ class PenguinTextualApp(App):
         if not self.interface:
             self.add_message("Core not initialized yet. Please wait.", "error")
             return
-        
+
         # First pass: detect and stage any image paths in the input
         user_input_raw = event.value
         user_input = self._detect_and_stage_attachments(user_input_raw).strip()
@@ -2231,7 +2626,7 @@ class PenguinTextualApp(App):
             # Allow sending only attachments (no text)
             if not self._pending_attachments:
                 return
-        
+
         event.input.value = ""
         # Start waiting spinner immediately; it will be cleared on first stream chunk
         try:
@@ -2241,9 +2636,13 @@ class PenguinTextualApp(App):
             self._last_status_payload = None
         except Exception:
             pass
-        
+
         # Check if user typed a number to select a conversation
-        if hasattr(self, '_conversation_list') and self._conversation_list and user_input.isdigit():
+        if (
+            hasattr(self, "_conversation_list")
+            and self._conversation_list
+            and user_input.isdigit()
+        ):
             conv_num = int(user_input)
             if 1 <= conv_num <= len(self._conversation_list):
                 selected_conv = self._conversation_list[conv_num - 1]
@@ -2255,14 +2654,19 @@ class PenguinTextualApp(App):
                 self._conversation_list = None
                 return
             else:
-                self.add_message(f"Invalid selection. Please choose a number between 1 and {len(self._conversation_list)}", "error")
+                self.add_message(
+                    f"Invalid selection. Please choose a number between 1 and {len(self._conversation_list)}",
+                    "error",
+                )
                 return
-        
+
         # Display user message immediately for better UX (show attachments chip)
         display_text = user_input
         if self._pending_attachments:
             chip = ", ".join(os.path.basename(p) for p in self._pending_attachments)
-            display_text = (display_text + "\n" if display_text else "") + f"[attachments: {chip}]"
+            display_text = (
+                display_text + "\n" if display_text else ""
+            ) + f"[attachments: {chip}]"
         if display_text:
             self.add_message(display_text, "user")
 
@@ -2277,24 +2681,24 @@ class PenguinTextualApp(App):
         self._conversation_list = None
         self.status_text = "Penguin is thinking..."
         # Build payload with optional image attachments
-        payload: Dict[str, Any] = {'text': user_input}
+        payload: Dict[str, Any] = {"text": user_input}
         if self._pending_attachments:
             # Support multiple images by sending the first (current interface supports single image_path)
             # For now, send one-by-one; future: extend interface/core to accept a list
             first = self._pending_attachments[0]
-            payload['image_path'] = first
-            
+            payload["image_path"] = first
+
         # CRITICAL FIX: Run processing in background to prevent TUI freeze
         # Don't await - let it run asynchronously so TUI stays responsive
         asyncio.create_task(self._process_input_background(payload))
-        
+
         # Clear attachments after send
         self._pending_attachments.clear()
 
     async def _process_input_background(self, payload: Dict[str, Any]) -> None:
         """
         Process input in background to prevent TUI freeze.
-        
+
         This method runs asynchronously without blocking the main TUI event loop,
         allowing users to interact with the interface (including cancellation)
         while the LLM processes their request.
@@ -2303,10 +2707,10 @@ class PenguinTextualApp(App):
             # Process the input through interface
             await self.interface.process_input(payload)
             self.status_text = "Ready"
-            
+
             # Save conversation after successful message processing
             try:
-                if self.core and hasattr(self.core, 'conversation_manager'):
+                if self.core and hasattr(self.core, "conversation_manager"):
                     self.core.conversation_manager.save()
                     logger.debug("TUI: Conversation saved after message processing")
             except Exception as save_err:
@@ -2334,7 +2738,9 @@ class PenguinTextualApp(App):
         if not self.debug_messages:
             content = "No debug messages."
         else:
-            content = "## Debug Log (last 20)\n\n" + "\n".join(f"- {msg}" for msg in self.debug_messages[-20:])
+            content = "## Debug Log (last 20)\n\n" + "\n".join(
+                f"- {msg}" for msg in self.debug_messages[-20:]
+            )
         self.add_message(content, "debug")
 
     async def _handle_command(self, command: str) -> None:
@@ -2346,7 +2752,22 @@ class PenguinTextualApp(App):
                 if cmd_obj:
                     handler = cmd_obj.handler or ""
                     # TUI-local handlers
-                    if handler in ("_show_enhanced_help", "action_clear_log", "action_quit", "action_show_debug", "_force_stream_recovery", "_handle_image", "_attachments_clear", "_handle_theme_list", "_handle_theme_set", "_handle_layout_set", "_handle_layout_get", "_handle_status_show", "_handle_status_hide", "_handle_status_toggle"):
+                    if handler in (
+                        "_show_enhanced_help",
+                        "action_clear_log",
+                        "action_quit",
+                        "action_show_debug",
+                        "_force_stream_recovery",
+                        "_handle_image",
+                        "_attachments_clear",
+                        "_handle_theme_list",
+                        "_handle_theme_set",
+                        "_handle_layout_set",
+                        "_handle_layout_get",
+                        "_handle_status_show",
+                        "_handle_status_hide",
+                        "_handle_status_toggle",
+                    ):
                         if handler == "_show_enhanced_help":
                             await self._show_enhanced_help()
                         elif handler == "action_clear_log":
@@ -2393,8 +2814,13 @@ class PenguinTextualApp(App):
                                 tokens.append(val)
                     built = cmd_obj.name + (" " + " ".join(tokens) if tokens else "")
                     # Fast-path view commands even if registry mapping is incomplete
-                    if cmd_obj.name.startswith("view set") or cmd_obj.name == "view set":
-                        mode = str(args_dict.get("mode") or (tokens[0] if tokens else "")).strip()
+                    if (
+                        cmd_obj.name.startswith("view set")
+                        or cmd_obj.name == "view set"
+                    ):
+                        mode = str(
+                            args_dict.get("mode") or (tokens[0] if tokens else "")
+                        ).strip()
                         await self._handle_view_set({"mode": mode})
                         return
                     if cmd_obj.name in ("view get", "view"):
@@ -2415,7 +2841,10 @@ class PenguinTextualApp(App):
                         try:
                             n = int(str(args_dict.get("lines", "20")))
                             self._tools_preview_lines = max(5, min(200, n))
-                            self.add_message(f"Tool preview lines set to {self._tools_preview_lines}.", "system")
+                            self.add_message(
+                                f"Tool preview lines set to {self._tools_preview_lines}.",
+                                "system",
+                            )
                         except Exception:
                             self.add_message("Usage: /tools preview <lines>", "error")
                         return
@@ -2464,20 +2893,29 @@ class PenguinTextualApp(App):
                         self._collapse_whole_messages = True
                     elif "sections" in [t.lower() for t in tokens]:
                         self._collapse_whole_messages = False
-                    
+
                     if self._auto_collapse_assistant:
                         self._collapse_older_assistant()
-                    
-                    mode = "whole messages" if self._collapse_whole_messages else "sections"
-                    self.add_message(f"Auto-collapse {'ON' if self._auto_collapse_assistant else 'OFF'} (keep {self._collapse_keep}, mode: {mode}).", "system")
+
+                    mode = (
+                        "whole messages"
+                        if self._collapse_whole_messages
+                        else "sections"
+                    )
+                    self.add_message(
+                        f"Auto-collapse {'ON' if self._auto_collapse_assistant else 'OFF'} (keep {self._collapse_keep}, mode: {mode}).",
+                        "system",
+                    )
                 else:
-                    self.add_message("Usage: /collapse on|off [keep N] [whole|sections]", "system")
+                    self.add_message(
+                        "Usage: /collapse on|off [keep N] [whole|sections]", "system"
+                    )
                 return
             if cmd == "crumb":
                 # /crumb on|off|text <value>
                 sub = (args.split(" ", 1)[0] if args else "").lower()
                 if sub in ("on", "off"):
-                    self._crumb_enabled = (sub == "on")
+                    self._crumb_enabled = sub == "on"
                     try:
                         self._crumb_ref = self.query_one("#crumb-bar", Static)
                         if self._crumb_enabled and not self._crumb_text:
@@ -2487,7 +2925,9 @@ class PenguinTextualApp(App):
                         self._crumb_ref.display = self._crumb_enabled
                     except Exception:
                         pass
-                    self.add_message(f"Crumb bar {'ON' if self._crumb_enabled else 'OFF'}.", "system")
+                    self.add_message(
+                        f"Crumb bar {'ON' if self._crumb_enabled else 'OFF'}.", "system"
+                    )
                     return
             if cmd == "style":
                 # /style soft|boxed|line
@@ -2581,7 +3021,9 @@ class PenguinTextualApp(App):
             # If path is missing, prompt the user via a simple input
             if not image_path:
                 # Allow drag-and-drop into terminal-like prompt
-                self.add_message("Drag and drop an image path, then press Enter:", "system")
+                self.add_message(
+                    "Drag and drop an image path, then press Enter:", "system"
+                )
                 return
 
             if not os.path.exists(image_path):
@@ -2596,7 +3038,9 @@ class PenguinTextualApp(App):
                 await self.interface.process_input(
                     {"text": description, "image_paths": [image_path]}
                 )
-                self.add_message(f"Image sent: {os.path.basename(image_path)}", "system")
+                self.add_message(
+                    f"Image sent: {os.path.basename(image_path)}", "system"
+                )
         except Exception as e:
             self.add_message(f"Error handling image: {e}", "error")
 
@@ -2617,7 +3061,9 @@ class PenguinTextualApp(App):
                     tool = candidate
                     break
             if tool is None:
-                self.add_message("No diff tool found (tried: difft/difftastic/git/diff)", "error")
+                self.add_message(
+                    "No diff tool found (tried: difft/difftastic/git/diff)", "error"
+                )
                 return
             # Build command
             if tool in ("difft", "difftastic"):
@@ -2628,6 +3074,7 @@ class PenguinTextualApp(App):
                 cmd = ["diff", "-u", a, b]
             # Run non-interactively
             import subprocess
+
             try:
                 out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True)
             except subprocess.CalledProcessError as e:
@@ -2658,7 +3105,7 @@ class PenguinTextualApp(App):
         staged: list[str] = []
         for tok in tokens:
             # Strip quotes
-            cleaned = tok.strip('"\'')
+            cleaned = tok.strip("\"'")
             _, ext = os.path.splitext(cleaned)
             if ext.lower() in valid_ext and os.path.exists(cleaned):
                 staged.append(cleaned)
@@ -2666,23 +3113,26 @@ class PenguinTextualApp(App):
                 kept_tokens.append(tok)
         if staged:
             self._pending_attachments.extend(staged)
-            self.add_message(f"Staged attachment(s): {', '.join(os.path.basename(p) for p in staged)}", "system")
+            self.add_message(
+                f"Staged attachment(s): {', '.join(os.path.basename(p) for p in staged)}",
+                "system",
+            )
             return " ".join(kept_tokens)
         return text
-    
+
     async def _handle_runmode_stream(self, content: str) -> None:
         """Handle streaming content from RunMode."""
         try:
             # Add streaming content to a dedicated RunMode message
-            if not hasattr(self, '_runmode_message') or self._runmode_message is None:
+            if not hasattr(self, "_runmode_message") or self._runmode_message is None:
                 self._runmode_message = self.add_message("", "system")
                 self._runmode_message.add_class("runmode-output")
-            
+
             self._runmode_message.stream_in(content)
             self._scroll_to_bottom()
         except Exception as e:
             logger.error(f"Error handling RunMode stream: {e}")
-    
+
     async def _handle_runmode_ui_update(self) -> None:
         """Handle UI updates for RunMode status."""
         try:
@@ -2691,84 +3141,86 @@ class PenguinTextualApp(App):
                 self.status_text = runmode_status.get("summary", "RunMode active")
         except Exception as e:
             logger.error(f"Error updating RunMode UI: {e}")
-    
+
     async def _display_command_response(self, response: Dict[str, Any]) -> None:
         """Display the response from a command."""
         if response.get("status"):
             self.add_message(response["status"], "system")
-        
+
         if response.get("error"):
             self.add_message(response["error"], "error")
-        
+
         # Handle structured responses (like /list, /tokens, etc.)
         if "conversations" in response:
             await self._display_conversations(response["conversations"])
-        
+
         if "projects" in response or "tasks" in response:
             await self._display_projects_and_tasks(response)
-        
+
         if "token_usage" in response:
             await self._display_token_usage(response["token_usage"])
-        
+
         # Optional detailed token usage
         if "token_usage_detailed" in response:
             await self._display_token_usage(response["token_usage_detailed"])
-    
+
     async def _display_conversations(self, conversations):
         """Display conversation list in a formatted way with numbered selection."""
         if not conversations:
             self.add_message("No conversations found.", "system")
             return
-        
+
         # Store conversations for selection
         self._conversation_list = conversations
-        
+
         content = "**Available Conversations:**\n\n"
         for i, conv in enumerate(conversations, 1):
             content += f"**{i}.** **{conv.title}** ({conv.session_id[:8]}...)\n"
             content += f"    {conv.message_count} messages, last active: {conv.last_active}\n\n"
-        
+
         content += "💡 **To load a conversation:** Type the number (e.g., `1`, `2`, `3`) or `/chat load <session_id>`"
-        
+
         self.add_message(content, "system")
-    
+
     async def _display_projects_and_tasks(self, data):
         """Display projects and tasks in a formatted way."""
         content = "**Projects & Tasks:**\n\n"
-        
+
         if "summary" in data:
             summary = data["summary"]
             content += f"**Summary:** {summary['total_projects']} projects, {summary['total_tasks']} tasks ({summary['active_tasks']} active)\n\n"
-        
+
         if "projects" in data:
             content += "**Projects:**\n"
             for project in data["projects"]:
                 content += f"- **{project['name']}** ({project['status']}) - {project['task_count']} tasks\n"
             content += "\n"
-        
+
         if "tasks" in data:
             content += "**Tasks:**\n"
             for task in data["tasks"]:
                 content += f"- **{task['title']}** ({task['status']}) - Priority {task['priority']}\n"
-        
+
         self.add_message(content, "system")
-    
+
     async def _display_token_usage(self, usage):
         """Display token usage in a formatted way."""
         current = usage.get("current_total_tokens", 0)
-        max_context_tokens = usage.get("max_context_window_tokens", usage.get("max_tokens", 0))  # Context window capacity
+        max_context_tokens = usage.get(
+            "max_context_window_tokens", usage.get("max_tokens", 0)
+        )  # Context window capacity
         percentage = usage.get("percentage", 0)
-        
+
         content = f"**Token Usage:** {current:,} / {max_context_tokens:,} ({percentage:.1f}%)\n\n"  # Context window usage
-        
+
         if "categories" in usage:
             content += "**By Category:**\n"
             for category, count in usage["categories"].items():
                 if count > 0:
                     content += f"- {category}: {count:,}\n"
-        
+
         self.add_message(content, "system")
-    
+
     async def _show_enhanced_help(self) -> None:
         """Display enhanced help message with all available commands."""
         try:
@@ -2778,7 +3230,9 @@ class PenguinTextualApp(App):
                 return
         except Exception:
             pass
-        self.add_message("Type /help for available commands. Use Tab for autocomplete.", "system")
+        self.add_message(
+            "Type /help for available commands. Use Tab for autocomplete.", "system"
+        )
 
     # ---------------------------
     # Debug runtime tuning hooks
@@ -2790,14 +3244,20 @@ class PenguinTextualApp(App):
                 try:
                     ms = float(str(args.get("ms", "")))
                     self._stream_update_min_interval = max(0.05, ms / 1000.0)
-                    self.add_message(f"Stream throttle set to {self._stream_update_min_interval*1000:.0f}ms.", "system")
+                    self.add_message(
+                        f"Stream throttle set to {self._stream_update_min_interval * 1000:.0f}ms.",
+                        "system",
+                    )
                 except Exception:
                     self.add_message("Usage: /debug throttle <ms>", "error")
             elif action == "scroll":
                 try:
                     ms = int(str(args.get("ms", "")))
                     self._scroll_debounce_ms = max(20, min(500, ms))
-                    self.add_message(f"Scroll debounce set to {self._scroll_debounce_ms}ms.", "system")
+                    self.add_message(
+                        f"Scroll debounce set to {self._scroll_debounce_ms}ms.",
+                        "system",
+                    )
                 except Exception:
                     self.add_message("Usage: /debug scroll <ms>", "error")
             elif action == "linkify":
@@ -2809,9 +3269,14 @@ class PenguinTextualApp(App):
                 else:
                     self.add_message("Usage: /debug linkify [on|off]", "error")
                     return
-                self.add_message(f"Linkify on finalization set to {self._linkify_on_finalization}.", "system")
+                self.add_message(
+                    f"Linkify on finalization set to {self._linkify_on_finalization}.",
+                    "system",
+                )
             else:
-                self.add_message("Usage: /debug [throttle|scroll|linkify] ...", "system")
+                self.add_message(
+                    "Usage: /debug [throttle|scroll|linkify] ...", "system"
+                )
         except Exception as e:
             self.add_message(f"Debug tuning error: {e}", "error")
 
@@ -2821,6 +3286,7 @@ class PenguinTextualApp(App):
     def _load_prefs(self) -> None:
         try:
             import yaml  # type: ignore
+
             if os.path.exists(self._prefs_path):
                 with open(self._prefs_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
@@ -2834,14 +3300,18 @@ class PenguinTextualApp(App):
     def _save_prefs(self) -> None:
         try:
             import yaml  # type: ignore
+
             os.makedirs(os.path.dirname(self._prefs_path), exist_ok=True)
             with open(self._prefs_path, "w", encoding="utf-8") as f:
-                yaml.safe_dump({
-                    "theme": self._theme_name,
-                    "layout": self._layout_mode,
-                    "view": self._view_mode,
-                    "minimal": self._minimal_mode,
-                }, f)
+                yaml.safe_dump(
+                    {
+                        "theme": self._theme_name,
+                        "layout": self._layout_mode,
+                        "view": self._view_mode,
+                        "minimal": self._minimal_mode,
+                    },
+                    f,
+                )
         except Exception:
             pass
 
@@ -2928,7 +3398,9 @@ class PenguinTextualApp(App):
 
     async def _handle_theme_list(self) -> None:
         themes = ["ocean", "nord", "dracula"]
-        msg = "**Available themes:**\n\n" + "\n".join(f"- {t}{' (current)' if t==self._theme_name else ''}" for t in themes)
+        msg = "**Available themes:**\n\n" + "\n".join(
+            f"- {t}{' (current)' if t == self._theme_name else ''}" for t in themes
+        )
         self.add_message(msg, "system")
 
     async def _handle_theme_set(self, args: Dict[str, Any]) -> None:
@@ -2975,7 +3447,7 @@ class PenguinTextualApp(App):
         """Quit the application."""
         # Save conversation before quitting
         try:
-            if self.core and hasattr(self.core, 'conversation_manager'):
+            if self.core and hasattr(self.core, "conversation_manager"):
                 self.core.conversation_manager.save()
                 logger.info("TUI: Final conversation save on quit")
         except Exception as e:
@@ -2998,7 +3470,9 @@ class PenguinTextualApp(App):
             self._apply_layout_class()
             self._apply_minimal_class()
             self._save_prefs()
-            self.add_message(f"Minimal mode {'ON' if self._minimal_mode else 'OFF' }.", "system")
+            self.add_message(
+                f"Minimal mode {'ON' if self._minimal_mode else 'OFF'}.", "system"
+            )
         except Exception:
             pass
 
@@ -3020,9 +3494,13 @@ class PenguinTextualApp(App):
         self._apply_layout_class()
         self._apply_minimal_class()
         self._save_prefs()
-        self.add_message(f"Minimal mode {'ON' if self._minimal_mode else 'OFF' }.", "system")
+        self.add_message(
+            f"Minimal mode {'ON' if self._minimal_mode else 'OFF'}.", "system"
+        )
 
-    async def on_status_message(self, event: StatusMessage) -> None:  # Textual auto dispatch
+    async def on_status_message(
+        self, event: StatusMessage
+    ) -> None:  # Textual auto dispatch
         bar = self._status_bar_ref or self.query_one("#status-bar", Static)
         bar.update(event.text)
         await asyncio.sleep(1.5)
@@ -3031,19 +3509,27 @@ class PenguinTextualApp(App):
     # -------------------------
     # Helpers: trim old messages
     # -------------------------
-    def _maybe_trim_messages(self, area: Optional[VerticalScroll] = None, keep_last: int = 300) -> None:
+    def _maybe_trim_messages(
+        self, area: Optional[VerticalScroll] = None, keep_last: int = 300
+    ) -> None:
         try:
-            area_ref = area or self._message_area_ref or self.query_one("#message-area", VerticalScroll)
+            area_ref = (
+                area
+                or self._message_area_ref
+                or self.query_one("#message-area", VerticalScroll)
+            )
             msgs = [w for w in area_ref.children if isinstance(w, ChatMessage)]
             if len(msgs) > keep_last:
                 excess = len(msgs) - keep_last
                 for w in msgs[:excess]:
                     try:
                         # Cache removed content for on-demand load
-                        self._older_messages_cache.append({
-                            "role": getattr(w, "role", "assistant"),
-                            "content": getattr(w, "content", ""),
-                        })
+                        self._older_messages_cache.append(
+                            {
+                                "role": getattr(w, "role", "assistant"),
+                                "content": getattr(w, "content", ""),
+                            }
+                        )
                     except Exception:
                         pass
                     w.remove()
@@ -3051,7 +3537,11 @@ class PenguinTextualApp(App):
                 if self._show_older_btn:
                     self._show_older_btn.display = len(self._older_messages_cache) > 0
                 if not self._trim_notice_added:
-                    area_ref.mount(Static("[dim]Older messages trimmed to keep UI responsive.[/dim]"))
+                    area_ref.mount(
+                        Static(
+                            "[dim]Older messages trimmed to keep UI responsive.[/dim]"
+                        )
+                    )
                     self._trim_notice_added = True
         except Exception:
             pass
@@ -3065,7 +3555,9 @@ class PenguinTextualApp(App):
                 if self._show_older_btn:
                     self._show_older_btn.display = False
                 return
-            area = self._message_area_ref or self.query_one("#message-area", VerticalScroll)
+            area = self._message_area_ref or self.query_one(
+                "#message-area", VerticalScroll
+            )
             btn = self._show_older_btn
             # Take the last N (oldest-first preserved below)
             n = max(1, min(batch, len(self._older_messages_cache)))
@@ -3074,7 +3566,9 @@ class PenguinTextualApp(App):
             del self._older_messages_cache[-n:]
             # Mount in chronological order after the loader button
             for msg in slice_items:
-                cm = ChatMessage(str(msg.get("content", "")), str(msg.get("role", "assistant")))
+                cm = ChatMessage(
+                    str(msg.get("content", "")), str(msg.get("role", "assistant"))
+                )
                 if btn and btn in area.children:
                     area.mount(cm, after=btn)
                 else:
@@ -3092,13 +3586,14 @@ class PenguinTextualApp(App):
         except Exception:
             pass
 
+
 class TUI:
     """Entry point for the Textual UI."""
-    
+
     @staticmethod
     def run():
         """Run the Textual application."""
-        os.environ['PENGUIN_TUI_MODE'] = '1'
+        os.environ["PENGUIN_TUI_MODE"] = "1"
         # Configure root logging to file, keep console quiet to avoid TUI flicker
         try:
             root = logging.getLogger()
@@ -3109,7 +3604,9 @@ class TUI:
             log_path = os.path.join(os.path.dirname(__file__), "tui_debug.log")
             fhd = logging.FileHandler(log_path, mode="a", encoding="utf-8")
             fhd.setLevel(logging.DEBUG)
-            fhd.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+            fhd.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+            )
             root.addHandler(fhd)
             # Console handler only for errors to keep terminal clean
             chd = logging.StreamHandler()
@@ -3117,7 +3614,13 @@ class TUI:
             chd.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
             root.addHandler(chd)
             # Silence noisy third-party loggers
-            for noisy in ("httpx", "urllib3", "openai", "litellm", "penguin.llm.openrouter_gateway"):
+            for noisy in (
+                "httpx",
+                "urllib3",
+                "openai",
+                "litellm",
+                "penguin.llm.openrouter_gateway",
+            ):
                 try:
                     logging.getLogger(noisy).setLevel(logging.ERROR)
                 except Exception:
@@ -3127,18 +3630,22 @@ class TUI:
         # Best-effort: ensure CSS resource exists; if missing, disable CSS to avoid crash
         try:
             # Allow override via env to disable CSS on problematic terminals
-            if os.environ.get('PENGUIN_TUI_NO_CSS') == '1' or os.environ.get('PENGUIN_TUI_DISABLE_CSS') == '1':
+            if (
+                os.environ.get("PENGUIN_TUI_NO_CSS") == "1"
+                or os.environ.get("PENGUIN_TUI_DISABLE_CSS") == "1"
+            ):
                 PenguinTextualApp.CSS_PATH = None
-            
+
             try:
                 from importlib import resources as _res  # py3.9+
+
                 has_css = False
                 try:
                     # Deprecated in 3.11 but still available; robust across versions
-                    has_css = _res.is_resource('penguin.cli', 'tui.css')  # type: ignore[attr-defined]
+                    has_css = _res.is_resource("penguin.cli", "tui.css")  # type: ignore[attr-defined]
                 except Exception:
                     # Fallback: attempt to read the resource
-                    with _res.open_text('penguin.cli', 'tui.css') as _f:  # type: ignore[attr-defined]
+                    with _res.open_text("penguin.cli", "tui.css") as _f:  # type: ignore[attr-defined]
                         has_css = bool(_f.read(1) or True)
                 if not has_css:
                     PenguinTextualApp.CSS_PATH = None  # Disable external CSS load
@@ -3152,15 +3659,16 @@ class TUI:
             # Run without DevTools to keep the UI clean
             app.run()
         finally:
-            os.environ.pop('PENGUIN_TUI_MODE', None)
+            os.environ.pop("PENGUIN_TUI_MODE", None)
             # Dump debug messages for post-session troubleshooting
-            if hasattr(app, 'debug_messages') and app.debug_messages:
-                print("\n" + "="*60)
+            if hasattr(app, "debug_messages") and app.debug_messages:
+                print("\n" + "=" * 60)
                 print("PENGUIN TUI DEBUG LOG")
-                print("="*60)
+                print("=" * 60)
                 for i, msg in enumerate(app.debug_messages, 1):
                     print(f"{i:4d}. {msg}")
-                print("="*60)
+                print("=" * 60)
+
 
 if __name__ == "__main__":
     # Configure both console + rolling file logs (debug_log_<n>.txt)
@@ -3197,4 +3705,4 @@ if __name__ == "__main__":
     # _root.addHandler(_file)
 
     # logging.getLogger(__name__).info(f"Writing debug log to: {_log_path}")
-    TUI.run() 
+    TUI.run()
