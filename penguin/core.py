@@ -160,6 +160,9 @@ from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig, safe_context_window, fetch_model_specs
 from penguin.llm.stream_handler import StreamingStateManager, AgentStreamingStateManager, StreamingConfig
 
+# TUI/OpenCode compatibility
+from penguin.engine.part_events import PartEventAdapter, PartType
+
 MODEL_CONFIG_FIELD_NAMES = {field.name for field in fields(ModelConfig)}
 
 # Project manager
@@ -517,6 +520,10 @@ class PenguinCore:
         from penguin.cli.events import EventBus, EventType
         self.event_bus = EventBus.get_sync()
         self.event_types = {e.value for e in EventType}
+        
+        # Initialize PartEventAdapter for TUI/OpenCode compatibility
+        self._part_event_adapter = PartEventAdapter(self.event_bus)
+        self._current_stream_ids: Optional[Tuple[str, str]] = None  # (message_id, part_id)
 
         # Telemetry collector
         ensure_telemetry(self)
@@ -2575,15 +2582,38 @@ class PenguinCore:
         if isinstance(data, dict):
             data = self._filter_internal_markers_from_event(data)
 
-        # Tag with agent_id when available so UI can label sources
         try:
-            if isinstance(data, dict):
-                # Tag missing or empty agent_id with the current active agent
-                if not data.get('agent_id'):
-                    cm = getattr(self, 'conversation_manager', None)
-                    if cm and hasattr(cm, 'current_agent_id'):
-                        data = dict(data)  # shallow copy to avoid mutating caller dict
-                        data['agent_id'] = cm.current_agent_id
+            # NEW: Emit OpenCode-compatible part events for TUI
+            if hasattr(self, '_part_event_adapter') and self._part_event_adapter:
+                if event_type == "stream_chunk" and isinstance(data, dict):
+                    chunk = data.get("chunk", "")
+                    message_type = data.get("message_type", "assistant")
+
+                    # Initialize stream if needed
+                    if not hasattr(self, '_current_stream_ids') or self._current_stream_ids is None:
+                        msg_id, part_id = await self._part_event_adapter.on_stream_start(
+                            agent_id=data.get("agent_id", "default")
+                        )
+                        self._current_stream_ids = (msg_id, part_id)
+
+                    if self._current_stream_ids:
+                        msg_id, part_id = self._current_stream_ids
+                        await self._part_event_adapter.on_stream_chunk(
+                            msg_id, part_id, chunk, message_type
+                        )
+
+                elif event_type == "message" and isinstance(data, dict):
+                    # User message
+                    if data.get("role") == "user":
+                        await self._part_event_adapter.on_user_message(
+                            data.get("content", "")
+                        )
+                    # Tag missing or empty agent_id with the current active agent
+                    if not data.get('agent_id'):
+                        cm = getattr(self, 'conversation_manager', None)
+                        if cm and hasattr(cm, 'current_agent_id'):
+                            data = dict(data)  # shallow copy to avoid mutating caller dict
+                            data['agent_id'] = cm.current_agent_id
         except Exception:
             pass
 
@@ -2747,6 +2777,20 @@ class PenguinCore:
                 asyncio.create_task(
                     self._invoke_runmode_stream_callback("", "assistant", callback_ref)
                 )
+
+
+        # NEW: Finalize OpenCode part events
+        try:
+            if hasattr(self, '_part_event_adapter') and self._part_event_adapter:
+                if hasattr(self, '_current_stream_ids') and self._current_stream_ids:
+                    msg_id, part_id = self._current_stream_ids
+                    # Note: finalize_streaming_message is sync, but on_stream_end is async
+                    # We'll fire and forget since this is cleanup
+                    import asyncio
+                    asyncio.create_task(self._part_event_adapter.on_stream_end(msg_id, part_id))
+                    self._current_stream_ids = None
+        except Exception:
+            pass
 
         return message.to_dict()
 
@@ -2926,7 +2970,7 @@ class PenguinCore:
         """Get current status of memory provider and indexing."""
         if not hasattr(self.tool_manager, '_memory_provider'):
             return {"status": "not_initialized", "provider": None}
-        
+
         provider = self.tool_manager._memory_provider
         if provider is None:
             return {"status": "disabled", "provider": None}
