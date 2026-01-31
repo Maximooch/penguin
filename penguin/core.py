@@ -571,6 +571,13 @@ class PenguinCore:
         # This allows multiple agents to stream simultaneously without interference
         self._stream_manager = AgentStreamingStateManager()
 
+        # OpenCode TUI adapter for SSE event translation
+        from penguin.tui_adapter import PartEventAdapter
+        self._tui_adapter = PartEventAdapter(self.event_bus)
+
+        # Subscribe to stream events and translate to OpenCode format
+        self._subscribe_to_stream_events()
+
         # RunMode state for UI streaming bridges
         self._runmode_stream_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
         self._runmode_active: bool = False
@@ -2949,3 +2956,97 @@ class PenguinCore:
             }
         
         return status
+
+
+    def _subscribe_to_stream_events(self):
+        """Subscribe to Penguin stream events and translate to OpenCode format."""
+        self._current_opencode_message_id: Optional[str] = None
+        self._current_opencode_part_id: Optional[str] = None
+        self._opencode_streaming_active: bool = False
+
+        async def on_stream_start(event_type: str, data: Dict[str, Any]):
+            """Handle stream start - initialize OpenCode message/part."""
+            if event_type != "stream_start":
+                return
+
+            self._opencode_streaming_active = True
+            session = self.conversation_manager.get_current_session()
+            session_id = session.id if session else "unknown"
+            self._tui_adapter.set_session(session_id)
+
+            # Create message and text part
+            self._current_opencode_message_id, self._current_opencode_part_id = \
+                await self._tui_adapter.on_stream_start(
+                    agent_id=data.get("agent_id", "default"),
+                    model_id=getattr(self.model_config, 'model', None),
+                    provider_id=getattr(self.model_config, 'provider', None)
+                )
+
+        async def on_stream_chunk(event_type: str, data: Dict[str, Any]):
+            """Handle stream chunk - emit with delta."""
+            if event_type != "stream_chunk" or not self._opencode_streaming_active:
+                return
+
+            chunk = data.get("chunk", "")
+            message_type = data.get("message_type", "assistant")
+
+            if self._current_opencode_message_id and self._current_opencode_part_id:
+                await self._tui_adapter.on_stream_chunk(
+                    self._current_opencode_message_id,
+                    self._current_opencode_part_id,
+                    chunk,
+                    message_type
+                )
+
+        async def on_stream_end(event_type: str, data: Dict[str, Any]):
+            """Handle stream end - finalize OpenCode message/part."""
+            if event_type != "stream_end" or not self._opencode_streaming_active:
+                return
+
+            if self._current_opencode_message_id and self._current_opencode_part_id:
+                await self._tui_adapter.on_stream_end(
+                    self._current_opencode_message_id,
+                    self._current_opencode_part_id
+                )
+
+            self._opencode_streaming_active = False
+            self._current_opencode_message_id = None
+            self._current_opencode_part_id = None
+
+        # Subscribe to events
+        self.event_bus.subscribe("stream_start", on_stream_start)
+        self.event_bus.subscribe("stream_chunk", on_stream_chunk)
+        self.event_bus.subscribe("stream_end", on_stream_end)
+
+    # ------------------------------------------------------------------
+    # OpenCode TUI Adapter Integration
+    # ------------------------------------------------------------------
+
+    async def _emit_opencode_stream_start(
+        self, 
+        agent_id: str = "default",
+        model_id: Optional[str] = None,
+        provider_id: Optional[str] = None
+    ) -> Tuple[str, str]:
+        """Initialize OpenCode streaming - creates Message and TextPart."""
+        self._tui_adapter.set_session(self.conversation_manager.get_current_session().id if self.conversation_manager.get_current_session() else "unknown")
+        return await self._tui_adapter.on_stream_start(agent_id, model_id, provider_id)
+
+    async def _emit_opencode_stream_chunk(
+        self, 
+        message_id: str, 
+        part_id: str, 
+        chunk: str,
+        message_type: str = "assistant"
+    ):
+        """Emit OpenCode-compatible stream chunk with delta."""
+        await self._tui_adapter.on_stream_chunk(message_id, part_id, chunk, message_type)
+
+    async def _emit_opencode_stream_end(self, message_id: str, part_id: str):
+        """Finalize OpenCode streaming."""
+        await self._tui_adapter.on_stream_end(message_id, part_id)
+
+    async def _emit_opencode_user_message(self, content: str) -> str:
+        """Emit user message in OpenCode format."""
+        self._tui_adapter.set_session(self.conversation_manager.get_current_session().id if self.conversation_manager.get_current_session() else "unknown")
+        return await self._tui_adapter.on_user_message(content)
