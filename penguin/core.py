@@ -2576,7 +2576,8 @@ class PenguinCore:
             event_type: Type of event (e.g., "stream_chunk", "token_update", etc.)
             data: Event data relevant to the event type
         """
-        logger.debug(f"Core emit_ui_event {event_type} keys={list(data.keys())}")
+        print(f"[TUI_ADAPTER] emit_ui_event called: {event_type} bus={id(self.event_bus)}", flush=True)
+        logger.warning(f"[TUI_ADAPTER_WARNING] emit_ui_event called: {event_type} keys={list(data.keys())} bus={id(self.event_bus)}")
 
         # Filter internal markers from content before emitting
         if isinstance(data, dict):
@@ -2960,77 +2961,75 @@ class PenguinCore:
 
     def _subscribe_to_stream_events(self):
         """Subscribe to Penguin stream events and translate to OpenCode format."""
+        print("[TUI_ADAPTER] _subscribe_to_stream_events CALLED", flush=True)
         self._current_opencode_message_id: Optional[str] = None
         self._current_opencode_part_id: Optional[str] = None
         self._opencode_streaming_active: bool = False
         self._current_stream_id: Optional[str] = None
-        self._last_chunk_time: Optional[float] = None
-        self._stream_timeout: float = 2.0  # Consider stream ended after 2s of no chunks
+        
+        # Store reference to handler so it doesn't get garbage collected
+        self._tui_stream_handler = self._on_tui_stream_chunk
+        self.event_bus.subscribe("stream_chunk", self._tui_stream_handler)
+        print(f"[TUI_ADAPTER] Subscribed to stream_chunk on bus {id(self.event_bus)}", flush=True)
 
-        async def on_stream_chunk(event_type: str, data: Dict[str, Any]):
-            """Handle stream chunk - manages stream lifecycle and emits with delta."""
-            import time
-            
-            if event_type != "stream_chunk":
-                return
+    async def _on_tui_stream_chunk(self, event_type: str, data: Dict[str, Any]):
+        """Handle stream chunk - manages stream lifecycle and emits with delta."""
+        import time
+        
+        if event_type != "stream_chunk":
+            return
 
-            chunk = data.get("chunk", "")
-            message_type = data.get("message_type", "assistant")
-            stream_id = data.get("stream_id", "unknown")
-            current_time = time.time()
-            
-            # Auto-detect stream start (first chunk or new stream_id)
-            if not self._opencode_streaming_active or self._current_stream_id != stream_id:
-                # Finalize previous stream if exists
-                if self._opencode_streaming_active and self._current_opencode_message_id:
-                    try:
-                        await self._tui_adapter.on_stream_end(
-                            self._current_opencode_message_id,
-                            self._current_opencode_part_id
-                        )
-                    except Exception:
-                        pass
-                
-                # Start new stream
-                self._opencode_streaming_active = True
-                self._current_stream_id = stream_id
+        chunk = data.get("chunk", "")
+        message_type = data.get("message_type", "assistant")
+        stream_id = data.get("stream_id", "unknown")
+        current_time = time.time()
+        
+        # Auto-detect stream start (first chunk or new stream_id)
+        if not self._opencode_streaming_active or self._current_stream_id != stream_id:
+            # Finalize previous stream if exists
+            if self._opencode_streaming_active and self._current_opencode_message_id:
                 try:
-                    session = self.conversation_manager.get_current_session()
-                    session_id = session.id if session else "unknown"
-                except Exception:
-                    session_id = "unknown"
-                self._tui_adapter.set_session(session_id)
-                
-                # Create message and text part
-                try:
-                    self._current_opencode_message_id, self._current_opencode_part_id = \
-                        await self._tui_adapter.on_stream_start(
-                            agent_id="default",
-                            model_id=getattr(self.model_config, 'model', None),
-                            provider_id=getattr(self.model_config, 'provider', None)
-                        )
-                except Exception as e:
-                    logger.error(f"Failed to start OpenCode stream: {e}")
-                    self._opencode_streaming_active = False
-                    return
-            
-            # Emit the chunk
-            if self._current_opencode_message_id and self._current_opencode_part_id:
-                try:
-                    logger.debug(f"[TUI_ADAPTER] Emitting chunk to OpenCode: {len(chunk)} chars")
-                    await self._tui_adapter.on_stream_chunk(
+                    await self._tui_adapter.on_stream_end(
                         self._current_opencode_message_id,
-                        self._current_opencode_part_id,
-                        chunk,
-                        message_type
+                        self._current_opencode_part_id
                     )
-                except Exception as e:
-                    logger.error(f"Failed to emit OpenCode chunk: {e}")
+                except Exception:
+                    pass
             
-            self._last_chunk_time = current_time
-
-        # Subscribe only to stream_chunk
-        self.event_bus.subscribe("stream_chunk", on_stream_chunk)
+            # Start new stream
+            self._opencode_streaming_active = True
+            self._current_stream_id = stream_id
+            try:
+                session = self.conversation_manager.get_current_session()
+                session_id = session.id if session else "unknown"
+            except Exception:
+                session_id = "unknown"
+            self._tui_adapter.set_session(session_id)
+            
+            # Create message and text part
+            try:
+                self._current_opencode_message_id, self._current_opencode_part_id = \
+                    await self._tui_adapter.on_stream_start(
+                        agent_id="default",
+                        model_id=getattr(self.model_config, 'model', None),
+                        provider_id=getattr(self.model_config, 'provider', None)
+                    )
+            except Exception as e:
+                logger.error(f"Failed to start OpenCode stream: {e}")
+                self._opencode_streaming_active = False
+                return
+        
+        # Emit the chunk
+        if self._current_opencode_message_id and self._current_opencode_part_id:
+            try:
+                await self._tui_adapter.on_stream_chunk(
+                    self._current_opencode_message_id,
+                    self._current_opencode_part_id,
+                    chunk,
+                    message_type
+                )
+            except Exception as e:
+                logger.error(f"Failed to emit OpenCode chunk: {e}")
 
     # ------------------------------------------------------------------
     # OpenCode TUI Adapter Integration
