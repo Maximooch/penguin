@@ -78,6 +78,7 @@ def create_app() -> "FastAPI":
         from .routes import router, get_capabilities
         from .integrations.github_webhook import router as github_webhook_router
         from .middleware.auth import AuthenticationMiddleware, AuthConfig
+        from .sse_events import router as sse_router, set_core_instance
     except ImportError:
         raise ImportError(
             "FastAPI and related dependencies not available. "
@@ -133,9 +134,13 @@ def create_app() -> "FastAPI":
         logger.info("Model configs loaded: unknown")
     router.core = core
     github_webhook_router.core = core
+    
+    # Set core for SSE router
+    set_core_instance(core)
 
     # Include API routes
     app.include_router(router)
+    app.include_router(sse_router)
     app.include_router(github_webhook_router)
 
     # Optionally include MCP HTTP router when enabled
