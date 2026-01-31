@@ -60,7 +60,7 @@ async def events_sse(
             import logging
             logger = logging.getLogger(__name__)
             logger.info(f"[SSE HANDLER] Received event: {event_type}, data type: {type(data)}")
-                        """Handler for EventBus events."""
+            """Handler for EventBus events."""
             # Only handle opencode_event type
             if event_type != "opencode_event":
                 return
@@ -72,7 +72,7 @@ async def events_sse(
             # Filter by session_id if provided
             if effective_session_id:
                 logger.info(f"[SSE HANDLER] Filtering by session: {effective_session_id}")
-                                event_session = data.get("properties", {}).get("sessionID")
+                event_session = data.get("properties", {}).get("sessionID")
                 if event_session != effective_session_id:
                     return
             
