@@ -35,6 +35,7 @@ def get_core_instance() -> "PenguinCore":
 @router.get("/api/v1/events/sse")
 async def events_sse(
     session_id: Optional[str] = Query(None, description="Filter to specific session"),
+    conversation_id: Optional[str] = Query(None, description="Alias for session_id (API compatibility)"),
     agent_id: Optional[str] = Query(None, description="Filter to specific agent"),
     directory: Optional[str] = Query(None, description="Workspace directory"),
 ):
@@ -48,11 +49,18 @@ async def events_sse(
     """
     core = get_core_instance()
     
+    # Use conversation_id if session_id not provided (API compatibility)
+    effective_session_id = session_id or conversation_id
+    effective_agent_id = agent_id
+    
     async def event_generator() -> AsyncIterator[str]:
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=1000)
         
         def event_handler(event_type: str, data: Any):
-            """Handler for EventBus events."""
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[SSE HANDLER] Received event: {event_type}, data type: {type(data)}")
+                        """Handler for EventBus events."""
             # Only handle opencode_event type
             if event_type != "opencode_event":
                 return
@@ -62,9 +70,10 @@ async def events_sse(
                 return
             
             # Filter by session_id if provided
-            if session_id:
-                event_session = data.get("properties", {}).get("sessionID")
-                if event_session != session_id:
+            if effective_session_id:
+                logger.info(f"[SSE HANDLER] Filtering by session: {effective_session_id}")
+                                event_session = data.get("properties", {}).get("sessionID")
+                if event_session != effective_session_id:
                     return
             
             # Filter by agent_id if provided (check multiple possible fields)
@@ -91,8 +100,8 @@ async def events_sse(
             connected_event = {
                 "type": "server.connected",
                 "properties": {
-                    "sessionID": session_id,
-                    "agentID": agent_id,
+                    "sessionID": effective_session_id,
+                    "agentID": effective_agent_id,
                     "directory": directory
                 }
             }
@@ -102,7 +111,7 @@ async def events_sse(
             while True:
                 try:
                     # Wait for event with timeout for keepalive
-                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    event = await asyncio.wait_for(queue.get(), timeout=300.0)
                     yield f"data: {json.dumps(event)}\n\n"
                 except asyncio.TimeoutError:
                     # Send keepalive comment

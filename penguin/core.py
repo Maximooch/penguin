@@ -2587,6 +2587,7 @@ class PenguinCore:
             if hasattr(self, '_part_event_adapter') and self._part_event_adapter:
                 if event_type == "stream_chunk" and isinstance(data, dict):
                     chunk = data.get("chunk", "")
+                    logger.info(f"[SSE DEBUG] stream_chunk received: {len(chunk)} chars")
                     message_type = data.get("message_type", "assistant")
 
                     # Initialize stream if needed
@@ -2598,6 +2599,7 @@ class PenguinCore:
 
                     if self._current_stream_ids:
                         msg_id, part_id = self._current_stream_ids
+                        logger.info(f"[SSE DEBUG] Emitting chunk: {chunk[:20]}...")
                         await self._part_event_adapter.on_stream_chunk(
                             msg_id, part_id, chunk, message_type
                         )

@@ -1118,6 +1118,106 @@ async def handle_chat_message(
         logger.error(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/api/v1/chat/message_async")
+async def handle_chat_message_async(
+    request: MessageRequest, 
+    background_tasks: BackgroundTasks,
+    core: PenguinCore = Depends(get_core)
+):
+    """Process a chat message asynchronously, streaming events via SSE.
+
+    This endpoint returns immediately (204) and processes the message in the
+    background. Events are streamed through the /api/v1/events/sse endpoint
+    in OpenCode-compatible format.
+
+    Request body: Same as /api/v1/chat/message
+    Response: 204 No Content (immediate)
+    Events: Streamed via SSE
+    """
+    try:
+        if request.agent_id:
+            _validate_agent_id(request.agent_id)
+
+        # Get or create session ID
+        conversation_id = request.conversation_id
+        if not conversation_id:
+            # Get current session from conversation manager
+            cm = core.conversation_manager
+            if hasattr(cm, 'current_session') and cm.current_session:
+                conversation_id = cm.current_session.id
+            else:
+                # Create a new session
+                conversation_id = f"session_{uuid.uuid4().hex[:12]}"
+
+        # Set session ID on the adapter for event routing
+        if hasattr(core, '_part_event_adapter') and core._part_event_adapter:
+            core._part_event_adapter.set_session(conversation_id)
+
+        # Emit user message event immediately
+        if hasattr(core, '_part_event_adapter') and core._part_event_adapter:
+            await core._part_event_adapter.on_user_message(request.text)
+
+        # Start processing in background
+        async def process_async():
+            logger.info(f"[ASYNC DEBUG] Starting async processing for session {conversation_id}")
+            try:
+                logger.info(f"[ASYNC DEBUG] Starting async processing for session {conversation_id}")
+
+                input_data = {"text": request.text}
+
+                if request.image_paths:
+                    if len(request.image_paths) > MAX_IMAGES_PER_REQUEST:
+                        input_data["image_paths"] = request.image_paths[:MAX_IMAGES_PER_REQUEST]
+                    else:
+                        input_data["image_paths"] = request.image_paths
+
+                # Create a stream callback to ensure events are emitted
+                async def _async_stream_cb(chunk: str, message_type: str = "assistant"):
+                    logger.info(f"[STREAM_CB] Received chunk: {len(chunk)} chars, type: {message_type}")
+                    # The actual streaming happens via EventBus, this just ensures
+                    # the streaming path is activated in the core
+                    pass
+
+                # Process with streaming enabled
+                logger.info("[ASYNC DEBUG] Calling core.process with streaming=True")
+                    
+                await core.process(
+                    input_data=input_data,
+                    context=request.context,
+                    conversation_id=conversation_id,
+                    agent_id=request.agent_id,
+                    context_files=request.context_files,
+                    streaming=True,  # Always stream for async
+                    stream_callback=_async_stream_cb,
+                    max_iterations=request.max_iterations,
+                )
+                logger.info("[ASYNC DEBUG] core.process completed successfully")
+            except Exception as e:
+                logger.error(f"[ASYNC DEBUG] Async processing error: {e}", exc_info=True)
+                logger.error(f"Async processing error: {e}")
+                # Emit error event
+                if hasattr(core, '_part_event_adapter') and core._part_event_adapter:
+                    await core._part_event_adapter._emit("error", {
+                        "sessionID": conversation_id,
+                        "message": str(e),
+                        "code": "PROCESSING_ERROR"
+                    })
+
+        # Add to background tasks
+        background_tasks.add_task(process_async)
+
+        # Return immediately with 204
+        from fastapi import Response
+        return Response(status_code=204)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"handle_chat_message_async error: {e}")
+        raise _format_error_response(e)
+
+
+
 
 @router.websocket("/api/v1/chat/stream")
 async def stream_chat(
