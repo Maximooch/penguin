@@ -2596,7 +2596,15 @@ class PenguinCore:
             pass
 
         # Emit through unified event bus
-        await self.event_bus.emit(event_type, data)
+        try:
+            print(f"[TUI_ADAPTER] About to call event_bus.emit for {event_type}", flush=True)
+            print(f"[TUI_ADAPTER] EventBus class: {type(self.event_bus).__name__}", flush=True)
+            print(f"[TUI_ADAPTER] EventBus module: {type(self.event_bus).__module__}", flush=True)
+            await self.event_bus.emit(event_type, data)
+            print(f"[TUI_ADAPTER] event_bus.emit completed for {event_type}", flush=True)
+        except Exception as e:
+            print(f"[TUI_ADAPTER] ERROR in event_bus.emit: {e}", flush=True)
+            logger.error(f"[TUI_ADAPTER] ERROR in event_bus.emit: {e}", exc_info=True)
 
     def _filter_internal_markers_from_event(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -2971,6 +2979,12 @@ class PenguinCore:
         self._tui_stream_handler = self._on_tui_stream_chunk
         self.event_bus.subscribe("stream_chunk", self._tui_stream_handler)
         print(f"[TUI_ADAPTER] Subscribed to stream_chunk on bus {id(self.event_bus)}", flush=True)
+        # Verify subscription
+        subs = getattr(self.event_bus, 'subscribers', {})
+        handlers = subs.get('stream_chunk', [])
+        print(f"[TUI_ADAPTER] Handlers registered: {len(handlers)}", flush=True)
+        for i, h in enumerate(handlers):
+            print(f"[TUI_ADAPTER] Handler {i}: {h}", flush=True)
 
     async def _on_tui_stream_chunk(self, event_type: str, data: Dict[str, Any]):
         """Handle stream chunk - manages stream lifecycle and emits with delta."""

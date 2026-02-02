@@ -157,6 +157,8 @@ class EventBus:
         Handles deduplication automatically. Streaming events are passed through
         directly since core.py's StreamingStateManager handles coalescing.
         """
+        print(f"[EVENTBUS_EMIT] emit called: {event_type}, bus={id(self)}", flush=True)
+
         # Validate event type - add unknown types dynamically
         if event_type not in self.event_types:
             self.event_types.add(event_type)
@@ -164,21 +166,29 @@ class EventBus:
 
         # Check for duplicate events (skip dedup for streaming/token events)
         if self._is_duplicate(event_type, data):
+            print(f"[EVENTBUS_EMIT] Duplicate detected, skipping: {event_type}", flush=True)
             return
 
         # Emit directly to all subscribers - core.py handles streaming state
+        print(f"[EVENTBUS_EMIT] Calling _emit_to_subscribers for: {event_type}", flush=True)
         await self._emit_to_subscribers(event_type, data)
 
     async def _emit_to_subscribers(self, event_type: str, data: Dict[str, Any]) -> None:
         """Internal method to emit events to subscribers"""
         if event_type not in self.subscribers:
+            print(f"[EVENTBUS] No subscribers for {event_type}", flush=True)
             return
 
-        for handler in self.subscribers[event_type]:
+        handlers = self.subscribers[event_type]
+        print(f"[EVENTBUS] Emitting {event_type} to {len(handlers)} handlers", flush=True)
+
+        for i, handler in enumerate(handlers):
             try:
+                print(f"[EVENTBUS] Calling handler {i}", flush=True)
                 # Support both sync and async handlers
                 if asyncio.iscoroutinefunction(handler):
                     await handler(event_type, data)
+                    print(f"[EVENTBUS] Handler {i} completed", flush=True)
                 else:
                     # Run sync handler in thread pool
                     loop = asyncio.get_event_loop()
