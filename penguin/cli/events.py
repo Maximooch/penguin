@@ -29,6 +29,7 @@ AsyncEventHandler = Callable[[str, Dict[str, Any]], asyncio.Task]
 
 class EventType(Enum):
     """Standard event types for UI updates"""
+
     # Streaming events
     STREAM_START = "stream_start"
     STREAM_CHUNK = "stream_chunk"
@@ -64,6 +65,7 @@ class EventType(Enum):
 @dataclass
 class StreamingState:
     """Centralized streaming state management"""
+
     active: bool = False
     stream_id: Optional[str] = None
     content: str = ""
@@ -102,7 +104,7 @@ class EventBus:
     - PenguinInterface callbacks
     """
 
-    _instance: Optional['EventBus'] = None
+    _instance: Optional["EventBus"] = None
     _lock = asyncio.Lock()
 
     def __init__(self):
@@ -117,7 +119,7 @@ class EventBus:
         logger.debug("EventBus initialized")
 
     @classmethod
-    async def get_instance(cls) -> 'EventBus':
+    async def get_instance(cls) -> "EventBus":
         """Get or create singleton instance (async-safe)"""
         if cls._instance is None:
             async with cls._lock:
@@ -126,7 +128,7 @@ class EventBus:
         return cls._instance
 
     @classmethod
-    def get_sync(cls) -> 'EventBus':
+    def get_sync(cls) -> "EventBus":
         """Get instance synchronously (for initialization)"""
         if cls._instance is None:
             cls._instance = cls()
@@ -157,7 +159,7 @@ class EventBus:
         Handles deduplication automatically. Streaming events are passed through
         directly since core.py's StreamingStateManager handles coalescing.
         """
-        print(f"[EVENTBUS_EMIT] emit called: {event_type}, bus={id(self)}", flush=True)
+        logger.debug("EventBus emit called: %s bus=%s", event_type, id(self))
 
         # Validate event type - add unknown types dynamically
         if event_type not in self.event_types:
@@ -166,40 +168,43 @@ class EventBus:
 
         # Check for duplicate events (skip dedup for streaming/token events)
         if self._is_duplicate(event_type, data):
-            print(f"[EVENTBUS_EMIT] Duplicate detected, skipping: {event_type}", flush=True)
+            logger.debug("EventBus duplicate detected: %s", event_type)
             return
 
         # Emit directly to all subscribers - core.py handles streaming state
-        print(f"[EVENTBUS_EMIT] Calling _emit_to_subscribers for: {event_type}", flush=True)
         await self._emit_to_subscribers(event_type, data)
 
     async def _emit_to_subscribers(self, event_type: str, data: Dict[str, Any]) -> None:
         """Internal method to emit events to subscribers"""
         if event_type not in self.subscribers:
-            print(f"[EVENTBUS] No subscribers for {event_type}", flush=True)
+            logger.debug("EventBus no subscribers for %s", event_type)
             return
 
         handlers = self.subscribers[event_type]
-        print(f"[EVENTBUS] Emitting {event_type} to {len(handlers)} handlers", flush=True)
+        logger.debug("EventBus emitting %s to %s handlers", event_type, len(handlers))
 
         for i, handler in enumerate(handlers):
             try:
-                print(f"[EVENTBUS] Calling handler {i}", flush=True)
                 # Support both sync and async handlers
                 if asyncio.iscoroutinefunction(handler):
                     await handler(event_type, data)
-                    print(f"[EVENTBUS] Handler {i} completed", flush=True)
                 else:
                     # Run sync handler in thread pool
                     loop = asyncio.get_event_loop()
                     await loop.run_in_executor(None, handler, event_type, data)
             except Exception as e:
-                logger.error(f"Error in event handler for {event_type}: {e}", exc_info=True)
+                logger.error(
+                    f"Error in event handler for {event_type}: {e}", exc_info=True
+                )
 
     def _is_duplicate(self, event_type: str, data: Dict[str, Any]) -> bool:
         """Check if event is duplicate within dedup window"""
         # Don't deduplicate streaming or token events
-        if event_type in [EventType.STREAM_CHUNK.value, EventType.TOKEN_UPDATE.value]:
+        if event_type in [
+            EventType.STREAM_CHUNK.value,
+            EventType.TOKEN_UPDATE.value,
+            "opencode_event",
+        ]:
             return False
 
         # Create hash of event
@@ -209,7 +214,8 @@ class EventBus:
 
         # Clean old events
         self._recent_events = [
-            (t, h, ts) for t, h, ts in self._recent_events
+            (t, h, ts)
+            for t, h, ts in self._recent_events
             if current_time - ts < self._dedup_window
         ]
 
@@ -221,21 +227,28 @@ class EventBus:
         # Add to recent events
         self._recent_events.append((event_type, event_hash, current_time))
         if len(self._recent_events) > self._max_recent:
-            self._recent_events = self._recent_events[-self._max_recent:]
+            self._recent_events = self._recent_events[-self._max_recent :]
 
         return False
 
-    async def emit_message(self, role: str, content: str,
-                          category: Optional[str] = None,
-                          metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def emit_message(
+        self,
+        role: str,
+        content: str,
+        category: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Convenience method for emitting message events"""
-        await self.emit(EventType.MESSAGE.value, {
-            "role": role,
-            "content": content,
-            "category": category or "DIALOG",
-            "metadata": metadata or {},
-            "timestamp": datetime.now().isoformat()
-        })
+        await self.emit(
+            EventType.MESSAGE.value,
+            {
+                "role": role,
+                "content": content,
+                "category": category or "DIALOG",
+                "metadata": metadata or {},
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
 
     async def emit_token_update(self, usage_data: Dict[str, Any]) -> None:
         """Convenience method for token updates"""
@@ -243,19 +256,27 @@ class EventBus:
 
     async def emit_error(self, error: str, details: Optional[str] = None) -> None:
         """Convenience method for error events"""
-        await self.emit(EventType.ERROR.value, {
-            "message": error,
-            "details": details,
-            "timestamp": datetime.now().isoformat()
-        })
+        await self.emit(
+            EventType.ERROR.value,
+            {
+                "message": error,
+                "details": details,
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
 
-    async def emit_status(self, status: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    async def emit_status(
+        self, status: str, metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
         """Convenience method for status updates"""
-        await self.emit(EventType.STATUS.value, {
-            "status": status,
-            "metadata": metadata or {},
-            "timestamp": datetime.now().isoformat()
-        })
+        await self.emit(
+            EventType.STATUS.value,
+            {
+                "status": status,
+                "metadata": metadata or {},
+                "timestamp": datetime.now().isoformat(),
+            },
+        )
 
     def reset(self) -> None:
         """Reset all state (useful for tests)"""

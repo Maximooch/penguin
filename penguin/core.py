@@ -158,7 +158,11 @@ from penguin._version import __version__ as PENGUIN_VERSION
 # LLM and API
 from penguin.llm.api_client import APIClient
 from penguin.llm.model_config import ModelConfig, safe_context_window, fetch_model_specs
-from penguin.llm.stream_handler import StreamingStateManager, AgentStreamingStateManager, StreamingConfig
+from penguin.llm.stream_handler import (
+    StreamingStateManager,
+    AgentStreamingStateManager,
+    StreamingConfig,
+)
 
 MODEL_CONFIG_FIELD_NAMES = {field.name for field in fields(ModelConfig)}
 
@@ -174,16 +178,26 @@ from penguin.system.state import MessageCategory, Message
 
 # System Prompt
 from penguin.system_prompt import SYSTEM_PROMPT, get_system_prompt
+
 # Workflow Prompt
 from penguin.prompt_workflow import PENGUIN_WORKFLOW
 
 # Tools and Processing
 from penguin.tools import ToolManager
 from penguin.utils.callbacks import adapt_stream_callback
-from penguin.utils.diagnostics import diagnostics, enable_diagnostics, disable_diagnostics
+from penguin.utils.diagnostics import (
+    diagnostics,
+    enable_diagnostics,
+    disable_diagnostics,
+)
 from penguin.utils.log_error import log_error
 from penguin.utils.parser import ActionExecutor, parse_action
-from penguin.utils.profiling import profile_startup_phase, profile_operation, profiler, print_startup_report
+from penguin.utils.profiling import (
+    profile_startup_phase,
+    profile_operation,
+    profiler,
+    print_startup_report,
+)
 
 try:
     from penguin.system.message_bus import MessageBus, ProtocolMessage
@@ -191,8 +205,10 @@ try:
 except Exception:  # pragma: no cover
     MessageBus = None  # type: ignore
     ProtocolMessage = None  # type: ignore
+
     def ensure_telemetry(_: Any):  # type: ignore[nested-alias]
         return None
+
 
 # Add the EventHandler type for type hinting
 EventHandler = Callable[[str, Dict[str, Any]], Union[Awaitable[None], None]]
@@ -210,16 +226,16 @@ console = Console()
 class PenguinCore:
     """
     Central coordinator for the Penguin AI assistant.
-    
+
     Acts as an integration point between:
     - ConversationManager: Handles messages, context, and conversation state
     - ToolManager: Provides access to available tools and actions
     - ActionExecutor: Executes actions from LLM responses
     - ProjectManager: Manages projects and tasks
-    
+
     This class focuses on coordination rather than direct implementation,
     delegating most functionality to specialized components.
-    
+
     Attributes:
         conversation_manager (ConversationManager): Manages conversations and context
         tool_manager (ToolManager): Manages available tools
@@ -229,7 +245,7 @@ class PenguinCore:
         config (Config): System configuration
         model_config (ModelConfig): Model-specific configuration
     """
-    
+
     @classmethod
     async def create(
         cls,
@@ -238,9 +254,9 @@ class PenguinCore:
         provider: Optional[str] = None,
         workspace_path: Optional[str] = None,
         enable_cli: bool = False,
-        show_progress: bool = True, # what is this again?
+        show_progress: bool = True,  # what is this again?
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
-        fast_startup: bool = True  # Default True for faster startup (defers memory indexing)
+        fast_startup: bool = True,  # Default True for faster startup (defers memory indexing)
     ) -> Union["PenguinCore", Tuple["PenguinCore", "PenguinCLI"]]:
         """
         Factory method for creating PenguinCore instance.
@@ -251,15 +267,16 @@ class PenguinCore:
         """
         # Fix HuggingFace tokenizers parallelism warning early, before any model loading
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
-        
-        pbar = None # Initialize pbar to None
+
+        pbar = None  # Initialize pbar to None
         # Track detailed timing for profiling
         import time
         from collections import defaultdict
+
         timings = defaultdict(float)
         step_start_time = time.time()
         overall_start_time = step_start_time
-        
+
         def log_step_time(step_name: str):
             nonlocal step_start_time
             step_end_time = time.time()
@@ -267,7 +284,7 @@ class PenguinCore:
             timings[step_name] = elapsed
             logger.info(f"PROFILING: {step_name} took {elapsed:.4f} seconds")
             step_start_time = step_end_time
-        
+
         try:
             with profile_startup_phase("PenguinCore.create_total"):
                 # Initialize progress bar only if show_progress is True
@@ -293,23 +310,30 @@ class PenguinCore:
                 # Step 1: Load environment
                 with profile_startup_phase("Load environment"):
                     logger.info("STARTUP: Loading environment variables")
-                    if pbar: pbar.set_description("Loading environment")
+                    if pbar:
+                        pbar.set_description("Loading environment")
                     if progress_callback:
                         current_step_index += 1
-                        progress_callback(current_step_index, total_steps, "Loading environment")
+                        progress_callback(
+                            current_step_index, total_steps, "Loading environment"
+                        )
                     # load_dotenv() is already invoked centrally in config.py at import time.
                     # Calling it again here is redundant and can subtly override earlier values.
                     # Intentionally no-op.
-                    if pbar: pbar.update(1)
+                    if pbar:
+                        pbar.update(1)
                     log_step_time("Load environment")
 
                 # Step 2: Initialize logging
                 with profile_startup_phase("Setup logging"):
                     logger.info("STARTUP: Setting up logging configuration")
-                    if pbar: pbar.set_description("Setting up logging")
+                    if pbar:
+                        pbar.set_description("Setting up logging")
                     if progress_callback:
                         current_step_index += 1
-                        progress_callback(current_step_index, total_steps, "Setting up logging")
+                        progress_callback(
+                            current_step_index, total_steps, "Setting up logging"
+                        )
                     logging.basicConfig(level=logging.WARNING)
                     for logger_name in [
                         "httpx",
@@ -320,144 +344,214 @@ class PenguinCore:
                     ]:
                         logging.getLogger(logger_name).setLevel(logging.WARNING)
                     logging.getLogger("chat").setLevel(logging.DEBUG)
-                    if pbar: pbar.update(1)
+                    if pbar:
+                        pbar.update(1)
                     log_step_time("Setup logging")
 
                 # Load configuration
                 with profile_startup_phase("Load configuration"):
                     logger.info("STARTUP: Loading and parsing configuration")
-                    if pbar: pbar.set_description("Loading configuration")
+                    if pbar:
+                        pbar.set_description("Loading configuration")
                     if progress_callback:
                         current_step_index += 1
-                        progress_callback(current_step_index, total_steps, "Loading configuration")
+                        progress_callback(
+                            current_step_index, total_steps, "Loading configuration"
+                        )
                     start_config_time = time.time()
                     config = config or Config.load_config()
-                    
+
                     # Use fast_startup from config if not explicitly set
-                    if fast_startup is False and hasattr(config, 'fast_startup'):
+                    if fast_startup is False and hasattr(config, "fast_startup"):
                         fast_startup = config.fast_startup
-                        
-                    logger.info(f"STARTUP: Config loaded in {time.time() - start_config_time:.4f}s")
-                    if pbar: pbar.update(1)
+
+                    logger.info(
+                        f"STARTUP: Config loaded in {time.time() - start_config_time:.4f}s"
+                    )
+                    if pbar:
+                        pbar.update(1)
                     log_step_time("Load configuration")
 
                 # Initialize model configuration
                 with profile_startup_phase("Create model config"):
                     logger.info("STARTUP: Creating model configuration")
-                    if pbar: pbar.set_description("Creating model config")
+                    if pbar:
+                        pbar.set_description("Creating model config")
                     if progress_callback:
                         current_step_index += 1
-                        progress_callback(current_step_index, total_steps, "Creating model config")
+                        progress_callback(
+                            current_step_index, total_steps, "Creating model config"
+                        )
                     # Source of truth for runtime model settings is the live Config.model_config.
                     # Allow explicit overrides via function args for tests/CLI.
                     model_config = ModelConfig(
                         model=(
                             model
-                            or getattr(config.model_config, 'model', DEFAULT_MODEL)
+                            or getattr(config.model_config, "model", DEFAULT_MODEL)
                         ),
                         provider=(
                             provider
-                            or getattr(config.model_config, 'provider', DEFAULT_PROVIDER)
+                            or getattr(
+                                config.model_config, "provider", DEFAULT_PROVIDER
+                            )
                         ),
                         api_base=(
-                            getattr(config.model_config, 'api_base', None)
-                            or (config.api.base_url if hasattr(config, 'api') and hasattr(config.api, 'base_url') else None)
+                            getattr(config.model_config, "api_base", None)
+                            or (
+                                config.api.base_url
+                                if hasattr(config, "api")
+                                and hasattr(config.api, "base_url")
+                                else None
+                            )
                         ),
-                        use_assistants_api=bool(getattr(config.model_config, 'use_assistants_api', False)),
-                        client_preference=getattr(config.model_config, 'client_preference', 'native'),
-                        streaming_enabled=bool(getattr(config.model_config, 'streaming_enabled', True)),
+                        use_assistants_api=bool(
+                            getattr(config.model_config, "use_assistants_api", False)
+                        ),
+                        client_preference=getattr(
+                            config.model_config, "client_preference", "native"
+                        ),
+                        streaming_enabled=bool(
+                            getattr(config.model_config, "streaming_enabled", True)
+                        ),
                         # Generation cap should be the configured model's value; do not substitute context window here
                         max_output_tokens=getattr(
                             config.model_config,
                             "max_output_tokens",
-                            getattr(config.model_config, "max_output_tokens", getattr(config.model_config, "max_tokens", None)),  # Prefer new name
+                            getattr(
+                                config.model_config,
+                                "max_output_tokens",
+                                getattr(config.model_config, "max_tokens", None),
+                            ),  # Prefer new name
                         ),
                         max_context_window_tokens=getattr(
                             config.model_config, "max_context_window_tokens", None
                         ),
                     )
-                    logger.info(f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}")
-                    if pbar: pbar.update(1)
+                    logger.info(
+                        f"STARTUP: Using model={model_config.model}, provider={model_config.provider}, client={model_config.client_preference}"
+                    )
+                    if pbar:
+                        pbar.update(1)
                     log_step_time("Create model config")
 
                 # Create API client
                 with profile_startup_phase("Initialize API client"):
                     logger.info("STARTUP: Initializing API client")
-                    if pbar: pbar.set_description("Initializing API client")
+                    if pbar:
+                        pbar.set_description("Initializing API client")
                     if progress_callback:
                         current_step_index += 1
-                        progress_callback(current_step_index, total_steps, "Initializing API client")
+                        progress_callback(
+                            current_step_index, total_steps, "Initializing API client"
+                        )
                     # Ensure .env files are loaded before API client needs API keys
                     _ensure_env_loaded()
                     api_client_start = time.time()
                     api_client = APIClient(model_config=model_config)
                     api_client.set_system_prompt(SYSTEM_PROMPT)
-                    logger.info(f"STARTUP: API client initialized in {time.time() - api_client_start:.4f}s")
-                    if pbar: pbar.update(1)
+                    logger.info(
+                        f"STARTUP: API client initialized in {time.time() - api_client_start:.4f}s"
+                    )
+                    if pbar:
+                        pbar.update(1)
                     log_step_time("Initialize API client")
 
                 # Initialize tool manager
                 with profile_startup_phase("Create tool manager"):
-                    logger.info(f"STARTUP: Creating tool manager (fast_startup={fast_startup})")
-                    if pbar: pbar.set_description("Creating tool manager")
+                    logger.info(
+                        f"STARTUP: Creating tool manager (fast_startup={fast_startup})"
+                    )
+                    if pbar:
+                        pbar.set_description("Creating tool manager")
                     if progress_callback:
                         current_step_index += 1
-                        progress_callback(current_step_index, total_steps, "Creating tool manager")
+                        progress_callback(
+                            current_step_index, total_steps, "Creating tool manager"
+                        )
                     tool_manager_start = time.time()
                     print("DEBUG: Creating ToolManager in PenguinCore...")
-                    print(f"DEBUG: Passing config of type {type(config)} to ToolManager.")
-                    print(f"DEBUG: Passing log_error of type {type(log_error)} to ToolManager.")
+                    print(
+                        f"DEBUG: Passing config of type {type(config)} to ToolManager."
+                    )
+                    print(
+                        f"DEBUG: Passing log_error of type {type(log_error)} to ToolManager."
+                    )
                     print(f"DEBUG: Fast startup mode: {fast_startup}")
                     # Provide ToolManager with a deterministic dict derived from the live Config
                     try:
-                        config_dict = config.to_dict() if hasattr(config, 'to_dict') else {}
+                        config_dict = (
+                            config.to_dict() if hasattr(config, "to_dict") else {}
+                        )
                     except Exception:
                         config_dict = {}
-                    tool_manager = ToolManager(config_dict, log_error, fast_startup=fast_startup)
-                    logger.info(f"STARTUP: Tool manager created in {time.time() - tool_manager_start:.4f}s with {len(tool_manager.tools) if hasattr(tool_manager, 'tools') else 'unknown'} tools")
-                    if pbar: pbar.update(1)
+                    tool_manager = ToolManager(
+                        config_dict, log_error, fast_startup=fast_startup
+                    )
+                    logger.info(
+                        f"STARTUP: Tool manager created in {time.time() - tool_manager_start:.4f}s with {len(tool_manager.tools) if hasattr(tool_manager, 'tools') else 'unknown'} tools"
+                    )
+                    if pbar:
+                        pbar.update(1)
                     log_step_time("Create tool manager")
 
                 # Create core instance
                 with profile_startup_phase("Create core instance"):
                     logger.info("STARTUP: Creating core instance")
-                    if pbar: pbar.set_description("Creating core instance")
+                    if pbar:
+                        pbar.set_description("Creating core instance")
                     if progress_callback:
                         current_step_index += 1
-                        progress_callback(current_step_index, total_steps, "Creating core instance")
+                        progress_callback(
+                            current_step_index, total_steps, "Creating core instance"
+                        )
                     core_start = time.time()
                     instance = cls(
-                        config=config, 
-                        api_client=api_client, 
-                        tool_manager=tool_manager, 
-                        model_config=model_config
+                        config=config,
+                        api_client=api_client,
+                        tool_manager=tool_manager,
+                        model_config=model_config,
                     )
-                    logger.info(f"STARTUP: Core instance created in {time.time() - core_start:.4f}s")
-                    if pbar: pbar.update(1)
+                    logger.info(
+                        f"STARTUP: Core instance created in {time.time() - core_start:.4f}s"
+                    )
+                    if pbar:
+                        pbar.update(1)
                     log_step_time("Create core instance")
 
                 if enable_cli:
                     with profile_startup_phase("Initialize CLI"):
                         logger.info("STARTUP: Initializing CLI")
-                        if pbar: pbar.set_description("Initializing CLI")
+                        if pbar:
+                            pbar.set_description("Initializing CLI")
                         if progress_callback:
                             current_step_index += 1
-                            progress_callback(current_step_index, total_steps, "Initializing CLI")
+                            progress_callback(
+                                current_step_index, total_steps, "Initializing CLI"
+                            )
                         cli_start = time.time()
                         from penguin.chat.cli import PenguinCLI
+
                         cli = PenguinCLI(instance)
-                        logger.info(f"STARTUP: CLI initialized in {time.time() - cli_start:.4f}s")
-                        if pbar: pbar.update(1)
+                        logger.info(
+                            f"STARTUP: CLI initialized in {time.time() - cli_start:.4f}s"
+                        )
+                        if pbar:
+                            pbar.update(1)
                         log_step_time("Initialize CLI")
 
-                if pbar: pbar.close()
+                if pbar:
+                    pbar.close()
                 # Ensure external progress finishes
                 if progress_callback and current_step_index < total_steps:
-                    progress_callback(total_steps, total_steps, "Initialization complete")
+                    progress_callback(
+                        total_steps, total_steps, "Initialization complete"
+                    )
 
                 total_time = time.time() - overall_start_time
-                logger.info(f"STARTUP COMPLETE: Total initialization time: {total_time:.4f} seconds")
-                
+                logger.info(
+                    f"STARTUP COMPLETE: Total initialization time: {total_time:.4f} seconds"
+                )
+
                 # Log summary of all timing measurements
                 logger.info("STARTUP TIMING SUMMARY:")
                 for step, duration in timings.items():
@@ -466,8 +560,10 @@ class PenguinCore:
 
                 # Print comprehensive profiling report if enabled
                 if fast_startup:
-                    logger.info("FAST STARTUP enabled - memory indexing deferred to first use")
-                
+                    logger.info(
+                        "FAST STARTUP enabled - memory indexing deferred to first use"
+                    )
+
                 # Log tool manager stats
                 tool_stats = tool_manager.get_startup_stats()
                 logger.info(f"ToolManager startup stats: {tool_stats}")
@@ -477,7 +573,8 @@ class PenguinCore:
         except Exception as e:
             error_time = time.time() - overall_start_time
             logger.error(f"STARTUP FAILED after {error_time:.4f}s: {str(e)}")
-            if pbar: pbar.close()
+            if pbar:
+                pbar.close()
             error_msg = f"Failed to initialize PenguinCore: {str(e)}"
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
@@ -499,22 +596,24 @@ class PenguinCore:
         self.progress_callbacks = []
         self.token_callbacks = []
         self._active_contexts = set()  # Track active execution contexts
-        
+
         # Initialize runtime configuration (for dynamic config changes)
         from penguin.config import RuntimeConfig
+
         if runtime_config is None:
             # Create from current config
-            config_dict = config.to_dict() if hasattr(config, 'to_dict') else {}
+            config_dict = config.to_dict() if hasattr(config, "to_dict") else {}
             self.runtime_config = RuntimeConfig(config_dict)
         else:
             self.runtime_config = runtime_config
-        
+
         # Register tool_manager as observer if it exists
-        if tool_manager and hasattr(tool_manager, 'on_runtime_config_change'):
+        if tool_manager and hasattr(tool_manager, "on_runtime_config_change"):
             self.runtime_config.register_observer(tool_manager.on_runtime_config_change)
 
         # Initialize unified event system
         from penguin.cli.events import EventBus, EventType
+
         self.event_bus = EventBus.get_sync()
         self.event_types = {e.value for e in EventType}
 
@@ -527,10 +626,17 @@ class PenguinCore:
             self.show_tool_results = bool(output_config.show_tool_results)
         else:
             try:
-                raw_output_config = raw_config.get("output", {}) if isinstance(raw_config, dict) else {}
+                raw_output_config = (
+                    raw_config.get("output", {}) if isinstance(raw_config, dict) else {}
+                )
                 show_tool_value = raw_output_config.get("show_tool_results", True)
                 if isinstance(show_tool_value, str):
-                    self.show_tool_results = show_tool_value.strip().lower() in {"1", "true", "yes", "on"}
+                    self.show_tool_results = show_tool_value.strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    }
                 else:
                     self.show_tool_results = bool(show_tool_value)
             except Exception:
@@ -539,7 +645,9 @@ class PenguinCore:
         # Set system prompt from import
         # Initialize prompt mode from config if available
         try:
-            initial_mode = str(raw_config.get("prompt", {}).get("mode", "direct")).strip().lower()
+            initial_mode = (
+                str(raw_config.get("prompt", {}).get("mode", "direct")).strip().lower()
+            )
         except Exception:
             initial_mode = "direct"
         self.prompt_mode: str = initial_mode or "direct"
@@ -547,10 +655,15 @@ class PenguinCore:
         # Apply initial output style from config before building prompt
         try:
             from penguin.prompt.builder import set_output_formatting
+
             if output_config and getattr(output_config, "prompt_style", None):
                 prompt_style = str(output_config.prompt_style).strip().lower()
             else:
-                prompt_style = str(raw_config.get("output", {}).get("prompt_style", "steps_final")).strip().lower()
+                prompt_style = (
+                    str(raw_config.get("output", {}).get("prompt_style", "steps_final"))
+                    .strip()
+                    .lower()
+                )
             self.output_style = prompt_style or "steps_final"
             set_output_formatting(self.output_style or "steps_final")
         except Exception:
@@ -573,37 +686,41 @@ class PenguinCore:
 
         # OpenCode TUI adapter for SSE event translation
         from penguin.tui_adapter import PartEventAdapter
+
         self._tui_adapter = PartEventAdapter(self.event_bus)
 
         # Subscribe to stream events and translate to OpenCode format
         self._subscribe_to_stream_events()
 
         # RunMode state for UI streaming bridges
-        self._runmode_stream_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
+        self._runmode_stream_callback: Optional[
+            Callable[[str, str], Awaitable[None]]
+        ] = None
         self._runmode_active: bool = False
         self.run_mode = None
 
         # Initialize project manager with workspace path from config
         from penguin.config import WORKSPACE_PATH
+
         self.project_manager = ProjectManager(workspace_path=WORKSPACE_PATH)
 
         # Initialize diagnostics based on config
         if not self.config.diagnostics.enabled:
             disable_diagnostics()
-        
+
         # Initialize conversation manager (replaces conversation system)
         from penguin.config import WORKSPACE_PATH
         from penguin.system.checkpoint_manager import CheckpointConfig
-        
+
         # Create checkpoint configuration
         checkpoint_config = CheckpointConfig(
             enabled=True,
             frequency=1,  # Checkpoint every message
             planes={"conversation": True, "tasks": False, "code": False},
             retention={"keep_all_hours": 24, "keep_every_nth": 10, "max_age_days": 30},
-            max_auto_checkpoints=1000 #TODO: review magic numbers and at least put them into constants.py or parametrize them via Config
+            max_auto_checkpoints=1000,  # TODO: review magic numbers and at least put them into constants.py or parametrize them via Config
         )
-        
+
         self.conversation_manager = ConversationManager(
             model_config=model_config,
             api_client=api_client,
@@ -612,7 +729,7 @@ class PenguinCore:
             max_messages_per_session=DEFAULT_MAX_MESSAGES_PER_SESSION,
             max_sessions_in_memory=20,
             auto_save_interval=60,
-            checkpoint_config=checkpoint_config
+            checkpoint_config=checkpoint_config,
         )
         # Attach a back-reference so Engine (and other helpers) can emit UI events
         # and finalize streaming messages via the Core.  Without this the Engine
@@ -626,11 +743,16 @@ class PenguinCore:
             self.conversation_manager,
             ui_event_callback=self.emit_ui_event,
         )
-        self.current_runmode_status_summary: str = "RunMode idle." # New attribute
+        self.current_runmode_status_summary: str = "RunMode idle."  # New attribute
 
         # ------------------- Engine Initialization -------------------
         try:
-            from penguin.engine import Engine, EngineSettings, TokenBudgetStop, WallClockStop  # type: ignore
+            from penguin.engine import (
+                Engine,
+                EngineSettings,
+                TokenBudgetStop,
+                WallClockStop,
+            )  # type: ignore
             # Propagate the model's streaming preference into the Engine so that
             # multi-step run modes (RunMode → Engine.run_task) inherit the same
             # behaviour as interactive chat.  Without this, Engine defaults to
@@ -664,7 +786,9 @@ class PenguinCore:
             except Exception as coord_err:  # pragma: no cover
                 logger.debug(f"Coordinator unavailable during engine init: {coord_err}")
         except Exception as e:
-            logger.warning(f"Failed to initialize Engine layer (fallback to legacy core processing): {e}")
+            logger.warning(
+                f"Failed to initialize Engine layer (fallback to legacy core processing): {e}"
+            )
             self.engine = None
 
         # State
@@ -673,6 +797,7 @@ class PenguinCore:
 
         # Ensure error log directory exists
         from penguin.config import WORKSPACE_PATH
+
         self.validate_path(Path(WORKSPACE_PATH))
 
         # Add an accumulated token counter
@@ -685,10 +810,12 @@ class PenguinCore:
         """Configure LiteLLM on first use to avoid import time overhead."""
         if not self._litellm_configured:
             try:
-                from litellm import _logging # type: ignore
+                from litellm import _logging  # type: ignore
+
                 _logging._disable_debugging()
                 # Also set these to be safe
-                import litellm # type: ignore
+                import litellm  # type: ignore
+
                 litellm.set_verbose = False
                 litellm.drop_params = False
                 self._litellm_configured = True
@@ -700,7 +827,7 @@ class PenguinCore:
         self.current_runmode_status_summary: str = "RunMode idle."
 
         # Inject core reference into tool_manager for sub-agent tools
-        if self.tool_manager and hasattr(self.tool_manager, 'set_core'):
+        if self.tool_manager and hasattr(self.tool_manager, "set_core"):
             self.tool_manager.set_core(self)
 
     # ------------------------------------------------------------------
@@ -709,9 +836,13 @@ class PenguinCore:
     def get_coordinator(self):
         """Return a singleton MultiAgentCoordinator bound to this Core."""
         try:
-            if not hasattr(self, "_coordinator") or getattr(self, "_coordinator") is None:
+            if (
+                not hasattr(self, "_coordinator")
+                or getattr(self, "_coordinator") is None
+            ):
                 # Use a relative import to avoid path issues in both repo and installed layouts
                 from .multi.coordinator import MultiAgentCoordinator  # type: ignore
+
                 self._coordinator = MultiAgentCoordinator(self)
             return self._coordinator
         except Exception as e:
@@ -761,11 +892,14 @@ class PenguinCore:
         try:
             style_normalized = str(style).strip().lower()
             from penguin.prompt.builder import set_output_formatting
+
             set_output_formatting(style_normalized)
             self.output_style = style_normalized
             # Rebuild prompt with current mode
             try:
-                if hasattr(self, "conversation_manager") and hasattr(self.conversation_manager, "set_system_prompt"):
+                if hasattr(self, "conversation_manager") and hasattr(
+                    self.conversation_manager, "set_system_prompt"
+                ):
                     prompt = get_system_prompt(self.prompt_mode)
                     self.system_prompt = prompt
                     self.conversation_manager.set_system_prompt(prompt)
@@ -792,11 +926,15 @@ class PenguinCore:
         if not os.access(path, os.W_OK):
             raise PermissionError(f"No write access to {path}")
 
-    def register_progress_callback(self, callback: Callable[[int, int, Optional[str]], None]) -> None:
+    def register_progress_callback(
+        self, callback: Callable[[int, int, Optional[str]], None]
+    ) -> None:
         """Register a callback for progress updates during multi-step processing."""
         self.progress_callbacks.append(callback)
 
-    def notify_progress(self, iteration: int, max_iterations: int, message: Optional[str] = None) -> None:
+    def notify_progress(
+        self, iteration: int, max_iterations: int, message: Optional[str] = None
+    ) -> None:
         """Notify all registered callbacks about progress."""
         for callback in self.progress_callbacks:
             callback(iteration, max_iterations, message)
@@ -804,14 +942,14 @@ class PenguinCore:
     def reset_context(self):
         """
         Reset conversation context and diagnostics.
-        
+
         This method clears the current conversation state and resets all
         tools and diagnostics. Use this between different conversation
         sessions.
         """
         diagnostics.reset()
         self._interrupted = False
-        
+
         # Reset conversation via manager
         self.conversation_manager.reset()
 
@@ -849,6 +987,7 @@ class PenguinCore:
         Delegates to AgentManager for the actual implementation.
         """
         from penguin.agent.manager import AgentManager
+
         manager = AgentManager(
             conversation_manager=getattr(self, "conversation_manager", None),
             config=self.config,
@@ -862,6 +1001,7 @@ class PenguinCore:
         Delegates to AgentManager for the actual implementation.
         """
         from penguin.agent.manager import AgentManager
+
         manager = AgentManager(
             conversation_manager=getattr(self, "conversation_manager", None),
             config=self.config,
@@ -896,12 +1036,14 @@ class PenguinCore:
         try:
             self.conversation_manager.set_current_agent(agent_id)
         except Exception as e:
-            logger.error(f"Failed to switch ConversationManager to agent '{agent_id}': {e}")
+            logger.error(
+                f"Failed to switch ConversationManager to agent '{agent_id}': {e}"
+            )
             raise
 
         # Switch Engine default routing
         try:
-            if getattr(self, 'engine', None):
+            if getattr(self, "engine", None):
                 self.engine.set_default_agent(agent_id)
         except Exception as e:
             logger.error(f"Failed to set Engine default agent '{agent_id}': {e}")
@@ -912,15 +1054,25 @@ class PenguinCore:
         return self.conversation_manager.create_agent_conversation(agent_id)
 
     def list_all_conversations(self, *, limit_per_agent: int = 1000, offset: int = 0):
-        return self.conversation_manager.list_all_conversations(limit_per_agent=limit_per_agent, offset=offset)
+        return self.conversation_manager.list_all_conversations(
+            limit_per_agent=limit_per_agent, offset=offset
+        )
 
-    def load_agent_conversation(self, agent_id: str, conversation_id: str, *, activate: bool = True) -> bool:
-        return self.conversation_manager.load_agent_conversation(agent_id, conversation_id, activate=activate)
+    def load_agent_conversation(
+        self, agent_id: str, conversation_id: str, *, activate: bool = True
+    ) -> bool:
+        return self.conversation_manager.load_agent_conversation(
+            agent_id, conversation_id, activate=activate
+        )
 
     def delete_agent_conversation(self, agent_id: str, conversation_id: str) -> bool:
-        return self.conversation_manager.delete_agent_conversation(agent_id, conversation_id)
+        return self.conversation_manager.delete_agent_conversation(
+            agent_id, conversation_id
+        )
 
-    def delete_agent_conversation_guarded(self, agent_id: str, conversation_id: str, *, force: bool = False) -> Dict[str, Any]:
+    def delete_agent_conversation_guarded(
+        self, agent_id: str, conversation_id: str, *, force: bool = False
+    ) -> Dict[str, Any]:
         """Delete a conversation with safety checks for shared sessions.
 
         Returns a dict: {"success": bool, "warning": Optional[str]}
@@ -952,7 +1104,9 @@ class PenguinCore:
         """Return all registered agent identifiers."""
         return self.conversation_manager.list_agents()
 
-    def list_sub_agents(self, parent_agent_id: Optional[str] = None) -> Dict[str, List[str]]:
+    def list_sub_agents(
+        self, parent_agent_id: Optional[str] = None
+    ) -> Dict[str, List[str]]:
         """Return mapping of parent agents to sub-agents."""
         return self.conversation_manager.list_sub_agents(parent_agent_id)
 
@@ -962,7 +1116,7 @@ class PenguinCore:
     def set_agent_paused(self, agent_id: str, paused: bool = True) -> None:
         """Mark an agent as paused/resumed using conversation metadata."""
         conv = self.conversation_manager.get_agent_conversation(agent_id)
-        if conv and hasattr(conv, 'session') and conv.session:
+        if conv and hasattr(conv, "session") and conv.session:
             conv.session.metadata["paused"] = bool(paused)
         # Also add system note for visibility
         try:
@@ -978,7 +1132,7 @@ class PenguinCore:
     def is_agent_paused(self, agent_id: str) -> bool:
         """Check if agent is paused via conversation metadata."""
         conv = self.conversation_manager.get_agent_conversation(agent_id)
-        if conv and hasattr(conv, 'session') and conv.session:
+        if conv and hasattr(conv, "session") and conv.session:
             return bool(conv.session.metadata.get("paused", False))
         return False
 
@@ -1002,7 +1156,9 @@ class PenguinCore:
             system_prompt: Optional system prompt for the agent
             **kwargs: Ignored (for backward compatibility with legacy callers)
         """
-        conv = self.conversation_manager.get_agent_conversation(agent_id, create_if_missing=True)
+        conv = self.conversation_manager.get_agent_conversation(
+            agent_id, create_if_missing=True
+        )
         if system_prompt and conv:
             conv.set_system_prompt(system_prompt)
 
@@ -1074,7 +1230,9 @@ class PenguinCore:
         # Ensure conversation exists
         self.ensure_agent_conversation(agent_id, system_prompt=system_prompt)
 
-    def unregister_agent(self, agent_id: str, *, preserve_conversation: bool = False) -> bool:
+    def unregister_agent(
+        self, agent_id: str, *, preserve_conversation: bool = False
+    ) -> bool:
         """Unregister an agent. Delegates to delete_agent_conversation()."""
         if preserve_conversation:
             # Just unregister from Engine, keep conversation
@@ -1082,7 +1240,9 @@ class PenguinCore:
                 try:
                     self.engine.unregister_agent(agent_id)
                 except Exception as e:
-                    logger.debug(f"Engine unregister_agent failed for '{agent_id}': {e}")
+                    logger.debug(
+                        f"Engine unregister_agent failed for '{agent_id}': {e}"
+                    )
             return True
         return self.delete_agent_conversation(agent_id)
 
@@ -1198,7 +1358,11 @@ class PenguinCore:
         for aid, conv in getattr(cm, "agent_sessions", {}).items():
             try:
                 session_id = getattr(conv.session, "id", None)
-                cw = cm.agent_context_windows.get(aid) if hasattr(cm, "agent_context_windows") else getattr(cm, "context_window", None)
+                cw = (
+                    cm.agent_context_windows.get(aid)
+                    if hasattr(cm, "agent_context_windows")
+                    else getattr(cm, "context_window", None)
+                )
                 cw_usage = {}
                 cw_max = None
                 if cw and hasattr(cw, "get_token_usage"):
@@ -1209,17 +1373,22 @@ class PenguinCore:
                             "total": u.get("total", u.get("current_total_tokens")),
                             "available": u.get("available", u.get("available_tokens")),
                         }
-                        cw_max = u.get("max", u.get("max_context_window_tokens", u.get("max_tokens")))  # max_context_window_tokens is the canonical key
+                        cw_max = u.get(
+                            "max",
+                            u.get("max_context_window_tokens", u.get("max_tokens")),
+                        )  # max_context_window_tokens is the canonical key
                     except Exception:
                         pass
                 # Record agent info
-                summary["agents"].append({
-                    "agent_id": aid,
-                    "session_id": session_id,
-                    "conversation_obj": id(conv),
-                    "context_window_max": cw_max,
-                    "context_window_usage": cw_usage,
-                })
+                summary["agents"].append(
+                    {
+                        "agent_id": aid,
+                        "session_id": session_id,
+                        "conversation_obj": id(conv),
+                        "context_window_max": cw_max,
+                        "context_window_usage": cw_usage,
+                    }
+                )
                 conv_to_agents.setdefault(id(conv), []).append(aid)
             except Exception:
                 continue
@@ -1227,16 +1396,21 @@ class PenguinCore:
         # Shared conversation groups
         summary["shared_conversations"] = [
             {"conversation_obj": k, "agents": v}
-            for k, v in conv_to_agents.items() if len(v) > 1
+            for k, v in conv_to_agents.items()
+            if len(v) > 1
         ]
 
         # Engine registry presence
         try:
-            engine_agents = set(self.engine.list_agents()) if getattr(self, "engine", None) else set()
+            engine_agents = (
+                set(self.engine.list_agents())
+                if getattr(self, "engine", None)
+                else set()
+            )
         except Exception:
             engine_agents = set()
         for a in [a.get("agent_id") for a in summary["agents"]]:
-            summary["engine_registry"][a] = (a in engine_agents)
+            summary["engine_registry"][a] = a in engine_agents
 
         return summary
 
@@ -1328,24 +1502,34 @@ class PenguinCore:
         """Get token usage via conversation manager"""
         try:
             if not self.conversation_manager:
-                return {"total": {"input": 0, "output": 0}, "session": {"input": 0, "output": 0}}
-            
+                return {
+                    "total": {"input": 0, "output": 0},
+                    "session": {"input": 0, "output": 0},
+                }
+
             usage = self.conversation_manager.get_token_usage()
-            
+
             # Emit UI event for token update (only if event loop is running)
             try:
                 token_event_data = usage.copy()
                 # Only create task if we have a real emit_ui_event method (not a mock)
-                if hasattr(self, 'emit_ui_event') and not hasattr(self.emit_ui_event, '_mock_name'):
-                    asyncio.create_task(self.emit_ui_event("token_update", token_event_data))
+                if hasattr(self, "emit_ui_event") and not hasattr(
+                    self.emit_ui_event, "_mock_name"
+                ):
+                    asyncio.create_task(
+                        self.emit_ui_event("token_update", token_event_data)
+                    )
             except (RuntimeError, AttributeError):
                 # No event loop running or method is a mock, skip event emission
                 pass
-            
+
             return usage
         except Exception as e:
             logger.error(f"Error getting token usage: {e}")
-            return {"total": {"input": 0, "output": 0}, "session": {"input": 0, "output": 0}}
+            return {
+                "total": {"input": 0, "output": 0},
+                "session": {"input": 0, "output": 0},
+            }
 
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt for both core and API client."""
@@ -1353,7 +1537,7 @@ class PenguinCore:
         if self.api_client:
             self.api_client.set_system_prompt(prompt)
         self.conversation_manager.set_system_prompt(prompt)
-    
+
     def set_llm_config(
         self,
         base_url: Optional[str] = None,
@@ -1364,10 +1548,10 @@ class PenguinCore:
         link_api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Configure LLM endpoint and Link integration at runtime.
-        
+
         This method is typically called by Link when starting a Penguin session
         to route LLM requests through Link's inference proxy for billing.
-        
+
         Args:
             base_url: LLM API endpoint (e.g., "http://localhost:3001/api/v1")
             link_user_id: Link user ID for billing attribution
@@ -1375,13 +1559,13 @@ class PenguinCore:
             link_agent_id: Link agent ID for multi-agent scenarios
             link_workspace_id: Link workspace ID for org billing
             link_api_key: Link API key for production auth
-            
+
         Returns:
             Dict with current LLM client status
         """
         from penguin.llm.client import LLMClient, LLMClientConfig, LinkConfig
-        
-        if not hasattr(self, '_llm_client') or self._llm_client is None:
+
+        if not hasattr(self, "_llm_client") or self._llm_client is None:
             config = LLMClientConfig(
                 base_url=base_url,
                 link=LinkConfig(
@@ -1402,7 +1586,7 @@ class PenguinCore:
                 link_workspace_id=link_workspace_id,
                 link_api_key=link_api_key,
             )
-        
+
         return self._llm_client.get_status()
 
     def _check_interrupt(self) -> bool:
@@ -1416,11 +1600,11 @@ class PenguinCore:
         conversation_id: Optional[str] = None,
         agent_id: Optional[str] = None,
         context_files: Optional[List[str]] = None,
-        streaming: bool = False
+        streaming: bool = False,
     ) -> str:
         """
         Process a message with optional conversation support.
-        
+
         Args:
             message: The user message to process
             context: Optional additional context for processing
@@ -1437,7 +1621,9 @@ class PenguinCore:
                     if hasattr(conversation_manager, "set_current_agent"):
                         conversation_manager.set_current_agent(agent_id)
                 except Exception as agent_err:
-                    logger.warning(f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}")
+                    logger.warning(
+                        f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}"
+                    )
                 if self.engine:
                     try:
                         candidate_cm = self.engine.get_conversation_manager(agent_id)
@@ -1446,21 +1632,24 @@ class PenguinCore:
                             if hasattr(candidate_cm, "set_current_agent"):
                                 candidate_cm.set_current_agent(agent_id)
                     except Exception as engine_err:
-                        logger.warning(f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}")
+                        logger.warning(
+                            f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}"
+                        )
 
             # Add context if provided
             if context:
                 for key, value in context.items():
                     conversation_manager.add_context(f"{key}: {value}")
-
+            # Store conversation_id for event emission (SSE filtering)
+            self._current_conversation_id = conversation_id
             # Process through conversation manager (handles context files)
             return await conversation_manager.process_message(
                 message=message,
                 conversation_id=conversation_id,
                 streaming=streaming,
-                context_files=context_files
+                context_files=context_files,
             )
-            
+
         except Exception as e:
             error_msg = f"Error processing message: {str(e)}"
             log_error(
@@ -1468,7 +1657,7 @@ class PenguinCore:
                 context={
                     "component": "core",
                     "method": "process_message",
-                    "message": message
+                    "message": message,
                 },
             )
             return error_msg
@@ -1478,17 +1667,17 @@ class PenguinCore:
         current_iteration: Optional[int] = None,
         max_iterations: Optional[int] = None,
         stream_callback: Optional[Callable[[str], None]] = None,
-        streaming: Optional[bool] = None
+        streaming: Optional[bool] = None,
     ) -> Tuple[Dict[str, Any], bool]:
         """
         Generate a response using the conversation context and execute any actions.
-        
+
         Args:
             current_iteration: Current iteration number for multi-step processing
             max_iterations: Maximum iterations for multi-step processing
             stream_callback: Optional callback function for handling streaming output chunks.
             streaming: Whether to use streaming mode for responses
-            
+
         Returns:
             Tuple of (response data, exit continuation flag)
         """
@@ -1498,51 +1687,67 @@ class PenguinCore:
                 self.conversation_manager.conversation.add_iteration_marker(
                     current_iteration, max_iterations
                 )
-            
+
             # Get formatted messages from conversation manager
             messages = self.conversation_manager.conversation.get_formatted_messages()
-            
+
             # Maximum retry attempts for empty responses
             max_retries = 2
             retry_count = 0
-            
+
             while retry_count <= max_retries:
                 # Start new stream, PASSING both streaming flag and callback
-                logger.debug(f"Calling API directly (Streaming: {streaming}, Callback provided: {stream_callback is not None})")
+                logger.debug(
+                    f"Calling API directly (Streaming: {streaming}, Callback provided: {stream_callback is not None})"
+                )
 
                 assistant_response = None
                 try:
-                    logger.debug(json.dumps(self.conversation_manager.conversation.get_formatted_messages(), indent=2))
+                    logger.debug(
+                        json.dumps(
+                            self.conversation_manager.conversation.get_formatted_messages(),
+                            indent=2,
+                        )
+                    )
                     assistant_response = await self.api_client.get_response(
                         messages=messages,
                         stream=streaming,
-                        stream_callback=stream_callback
+                        stream_callback=stream_callback,
                     )
                 except asyncio.CancelledError:
                     logger.warning("APIClient response retrieval was cancelled")
                 except Exception as e:
-                    logger.error(f"Error during APIClient response retrieval: {str(e)}", exc_info=True) 
+                    logger.error(
+                        f"Error during APIClient response retrieval: {str(e)}",
+                        exc_info=True,
+                    )
 
                 # Validate response (retry logic remains the same)
                 if not assistant_response or not assistant_response.strip():
                     retry_count += 1
                     if retry_count <= max_retries:
-                        logger.warning(f"Empty response from API (attempt {retry_count}/{max_retries}), retrying...")
+                        logger.warning(
+                            f"Empty response from API (attempt {retry_count}/{max_retries}), retrying..."
+                        )
                         # Small exponential backoff
                         await asyncio.sleep(1 * retry_count)
                         continue
                     else:
-                        logger.warning(f"Empty response from API after {max_retries} attempts")
+                        logger.warning(
+                            f"Empty response from API after {max_retries} attempts"
+                        )
                         assistant_response = "I apologize, but I encountered an issue generating a response. Please try again."
                         break
                 else:
                     # We got a valid response, break the retry loop
                     break
-            
+
                 # Let's return it as is for now, core needs adjustment later if this is the case.
-    
+
             # Process response and execute actions regardless of streaming mode
-            logger.debug(f"[Core.get_response] Processing response and executing actions. Streaming={streaming}")
+            logger.debug(
+                f"[Core.get_response] Processing response and executing actions. Streaming={streaming}"
+            )
 
             # Add assistant response to conversation (only happens *after* the stream task is fully complete)
             if assistant_response:
@@ -1550,15 +1755,18 @@ class PenguinCore:
                 # Ensure we add the complete response, even if it was streamed.
                 # The APIClient should return the full string after streaming completes.
                 # Note: add_assistant_message automatically strips action tags
-                self.conversation_manager.conversation.add_assistant_message(assistant_response)
-            
+                self.conversation_manager.conversation.add_assistant_message(
+                    assistant_response
+                )
+
             # Parse actions and continue with action handling
             actions = parse_action(assistant_response)
-            
+
             # Check for task/response completion via finish_task or finish_response tools
             # NOTE: Phrase-based detection is deprecated. Use finish_task/finish_response tools.
             exit_continuation = any(
-                action.action_type.value in ("finish_response", "finish_task", "task_completed")
+                action.action_type.value
+                in ("finish_response", "finish_task", "task_completed")
                 for action in actions
             )
 
@@ -1566,27 +1774,31 @@ class PenguinCore:
             action_results = []
             for action in actions:
                 if self._check_interrupt():
-                    action_results.append({
-                        "action": action.action_type.value,
-                        "result": "Action skipped due to interrupt",
-                        "status": "interrupted",
-                    })
+                    action_results.append(
+                        {
+                            "action": action.action_type.value,
+                            "result": "Action skipped due to interrupt",
+                            "status": "interrupted",
+                        }
+                    )
                     continue
 
                 try:
                     result = await self.action_executor.execute_action(action)
                     if result is not None:
-                        action_results.append({
-                            "action": action.action_type.value,
-                            "result": str(result),
-                            "status": "completed",
-                        })
-                        
+                        action_results.append(
+                            {
+                                "action": action.action_type.value,
+                                "result": str(result),
+                                "status": "completed",
+                            }
+                        )
+
                         # Update conversation with action result
                         self.conversation_manager.add_action_result(
                             action_type=action.action_type.value,
                             result=str(result),
-                            status="completed"
+                            status="completed",
                         )
                 except Exception as e:
                     error_result = {
@@ -1598,13 +1810,13 @@ class PenguinCore:
                     self.conversation_manager.add_action_result(
                         action_type=action.action_type.value,
                         result=f"Error executing action: {str(e)}",
-                        status="error"
+                        status="error",
                     )
                     logger.error(f"Action execution error: {str(e)}")
 
             # Save the updated conversation state
             self.conversation_manager.save()
-            
+
             # Construct the final response payload
             full_response = {
                 "assistant_response": assistant_response,
@@ -1616,8 +1828,12 @@ class PenguinCore:
                 },
             }
 
-            logger.debug(f"ACTION RESULT TEST: System outputs visible to LLM: {[msg for msg in messages if 'system' in msg.get('role', '') and 'Action executed' in str(msg.get('content', ''))]}")
-            print(f"ACTION RESULT TEST: System outputs visible to LLM: {[msg for msg in messages if 'system' in msg.get('role', '') and 'Action executed' in str(msg.get('content', ''))]}")
+            logger.debug(
+                f"ACTION RESULT TEST: System outputs visible to LLM: {[msg for msg in messages if 'system' in msg.get('role', '') and 'Action executed' in str(msg.get('content', ''))]}"
+            )
+            print(
+                f"ACTION RESULT TEST: System outputs visible to LLM: {[msg for msg in messages if 'system' in msg.get('role', '') and 'Action executed' in str(msg.get('content', ''))]}"
+            )
 
             return full_response, exit_continuation
 
@@ -1664,22 +1880,23 @@ class PenguinCore:
     async def reset_state(self):
         """
         Reset the core state completely.
-        
+
         This method performs a more comprehensive reset than reset_context:
         - Resets all conversation state
         - Clears interrupt flags
         - Closes external resources like browser instances
-        
+
         Use this when switching between entirely different tasks or at
         application shutdown.
         """
         self.reset_context()
         self._interrupted = False
-        
+
         # Close browser if it was initialized
         from penguin.tools.browser_tools import browser_manager
+
         asyncio.create_task(browser_manager.close())
-        
+
     def list_context_files(self) -> List[Dict[str, Any]]:
         """List all available context files"""
         return self.conversation_manager.list_context_files()
@@ -1696,7 +1913,9 @@ class PenguinCore:
         """Load conversation from snapshot; returns success bool."""
         return self.conversation_manager.restore_snapshot(snapshot_id)
 
-    def branch_from_snapshot(self, snapshot_id: str, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    def branch_from_snapshot(
+        self, snapshot_id: str, meta: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
         """Fork a snapshot into a new branch and load it."""
         return self.conversation_manager.branch_from_snapshot(snapshot_id, meta=meta)
 
@@ -1705,32 +1924,29 @@ class PenguinCore:
     # ------------------------------------------------------------------
 
     async def create_checkpoint(
-        self,
-        name: Optional[str] = None,
-        description: Optional[str] = None
+        self, name: Optional[str] = None, description: Optional[str] = None
     ) -> Optional[str]:
         """
         Create a manual checkpoint of the current conversation state.
-        
+
         Args:
             name: Optional name for the checkpoint
             description: Optional description
-            
+
         Returns:
             Checkpoint ID if successful, None otherwise
         """
         return await self.conversation_manager.create_manual_checkpoint(
-            name=name,
-            description=description
+            name=name, description=description
         )
 
     async def rollback_to_checkpoint(self, checkpoint_id: str) -> bool:
         """
         Rollback conversation to a specific checkpoint.
-        
+
         Args:
             checkpoint_id: ID of the checkpoint to rollback to
-            
+
         Returns:
             True if successful, False otherwise
         """
@@ -1740,37 +1956,33 @@ class PenguinCore:
         self,
         checkpoint_id: str,
         name: Optional[str] = None,
-        description: Optional[str] = None
+        description: Optional[str] = None,
     ) -> Optional[str]:
         """
         Create a new conversation branch from a checkpoint.
-        
+
         Args:
             checkpoint_id: ID of the checkpoint to branch from
             name: Optional name for the branch
             description: Optional description
-            
+
         Returns:
             New branch checkpoint ID if successful, None otherwise
         """
         return await self.conversation_manager.branch_from_checkpoint(
-            checkpoint_id,
-            name=name,
-            description=description
+            checkpoint_id, name=name, description=description
         )
 
     def list_checkpoints(
-        self,
-        session_id: Optional[str] = None,
-        limit: int = 50
+        self, session_id: Optional[str] = None, limit: int = 50
     ) -> List[Dict[str, Any]]:
         """
         List available checkpoints with optional filtering.
-        
+
         Args:
             session_id: Filter by session ID (None for current session)
             limit: Maximum number of checkpoints to return
-            
+
         Returns:
             List of checkpoint information
         """
@@ -1779,16 +1991,15 @@ class PenguinCore:
             current_session = self.conversation_manager.get_current_session()
             if current_session:
                 session_id = current_session.id
-                
+
         return self.conversation_manager.list_checkpoints(
-            session_id=session_id,
-            limit=limit
+            session_id=session_id, limit=limit
         )
 
     async def cleanup_old_checkpoints(self) -> int:
         """
         Clean up old checkpoints according to retention policy.
-        
+
         Returns:
             Number of checkpoints cleaned up
         """
@@ -1797,34 +2008,47 @@ class PenguinCore:
     def get_checkpoint_stats(self) -> Dict[str, Any]:
         """
         Get statistics about the checkpointing system.
-        
+
         Returns:
             Dictionary with checkpoint statistics
         """
-        if not self.conversation_manager or not self.conversation_manager.checkpoint_manager:
+        if (
+            not self.conversation_manager
+            or not self.conversation_manager.checkpoint_manager
+        ):
             return {
                 "enabled": False,
                 "total_checkpoints": 0,
                 "auto_checkpoints": 0,
                 "manual_checkpoints": 0,
-                "branch_checkpoints": 0
+                "branch_checkpoints": 0,
             }
-            
+
         checkpoints = self.conversation_manager.list_checkpoints(limit=1000)
-        
+
         stats = {
             "enabled": True,
             "total_checkpoints": len(checkpoints),
-            "auto_checkpoints": len([cp for cp in checkpoints if cp.get("auto", False)]),
-            "manual_checkpoints": len([cp for cp in checkpoints if cp.get("type") == "manual"]),
-            "branch_checkpoints": len([cp for cp in checkpoints if cp.get("type") == "branch"]),
+            "auto_checkpoints": len(
+                [cp for cp in checkpoints if cp.get("auto", False)]
+            ),
+            "manual_checkpoints": len(
+                [cp for cp in checkpoints if cp.get("type") == "manual"]
+            ),
+            "branch_checkpoints": len(
+                [cp for cp in checkpoints if cp.get("type") == "branch"]
+            ),
             "config": {
                 "frequency": self.conversation_manager.checkpoint_manager.config.frequency,
-                "retention_hours": self.conversation_manager.checkpoint_manager.config.retention["keep_all_hours"],
-                "max_age_days": self.conversation_manager.checkpoint_manager.config.retention["max_age_days"]
-            }
+                "retention_hours": self.conversation_manager.checkpoint_manager.config.retention[
+                    "keep_all_hours"
+                ],
+                "max_age_days": self.conversation_manager.checkpoint_manager.config.retention[
+                    "max_age_days"
+                ],
+            },
         }
-        
+
         return stats
 
     # System Diagnostics and Information API
@@ -1833,7 +2057,7 @@ class PenguinCore:
     def get_system_info(self) -> Dict[str, Any]:
         """
         Get comprehensive system information.
-        
+
         Returns:
             Dictionary containing system information including model config,
             component status, and capabilities
@@ -1841,54 +2065,68 @@ class PenguinCore:
         try:
             info = {
                 "penguin_version": PENGUIN_VERSION,
-                "engine_available": hasattr(self, 'engine') and self.engine is not None,
-                "checkpoints_enabled": self.get_checkpoint_stats().get('enabled', False),
+                "engine_available": hasattr(self, "engine") and self.engine is not None,
+                "checkpoints_enabled": self.get_checkpoint_stats().get(
+                    "enabled", False
+                ),
                 "current_model": None,
                 "conversation_manager": {
-                    "active": hasattr(self, 'conversation_manager') and self.conversation_manager is not None,
+                    "active": hasattr(self, "conversation_manager")
+                    and self.conversation_manager is not None,
                     "current_session_id": None,
-                    "total_messages": 0
+                    "total_messages": 0,
                 },
                 "tool_manager": {
-                    "active": hasattr(self, 'tool_manager') and self.tool_manager is not None,
-                    "total_tools": 0
+                    "active": hasattr(self, "tool_manager")
+                    and self.tool_manager is not None,
+                    "total_tools": 0,
                 },
-                "memory_provider": {
-                    "initialized": False,
-                    "provider_type": None
-                }
+                "memory_provider": {"initialized": False, "provider_type": None},
             }
-            
+
             # Add current model info
-            if hasattr(self, 'model_config') and self.model_config:
+            if hasattr(self, "model_config") and self.model_config:
                 info["current_model"] = {
                     "model": self.model_config.model,
                     "provider": self.model_config.provider,
                     "streaming_enabled": self.model_config.streaming_enabled,
-                    "vision_enabled": bool(getattr(self.model_config, 'vision_enabled', False))
+                    "vision_enabled": bool(
+                        getattr(self.model_config, "vision_enabled", False)
+                    ),
                 }
-            
+
             # Add conversation manager details
-            if hasattr(self, 'conversation_manager') and self.conversation_manager:
+            if hasattr(self, "conversation_manager") and self.conversation_manager:
                 try:
                     current_session = self.conversation_manager.get_current_session()
                     if current_session:
-                        info["conversation_manager"]["current_session_id"] = current_session.id
-                        info["conversation_manager"]["total_messages"] = len(current_session.messages)
+                        info["conversation_manager"]["current_session_id"] = (
+                            current_session.id
+                        )
+                        info["conversation_manager"]["total_messages"] = len(
+                            current_session.messages
+                        )
                 except Exception:
                     pass  # Ignore errors getting session info
-            
+
             # Add tool manager details
-            if hasattr(self, 'tool_manager') and self.tool_manager:
-                info["tool_manager"]["total_tools"] = len(getattr(self.tool_manager, 'tools', {}))
-                
+            if hasattr(self, "tool_manager") and self.tool_manager:
+                info["tool_manager"]["total_tools"] = len(
+                    getattr(self.tool_manager, "tools", {})
+                )
+
                 # Add memory provider info
-                if hasattr(self.tool_manager, '_memory_provider') and self.tool_manager._memory_provider:
+                if (
+                    hasattr(self.tool_manager, "_memory_provider")
+                    and self.tool_manager._memory_provider
+                ):
                     info["memory_provider"]["initialized"] = True
-                    info["memory_provider"]["provider_type"] = type(self.tool_manager._memory_provider).__name__
-            
+                    info["memory_provider"]["provider_type"] = type(
+                        self.tool_manager._memory_provider
+                    ).__name__
+
             return info
-            
+
         except Exception as e:
             logger.error(f"Error getting system info: {e}")
             return {"error": f"Failed to get system info: {str(e)}"}
@@ -1896,38 +2134,44 @@ class PenguinCore:
     def get_system_status(self) -> Dict[str, Any]:
         """
         Get current system status including runtime state.
-        
+
         Returns:
             Dictionary containing current system status and runtime information
         """
         try:
             from datetime import datetime
-            
+
             status = {
                 "status": "active",
-                "runmode_status": getattr(self, 'current_runmode_status_summary', 'RunMode idle.'),
-                "continuous_mode": getattr(self, '_continuous_mode', False),
-                "streaming_active": getattr(self, 'streaming_active', False),
+                "runmode_status": getattr(
+                    self, "current_runmode_status_summary", "RunMode idle."
+                ),
+                "continuous_mode": getattr(self, "_continuous_mode", False),
+                "streaming_active": getattr(self, "streaming_active", False),
                 "token_usage": self.get_token_usage(),
                 "timestamp": datetime.now().isoformat(),
                 "initialization": {
-                    "core_initialized": getattr(self, 'initialized', False),
-                    "fast_startup_enabled": getattr(self.tool_manager, 'fast_startup', False) if hasattr(self, 'tool_manager') else False
-                }
+                    "core_initialized": getattr(self, "initialized", False),
+                    "fast_startup_enabled": getattr(
+                        self.tool_manager, "fast_startup", False
+                    )
+                    if hasattr(self, "tool_manager")
+                    else False,
+                },
             }
-            
+
             # Add memory provider status if available
-            if hasattr(self, 'get_memory_provider_status'):
+            if hasattr(self, "get_memory_provider_status"):
                 status["memory_provider"] = self.get_memory_provider_status()
-            
+
             return status
-            
+
         except Exception as e:
             logger.error(f"Error getting system status: {e}")
             return {
                 "status": "error",
                 "error": f"Failed to get system status: {str(e)}",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
             }
 
     @retry(
@@ -1935,9 +2179,9 @@ class PenguinCore:
         wait=wait_exponential(multiplier=1, min=4, max=10),
         reraise=True,
         retry=retry_if_exception_type(Exception),
-        retry_error_callback=lambda retry_state: None 
-            if isinstance(retry_state.outcome.exception(), KeyboardInterrupt) 
-            else retry_state.outcome.exception()
+        retry_error_callback=lambda retry_state: None
+        if isinstance(retry_state.outcome.exception(), KeyboardInterrupt)
+        else retry_state.outcome.exception(),
     )
     async def process(
         self,
@@ -1953,14 +2197,14 @@ class PenguinCore:
     ) -> Dict[str, Any]:
         """
         Process a message with Penguin.
-        
-        This method serves as the primary interface for external systems 
+
+        This method serves as the primary interface for external systems
         (CLI, API, etc.) to interact with Penguin's capabilities. It handles:
         - Input preprocessing
         - Conversation loading/management
         - Delegating to multi-step processing
         - Error handling and retries
-        
+
         Args:
             input_data: Either a dictionary with a 'text' key or a string message directly
             context: Optional additional context for processing
@@ -1971,7 +2215,7 @@ class PenguinCore:
             streaming: Whether to use streaming mode for responses.
             stream_callback: Optional callback function for handling streaming output chunks.
             multi_step: If True, use the multi-step `run_task` engine. Defaults to True.
-            
+
         Returns:
             Dict containing assistant response and action results
         """
@@ -1991,20 +2235,25 @@ class PenguinCore:
             if isinstance(image_paths, str):
                 image_paths = [image_paths.strip()] if image_paths.strip() else None
             elif isinstance(image_paths, list):
-                image_paths = [p.strip() for p in image_paths if isinstance(p, str) and p.strip()]
+                image_paths = [
+                    p.strip() for p in image_paths if isinstance(p, str) and p.strip()
+                ]
                 if not image_paths:
                     image_paths = None
 
         if not message and not image_paths:
             return {"assistant_response": "No input provided", "action_results": []}
-
+        # Store conversation_id for event emission (SSE filtering)
+        self._current_conversation_id = conversation_id
         conversation_manager = self.conversation_manager
         if agent_id:
             try:
                 if hasattr(conversation_manager, "set_current_agent"):
                     conversation_manager.set_current_agent(agent_id)
             except Exception as agent_err:
-                logger.warning(f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}")
+                logger.warning(
+                    f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}"
+                )
             if self.engine:
                 try:
                     candidate_cm = self.engine.get_conversation_manager(agent_id)
@@ -2013,7 +2262,9 @@ class PenguinCore:
                         if hasattr(candidate_cm, "set_current_agent"):
                             candidate_cm.set_current_agent(agent_id)
                 except Exception as engine_err:
-                    logger.warning(f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}")
+                    logger.warning(
+                        f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}"
+                    )
 
         try:
             # Load conversation if ID provided
@@ -2030,7 +2281,7 @@ class PenguinCore:
             user_message_dict = {
                 "role": "user",
                 "content": message,
-                "category": MessageCategory.DIALOG
+                "category": MessageCategory.DIALOG,
             }
             if agent_id:
                 user_message_dict["agent_id"] = agent_id
@@ -2046,15 +2297,25 @@ class PenguinCore:
                 # stream_callback supplied by callers (e.g., WebSocket).
                 if streaming:
                     if stream_callback:
-                        async def _combined_stream_callback(chunk: str, message_type: str = "assistant"):
+
+                        async def _combined_stream_callback(
+                            chunk: str, message_type: str = "assistant"
+                        ):
                             # Update internal streaming handling
-                            await self._handle_stream_chunk(chunk, message_type=message_type)
+                            await self._handle_stream_chunk(
+                                chunk, message_type=message_type
+                            )
                             # Forward to external callback, preserving message_type when supported
                             try:
                                 import inspect
+
                                 params = []
                                 try:
-                                    params = list(inspect.signature(stream_callback).parameters.keys())
+                                    params = list(
+                                        inspect.signature(
+                                            stream_callback
+                                        ).parameters.keys()
+                                    )
                                 except Exception:
                                     params = []
                                 if asyncio.iscoroutinefunction(stream_callback):
@@ -2064,11 +2325,16 @@ class PenguinCore:
                                         await stream_callback(chunk)
                                 else:
                                     if len(params) >= 2:
-                                        await asyncio.to_thread(stream_callback, chunk, message_type)
+                                        await asyncio.to_thread(
+                                            stream_callback, chunk, message_type
+                                        )
                                     else:
                                         await asyncio.to_thread(stream_callback, chunk)
                             except Exception as cb_err:
-                                logger.error(f"Error in external stream_callback: {cb_err}")
+                                logger.error(
+                                    f"Error in external stream_callback: {cb_err}"
+                                )
+
                         engine_stream_callback = _combined_stream_callback
                     else:
                         engine_stream_callback = self._handle_stream_chunk
@@ -2077,22 +2343,29 @@ class PenguinCore:
 
                 if multi_step:
                     # Check if this is a formal task (RunMode) or conversational multi-step
-                    is_formal_task = context and context.get('task_mode', False)
-                    
+                    is_formal_task = context and context.get("task_mode", False)
+
                     if is_formal_task:
                         # Bridge the simple stream_callback to the Engine's richer message_callback
                         engine_message_callback = None
                         if stream_callback:
                             # The engine expects an async callback that takes (message, type, **kwargs)
-                            async def bridged_callback(message: str, msg_type: str, action_name: Optional[str] = None, **kwargs):
+                            async def bridged_callback(
+                                message: str,
+                                msg_type: str,
+                                action_name: Optional[str] = None,
+                                **kwargs,
+                            ):
                                 # We only care about streaming assistant thoughts for this callback
-                                if msg_type == 'assistant':
+                                if msg_type == "assistant":
                                     # Create a task to run the potentially non-async callback
                                     # This ensures we don't block the engine's event loop.
-                                    asyncio.create_task(asyncio.to_thread(stream_callback, message))
+                                    asyncio.create_task(
+                                        asyncio.to_thread(stream_callback, message)
+                                    )
 
                             engine_message_callback = bridged_callback
-                            
+
                         # Use the task-oriented engine for formal tasks
                         response = await self.engine.run_task(
                             task_prompt=message,
@@ -2124,14 +2397,18 @@ class PenguinCore:
             else:
                 # ---------- Legacy path (fallback) ----------
                 # Prepare conversation and call get_response directly
-                conversation_manager.conversation.prepare_conversation(message, image_paths=image_paths)
+                conversation_manager.conversation.prepare_conversation(
+                    message, image_paths=image_paths
+                )
 
                 # FIX: Set the callback for event-based streaming, even in legacy mode
-                internal_stream_callback = self._handle_stream_chunk if streaming else None
+                internal_stream_callback = (
+                    self._handle_stream_chunk if streaming else None
+                )
 
                 response, _ = await self.get_response(
-                    stream_callback=internal_stream_callback, # Pass the correct callback
-                    streaming=streaming
+                    stream_callback=internal_stream_callback,  # Pass the correct callback
+                    streaming=streaming,
                 )
 
             # NOTE: Empty-response retry logic removed - engine._llm_step handles this.
@@ -2170,23 +2447,26 @@ class PenguinCore:
             await self.emit_ui_event("token_update", token_data)
 
             return response
-            
+
         except Exception as e:
             error_msg = f"Error in process method: {str(e)}"
             logger.error(f"{error_msg}\n{traceback.format_exc()}")
             log_error(e, context={"method": "process", "input_data": input_data})
-            
+
             # Emit error event
-            await self.emit_ui_event("error", {
-                "message": "Error processing your request",
-                "source": "core.process",
-                "details": str(e)
-            })
-            
+            await self.emit_ui_event(
+                "error",
+                {
+                    "message": "Error processing your request",
+                    "source": "core.process",
+                    "details": str(e),
+                },
+            )
+
             return {
                 "assistant_response": "I apologize, but an error occurred while processing your request.",
                 "action_results": [],
-                "error": str(e)
+                "error": str(e),
             }
 
     def list_conversations(
@@ -2197,23 +2477,25 @@ class PenguinCore:
     ) -> List[Dict[str, Any]]:
         """
         List available conversations.
-        
+
         Args:
             limit: Maximum number of conversations to return
             offset: Offset for pagination
-            
+
         Returns:
             List of conversations with metadata
         """
-        return self.conversation_manager.list_conversations(limit=limit, offset=offset, search_term=search_term)
-        
+        return self.conversation_manager.list_conversations(
+            limit=limit, offset=offset, search_term=search_term
+        )
+
     def get_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
         """
         Get a specific conversation by ID.
-        
+
         Args:
             conversation_id: ID of the conversation to retrieve
-            
+
         Returns:
             Conversation data or None if not found
         """
@@ -2221,7 +2503,7 @@ class PenguinCore:
             session = self.conversation_manager.get_current_session()
             if not session:
                 return None
-                
+
             return {
                 "id": session.id,
                 "messages": [
@@ -2238,7 +2520,7 @@ class PenguinCore:
                 ],
                 "created_at": session.created_at,
                 "last_active": session.last_active,
-                "metadata": session.metadata
+                "metadata": session.metadata,
             }
         return None
 
@@ -2254,32 +2536,32 @@ class PenguinCore:
             include_system=include_system,
             limit=limit,
         )
-        
+
     def create_conversation(self) -> str:
         """
         Create a new conversation.
-        
+
         Returns:
             ID of the new conversation
         """
         return self.conversation_manager.create_new_conversation()
-        
+
     def delete_conversation(self, conversation_id: str) -> bool:
         """
         Delete a conversation.
-        
+
         Args:
             conversation_id: ID of the conversation to delete
-            
+
         Returns:
             True if successful, False otherwise
         """
         return self.conversation_manager.delete_conversation(conversation_id)
-        
+
     def get_conversation_stats(self) -> Dict[str, Any]:
         """
         Get statistics about conversations.
-        
+
         Returns:
             Dictionary with conversation statistics
         """
@@ -2294,11 +2576,11 @@ class PenguinCore:
         time_limit: Optional[int] = None,
         mode_type: str = "task",
         stream_callback_for_cli: Optional[Callable[[str], Awaitable[None]]] = None,
-        ui_update_callback_for_cli: Optional[Callable[[], Awaitable[None]]] = None
+        ui_update_callback_for_cli: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
         """
         Start autonomous run mode for executing a task.
-        
+
         Args:
             name: Name of the task (existing or new)
             description: Optional description if creating a new task
@@ -2323,14 +2605,16 @@ class PenguinCore:
             run_mode = RunMode(
                 self,  # core instance
                 time_limit=time_limit,
-                event_callback=self._handle_run_mode_event
+                event_callback=self._handle_run_mode_event,
             )
             self.run_mode = run_mode
             self._continuous_mode = continuous
 
             if continuous:
                 # RunMode's start_continuous will manage its internal continuous_mode flag
-                await run_mode.start_continuous(specified_task_name=name, task_description=description)
+                await run_mode.start_continuous(
+                    specified_task_name=name, task_description=description
+                )
             else:
                 await run_mode.start(
                     name=name, description=description, context=context
@@ -2339,7 +2623,7 @@ class PenguinCore:
         except Exception as e:
             # Reset continuous mode flag if starting run_mode itself fails
             self._continuous_mode = False
-            
+
             # Log the error
             log_error(
                 e,
@@ -2350,37 +2634,41 @@ class PenguinCore:
                     "description": description,
                 },
             )
-            
+
             # Update error status
             self.current_runmode_status_summary = f"Error starting RunMode: {str(e)}"
-            
+
             # Final UI update with error
             if self._ui_update_callback:
                 try:
                     await self._ui_update_callback()
                 except Exception as callback_err:
                     logger.error(f"Error in UI update callback: {callback_err}")
-            
-            raise # Re-raise the exception so the caller knows starting run_mode failed
-        
+
+            raise  # Re-raise the exception so the caller knows starting run_mode failed
+
         finally:
             self._runmode_active = False
             self._runmode_stream_callback = None
             self.run_mode = None
             # Clear the UI update callback reference when finished
             self._ui_update_callback = None
-            
+
             # Ensure state is cleaned up if run mode was not continuous or if continuous mode exited
-            if hasattr(run_mode, 'continuous_mode') and not run_mode.continuous_mode:
+            if hasattr(run_mode, "continuous_mode") and not run_mode.continuous_mode:
                 self._continuous_mode = False
-            
-            logger.info(f"Exiting start_run_mode. Core _continuous_mode: {self._continuous_mode}")
+
+            logger.info(
+                f"Exiting start_run_mode. Core _continuous_mode: {self._continuous_mode}"
+            )
 
     # ------------------------------------------------------------------
     # Model management helpers
     # ------------------------------------------------------------------
 
-    def _apply_new_model_config(self, new_model_config: ModelConfig, context_window_tokens: Optional[int] = None) -> None:
+    def _apply_new_model_config(
+        self, new_model_config: ModelConfig, context_window_tokens: Optional[int] = None
+    ) -> None:
         """Internal helper that swaps the model configuration and re-wires dependent components.
 
         This keeps the public ``load_model`` method concise and focused on
@@ -2412,15 +2700,19 @@ class PenguinCore:
                 if hasattr(self.conversation_manager, "context_window"):
                     cw = self.conversation_manager.context_window
                     cw.model_config = new_model_config  # type: ignore[attr-defined]
-                    cw.api_client = self.api_client     # type: ignore[attr-defined]
+                    cw.api_client = self.api_client  # type: ignore[attr-defined]
                     # Update context window budget with safe window (85% of raw)
                     if context_window_tokens:
                         old_budget = cw.max_context_window_tokens
                         cw.max_context_window_tokens = context_window_tokens
                         cw._initialize_token_budgets()  # Re-compute category budgets
-                        logger.info(f"Updated context window: {old_budget} -> {context_window_tokens} tokens")
+                        logger.info(
+                            f"Updated context window: {old_budget} -> {context_window_tokens} tokens"
+                        )
             except Exception as e:
-                logger.warning(f"Failed to propagate new model config to ContextWindowManager: {e}")
+                logger.warning(
+                    f"Failed to propagate new model config to ContextWindowManager: {e}"
+                )
 
         # 3. Engine layer (optional – may not exist depending on install).
         if getattr(self, "engine", None) is not None:
@@ -2457,7 +2749,7 @@ class PenguinCore:
             max_output = model_specs.get("max_output_tokens") or safe_window
 
             # Build and apply new ModelConfig
-            model_configs = getattr(self.config, 'model_configs', None) or {}
+            model_configs = getattr(self.config, "model_configs", None) or {}
             new_model_config = ModelConfig.for_model(
                 model_name=model_id,
                 provider=provider,
@@ -2472,15 +2764,21 @@ class PenguinCore:
             if user_explicit_vision is not None:
                 # User explicitly configured vision - respect their choice
                 new_model_config.vision_enabled = bool(user_explicit_vision)
-                logger.info(f"Model '{model_id}' vision set to {new_model_config.vision_enabled} (user config)")
+                logger.info(
+                    f"Model '{model_id}' vision set to {new_model_config.vision_enabled} (user config)"
+                )
             elif model_specs.get("supports_vision"):
                 # No explicit user config, auto-enable based on model capability
                 new_model_config.vision_enabled = True
                 logger.info(f"Model '{model_id}' supports vision (auto-detected)")
 
-            self._apply_new_model_config(new_model_config, context_window_tokens=safe_window)
+            self._apply_new_model_config(
+                new_model_config, context_window_tokens=safe_window
+            )
 
-            logger.info(f"Switched to model '{model_id}' (context: {safe_window} tokens, vision: {new_model_config.vision_enabled})")
+            logger.info(
+                f"Switched to model '{model_id}' (context: {safe_window} tokens, vision: {new_model_config.vision_enabled})"
+            )
             return True
 
         except Exception as e:
@@ -2494,7 +2792,9 @@ class PenguinCore:
             Tuple of (provider, client_preference), or (None, "") on error.
         """
         # Check explicit model_configs first
-        if hasattr(self.config, "model_configs") and isinstance(self.config.model_configs, dict):
+        if hasattr(self.config, "model_configs") and isinstance(
+            self.config.model_configs, dict
+        ):
             model_conf = self.config.model_configs.get(model_id)
             if model_conf:
                 provider = model_conf.get("provider")
@@ -2503,11 +2803,15 @@ class PenguinCore:
 
         # Infer from fully-qualified model ID
         if "/" not in model_id:
-            logger.error(f"Model '{model_id}' not in model_configs and not fully-qualified")
+            logger.error(
+                f"Model '{model_id}' not in model_configs and not fully-qualified"
+            )
             return None, ""
 
         provider_part = model_id.split("/", 1)[0]
-        client_pref = self.model_config.client_preference if self.model_config else "native"
+        client_pref = (
+            self.model_config.client_preference if self.model_config else "native"
+        )
 
         # OpenRouter routes all providers through its gateway
         provider = "openrouter" if client_pref == "openrouter" else provider_part
@@ -2523,7 +2827,10 @@ class PenguinCore:
         models: List[Dict[str, Any]] = []
         current_model_name = self.model_config.model if self.model_config else None
 
-        if not (hasattr(self.config, "model_configs") and isinstance(self.config.model_configs, dict)):
+        if not (
+            hasattr(self.config, "model_configs")
+            and isinstance(self.config.model_configs, dict)
+        ):
             return models
 
         for model_id, conf in self.config.model_configs.items():
@@ -2535,9 +2842,12 @@ class PenguinCore:
                 "provider": conf.get("provider", "unknown"),
                 "client_preference": conf.get("client_preference", "native"),
                 "vision_enabled": conf.get("vision_enabled", False),
-                "max_output_tokens": conf.get("max_output_tokens", conf.get("max_tokens")),  # Accept both keys
+                "max_output_tokens": conf.get(
+                    "max_output_tokens", conf.get("max_tokens")
+                ),  # Accept both keys
                 "temperature": conf.get("temperature"),
-                "current": model_id == current_model_name or conf.get("model") == current_model_name,
+                "current": model_id == current_model_name
+                or conf.get("model") == current_model_name,
             }
             models.append(entry)
 
@@ -2548,22 +2858,22 @@ class PenguinCore:
     def get_current_model(self) -> Optional[Dict[str, Any]]:
         """
         Get information about the currently loaded model.
-        
+
         Returns:
             Dictionary with current model information, or None if no model is loaded
         """
         if not self.model_config:
             return None
-            
+
         return {
             "model": self.model_config.model,
             "provider": self.model_config.provider,
             "client_preference": self.model_config.client_preference,
-            "max_output_tokens": getattr(self.model_config, 'max_output_tokens', None),
-            "temperature": getattr(self.model_config, 'temperature', None),
+            "max_output_tokens": getattr(self.model_config, "max_output_tokens", None),
+            "temperature": getattr(self.model_config, "temperature", None),
             "streaming_enabled": self.model_config.streaming_enabled,
-            "vision_enabled": bool(getattr(self.model_config, 'vision_enabled', False)),
-            "api_base": getattr(self.model_config, 'api_base', None)
+            "vision_enabled": bool(getattr(self.model_config, "vision_enabled", False)),
+            "api_base": getattr(self.model_config, "api_base", None),
         }
 
     async def emit_ui_event(self, event_type: str, data: Dict[str, Any]) -> None:
@@ -2576,8 +2886,13 @@ class PenguinCore:
             event_type: Type of event (e.g., "stream_chunk", "token_update", etc.)
             data: Event data relevant to the event type
         """
-        print(f"[TUI_ADAPTER] emit_ui_event called: {event_type} bus={id(self.event_bus)}", flush=True)
-        logger.warning(f"[TUI_ADAPTER_WARNING] emit_ui_event called: {event_type} keys={list(data.keys())} bus={id(self.event_bus)}")
+        data_keys = list(data.keys()) if isinstance(data, dict) else []
+        logger.debug(
+            "emit_ui_event called: %s keys=%s bus=%s",
+            event_type,
+            data_keys,
+            id(self.event_bus),
+        )
 
         # Filter internal markers from content before emitting
         if isinstance(data, dict):
@@ -2587,26 +2902,34 @@ class PenguinCore:
         try:
             if isinstance(data, dict):
                 # Tag missing or empty agent_id with the current active agent
-                if not data.get('agent_id'):
-                    cm = getattr(self, 'conversation_manager', None)
-                    if cm and hasattr(cm, 'current_agent_id'):
+                if not data.get("agent_id"):
+                    cm = getattr(self, "conversation_manager", None)
+                    if cm and hasattr(cm, "current_agent_id"):
                         data = dict(data)  # shallow copy to avoid mutating caller dict
-                        data['agent_id'] = cm.current_agent_id
+                        data["agent_id"] = cm.current_agent_id
         except Exception:
             pass
 
+        # Inject conversation_id for SSE filtering (into ALL events)
+        if isinstance(data, dict):
+            if (
+                hasattr(self, "_current_conversation_id")
+                and self._current_conversation_id
+            ):
+                if "conversation_id" not in data or not data.get("conversation_id"):
+                    data = dict(data) if not isinstance(data, dict) else data
+                    data["conversation_id"] = self._current_conversation_id
+                    data["session_id"] = self._current_conversation_id
+
         # Emit through unified event bus
         try:
-            print(f"[TUI_ADAPTER] About to call event_bus.emit for {event_type}", flush=True)
-            print(f"[TUI_ADAPTER] EventBus class: {type(self.event_bus).__name__}", flush=True)
-            print(f"[TUI_ADAPTER] EventBus module: {type(self.event_bus).__module__}", flush=True)
             await self.event_bus.emit(event_type, data)
-            print(f"[TUI_ADAPTER] event_bus.emit completed for {event_type}", flush=True)
         except Exception as e:
-            print(f"[TUI_ADAPTER] ERROR in event_bus.emit: {e}", flush=True)
             logger.error(f"[TUI_ADAPTER] ERROR in event_bus.emit: {e}", exc_info=True)
 
-    def _filter_internal_markers_from_event(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _filter_internal_markers_from_event(
+        self, data: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """
         Filter internal implementation markers from event data.
 
@@ -2622,13 +2945,13 @@ class PenguinCore:
 
         # Patterns for internal markers
         internal_patterns = [
-            r'<execute>.*?</execute>',
-            r'<system-reminder>.*?</system-reminder>',
-            r'<internal>.*?</internal>',
+            r"<execute>.*?</execute>",
+            r"<system-reminder>.*?</system-reminder>",
+            r"<internal>.*?</internal>",
         ]
 
         # Fields that may contain content to filter
-        content_fields = ['content', 'chunk', 'content_so_far', 'message']
+        content_fields = ["content", "chunk", "content_so_far", "message"]
 
         modified = False
         filtered_data = data
@@ -2640,7 +2963,9 @@ class PenguinCore:
 
                 # Apply all filter patterns
                 for pattern in internal_patterns:
-                    filtered_content = re.sub(pattern, '', filtered_content, flags=re.DOTALL)
+                    filtered_content = re.sub(
+                        pattern, "", filtered_content, flags=re.DOTALL
+                    )
 
                 # Only create copy if content changed
                 if filtered_content != original_content:
@@ -2670,7 +2995,7 @@ class PenguinCore:
         """
         # Resolve agent_id from conversation_manager if not provided
         if agent_id is None:
-            agent_id = getattr(self.conversation_manager, 'current_agent_id', 'default')
+            agent_id = getattr(self.conversation_manager, "current_agent_id", "default")
 
         # Delegate to AgentStreamingStateManager
         events = self._stream_manager.handle_chunk(
@@ -2680,22 +3005,39 @@ class PenguinCore:
         # Emit events and invoke RunMode callback
         for event in events:
             # Inject session_id into event data for SSE filtering
-            event_data = dict(event.data)  # Copy to avoid mutating original
-            try:
-                session = self.conversation_manager.get_current_session()
-                event_data['session_id'] = session.id if session else "unknown"
-            except Exception:
-                event_data['session_id'] = "unknown"
+            event_data = (
+                dict(event.data)
+                if isinstance(event.data, dict)
+                else {"data": event.data}
+            )
+            # Use stored conversation_id from HTTP request if available
+            if (
+                hasattr(self, "_current_conversation_id")
+                and self._current_conversation_id
+            ):
+                event_data["session_id"] = self._current_conversation_id
+                event_data["conversation_id"] = self._current_conversation_id
+            else:
+                try:
+                    session = self.conversation_manager.get_current_session()
+                    sid = session.id if session else "unknown"
+                    event_data["session_id"] = sid
+                    event_data["conversation_id"] = sid
+                except Exception:
+                    event_data["session_id"] = "unknown"
+                    event_data["conversation_id"] = "unknown"
 
             await self.emit_ui_event(event.event_type, event_data)
             # Forward to RunMode stream callback if active
-            if event.data.get("chunk") and not event.data.get("is_reasoning"):
+            if event_data.get("chunk") and not event_data.get("is_reasoning"):
                 await self._invoke_runmode_stream_callback(
-                    event.data["chunk"],
-                    event.data.get("message_type", "assistant")
+                    event_data["chunk"],
+                    event_data.get("message_type", "assistant"),
                 )
 
-    def finalize_streaming_message(self, agent_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def finalize_streaming_message(
+        self, agent_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Finalizes the current streaming message for a specific agent, adds it to
         ConversationManager, and resets the streaming state. Emits a final event
@@ -2709,7 +3051,7 @@ class PenguinCore:
         """
         # Resolve agent_id from conversation_manager if not provided
         if agent_id is None:
-            agent_id = getattr(self.conversation_manager, 'current_agent_id', 'default')
+            agent_id = getattr(self.conversation_manager, "current_agent_id", "default")
 
         # Delegate to AgentStreamingStateManager
         message, events = self._stream_manager.finalize(agent_id=agent_id)
@@ -2740,7 +3082,7 @@ class PenguinCore:
                     role=message.role,
                     content=message.content,
                     category=category,
-                    metadata=message.metadata
+                    metadata=message.metadata,
                 )
             except (KeyError, AttributeError):
                 # Fallback to current conversation
@@ -2748,19 +3090,23 @@ class PenguinCore:
                     role=message.role,
                     content=message.content,
                     category=category,
-                    metadata=message.metadata
+                    metadata=message.metadata,
                 )
 
             # For WebSocket streaming (RunMode), emit a message event
-            if hasattr(self, '_temp_ws_callback') and self._temp_ws_callback:
-                asyncio.create_task(self._temp_ws_callback({
-                    "type": "message",
-                    "role": message.role,
-                    "content": message.content,
-                    "category": category,
-                    "metadata": message.metadata,
-                    "agent_id": agent_id,
-                }))
+            if hasattr(self, "_temp_ws_callback") and self._temp_ws_callback:
+                asyncio.create_task(
+                    self._temp_ws_callback(
+                        {
+                            "type": "message",
+                            "role": message.role,
+                            "content": message.content,
+                            "category": category,
+                            "metadata": message.metadata,
+                            "agent_id": agent_id,
+                        }
+                    )
+                )
 
         # Emit events from manager
         callback_ref = self._runmode_stream_callback
@@ -2793,7 +3139,9 @@ class PenguinCore:
         try:
             await cb(chunk, message_type)
         except Exception as exc:
-            logger.debug("RunMode stream callback execution failed: %s", exc, exc_info=True)
+            logger.debug(
+                "RunMode stream callback execution failed: %s", exc, exc_info=True
+            )
 
     # Update token usage notification to use events
     def update_token_display(self) -> None:
@@ -2813,10 +3161,10 @@ class PenguinCore:
     async def _handle_run_mode_event(self, event: Dict[str, Any]) -> None:
         """
         Central handler for all events emitted by RunMode.
-        
+
         This method is the bridge between RunMode's headless operation and the rest of the system.
         It processes events from RunMode and updates ConversationManager appropriately.
-        
+
         Args:
             event: Dictionary containing event data with at least a 'type' key
         """
@@ -2831,161 +3179,211 @@ class PenguinCore:
                     "role": event.get("role", "system"),
                     "content": event.get("content", ""),
                     "category": event.get("category", MessageCategory.SYSTEM),
-                    "metadata": event.get("metadata", {})
+                    "metadata": event.get("metadata", {}),
                 }
-                
+
                 # Ensure category is a MessageCategory enum if provided as string
                 if isinstance(msg_data["category"], str):
                     try:
-                        msg_data["category"] = MessageCategory[msg_data["category"].upper()]
+                        msg_data["category"] = MessageCategory[
+                            msg_data["category"].upper()
+                        ]
                     except KeyError:
-                        logger.warning(f"Invalid message category string '{msg_data['category']}' from RunMode event. Defaulting to SYSTEM.")
+                        logger.warning(
+                            f"Invalid message category string '{msg_data['category']}' from RunMode event. Defaulting to SYSTEM."
+                        )
                         msg_data["category"] = MessageCategory.SYSTEM
-                
+
                 # Add to conversation
                 self.conversation_manager.conversation.add_message(**msg_data)
                 self.conversation_manager.save()
-                logger.debug(f"Core added message to ConversationManager from RunMode event: {msg_data['role']} - {msg_data['content'][:50]}...")
-            
+                logger.debug(
+                    f"Core added message to ConversationManager from RunMode event: {msg_data['role']} - {msg_data['content'][:50]}..."
+                )
+
             # Handle status events
             elif event_type == "status":
                 status_type = event.get("status_type", "unknown")
                 status_data = event.get("data", {})
-                logger.info(f"RunMode status update: {status_type} - Data: {status_data}")
-                
+                logger.info(
+                    f"RunMode status update: {status_type} - Data: {status_data}"
+                )
+
                 # Update status summary based on event type
-                if status_type == "task_started" or status_type == "task_started_legacy":
-                    task_name = status_data.get('task_name', status_data.get('task_prompt', 'Unknown task'))
+                if (
+                    status_type == "task_started"
+                    or status_type == "task_started_legacy"
+                ):
+                    task_name = status_data.get(
+                        "task_name", status_data.get("task_prompt", "Unknown task")
+                    )
                     self.current_runmode_status_summary = f"Task: {task_name} - Running"
                 elif status_type == "task_progress":
-                    iteration = status_data.get('iteration', '?')
-                    max_iter = status_data.get('max_iterations', '?')
-                    progress = status_data.get('progress', 0)
-                    self.current_runmode_status_summary = f"Progress: {progress}% (Iter: {iteration}/{max_iter})"
-                elif status_type == "task_completed" or status_type == "task_completed_legacy" or status_type == "task_completed_eventbus":
-                    task_name = status_data.get('task_name', 'Last task')
-                    self.current_runmode_status_summary = f"Task: {task_name} - Completed"
-                elif status_type == "run_mode_ended" or status_type == "shutdown_completed":
+                    iteration = status_data.get("iteration", "?")
+                    max_iter = status_data.get("max_iterations", "?")
+                    progress = status_data.get("progress", 0)
+                    self.current_runmode_status_summary = (
+                        f"Progress: {progress}% (Iter: {iteration}/{max_iter})"
+                    )
+                elif (
+                    status_type == "task_completed"
+                    or status_type == "task_completed_legacy"
+                    or status_type == "task_completed_eventbus"
+                ):
+                    task_name = status_data.get("task_name", "Last task")
+                    self.current_runmode_status_summary = (
+                        f"Task: {task_name} - Completed"
+                    )
+                elif (
+                    status_type == "run_mode_ended"
+                    or status_type == "shutdown_completed"
+                ):
                     self.current_runmode_status_summary = "RunMode ended."
-                elif status_type == "clarification_needed" or status_type == "clarification_needed_eventbus":
+                elif (
+                    status_type == "clarification_needed"
+                    or status_type == "clarification_needed_eventbus"
+                ):
                     self.current_runmode_status_summary = "Awaiting user clarification."
                 elif status_type == "awaiting_user_input_after_task":
-                    self.current_runmode_status_summary = "Task complete. Awaiting input."
-            
+                    self.current_runmode_status_summary = (
+                        "Task complete. Awaiting input."
+                    )
+
             # Handle error events
             elif event_type == "error":
                 err_msg = event.get("message", "Unknown error from RunMode")
                 err_source = event.get("source", "runmode")
                 err_details = event.get("details", {})
-                logger.error(f"RunMode Error Event (Source: {err_source}): {err_msg} | Details: {err_details}")
-                
+                logger.error(
+                    f"RunMode Error Event (Source: {err_source}): {err_msg} | Details: {err_details}"
+                )
+
                 # Update status with error
                 self.current_runmode_status_summary = f"Error: {err_msg}"
-            
+
             # Handle unknown event types
             else:
-                logger.warning(f"Core received unknown RunMode event type: {event_type} | Event: {event}")
+                logger.warning(
+                    f"Core received unknown RunMode event type: {event_type} | Event: {event}"
+                )
 
             # After processing any event, signal the UI to update if callback is registered
-            if hasattr(self, '_ui_update_callback') and self._ui_update_callback:
+            if hasattr(self, "_ui_update_callback") and self._ui_update_callback:
                 try:
                     await self._ui_update_callback()
                 except Exception as e:
                     logger.error(f"Error in UI update callback: {e}", exc_info=True)
 
             # Also send to WebSocket if temporary callback exists (for streaming)
-            if hasattr(self, '_temp_ws_callback') and self._temp_ws_callback:
+            if hasattr(self, "_temp_ws_callback") and self._temp_ws_callback:
                 try:
                     await self._temp_ws_callback(event)
                 except Exception as e:
                     logger.error(f"Error in WebSocket callback: {e}", exc_info=True)
 
         except Exception as e:
-            logger.error(f"Error in PenguinCore._handle_run_mode_event: {str(e)}", exc_info=True)
+            logger.error(
+                f"Error in PenguinCore._handle_run_mode_event: {str(e)}", exc_info=True
+            )
 
     def get_startup_stats(self) -> Dict[str, Any]:
         """Get comprehensive startup performance statistics."""
         stats = {
             "profiling_summary": profiler.get_summary(),
-            "tool_manager_stats": self.tool_manager.get_startup_stats() if hasattr(self.tool_manager, 'get_startup_stats') else {},
-            "memory_provider_initialized": hasattr(self.tool_manager, '_memory_provider') and self.tool_manager._memory_provider is not None,
+            "tool_manager_stats": self.tool_manager.get_startup_stats()
+            if hasattr(self.tool_manager, "get_startup_stats")
+            else {},
+            "memory_provider_initialized": hasattr(
+                self.tool_manager, "_memory_provider"
+            )
+            and self.tool_manager._memory_provider is not None,
             "core_initialized": self.initialized,
         }
         return stats
 
     def print_startup_report(self) -> None:
         """Print a comprehensive startup performance report."""
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("PENGUIN STARTUP PERFORMANCE REPORT")
-        print("="*60)
-        
+        print("=" * 60)
+
         # Get tool manager stats
-        if hasattr(self.tool_manager, 'get_startup_stats'):
+        if hasattr(self.tool_manager, "get_startup_stats"):
             tool_stats = self.tool_manager.get_startup_stats()
             print(f"\nTool Manager Configuration:")
             print(f"  Fast startup mode: {tool_stats.get('fast_startup', 'Unknown')}")
-            print(f"  Memory provider initialized: {tool_stats.get('memory_provider_exists', 'Unknown')}")
-            print(f"  Indexing completed: {tool_stats.get('indexing_completed', 'Unknown')}")
-            
-            lazy_init = tool_stats.get('lazy_initialized', {})
+            print(
+                f"  Memory provider initialized: {tool_stats.get('memory_provider_exists', 'Unknown')}"
+            )
+            print(
+                f"  Indexing completed: {tool_stats.get('indexing_completed', 'Unknown')}"
+            )
+
+            lazy_init = tool_stats.get("lazy_initialized", {})
             print(f"\nLazy-loaded components:")
             for component, initialized in lazy_init.items():
                 status = "✓ Loaded" if initialized else "○ Deferred"
                 print(f"  {component}: {status}")
-        
+
         # Print profiling report
         print(f"\nDetailed Performance Breakdown:")
         profiler_report = profiler.get_startup_report()
         print(profiler_report)
-        
-        print("="*60)
+
+        print("=" * 60)
 
     def enable_fast_startup_globally(self) -> None:
         """Enable fast startup mode for future operations."""
-        if hasattr(self.tool_manager, 'fast_startup'):
+        if hasattr(self.tool_manager, "fast_startup"):
             self.tool_manager.fast_startup = True
             logger.info("Fast startup mode enabled globally")
 
     def get_memory_provider_status(self) -> Dict[str, Any]:
         """Get current status of memory provider and indexing."""
-        if not hasattr(self.tool_manager, '_memory_provider'):
+        if not hasattr(self.tool_manager, "_memory_provider"):
             return {"status": "not_initialized", "provider": None}
-        
+
         provider = self.tool_manager._memory_provider
         if provider is None:
             return {"status": "disabled", "provider": None}
-        
+
         status = {
             "status": "initialized" if provider else "not_initialized",
             "provider": type(provider).__name__ if provider else None,
-            "indexing_completed": getattr(self.tool_manager, '_indexing_completed', False),
+            "indexing_completed": getattr(
+                self.tool_manager, "_indexing_completed", False
+            ),
             "indexing_task_running": False,
         }
-        
+
         # Check indexing task status
-        if hasattr(self.tool_manager, '_indexing_task') and self.tool_manager._indexing_task:
+        if (
+            hasattr(self.tool_manager, "_indexing_task")
+            and self.tool_manager._indexing_task
+        ):
             task = self.tool_manager._indexing_task
             status["indexing_task_running"] = not task.done()
             status["indexing_task_status"] = {
                 "done": task.done(),
                 "cancelled": task.cancelled(),
-                "exception": str(task.exception()) if task.done() and task.exception() else None
+                "exception": str(task.exception())
+                if task.done() and task.exception()
+                else None,
             }
-        
-        return status
 
+        return status
 
     def _subscribe_to_stream_events(self):
         """Subscribe to Penguin stream events and translate to OpenCode format."""
-        print("[TUI_ADAPTER] _subscribe_to_stream_events CALLED", flush=True)
         self._current_opencode_message_id: Optional[str] = None
         self._current_opencode_part_id: Optional[str] = None
         self._opencode_streaming_active: bool = False
         self._current_stream_id: Optional[str] = None
-        
+
         # Store reference to handler so it doesn't get garbage collected
         self._tui_stream_handler = self._on_tui_stream_chunk
         self.event_bus.subscribe("stream_chunk", self._tui_stream_handler)
+
     async def _on_tui_stream_chunk(self, event_type: str, data: Dict[str, Any]):
         """Handle stream chunk - manages stream lifecycle and emits with delta."""
         import time
@@ -3006,7 +3404,7 @@ class PenguinCore:
                 try:
                     await self._tui_adapter.on_stream_end(
                         self._current_opencode_message_id,
-                        self._current_opencode_part_id
+                        self._current_opencode_part_id,
                     )
                 except Exception:
                     pass
@@ -3018,12 +3416,14 @@ class PenguinCore:
 
             # Create message and text part
             try:
-                self._current_opencode_message_id, self._current_opencode_part_id = \
-                    await self._tui_adapter.on_stream_start(
-                        agent_id="default",
-                        model_id=getattr(self.model_config, 'model', None),
-                        provider_id=getattr(self.model_config, 'provider', None)
-                    )
+                (
+                    self._current_opencode_message_id,
+                    self._current_opencode_part_id,
+                ) = await self._tui_adapter.on_stream_start(
+                    agent_id="default",
+                    model_id=getattr(self.model_config, "model", None),
+                    provider_id=getattr(self.model_config, "provider", None),
+                )
             except Exception as e:
                 logger.error(f"Failed to start OpenCode stream: {e}")
                 self._opencode_streaming_active = False
@@ -3036,35 +3436,36 @@ class PenguinCore:
                     self._current_opencode_message_id,
                     self._current_opencode_part_id,
                     chunk,
-                    message_type
+                    message_type,
                 )
             except Exception as e:
                 logger.error(f"Failed to emit OpenCode chunk: {e}")
-
 
     # ------------------------------------------------------------------
     # OpenCode TUI Adapter Integration
     # ------------------------------------------------------------------
 
     async def _emit_opencode_stream_start(
-        self, 
+        self,
         agent_id: str = "default",
         model_id: Optional[str] = None,
-        provider_id: Optional[str] = None
+        provider_id: Optional[str] = None,
     ) -> Tuple[str, str]:
         """Initialize OpenCode streaming - creates Message and TextPart."""
-        self._tui_adapter.set_session(self.conversation_manager.get_current_session().id if self.conversation_manager.get_current_session() else "unknown")
+        self._tui_adapter.set_session(
+            self.conversation_manager.get_current_session().id
+            if self.conversation_manager.get_current_session()
+            else "unknown"
+        )
         return await self._tui_adapter.on_stream_start(agent_id, model_id, provider_id)
 
     async def _emit_opencode_stream_chunk(
-        self, 
-        message_id: str, 
-        part_id: str, 
-        chunk: str,
-        message_type: str = "assistant"
+        self, message_id: str, part_id: str, chunk: str, message_type: str = "assistant"
     ):
         """Emit OpenCode-compatible stream chunk with delta."""
-        await self._tui_adapter.on_stream_chunk(message_id, part_id, chunk, message_type)
+        await self._tui_adapter.on_stream_chunk(
+            message_id, part_id, chunk, message_type
+        )
 
     async def _emit_opencode_stream_end(self, message_id: str, part_id: str):
         """Finalize OpenCode streaming."""
@@ -3072,5 +3473,9 @@ class PenguinCore:
 
     async def _emit_opencode_user_message(self, content: str) -> str:
         """Emit user message in OpenCode format."""
-        self._tui_adapter.set_session(self.conversation_manager.get_current_session().id if self.conversation_manager.get_current_session() else "unknown")
+        self._tui_adapter.set_session(
+            self.conversation_manager.get_current_session().id
+            if self.conversation_manager.get_current_session()
+            else "unknown"
+        )
         return await self._tui_adapter.on_user_message(content)

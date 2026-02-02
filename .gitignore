@@ -115,6 +115,10 @@ context/cli-run.txt
 context/cli-run-*.txt
 session_*.json
 
+# Ignore web run files
+web-api-run.txt
+web-api-run-*.txt
+
 # Ignore test run files
 gh-codespace-test.txt
 gh-codespace-test-*.txt

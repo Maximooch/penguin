@@ -4,11 +4,12 @@ Provides Server-Sent Events endpoint that streams OpenCode-compatible
 message/part events to the TUI client.
 """
 
-from fastapi import APIRouter, Query
-from fastapi.responses import StreamingResponse
 import asyncio
 import json
-from typing import Optional, Any, AsyncIterator, TYPE_CHECKING
+from typing import Any, AsyncIterator, Optional, TYPE_CHECKING
+
+from fastapi import APIRouter, Query
+from fastapi.responses import StreamingResponse
 
 if TYPE_CHECKING:
     from penguin.core import PenguinCore
@@ -35,70 +36,77 @@ def get_core_instance() -> "PenguinCore":
 @router.get("/api/v1/events/sse")
 async def events_sse(
     session_id: Optional[str] = Query(None, description="Filter to specific session"),
-    conversation_id: Optional[str] = Query(None, description="Alias for session_id (API compatibility)"),
+    conversation_id: Optional[str] = Query(
+        None, description="Alias for session_id (API compatibility)"
+    ),
     agent_id: Optional[str] = Query(None, description="Filter to specific agent"),
     directory: Optional[str] = Query(None, description="Workspace directory"),
 ):
     """
     SSE stream of OpenCode-compatible events.
-    
+
     Query params:
     - session_id: Filter events to specific session
-    - agent_id: Filter events to specific agent  
+    - agent_id: Filter events to specific agent
     - directory: Workspace directory (for context)
     """
     core = get_core_instance()
-    
+
     # Use conversation_id if session_id not provided (API compatibility)
     effective_session_id = session_id or conversation_id
     effective_agent_id = agent_id
-    
+
     async def event_generator() -> AsyncIterator[str]:
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=1000)
-        
+
         def event_handler(event_type: str, data: Any):
             """Handler for EventBus events."""
-            print(f"[SSE_HANDLER] Received event: {event_type}", flush=True)
             # Only handle opencode_event type
             if event_type != "opencode_event":
-                print(f"[SSE_HANDLER] Ignoring non-opencode_event", flush=True)
                 return
-            print(f"[SSE_HANDLER] Processing opencode_event", flush=True)
-            
+
             # Data should already be in OpenCode format
             if not isinstance(data, dict):
                 return
-            
-            # Filter by session_id if provided
+
+            # Filter by session_id if provided (check both sessionID and conversation_id)
             if effective_session_id:
-                event_session = data.get("properties", {}).get("sessionID")
-                print(f"[SSE_HANDLER] Filtering: event_session={event_session}, expected={effective_session_id}", flush=True)
+                props = data.get("properties", {})
+                event_session = (
+                    props.get("sessionID")
+                    or props.get("conversation_id")
+                    or props.get("session_id")
+                )
+                if not event_session and "part" in props:
+                    part = props.get("part", {})
+                    event_session = (
+                        part.get("sessionID")
+                        or part.get("conversation_id")
+                        or part.get("session_id")
+                    )
                 if event_session != effective_session_id:
-                    print(f"[SSE_HANDLER] Session mismatch, dropping event", flush=True)
                     return
-                print(f"[SSE_HANDLER] Session matched!", flush=True)
-            
             # Filter by agent_id if provided (check multiple possible fields)
-            if agent_id:
+            if effective_agent_id:
                 props = data.get("properties", {})
                 event_agent = props.get("agentID") or props.get("agent_id")
                 # Also check nested part if present
                 if not event_agent and "part" in props:
-                    event_agent = props["part"].get("agentID") or props["part"].get("agent_id")
-                if event_agent and event_agent != agent_id:
+                    event_agent = props["part"].get("agentID") or props["part"].get(
+                        "agent_id"
+                    )
+                if event_agent and event_agent != effective_agent_id:
                     return
-            
+
             try:
                 queue.put_nowait(data)
-                print(f"[SSE_HANDLER] Event queued for SSE", flush=True)
             except asyncio.QueueFull:
                 # Drop event if queue is full (client is slow)
-                print(f"[SSE_HANDLER] Queue full, dropping event", flush=True)
                 pass
-        
+
         # Subscribe to events
         core.event_bus.subscribe("opencode_event", event_handler)
-        
+
         try:
             # Send initial server.connected event
             connected_event = {
@@ -106,11 +114,11 @@ async def events_sse(
                 "properties": {
                     "sessionID": effective_session_id,
                     "agentID": effective_agent_id,
-                    "directory": directory
-                }
+                    "directory": directory,
+                },
             }
             yield f"data: {json.dumps(connected_event)}\n\n"
-            
+
             # Stream events
             while True:
                 try:
@@ -120,7 +128,7 @@ async def events_sse(
                 except asyncio.TimeoutError:
                     # Send keepalive comment
                     yield ": keepalive\n\n"
-                    
+
         except asyncio.CancelledError:
             # Client disconnected
             pass
@@ -130,7 +138,7 @@ async def events_sse(
                 core.event_bus.unsubscribe("opencode_event", event_handler)
             except Exception:
                 pass
-    
+
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
@@ -138,7 +146,7 @@ async def events_sse(
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",  # Disable nginx buffering
-        }
+        },
     )
 
 
