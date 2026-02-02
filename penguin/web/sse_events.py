@@ -58,9 +58,12 @@ async def events_sse(
         
         def event_handler(event_type: str, data: Any):
             """Handler for EventBus events."""
+            print(f"[SSE_HANDLER] Received event: {event_type}", flush=True)
             # Only handle opencode_event type
             if event_type != "opencode_event":
+                print(f"[SSE_HANDLER] Ignoring non-opencode_event", flush=True)
                 return
+            print(f"[SSE_HANDLER] Processing opencode_event", flush=True)
             
             # Data should already be in OpenCode format
             if not isinstance(data, dict):
@@ -69,8 +72,11 @@ async def events_sse(
             # Filter by session_id if provided
             if effective_session_id:
                 event_session = data.get("properties", {}).get("sessionID")
+                print(f"[SSE_HANDLER] Filtering: event_session={event_session}, expected={effective_session_id}", flush=True)
                 if event_session != effective_session_id:
+                    print(f"[SSE_HANDLER] Session mismatch, dropping event", flush=True)
                     return
+                print(f"[SSE_HANDLER] Session matched!", flush=True)
             
             # Filter by agent_id if provided (check multiple possible fields)
             if agent_id:
@@ -84,8 +90,10 @@ async def events_sse(
             
             try:
                 queue.put_nowait(data)
+                print(f"[SSE_HANDLER] Event queued for SSE", flush=True)
             except asyncio.QueueFull:
                 # Drop event if queue is full (client is slow)
+                print(f"[SSE_HANDLER] Queue full, dropping event", flush=True)
                 pass
         
         # Subscribe to events

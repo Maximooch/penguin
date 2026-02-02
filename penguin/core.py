@@ -2679,7 +2679,15 @@ class PenguinCore:
 
         # Emit events and invoke RunMode callback
         for event in events:
-            await self.emit_ui_event(event.event_type, event.data)
+            # Inject session_id into event data for SSE filtering
+            event_data = dict(event.data)  # Copy to avoid mutating original
+            try:
+                session = self.conversation_manager.get_current_session()
+                event_data['session_id'] = session.id if session else "unknown"
+            except Exception:
+                event_data['session_id'] = "unknown"
+
+            await self.emit_ui_event(event.event_type, event_data)
             # Forward to RunMode stream callback if active
             if event.data.get("chunk") and not event.data.get("is_reasoning"):
                 await self._invoke_runmode_stream_callback(
@@ -2978,14 +2986,6 @@ class PenguinCore:
         # Store reference to handler so it doesn't get garbage collected
         self._tui_stream_handler = self._on_tui_stream_chunk
         self.event_bus.subscribe("stream_chunk", self._tui_stream_handler)
-        print(f"[TUI_ADAPTER] Subscribed to stream_chunk on bus {id(self.event_bus)}", flush=True)
-        # Verify subscription
-        subs = getattr(self.event_bus, 'subscribers', {})
-        handlers = subs.get('stream_chunk', [])
-        print(f"[TUI_ADAPTER] Handlers registered: {len(handlers)}", flush=True)
-        for i, h in enumerate(handlers):
-            print(f"[TUI_ADAPTER] Handler {i}: {h}", flush=True)
-
     async def _on_tui_stream_chunk(self, event_type: str, data: Dict[str, Any]):
         """Handle stream chunk - manages stream lifecycle and emits with delta."""
         import time
@@ -2996,6 +2996,7 @@ class PenguinCore:
         chunk = data.get("chunk", "")
         message_type = data.get("message_type", "assistant")
         stream_id = data.get("stream_id", "unknown")
+        session_id = data.get("session_id", "unknown")  # Get from event data
         current_time = time.time()
         
         # Auto-detect stream start (first chunk or new stream_id)
@@ -3005,6 +3006,15 @@ class PenguinCore:
                 try:
                     await self._tui_adapter.on_stream_end(
                         self._current_opencode_message_id,
+                        self._current_opencode_part_id
+                    )
+                except Exception:
+                    pass
+            
+            # Start new stream
+            self._opencode_streaming_active = True
+            self._current_stream_id = stream_id
+            self._tui_adapter.set_session(session_id)
                         self._current_opencode_part_id
                     )
                 except Exception:
