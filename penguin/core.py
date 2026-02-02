@@ -2989,16 +2989,16 @@ class PenguinCore:
     async def _on_tui_stream_chunk(self, event_type: str, data: Dict[str, Any]):
         """Handle stream chunk - manages stream lifecycle and emits with delta."""
         import time
-        
+
         if event_type != "stream_chunk":
             return
 
         chunk = data.get("chunk", "")
         message_type = data.get("message_type", "assistant")
         stream_id = data.get("stream_id", "unknown")
-        session_id = data.get("session_id", "unknown")  # Get from event data
+        session_id = data.get("conversation_id", "unknown")
         current_time = time.time()
-        
+
         # Auto-detect stream start (first chunk or new stream_id)
         if not self._opencode_streaming_active or self._current_stream_id != stream_id:
             # Finalize previous stream if exists
@@ -3010,26 +3010,12 @@ class PenguinCore:
                     )
                 except Exception:
                     pass
-            
+
             # Start new stream
             self._opencode_streaming_active = True
             self._current_stream_id = stream_id
             self._tui_adapter.set_session(session_id)
-                        self._current_opencode_part_id
-                    )
-                except Exception:
-                    pass
-            
-            # Start new stream
-            self._opencode_streaming_active = True
-            self._current_stream_id = stream_id
-            try:
-                session = self.conversation_manager.get_current_session()
-                session_id = session.id if session else "unknown"
-            except Exception:
-                session_id = "unknown"
-            self._tui_adapter.set_session(session_id)
-            
+
             # Create message and text part
             try:
                 self._current_opencode_message_id, self._current_opencode_part_id = \
@@ -3042,7 +3028,7 @@ class PenguinCore:
                 logger.error(f"Failed to start OpenCode stream: {e}")
                 self._opencode_streaming_active = False
                 return
-        
+
         # Emit the chunk
         if self._current_opencode_message_id and self._current_opencode_part_id:
             try:
@@ -3054,6 +3040,7 @@ class PenguinCore:
                 )
             except Exception as e:
                 logger.error(f"Failed to emit OpenCode chunk: {e}")
+
 
     # ------------------------------------------------------------------
     # OpenCode TUI Adapter Integration
