@@ -6,7 +6,7 @@ import path from "path"
 import { UI } from "@/cli/ui"
 import { iife } from "@/util/iife"
 import { Log } from "@/util/log"
-import { withNetworkOptions, resolveNetworkOptions } from "@/cli/network"
+import { withNetworkOptions } from "@/cli/network"
 import type { Event } from "@opencode-ai/sdk/v2"
 import type { EventSource } from "./context/sdk"
 
@@ -71,6 +71,10 @@ export const TuiThreadCommand = cmd({
       .option("agent", {
         type: "string",
         describe: "agent to use",
+      })
+      .option("url", {
+        type: "string",
+        describe: "penguin web server url",
       }),
   handler: async (args) => {
     // Resolve relative paths against PWD to preserve behavior when using --cwd flag
@@ -115,38 +119,21 @@ export const TuiThreadCommand = cmd({
       return piped ? piped + "\n" + args.prompt : args.prompt
     })
 
-    // Check if server should be started (port or hostname explicitly set in CLI or config)
-    const networkOpts = await resolveNetworkOptions(args)
-    const shouldStartServer =
-      process.argv.includes("--port") ||
-      process.argv.includes("--hostname") ||
-      process.argv.includes("--mdns") ||
-      networkOpts.mdns ||
-      networkOpts.port !== 0 ||
-      networkOpts.hostname !== "127.0.0.1"
-
-    let url: string
-    let customFetch: typeof fetch | undefined
-    let events: EventSource | undefined
-
-    if (shouldStartServer) {
-      // Start HTTP server for external access
-      const server = await client.call("server", networkOpts)
-      url = server.url
-    } else {
-      // Use direct RPC communication (no HTTP)
-      url = "http://opencode.internal"
-      customFetch = createWorkerFetch(client)
-      events = createEventSource(client)
-    }
+    const base = args.url ?? process.env.PENGUIN_WEB_URL ?? "http://localhost:8000"
+    const sessionID = args.session ?? crypto.randomUUID()
+    const url = base
+    const customFetch = undefined
+    const events = undefined
 
     const tuiPromise = tui({
       url,
       fetch: customFetch,
       events,
+      penguin: true,
+      sessionID,
       args: {
         continue: args.continue,
-        sessionID: args.session,
+        sessionID,
         agent: args.agent,
         model: args.model,
         prompt,

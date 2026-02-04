@@ -2948,6 +2948,7 @@ class PenguinCore:
             r"<execute>.*?</execute>",
             r"<system-reminder>.*?</system-reminder>",
             r"<internal>.*?</internal>",
+            r"</?finish_response\b[^>]*>?",
         ]
 
         # Fields that may contain content to filter
@@ -2998,6 +2999,9 @@ class PenguinCore:
             agent_id = getattr(self.conversation_manager, "current_agent_id", "default")
 
         # Delegate to AgentStreamingStateManager
+        filtered = self._filter_internal_markers_from_event({"chunk": chunk})
+        if filtered.get("chunk") is not None:
+            chunk = filtered.get("chunk", "")
         events = self._stream_manager.handle_chunk(
             chunk, agent_id=agent_id, message_type=message_type, role=role
         )
@@ -3027,6 +3031,7 @@ class PenguinCore:
                     event_data["session_id"] = "unknown"
                     event_data["conversation_id"] = "unknown"
 
+            event_data = self._filter_internal_markers_from_event(event_data)
             await self.emit_ui_event(event.event_type, event_data)
             # Forward to RunMode stream callback if active
             if event_data.get("chunk") and not event_data.get("is_reasoning"):
@@ -3440,6 +3445,18 @@ class PenguinCore:
                 )
             except Exception as e:
                 logger.error(f"Failed to emit OpenCode chunk: {e}")
+
+        if data.get("is_final"):
+            if self._current_opencode_message_id and self._current_opencode_part_id:
+                try:
+                    await self._tui_adapter.on_stream_end(
+                        self._current_opencode_message_id,
+                        self._current_opencode_part_id,
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to finalize OpenCode stream: {e}")
+            self._opencode_streaming_active = False
+            self._current_stream_id = None
 
     # ------------------------------------------------------------------
     # OpenCode TUI Adapter Integration

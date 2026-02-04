@@ -105,6 +105,8 @@ export function tui(input: {
   directory?: string
   fetch?: typeof fetch
   events?: EventSource
+  penguin?: boolean
+  sessionID?: string
   onExit?: () => Promise<void>
 }) {
   // promise to prevent immediate exit
@@ -131,6 +133,8 @@ export function tui(input: {
                         directory={input.directory}
                         fetch={input.fetch}
                         events={input.events}
+                        penguin={input.penguin}
+                        sessionID={input.sessionID}
                       >
                         <SyncProvider>
                           <ThemeProvider mode={mode}>

@@ -226,30 +226,47 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
 
         case "message.updated": {
-          const messages = store.message[event.properties.info.sessionID]
+          const info = "info" in event.properties ? event.properties.info : event.properties
+          if (!info || !("sessionID" in info)) break
+          const normalized =
+            info.role === "assistant"
+              ? {
+                  parentID: "root",
+                  agent: "penguin",
+                  path: {
+                    cwd: process.cwd(),
+                    root: process.cwd(),
+                  },
+                  modelID: "penguin-default",
+                  providerID: "penguin",
+                  mode: "chat",
+                  ...info,
+                }
+              : info
+          const messages = store.message[normalized.sessionID]
           if (!messages) {
-            setStore("message", event.properties.info.sessionID, [event.properties.info])
+            setStore("message", normalized.sessionID, [normalized])
             break
           }
-          const result = Binary.search(messages, event.properties.info.id, (m) => m.id)
+          const result = Binary.search(messages, normalized.id, (m) => m.id)
           if (result.found) {
-            setStore("message", event.properties.info.sessionID, result.index, reconcile(event.properties.info))
+            setStore("message", normalized.sessionID, result.index, reconcile(normalized))
             break
           }
           setStore(
             "message",
-            event.properties.info.sessionID,
+            normalized.sessionID,
             produce((draft) => {
-              draft.splice(result.index, 0, event.properties.info)
+              draft.splice(result.index, 0, normalized)
             }),
           )
-          const updated = store.message[event.properties.info.sessionID]
+          const updated = store.message[normalized.sessionID]
           if (updated.length > 100) {
             const oldest = updated[0]
             batch(() => {
               setStore(
                 "message",
-                event.properties.info.sessionID,
+                normalized.sessionID,
                 produce((draft) => {
                   draft.shift()
                 }),
@@ -330,6 +347,155 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     async function bootstrap() {
       console.log("bootstrapping")
+      if (sdk.penguin) {
+        const now = Date.now()
+        const id = sdk.sessionID ?? "penguin"
+        const stamp = (value?: string) => {
+          const time = value ? Date.parse(value) : NaN
+          return Number.isFinite(time) ? time : now
+        }
+        const model = {
+          id: "penguin-default",
+          providerID: "penguin",
+          api: {
+            id: "penguin-web",
+            url: sdk.url,
+            npm: "penguin",
+          },
+          name: "Penguin Default",
+          capabilities: {
+            temperature: true,
+            reasoning: true,
+            attachment: false,
+            toolcall: false,
+            input: {
+              text: true,
+              audio: false,
+              image: false,
+              video: false,
+              pdf: false,
+            },
+            output: {
+              text: true,
+              audio: false,
+              image: false,
+              video: false,
+              pdf: false,
+            },
+            interleaved: false,
+          },
+          cost: {
+            input: 0,
+            output: 0,
+            cache: { read: 0, write: 0 },
+          },
+          limit: {
+            context: 100000,
+            output: 4096,
+          },
+          status: "active" as const,
+          options: {},
+          headers: {},
+          release_date: new Date(now).toISOString(),
+        }
+        const provider = {
+          id: "penguin",
+          name: "Penguin",
+          source: "custom" as const,
+          env: [],
+          options: {},
+          models: {
+            [model.id]: model,
+          },
+        }
+        const list = await fetch(new URL("/api/v1/conversations", sdk.url))
+          .then((res) => (res.ok ? res.json() : undefined))
+          .then((data) => (Array.isArray(data?.conversations) ? data.conversations : []))
+          .catch(() => [])
+        const mapped = list.map((item: { [key: string]: unknown }) => {
+          const sid = typeof item.id === "string" ? item.id : crypto.randomUUID()
+          const title = typeof item.title === "string" ? item.title : `Session ${sid.slice(-8)}`
+          const created = stamp(typeof item.created_at === "string" ? item.created_at : undefined)
+          const updated = stamp(typeof item.last_active === "string" ? item.last_active : undefined)
+          return {
+            id: sid,
+            slug: sid,
+            projectID: "penguin",
+            directory: process.cwd(),
+            title,
+            version: "penguin",
+            time: {
+              created,
+              updated,
+            },
+          }
+        })
+        const exists = mapped.some((item) => item.id === id)
+        const session = exists
+          ? mapped
+          : [
+              {
+                id,
+                slug: id,
+                projectID: "penguin",
+                directory: process.cwd(),
+                title: "Penguin Session",
+                version: "penguin",
+                time: {
+                  created: now,
+                  updated: now,
+                },
+              },
+              ...mapped,
+            ]
+        const agent = {
+          name: "penguin",
+          mode: "primary" as const,
+          permission: [],
+          options: {},
+        }
+        const status = Object.fromEntries(
+          session.map((item) => [item.id, { type: "idle" }]),
+        )
+        batch(() => {
+          setStore("provider", reconcile([provider]))
+          setStore("provider_default", reconcile({ penguin: model.id }))
+          setStore(
+            "provider_next",
+            reconcile({
+              all: [
+                {
+                  id: provider.id,
+                  name: provider.name,
+                  env: provider.env,
+                  models: {
+                    [model.id]: {
+                      id: model.id,
+                      name: model.name,
+                      release_date: model.release_date,
+                      attachment: model.capabilities.attachment,
+                      reasoning: model.capabilities.reasoning,
+                      temperature: model.capabilities.temperature,
+                      tool_call: model.capabilities.toolcall,
+                      limit: model.limit,
+                      status: model.status,
+                    },
+                  },
+                },
+              ],
+              default: { penguin: model.id },
+              connected: [provider.id],
+            }),
+          )
+          setStore("agent", reconcile([agent]))
+          setStore("config", reconcile({ share: "disabled" }))
+          setStore("session", reconcile(session))
+          setStore("session_status", reconcile(status))
+          setStore("path", reconcile({ state: "", config: "", worktree: "", directory: process.cwd() }))
+          setStore("status", "complete")
+        })
+        return
+      }
       const start = Date.now() - 30 * 24 * 60 * 60 * 1000
       const sessionListPromise = sdk.client.session
         .list({ start: start })
@@ -423,12 +589,15 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       get ready() {
         return store.status !== "loading"
       },
-      session: {
-        get(sessionID: string) {
-          const match = Binary.search(store.session, sessionID, (s) => s.id)
-          if (match.found) return store.session[match.index]
-          return undefined
-        },
+        session: {
+          get(sessionID: string) {
+            if (sdk.penguin) {
+              return store.session.find((item) => item.id === sessionID)
+            }
+            const match = Binary.search(store.session, sessionID, (s) => s.id)
+            if (match.found) return store.session[match.index]
+            return undefined
+          },
         status(sessionID: string) {
           const session = result.session.get(sessionID)
           if (!session) return "idle"
@@ -440,6 +609,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           return last.time.completed ? "idle" : "working"
         },
         async sync(sessionID: string) {
+          if (sdk.penguin) return
           if (fullSyncedSessions.has(sessionID)) return
           const [session, messages, todo, diff] = await Promise.all([
             sdk.client.session.get({ sessionID }, { throwOnError: true }),

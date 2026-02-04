@@ -2,9 +2,11 @@
 
 ## Status
 
-**Implementation Started (refactor-penguin-backend-tui branch)**
+**Implementation In Progress (refactor-penguin-backend-tui branch)**
 
-Phase 1: SSE Backend Infrastructure - In Progress
+- Phase 1: SSE Backend Infrastructure - Complete
+- Phase 2: Event Translation Layer - Complete (core streaming path)
+- Phase 3: TUI Fork - In Progress (minimal chat mode wired)
 
 ## Key Updates from Investigation
 
@@ -56,12 +58,19 @@ SSE will be a **first-class peer** to WebSocket, not a replacement:
 - Emit as `opencode_event` on EventBus
 - SSE endpoint filters and streams
 
-### Phase 3: TUI Fork (Future)
+### Phase 3: TUI Fork (Current)
 
 Create `penguin-tui` package by forking OpenCode's TUI:
 - Replace OpenCode SDK with Penguin API client
 - Connect to `/api/v1/events/sse`
 - Keep SolidJS UI components unchanged
+
+**Parity Priorities (in order):**
+1) Session list + metadata
+2) Model/provider picker
+3) Tool execution UI
+4) Permissions/approvals
+5) MCP/LSP status
 
 ## SSE Endpoint Specification
 
@@ -139,13 +148,13 @@ OpenCode is MIT-licensed. `penguin-tui` will include:
 
 ## Success Criteria
 
-- [ ] SSE endpoint streams events without timeouts
-- [ ] OpenCode TUI can connect and display streaming text
+- [x] SSE endpoint streams events without timeouts
+- [x] OpenCode TUI can connect and display streaming text
 - [ ] Tool execution renders correctly
-- [ ] Session/agent filtering works
-- [ ] No regression to existing WS/REST endpoints
+- [x] Session/agent filtering works
+- [x] No regression to existing WS/REST endpoints
 
 ---
 
-**Last Updated:** 2026-01-31  
+**Last Updated:** 2026-02-02  
 **Branch:** refactor-penguin-backend-tui

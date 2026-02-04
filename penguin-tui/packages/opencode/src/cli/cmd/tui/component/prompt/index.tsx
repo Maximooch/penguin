@@ -505,10 +505,9 @@ export function Prompt(props: PromptProps) {
     }
     const sessionID = props.sessionID
       ? props.sessionID
-      : await (async () => {
-          const sessionID = await sdk.client.session.create({}).then((x) => x.data!.id)
-          return sessionID
-        })()
+      : sdk.penguin
+        ? sdk.sessionID ?? crypto.randomUUID()
+        : await sdk.client.session.create({}).then((x) => x.data!.id)
     const messageID = Identifier.ascending("message")
     let inputText = store.prompt.input
 
@@ -534,11 +533,71 @@ export function Prompt(props: PromptProps) {
     // Capture mode before it gets reset
     const currentMode = store.mode
     const variant = local.model.variant.current()
+    const agent = local.agent.current()
+
+    if (sdk.penguin) {
+      const now = Date.now()
+      const user = {
+        id: messageID,
+        sessionID,
+        role: "user" as const,
+        time: {
+          created: now,
+        },
+        agent: agent.name,
+        model: {
+          providerID: selectedModel.providerID,
+          modelID: selectedModel.modelID,
+        },
+      }
+      const part = {
+        id: Identifier.ascending("part"),
+        sessionID,
+        messageID,
+        type: "text" as const,
+        text: inputText,
+        time: {
+          start: now,
+          end: now,
+        },
+      }
+      sdk.event.emit("message.updated", {
+        type: "message.updated",
+        properties: { info: user },
+      })
+      sdk.event.emit("message.part.updated", {
+        type: "message.part.updated",
+        properties: { part, delta: inputText },
+      })
+      const url = new URL("/api/v1/chat/message", sdk.url)
+      await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text: inputText,
+          session_id: sessionID,
+          streaming: true,
+        }),
+      }).catch(() => {})
+      history.append({
+        ...store.prompt,
+        mode: currentMode,
+      })
+      input.extmarks.clear()
+      setStore("prompt", {
+        input: "",
+        parts: [],
+      })
+      dialog.clear()
+      return
+    }
 
     if (store.mode === "shell") {
       sdk.client.session.shell({
         sessionID,
-        agent: local.agent.current().name,
+        agent: agent.name,
         model: {
           providerID: selectedModel.providerID,
           modelID: selectedModel.modelID,
@@ -565,7 +624,7 @@ export function Prompt(props: PromptProps) {
         sessionID,
         command: command.slice(1),
         arguments: args,
-        agent: local.agent.current().name,
+        agent: agent.name,
         model: `${selectedModel.providerID}/${selectedModel.modelID}`,
         messageID,
         variant,
@@ -582,7 +641,7 @@ export function Prompt(props: PromptProps) {
           sessionID,
           ...selectedModel,
           messageID,
-          agent: local.agent.current().name,
+          agent: agent.name,
           model: selectedModel,
           variant,
           parts: [
