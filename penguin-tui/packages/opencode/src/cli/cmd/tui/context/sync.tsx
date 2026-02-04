@@ -248,6 +248,43 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             setStore("message", normalized.sessionID, [normalized])
             break
           }
+          if (sdk.penguin) {
+            const match = messages.findIndex((item) => item.id === normalized.id)
+            if (match !== -1) {
+              setStore("message", normalized.sessionID, match, reconcile(normalized))
+              break
+            }
+            const stamp = normalized.time?.created ?? 0
+            const pos = messages.findIndex((item) => (item.time?.created ?? 0) > stamp)
+            const index = pos === -1 ? messages.length : pos
+            setStore(
+              "message",
+              normalized.sessionID,
+              produce((draft) => {
+                draft.splice(index, 0, normalized)
+              }),
+            )
+            const updated = store.message[normalized.sessionID]
+            if (updated.length > 100) {
+              const oldest = updated[0]
+              batch(() => {
+                setStore(
+                  "message",
+                  normalized.sessionID,
+                  produce((draft) => {
+                    draft.shift()
+                  }),
+                )
+                setStore(
+                  "part",
+                  produce((draft) => {
+                    delete draft[oldest.id]
+                  }),
+                )
+              })
+            }
+            break
+          }
           const result = Binary.search(messages, normalized.id, (m) => m.id)
           if (result.found) {
             setStore("message", normalized.sessionID, result.index, reconcile(normalized))

@@ -61,6 +61,7 @@ class MessageRequest(BaseModel):
     text: str
     conversation_id: Optional[str] = None
     session_id: Optional[str] = None
+    client_message_id: Optional[str] = None
     context: Optional[Dict[str, Any]] = None
     context_files: Optional[List[str]] = None
     streaming: Optional[bool] = True

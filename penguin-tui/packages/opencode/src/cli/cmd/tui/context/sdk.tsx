@@ -54,7 +54,6 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     const handleEvent = (event: Event) => {
       if (penguin && event.type === "message.part.updated") {
         const part = event.properties.part
-        if (part && part.type === "reasoning") return
         if (part && part.type === "text" && typeof part.text === "string") {
           const text = clean(part.text)
           if (text !== part.text) part.text = text

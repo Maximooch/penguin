@@ -162,6 +162,13 @@ Goal: streaming feels correct and stable in the TUI.
 - Emit `session.status` transitions (busy → idle) during streaming.
 - Ensure tool events can stream as `part.type=tool` with state transitions.
 - Filter internal markers (`<finish_response>`) at source.
+- Reconcile optimistic user messages with server events using a client message id.
+
+**Architecture Decision (Phase 0)**
+- Emit OpenCode-compatible streaming events directly from Penguin’s core.
+- Keep streaming state and coalescing in Penguin, not in the TUI.
+- SSE remains the primary delivery channel; WS remains unchanged.
+- Keep optimistic client-side user messages; server echoes the same message id.
 
 ### Phase 1: Session list + metadata
 Goal: session picker works fully and loads complete history.
@@ -171,12 +178,20 @@ Goal: session picker works fully and loads complete history.
 - Add OpenCode message envelopes (`info` + `parts`) to history output.
 - Emit `session.created`, `session.updated`, `session.deleted` events.
 
+**Architecture Decision (Phase 1)**
+- Add `/session.*` endpoints in Penguin web API backed by `ConversationManager`.
+- Return OpenCode-shaped messages/parts from persisted session data.
+
 ### Phase 2: Provider/model picker
 Goal: model selection and provider UI works.
 
 - Implement `/provider.list` and `/config.providers` with OpenCode schema.
 - Implement `/config.get` for config controls.
 - Add `/provider.auth` (no-op or mapped to Penguin credential status).
+
+**Architecture Decision (Phase 2)**
+- Map Penguin model configs into OpenCode provider + model schemas.
+- Keep auth endpoints as stubs until provider credential workflows exist.
 
 ### Phase 3: Tool execution UI
 Goal: tool events render and persist in history.
@@ -185,11 +200,19 @@ Goal: tool events render and persist in history.
 - Store tool parts in session history for reload.
 - Implement `/session.diff`, `/session.todo` to feed diff/todo widgets.
 
+**Architecture Decision (Phase 3)**
+- Persist tool parts alongside message parts in session history.
+- Translate Penguin tool lifecycle events into OpenCode tool parts.
+
 ### Phase 4: Permissions + questions
 Goal: approvals and user questions behave like OpenCode.
 
 - Implement `/permission.reply`, `/question.reply`, `/question.reject`.
 - Emit `permission.asked/replied`, `question.asked/replied/rejected`.
+
+**Architecture Decision (Phase 4)**
+- Wrap Penguin’s permission system with OpenCode-compatible endpoints/events.
+- Treat OpenCode question flow as a thin layer over Penguin prompts.
 
 ### Phase 5: MCP/LSP + misc widgets
 Goal: the remaining system widgets populate correctly.
@@ -197,6 +220,10 @@ Goal: the remaining system widgets populate correctly.
 - Implement `/mcp.status`, `/mcp.connect`, `/mcp.disconnect`.
 - Implement `/lsp.status`, `/formatter.status`, `/path.get`, `/vcs.get`.
 - Emit `mcp.tools.changed`, `lsp.updated`, diagnostics events.
+
+**Architecture Decision (Phase 5)**
+- Expose MCP/LSP status as read-only endpoints first; add control later.
+- Return empty sets when services are not configured.
 
 ## Backend Work Items (Penguin)
 

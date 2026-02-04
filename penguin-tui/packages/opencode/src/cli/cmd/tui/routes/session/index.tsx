@@ -1129,12 +1129,28 @@ function UserMessage(props: {
 }) {
   const ctx = use()
   const local = useLocal()
+  const sdk = useSDK()
   const text = createMemo(() => props.parts.flatMap((x) => (x.type === "text" && !x.synthetic ? [x] : []))[0])
   const files = createMemo(() => props.parts.flatMap((x) => (x.type === "file" ? [x] : [])))
   const sync = useSync()
   const { theme } = useTheme()
   const [hover, setHover] = createSignal(false)
-  const queued = createMemo(() => props.pending && props.message.id > props.pending)
+  const pendingTime = createMemo(() => {
+    if (!props.pending) return undefined
+    const items = sync.data.message[props.message.sessionID] ?? []
+    const match = items.find((item) => item.id === props.pending)
+    return match?.time?.created
+  })
+  const queued = createMemo(() => {
+    if (!props.pending) return false
+    if (sdk.penguin) {
+      const base = pendingTime()
+      if (!base) return false
+      const current = props.message.time?.created ?? 0
+      return current > base
+    }
+    return props.message.id > props.pending
+  })
   const color = createMemo(() => (queued() ? theme.accent : local.agent.color(props.message.agent)))
   const metadataVisible = createMemo(() => queued() || ctx.showTimestamps())
 

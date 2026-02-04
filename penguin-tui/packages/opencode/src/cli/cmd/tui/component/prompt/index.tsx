@@ -73,6 +73,20 @@ export function Prompt(props: PromptProps) {
   const renderer = useRenderer()
   const { theme, syntax } = useTheme()
   const kv = useKV()
+  const gen = iife(() => {
+    const state = { ts: 0, inc: 0 }
+    return {
+      next(prefix: string) {
+        const now = Date.now()
+        const inc = now === state.ts ? state.inc + 1 : 0
+        state.ts = now
+        state.inc = inc
+        const stamp = String(now).padStart(13, "0")
+        const idx = String(inc).padStart(2, "0")
+        return `${prefix}_${stamp}_${idx}`
+      },
+    }
+  })
 
   function promptModelWarning() {
     toast.show({
@@ -508,7 +522,7 @@ export function Prompt(props: PromptProps) {
       : sdk.penguin
         ? sdk.sessionID ?? crypto.randomUUID()
         : await sdk.client.session.create({}).then((x) => x.data!.id)
-    const messageID = Identifier.ascending("message")
+    const messageID = sdk.penguin ? gen.next("msg") : Identifier.ascending("message")
     let inputText = store.prompt.input
 
     // Expand pasted text inline before submitting
@@ -551,7 +565,7 @@ export function Prompt(props: PromptProps) {
         },
       }
       const part = {
-        id: Identifier.ascending("part"),
+        id: sdk.penguin ? gen.next("part") : Identifier.ascending("part"),
         sessionID,
         messageID,
         type: "text" as const,
@@ -570,7 +584,7 @@ export function Prompt(props: PromptProps) {
         properties: { part, delta: inputText },
       })
       const url = new URL("/api/v1/chat/message", sdk.url)
-      await fetch(url, {
+      fetch(url, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -579,6 +593,7 @@ export function Prompt(props: PromptProps) {
           text: inputText,
           session_id: sessionID,
           streaming: true,
+          client_message_id: messageID,
         }),
       }).catch(() => {})
       history.append({
@@ -590,7 +605,13 @@ export function Prompt(props: PromptProps) {
         input: "",
         parts: [],
       })
+      setStore("extmarkToPartIndex", new Map())
       dialog.clear()
+      input.clear()
+      input.setText("")
+      input.getLayoutNode().markDirty()
+      renderer.requestRender()
+      props.onSubmit?.()
       return
     }
 

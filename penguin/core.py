@@ -3031,6 +3031,7 @@ class PenguinCore:
                     event_data["session_id"] = "unknown"
                     event_data["conversation_id"] = "unknown"
 
+            event_data["agent_id"] = agent_id
             event_data = self._filter_internal_markers_from_event(event_data)
             await self.emit_ui_event(event.event_type, event_data)
             # Forward to RunMode stream callback if active
@@ -3116,9 +3117,32 @@ class PenguinCore:
         # Emit events from manager
         callback_ref = self._runmode_stream_callback
         for event in events:
-            asyncio.create_task(self.emit_ui_event(event.event_type, event.data))
+            event_data = (
+                dict(event.data)
+                if isinstance(event.data, dict)
+                else {"data": event.data}
+            )
+            if (
+                hasattr(self, "_current_conversation_id")
+                and self._current_conversation_id
+            ):
+                event_data["session_id"] = self._current_conversation_id
+                event_data["conversation_id"] = self._current_conversation_id
+            else:
+                try:
+                    session = self.conversation_manager.get_current_session()
+                    sid = session.id if session else "unknown"
+                    event_data["session_id"] = sid
+                    event_data["conversation_id"] = sid
+                except Exception:
+                    event_data["session_id"] = "unknown"
+                    event_data["conversation_id"] = "unknown"
+
+            event_data["agent_id"] = agent_id
+            event_data = self._filter_internal_markers_from_event(event_data)
+            asyncio.create_task(self.emit_ui_event(event.event_type, event_data))
             # Forward final event to RunMode callback
-            if callback_ref and event.data.get("is_final"):
+            if callback_ref and event_data.get("is_final"):
                 asyncio.create_task(
                     self._invoke_runmode_stream_callback("", "assistant", callback_ref)
                 )
@@ -3400,6 +3424,7 @@ class PenguinCore:
         message_type = data.get("message_type", "assistant")
         stream_id = data.get("stream_id", "unknown")
         session_id = data.get("conversation_id", "unknown")
+        agent_id = data.get("agent_id") or data.get("agentID") or "default"
         current_time = time.time()
 
         # Auto-detect stream start (first chunk or new stream_id)
@@ -3425,7 +3450,7 @@ class PenguinCore:
                     self._current_opencode_message_id,
                     self._current_opencode_part_id,
                 ) = await self._tui_adapter.on_stream_start(
-                    agent_id="default",
+                    agent_id=agent_id,
                     model_id=getattr(self.model_config, "model", None),
                     provider_id=getattr(self.model_config, "provider", None),
                 )
