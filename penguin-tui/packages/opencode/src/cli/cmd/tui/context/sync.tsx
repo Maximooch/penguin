@@ -254,14 +254,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               setStore("message", normalized.sessionID, match, reconcile(normalized))
               break
             }
-            const stamp = normalized.time?.created ?? 0
-            const pos = messages.findIndex((item) => (item.time?.created ?? 0) > stamp)
-            const index = pos === -1 ? messages.length : pos
             setStore(
               "message",
               normalized.sessionID,
               produce((draft) => {
-                draft.splice(index, 0, normalized)
+                draft.push(normalized)
               }),
             )
             const updated = store.message[normalized.sessionID]

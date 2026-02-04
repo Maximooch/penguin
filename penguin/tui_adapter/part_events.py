@@ -132,6 +132,7 @@ class PartEventAdapter:
             Tuple of (message_id, part_id)
         """
         message_id = self._next_id("msg")
+        reasoning_id = self._next_id("part")
         part_id = self._next_id("part")
 
         message = Message(
@@ -148,7 +149,16 @@ class PartEventAdapter:
         self._active_messages[message_id] = message
         self._current_message_id = message_id
         self._current_text_part_id = part_id
-        self._current_reasoning_part_id = None
+        self._current_reasoning_part_id = reasoning_id
+
+        reasoning_part = Part(
+            id=reasoning_id,
+            message_id=message_id,
+            session_id=self._session_id or "unknown",
+            type=PartType.REASONING,
+            content={"text": ""},
+        )
+        self._active_parts[reasoning_id] = reasoning_part
 
         text_part = Part(
             id=part_id,
@@ -162,6 +172,9 @@ class PartEventAdapter:
         await self._emit_session_status("busy")
         # Emit message.updated
         await self._emit("message.updated", self._message_to_dict(message))
+        await self._emit(
+            "message.part.updated", {"part": self._part_to_dict(reasoning_part)}
+        )
         return message_id, part_id
 
     async def on_stream_chunk(

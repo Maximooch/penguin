@@ -611,6 +611,9 @@ export function Prompt(props: PromptProps) {
       input.setText("")
       input.getLayoutNode().markDirty()
       renderer.requestRender()
+      queueMicrotask(() => {
+        setStore("prompt", "input", "")
+      })
       props.onSubmit?.()
       return
     }
