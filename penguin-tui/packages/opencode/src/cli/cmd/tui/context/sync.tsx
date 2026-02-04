@@ -488,6 +488,26 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           permission: [],
           options: {},
         }
+        const command = [
+          {
+            name: "settings",
+            description: "Show settings locations",
+            template: "/settings",
+            hints: [],
+          },
+          {
+            name: "tool_details",
+            description: "Toggle tool detail visibility",
+            template: "/tool_details",
+            hints: [],
+          },
+          {
+            name: "thinking",
+            description: "Toggle reasoning visibility",
+            template: "/thinking",
+            hints: [],
+          },
+        ]
         const status = Object.fromEntries(
           session.map((item) => [item.id, { type: "idle" }]),
         )
@@ -522,6 +542,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             }),
           )
           setStore("agent", reconcile([agent]))
+          setStore("command", reconcile(command))
           setStore("config", reconcile({ share: "disabled" }))
           setStore("session", reconcile(session))
           setStore("session_status", reconcile(status))

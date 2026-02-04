@@ -115,6 +115,8 @@ context/cli-run.txt
 context/cli-run-*.txt
 session_*.json
 
+context/sessions-test/
+
 # Ignore web run files
 web-api-run.txt
 web-api-run-*.txt

@@ -550,6 +550,44 @@ export function Prompt(props: PromptProps) {
     const agent = local.agent.current()
 
     if (sdk.penguin) {
+      if (inputText.startsWith("/")) {
+        const name = inputText.split("\n", 1)[0].slice(1).trim()
+        if (name === "settings") {
+          toast.show({
+            variant: "info",
+            message:
+              "Settings live in opencode.json (project root) or ~/.config/opencode/opencode.json",
+          })
+        } else if (name === "tool_details") {
+          const next = !kv.get("tool_details_visibility", true)
+          kv.set("tool_details_visibility", next)
+        } else if (name === "thinking") {
+          const next = !kv.get("thinking_visibility", true)
+          kv.set("thinking_visibility", next)
+        } else {
+          toast.show({ variant: "warning", message: `Unknown command: /${name}` })
+        }
+        history.append({
+          ...store.prompt,
+          mode: currentMode,
+        })
+        input.extmarks.clear()
+        setStore("prompt", {
+          input: "",
+          parts: [],
+        })
+        setStore("extmarkToPartIndex", new Map())
+        dialog.clear()
+        input.clear()
+        input.setText("")
+        input.getLayoutNode().markDirty()
+        renderer.requestRender()
+        queueMicrotask(() => {
+          setStore("prompt", "input", "")
+        })
+        props.onSubmit?.()
+        return
+      }
       const now = Date.now()
       const user = {
         id: messageID,

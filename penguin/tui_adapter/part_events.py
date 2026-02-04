@@ -88,6 +88,16 @@ class PartEventAdapter:
         self._current_text_part_id: Optional[str] = None
         self._last_id_ts = 0
         self._last_id_inc = 0
+        self._action_active: Optional[str] = None
+        self._action_buffer = ""
+        try:
+            from penguin.utils.parser import ActionType
+
+            self._action_tags = [
+                action_type.value.lower() for action_type in ActionType
+            ]
+        except Exception:
+            self._action_tags = []
         self._filter_re = re.compile(r"</?finish_response\b[^>]*>?", re.IGNORECASE)
 
     def set_session(self, session_id: str):
@@ -108,8 +118,78 @@ class PartEventAdapter:
         stamp = str(ts).rjust(13, "0")
         return f"{prefix}_{stamp}_{self._last_id_inc:02d}"
 
-    def _strip_internal(self, text: str) -> str:
-        return self._filter_re.sub("", text)
+    def _strip_action_tags_keep_whitespace(self, text: str) -> str:
+        if not text:
+            return text
+
+        if not self._action_tags:
+            return text
+
+        combined = f"{self._action_buffer}{text}"
+        self._action_buffer = ""
+        lowered = combined.lower()
+        output: list[str] = []
+        index = 0
+
+        while index < len(combined):
+            if self._action_active:
+                close_token = f"</{self._action_active}>"
+                close_index = lowered.find(close_token, index)
+                if close_index == -1:
+                    tail_len = max(len(close_token) - 1, 0)
+                    if tail_len:
+                        self._action_buffer = combined[-tail_len:]
+                    return "".join(output)
+                index = close_index + len(close_token)
+                self._action_active = None
+                continue
+
+            open_index = combined.find("<", index)
+            if open_index == -1:
+                output.append(combined[index:])
+                return "".join(output)
+
+            output.append(combined[index:open_index])
+            end_index = combined.find(">", open_index + 1)
+            if end_index == -1:
+                fragment = lowered[open_index + 1 :]
+                if fragment.startswith("/"):
+                    fragment = fragment[1:]
+                if any(tag.startswith(fragment) for tag in self._action_tags):
+                    self._action_buffer = combined[open_index:]
+                    return "".join(output)
+                output.append(combined[open_index:])
+                return "".join(output)
+
+            tag_token = lowered[open_index + 1 : end_index].strip()
+            is_close = tag_token.startswith("/")
+            tag_name = tag_token[1:].strip() if is_close else tag_token
+            if tag_name not in self._action_tags:
+                output.append(combined[open_index : end_index + 1])
+                index = end_index + 1
+                continue
+
+            if is_close:
+                index = end_index + 1
+                continue
+
+            close_token = f"</{tag_name}>"
+            close_index = lowered.find(close_token, end_index + 1)
+            if close_index == -1:
+                self._action_active = tag_name
+                tail_len = max(len(close_token) - 1, 0)
+                if tail_len:
+                    self._action_buffer = combined[-tail_len:]
+                return "".join(output)
+
+            index = close_index + len(close_token)
+
+        return "".join(output)
+
+    def _strip_internal(self, text: str, trim: bool = True) -> str:
+        cleaned = self._strip_action_tags_keep_whitespace(text)
+        cleaned = self._filter_re.sub("", cleaned)
+        return cleaned.strip() if trim else cleaned
 
     async def _emit_session_status(self, status_type: str):
         await self._emit(
@@ -131,6 +211,8 @@ class PartEventAdapter:
         Returns:
             Tuple of (message_id, part_id)
         """
+        self._action_active = None
+        self._action_buffer = ""
         message_id = self._next_id("msg")
         reasoning_id = self._next_id("part")
         part_id = self._next_id("part")
@@ -190,7 +272,7 @@ class PartEventAdapter:
         if not part:
             return
 
-        chunk = self._strip_internal(chunk)
+        chunk = self._strip_internal(chunk, trim=False)
         # Handle reasoning content separately
         if message_type == "reasoning":
             if not self._current_reasoning_part_id:
@@ -211,9 +293,7 @@ class PartEventAdapter:
             if not part:
                 return
 
-        part.content["text"] = self._strip_internal(
-            part.content.get("text", "") + chunk
-        )
+        part.content["text"] = f"{part.content.get('text', '')}{chunk}"
         part.delta = chunk
 
         # Emit with delta for streaming
@@ -239,6 +319,8 @@ class PartEventAdapter:
         self._current_message_id = None
         self._current_reasoning_part_id = None
         self._current_text_part_id = None
+        self._action_active = None
+        self._action_buffer = ""
 
     async def on_tool_start(
         self,
