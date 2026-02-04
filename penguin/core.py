@@ -3408,10 +3408,16 @@ class PenguinCore:
         self._current_opencode_part_id: Optional[str] = None
         self._opencode_streaming_active: bool = False
         self._current_stream_id: Optional[str] = None
+        self._opencode_tool_parts: Dict[str, str] = {}
 
         # Store reference to handler so it doesn't get garbage collected
         self._tui_stream_handler = self._on_tui_stream_chunk
         self.event_bus.subscribe("stream_chunk", self._tui_stream_handler)
+
+        self._tui_action_handler = self._on_tui_action
+        self._tui_action_result_handler = self._on_tui_action_result
+        self.event_bus.subscribe("action", self._tui_action_handler)
+        self.event_bus.subscribe("action_result", self._tui_action_result_handler)
 
     async def _on_tui_stream_chunk(self, event_type: str, data: Dict[str, Any]):
         """Handle stream chunk - manages stream lifecycle and emits with delta."""
@@ -3482,6 +3488,77 @@ class PenguinCore:
                     logger.error(f"Failed to finalize OpenCode stream: {e}")
             self._opencode_streaming_active = False
             self._current_stream_id = None
+
+    async def _on_tui_action(self, event_type: str, data: Dict[str, Any]) -> None:
+        if event_type != "action":
+            return
+
+        session_id = (
+            data.get("conversation_id")
+            or data.get("session_id")
+            or data.get("sessionID")
+            or "unknown"
+        )
+        self._tui_adapter.set_session(session_id)
+
+        tool_name = data.get("type") or data.get("action") or "unknown"
+        params = data.get("params")
+        tool_input: Dict[str, Any]
+        if isinstance(params, dict):
+            tool_input = params
+        elif isinstance(params, str) and params.strip().startswith("{"):
+            try:
+                import json
+
+                tool_input = json.loads(params)
+            except Exception:
+                tool_input = {"params": params}
+        else:
+            tool_input = {"params": params}
+
+        call_id = data.get("id") or data.get("call_id") or data.get("callID")
+        if not call_id:
+            call_id = f"call_{int(time.time() * 1000)}"
+
+        part_id = await self._tui_adapter.on_tool_start(
+            tool_name,
+            tool_input,
+            tool_call_id=call_id,
+        )
+        self._opencode_tool_parts[call_id] = part_id
+
+    async def _on_tui_action_result(
+        self, event_type: str, data: Dict[str, Any]
+    ) -> None:
+        if event_type != "action_result":
+            return
+
+        session_id = (
+            data.get("conversation_id")
+            or data.get("session_id")
+            or data.get("sessionID")
+            or "unknown"
+        )
+        self._tui_adapter.set_session(session_id)
+
+        call_id = data.get("id") or data.get("call_id") or data.get("callID")
+        if not call_id:
+            return
+
+        part_id = self._opencode_tool_parts.get(call_id)
+        if not part_id:
+            tool_name = data.get("action") or data.get("type") or "unknown"
+            part_id = await self._tui_adapter.on_tool_start(
+                tool_name,
+                {"params": None},
+                tool_call_id=call_id,
+            )
+            self._opencode_tool_parts[call_id] = part_id
+
+        status = data.get("status")
+        result = data.get("result")
+        error = result if status == "error" else None
+        await self._tui_adapter.on_tool_end(part_id, result, error=error)
 
     # ------------------------------------------------------------------
     # OpenCode TUI Adapter Integration

@@ -199,10 +199,23 @@ Goal: tool events render and persist in history.
 - Emit tool lifecycle events as `message.part.updated` with `type=tool`.
 - Store tool parts in session history for reload.
 - Implement `/session.diff`, `/session.todo` to feed diff/todo widgets.
+- Tool display respects OpenCode user settings (no custom UI overrides).
+- Emit tool parts for all tools, interleaved with assistant streaming.
 
 **Architecture Decision (Phase 3)**
 - Persist tool parts alongside message parts in session history.
 - Translate Penguin tool lifecycle events into OpenCode tool parts.
+- Use `action` + `action_result` events as the canonical tool lifecycle.
+- Tool output rendering is controlled by OpenCode settings.
+
+**Tool Display Bridging (Summary)**
+- Map `action` events to tool parts with `state=running`.
+- Map `action_result` events to the same tool part with `state=completed/error`.
+- Use `action.id` as `callID` and as the tool part correlation key.
+- Attach tool parts to the current assistant message; if none, create one.
+- Interleave tool parts with the streaming message that triggered them.
+
+For the exact mapping, see `context/architecture/tui-opencode-tool-bridge.md`.
 
 ### Phase 4: Permissions + questions
 Goal: approvals and user questions behave like OpenCode.

@@ -583,19 +583,6 @@ export function Prompt(props: PromptProps) {
         type: "message.part.updated",
         properties: { part, delta: inputText },
       })
-      const url = new URL("/api/v1/chat/message", sdk.url)
-      fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text: inputText,
-          session_id: sessionID,
-          streaming: true,
-          client_message_id: messageID,
-        }),
-      }).catch(() => {})
       history.append({
         ...store.prompt,
         mode: currentMode,
@@ -615,6 +602,19 @@ export function Prompt(props: PromptProps) {
         setStore("prompt", "input", "")
       })
       props.onSubmit?.()
+      const url = new URL("/api/v1/chat/message", sdk.url)
+      fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text: inputText,
+          session_id: sessionID,
+          streaming: true,
+          client_message_id: messageID,
+        }),
+      }).catch(() => {})
       return
     }
 
