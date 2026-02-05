@@ -3409,6 +3409,7 @@ class PenguinCore:
         self._opencode_streaming_active: bool = False
         self._current_stream_id: Optional[str] = None
         self._opencode_tool_parts: Dict[str, str] = {}
+        self._opencode_tool_info: Dict[str, Dict[str, Any]] = {}
 
         # Store reference to handler so it doesn't get garbage collected
         self._tui_stream_handler = self._on_tui_stream_chunk
@@ -3489,6 +3490,199 @@ class PenguinCore:
             self._opencode_streaming_active = False
             self._current_stream_id = None
 
+    def _strip_diff_fences(self, diff_content: str) -> str:
+        if not diff_content:
+            return diff_content
+        stripped = diff_content.strip()
+        if not stripped.startswith("```"):
+            return diff_content
+        lines = stripped.splitlines()
+        if len(lines) < 2:
+            return diff_content
+        if not lines[-1].startswith("```"):
+            return diff_content
+        return "\n".join(lines[1:-1])
+
+    def _ensure_unified_diff(self, file_path: str, diff_content: str) -> str:
+        if not diff_content:
+            return diff_content
+        cleaned = self._strip_diff_fences(diff_content)
+        stripped = cleaned.lstrip()
+        if stripped.startswith("--- ") or stripped.startswith("*** "):
+            return cleaned
+        rel = (file_path or "").lstrip("./")
+        if not rel:
+            return cleaned
+        header = f"--- a/{rel}\n+++ b/{rel}\n"
+        body = cleaned.lstrip("\n")
+        return f"{header}{body}"
+
+    def _map_action_to_tool(
+        self, action: str, params: Any
+    ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+        action_name = (action or "").strip().lower()
+        tool_input: Dict[str, Any] = {}
+        metadata: Dict[str, Any] = {}
+        raw = params if isinstance(params, str) else ""
+        if isinstance(params, dict):
+            raw = (
+                params.get("code")
+                or params.get("command")
+                or params.get("params")
+                or ""
+            )
+
+        if action_name == "execute":
+            tool_input = {"command": raw, "description": "IPython"}
+            return "bash", tool_input, metadata
+
+        if action_name == "execute_command":
+            tool_input = {"command": raw, "description": "Shell"}
+            return "bash", tool_input, metadata
+
+        if action_name == "apply_diff":
+            if isinstance(params, dict):
+                file_path = params.get("file_path") or params.get("path") or ""
+                diff_content = params.get("diff_content") or params.get("diff") or ""
+            else:
+                first_sep = raw.find(":")
+                if first_sep != -1:
+                    file_path = raw[:first_sep].strip()
+                    remainder = raw[first_sep + 1 :]
+                else:
+                    file_path = ""
+                    remainder = raw
+                diff_content = remainder
+                if ":" in remainder:
+                    diff_part, flag = remainder.rsplit(":", 1)
+                    flag_stripped = flag.strip().lower()
+                    if (
+                        flag_stripped in {"true", "false"}
+                        and "\n" not in flag
+                        and "\r" not in flag
+                    ):
+                        diff_content = diff_part
+            tool_input = {"filePath": file_path}
+            metadata["diff"] = self._ensure_unified_diff(file_path, diff_content)
+            return "edit", tool_input, metadata
+
+        if action_name == "replace_lines":
+            if isinstance(params, dict):
+                path = params.get("path") or params.get("file_path") or ""
+                start_line = params.get("start_line")
+                end_line = params.get("end_line")
+                tool_input = {"filePath": path}
+                if isinstance(start_line, int):
+                    tool_input["startLine"] = start_line
+                if isinstance(end_line, int):
+                    tool_input["endLine"] = end_line
+            else:
+                parts = raw.split(":", 3)
+                if len(parts) >= 4:
+                    path = parts[0].strip()
+                    try:
+                        start_line = int(parts[1].strip())
+                        end_line = int(parts[2].strip())
+                        tool_input = {
+                            "filePath": path,
+                            "startLine": start_line,
+                            "endLine": end_line,
+                        }
+                    except ValueError:
+                        tool_input = {"filePath": path}
+            return "edit", tool_input, metadata
+
+        if action_name == "edit_with_pattern":
+            if isinstance(params, dict):
+                tool_input = {
+                    "filePath": params.get("file_path") or params.get("path") or "",
+                    "pattern": params.get("search_pattern") or params.get("pattern"),
+                    "replacement": params.get("replacement"),
+                }
+            else:
+                content = raw
+                parts = raw.rsplit(":", 1)
+                if len(parts) == 2 and parts[1].strip().lower() in ("true", "false"):
+                    content = parts[0]
+                fields = content.split(":", 2)
+                if len(fields) >= 3:
+                    tool_input = {
+                        "filePath": fields[0].strip(),
+                        "pattern": fields[1],
+                        "replacement": fields[2],
+                    }
+            return "edit", tool_input, metadata
+
+        if action_name == "enhanced_read":
+            if isinstance(params, dict):
+                tool_input = {
+                    "filePath": params.get("path") or params.get("filePath") or ""
+                }
+                if params.get("max_lines") is not None:
+                    tool_input["limit"] = params.get("max_lines")
+            else:
+                parts = raw.split(":")
+                path = parts[0].strip() if parts and parts[0].strip() else ""
+                limit = (
+                    int(parts[2].strip())
+                    if len(parts) > 2 and parts[2].strip().isdigit()
+                    else None
+                )
+                tool_input = {"filePath": path}
+                if limit is not None:
+                    tool_input["limit"] = limit
+            return "read", tool_input, metadata
+
+        if action_name == "list_files_filtered":
+            if isinstance(params, dict):
+                tool_input = {
+                    "path": params.get("path") or params.get("directory") or "."
+                }
+            else:
+                parts = raw.split(":")
+                path = parts[0].strip() if parts and parts[0].strip() else "."
+                tool_input = {"path": path}
+            return "list", tool_input, metadata
+
+        if action_name == "find_files_enhanced":
+            if isinstance(params, dict):
+                tool_input = {
+                    "pattern": params.get("pattern") or params.get("filename") or "",
+                    "path": params.get("search_path") or params.get("path") or ".",
+                }
+            else:
+                parts = raw.split(":")
+                pattern = parts[0].strip() if parts and parts[0].strip() else ""
+                search_path = (
+                    parts[1].strip() if len(parts) > 1 and parts[1].strip() else "."
+                )
+                tool_input = {"pattern": pattern, "path": search_path}
+            return "glob", tool_input, metadata
+
+        if action_name == "search":
+            if isinstance(params, dict):
+                tool_input = {
+                    "pattern": params.get("pattern") or params.get("query") or ""
+                }
+            else:
+                tool_input = {"pattern": raw}
+            return "grep", tool_input, metadata
+
+        if isinstance(params, dict):
+            tool_input = params
+        else:
+            tool_input = {"params": params}
+        return action_name or "unknown", tool_input, metadata
+
+    def _map_action_result_metadata(
+        self, action: str, result: Any, existing: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        metadata = dict(existing or {})
+        action_name = (action or "").strip().lower()
+        if action_name in {"execute", "execute_command"}:
+            metadata.setdefault("output", "" if result is None else str(result))
+        return metadata
+
     async def _on_tui_action(self, event_type: str, data: Dict[str, Any]) -> None:
         if event_type != "action":
             return
@@ -3503,29 +3697,33 @@ class PenguinCore:
 
         tool_name = data.get("type") or data.get("action") or "unknown"
         params = data.get("params")
-        tool_input: Dict[str, Any]
-        if isinstance(params, dict):
-            tool_input = params
-        elif isinstance(params, str) and params.strip().startswith("{"):
+        if isinstance(params, str) and params.strip().startswith("{"):
             try:
                 import json
 
-                tool_input = json.loads(params)
+                params = json.loads(params)
             except Exception:
-                tool_input = {"params": params}
-        else:
-            tool_input = {"params": params}
+                pass
+
+        mapped_tool, tool_input, metadata = self._map_action_to_tool(tool_name, params)
 
         call_id = data.get("id") or data.get("call_id") or data.get("callID")
         if not call_id:
             call_id = f"call_{int(time.time() * 1000)}"
 
         part_id = await self._tui_adapter.on_tool_start(
-            tool_name,
+            mapped_tool,
             tool_input,
             tool_call_id=call_id,
+            metadata=metadata,
         )
         self._opencode_tool_parts[call_id] = part_id
+        self._opencode_tool_info[call_id] = {
+            "tool": mapped_tool,
+            "input": tool_input,
+            "metadata": metadata,
+            "action": tool_name,
+        }
 
     async def _on_tui_action_result(
         self, event_type: str, data: Dict[str, Any]
@@ -3545,20 +3743,35 @@ class PenguinCore:
         if not call_id:
             return
 
+        info = self._opencode_tool_info.get(call_id, {})
         part_id = self._opencode_tool_parts.get(call_id)
+        action_name = (
+            data.get("action") or data.get("type") or info.get("action") or "unknown"
+        )
         if not part_id:
-            tool_name = data.get("action") or data.get("type") or "unknown"
+            mapped_tool, tool_input, metadata = self._map_action_to_tool(
+                action_name, {}
+            )
             part_id = await self._tui_adapter.on_tool_start(
-                tool_name,
-                {"params": None},
+                mapped_tool,
+                tool_input,
                 tool_call_id=call_id,
+                metadata=metadata,
             )
             self._opencode_tool_parts[call_id] = part_id
+            info = {"tool": mapped_tool, "input": tool_input, "metadata": metadata}
 
         status = data.get("status")
         result = data.get("result")
         error = result if status == "error" else None
-        await self._tui_adapter.on_tool_end(part_id, result, error=error)
+        merged_meta = self._map_action_result_metadata(
+            action_name,
+            result,
+            info.get("metadata") if isinstance(info, dict) else None,
+        )
+        await self._tui_adapter.on_tool_end(
+            part_id, result, error=error, metadata=merged_meta
+        )
 
     # ------------------------------------------------------------------
     # OpenCode TUI Adapter Integration

@@ -327,6 +327,7 @@ class PartEventAdapter:
         tool_name: str,
         tool_input: Dict[str, Any],
         tool_call_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Called when a tool starts executing.
 
@@ -342,6 +343,15 @@ class PartEventAdapter:
         part_id = self._next_id("part")
         call_id = tool_call_id or self._next_id("call")
 
+        start_time = int(time.time() * 1000)
+        state: Dict[str, Any] = {
+            "status": "running",
+            "input": tool_input or {},
+            "time": {"start": start_time},
+        }
+        if metadata:
+            state["metadata"] = metadata
+
         tool_part = Part(
             id=part_id,
             message_id=message_id,
@@ -350,9 +360,7 @@ class PartEventAdapter:
             content={
                 "callID": call_id,
                 "tool": tool_name,
-                "input": tool_input,
-                "state": "running",
-                "output": None,
+                "state": state,
             },
         )
         self._active_parts[part_id] = tool_part
@@ -362,16 +370,51 @@ class PartEventAdapter:
         )
         return part_id
 
-    async def on_tool_end(self, part_id: str, output: Any, error: Optional[str] = None):
+    async def on_tool_end(
+        self,
+        part_id: str,
+        output: Any,
+        error: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
         """Called when a tool finishes executing."""
         part = self._active_parts.get(part_id)
         if not part:
             return
 
-        part.content["state"] = "error" if error else "completed"
-        part.content["output"] = output
+        now = int(time.time() * 1000)
+        existing_state = part.content.get("state")
+        input_data: Dict[str, Any] = {}
+        start_time = now
+        existing_meta: Dict[str, Any] = {}
+        if isinstance(existing_state, dict):
+            existing_input = existing_state.get("input")
+            if isinstance(existing_input, dict):
+                input_data = existing_input
+            time_data = existing_state.get("time")
+            if isinstance(time_data, dict) and isinstance(time_data.get("start"), int):
+                start_time = time_data["start"]
+            meta_data = existing_state.get("metadata")
+            if isinstance(meta_data, dict):
+                existing_meta = meta_data
+
+        merged_meta = dict(existing_meta)
+        if metadata:
+            merged_meta.update(metadata)
+
+        new_state: Dict[str, Any] = {
+            "status": "error" if error else "completed",
+            "input": input_data,
+            "time": {"start": start_time, "end": now},
+        }
         if error:
-            part.content["error"] = error
+            new_state["error"] = error
+        else:
+            new_state["output"] = output
+        if merged_meta:
+            new_state["metadata"] = merged_meta
+
+        part.content["state"] = new_state
 
         await self._emit("message.part.updated", {"part": self._part_to_dict(part)})
 

@@ -215,6 +215,17 @@ Goal: tool events render and persist in history.
 - Attach tool parts to the current assistant message; if none, create one.
 - Interleave tool parts with the streaming message that triggered them.
 
+**Action-to-Tool Mapping (Initial)**
+- `execute` -> `bash` (temporary; reuse Bash card for IPython output).
+- `execute_command` -> `bash`.
+- `apply_diff` -> `edit` (diff rendered via `metadata.diff`).
+- `replace_lines` -> `edit` (inline until diff generation added).
+- `edit_with_pattern` -> `edit` (inline until diff generation added).
+- `enhanced_read` -> `read`.
+- `list_files_filtered` -> `list`.
+- `find_files_enhanced` -> `glob`.
+- `search` -> `grep`.
+
 For the exact mapping, see `context/architecture/tui-opencode-tool-bridge.md`.
 
 ### Phase 4: Permissions + questions
