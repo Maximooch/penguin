@@ -1,0 +1,108 @@
+version: '3.9'
+
+services:
+  # Penguin Web API
+  penguin:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+      args:
+        INSTALL_MODE: local
+    ports:
+      - "8000:8000"
+    environment:
+      - PENGUIN_DEFAULT_MODEL=deepseek/deepseek-v3.2-exp
+      - PENGUIN_DEFAULT_PROVIDER=openrouter
+      - PENGUIN_CLIENT_PREFERENCE=openrouter
+      - PENGUIN_CORS_ORIGINS=*
+      - PENGUIN_DEBUG=1
+      - PENGUIN_WORKSPACE=/workspace
+    env_file:
+      - .env
+    volumes:
+      - ./workspace:/workspace
+      - ./penguin:/app/penguin:ro
+    networks:
+      - penguin-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.penguin.rule=Host(`penguin.localhost`)"
+      - "traefik.http.services.penguin.loadbalancer.server.port=8000"
+      - "traefik.http.routers.penguin.middlewares=cors-headers"
+
+  # Traefik Gateway (local)
+  gateway:
+    image: traefik:v3.0
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"
+    volumes:
+      - ./deploy/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - penguin-net
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+
+  # Redis (for future: caching, sessions)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - penguin-net
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # PostgreSQL (for future: projects DB, if needed)
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=penguin
+      - POSTGRES_PASSWORD=penguin
+      - POSTGRES_DB=penguin
+    networks:
+      - penguin-net
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U penguin"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Jaeger (tracing, optional)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - penguin-net
+
+networks:
+  penguin-net:
+    driver: bridge
+
+volumes:
+  redis-data:
+  postgres-data:

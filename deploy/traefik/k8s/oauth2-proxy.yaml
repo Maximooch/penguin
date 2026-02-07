@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oauth2-proxy
+  namespace: penguin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oauth2-proxy
+  template:
+    metadata:
+      labels:
+        app: oauth2-proxy
+    spec:
+      containers:
+        - name: oauth2-proxy
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.5.1
+          ports:
+            - containerPort: 4181
+          args:
+            - --provider=oidc
+            - --email-domain=*
+            - --upstream=http://penguin-web:80
+            - --http-address=0.0.0.0:4181
+            - --cookie-secret=$(COOKIE_SECRET)
+            - --cookie-secure=true
+            - --cookie-expire=24h
+            - --cookie-refresh=1h
+            - --skip-provider-button=true
+          env:
+            - name: OAUTH2_PROXY_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: OAUTH2_CLIENT_ID
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: OAUTH2_CLIENT_SECRET
+            - name: OAUTH2_PROXY_OIDC_ISSUER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: OAUTH2_ISSUER_URL
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-secrets
+                  key: COOKIE_SECRET
+            - name: OAUTH2_PROXY_REDIRECT_URL
+              value: "https://api.penguin.example.com/oauth2/callback"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oauth2-proxy
+  namespace: penguin
+spec:
+  selector:
+    app: oauth2-proxy
+  ports:
+    - protocol: TCP
+      port: 4181
+      targetPort: 4181

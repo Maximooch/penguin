@@ -1,0 +1,20 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: penguin-api
+  namespace: penguin
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`api.penguin.example.com`)
+      kind: Rule
+      middlewares:
+        - name: penguin-auth
+        - name: penguin-ratelimit
+        - name: penguin-headers
+      services:
+        - name: penguin-web
+          port: 80
+  tls:
+    certResolver: letsencrypt

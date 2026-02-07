@@ -9,4 +9,10 @@ resources:
   - deployment.yaml
   - service.yaml
   - ingress.example.yaml
-
+  - ../traefik/k8s/ingressroute.yaml
+  - ../traefik/k8s/middleware-auth.yaml
+  - ../traefik/k8s/middleware-ratelimit.yaml
+  - ../traefik/k8s/middleware-headers.yaml
+  - ../traefik/k8s/networkpolicy.yaml
+  - ../traefik/k8s/oauth2-proxy.yaml
+  - ../traefik/k8s/hpa.yaml
