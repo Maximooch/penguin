@@ -177,6 +177,11 @@ The TUI expects these events to drive UI state:
 **Cross-cutting principle**
 - Where OpenCode implements a more reliable or clearer workflow than Penguin, prefer updating Penguin to match OpenCode behavior (e.g., tool metadata shapes, diff rendering, session envelopes).
 
+**Refactor strategy (agreed)**
+- Prefer direct refactors in core Penguin modules and existing web routes when the work is broadly useful.
+- Keep OpenCode compatibility as schema/adapter logic in shared services, not as a separate product surface by default.
+- Introduce a dedicated compatibility router only for truly OpenCode-only endpoint semantics that do not improve Penguin’s native API.
+
 ## Progress Snapshot (Phases)
 - Phase 0 (Streaming + animation parity): **mostly complete**.
 - Phase 1 (Session list + metadata): **partial**.
@@ -283,9 +288,10 @@ Goal: the remaining system widgets populate correctly.
 
 ## Backend Work Items (Penguin)
 
-1) **OpenCode compatibility router**
-   - Create a new router under `penguin/web/opencode_routes.py`.
-   - Expose OpenCode-compatible endpoints (`/session`, `/provider`, `/config`, etc.).
+1) **Route + service refactor (preferred)**
+   - Refactor existing `penguin/web/routes.py` into focused service modules.
+   - Add OpenCode-compatible payload adapters in shared service layer.
+   - Keep endpoint aliases only where naming compatibility is required.
 
 2) **Event mapping layer**
    - Extend `tui_adapter` to emit full OpenCode event set.
@@ -320,7 +326,7 @@ For each phase, validate with:
 
 ### Track A: Stabilize Existing Work
 - [ ] A1. Persist tool parts in session history and replay them in `/session.messages`.
-  - Owner: `penguin/tui_adapter/part_events.py`, `penguin/web/opencode_routes.py` (or equivalent session route layer), `ConversationManager` storage adapters.
+  - Owner: `penguin/tui_adapter/part_events.py`, `penguin/web/routes.py` + new `penguin/web/services/session_view.py`, `ConversationManager` storage adapters.
   - Acceptance: reload shows identical tool cards/order as live run.
 - [ ] A2. Extend action-to-tool mapping coverage for remaining common actions.
   - Owner: `penguin/core.py` mapping helpers.
@@ -329,20 +335,20 @@ For each phase, validate with:
   - Owner: `penguin/core.py` mapper + `penguin/tools/core/support.py` helpers.
   - Acceptance: these actions render block diff views in OpenCode TUI.
 
-### Track B: OpenCode API Compatibility Router
-- [ ] B1. Add compatibility router scaffold for OpenCode operation IDs.
-  - Owner: `penguin/web/opencode_routes.py` + `penguin/web/app.py` route registration.
-  - Acceptance: route table includes session/config/provider/lsp/formatter/path/vcs endpoints used by TUI.
+### Track B: API/Service Refactor (No dedicated compatibility router by default)
+- [ ] B1. Split `penguin/web/routes.py` by concern (session/config/system/status) with shared service modules.
+  - Owner: `penguin/web/routes.py`, `penguin/web/app.py`, `penguin/web/services/*`.
+  - Acceptance: route handlers are thin and business logic is testable in services.
 - [ ] B2. Implement `session.list`, `session.get`, `session.messages` with OpenCode-shaped payloads.
-  - Owner: `ConversationManager` + route adapters.
+  - Owner: `ConversationManager` + `penguin/web/services/session_view.py` adapters.
   - Acceptance: TUI loads sessions and history without Penguin-mode-only shims.
 - [ ] B3. Implement `session.status`, `session.update`, `session.delete`, `session.create`.
-  - Owner: web routes + `ConversationManager`.
+  - Owner: web routes + `ConversationManager` + service adapters.
   - Acceptance: create/rename/delete session flows work from TUI.
 
 ### Track C: Settings / Provider / Model UX
 - [ ] C1. Implement `config.get` with runtime config + reasoning + active model metadata.
-  - Owner: `penguin/web/opencode_routes.py`, `core.runtime_config`, model config adapters.
+  - Owner: `penguin/web/routes.py`, `core.runtime_config`, model config adapters.
   - Acceptance: settings panel reflects current values and capabilities.
 - [ ] C2. Implement `config.providers` and `provider.list` mapped from Penguin model configs.
   - Owner: `penguin/config`, `penguin/llm/model_config.py`, route adapters.
@@ -353,7 +359,7 @@ For each phase, validate with:
 
 ### Track D: Diffs, Files Sidebar, VCS
 - [ ] D1. Implement `vcs.get` with real git-backed branch + dirty status.
-  - Owner: `penguin/web/opencode_routes.py` + lightweight git adapter utility.
+  - Owner: `penguin/web/routes.py` + lightweight git adapter utility.
   - Acceptance: sidebar shows branch and updates after branch switch.
 - [ ] D2. Implement `session.diff` using persisted snapshots/tool outputs and/or git diff.
   - Owner: conversation persistence + route adapters.
@@ -396,7 +402,7 @@ For each phase, validate with:
   - Acceptance: OpenCode MCP dialog can connect/disconnect providers.
 
 ### Session + messages
-- `session.list({ start, search, limit })` -> `penguin/web/opencode_routes.py` using `ConversationManager` for list/metadata.
+- `session.list({ start, search, limit })` -> `penguin/web/routes.py` + `penguin/web/services/session_view.py` using `ConversationManager` for list/metadata.
   - Response: `{ sessions: [{ id, title, time, summary?, agent?, model?, tags? }] }`
 - `session.get({ sessionID })` -> `ConversationManager.get_session(session_id)`.
   - Response: `{ session: { id, title, time, model, provider, agent, status } }`
@@ -459,3 +465,8 @@ For each phase, validate with:
 
 ### MCP (defer)
 - `mcp.status/connect/disconnect` -> optional; can remain stubbed until LSP/VCS are stable.
+
+## Router Decision Rules
+- Use existing route modules + shared services for improvements that benefit Penguin broadly.
+- Add a dedicated compatibility router only if OpenCode-specific endpoint names/shapes would otherwise pollute core Penguin APIs.
+- Prefer adapter functions over duplicate business logic.
