@@ -20,20 +20,23 @@ from penguin.system_prompt import SYSTEM_PROMPT
 from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
 from penguin.constants import get_engine_max_iterations_default
+from penguin.web.services.system_status import start_vcs_watcher, stop_vcs_watcher
 
 logger = logging.getLogger(__name__)
 
 # Global core instance for reuse
 _core_instance: Optional[PenguinCore] = None
 
+
 def get_or_create_core() -> PenguinCore:
     """Get the global core instance or create it if it doesn't exist."""
     global _core_instance
-    
+
     if _core_instance is None:
         _core_instance = _create_core()
-    
+
     return _core_instance
+
 
 def _create_core() -> PenguinCore:
     """Create a new PenguinCore instance with proper configuration."""
@@ -49,20 +52,20 @@ def _create_core() -> PenguinCore:
         api_client = APIClient(model_config=model_config)
         api_client.set_system_prompt(SYSTEM_PROMPT)
         # Pass a stable dict derived from live Config
-        config_dict = config_obj.to_dict() if hasattr(config_obj, 'to_dict') else {}
+        config_dict = config_obj.to_dict() if hasattr(config_obj, "to_dict") else {}
         tool_manager = ToolManager(config_dict, log_error)
 
         # Create core with proper Config object
         core = PenguinCore(
             config=config_obj,
-            api_client=api_client, 
-            tool_manager=tool_manager, 
-            model_config=model_config
+            api_client=api_client,
+            tool_manager=tool_manager,
+            model_config=model_config,
         )
-        
+
         logger.info("PenguinCore initialized successfully for web interface")
         return core
-        
+
     except Exception as e:
         logger.error(f"Failed to initialize PenguinCore: {str(e)}")
         raise
@@ -92,9 +95,17 @@ def create_app() -> "FastAPI":
     async def lifespan(app: "FastAPI"):
         # Startup
         logger.info("Penguin web application starting up...")
+        try:
+            start_vcs_watcher(get_or_create_core())
+        except Exception:
+            logger.debug("Unable to start VCS watcher", exc_info=True)
         yield
         # Shutdown: close connection pools
         logger.info("Penguin web application shutting down...")
+        try:
+            await stop_vcs_watcher()
+        except Exception:
+            logger.debug("Unable to stop VCS watcher", exc_info=True)
         try:
             pool = ConnectionPoolManager.get_instance()
             await pool.close_all()
@@ -108,7 +119,7 @@ def create_app() -> "FastAPI":
         description="AI Assistant with reasoning, memory, and tool use capabilities",
         version=__version__,
         docs_url="/api/docs",
-        redoc_url="/api/redoc"
+        redoc_url="/api/redoc",
     )
 
     # Configure CORS
@@ -129,12 +140,15 @@ def create_app() -> "FastAPI":
     # Initialize core and attach to router
     core = get_or_create_core()
     try:
-        logger.info("Model configs loaded: %s", list((getattr(core.config, "model_configs", {}) or {}).keys()))
+        logger.info(
+            "Model configs loaded: %s",
+            list((getattr(core.config, "model_configs", {}) or {}).keys()),
+        )
     except Exception:
         logger.info("Model configs loaded: unknown")
     router.core = core
     github_webhook_router.core = core
-    
+
     # Set core for SSE router
     set_core_instance(core)
 
@@ -148,9 +162,15 @@ def create_app() -> "FastAPI":
         from penguin.integrations.mcp.server import MCPServer  # type: ignore
         from penguin.integrations.mcp.http_server import get_router as get_mcp_router  # type: ignore
 
-        mcp_conf: Dict[str, Any] = config.get("mcp", {}) if isinstance(config, dict) else {}
-        srv_conf: Dict[str, Any] = mcp_conf.get("server", {}) if isinstance(mcp_conf, dict) else {}
-        http_conf: Dict[str, Any] = srv_conf.get("http", {}) if isinstance(srv_conf, dict) else {}
+        mcp_conf: Dict[str, Any] = (
+            config.get("mcp", {}) if isinstance(config, dict) else {}
+        )
+        srv_conf: Dict[str, Any] = (
+            mcp_conf.get("server", {}) if isinstance(mcp_conf, dict) else {}
+        )
+        http_conf: Dict[str, Any] = (
+            srv_conf.get("http", {}) if isinstance(srv_conf, dict) else {}
+        )
         # Register remote MCP servers as virtual tools (client bridge)
         servers_conf = mcp_conf.get("servers") if isinstance(mcp_conf, dict) else None
         if isinstance(servers_conf, list) and servers_conf:
@@ -174,7 +194,11 @@ def create_app() -> "FastAPI":
                 deny=deny_patterns,
                 confirm_required_write=True,
             )
-            oauth2_conf = http_conf.get("oauth2") if isinstance(http_conf.get("oauth2"), dict) else None
+            oauth2_conf = (
+                http_conf.get("oauth2")
+                if isinstance(http_conf.get("oauth2"), dict)
+                else None
+            )
             app.include_router(get_mcp_router(mcp_server, oauth2=oauth2_conf))
     except Exception:
         # MCP is optional; proceed silently if unavailable
@@ -184,7 +208,7 @@ def create_app() -> "FastAPI":
     static_dir = Path(__file__).parent / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-        
+
         @app.get("/")
         async def read_root():
             """Serve the main web UI."""
@@ -201,6 +225,7 @@ def create_app() -> "FastAPI":
                 return FileResponse(str(dashboard_path))
             return {"message": "Dashboard not found."}
     else:
+
         @app.get("/")
         async def api_root():
             """API root endpoint with service information."""
@@ -215,14 +240,14 @@ def create_app() -> "FastAPI":
                     "redoc": "/api/redoc",
                     "chat": "/api/v1/chat/message",
                     "conversations": "/api/v1/conversations",
-                    "health": "/api/v1/health"
+                    "health": "/api/v1/health",
                 },
                 "features": [
                     "Multi-turn conversations",
                     "Memory and context management",
                     "Tool and action execution",
                     "Project and task management",
-                    "WebSocket streaming"
+                    "WebSocket streaming",
                 ],
                 "capabilities": capabilities,
             }
@@ -232,10 +257,10 @@ def create_app() -> "FastAPI":
 
 class PenguinAPI:
     """Programmatic API interface for Penguin.
-    
+
     This class provides a convenient way to interact with Penguin programmatically
     from other Python applications without going through the HTTP API.
-    
+
     Example:
         ```python
         api = PenguinAPI()
@@ -243,16 +268,16 @@ class PenguinAPI:
         print(response["assistant_response"])
         ```
     """
-    
+
     def __init__(self, core: Optional[PenguinCore] = None):
         """Initialize the API interface.
-        
+
         Args:
             core: Optional PenguinCore instance. If not provided, a global instance will be used.
         """
         self.core = core or get_or_create_core()
         logger.info("PenguinAPI interface initialized")
-    
+
     async def chat(
         self,
         message: str,
@@ -265,10 +290,10 @@ class PenguinAPI:
         include_reasoning: bool = False,
     ) -> Dict[str, Any]:
         """Send a chat message and get a response.
-        
+
         This method now uses the conversational `run_response` engine for a more
         natural multi-turn chat experience.
-        
+
         Args:
             message: The message to send
             conversation_id: Optional conversation ID to continue an existing conversation
@@ -276,7 +301,7 @@ class PenguinAPI:
             tools_enabled: Whether to enable tool use (currently respected by Engine)
             streaming: Whether to use streaming for responses
             max_iterations: The maximum number of conversational turns (default from config).
-            
+
         Returns:
             Dictionary containing the response and any action results
         """
@@ -287,7 +312,7 @@ class PenguinAPI:
                 return {
                     "error": "Engine not available",
                     "assistant_response": "The core Engine is not available for processing.",
-                    "action_results": []
+                    "action_results": [],
                 }
 
             input_data: Dict[str, Any] = {"text": message}
@@ -299,7 +324,10 @@ class PenguinAPI:
             stream_callback: Optional[Callable[[str, str], Awaitable[None]]] = None
 
             if effective_streaming:
-                async def _forward_chunk(chunk: str, message_type: str = "assistant") -> None:
+
+                async def _forward_chunk(
+                    chunk: str, message_type: str = "assistant"
+                ) -> None:
                     if include_reasoning and message_type == "reasoning" and chunk:
                         reasoning_chunks.append(chunk)
                     if on_chunk:
@@ -313,8 +341,12 @@ class PenguinAPI:
                                 await on_chunk(chunk)  # type: ignore[misc]
                             else:
                                 await asyncio.to_thread(on_chunk, chunk)
-                        except Exception as cb_err:  # pragma: no cover - defensive logging
-                            logger.warning("PenguinAPI chat on_chunk callback failed: %s", cb_err)
+                        except (
+                            Exception
+                        ) as cb_err:  # pragma: no cover - defensive logging
+                            logger.warning(
+                                "PenguinAPI chat on_chunk callback failed: %s", cb_err
+                            )
 
                 stream_callback = _forward_chunk
 
@@ -333,11 +365,7 @@ class PenguinAPI:
 
         except Exception as e:
             logger.error(f"Error in chat API: {str(e)}")
-            return {
-                "error": str(e),
-                "assistant_response": "",
-                "action_results": []
-            }
+            return {"error": str(e), "assistant_response": "", "action_results": []}
 
     async def stream_chat(
         self,
@@ -352,7 +380,7 @@ class PenguinAPI:
 
         async def _on_chunk(chunk: str, message_type: str = "assistant") -> None:
             await queue.put((message_type, chunk))
-        
+
         if max_iterations is None:
             max_iterations = get_engine_max_iterations_default()
 
@@ -380,26 +408,28 @@ class PenguinAPI:
             runner_task.cancel()
             with suppress(asyncio.CancelledError):
                 await runner_task
-    
+
     async def create_conversation(self, name: Optional[str] = None) -> str:
         """Create a new conversation.
-        
+
         Args:
             name: Optional name for the conversation
-            
+
         Returns:
             The conversation ID
         """
         try:
-            conversation_id = await self.core.conversation_manager.create_conversation(name)
+            conversation_id = await self.core.conversation_manager.create_conversation(
+                name
+            )
             return conversation_id
         except Exception as e:
             logger.error(f"Error creating conversation: {str(e)}")
             raise
-    
+
     async def list_conversations(self) -> List[Dict[str, Any]]:
         """List all conversations.
-        
+
         Returns:
             List of conversation summaries
         """
@@ -409,40 +439,44 @@ class PenguinAPI:
         except Exception as e:
             logger.error(f"Error listing conversations: {str(e)}")
             raise
-    
-    async def get_conversation_history(self, conversation_id: str) -> List[Dict[str, Any]]:
+
+    async def get_conversation_history(
+        self, conversation_id: str
+    ) -> List[Dict[str, Any]]:
         """Get the message history for a conversation.
-        
+
         Args:
             conversation_id: The conversation ID
-            
+
         Returns:
             List of messages in the conversation
         """
         try:
             # Switch to the conversation
             await self.core.conversation_manager.switch_conversation(conversation_id)
-            
+
             # Get the formatted messages
-            messages = self.core.conversation_manager.conversation.get_formatted_messages()
+            messages = (
+                self.core.conversation_manager.conversation.get_formatted_messages()
+            )
             return messages
         except Exception as e:
             logger.error(f"Error getting conversation history: {str(e)}")
             raise
-    
+
     async def run_task(
-        self, 
-        task_description: str, 
+        self,
+        task_description: str,
         max_iterations: Optional[int] = None,
-        project_id: Optional[str] = None
+        project_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run a task using the engine.
-        
+
         Args:
             task_description: Description of the task to run
             max_iterations: Maximum number of iterations
             project_id: Optional project ID to associate the task with
-            
+
         Returns:
             Dictionary containing task execution results
         """
@@ -450,7 +484,7 @@ class PenguinAPI:
             result = await self.core.engine.run_task(
                 task_prompt=task_description,
                 max_iterations=max_iterations,
-                task_context={"project_id": project_id} if project_id else None
+                task_context={"project_id": project_id} if project_id else None,
             )
             return result
         except Exception as e:
@@ -459,12 +493,12 @@ class PenguinAPI:
                 "error": str(e),
                 "assistant_response": "",
                 "iterations": 0,
-                "status": "error"
+                "status": "error",
             }
-    
+
     def get_health(self) -> Dict[str, Any]:
         """Get health status of the API.
-        
+
         Returns:
             Health status information
         """
@@ -472,12 +506,15 @@ class PenguinAPI:
             return {
                 "status": "healthy",
                 "core_initialized": self.core is not None,
-                "api_client_ready": self.core.api_client is not None if self.core else False,
-                "tool_manager_ready": self.core.tool_manager is not None if self.core else False,
-                "conversation_manager_ready": self.core.conversation_manager is not None if self.core else False
+                "api_client_ready": self.core.api_client is not None
+                if self.core
+                else False,
+                "tool_manager_ready": self.core.tool_manager is not None
+                if self.core
+                else False,
+                "conversation_manager_ready": self.core.conversation_manager is not None
+                if self.core
+                else False,
             }
         except Exception as e:
-            return {
-                "status": "unhealthy",
-                "error": str(e)
-            } 
+            return {"status": "unhealthy", "error": str(e)}

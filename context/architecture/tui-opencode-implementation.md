@@ -31,6 +31,7 @@ Rationale:
 - Added shared web service module for system status (`penguin/web/services/system_status.py`) to keep routes thin.
 - `vcs.get` now includes real branch + dirty + ahead/behind fields.
 - `vcs.branch.updated` now emits via event bus on branch changes detected during VCS status reads.
+- Background VCS watcher is enabled in web app lifespan to emit branch updates proactively.
 - File-modifying action paths now emit `lsp.updated` and `lsp.client.diagnostics` refresh events.
 - Session list/history parity is still incomplete vs full OpenCode API.
 
@@ -328,6 +329,40 @@ For each phase, validate with:
 ## Implementation Checklist (Endpoints, Payloads, Owners)
 
 ## Executable Task Backlog
+
+## VCS Hardening Matrix (Worktrees First)
+
+### Target VCS payload contract
+- `vcs.get` returns:
+  - `vcs`: `"git" | "none"`
+  - `root`: shared git root path
+  - `worktree`: active worktree root path
+  - `branch`: current branch (empty when detached)
+  - `detached`: boolean
+  - `head`: short commit SHA
+  - `upstream`: tracking branch (empty if missing)
+  - `dirty`: boolean
+  - `ahead`: integer
+  - `behind`: integer
+  - `error`: empty string on success, message when unavailable
+
+### Target `vcs.branch.updated` event payload
+- `branch`, `detached`, `head`, `worktree`
+- Emit only on effective branch/head identity change.
+
+### Scenario matrix (must pass)
+1. Normal git repo on tracked branch.
+2. Linked git worktree.
+3. Detached HEAD.
+4. Branch with no upstream.
+5. Dirty worktree (tracked + untracked changes).
+6. Clean worktree.
+7. Non-git directory.
+8. Branch switch in current worktree emits one update event.
+9. Branch switch in linked worktree emits update with correct worktree.
+10. Ahead/behind divergence with upstream.
+11. Git command/transient failure still returns stable schema.
+12. Endpoint remains responsive in large repos.
 
 ### Track A: Stabilize Existing Work
 - [ ] A1. Persist tool parts in session history and replay them in `/session.messages`.

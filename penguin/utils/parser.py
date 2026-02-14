@@ -340,6 +340,34 @@ class ActionExecutor:
 
         return []
 
+    def _build_lsp_diagnostics(
+        self, files: List[str], result: Any
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Build a minimal diagnostics payload for UI refresh events."""
+        text = "" if result is None else str(result)
+        if not text.strip():
+            return {}
+
+        is_error = text.lower().startswith("error") or "traceback" in text.lower()
+        if not is_error:
+            return {}
+
+        message = text.strip().splitlines()[0][:500]
+        targets = files or [""]
+        diagnostics: Dict[str, List[Dict[str, Any]]] = {}
+        for path in targets:
+            diagnostics[path] = [
+                {
+                    "severity": 1,
+                    "message": message,
+                    "range": {
+                        "start": {"line": 0, "character": 0},
+                        "end": {"line": 0, "character": 1},
+                    },
+                }
+            ]
+        return diagnostics
+
     async def execute_action(self, action: CodeActAction) -> str:
         """Execute an action and emit UI events if a callback is provided."""
         logger.debug(f"Attempting to execute action: {action.action_type.value}")
@@ -536,7 +564,7 @@ class ActionExecutor:
                         {
                             "action": action.action_type.value,
                             "files": files,
-                            "diagnostics": {},
+                            "diagnostics": self._build_lsp_diagnostics(files, result),
                         },
                     )
                 except Exception as e:
