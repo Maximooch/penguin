@@ -27,6 +27,11 @@ Rationale:
 - Tool parts now emit OpenCode-style ToolState objects (running/completed/error with time/input/output/metadata).
 - Chunk-safe action-tag filtering is implemented to prevent tag leakage in streamed text.
 - Minimal Penguin TUI command parity added (`/settings`, `/tool_details`, `/thinking`).
+- Real OpenCode-compatible endpoints added in core routes for `/path`, `/vcs`, `/formatter`, `/lsp` (plus `/api/v1/*` aliases).
+- Added shared web service module for system status (`penguin/web/services/system_status.py`) to keep routes thin.
+- `vcs.get` now includes real branch + dirty + ahead/behind fields.
+- `vcs.branch.updated` now emits via event bus on branch changes detected during VCS status reads.
+- File-modifying action paths now emit `lsp.updated` and `lsp.client.diagnostics` refresh events.
 - Session list/history parity is still incomplete vs full OpenCode API.
 
 ## Audit: TUI Expectations (from `penguin-tui`)
@@ -358,13 +363,13 @@ For each phase, validate with:
   - Acceptance: endpoint returns stable non-error response with clear unsupported/available state.
 
 ### Track D: Diffs, Files Sidebar, VCS
-- [ ] D1. Implement `vcs.get` with real git-backed branch + dirty status.
+- [x] D1. Implement `vcs.get` with real git-backed branch + dirty status.
   - Owner: `penguin/web/routes.py` + lightweight git adapter utility.
   - Acceptance: sidebar shows branch and updates after branch switch.
 - [ ] D2. Implement `session.diff` using persisted snapshots/tool outputs and/or git diff.
   - Owner: conversation persistence + route adapters.
   - Acceptance: diff sidebar/widget populates with changed files + patch data.
-- [ ] D3. Emit `vcs.branch.updated` when branch changes are detected.
+- [x] D3. Emit `vcs.branch.updated` when branch changes are detected.
   - Owner: event bus + vcs poll/trigger hook.
   - Acceptance: TUI updates branch without restart.
 
@@ -383,18 +388,19 @@ For each phase, validate with:
   - Acceptance: toggling mode/effort affects runtime behavior and is reflected in metadata.
 
 ### Track F: LSP / Formatter / Path (Real, not stubbed)
-- [ ] F1. Implement `path.get` from runtime roots (`directory`, `worktree`, `home`).
+- [x] F1. Implement `path.get` from runtime roots (`directory`, `worktree`, `home`).
   - Owner: route adapter + runtime config.
   - Acceptance: sidebar path info is always populated.
-- [ ] F2. Implement `formatter.status` from actual formatter availability/config.
+- [x] F2. Implement `formatter.status` from actual formatter availability/config.
   - Owner: tool/config layer + route adapter.
   - Acceptance: formatter panel shows real enabled/disabled state by language.
-- [ ] F3. Implement `lsp.status` with real language server health/status.
+- [x] F3. Implement `lsp.status` with real language server health/status.
   - Owner: new `penguin/lsp/` integration module + route adapter.
   - Acceptance: TUI no longer sees empty/default LSP forever; status tracks active languages.
-- [ ] F4. Emit `lsp.updated` and `lsp.client.diagnostics` events from file edits.
+- [~] F4. Emit `lsp.updated` and `lsp.client.diagnostics` events from file edits.
   - Owner: edit/apply_diff/write tool paths + event bus adapter.
   - Acceptance: diagnostics refresh in TUI after edits.
+  - Progress: events now emit for file-modifying action tools; diagnostics payload enrichment still pending.
 
 ### Track G: Deferred / Later
 - [ ] G1. MCP compatibility (`mcp.status/connect/disconnect`) after core parity is stable.

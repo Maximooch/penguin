@@ -3420,6 +3420,13 @@ class PenguinCore:
         self.event_bus.subscribe("action", self._tui_action_handler)
         self.event_bus.subscribe("action_result", self._tui_action_result_handler)
 
+        self._tui_lsp_updated_handler = self._on_tui_lsp_updated
+        self._tui_lsp_diagnostics_handler = self._on_tui_lsp_diagnostics
+        self.event_bus.subscribe("lsp.updated", self._tui_lsp_updated_handler)
+        self.event_bus.subscribe(
+            "lsp.client.diagnostics", self._tui_lsp_diagnostics_handler
+        )
+
     async def _on_tui_stream_chunk(self, event_type: str, data: Dict[str, Any]):
         """Handle stream chunk - manages stream lifecycle and emits with delta."""
         import time
@@ -3771,6 +3778,30 @@ class PenguinCore:
         )
         await self._tui_adapter.on_tool_end(
             part_id, result, error=error, metadata=merged_meta
+        )
+
+    async def _on_tui_lsp_updated(self, event_type: str, data: Dict[str, Any]) -> None:
+        if event_type != "lsp.updated":
+            return
+        await self.event_bus.emit(
+            "opencode_event",
+            {
+                "type": "lsp.updated",
+                "properties": data or {},
+            },
+        )
+
+    async def _on_tui_lsp_diagnostics(
+        self, event_type: str, data: Dict[str, Any]
+    ) -> None:
+        if event_type != "lsp.client.diagnostics":
+            return
+        await self.event_bus.emit(
+            "opencode_event",
+            {
+                "type": "lsp.client.diagnostics",
+                "properties": data or {},
+            },
         )
 
     # ------------------------------------------------------------------

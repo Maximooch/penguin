@@ -32,6 +32,18 @@ from penguin.constants import get_engine_max_iterations_default
 from penguin.utils.events import EventBus as UtilsEventBus
 from penguin.cli.events import EventBus as CLIEventBus, EventType
 from penguin.web.health import get_health_monitor
+from penguin.web.services.configuration import runtime_config_payload
+from penguin.web.services.conversations import (
+    create_conversation_payload,
+    get_conversation_payload,
+    list_conversations_payload,
+)
+from penguin.web.services.system_status import (
+    get_formatter_status,
+    get_lsp_status,
+    get_path_info,
+    get_vcs_info,
+)
 from penguin.utils.errors import AgentNotFoundError, PenguinError
 
 logger = logging.getLogger(__name__)
@@ -1072,6 +1084,70 @@ async def system_info(core: PenguinCore = Depends(get_core)):
     except Exception as e:
         logger.error(f"system-info error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/path")
+async def opencode_path_get(core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible path endpoint."""
+    try:
+        return get_path_info(core)
+    except Exception as e:
+        logger.error(f"path.get error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load path info")
+
+
+@router.get("/vcs")
+async def opencode_vcs_get(core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible VCS endpoint."""
+    try:
+        return get_vcs_info(core)
+    except Exception as e:
+        logger.error(f"vcs.get error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load vcs info")
+
+
+@router.get("/formatter")
+async def opencode_formatter_status(core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible formatter status endpoint."""
+    try:
+        return get_formatter_status(core)
+    except Exception as e:
+        logger.error(f"formatter.status error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load formatter status")
+
+
+@router.get("/lsp")
+async def opencode_lsp_status(core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible LSP status endpoint."""
+    try:
+        return get_lsp_status(core)
+    except Exception as e:
+        logger.error(f"lsp.status error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load lsp status")
+
+
+@router.get("/api/v1/path")
+async def api_path_get(core: PenguinCore = Depends(get_core)):
+    """Alias for path status in API namespace."""
+    return await opencode_path_get(core)
+
+
+@router.get("/api/v1/vcs")
+async def api_vcs_get(core: PenguinCore = Depends(get_core)):
+    """Alias for VCS status in API namespace."""
+    return await opencode_vcs_get(core)
+
+
+@router.get("/api/v1/formatter/status")
+async def api_formatter_status(core: PenguinCore = Depends(get_core)):
+    """Alias for formatter status in API namespace."""
+    return await opencode_formatter_status(core)
+
+
+@router.get("/api/v1/lsp/status")
+async def api_lsp_status(core: PenguinCore = Depends(get_core)):
+    """Alias for LSP status in API namespace."""
+    return await opencode_lsp_status(core)
 
 
 # Note: unified telemetry endpoint above returns the summary directly
@@ -2166,8 +2242,7 @@ async def get_token_usage(core: PenguinCore = Depends(get_core)):
 async def list_conversations(core: PenguinCore = Depends(get_core)):
     """List all available conversations."""
     try:
-        conversations = core.list_conversations()
-        return {"conversations": conversations}
+        return list_conversations_payload(core)
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error retrieving conversations: {str(e)}"
@@ -2178,12 +2253,7 @@ async def list_conversations(core: PenguinCore = Depends(get_core)):
 async def get_conversation(conversation_id: str, core: PenguinCore = Depends(get_core)):
     """Retrieve conversation details by ID."""
     try:
-        conversation = core.get_conversation(conversation_id)
-        if not conversation:
-            raise HTTPException(
-                status_code=404, detail=f"Conversation {conversation_id} not found"
-            )
-        return conversation
+        return get_conversation_payload(core, conversation_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -2197,8 +2267,7 @@ async def get_conversation(conversation_id: str, core: PenguinCore = Depends(get
 async def create_conversation(core: PenguinCore = Depends(get_core)):
     """Create a new conversation."""
     try:
-        conversation_id = core.create_conversation()
-        return {"conversation_id": conversation_id}
+        return create_conversation_payload(core)
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error creating conversation: {str(e)}"
@@ -2787,8 +2856,7 @@ async def get_current_model(core: PenguinCore = Depends(get_core)):
 async def get_runtime_config(core: PenguinCore = Depends(get_core)):
     """Get current runtime configuration (project root, workspace root, execution mode)."""
     try:
-        config_dict = core.runtime_config.to_dict()
-        return {"status": "success", "config": config_dict}
+        return runtime_config_payload(core)
     except Exception as e:
         logger.error(f"Error getting runtime config: {e}")
         raise HTTPException(status_code=500, detail=str(e))

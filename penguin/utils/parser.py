@@ -300,6 +300,46 @@ class ActionExecutor:
         self._ui_event_cb = ui_event_callback
         # No direct initialization of expensive tools, we'll use tool_manager's properties
 
+    def _is_lsp_refresh_action(self, action_type: ActionType) -> bool:
+        """Return True if action can modify files and should refresh LSP state."""
+        return action_type in {
+            ActionType.APPLY_DIFF,
+            ActionType.MULTIEDIT,
+            ActionType.EDIT_WITH_PATTERN,
+            ActionType.REPLACE_LINES,
+            ActionType.INSERT_LINES,
+            ActionType.DELETE_LINES,
+            ActionType.ENHANCED_WRITE,
+        }
+
+    def _extract_changed_files(self, action: CodeActAction) -> List[str]:
+        """Best-effort extraction of changed file paths from action parameters."""
+        params = action.params or ""
+        if action.action_type == ActionType.APPLY_DIFF:
+            first_sep = params.find(":")
+            if first_sep > 0:
+                return [params[:first_sep].strip()]
+            return []
+
+        if action.action_type in {
+            ActionType.REPLACE_LINES,
+            ActionType.INSERT_LINES,
+            ActionType.DELETE_LINES,
+            ActionType.ENHANCED_WRITE,
+        }:
+            first_sep = params.find(":")
+            if first_sep > 0:
+                return [params[:first_sep].strip()]
+            return []
+
+        if action.action_type == ActionType.EDIT_WITH_PATTERN:
+            parts = params.split(":", 1)
+            if parts and parts[0].strip():
+                return [parts[0].strip()]
+            return []
+
+        return []
+
     async def execute_action(self, action: CodeActAction) -> str:
         """Execute an action and emit UI events if a callback is provided."""
         logger.debug(f"Attempting to execute action: {action.action_type.value}")
@@ -480,6 +520,27 @@ class ActionExecutor:
                     )
                 except Exception as e:
                     logger.debug(f"UI event emit failed (action result): {e}")
+
+            if self._ui_event_cb and self._is_lsp_refresh_action(action.action_type):
+                files = self._extract_changed_files(action)
+                try:
+                    await self._ui_event_cb(
+                        "lsp.updated",
+                        {
+                            "action": action.action_type.value,
+                            "files": files,
+                        },
+                    )
+                    await self._ui_event_cb(
+                        "lsp.client.diagnostics",
+                        {
+                            "action": action.action_type.value,
+                            "files": files,
+                            "diagnostics": {},
+                        },
+                    )
+                except Exception as e:
+                    logger.debug(f"UI event emit failed (lsp refresh): {e}")
             return result
         except Exception as e:
             error_message = (
