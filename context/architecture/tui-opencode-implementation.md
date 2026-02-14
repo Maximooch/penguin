@@ -33,6 +33,8 @@ Rationale:
 - `vcs.branch.updated` now emits via event bus on branch changes detected during VCS status reads.
 - Background VCS watcher is enabled in web app lifespan to emit branch updates proactively.
 - File-modifying action paths now emit `lsp.updated` and `lsp.client.diagnostics` refresh events.
+- SSE session filtering now passes global VCS/LSP events so TUI subscribers with `session_id` still receive them.
+- Penguin-mode TUI bootstrap now fetches and hydrates `/path`, `/vcs`, `/formatter`, and `/lsp` data.
 - Session list/history parity is still incomplete vs full OpenCode API.
 
 ## Audit: TUI Expectations (from `penguin-tui`)

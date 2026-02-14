@@ -72,6 +72,7 @@ async def events_sse(
             # Filter by session_id if provided (check both sessionID and conversation_id)
             if effective_session_id:
                 props = data.get("properties", {})
+                event_name = data.get("type")
                 event_session = (
                     props.get("sessionID")
                     or props.get("conversation_id")
@@ -84,7 +85,15 @@ async def events_sse(
                         or part.get("conversation_id")
                         or part.get("session_id")
                     )
-                if event_session != effective_session_id:
+                global_events = {
+                    "vcs.branch.updated",
+                    "lsp.updated",
+                    "lsp.client.diagnostics",
+                }
+                if (
+                    event_session != effective_session_id
+                    and event_name not in global_events
+                ):
                     return
             # Filter by agent_id if provided (check multiple possible fields)
             if effective_agent_id:

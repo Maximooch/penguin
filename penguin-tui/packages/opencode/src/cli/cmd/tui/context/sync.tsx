@@ -382,6 +382,18 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     async function bootstrap() {
       console.log("bootstrapping")
       if (sdk.penguin) {
+        type PenguinSession = {
+          id: string
+          slug: string
+          projectID: string
+          directory: string
+          title: string
+          version: string
+          time: {
+            created: number
+            updated: number
+          }
+        }
         const now = Date.now()
         const id = sdk.sessionID ?? "penguin"
         const stamp = (value?: string) => {
@@ -427,7 +439,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             context: 100000,
             output: 4096,
           },
-          status: "active" as const,
+          status: "beta" as const,
           options: {},
           headers: {},
           release_date: new Date(now).toISOString(),
@@ -446,7 +458,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           .then((res) => (res.ok ? res.json() : undefined))
           .then((data) => (Array.isArray(data?.conversations) ? data.conversations : []))
           .catch(() => [])
-        const mapped = list.map((item: { [key: string]: unknown }) => {
+        const mapped: PenguinSession[] = list.map((item: { [key: string]: unknown }) => {
           const sid = typeof item.id === "string" ? item.id : crypto.randomUUID()
           const title = typeof item.title === "string" ? item.title : `Session ${sid.slice(-8)}`
           const created = stamp(typeof item.created_at === "string" ? item.created_at : undefined)
@@ -464,8 +476,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             },
           }
         })
-        const exists = mapped.some((item) => item.id === id)
-        const session = exists
+        const exists = mapped.some((item: PenguinSession) => item.id === id)
+        const session: PenguinSession[] = exists
           ? mapped
           : [
               {
@@ -509,7 +521,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           },
         ]
         const status = Object.fromEntries(
-          session.map((item) => [item.id, { type: "idle" }]),
+          session.map((item: PenguinSession) => [item.id, { type: "idle" as const }]),
         )
         batch(() => {
           setStore("provider", reconcile([provider]))
@@ -533,6 +545,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                       tool_call: model.capabilities.toolcall,
                       limit: model.limit,
                       status: model.status,
+                      options: {},
                     },
                   },
                 },
@@ -546,8 +559,37 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("config", reconcile({ share: "disabled" }))
           setStore("session", reconcile(session))
           setStore("session_status", reconcile(status))
-          setStore("path", reconcile({ state: "", config: "", worktree: "", directory: process.cwd() }))
+          setStore(
+            "path",
+            reconcile({ home: "", state: "", config: "", worktree: "", directory: process.cwd() }),
+          )
           setStore("status", "complete")
+        })
+
+        await Promise.all([
+          fetch(new URL("/lsp", sdk.url))
+            .then((res) => (res.ok ? res.json() : []))
+            .catch(() => []),
+          fetch(new URL("/formatter", sdk.url))
+            .then((res) => (res.ok ? res.json() : []))
+            .catch(() => []),
+          fetch(new URL("/vcs", sdk.url))
+            .then((res) => (res.ok ? res.json() : undefined))
+            .catch(() => undefined),
+          fetch(new URL("/path", sdk.url))
+            .then((res) => (res.ok ? res.json() : undefined))
+            .catch(() => undefined),
+        ]).then((result) => {
+          const lsp = result[0]
+          const formatter = result[1]
+          const vcs = result[2]
+          const path = result[3]
+          batch(() => {
+            setStore("lsp", reconcile(Array.isArray(lsp) ? lsp : []))
+            setStore("formatter", reconcile(Array.isArray(formatter) ? formatter : []))
+            if (vcs) setStore("vcs", reconcile(vcs))
+            if (path) setStore("path", reconcile(path))
+          })
         })
         return
       }
