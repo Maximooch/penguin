@@ -97,10 +97,12 @@ async def events_sse(
                     "lsp.updated",
                     "lsp.client.diagnostics",
                 }
-                if (
-                    event_session != effective_session_id
-                    and event_name not in global_events
-                ):
+                if event_session == effective_session_id:
+                    pass
+                elif event_name in global_events and not event_session:
+                    # Global status event without a session association
+                    pass
+                else:
                     return
             # Filter by agent_id if provided (check multiple possible fields)
             if effective_agent_id:

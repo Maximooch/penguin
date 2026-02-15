@@ -13,7 +13,7 @@ from typing import Any, Iterable
 from penguin.config import WORKSPACE_PATH
 
 logger = logging.getLogger(__name__)
-_LAST_BRANCH_KEY: str | None = None
+_LAST_BRANCH_KEYS: dict[str, str] = {}
 _VCS_EMIT_TASK: asyncio.Task | None = None
 _VCS_WATCH_TASK: asyncio.Task | None = None
 
@@ -142,7 +142,7 @@ def get_vcs_info(
     emit_events: bool = True,
 ) -> dict[str, Any]:
     """Return real VCS info for the current worktree."""
-    global _LAST_BRANCH_KEY
+    global _LAST_BRANCH_KEYS
     path_info = get_path_info(core, directory=directory, session_id=session_id)
     directory = path_info["directory"]
     worktree = _run_git(["rev-parse", "--show-toplevel"], directory)
@@ -205,9 +205,10 @@ def get_vcs_info(
             behind = 0
             ahead = 0
 
+    scope = session_id or directory
     branch_key = f"{worktree}|{branch}|{head}|{detached}"
-    if emit_events and branch_key != _LAST_BRANCH_KEY:
-        _LAST_BRANCH_KEY = branch_key
+    if emit_events and branch_key != _LAST_BRANCH_KEYS.get(scope, ""):
+        _LAST_BRANCH_KEYS[scope] = branch_key
         try:
             loop = asyncio.get_running_loop()
             global _VCS_EMIT_TASK
@@ -221,6 +222,7 @@ def get_vcs_info(
                             "detached": detached,
                             "head": head,
                             "worktree": worktree,
+                            "directory": directory,
                             "sessionID": session_id,
                         },
                     },
@@ -248,7 +250,14 @@ async def _vcs_watch_loop(core: Any, interval_seconds: float) -> None:
     """Watch for VCS branch changes and emit events."""
     while True:
         try:
+            # Default runtime scope
             get_vcs_info(core, emit_events=True)
+
+            # Session-scoped directories
+            session_dirs = getattr(core, "_opencode_session_directories", {})
+            if isinstance(session_dirs, dict):
+                for session_id in list(session_dirs.keys()):
+                    get_vcs_info(core, session_id=session_id, emit_events=True)
         except asyncio.CancelledError:
             raise
         except Exception:

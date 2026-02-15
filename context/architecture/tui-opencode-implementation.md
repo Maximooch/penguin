@@ -36,6 +36,9 @@ Rationale:
 - SSE session filtering now passes global VCS/LSP events so TUI subscribers with `session_id` still receive them.
 - Penguin-mode TUI bootstrap now fetches and hydrates `/path`, `/vcs`, `/formatter`, and `/lsp` data.
 - `path/vcs/formatter/lsp` now support directory/session scoped queries (`directory`, `session_id`) for multi-worktree workflows.
+- VCS branch watcher now checks default scope and session-scoped directories for proactive multi-session updates.
+- SSE session filtering now only forwards global VCS/LSP events cross-session when no session is attached.
+- Added automated VCS hardening tests covering non-git, dirty/clean, no-upstream, detached HEAD, and linked worktrees.
 - Session list/history parity is still incomplete vs full OpenCode API.
 
 ## Audit: TUI Expectations (from `penguin-tui`)
@@ -411,6 +414,10 @@ For each phase, validate with:
 - [x] D3. Emit `vcs.branch.updated` when branch changes are detected.
   - Owner: event bus + vcs poll/trigger hook.
   - Acceptance: TUI updates branch without restart.
+
+**VCS Hardening status**
+- Stable foundation implemented for directory/session-scoped multi-worktree usage.
+- Scenario matrix core cases validated manually + automated service tests in `tests/api/test_vcs_status_service.py`.
 
 ### Track E: Plan/TODO + Agent Features
 - [ ] E1. Implement `session.todo` from `ProjectManager` task graph.
