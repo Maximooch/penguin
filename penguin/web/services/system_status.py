@@ -66,33 +66,84 @@ def _detect_extensions(root: str, max_files: int = 5000) -> set[str]:
     return found
 
 
-def get_path_info(core: Any) -> dict[str, str]:
+def _valid_directory(directory: str | None) -> str | None:
+    """Resolve and validate a directory path, returning None when invalid."""
+    if not directory:
+        return None
+    try:
+        resolved = Path(directory).expanduser().resolve()
+    except Exception:
+        return None
+    if not resolved.exists() or not resolved.is_dir():
+        return None
+    return str(resolved)
+
+
+def _resolve_directory(
+    core: Any, directory: str | None = None, session_id: str | None = None
+) -> str:
+    """Resolve effective directory from request args, session map, or runtime."""
+    request_dir = _valid_directory(directory)
+    if request_dir:
+        return request_dir
+
+    if session_id:
+        session_dirs = getattr(core, "_opencode_session_directories", {})
+        mapped = (
+            session_dirs.get(session_id) if isinstance(session_dirs, dict) else None
+        )
+        mapped_dir = _valid_directory(mapped)
+        if mapped_dir:
+            return mapped_dir
+
+    runtime = getattr(core, "runtime_config", None)
+    fallback = getattr(runtime, "active_root", None) or getattr(
+        runtime, "project_root", None
+    )
+    fallback_dir = _valid_directory(fallback)
+    if fallback_dir:
+        return fallback_dir
+
+    return str(Path(WORKSPACE_PATH).expanduser().resolve())
+
+
+def get_path_info(
+    core: Any, directory: str | None = None, session_id: str | None = None
+) -> dict[str, str]:
     """Return OpenCode-compatible path information."""
     runtime = getattr(core, "runtime_config", None)
     workspace = getattr(runtime, "workspace_root", None) or WORKSPACE_PATH
     project = getattr(runtime, "project_root", None) or workspace
-    directory = getattr(runtime, "active_root", None) or project
+    effective_directory = _resolve_directory(
+        core, directory=directory, session_id=session_id
+    )
 
     config_candidate = Path(project) / ".penguin"
     config_dir = str(config_candidate) if config_candidate.exists() else str(project)
 
-    worktree = _run_git(["rev-parse", "--show-toplevel"], str(directory))
+    worktree = _run_git(["rev-parse", "--show-toplevel"], str(effective_directory))
     if not worktree:
-        worktree = str(project)
+        worktree = str(effective_directory)
 
     return {
         "home": str(Path.home()),
         "state": str(workspace),
         "config": config_dir,
         "worktree": worktree,
-        "directory": str(directory),
+        "directory": str(effective_directory),
     }
 
 
-def get_vcs_info(core: Any, *, emit_events: bool = True) -> dict[str, Any]:
+def get_vcs_info(
+    core: Any,
+    directory: str | None = None,
+    session_id: str | None = None,
+    *,
+    emit_events: bool = True,
+) -> dict[str, Any]:
     """Return real VCS info for the current worktree."""
     global _LAST_BRANCH_KEY
-    path_info = get_path_info(core)
+    path_info = get_path_info(core, directory=directory, session_id=session_id)
     directory = path_info["directory"]
     worktree = _run_git(["rev-parse", "--show-toplevel"], directory)
     if not worktree:
@@ -170,6 +221,7 @@ def get_vcs_info(core: Any, *, emit_events: bool = True) -> dict[str, Any]:
                             "detached": detached,
                             "head": head,
                             "worktree": worktree,
+                            "sessionID": session_id,
                         },
                     },
                 )
@@ -229,9 +281,13 @@ async def stop_vcs_watcher() -> None:
     _VCS_WATCH_TASK = None
 
 
-def get_formatter_status(core: Any) -> list[dict[str, Any]]:
+def get_formatter_status(
+    core: Any, directory: str | None = None, session_id: str | None = None
+) -> list[dict[str, Any]]:
     """Return formatter availability for languages present in the workspace."""
-    directory = get_path_info(core)["directory"]
+    directory = get_path_info(core, directory=directory, session_id=session_id)[
+        "directory"
+    ]
     extensions = _detect_extensions(directory)
 
     formatters = [
@@ -267,9 +323,13 @@ def get_formatter_status(core: Any) -> list[dict[str, Any]]:
     return result
 
 
-def get_lsp_status(core: Any) -> list[dict[str, str]]:
+def get_lsp_status(
+    core: Any, directory: str | None = None, session_id: str | None = None
+) -> list[dict[str, str]]:
     """Return LSP status for languages detected in the workspace."""
-    directory = get_path_info(core)["directory"]
+    directory = get_path_info(core, directory=directory, session_id=session_id)[
+        "directory"
+    ]
     extensions = _detect_extensions(directory)
 
     servers = [

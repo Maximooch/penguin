@@ -365,6 +365,16 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
 
         case "lsp.updated": {
+          if (sdk.penguin) {
+            const url = new URL("/lsp", sdk.url)
+            url.searchParams.set("directory", process.cwd())
+            url.searchParams.set("session_id", sdk.sessionID ?? "penguin")
+            fetch(url)
+              .then((res) => (res.ok ? res.json() : []))
+              .then((data) => setStore("lsp", reconcile(Array.isArray(data) ? data : [])))
+              .catch(() => undefined)
+            break
+          }
           sdk.client.lsp.status().then((x) => setStore("lsp", x.data!))
           break
         }
@@ -566,17 +576,24 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("status", "complete")
         })
 
+        const systemUrl = (pathname: string) => {
+          const url = new URL(pathname, sdk.url)
+          url.searchParams.set("directory", process.cwd())
+          url.searchParams.set("session_id", id)
+          return url
+        }
+
         await Promise.all([
-          fetch(new URL("/lsp", sdk.url))
+          fetch(systemUrl("/lsp"))
             .then((res) => (res.ok ? res.json() : []))
             .catch(() => []),
-          fetch(new URL("/formatter", sdk.url))
+          fetch(systemUrl("/formatter"))
             .then((res) => (res.ok ? res.json() : []))
             .catch(() => []),
-          fetch(new URL("/vcs", sdk.url))
+          fetch(systemUrl("/vcs"))
             .then((res) => (res.ok ? res.json() : undefined))
             .catch(() => undefined),
-          fetch(new URL("/path", sdk.url))
+          fetch(systemUrl("/path"))
             .then((res) => (res.ok ? res.json() : undefined))
             .catch(() => undefined),
         ]).then((result) => {

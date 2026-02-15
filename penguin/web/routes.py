@@ -1087,67 +1087,101 @@ async def system_info(core: PenguinCore = Depends(get_core)):
 
 
 @router.get("/path")
-async def opencode_path_get(core: PenguinCore = Depends(get_core)):
+async def opencode_path_get(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+):
     """OpenCode-compatible path endpoint."""
     try:
-        return get_path_info(core)
+        return get_path_info(core, directory=directory, session_id=session_id)
     except Exception as e:
         logger.error(f"path.get error: {e}")
         raise HTTPException(status_code=500, detail="Failed to load path info")
 
 
 @router.get("/vcs")
-async def opencode_vcs_get(core: PenguinCore = Depends(get_core)):
+async def opencode_vcs_get(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+):
     """OpenCode-compatible VCS endpoint."""
     try:
-        return get_vcs_info(core)
+        return get_vcs_info(core, directory=directory, session_id=session_id)
     except Exception as e:
         logger.error(f"vcs.get error: {e}")
         raise HTTPException(status_code=500, detail="Failed to load vcs info")
 
 
 @router.get("/formatter")
-async def opencode_formatter_status(core: PenguinCore = Depends(get_core)):
+async def opencode_formatter_status(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+):
     """OpenCode-compatible formatter status endpoint."""
     try:
-        return get_formatter_status(core)
+        return get_formatter_status(core, directory=directory, session_id=session_id)
     except Exception as e:
         logger.error(f"formatter.status error: {e}")
         raise HTTPException(status_code=500, detail="Failed to load formatter status")
 
 
 @router.get("/lsp")
-async def opencode_lsp_status(core: PenguinCore = Depends(get_core)):
+async def opencode_lsp_status(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+):
     """OpenCode-compatible LSP status endpoint."""
     try:
-        return get_lsp_status(core)
+        return get_lsp_status(core, directory=directory, session_id=session_id)
     except Exception as e:
         logger.error(f"lsp.status error: {e}")
         raise HTTPException(status_code=500, detail="Failed to load lsp status")
 
 
 @router.get("/api/v1/path")
-async def api_path_get(core: PenguinCore = Depends(get_core)):
+async def api_path_get(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+):
     """Alias for path status in API namespace."""
-    return await opencode_path_get(core)
+    return await opencode_path_get(core, directory=directory, session_id=session_id)
 
 
 @router.get("/api/v1/vcs")
-async def api_vcs_get(core: PenguinCore = Depends(get_core)):
+async def api_vcs_get(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+):
     """Alias for VCS status in API namespace."""
-    return await opencode_vcs_get(core)
+    return await opencode_vcs_get(core, directory=directory, session_id=session_id)
 
 
 @router.get("/api/v1/formatter/status")
-async def api_formatter_status(core: PenguinCore = Depends(get_core)):
+async def api_formatter_status(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+):
     """Alias for formatter status in API namespace."""
-    return await opencode_formatter_status(core)
+    return await opencode_formatter_status(
+        core, directory=directory, session_id=session_id
+    )
 
 
 @router.get("/api/v1/lsp/status")
-async def api_lsp_status(core: PenguinCore = Depends(get_core)):
+async def api_lsp_status(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+):
     """Alias for LSP status in API namespace."""
-    return await opencode_lsp_status(core)
+    return await opencode_lsp_status(core, directory=directory, session_id=session_id)
 
 
 # Note: unified telemetry endpoint above returns the summary directly

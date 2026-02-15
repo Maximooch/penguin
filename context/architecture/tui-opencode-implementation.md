@@ -35,6 +35,7 @@ Rationale:
 - File-modifying action paths now emit `lsp.updated` and `lsp.client.diagnostics` refresh events.
 - SSE session filtering now passes global VCS/LSP events so TUI subscribers with `session_id` still receive them.
 - Penguin-mode TUI bootstrap now fetches and hydrates `/path`, `/vcs`, `/formatter`, and `/lsp` data.
+- `path/vcs/formatter/lsp` now support directory/session scoped queries (`directory`, `session_id`) for multi-worktree workflows.
 - Session list/history parity is still incomplete vs full OpenCode API.
 
 ## Audit: TUI Expectations (from `penguin-tui`)
@@ -189,6 +190,7 @@ The TUI expects these events to drive UI state:
 - Prefer direct refactors in core Penguin modules and existing web routes when the work is broadly useful.
 - Keep OpenCode compatibility as schema/adapter logic in shared services, not as a separate product surface by default.
 - Introduce a dedicated compatibility router only for truly OpenCode-only endpoint semantics that do not improve Penguin’s native API.
+- System status endpoints (`path/vcs/formatter/lsp`) are directory-scoped per request/session for multi-worktree and agent workflows.
 
 ## Progress Snapshot (Phases)
 - Phase 0 (Streaming + animation parity): **mostly complete**.

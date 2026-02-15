@@ -6,7 +6,7 @@ message/part events to the TUI client.
 
 import asyncio
 import json
-from typing import Any, AsyncIterator, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
@@ -56,6 +56,13 @@ async def events_sse(
     effective_session_id = session_id or conversation_id
     effective_agent_id = agent_id
 
+    if effective_session_id and directory:
+        session_dirs = getattr(core, "_opencode_session_directories", None)
+        if not isinstance(session_dirs, dict):
+            session_dirs = {}
+            setattr(core, "_opencode_session_directories", session_dirs)
+        session_dirs[effective_session_id] = directory
+
     async def event_generator() -> AsyncIterator[str]:
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=1000)
 
@@ -69,7 +76,7 @@ async def events_sse(
             if not isinstance(data, dict):
                 return
 
-            # Filter by session_id if provided (check both sessionID and conversation_id)
+            # Filter by session_id if provided
             if effective_session_id:
                 props = data.get("properties", {})
                 event_name = data.get("type")
