@@ -649,6 +649,7 @@ export function Prompt(props: PromptProps) {
         body: JSON.stringify({
           text: inputText,
           session_id: sessionID,
+          directory: process.cwd(),
           streaming: true,
           client_message_id: messageID,
         }),

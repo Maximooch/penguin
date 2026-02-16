@@ -372,7 +372,7 @@ For each phase, validate with:
 12. Endpoint remains responsive in large repos.
 
 ### Track A: Stabilize Existing Work
-- [ ] A1. Persist tool parts in session history and replay them in `/session.messages`.
+- [~] A1. Persist tool parts in session history and replay them in `/session.messages`.
   - Owner: `penguin/tui_adapter/part_events.py`, `penguin/web/routes.py` + new `penguin/web/services/session_view.py`, `ConversationManager` storage adapters.
   - Acceptance: reload shows identical tool cards/order as live run.
 - [ ] A2. Extend action-to-tool mapping coverage for remaining common actions.
@@ -386,7 +386,7 @@ For each phase, validate with:
 - [ ] B1. Split `penguin/web/routes.py` by concern (session/config/system/status) with shared service modules.
   - Owner: `penguin/web/routes.py`, `penguin/web/app.py`, `penguin/web/services/*`.
   - Acceptance: route handlers are thin and business logic is testable in services.
-- [ ] B2. Implement `session.list`, `session.get`, `session.messages` with OpenCode-shaped payloads.
+- [~] B2. Implement `session.list`, `session.get`, `session.messages` with OpenCode-shaped payloads.
   - Owner: `ConversationManager` + `penguin/web/services/session_view.py` adapters.
   - Acceptance: TUI loads sessions and history without Penguin-mode-only shims.
 - [ ] B3. Implement `session.status`, `session.update`, `session.delete`, `session.create`.
@@ -418,6 +418,8 @@ For each phase, validate with:
 **VCS Hardening status**
 - Stable foundation implemented for directory/session-scoped multi-worktree usage.
 - Scenario matrix core cases validated manually + automated service tests in `tests/api/test_vcs_status_service.py`.
+- Added OpenCode-shaped `/session`, `/session/{id}`, and `/session/{id}/message` adapters backed by session view services.
+- Added persisted OpenCode transcript storage (`_opencode_transcript_v1`) from live `message.*` and `message.part.*` events.
 
 ### Track E: Plan/TODO + Agent Features
 - [ ] E1. Implement `session.todo` from `ProjectManager` task graph.

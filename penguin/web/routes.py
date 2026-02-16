@@ -14,6 +14,7 @@ from fastapi import (
 from pydantic import BaseModel  # type: ignore
 from dataclasses import asdict  # type: ignore
 from datetime import datetime  # type: ignore
+from contextlib import asynccontextmanager
 import asyncio
 import copy
 import json
@@ -37,6 +38,11 @@ from penguin.web.services.conversations import (
     create_conversation_payload,
     get_conversation_payload,
     list_conversations_payload,
+)
+from penguin.web.services.session_view import (
+    get_session_info,
+    get_session_messages,
+    list_session_infos,
 )
 from penguin.web.services.system_status import (
     get_formatter_status,
@@ -67,6 +73,75 @@ def _format_error_response(error: Exception, status_code: int = 500) -> HTTPExce
 
 
 MAX_IMAGES_PER_REQUEST = 10
+_directory_scope_lock = asyncio.Lock()
+
+
+@asynccontextmanager
+async def _scoped_directory(core: PenguinCore, directory: Optional[str]):
+    """Temporarily scope process/runtime directory for a request."""
+    if not directory:
+        yield
+        return
+
+    try:
+        target = Path(directory).expanduser().resolve()
+    except Exception:
+        yield
+        return
+
+    if not target.exists() or not target.is_dir():
+        yield
+        return
+
+    runtime = getattr(core, "runtime_config", None)
+    tool_manager = getattr(core, "tool_manager", None)
+    original_cwd = os.getcwd()
+    original_active = getattr(runtime, "active_root", None) if runtime else None
+    original_project = getattr(runtime, "project_root", None) if runtime else None
+    original_workspace = getattr(runtime, "workspace_root", None) if runtime else None
+    original_tool_project = (
+        getattr(tool_manager, "project_root", None) if tool_manager else None
+    )
+    original_tool_mode = (
+        getattr(tool_manager, "file_root_mode", None) if tool_manager else None
+    )
+
+    async with _directory_scope_lock:
+        try:
+            os.chdir(str(target))
+            if runtime is not None:
+                try:
+                    runtime.active_root = str(target)
+                    runtime.project_root = str(target)
+                    runtime.workspace_root = str(target)
+                except Exception:
+                    pass
+            if tool_manager is not None:
+                try:
+                    tool_manager.set_project_root(str(target))
+                    tool_manager.set_execution_root("project")
+                except Exception:
+                    pass
+            yield
+        finally:
+            try:
+                os.chdir(original_cwd)
+            except Exception:
+                pass
+            if runtime is not None:
+                try:
+                    runtime.active_root = original_active
+                    runtime.project_root = original_project
+                    runtime.workspace_root = original_workspace
+                except Exception:
+                    pass
+            if tool_manager is not None and original_tool_project:
+                try:
+                    tool_manager.set_project_root(str(original_tool_project))
+                    if original_tool_mode in {"project", "workspace"}:
+                        tool_manager.set_execution_root(str(original_tool_mode))
+                except Exception:
+                    pass
 
 
 class MessageRequest(BaseModel):
@@ -81,6 +156,7 @@ class MessageRequest(BaseModel):
     image_paths: Optional[List[str]] = None  # Multiple images supported (max 10)
     include_reasoning: Optional[bool] = False
     agent_id: Optional[str] = None
+    directory: Optional[str] = None
 
 
 class StreamResponse(BaseModel):
@@ -1360,6 +1436,13 @@ async def handle_chat_message(
         if not request.conversation_id and request.session_id:
             request.conversation_id = request.session_id
 
+        if request.conversation_id and request.directory:
+            session_dirs = getattr(core, "_opencode_session_directories", None)
+            if not isinstance(session_dirs, dict):
+                session_dirs = {}
+                setattr(core, "_opencode_session_directories", session_dirs)
+            session_dirs[request.conversation_id] = request.directory
+
         # Maybe?
         # # If no conversation_id is provided, try to use the most recent one
         # if not request.conversation_id:
@@ -1399,16 +1482,17 @@ async def handle_chat_message(
             stream_cb = _rest_stream_cb
 
         # Process the message with all available options
-        process_result = await core.process(
-            input_data=input_data,
-            context=request.context,
-            conversation_id=request.conversation_id,
-            agent_id=request.agent_id,
-            max_iterations=request.max_iterations or 100,
-            context_files=request.context_files,
-            streaming=effective_streaming,
-            stream_callback=stream_cb,
-        )
+        async with _scoped_directory(core, request.directory):
+            process_result = await core.process(
+                input_data=input_data,
+                context=request.context,
+                conversation_id=request.conversation_id,
+                agent_id=request.agent_id,
+                max_iterations=request.max_iterations or 100,
+                context_files=request.context_files,
+                streaming=effective_streaming,
+                stream_callback=stream_cb,
+            )
 
         # Build response
         resp: Dict[str, Any] = {
@@ -2338,6 +2422,84 @@ async def create_conversation(core: PenguinCore = Depends(get_core)):
         raise HTTPException(
             status_code=500, detail=f"Error creating conversation: {str(e)}"
         )
+
+
+@router.get("/session")
+async def session_list(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+    roots: Optional[bool] = Query(False),
+    start: Optional[int] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: Optional[int] = Query(None),
+):
+    """OpenCode-compatible session list endpoint."""
+    return list_session_infos(
+        core,
+        directory=directory,
+        roots=bool(roots),
+        start=start,
+        search=search,
+        limit=limit,
+    )
+
+
+@router.get("/session/{session_id}")
+async def session_get(session_id: str, core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible session get endpoint."""
+    session = get_session_info(core, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    return session
+
+
+@router.get("/session/{session_id}/message")
+async def session_messages(
+    session_id: str,
+    core: PenguinCore = Depends(get_core),
+    limit: Optional[int] = Query(None),
+):
+    """OpenCode-compatible session.messages endpoint."""
+    messages = get_session_messages(core, session_id, limit=limit)
+    if messages is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    return messages
+
+
+@router.get("/api/v1/session")
+async def api_session_list(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+    roots: Optional[bool] = Query(False),
+    start: Optional[int] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: Optional[int] = Query(None),
+):
+    """Alias for OpenCode-compatible session list endpoint."""
+    return await session_list(
+        core,
+        directory=directory,
+        roots=roots,
+        start=start,
+        search=search,
+        limit=limit,
+    )
+
+
+@router.get("/api/v1/session/{session_id}")
+async def api_session_get(session_id: str, core: PenguinCore = Depends(get_core)):
+    """Alias for OpenCode-compatible session get endpoint."""
+    return await session_get(session_id, core)
+
+
+@router.get("/api/v1/session/{session_id}/message")
+async def api_session_messages(
+    session_id: str,
+    core: PenguinCore = Depends(get_core),
+    limit: Optional[int] = Query(None),
+):
+    """Alias for OpenCode-compatible session.messages endpoint."""
+    return await session_messages(session_id, core, limit=limit)
 
 
 # Conversation-specific checkpointing

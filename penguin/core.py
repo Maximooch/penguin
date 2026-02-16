@@ -687,7 +687,10 @@ class PenguinCore:
         # OpenCode TUI adapter for SSE event translation
         from penguin.tui_adapter import PartEventAdapter
 
-        self._tui_adapter = PartEventAdapter(self.event_bus)
+        self._tui_adapter = PartEventAdapter(
+            self.event_bus,
+            persist_callback=self._persist_opencode_event,
+        )
 
         # Subscribe to stream events and translate to OpenCode format
         self._subscribe_to_stream_events()
@@ -3803,6 +3806,208 @@ class PenguinCore:
                 "properties": data or {},
             },
         )
+
+    def _find_session_store(
+        self, session_id: str
+    ) -> tuple[Optional[Any], Optional[Any]]:
+        """Locate session and owning session manager for a given session id."""
+        if not session_id:
+            return None, None
+
+        manager_candidates: list[Any] = []
+        conversation_manager = getattr(self, "conversation_manager", None)
+        if conversation_manager is None:
+            return None, None
+
+        default_manager = getattr(conversation_manager, "session_manager", None)
+        if default_manager is not None:
+            manager_candidates.append(default_manager)
+
+        agent_managers = getattr(conversation_manager, "agent_session_managers", {})
+        if isinstance(agent_managers, dict):
+            manager_candidates.extend(agent_managers.values())
+
+        seen: set[int] = set()
+        for manager in manager_candidates:
+            manager_id = id(manager)
+            if manager_id in seen:
+                continue
+            seen.add(manager_id)
+
+            cached = getattr(manager, "sessions", {})
+            if isinstance(cached, dict) and session_id in cached:
+                session = cached[session_id][0]
+                return session, manager
+
+            index = getattr(manager, "session_index", {})
+            if isinstance(index, dict) and session_id in index:
+                try:
+                    session = manager.load_session(session_id)
+                except Exception:
+                    session = None
+                if session is not None:
+                    return session, manager
+
+        return None, None
+
+    async def _persist_opencode_event(
+        self, event_type: str, properties: Dict[str, Any]
+    ) -> None:
+        """Persist OpenCode message/part events for replay via session history."""
+        if event_type not in {
+            "message.updated",
+            "message.part.updated",
+            "message.part.removed",
+            "message.removed",
+        }:
+            return
+
+        session_id = properties.get("sessionID")
+        if not session_id and isinstance(properties.get("part"), dict):
+            session_id = properties["part"].get("sessionID")
+        if not session_id or session_id == "unknown":
+            return
+
+        session, manager = self._find_session_store(session_id)
+        if session is None or manager is None:
+            return
+
+        metadata = getattr(session, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+
+        key = "_opencode_transcript_v1"
+        transcript = metadata.get(key)
+        if not isinstance(transcript, dict):
+            transcript = {"messages": {}, "order": []}
+            metadata[key] = transcript
+
+        messages = transcript.get("messages")
+        if not isinstance(messages, dict):
+            messages = {}
+            transcript["messages"] = messages
+
+        order = transcript.get("order")
+        if not isinstance(order, list):
+            order = []
+            transcript["order"] = order
+
+        should_save = False
+
+        if event_type == "message.updated":
+            message_id = properties.get("id")
+            if not message_id:
+                return
+            entry = messages.get(message_id)
+            if not isinstance(entry, dict):
+                entry = {}
+            parts = entry.get("parts")
+            if not isinstance(parts, dict):
+                parts = {}
+            part_order = entry.get("part_order")
+            if not isinstance(part_order, list):
+                part_order = []
+            entry["info"] = dict(properties)
+            entry["parts"] = parts
+            entry["part_order"] = part_order
+            messages[message_id] = entry
+            if message_id not in order:
+                order.append(message_id)
+
+            time_data = properties.get("time")
+            if isinstance(time_data, dict) and time_data.get("completed"):
+                should_save = True
+
+        elif event_type == "message.part.updated":
+            part = properties.get("part")
+            if not isinstance(part, dict):
+                return
+
+            message_id = part.get("messageID")
+            part_id = part.get("id")
+            if not message_id or not part_id:
+                return
+
+            entry = messages.get(message_id)
+            if not isinstance(entry, dict):
+                entry = {
+                    "info": {
+                        "id": message_id,
+                        "sessionID": session_id,
+                        "role": "assistant",
+                        "time": {"created": int(time.time() * 1000)},
+                        "parentID": "root",
+                        "modelID": getattr(
+                            self.model_config, "model", "penguin-default"
+                        ),
+                        "providerID": getattr(self.model_config, "provider", "penguin"),
+                        "mode": "chat",
+                        "agent": "default",
+                        "path": {"cwd": os.getcwd(), "root": os.getcwd()},
+                        "cost": 0,
+                        "tokens": {
+                            "input": 0,
+                            "output": 0,
+                            "reasoning": 0,
+                            "cache": {"read": 0, "write": 0},
+                        },
+                    },
+                    "parts": {},
+                    "part_order": [],
+                }
+                messages[message_id] = entry
+                if message_id not in order:
+                    order.append(message_id)
+
+            parts = entry.get("parts")
+            if not isinstance(parts, dict):
+                parts = {}
+                entry["parts"] = parts
+            part_order = entry.get("part_order")
+            if not isinstance(part_order, list):
+                part_order = []
+                entry["part_order"] = part_order
+
+            parts[part_id] = dict(part)
+            if part_id not in part_order:
+                part_order.append(part_id)
+
+            if part.get("type") == "tool":
+                state = part.get("state")
+                if isinstance(state, dict) and state.get("status") in {
+                    "completed",
+                    "error",
+                }:
+                    should_save = True
+
+        elif event_type == "message.part.removed":
+            message_id = properties.get("messageID")
+            part_id = properties.get("partID")
+            if not message_id or not part_id:
+                return
+            entry = messages.get(message_id)
+            if not isinstance(entry, dict):
+                return
+            parts = entry.get("parts")
+            if isinstance(parts, dict):
+                parts.pop(part_id, None)
+            part_order = entry.get("part_order")
+            if isinstance(part_order, list):
+                entry["part_order"] = [item for item in part_order if item != part_id]
+
+        elif event_type == "message.removed":
+            message_id = properties.get("messageID")
+            if not message_id:
+                return
+            messages.pop(message_id, None)
+            transcript["order"] = [item for item in order if item != message_id]
+
+        try:
+            manager.mark_session_modified(session_id)
+            if should_save:
+                manager.save_session(session)
+        except Exception:
+            logger.debug("Unable to persist OpenCode transcript event", exc_info=True)
 
     # ------------------------------------------------------------------
     # OpenCode TUI Adapter Integration

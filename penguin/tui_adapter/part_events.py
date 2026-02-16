@@ -5,7 +5,7 @@ streaming events to OpenCode-compatible message/part events for the TUI.
 """
 
 from dataclasses import dataclass, field
-from typing import Literal, Optional, Dict, Any, Tuple, Callable
+from typing import Literal, Optional, Dict, Any, Tuple, Callable, Awaitable
 from enum import Enum
 import json
 import os
@@ -78,8 +78,15 @@ class EventEnvelope:
 class PartEventAdapter:
     """Adapts Penguin StreamEvent to OpenCode-compatible Part events."""
 
-    def __init__(self, event_bus: Any):
+    def __init__(
+        self,
+        event_bus: Any,
+        persist_callback: Optional[
+            Callable[[str, Dict[str, Any]], Optional[Awaitable[None]]]
+        ] = None,
+    ):
         self.event_bus = event_bus
+        self.persist_callback = persist_callback
         self._active_messages: Dict[str, Message] = {}
         self._active_parts: Dict[str, Part] = {}
         self._session_id: Optional[str] = None
@@ -503,6 +510,13 @@ class PartEventAdapter:
 
     async def _emit(self, event_type: str, properties: Dict[str, Any]):
         """Emit through EventBus with OpenCode envelope format."""
+        if self.persist_callback is not None:
+            try:
+                result = self.persist_callback(event_type, properties)
+                if result is not None:
+                    await result
+            except Exception:
+                pass
         await self.event_bus.emit(
             "opencode_event", {"type": event_type, "properties": properties}
         )
