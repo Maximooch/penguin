@@ -468,6 +468,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           .then((res) => (res.ok ? res.json() : undefined))
           .then((data) => (Array.isArray(data?.conversations) ? data.conversations : []))
           .catch(() => [])
+        const roster = await fetch(new URL("/api/v1/agents", sdk.url))
+          .then((res) => (res.ok ? res.json() : undefined))
+          .then((data) => (Array.isArray(data) ? data : []))
+          .catch(() => [])
         const mapped: PenguinSession[] = list.map((item: { [key: string]: unknown }) => {
           const sid = typeof item.id === "string" ? item.id : crypto.randomUUID()
           const title = typeof item.title === "string" ? item.title : `Session ${sid.slice(-8)}`
@@ -504,12 +508,27 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               },
               ...mapped,
             ]
-        const agent = {
+        const baseAgent = {
           name: "penguin",
           mode: "primary" as const,
           permission: [],
           options: {},
         }
+        const agent = roster
+          .map((item: { [key: string]: unknown }) => {
+            const name = typeof item.id === "string" ? item.id : ""
+            if (!name) return undefined
+            const mode = item.is_sub_agent === true ? ("subagent" as const) : ("primary" as const)
+            const hidden = item.hidden === true
+            return {
+              name,
+              mode,
+              hidden,
+              permission: [],
+              options: {},
+            }
+          })
+          .filter((item) => !!item)
         const command = [
           {
             name: "settings",
@@ -564,7 +583,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               connected: [provider.id],
             }),
           )
-          setStore("agent", reconcile([agent]))
+          setStore("agent", reconcile(agent.length ? agent : [baseAgent]))
           setStore("command", reconcile(command))
           setStore("config", reconcile({ share: "disabled" }))
           setStore("session", reconcile(session))

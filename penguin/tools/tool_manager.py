@@ -9,11 +9,13 @@ import json
 from pathlib import Path
 import time
 import re
+import threading
 from collections import defaultdict
 
 # from utils.log_error import log_error
 # from .core.support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
 from penguin.config import config, WORKSPACE_PATH
+from penguin.system.execution_context import get_current_execution_context_dict
 from penguin.utils.path_utils import get_allowed_roots, get_default_write_root
 from penguin.memory.summary_notes import SummaryNotes
 from penguin.utils import FileMap
@@ -246,6 +248,7 @@ class ToolManager:
 
             # PenguinCore reference for sub-agent tools
             self._core = None
+            self._code_execution_lock = threading.Lock()
 
             # Permission enforcer (lazy initialized)
             self._permission_enforcer = None
@@ -1852,18 +1855,19 @@ class ToolManager:
         return tool_instance
 
     def _execute_file_operation(
-        self, operation_name: str, tool_input: dict
+        self, operation_name: str, tool_input: dict, *, file_root: Optional[str] = None
     ) -> Union[str, dict]:
         """Execute file operations with enhanced tools and workspace integration."""
+        effective_root = file_root or self._file_root
         if operation_name == "create_folder":
             from penguin.tools.core.support import create_folder
 
-            return create_folder(os.path.join(self._file_root, tool_input["path"]))
+            return create_folder(os.path.join(effective_root, tool_input["path"]))
         elif operation_name == "create_file":
             from penguin.tools.core.support import create_file
 
             return create_file(
-                os.path.join(self._file_root, tool_input["path"]),
+                os.path.join(effective_root, tool_input["path"]),
                 tool_input.get("content", ""),
             )
         elif operation_name == "write_to_file":
@@ -1873,7 +1877,7 @@ class ToolManager:
                 tool_input["path"],
                 tool_input["content"],
                 backup=tool_input.get("backup", True),
-                workspace_path=self._file_root,
+                workspace_path=effective_root,
             )
         elif operation_name == "read_file":
             from penguin.tools.core.support import enhanced_read_file
@@ -1882,7 +1886,7 @@ class ToolManager:
                 tool_input["path"],
                 show_line_numbers=tool_input.get("show_line_numbers", False),
                 max_lines=tool_input.get("max_lines"),
-                workspace_path=self._file_root,
+                workspace_path=effective_root,
             )
         elif operation_name == "list_files":
             from penguin.tools.core.support import list_files_filtered
@@ -1892,7 +1896,7 @@ class ToolManager:
                 ignore_patterns=tool_input.get("ignore_patterns"),
                 group_by_type=tool_input.get("group_by_type", False),
                 show_hidden=tool_input.get("show_hidden", False),
-                workspace_path=self._file_root,
+                workspace_path=effective_root,
             )
         elif operation_name == "find_file":
             from penguin.tools.core.support import find_files_enhanced
@@ -1902,7 +1906,7 @@ class ToolManager:
                 search_path=tool_input.get("search_path", "."),
                 include_hidden=tool_input.get("include_hidden", False),
                 file_type=tool_input.get("file_type"),
-                workspace_path=self._file_root,
+                workspace_path=effective_root,
             )
         else:
             raise ValueError(f"Unknown file operation: {operation_name}")
@@ -1954,10 +1958,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_analyze_project(self, tool_input: dict) -> str:
+    def _execute_analyze_project(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute project analysis with workspace integration."""
         from penguin.tools.core.support import analyze_project_structure
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -1976,7 +1984,7 @@ class ToolManager:
                 result_container["result"] = analyze_project_structure(
                     directory=tool_input.get("directory", "."),
                     include_external=tool_input.get("include_external", False),
-                    workspace_path=self._file_root,
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2000,10 +2008,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_apply_diff(self, tool_input: dict) -> str:
+    def _execute_apply_diff(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute diff application with workspace integration."""
         from penguin.tools.core.support import apply_diff_to_file
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -2023,7 +2035,7 @@ class ToolManager:
                     file_path=tool_input["file_path"],
                     diff_content=tool_input["diff_content"],
                     backup=tool_input.get("backup", True),
-                    workspace_path=self._file_root,
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2047,10 +2059,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_replace_lines(self, tool_input: dict) -> str:
+    def _execute_replace_lines(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute line replacement with workspace integration."""
         from penguin.tools.core.support import replace_lines
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -2067,11 +2083,12 @@ class ToolManager:
         def _runner():
             try:
                 result_container["result"] = replace_lines(
-                    tool_input["path"],
+                    self._resolve_path_in_root(tool_input["path"], effective_root),
                     int(tool_input["start_line"]),
                     int(tool_input["end_line"]),
                     tool_input.get("new_content", ""),
                     verify=tool_input.get("verify", True),
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2095,10 +2112,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_insert_lines(self, tool_input: dict) -> str:
+    def _execute_insert_lines(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute line insertion with workspace integration."""
         from penguin.tools.core.support import insert_lines
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -2115,9 +2136,10 @@ class ToolManager:
         def _runner():
             try:
                 result_container["result"] = insert_lines(
-                    tool_input["path"],
+                    self._resolve_path_in_root(tool_input["path"], effective_root),
                     int(tool_input["after_line"]),
                     tool_input.get("new_content", ""),
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2141,10 +2163,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_delete_lines(self, tool_input: dict) -> str:
+    def _execute_delete_lines(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute line deletion with workspace integration."""
         from penguin.tools.core.support import delete_lines
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -2161,9 +2187,10 @@ class ToolManager:
         def _runner():
             try:
                 result_container["result"] = delete_lines(
-                    tool_input["path"],
+                    self._resolve_path_in_root(tool_input["path"], effective_root),
                     int(tool_input["start_line"]),
                     int(tool_input["end_line"]),
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2187,10 +2214,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_edit_with_pattern(self, tool_input: dict) -> str:
+    def _execute_edit_with_pattern(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute pattern-based editing with workspace integration."""
         from penguin.tools.core.support import edit_file_with_pattern
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -2211,7 +2242,7 @@ class ToolManager:
                     search_pattern=tool_input["search_pattern"],
                     replacement=tool_input["replacement"],
                     backup=tool_input.get("backup", True),
-                    workspace_path=self._file_root,
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2235,9 +2266,13 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_multiedit(self, tool_input: dict) -> str:
+    def _execute_multiedit(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute multiedit facade with workspace integration."""
         from penguin.tools.multiedit import apply_multiedit
+
+        effective_root = file_root or self._file_root
 
         content = tool_input.get("content", "")
         do_apply = bool(tool_input.get("apply", False))
@@ -2277,7 +2312,7 @@ class ToolManager:
         except Exception:
             pass
         result = apply_multiedit(
-            content, dry_run=(not do_apply), workspace_root=self._file_root
+            content, dry_run=(not do_apply), workspace_root=effective_root
         )
         try:
             import json
@@ -2434,14 +2469,75 @@ class ToolManager:
             # Defer until first access
             self._lazy_initialized["file_map"] = False
 
+    def _merged_execution_context(
+        self, context: Optional[dict[str, Any]] = None
+    ) -> dict[str, Any]:
+        """Merge explicit context with request-scoped execution context."""
+        merged: dict[str, Any] = {}
+        current = get_current_execution_context_dict()
+        if isinstance(current, dict):
+            merged.update(current)
+        if isinstance(context, dict):
+            merged.update(context)
+        return merged
+
+    def _resolve_file_root(self, context: Optional[dict[str, Any]] = None) -> str:
+        """Resolve effective file root for a tool call without global mutation."""
+        merged = self._merged_execution_context(context)
+        candidate = merged.get("directory") or merged.get("project_root")
+        if isinstance(candidate, str) and candidate:
+            try:
+                resolved = Path(candidate).expanduser().resolve()
+                if resolved.exists() and resolved.is_dir():
+                    return str(resolved)
+            except Exception:
+                pass
+        return self._file_root
+
+    def _resolve_path_in_root(self, path: str, file_root: str) -> str:
+        """Resolve relative paths against the effective file root."""
+        try:
+            candidate = Path(path)
+            if candidate.is_absolute():
+                return str(candidate)
+            return str((Path(file_root) / candidate).resolve())
+        except Exception:
+            return path
+
+    def _normalize_tool_input_paths(
+        self, tool_input: dict[str, Any], file_root: str
+    ) -> dict[str, Any]:
+        """Normalize path-like tool inputs against request-scoped file root."""
+        normalized = dict(tool_input or {})
+        path_like_keys = {
+            "path",
+            "file_path",
+            "directory",
+            "search_path",
+            "file1",
+            "file2",
+        }
+        for key in path_like_keys:
+            value = normalized.get(key)
+            if isinstance(value, str) and value.strip():
+                normalized[key] = self._resolve_path_in_root(value, file_root)
+        return normalized
+
     def execute_tool(
         self, tool_name: str, tool_input: dict, context: dict = None
     ) -> Union[str, dict]:
         with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
+            effective_context = self._merged_execution_context(context)
+            file_root = self._resolve_file_root(effective_context)
+            effective_context.setdefault("directory", file_root)
+            effective_context.setdefault("project_root", file_root)
+            effective_context.setdefault("workspace_root", file_root)
+            tool_input = self._normalize_tool_input_paths(tool_input, file_root)
+
             # Check permission before executing
             if self._permission_enabled:
                 result, reason = self.check_tool_permission(
-                    tool_name, tool_input, context
+                    tool_name, tool_input, effective_context
                 )
                 if result is not None:
                     _ensure_permission_imports()
@@ -2462,15 +2558,19 @@ class ToolManager:
 
                         # Extract operation and resource for approval tracking
                         operation = (
-                            context.get("operation", f"tool.{tool_name}")
-                            if context
+                            effective_context.get("operation", f"tool.{tool_name}")
+                            if effective_context
                             else f"tool.{tool_name}"
                         )
                         resource = tool_input.get(
                             "path",
                             tool_input.get("file_path", tool_input.get("target", "")),
                         )
-                        session_id = context.get("session_id") if context else None
+                        session_id = (
+                            effective_context.get("session_id")
+                            if effective_context
+                            else None
+                        )
 
                         # Check for pre-approvals first
                         try:
@@ -2496,8 +2596,8 @@ class ToolManager:
                                     session_id=session_id,
                                     context={
                                         "tool_input": tool_input,
-                                        "agent_id": context.get("agent_id")
-                                        if context
+                                        "agent_id": effective_context.get("agent_id")
+                                        if effective_context
                                         else None,
                                     },
                                 )
@@ -2551,22 +2651,22 @@ class ToolManager:
 
             tool_map = {
                 "create_folder": lambda: self._execute_file_operation(
-                    "create_folder", tool_input
+                    "create_folder", tool_input, file_root=file_root
                 ),
                 "create_file": lambda: self._execute_file_operation(
-                    "create_file", tool_input
+                    "create_file", tool_input, file_root=file_root
                 ),
                 "write_to_file": lambda: self._execute_file_operation(
-                    "write_to_file", tool_input
+                    "write_to_file", tool_input, file_root=file_root
                 ),
                 "read_file": lambda: self._execute_file_operation(
-                    "read_file", tool_input
+                    "read_file", tool_input, file_root=file_root
                 ),
                 "list_files": lambda: self._execute_file_operation(
-                    "list_files", tool_input
+                    "list_files", tool_input, file_root=file_root
                 ),
                 "find_file": lambda: self._execute_file_operation(
-                    "find_file", tool_input
+                    "find_file", tool_input, file_root=file_root
                 ),
                 "add_declarative_note": lambda: self.add_declarative_note(
                     tool_input["category"], tool_input["content"]
@@ -2585,14 +2685,18 @@ class ToolManager:
                         tool_input.get("categories"),
                     )
                 ),
-                "code_execution": lambda: self.execute_code(tool_input["code"]),
+                "code_execution": lambda: self.execute_code(
+                    tool_input["code"], cwd=file_root
+                ),
                 "get_file_map": lambda: self.get_file_map(
-                    tool_input.get("directory", "")
+                    tool_input.get("directory", ""), file_root=file_root
                 ),
                 "lint_python": lambda: lint_python(
                     tool_input["target"], tool_input["is_file"]
                 ),
-                "execute_command": lambda: self.execute_command(tool_input["command"]),
+                "execute_command": lambda: self.execute_command(
+                    tool_input["command"], cwd=file_root
+                ),
                 "add_summary_note": lambda: self.add_summary_note(
                     tool_input["category"], tool_input["content"]
                 ),
@@ -2649,6 +2753,7 @@ class ToolManager:
                     tool_input.get("directory"),
                     tool_input.get("analysis_type", "all"),
                     tool_input.get("include_external", False),
+                    file_root=file_root,
                 ),
                 "reindex_workspace": lambda: self._execute_async_tool(
                     self.reindex_workspace(
@@ -2658,14 +2763,26 @@ class ToolManager:
                     )
                 ),
                 "enhanced_diff": lambda: self._execute_enhanced_diff(tool_input),
-                "analyze_project": lambda: self._execute_analyze_project(tool_input),
-                "apply_diff": lambda: self._execute_apply_diff(tool_input),
-                "replace_lines": lambda: self._execute_replace_lines(tool_input),
-                "insert_lines": lambda: self._execute_insert_lines(tool_input),
-                "delete_lines": lambda: self._execute_delete_lines(tool_input),
-                "multiedit_apply": lambda: self._execute_multiedit(tool_input),
+                "analyze_project": lambda: self._execute_analyze_project(
+                    tool_input, file_root=file_root
+                ),
+                "apply_diff": lambda: self._execute_apply_diff(
+                    tool_input, file_root=file_root
+                ),
+                "replace_lines": lambda: self._execute_replace_lines(
+                    tool_input, file_root=file_root
+                ),
+                "insert_lines": lambda: self._execute_insert_lines(
+                    tool_input, file_root=file_root
+                ),
+                "delete_lines": lambda: self._execute_delete_lines(
+                    tool_input, file_root=file_root
+                ),
+                "multiedit_apply": lambda: self._execute_multiedit(
+                    tool_input, file_root=file_root
+                ),
                 "edit_with_pattern": lambda: self._execute_edit_with_pattern(
-                    tool_input
+                    tool_input, file_root=file_root
                 ),
                 # Repository management tools
                 "create_improvement_pr": lambda: create_improvement_pr(
@@ -2781,8 +2898,11 @@ class ToolManager:
     def add_declarative_note(self, category, content):
         return self.declarative_memory_tool.add_note(category, content)
 
-    def get_file_map(self, directory: str = "") -> str:
-        return self.file_map.get_formatted_file_map(directory)
+    def get_file_map(self, directory: str = "", file_root: Optional[str] = None) -> str:
+        effective_root = file_root or self._file_root
+        if effective_root == self._file_root:
+            return self.file_map.get_formatted_file_map(directory)
+        return FileMap(effective_root).get_formatted_file_map(directory)
 
     def perform_grep_search(self, query, k=5, case_sensitive=False, search_files=True):
         patterns = query.split("|")  # Allow multiple patterns separated by |
@@ -2811,8 +2931,10 @@ class ToolManager:
     def add_message_to_search(self, message):
         self.grep_search.add_message(message)
 
-    def execute_code(self, code: str) -> str:
+    def execute_code(self, code: str, cwd: Optional[str] = None) -> str:
         import threading, json
+
+        effective_cwd = cwd or self._file_root
 
         # Allow a separate timeout for code execution; fall back to general tool timeout
         try:
@@ -2829,7 +2951,15 @@ class ToolManager:
 
         def _runner():
             try:
-                result_container["result"] = self.notebook_executor.execute_code(code)
+                executor = self.notebook_executor
+                with self._code_execution_lock:
+                    previous = getattr(executor, "active_directory", None)
+                    executor.active_directory = effective_cwd
+                    try:
+                        result_container["result"] = executor.execute_code(code)
+                    finally:
+                        if previous:
+                            executor.active_directory = previous
             except Exception as e:
                 result_container["error"] = str(e)
             finally:
@@ -2856,7 +2986,7 @@ class ToolManager:
             )
         return result_container["result"] or ""
 
-    def execute_command(self, command: str) -> str:
+    def execute_command(self, command: str, cwd: Optional[str] = None) -> str:
         try:
             # Determine the OS
             import platform
@@ -2887,12 +3017,13 @@ class ToolManager:
 
             result = None
             try:
+                effective_cwd = cwd or self._file_root
                 result = subprocess.run(
                     command,
                     shell=shell,
                     capture_output=True,
                     text=True,
-                    cwd=self._file_root,
+                    cwd=effective_cwd,
                     env=env,  # Use environment with Rich suppression
                     timeout=default_timeout,
                 )
@@ -3153,6 +3284,7 @@ class ToolManager:
         directory: Optional[str] = None,
         analysis_type: str = "all",
         include_external: bool = False,
+        file_root: Optional[str] = None,
     ) -> str:
         """Analyze codebase structure and dependencies using AST analysis."""
         # Check if memory tools are enabled with safe config access
@@ -3185,7 +3317,8 @@ class ToolManager:
             from collections import defaultdict
 
             # Default to active file root if no directory is specified
-            target_dir = Path(directory or self._file_root)
+            effective_root = file_root or self._file_root
+            target_dir = Path(directory or effective_root)
 
             if not target_dir.exists():
                 return json.dumps(

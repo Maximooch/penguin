@@ -131,12 +131,14 @@ Process a chat message with optional conversation support, multi-modal capabilit
 {
   "text": "Hello, how can you help me with Python development?",
   "conversation_id": "optional-conversation-id",
+  "session_id": "optional-session-id",
   "agent_id": "code-expert",
+  "directory": "/absolute/path/to/repo",
   "context": {"key": "value"},
   "context_files": ["path/to/file1.py", "path/to/file2.py"],
   "streaming": true,
   "max_iterations": 5,
-  "image_path": "/path/to/image.png",
+  "image_paths": ["/path/to/image.png"],
   "include_reasoning": false
 }
 ```
@@ -144,12 +146,14 @@ Process a chat message with optional conversation support, multi-modal capabilit
 **Parameters:**
 - `text` (required): The message content
 - `conversation_id` (optional): Continue an existing conversation
+- `session_id` (optional): Session identity for request scoping and directory binding (takes precedence for binding when both are provided)
 - `agent_id` (optional): Route to a specific agent
+- `directory` (optional): Working/project directory for scoped tool execution
 - `context` (optional): Additional context dictionary
 - `context_files` (optional): Files to load as context
-- `streaming` (optional): Enable streaming response (default: true)
+- `streaming` (optional): Accepted for compatibility; REST `/chat/message` returns final payloads (use WebSocket endpoint for token streaming)
 - `max_iterations` (optional): Maximum reasoning iterations (default: 5)
-- `image_path` (optional): Path to image for vision models
+- `image_paths` (optional): List of image paths for vision models
 - `include_reasoning` (optional): Include reasoning content in response
 
 **Response:**
@@ -174,6 +178,12 @@ Process a chat message with optional conversation support, multi-modal capabilit
 - Improved error handling and response consistency
 - Per-agent conversation tracking
 
+**Session Directory Binding and Isolation:**
+- Session-to-directory binding is immutable by default. The first valid `directory` bound to a `session_id`/`conversation_id` wins.
+- Rebinding the same session to a different directory returns `409 Conflict`.
+- Invalid directories return `400 Bad Request`.
+- Request execution is context-scoped, so concurrent requests in different repos keep tool/file/command roots isolated.
+
 #### WebSocket `/api/v1/chat/stream`
 
 Stream chat responses in real-time with support for reasoning models and multiple agents.
@@ -189,9 +199,12 @@ const ws = new WebSocket('ws://localhost:8000/api/v1/chat/stream');
   "text": "Explain this code",
   "agent_id": "code-expert",
   "conversation_id": "conv_123",
+  "session_id": "conv_123",
+  "directory": "/absolute/path/to/repo",
   "include_reasoning": true,
   "max_iterations": 5,
-  "context_files": ["main.py"]
+  "context_files": ["main.py"],
+  "image_paths": ["/path/to/screenshot.png"]
 }
 ```
 
@@ -230,6 +243,7 @@ const ws = new WebSocket('ws://localhost:8000/api/v1/chat/stream');
 - Separate reasoning token stream for reasoning-capable models
 - Progress tracking for multi-iteration processing
 - Agent-scoped conversations
+- Session-scoped directory binding for per-repo isolation
 - Automatic buffer flushing on timeout (100ms)
 
 ### Multi-Agent Endpoints
@@ -1487,6 +1501,16 @@ This integration ensures:
 4. **PenguinCore**: Coordinates multi-agent system with event-driven architecture
 5. **ConversationManager**: Manages per-agent sessions with checkpointing
 6. **Engine**: Provides high-level task orchestration and stop conditions
+
+## Concurrency Isolation Audit (Recommended)
+
+For substantial web/runtime changes, run a focused isolation audit before calling a deployment production-safe:
+
+1. Verify request-dependent state (`session_id`, `conversation_id`, `agent_id`, `directory`) is context-scoped and not stored in shared mutable globals.
+2. Verify concurrent requests against different repos do not cross-write files or leak tool cwd roots.
+3. Verify event payloads (`message.*`, `tool.*`, stream events) preserve the correct scoped session/conversation IDs.
+4. Verify fallback paths (non-Engine or legacy paths) either keep equivalent isolation guarantees or are explicitly documented.
+5. Re-run targeted multi-session tests with parallel chat/tool workloads before release.
 
 ## Running the Server
 

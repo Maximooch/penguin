@@ -420,9 +420,56 @@ For each phase, validate with:
 - Scenario matrix core cases validated manually + automated service tests in `tests/api/test_vcs_status_service.py`.
 - Added OpenCode-shaped `/session`, `/session/{id}`, and `/session/{id}/message` adapters backed by session view services.
 - Added persisted OpenCode transcript storage (`_opencode_transcript_v1`) from live `message.*` and `message.part.*` events.
+- Session->directory binding is now immutable by default (rebind attempts return 409).
+- Web request execution now uses request-scoped execution context plumbing instead of route-level root mutation.
+- Tool execution root resolution is now context-driven (`directory/project_root/workspace_root`) for parallel session safety.
+
+### Track H: Concurrent Session Isolation
+- [x] H1. Introduce request-scoped execution context across web request -> tool execution.
+  - Owner: `penguin/system/execution_context.py`, `penguin/web/routes.py`, `penguin/tools/tool_manager.py`, `penguin/utils/parser.py`.
+  - Acceptance: concurrent sessions in different repos resolve `pwd`, file tools, and command tools to the correct bound directory.
+- [~] H2. Remove remaining implicit global root dependencies (`os.getcwd`, env-root assumptions) from tool and parser paths.
+  - Owner: tool helpers and security/path enforcement integration.
+  - Acceptance: no request path requires global `PENGUIN_CWD` mutation for correctness.
+  - Progress: Engine component resolution now uses agent-scoped conversation manager views (no `set_current_agent` mutation in Engine request path); core request path now prefers scoped managers and context-based event/session tagging.
+  - Progress: OpenCode event translation now uses session-scoped TUI adapters/tool-part keys and per-session stream state tracking in `core.py` to prevent cross-session part/message state collisions.
+  - Progress: Engine wallet-guard loop state moved to per-run state (`EngineRunState.loop_state`) to avoid concurrent iteration cross-talk.
+  - Progress: core streaming manager keys now resolve to request scope (`session_id:agent_id`) instead of agent-only identity in `_handle_stream_chunk` / `finalize_streaming_message`.
+  - Progress: `PartEventAdapter` now balances session `busy`/`idle` lifecycle for both stream and tool-only flows and finalizes tool-created assistant messages.
+- [x] H3. Add explicit parallel multi-session API tests (two sessions, two repos, concurrent prompts/actions).
+  - Owner: `tests/api/*`.
+  - Acceptance: no cross-session directory bleed under concurrent execution.
+  - Progress: added `tests/api/test_concurrent_session_isolation.py` validating parallel `execute_command (pwd)` and file write/read isolation across two repo roots.
+- [ ] H4. Run a focused mutable-state isolation audit before production-safe declaration.
+  - Owner: `penguin/core.py`, `penguin/engine.py`, `penguin/system/conversation_manager.py`, web routes/SSE adapters.
+  - Acceptance: all request-dependent fields are either request-scoped (`contextvars`) or local variables; no cross-request reliance on shared mutable pointers.
+  - Audit checklist:
+    - Verify no request path mutates shared active conversation/session pointers without scoping.
+    - Verify event/session identifiers are sourced from request context, not process-global fields.
+    - Verify concurrent same-process requests across different repos/sessions do not cross-write files/messages.
+    - Verify fallback (legacy/no-engine) path behavior is documented and gated if not fully isolated.
+
+#### Concurrent hardening execution mirror (from `tui-opencode-port.md`)
+- Objective: production-safe concurrent OpenCode web sessions for same-agent (`default`) multi-turn usage across repos, without queued/stuck UI.
+- Root cause hypothesis: stream lifecycle was keyed by `agent_id` (`default`) instead of session scope, causing shared-state collisions.
+- Additional finding: single-session stuck states can occur when tool fallback opens `session.status=busy` without a guaranteed idle transition.
+- Ordered implementation tracks:
+  1) Add deterministic stream scope key (`session_id:agent_id`) through core stream handling and `AgentStreamingStateManager`.
+  2) Remove ambiguous/double finalize paths so each iteration finalizes exactly once with explicit scope.
+  3) Ensure default-agent request paths use scoped conversation handles (no shared mutable pointer reliance).
+  4) Guarantee completion ordering (critical final events awaited or flush-barriered before REST return).
+  5) Harden TUI adapter lifecycle: session-scoped adapters, namespaced tool keys, bounded adapter cleanup, and balanced busy/idle transitions.
+  6) Publish formal audit artifact + docs invariants (`stream scope key`, immutable binding, completion ordering).
+- Test matrix mirror:
+  - Unit stream scope isolation (`tests/llm/test_stream_scope_isolation.py`).
+  - Unit core routing (`tests/test_core_stream_scope.py`).
+  - API parallel multi-turn default-agent isolation (`tests/api/test_concurrent_session_isolation.py`).
+  - API SSE filtering/final completion correctness (`tests/api/test_sse_and_status_scoping.py`).
+  - Regression keeps: binding + execution-context + multi-agent smoke.
+  - Manual gates: two-session Cadence/Tuxford (5 prompts each) + single-session 5-prompt no-stuck regression.
 
 ### Track E: Plan/TODO + Agent Features
-- [ ] E1. Implement `session.todo` from `ProjectManager` task graph.
+- [ ] E1. Implement `session.todo` from `ProjectManager` task graph. # NOTE: a new todo tool would be great, that can be connected to a task/project, or independent of. This would cover 80% of what we're looking for here.
   - Owner: `penguin/project` + route adapter.
   - Acceptance: todo panel shows stable list with statuses.
 - [ ] E2. Emit `todo.updated` on task create/update/complete.

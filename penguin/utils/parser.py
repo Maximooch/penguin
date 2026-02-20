@@ -18,6 +18,7 @@ from penguin.local_task.manager import ProjectManager
 from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
+from penguin.system.execution_context import get_current_execution_context
 from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
 from penguin.constants import (
     DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
@@ -521,9 +522,9 @@ class ActionExecutor:
                 logger.debug(
                     f"Executing sync handler for {action.action_type.value} in thread pool"
                 )
-                # Offload synchronous tools to thread pool to avoid blocking the event loop
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(None, handler, action.params)
+                # Offload synchronous tools to thread pool to avoid blocking the event loop.
+                # asyncio.to_thread preserves contextvars for per-request execution context.
+                result = await asyncio.to_thread(handler, action.params)
 
                 if asyncio.iscoroutine(result):
                     result = await result
@@ -996,13 +997,24 @@ class ActionExecutor:
             int(DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP),
         )
 
-        # Get current working directory for context
-        cwd = os.getcwd()
+        # Get request-scoped working directory for context
+        execution_context = get_current_execution_context()
+        cwd = (
+            execution_context.directory
+            if execution_context and execution_context.directory
+            else os.getcwd()
+        )
+
+        def _resolve_explore_path(raw_path: str) -> Path:
+            candidate = Path(raw_path)
+            if candidate.is_absolute():
+                return candidate
+            return (Path(cwd) / candidate).resolve()
 
         # Tool execution functions
         def execute_list_files(path: str) -> str:
             try:
-                p = Path(path)
+                p = _resolve_explore_path(path)
                 if not p.exists():
                     return f"Directory not found: {path}"
                 if not p.is_dir():
@@ -1026,7 +1038,7 @@ class ActionExecutor:
 
         def execute_read_file(path: str, max_lines: int = 200) -> str:
             try:
-                p = Path(path)
+                p = _resolve_explore_path(path)
                 if not p.exists():
                     return f"File not found: {path}"
                 if not p.is_file():
@@ -1061,7 +1073,7 @@ class ActionExecutor:
                         "--include=*.yaml",
                         "--include=*.yml",
                         pattern,
-                        path,
+                        str(_resolve_explore_path(path)),
                     ],
                     capture_output=True,
                     text=True,

@@ -35,17 +35,30 @@ The OpenAPI / Swagger UI is served at:
 GET http://<host>:<port>/docs
 ```
 Key route groups:
-1. `/projects` – CRUD for projects
-2. `/tasks` – CRUD & execution for tasks
-3. `/chat` – Chat endpoint (POST message, returns assistant reply)
-4. `/ws/chat` – WebSocket for streaming chat responses
+1. `/api/v1/projects` – CRUD for projects
+2. `/api/v1/tasks` – CRUD & execution for tasks
+3. `/api/v1/chat/message` – Chat endpoint (POST message, returns assistant reply)
+4. `/api/v1/chat/stream` – WebSocket for streaming chat responses
+5. `/api/v1/*` status/session endpoints for path, VCS, formatter, and LSP
 
 For full path details, inspect the live Swagger page or read `penguin/penguin/web/routes.py`.
 
 > Example – list projects:
 > ```bash
-> curl http://localhost:8000/projects
+> curl http://localhost:8000/api/v1/projects
 > ```
+
+### Session + Directory Isolation
+
+For OpenCode-compatible multi-session workflows, chat requests support:
+- `session_id` and/or `conversation_id`
+- `directory` (repo root for tool execution)
+
+Behavior:
+- The first valid directory bound to a session is immutable by default.
+- Rebinding a session to a different directory returns `409`.
+- Invalid directories return `400`.
+- Request execution is context-scoped so parallel sessions can run safely across different repos.
 
 ---
 
@@ -61,4 +74,4 @@ Authentication is **not** yet implemented.  The server should only be exposed on
 
 ---
 
-*Last updated: June 13th 2025* 
+*Last updated: February 16th 2026* 

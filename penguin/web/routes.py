@@ -14,7 +14,6 @@ from fastapi import (
 from pydantic import BaseModel  # type: ignore
 from dataclasses import asdict  # type: ignore
 from datetime import datetime  # type: ignore
-from contextlib import asynccontextmanager
 import asyncio
 import copy
 import json
@@ -50,6 +49,11 @@ from penguin.web.services.system_status import (
     get_path_info,
     get_vcs_info,
 )
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+    normalize_directory,
+)
 from penguin.utils.errors import AgentNotFoundError, PenguinError
 
 logger = logging.getLogger(__name__)
@@ -73,75 +77,79 @@ def _format_error_response(error: Exception, status_code: int = 500) -> HTTPExce
 
 
 MAX_IMAGES_PER_REQUEST = 10
-_directory_scope_lock = asyncio.Lock()
 
 
-@asynccontextmanager
-async def _scoped_directory(core: PenguinCore, directory: Optional[str]):
-    """Temporarily scope process/runtime directory for a request."""
-    if not directory:
-        yield
-        return
+def _ensure_session_directory_map(core: PenguinCore) -> dict[str, str]:
+    """Ensure core has a session->directory map and return it."""
+    session_dirs = getattr(core, "_opencode_session_directories", None)
+    if not isinstance(session_dirs, dict):
+        session_dirs = {}
+        setattr(core, "_opencode_session_directories", session_dirs)
+    return session_dirs
 
-    try:
-        target = Path(directory).expanduser().resolve()
-    except Exception:
-        yield
-        return
 
-    if not target.exists() or not target.is_dir():
-        yield
-        return
+def _bind_session_directory(
+    core: PenguinCore,
+    session_id: Optional[str],
+    directory: Optional[str],
+) -> Optional[str]:
+    """Bind directory to a session id with immutable-by-default semantics."""
+    if directory and not normalize_directory(directory):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid directory: {directory}",
+        )
 
-    runtime = getattr(core, "runtime_config", None)
-    tool_manager = getattr(core, "tool_manager", None)
-    original_cwd = os.getcwd()
-    original_active = getattr(runtime, "active_root", None) if runtime else None
-    original_project = getattr(runtime, "project_root", None) if runtime else None
-    original_workspace = getattr(runtime, "workspace_root", None) if runtime else None
-    original_tool_project = (
-        getattr(tool_manager, "project_root", None) if tool_manager else None
-    )
-    original_tool_mode = (
-        getattr(tool_manager, "file_root_mode", None) if tool_manager else None
-    )
+    if not session_id:
+        return normalize_directory(directory)
 
-    async with _directory_scope_lock:
-        try:
-            os.chdir(str(target))
-            if runtime is not None:
-                try:
-                    runtime.active_root = str(target)
-                    runtime.project_root = str(target)
-                    runtime.workspace_root = str(target)
-                except Exception:
-                    pass
-            if tool_manager is not None:
-                try:
-                    tool_manager.set_project_root(str(target))
-                    tool_manager.set_execution_root("project")
-                except Exception:
-                    pass
-            yield
-        finally:
+    session_dirs = _ensure_session_directory_map(core)
+    existing = normalize_directory(session_dirs.get(session_id))
+    requested = normalize_directory(directory)
+
+    if existing:
+        if requested and Path(existing) != Path(requested):
             try:
-                os.chdir(original_cwd)
+                if Path(existing).samefile(requested):
+                    return existing
             except Exception:
                 pass
-            if runtime is not None:
-                try:
-                    runtime.active_root = original_active
-                    runtime.project_root = original_project
-                    runtime.workspace_root = original_workspace
-                except Exception:
-                    pass
-            if tool_manager is not None and original_tool_project:
-                try:
-                    tool_manager.set_project_root(str(original_tool_project))
-                    if original_tool_mode in {"project", "workspace"}:
-                        tool_manager.set_execution_root(str(original_tool_mode))
-                except Exception:
-                    pass
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Session '{session_id}' is already bound to '{existing}' and "
+                    f"cannot be reassigned to '{requested}'"
+                ),
+            )
+        return existing
+
+    if requested:
+        session_dirs[session_id] = requested
+        return requested
+
+    return None
+
+
+def _build_execution_context(
+    core: PenguinCore,
+    *,
+    session_id: Optional[str],
+    conversation_id: Optional[str],
+    agent_id: Optional[str],
+    directory: Optional[str],
+) -> ExecutionContext:
+    """Create request-scoped execution context for concurrent web sessions."""
+    path_info = get_path_info(core, directory=directory, session_id=session_id)
+    effective_directory = normalize_directory(path_info.get("directory"))
+    return ExecutionContext(
+        session_id=session_id,
+        conversation_id=conversation_id,
+        agent_id=agent_id,
+        directory=effective_directory,
+        project_root=effective_directory,
+        workspace_root=effective_directory,
+        request_id=str(uuid.uuid4()),
+    )
 
 
 class MessageRequest(BaseModel):
@@ -1436,12 +1444,20 @@ async def handle_chat_message(
         if not request.conversation_id and request.session_id:
             request.conversation_id = request.session_id
 
-        if request.conversation_id and request.directory:
-            session_dirs = getattr(core, "_opencode_session_directories", None)
-            if not isinstance(session_dirs, dict):
-                session_dirs = {}
-                setattr(core, "_opencode_session_directories", session_dirs)
-            session_dirs[request.conversation_id] = request.directory
+        # Prefer explicit session_id when provided; conversation_id is continuity metadata.
+        effective_session_id = request.session_id or request.conversation_id
+        bound_directory = _bind_session_directory(
+            core,
+            effective_session_id,
+            request.directory,
+        )
+        execution_context = _build_execution_context(
+            core,
+            session_id=effective_session_id,
+            conversation_id=request.conversation_id,
+            agent_id=request.agent_id,
+            directory=bound_directory or request.directory,
+        )
 
         # Maybe?
         # # If no conversation_id is provided, try to use the most recent one
@@ -1469,6 +1485,7 @@ async def handle_chat_message(
         # If reasoning is requested, capture reasoning chunks via a local callback
         reasoning_buf: List[str] = []
         stream_cb = None
+        # Respect client streaming preference for OpenCode compatibility.
         effective_streaming = bool(request.streaming)
         if request.include_reasoning:
             effective_streaming = (
@@ -1482,7 +1499,7 @@ async def handle_chat_message(
             stream_cb = _rest_stream_cb
 
         # Process the message with all available options
-        async with _scoped_directory(core, request.directory):
+        with execution_context_scope(execution_context):
             process_result = await core.process(
                 input_data=input_data,
                 context=request.context,
@@ -1502,6 +1519,8 @@ async def handle_chat_message(
         if request.include_reasoning:
             resp["reasoning"] = "".join(reasoning_buf)
         return resp
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1642,12 +1661,29 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
             # Extract parameters
             text = data.get("text", "")
             conversation_id = data.get("conversation_id")
+            session_id = data.get("session_id")
             context_files = data.get("context_files")
             context = data.get("context")
             max_iterations = data.get("max_iterations", 100)
             image_paths = data.get("image_paths")  # Multiple images supported
             include_reasoning = bool(data.get("include_reasoning", False))
             agent_id = data.get("agent_id")
+            directory = data.get("directory")
+
+            # Prefer explicit session_id when provided; conversation_id is continuity metadata.
+            effective_session_id = session_id or conversation_id
+            bound_directory = _bind_session_directory(
+                core,
+                effective_session_id,
+                directory,
+            )
+            execution_context = _build_execution_context(
+                core,
+                session_id=effective_session_id,
+                conversation_id=conversation_id,
+                agent_id=agent_id,
+                directory=bound_directory or directory,
+            )
 
             # Log conversation ID for debugging
             print(
@@ -1769,18 +1805,19 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     except Exception as e:
                         logger.error(f"Error enqueuing stream chunk: {e}")
 
-                process_task = asyncio.create_task(
-                    core.process(
-                        input_data=input_data,
-                        conversation_id=conversation_id,
-                        agent_id=agent_id,
-                        max_iterations=max_iterations,
-                        context_files=context_files,
-                        context=context,
-                        streaming=True,
-                        stream_callback=per_request_stream_callback,
+                with execution_context_scope(execution_context):
+                    process_task = asyncio.create_task(
+                        core.process(
+                            input_data=input_data,
+                            conversation_id=conversation_id,
+                            agent_id=agent_id,
+                            max_iterations=max_iterations,
+                            context_files=context_files,
+                            context=context,
+                            streaming=True,
+                            stream_callback=per_request_stream_callback,
+                        )
                     )
-                )
 
                 # Wait for the core process to finish
                 process_result = await process_task

@@ -10,14 +10,14 @@ Basic `curl` commands for interacting with the API server.
 ```bash
 curl -X POST http://localhost:8000/api/v1/chat/message \
   -H "Content-Type: application/json" \
-  -d '{"text": "Hello"}'
+  -d '{"text": "Hello", "session_id": "example-session", "directory": "/absolute/path/to/repo"}'
 ```
 
 ## Stream Chat Responses
 ```bash
 # Requires websocat or similar tool
 websocat ws://localhost:8000/api/v1/chat/stream
-{"text": "Hello"}
+{"text": "Hello", "session_id": "example-stream", "directory": "/absolute/path/to/repo"}
 ```
 
 ## Execute a Task

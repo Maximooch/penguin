@@ -2102,7 +2102,12 @@ def enhanced_read_file(
 
 
 def replace_lines(
-    path: str, start_line: int, end_line: int, new_content: str, verify: bool = True
+    path: str,
+    start_line: int,
+    end_line: int,
+    new_content: str,
+    verify: bool = True,
+    workspace_path: Optional[str] = None,
 ) -> str:
     """
     Replace lines in a file with new content.
@@ -2123,7 +2128,9 @@ def replace_lines(
             if root_env in ("project", "workspace")
             else get_default_write_root()
         )
-        safe_path = enforce_allowed_path(Path(path), root_pref=root_pref)
+        safe_path = enforce_allowed_path(
+            Path(path), root_pref=root_pref, cwd_override=workspace_path
+        )
 
         # Read original
         with open(safe_path, "r", encoding="utf-8") as f:
@@ -2175,7 +2182,12 @@ def replace_lines(
         return f"Error in replace_lines: {str(e)}\n{traceback.format_exc()}"
 
 
-def insert_lines(path: str, after_line: int, new_content: str) -> str:
+def insert_lines(
+    path: str,
+    after_line: int,
+    new_content: str,
+    workspace_path: Optional[str] = None,
+) -> str:
     """Insert lines after a specific line."""
     import os
     import traceback
@@ -2189,7 +2201,9 @@ def insert_lines(path: str, after_line: int, new_content: str) -> str:
             if root_env in ("project", "workspace")
             else get_default_write_root()
         )
-        safe_path = enforce_allowed_path(Path(path), root_pref=root_pref)
+        safe_path = enforce_allowed_path(
+            Path(path), root_pref=root_pref, cwd_override=workspace_path
+        )
 
         with open(safe_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
@@ -2223,7 +2237,12 @@ def insert_lines(path: str, after_line: int, new_content: str) -> str:
         return f"Error in insert_lines: {str(e)}\n{traceback.format_exc()}"
 
 
-def delete_lines(path: str, start_line: int, end_line: int) -> str:
+def delete_lines(
+    path: str,
+    start_line: int,
+    end_line: int,
+    workspace_path: Optional[str] = None,
+) -> str:
     """Delete a range of lines."""
     import os
     import traceback
@@ -2237,7 +2256,9 @@ def delete_lines(path: str, start_line: int, end_line: int) -> str:
             if root_env in ("project", "workspace")
             else get_default_write_root()
         )
-        safe_path = enforce_allowed_path(Path(path), root_pref=root_pref)
+        safe_path = enforce_allowed_path(
+            Path(path), root_pref=root_pref, cwd_override=workspace_path
+        )
 
         with open(safe_path, "r", encoding="utf-8") as f:
             lines = f.readlines()

@@ -174,6 +174,7 @@ from penguin.run_mode import RunMode
 
 # Core systems
 from penguin.system.conversation_manager import ConversationManager
+from penguin.system.execution_context import get_current_execution_context
 from penguin.system.state import MessageCategory, Message
 
 # System Prompt
@@ -691,6 +692,7 @@ class PenguinCore:
             self.event_bus,
             persist_callback=self._persist_opencode_event,
         )
+        self._tui_adapters: Dict[str, Any] = {}
 
         # Subscribe to stream events and translate to OpenCode format
         self._subscribe_to_stream_events()
@@ -790,7 +792,9 @@ class PenguinCore:
                 logger.debug(f"Coordinator unavailable during engine init: {coord_err}")
         except Exception as e:
             logger.warning(
-                f"Failed to initialize Engine layer (fallback to legacy core processing): {e}"
+                "Failed to initialize Engine layer (fallback to legacy core processing): %s",
+                e,
+                exc_info=True,
             )
             self.engine = None
 
@@ -1619,7 +1623,17 @@ class PenguinCore:
         try:
             # Resolve the active conversation manager for the agent (if provided)
             conversation_manager = self.conversation_manager
-            if agent_id:
+            if self.engine:
+                try:
+                    candidate_cm = self.engine.get_conversation_manager(agent_id)
+                    if candidate_cm is not None:
+                        conversation_manager = candidate_cm
+                except Exception as engine_err:
+                    logger.warning(
+                        f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}"
+                    )
+            elif agent_id:
+                # Legacy fallback only: activate agent on shared manager when Engine is unavailable.
                 try:
                     if hasattr(conversation_manager, "set_current_agent"):
                         conversation_manager.set_current_agent(agent_id)
@@ -1627,24 +1641,11 @@ class PenguinCore:
                     logger.warning(
                         f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}"
                     )
-                if self.engine:
-                    try:
-                        candidate_cm = self.engine.get_conversation_manager(agent_id)
-                        if candidate_cm is not None:
-                            conversation_manager = candidate_cm
-                            if hasattr(candidate_cm, "set_current_agent"):
-                                candidate_cm.set_current_agent(agent_id)
-                    except Exception as engine_err:
-                        logger.warning(
-                            f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}"
-                        )
 
             # Add context if provided
             if context:
                 for key, value in context.items():
                     conversation_manager.add_context(f"{key}: {value}")
-            # Store conversation_id for event emission (SSE filtering)
-            self._current_conversation_id = conversation_id
             # Process through conversation manager (handles context files)
             return await conversation_manager.process_message(
                 message=message,
@@ -1832,9 +1833,6 @@ class PenguinCore:
             }
 
             logger.debug(
-                f"ACTION RESULT TEST: System outputs visible to LLM: {[msg for msg in messages if 'system' in msg.get('role', '') and 'Action executed' in str(msg.get('content', ''))]}"
-            )
-            print(
                 f"ACTION RESULT TEST: System outputs visible to LLM: {[msg for msg in messages if 'system' in msg.get('role', '') and 'Action executed' in str(msg.get('content', ''))]}"
             )
 
@@ -2246,10 +2244,18 @@ class PenguinCore:
 
         if not message and not image_paths:
             return {"assistant_response": "No input provided", "action_results": []}
-        # Store conversation_id for event emission (SSE filtering)
-        self._current_conversation_id = conversation_id
         conversation_manager = self.conversation_manager
-        if agent_id:
+        if self.engine:
+            try:
+                candidate_cm = self.engine.get_conversation_manager(agent_id)
+                if candidate_cm is not None:
+                    conversation_manager = candidate_cm
+            except Exception as engine_err:
+                logger.warning(
+                    f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}"
+                )
+        elif agent_id:
+            # Legacy fallback only: activate agent on shared manager when Engine is unavailable.
             try:
                 if hasattr(conversation_manager, "set_current_agent"):
                     conversation_manager.set_current_agent(agent_id)
@@ -2257,28 +2263,33 @@ class PenguinCore:
                 logger.warning(
                     f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}"
                 )
-            if self.engine:
-                try:
-                    candidate_cm = self.engine.get_conversation_manager(agent_id)
-                    if candidate_cm is not None:
-                        conversation_manager = candidate_cm
-                        if hasattr(candidate_cm, "set_current_agent"):
-                            candidate_cm.set_current_agent(agent_id)
-                except Exception as engine_err:
-                    logger.warning(
-                        f"Engine conversation manager lookup failed for agent '{agent_id}': {engine_err}"
-                    )
 
         try:
             # Load conversation if ID provided
             if conversation_id:
-                if not conversation_manager.load(conversation_id):
+                scoped_conversation = getattr(
+                    conversation_manager, "conversation", None
+                )
+                if scoped_conversation is not None and hasattr(
+                    scoped_conversation, "load"
+                ):
+                    if not scoped_conversation.load(conversation_id):
+                        logger.warning(f"Failed to load conversation {conversation_id}")
+                elif not conversation_manager.load(conversation_id):
                     logger.warning(f"Failed to load conversation {conversation_id}")
 
             # Load context files if specified
             if context_files:
+                scoped_conversation = getattr(
+                    conversation_manager, "conversation", None
+                )
                 for file_path in context_files:
-                    conversation_manager.load_context_file(file_path)
+                    if scoped_conversation is not None and hasattr(
+                        scoped_conversation, "load_context_file"
+                    ):
+                        scoped_conversation.load_context_file(file_path)
+                    else:
+                        conversation_manager.load_context_file(file_path)
 
             # Add user message to conversation explicitly
             user_message_dict = {
@@ -2295,6 +2306,48 @@ class PenguinCore:
 
             # Use new Engine layer if available
             if self.engine:
+                execution_context = get_current_execution_context()
+                stream_scope_id = self._resolve_stream_scope_id(
+                    execution_context,
+                    agent_id,
+                )
+                scoped_conversation_id = conversation_id
+                scoped_session_id = conversation_id
+                if execution_context is not None:
+                    scoped_conversation_id = (
+                        execution_context.conversation_id
+                        or execution_context.session_id
+                        or scoped_conversation_id
+                    )
+                    scoped_session_id = (
+                        execution_context.session_id
+                        or scoped_conversation_id
+                        or scoped_session_id
+                    )
+                if not scoped_session_id:
+                    try:
+                        active_session = conversation_manager.get_current_session()
+                        scoped_session_id = (
+                            active_session.id if active_session else None
+                        )
+                    except Exception:
+                        scoped_session_id = None
+                if not scoped_conversation_id:
+                    scoped_conversation_id = scoped_session_id
+
+                async def _scoped_stream_callback(
+                    chunk: str,
+                    message_type: str = "assistant",
+                ) -> None:
+                    await self._handle_stream_chunk(
+                        chunk,
+                        message_type=message_type,
+                        agent_id=agent_id,
+                        stream_scope_id=stream_scope_id,
+                        session_id=scoped_session_id,
+                        conversation_id=scoped_conversation_id,
+                    )
+
                 # Build streaming callback for Engine that first updates internal streaming
                 # state via _handle_stream_chunk and then forwards chunks to any external
                 # stream_callback supplied by callers (e.g., WebSocket).
@@ -2305,9 +2358,7 @@ class PenguinCore:
                             chunk: str, message_type: str = "assistant"
                         ):
                             # Update internal streaming handling
-                            await self._handle_stream_chunk(
-                                chunk, message_type=message_type
-                            )
+                            await _scoped_stream_callback(chunk, message_type)
                             # Forward to external callback, preserving message_type when supported
                             try:
                                 import inspect
@@ -2340,7 +2391,7 @@ class PenguinCore:
 
                         engine_stream_callback = _combined_stream_callback
                     else:
-                        engine_stream_callback = self._handle_stream_chunk
+                        engine_stream_callback = _scoped_stream_callback
                 else:
                     engine_stream_callback = None
 
@@ -2901,28 +2952,54 @@ class PenguinCore:
         if isinstance(data, dict):
             data = self._filter_internal_markers_from_event(data)
 
+        execution_context = get_current_execution_context()
+
         # Tag with agent_id when available so UI can label sources
         try:
             if isinstance(data, dict):
                 # Tag missing or empty agent_id with the current active agent
                 if not data.get("agent_id"):
-                    cm = getattr(self, "conversation_manager", None)
-                    if cm and hasattr(cm, "current_agent_id"):
-                        data = dict(data)  # shallow copy to avoid mutating caller dict
-                        data["agent_id"] = cm.current_agent_id
+                    context_agent = (
+                        execution_context.agent_id if execution_context else None
+                    )
+                    if context_agent:
+                        data = dict(data)
+                        data["agent_id"] = context_agent
+                    else:
+                        cm = getattr(self, "conversation_manager", None)
+                        if cm and hasattr(cm, "current_agent_id"):
+                            data = dict(data)
+                            data["agent_id"] = cm.current_agent_id
         except Exception:
             pass
 
-        # Inject conversation_id for SSE filtering (into ALL events)
+        # Inject conversation/session ids for SSE filtering
         if isinstance(data, dict):
-            if (
-                hasattr(self, "_current_conversation_id")
-                and self._current_conversation_id
-            ):
-                if "conversation_id" not in data or not data.get("conversation_id"):
-                    data = dict(data) if not isinstance(data, dict) else data
-                    data["conversation_id"] = self._current_conversation_id
-                    data["session_id"] = self._current_conversation_id
+            scoped_conversation_id = None
+            scoped_session_id = None
+            if execution_context:
+                scoped_conversation_id = (
+                    execution_context.conversation_id or execution_context.session_id
+                )
+                scoped_session_id = (
+                    execution_context.session_id or scoped_conversation_id
+                )
+
+            if scoped_conversation_id and not data.get("conversation_id"):
+                data = dict(data)
+                data["conversation_id"] = scoped_conversation_id
+            if scoped_session_id and not data.get("session_id"):
+                data = dict(data)
+                data["session_id"] = scoped_session_id
+
+            if not data.get("conversation_id") or not data.get("session_id"):
+                fallback_conversation_id = getattr(
+                    self, "_current_conversation_id", None
+                )
+                if fallback_conversation_id:
+                    data = dict(data)  # shallow copy to avoid mutating caller dict
+                    data.setdefault("conversation_id", fallback_conversation_id)
+                    data.setdefault("session_id", fallback_conversation_id)
 
         # Emit through unified event bus
         try:
@@ -2980,12 +3057,40 @@ class PenguinCore:
 
         return filtered_data
 
+    def _resolve_stream_scope_id(
+        self,
+        execution_context: Optional[Any],
+        agent_id: Optional[str],
+    ) -> str:
+        """Resolve stream-state key for concurrent session isolation."""
+        resolved_agent = agent_id
+        if not resolved_agent and execution_context is not None:
+            resolved_agent = getattr(execution_context, "agent_id", None)
+        if not resolved_agent:
+            resolved_agent = getattr(
+                self.conversation_manager,
+                "current_agent_id",
+                None,
+            )
+        resolved_agent = resolved_agent or "default"
+        if execution_context is None:
+            return resolved_agent
+        session_scope = (
+            execution_context.session_id or execution_context.conversation_id
+        )
+        if not session_scope:
+            return resolved_agent
+        return f"{session_scope}:{resolved_agent}"
+
     async def _handle_stream_chunk(
         self,
         chunk: str,
         message_type: Optional[str] = None,
         role: str = "assistant",
         agent_id: Optional[str] = None,
+        stream_scope_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
     ) -> None:
         """
         Central handler for all streaming content chunks from any source.
@@ -2998,15 +3103,27 @@ class PenguinCore:
             agent_id: Optional agent identifier for per-agent streaming (default: current agent)
         """
         # Resolve agent_id from conversation_manager if not provided
+        execution_context = get_current_execution_context()
         if agent_id is None:
-            agent_id = getattr(self.conversation_manager, "current_agent_id", "default")
+            if execution_context and execution_context.agent_id:
+                agent_id = execution_context.agent_id
+            else:
+                agent_id = getattr(
+                    self.conversation_manager, "current_agent_id", "default"
+                )
+        resolved_scope_id = stream_scope_id or self._resolve_stream_scope_id(
+            execution_context, agent_id
+        )
 
         # Delegate to AgentStreamingStateManager
         filtered = self._filter_internal_markers_from_event({"chunk": chunk})
         if filtered.get("chunk") is not None:
             chunk = filtered.get("chunk", "")
         events = self._stream_manager.handle_chunk(
-            chunk, agent_id=agent_id, message_type=message_type, role=role
+            chunk,
+            agent_id=resolved_scope_id,
+            message_type=message_type,
+            role=role,
         )
 
         # Emit events and invoke RunMode callback
@@ -3017,13 +3134,23 @@ class PenguinCore:
                 if isinstance(event.data, dict)
                 else {"data": event.data}
             )
-            # Use stored conversation_id from HTTP request if available
-            if (
-                hasattr(self, "_current_conversation_id")
-                and self._current_conversation_id
-            ):
-                event_data["session_id"] = self._current_conversation_id
-                event_data["conversation_id"] = self._current_conversation_id
+            scoped_conversation_id = conversation_id
+            scoped_session_id = session_id or conversation_id
+            if execution_context:
+                scoped_conversation_id = (
+                    execution_context.conversation_id
+                    or execution_context.session_id
+                    or scoped_conversation_id
+                )
+                scoped_session_id = (
+                    execution_context.session_id
+                    or scoped_conversation_id
+                    or scoped_session_id
+                )
+
+            if scoped_conversation_id:
+                event_data["conversation_id"] = scoped_conversation_id
+                event_data["session_id"] = scoped_session_id or scoped_conversation_id
             else:
                 try:
                     session = self.conversation_manager.get_current_session()
@@ -3045,7 +3172,11 @@ class PenguinCore:
                 )
 
     def finalize_streaming_message(
-        self, agent_id: Optional[str] = None
+        self,
+        agent_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        stream_scope_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Finalizes the current streaming message for a specific agent, adds it to
@@ -3059,11 +3190,68 @@ class PenguinCore:
             The finalized message dict or None if no streaming was active
         """
         # Resolve agent_id from conversation_manager if not provided
+        execution_context = get_current_execution_context()
         if agent_id is None:
-            agent_id = getattr(self.conversation_manager, "current_agent_id", "default")
+            if execution_context and execution_context.agent_id:
+                agent_id = execution_context.agent_id
+            else:
+                agent_id = getattr(
+                    self.conversation_manager, "current_agent_id", "default"
+                )
+        resolved_agent_id = agent_id
+        if (
+            resolved_agent_id is None
+            and execution_context
+            and execution_context.agent_id
+        ):
+            resolved_agent_id = execution_context.agent_id
+        if resolved_agent_id is None:
+            resolved_agent_id = getattr(
+                self.conversation_manager,
+                "current_agent_id",
+                "default",
+            )
+        resolved_agent_id = resolved_agent_id or "default"
+
+        resolved_conversation_id = conversation_id
+        resolved_session_id = session_id or conversation_id
+        if execution_context:
+            resolved_conversation_id = (
+                execution_context.conversation_id
+                or execution_context.session_id
+                or resolved_conversation_id
+            )
+            resolved_session_id = (
+                execution_context.session_id
+                or resolved_conversation_id
+                or resolved_session_id
+            )
+
+        resolved_stream_scope_id = stream_scope_id
+        if not resolved_stream_scope_id and resolved_session_id:
+            resolved_stream_scope_id = f"{resolved_session_id}:{resolved_agent_id}"
+        if not resolved_stream_scope_id:
+            resolved_stream_scope_id = self._resolve_stream_scope_id(
+                execution_context,
+                resolved_agent_id,
+            )
 
         # Delegate to AgentStreamingStateManager
-        message, events = self._stream_manager.finalize(agent_id=agent_id)
+        message, events = self._stream_manager.finalize(
+            agent_id=resolved_stream_scope_id
+        )
+        if message is None:
+            logical_agent_id = resolved_agent_id
+            if resolved_stream_scope_id != logical_agent_id:
+                message, events = self._stream_manager.finalize(
+                    agent_id=logical_agent_id
+                )
+            if message is None:
+                active_scopes = self._stream_manager.get_active_agents()
+                if len(active_scopes) == 1:
+                    message, events = self._stream_manager.finalize(
+                        agent_id=active_scopes[0]
+                    )
 
         if message is None:
             return None
@@ -3071,7 +3259,7 @@ class PenguinCore:
         # Log WALLET_GUARD warning if empty
         if message.was_empty:
             logger.warning(
-                f"[WALLET_GUARD] Empty response from LLM for agent '{agent_id}', forcing context advance."
+                f"[WALLET_GUARD] Empty response from LLM for agent '{resolved_agent_id}', forcing context advance."
             )
 
         # Determine message category
@@ -3086,7 +3274,9 @@ class PenguinCore:
         if hasattr(self, "conversation_manager") and self.conversation_manager:
             try:
                 # Try to get agent-specific conversation if available
-                conv = self.conversation_manager.get_agent_conversation(agent_id)
+                conv = self.conversation_manager.get_agent_conversation(
+                    resolved_agent_id
+                )
                 conv.add_message(
                     role=message.role,
                     content=message.content,
@@ -3112,7 +3302,7 @@ class PenguinCore:
                             "content": message.content,
                             "category": category,
                             "metadata": message.metadata,
-                            "agent_id": agent_id,
+                            "agent_id": resolved_agent_id,
                         }
                     )
                 )
@@ -3125,12 +3315,23 @@ class PenguinCore:
                 if isinstance(event.data, dict)
                 else {"data": event.data}
             )
-            if (
-                hasattr(self, "_current_conversation_id")
-                and self._current_conversation_id
-            ):
-                event_data["session_id"] = self._current_conversation_id
-                event_data["conversation_id"] = self._current_conversation_id
+            scoped_conversation_id = resolved_conversation_id
+            scoped_session_id = resolved_session_id
+            if execution_context:
+                scoped_conversation_id = (
+                    execution_context.conversation_id
+                    or execution_context.session_id
+                    or scoped_conversation_id
+                )
+                scoped_session_id = (
+                    execution_context.session_id
+                    or scoped_conversation_id
+                    or scoped_session_id
+                )
+
+            if scoped_conversation_id:
+                event_data["session_id"] = scoped_session_id or scoped_conversation_id
+                event_data["conversation_id"] = scoped_conversation_id
             else:
                 try:
                     session = self.conversation_manager.get_current_session()
@@ -3141,7 +3342,7 @@ class PenguinCore:
                     event_data["session_id"] = "unknown"
                     event_data["conversation_id"] = "unknown"
 
-            event_data["agent_id"] = agent_id
+            event_data["agent_id"] = resolved_agent_id
             event_data = self._filter_internal_markers_from_event(event_data)
             asyncio.create_task(self.emit_ui_event(event.event_type, event_data))
             # Forward final event to RunMode callback
@@ -3407,10 +3608,8 @@ class PenguinCore:
 
     def _subscribe_to_stream_events(self):
         """Subscribe to Penguin stream events and translate to OpenCode format."""
-        self._current_opencode_message_id: Optional[str] = None
-        self._current_opencode_part_id: Optional[str] = None
-        self._opencode_streaming_active: bool = False
-        self._current_stream_id: Optional[str] = None
+        self._opencode_stream_states: Dict[str, Dict[str, Any]] = {}
+        self._opencode_message_adapters: Dict[str, Any] = {}
         self._opencode_tool_parts: Dict[str, str] = {}
         self._opencode_tool_info: Dict[str, Dict[str, Any]] = {}
 
@@ -3430,75 +3629,108 @@ class PenguinCore:
             "lsp.client.diagnostics", self._tui_lsp_diagnostics_handler
         )
 
+    def _get_tui_adapter(self, session_id: Optional[str]) -> Any:
+        """Return a session-scoped TUI adapter to avoid cross-session bleed."""
+        sid = session_id or "unknown"
+        adapters = getattr(self, "_tui_adapters", None)
+        if not isinstance(adapters, dict):
+            adapters = {}
+            self._tui_adapters = adapters
+        adapter = adapters.get(sid)
+        if adapter is not None:
+            return adapter
+
+        from penguin.tui_adapter import PartEventAdapter
+
+        adapter = PartEventAdapter(
+            self.event_bus,
+            persist_callback=self._persist_opencode_event,
+        )
+        adapter.set_session(sid)
+        adapters[sid] = adapter
+        return adapter
+
     async def _on_tui_stream_chunk(self, event_type: str, data: Dict[str, Any]):
         """Handle stream chunk - manages stream lifecycle and emits with delta."""
-        import time
-
         if event_type != "stream_chunk":
             return
 
         chunk = data.get("chunk", "")
         message_type = data.get("message_type", "assistant")
         stream_id = data.get("stream_id", "unknown")
-        session_id = data.get("conversation_id", "unknown")
+        session_id = (
+            data.get("session_id")
+            or data.get("conversation_id")
+            or data.get("sessionID")
+            or "unknown"
+        )
         agent_id = data.get("agent_id") or data.get("agentID") or "default"
-        current_time = time.time()
+        adapter = self._get_tui_adapter(session_id)
+        stream_states = getattr(self, "_opencode_stream_states", None)
+        if not isinstance(stream_states, dict):
+            stream_states = {}
+            self._opencode_stream_states = stream_states
+        state = stream_states.get(session_id)
+        if not isinstance(state, dict):
+            state = {
+                "active": False,
+                "stream_id": None,
+                "message_id": None,
+                "part_id": None,
+            }
+            stream_states[session_id] = state
 
         # Auto-detect stream start (first chunk or new stream_id)
-        if not self._opencode_streaming_active or self._current_stream_id != stream_id:
+        if (not state.get("active")) or state.get("stream_id") != stream_id:
             # Finalize previous stream if exists
-            if self._opencode_streaming_active and self._current_opencode_message_id:
+            message_id = state.get("message_id")
+            part_id = state.get("part_id")
+            if state.get("active") and message_id and part_id:
                 try:
-                    await self._tui_adapter.on_stream_end(
-                        self._current_opencode_message_id,
-                        self._current_opencode_part_id,
-                    )
+                    await adapter.on_stream_end(message_id, part_id)
                 except Exception:
                     pass
 
             # Start new stream
-            self._opencode_streaming_active = True
-            self._current_stream_id = stream_id
-            self._tui_adapter.set_session(session_id)
+            state["active"] = True
+            state["stream_id"] = stream_id
 
             # Create message and text part
             try:
-                (
-                    self._current_opencode_message_id,
-                    self._current_opencode_part_id,
-                ) = await self._tui_adapter.on_stream_start(
+                message_id, part_id = await adapter.on_stream_start(
                     agent_id=agent_id,
                     model_id=getattr(self.model_config, "model", None),
                     provider_id=getattr(self.model_config, "provider", None),
                 )
+                state["message_id"] = message_id
+                state["part_id"] = part_id
+                self._opencode_message_adapters[message_id] = adapter
             except Exception as e:
                 logger.error(f"Failed to start OpenCode stream: {e}")
-                self._opencode_streaming_active = False
+                state["active"] = False
                 return
 
         # Emit the chunk
-        if self._current_opencode_message_id and self._current_opencode_part_id:
+        message_id = state.get("message_id")
+        part_id = state.get("part_id")
+        if message_id and part_id:
             try:
-                await self._tui_adapter.on_stream_chunk(
-                    self._current_opencode_message_id,
-                    self._current_opencode_part_id,
-                    chunk,
-                    message_type,
-                )
+                await adapter.on_stream_chunk(message_id, part_id, chunk, message_type)
             except Exception as e:
                 logger.error(f"Failed to emit OpenCode chunk: {e}")
 
         if data.get("is_final"):
-            if self._current_opencode_message_id and self._current_opencode_part_id:
+            if message_id and part_id:
                 try:
-                    await self._tui_adapter.on_stream_end(
-                        self._current_opencode_message_id,
-                        self._current_opencode_part_id,
-                    )
+                    await adapter.on_stream_end(message_id, part_id)
                 except Exception as e:
                     logger.error(f"Failed to finalize OpenCode stream: {e}")
-            self._opencode_streaming_active = False
-            self._current_stream_id = None
+            state["active"] = False
+            state["stream_id"] = None
+            # Keep latest message id so post-stream tool events can attach
+            # to the same assistant response when possible.
+            state["message_id"] = message_id
+            state["part_id"] = None
 
     def _strip_diff_fences(self, diff_content: str) -> str:
         if not diff_content:
@@ -3698,12 +3930,12 @@ class PenguinCore:
             return
 
         session_id = (
-            data.get("conversation_id")
-            or data.get("session_id")
+            data.get("session_id")
+            or data.get("conversation_id")
             or data.get("sessionID")
             or "unknown"
         )
-        self._tui_adapter.set_session(session_id)
+        adapter = self._get_tui_adapter(session_id)
 
         tool_name = data.get("type") or data.get("action") or "unknown"
         params = data.get("params")
@@ -3717,18 +3949,30 @@ class PenguinCore:
 
         mapped_tool, tool_input, metadata = self._map_action_to_tool(tool_name, params)
 
+        stream_state: Dict[str, Any] = {}
+        states = getattr(self, "_opencode_stream_states", None)
+        if isinstance(states, dict):
+            maybe_state = states.get(session_id)
+            if isinstance(maybe_state, dict):
+                stream_state = maybe_state
+        message_id_hint = stream_state.get("message_id")
+        agent_id_hint = data.get("agent_id") or data.get("agentID") or "default"
+
         call_id = data.get("id") or data.get("call_id") or data.get("callID")
         if not call_id:
             call_id = f"call_{int(time.time() * 1000)}"
+        tool_key = f"{session_id}:{call_id}"
 
-        part_id = await self._tui_adapter.on_tool_start(
+        part_id = await adapter.on_tool_start(
             mapped_tool,
             tool_input,
             tool_call_id=call_id,
             metadata=metadata,
+            message_id=message_id_hint,
+            agent_id=agent_id_hint,
         )
-        self._opencode_tool_parts[call_id] = part_id
-        self._opencode_tool_info[call_id] = {
+        self._opencode_tool_parts[tool_key] = part_id
+        self._opencode_tool_info[tool_key] = {
             "tool": mapped_tool,
             "input": tool_input,
             "metadata": metadata,
@@ -3742,19 +3986,20 @@ class PenguinCore:
             return
 
         session_id = (
-            data.get("conversation_id")
-            or data.get("session_id")
+            data.get("session_id")
+            or data.get("conversation_id")
             or data.get("sessionID")
             or "unknown"
         )
-        self._tui_adapter.set_session(session_id)
+        adapter = self._get_tui_adapter(session_id)
 
         call_id = data.get("id") or data.get("call_id") or data.get("callID")
         if not call_id:
             return
+        tool_key = f"{session_id}:{call_id}"
 
-        info = self._opencode_tool_info.get(call_id, {})
-        part_id = self._opencode_tool_parts.get(call_id)
+        info = self._opencode_tool_info.get(tool_key, {})
+        part_id = self._opencode_tool_parts.get(tool_key)
         action_name = (
             data.get("action") or data.get("type") or info.get("action") or "unknown"
         )
@@ -3762,13 +4007,25 @@ class PenguinCore:
             mapped_tool, tool_input, metadata = self._map_action_to_tool(
                 action_name, {}
             )
-            part_id = await self._tui_adapter.on_tool_start(
+
+            stream_state: Dict[str, Any] = {}
+            states = getattr(self, "_opencode_stream_states", None)
+            if isinstance(states, dict):
+                maybe_state = states.get(session_id)
+                if isinstance(maybe_state, dict):
+                    stream_state = maybe_state
+            message_id_hint = stream_state.get("message_id")
+            agent_id_hint = data.get("agent_id") or data.get("agentID") or "default"
+
+            part_id = await adapter.on_tool_start(
                 mapped_tool,
                 tool_input,
                 tool_call_id=call_id,
                 metadata=metadata,
+                message_id=message_id_hint,
+                agent_id=agent_id_hint,
             )
-            self._opencode_tool_parts[call_id] = part_id
+            self._opencode_tool_parts[tool_key] = part_id
             info = {"tool": mapped_tool, "input": tool_input, "metadata": metadata}
 
         status = data.get("status")
@@ -3779,9 +4036,9 @@ class PenguinCore:
             result,
             info.get("metadata") if isinstance(info, dict) else None,
         )
-        await self._tui_adapter.on_tool_end(
-            part_id, result, error=error, metadata=merged_meta
-        )
+        await adapter.on_tool_end(part_id, result, error=error, metadata=merged_meta)
+        self._opencode_tool_parts.pop(tool_key, None)
+        self._opencode_tool_info.pop(tool_key, None)
 
     async def _on_tui_lsp_updated(self, event_type: str, data: Dict[str, Any]) -> None:
         if event_type != "lsp.updated":
@@ -4020,30 +4277,44 @@ class PenguinCore:
         provider_id: Optional[str] = None,
     ) -> Tuple[str, str]:
         """Initialize OpenCode streaming - creates Message and TextPart."""
-        self._tui_adapter.set_session(
-            self.conversation_manager.get_current_session().id
-            if self.conversation_manager.get_current_session()
-            else "unknown"
+        execution_context = get_current_execution_context()
+        session_id = None
+        if execution_context:
+            session_id = (
+                execution_context.session_id or execution_context.conversation_id
+            )
+        if not session_id:
+            current_session = self.conversation_manager.get_current_session()
+            session_id = current_session.id if current_session else "unknown"
+        adapter = self._get_tui_adapter(session_id)
+        message_id, part_id = await adapter.on_stream_start(
+            agent_id, model_id, provider_id
         )
-        return await self._tui_adapter.on_stream_start(agent_id, model_id, provider_id)
+        self._opencode_message_adapters[message_id] = adapter
+        return message_id, part_id
 
     async def _emit_opencode_stream_chunk(
         self, message_id: str, part_id: str, chunk: str, message_type: str = "assistant"
     ):
         """Emit OpenCode-compatible stream chunk with delta."""
-        await self._tui_adapter.on_stream_chunk(
-            message_id, part_id, chunk, message_type
-        )
+        adapter = self._opencode_message_adapters.get(message_id, self._tui_adapter)
+        await adapter.on_stream_chunk(message_id, part_id, chunk, message_type)
 
     async def _emit_opencode_stream_end(self, message_id: str, part_id: str):
         """Finalize OpenCode streaming."""
-        await self._tui_adapter.on_stream_end(message_id, part_id)
+        adapter = self._opencode_message_adapters.pop(message_id, self._tui_adapter)
+        await adapter.on_stream_end(message_id, part_id)
 
     async def _emit_opencode_user_message(self, content: str) -> str:
         """Emit user message in OpenCode format."""
-        self._tui_adapter.set_session(
-            self.conversation_manager.get_current_session().id
-            if self.conversation_manager.get_current_session()
-            else "unknown"
-        )
-        return await self._tui_adapter.on_user_message(content)
+        execution_context = get_current_execution_context()
+        session_id = None
+        if execution_context:
+            session_id = (
+                execution_context.session_id or execution_context.conversation_id
+            )
+        if not session_id:
+            current_session = self.conversation_manager.get_current_session()
+            session_id = current_session.id if current_session else "unknown"
+        adapter = self._get_tui_adapter(session_id)
+        return await adapter.on_user_message(content)

@@ -6,6 +6,7 @@ message/part events to the TUI client.
 
 import asyncio
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
 from fastapi import APIRouter, Query
@@ -61,7 +62,13 @@ async def events_sse(
         if not isinstance(session_dirs, dict):
             session_dirs = {}
             setattr(core, "_opencode_session_directories", session_dirs)
-        session_dirs[effective_session_id] = directory
+        try:
+            resolved = str(Path(directory).expanduser().resolve())
+        except Exception:
+            resolved = directory
+        existing = session_dirs.get(effective_session_id)
+        if not existing:
+            session_dirs[effective_session_id] = resolved
 
     async def event_generator() -> AsyncIterator[str]:
         queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=1000)

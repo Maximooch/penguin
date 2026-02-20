@@ -82,6 +82,25 @@ curl -X POST http://localhost:8000/api/v1/chat/message \
   }'
 ```
 
+#### With Session-Scoped Directory
+
+Use `session_id`/`conversation_id` plus `directory` to bind a session to a specific repo root.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/chat/message \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Run checks in this repo",
+    "session_id": "repo-session-1",
+    "directory": "/absolute/path/to/repo"
+  }'
+```
+
+Notes:
+- The first valid directory bound to a session becomes the session root.
+- Rebinding that same session to a different directory returns `409`.
+- Invalid directories return `400`.
+
 ### Streaming Responses
 
 For real-time streaming of responses, use the WebSocket API:
@@ -93,7 +112,9 @@ const socket = new WebSocket('ws://localhost:8000/api/v1/chat/stream');
 // Connection opened
 socket.addEventListener('open', (event) => {
     socket.send(JSON.stringify({
-        text: "Write a step-by-step guide to installing TensorFlow."
+        text: "Write a step-by-step guide to installing TensorFlow.",
+        session_id: "stream-session-1",
+        directory: "/absolute/path/to/repo"
     }));
 });
 

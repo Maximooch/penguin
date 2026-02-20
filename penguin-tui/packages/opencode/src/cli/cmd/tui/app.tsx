@@ -240,7 +240,6 @@ function App() {
   const args = useArgs()
   onMount(() => {
     batch(() => {
-      if (args.agent) local.agent.set(args.agent)
       if (args.model) {
         const { providerID, modelID } = Provider.parseModel(args.model)
         if (!providerID || !modelID)
@@ -257,6 +256,25 @@ function App() {
           sessionID: args.sessionID,
         })
       }
+    })
+  })
+
+  let agentApplied = false
+  let agentWarned = false
+  createEffect(() => {
+    if (!args.agent || agentApplied) return
+    const hasAgent = sync.data.agent.some((item) => item.name === args.agent)
+    if (hasAgent) {
+      local.agent.set(args.agent)
+      agentApplied = true
+      return
+    }
+    if (sync.status !== "complete" || agentWarned) return
+    agentWarned = true
+    toast.show({
+      variant: "warning",
+      message: `Agent not found: ${args.agent}`,
+      duration: 3000,
     })
   })
 
