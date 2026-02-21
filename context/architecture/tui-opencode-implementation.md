@@ -17,7 +17,7 @@ Rationale:
 - Centralizes integration logic in Penguin’s web API.
 - Enables incremental parity without reworking UI components.
 
-## Current Status (2026-02-07)
+## Current Status (2026-02-19)
 - SSE streaming works end-to-end for chat in Penguin mode.
 - Session filtering by `session_id` works in SSE.
 - OpenCode-style message/part streaming is active via `opencode_event` bridge.
@@ -39,6 +39,10 @@ Rationale:
 - VCS branch watcher now checks default scope and session-scoped directories for proactive multi-session updates.
 - SSE session filtering now only forwards global VCS/LSP events cross-session when no session is attached.
 - Added automated VCS hardening tests covering non-git, dirty/clean, no-upstream, detached HEAD, and linked worktrees.
+- Request-scoped execution context now drives tool/file root resolution for concurrent session safety.
+- Engine initialization-order bug was fixed so web mode no longer silently falls back to legacy processing.
+- Streaming scope/finalization now carries explicit session hints (`session_id:agent_id`) across chunk + finalize paths.
+- Manual two-session Cadence/Tuxford runs on one server now complete multi-turn prompts with substantially improved isolation.
 - Session list/history parity is still incomplete vs full OpenCode API.
 
 ## Audit: TUI Expectations (from `penguin-tui`)
@@ -201,7 +205,7 @@ The TUI expects these events to drive UI state:
 - Phase 2 (Provider/model picker): **partial**.
 - Phase 3 (Tool execution UI + persistence): **partial** (live rendering is strong; persistence/replay still incomplete).
 - Phase 4 (Permissions + questions): **not started**.
-- Phase 5 (LSP/Formatter/Path/VCS real implementations, MCP deferred): **not started**.
+- Phase 5 (LSP/Formatter/Path/VCS real implementations, MCP deferred): **partial**.
 
 ### Phase 0: Streaming + Animation Parity (highest priority)
 Goal: streaming feels correct and stable in the TUI.
@@ -394,15 +398,20 @@ For each phase, validate with:
   - Acceptance: create/rename/delete session flows work from TUI.
 
 ### Track C: Settings / Provider / Model UX
-- [ ] C1. Implement `config.get` with runtime config + reasoning + active model metadata.
+- [~] C1. Implement `config.get` with runtime config + reasoning + active model metadata.
   - Owner: `penguin/web/routes.py`, `core.runtime_config`, model config adapters.
   - Acceptance: settings panel reflects current values and capabilities.
-- [ ] C2. Implement `config.providers` and `provider.list` mapped from Penguin model configs.
+- [~] C2. Implement `config.providers` and `provider.list` mapped from Penguin model configs.
   - Owner: `penguin/config`, `penguin/llm/model_config.py`, route adapters.
   - Acceptance: model/provider picker loads valid options.
-- [ ] C3. Implement `provider.auth` placeholder contract.
-  - Owner: web routes.
-  - Acceptance: endpoint returns stable non-error response with clear unsupported/available state.
+- [~] C3. Implement provider auth contract (`provider.auth`, `auth.set/remove`, OAuth authorize/callback).
+  - Owner: web routes + provider auth store service.
+  - Acceptance: endpoint set supports OpenRouter API-key auth and OpenAI/ChatGPT Pro OAuth handshake flow with stable payloads.
+  - Finalization note: current OpenAI device OAuth uses a compatibility client id mirrored from OpenCode; one of the last Phase C steps is to make client id fully Penguin-owned/configurable (env override first, then first-party registration when available).
+  - Progress (2026-02-19): starting Phase C implementation with a dedicated Penguin provider-auth store and OpenCode-compatible config/provider endpoints.
+  - Progress (2026-02-20): wired `/config`, `/config/providers`, `/provider`, `/provider/auth`, `/auth/{providerID}`, and `/provider/{providerID}/oauth/*` in `penguin/web/routes.py`; added `/api/v1/*` aliases; added route + service tests (`tests/api/test_opencode_provider_routes.py`, `tests/api/test_opencode_provider_service.py`); switched Penguin-mode TUI bootstrap to consume backend config/provider/auth endpoints first with fallback.
+  - Progress (2026-02-21): refactored provider/auth backend into general-purpose services (`provider_catalog.py`, `provider_credentials.py`, `provider_auth.py`) and reduced `opencode_provider.py` to compatibility mapping wrappers; credentials default to user-global `~/.config/penguin/providers/credentials.json` (0600, atomic writes) with legacy-path compatibility.
+  - Progress (2026-02-21): OpenAI device OAuth client id is now overridable via `PENGUIN_OPENAI_OAUTH_CLIENT_ID` with compatibility fallback to current OpenCode/Codex client id while first-party Penguin registration is pending.
 
 ### Track D: Diffs, Files Sidebar, VCS
 - [x] D1. Implement `vcs.get` with real git-backed branch + dirty status.
@@ -435,12 +444,14 @@ For each phase, validate with:
   - Progress: OpenCode event translation now uses session-scoped TUI adapters/tool-part keys and per-session stream state tracking in `core.py` to prevent cross-session part/message state collisions.
   - Progress: Engine wallet-guard loop state moved to per-run state (`EngineRunState.loop_state`) to avoid concurrent iteration cross-talk.
   - Progress: core streaming manager keys now resolve to request scope (`session_id:agent_id`) instead of agent-only identity in `_handle_stream_chunk` / `finalize_streaming_message`.
+  - Progress: stream callback and finalize paths now forward explicit `session_id`/`conversation_id` hints to avoid fallback-to-global session labeling.
+  - Progress: Engine finalize call sites pass session-derived scope hints for deterministic message completion routing.
   - Progress: `PartEventAdapter` now balances session `busy`/`idle` lifecycle for both stream and tool-only flows and finalizes tool-created assistant messages.
 - [x] H3. Add explicit parallel multi-session API tests (two sessions, two repos, concurrent prompts/actions).
   - Owner: `tests/api/*`.
   - Acceptance: no cross-session directory bleed under concurrent execution.
   - Progress: added `tests/api/test_concurrent_session_isolation.py` validating parallel `execute_command (pwd)` and file write/read isolation across two repo roots.
-- [ ] H4. Run a focused mutable-state isolation audit before production-safe declaration.
+- [~] H4. Run a focused mutable-state isolation audit before production-safe declaration.
   - Owner: `penguin/core.py`, `penguin/engine.py`, `penguin/system/conversation_manager.py`, web routes/SSE adapters.
   - Acceptance: all request-dependent fields are either request-scoped (`contextvars`) or local variables; no cross-request reliance on shared mutable pointers.
   - Audit checklist:
@@ -448,6 +459,7 @@ For each phase, validate with:
     - Verify event/session identifiers are sourced from request context, not process-global fields.
     - Verify concurrent same-process requests across different repos/sessions do not cross-write files/messages.
     - Verify fallback (legacy/no-engine) path behavior is documented and gated if not fully isolated.
+  - Progress (2026-02-19): fixed Engine construction ordering to prevent accidental legacy fallback in web runtime; remaining work is sustained concurrency soak coverage and final checklist sign-off.
 
 #### Concurrent hardening execution mirror (from `tui-opencode-port.md`)
 - Objective: production-safe concurrent OpenCode web sessions for same-agent (`default`) multi-turn usage across repos, without queued/stuck UI.
@@ -467,6 +479,7 @@ For each phase, validate with:
   - API SSE filtering/final completion correctness (`tests/api/test_sse_and_status_scoping.py`).
   - Regression keeps: binding + execution-context + multi-agent smoke.
   - Manual gates: two-session Cadence/Tuxford (5 prompts each) + single-session 5-prompt no-stuck regression.
+  - Latest manual signal (2026-02-19): two-session same-server runs are now mostly stable; keep this track open until repeated long-run stress passes complete.
 
 ### Track E: Plan/TODO + Agent Features
 - [ ] E1. Implement `session.todo` from `ProjectManager` task graph. # NOTE: a new todo tool would be great, that can be connected to a task/project, or independent of. This would cover 80% of what we're looking for here.

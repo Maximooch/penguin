@@ -1,0 +1,364 @@
+"""Tests for OpenCode-compatible config/provider/auth routes."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pytest
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
+
+from penguin.web import routes as routes_module
+from penguin.web.routes import (
+    ProviderOAuthAuthorizeRequest,
+    ProviderOAuthCallbackRequest,
+    api_auth_remove,
+    api_auth_set,
+    api_config_get,
+    api_config_providers,
+    api_config_update,
+    api_provider_auth,
+    api_provider_list,
+    api_provider_oauth_authorize,
+    api_provider_oauth_callback,
+    opencode_auth_remove,
+    opencode_auth_set,
+    opencode_config_get,
+    opencode_config_providers,
+    opencode_config_update,
+    opencode_provider_auth,
+    opencode_provider_list,
+    opencode_provider_oauth_authorize,
+    opencode_provider_oauth_callback,
+)
+from penguin.web.services.opencode_provider import get_provider_auth_records
+
+
+class _Core:
+    def __init__(self, workspace: Path) -> None:
+        self.runtime_config = SimpleNamespace(
+            workspace_root=str(workspace),
+            project_root=str(workspace),
+            active_root=str(workspace),
+        )
+        self.config = SimpleNamespace(
+            model_configs={
+                "openai/gpt-5": {
+                    "provider": "openai",
+                    "model": "gpt-5",
+                    "max_output_tokens": 8192,
+                    "context_window": 128000,
+                },
+                "openai/gpt-5-codex": {
+                    "provider": "openrouter",
+                    "model": "openai/gpt-5-codex",
+                    "max_output_tokens": 8192,
+                    "context_window": 128000,
+                },
+            }
+        )
+        self.model_config = SimpleNamespace(provider="openrouter", api_key=None)
+        self.conversation_manager = SimpleNamespace(current_agent_id="default")
+        self._current_model = {
+            "provider": "openrouter",
+            "model": "openai/gpt-5-codex",
+            "client_preference": "openrouter",
+            "max_output_tokens": 8192,
+            "context_window": 128000,
+        }
+        self._load_model_success = True
+        self.loaded_model: str | None = None
+
+    def get_current_model(self) -> dict[str, Any]:
+        return dict(self._current_model)
+
+    async def load_model(self, model_id: str) -> bool:
+        self.loaded_model = model_id
+        if not self._load_model_success:
+            return False
+
+        provider = model_id.split("/", 1)[0] if "/" in model_id else "openrouter"
+        model = model_id.split("/", 1)[1] if "/" in model_id else model_id
+        self._current_model["provider"] = provider
+        self._current_model["model"] = model
+        return True
+
+    def set_active_agent(self, agent_id: str) -> None:
+        self.conversation_manager.current_agent_id = agent_id
+
+
+@pytest.mark.asyncio
+async def test_config_get_and_update(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    before = await opencode_config_get(core=typed_core)
+    assert before["model"] == "openai/gpt-5-codex"
+    assert before["default_agent"] == "default"
+
+    updated = await opencode_config_update(
+        config={"model": "openai/gpt-5", "default_agent": "builder"},
+        core=typed_core,
+    )
+    assert core.loaded_model == "openai/gpt-5"
+    assert updated["model"] == "openai/gpt-5"
+    assert updated["default_agent"] == "builder"
+
+
+@pytest.mark.asyncio
+async def test_config_update_returns_400_when_model_switch_fails(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    core._load_model_success = False
+    typed_core = cast(Any, core)
+
+    with pytest.raises(HTTPException) as exc:
+        await opencode_config_update(config={"model": "openai/gpt-5"}, core=typed_core)
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_config_providers_and_auth_methods(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    providers = await opencode_config_providers(core=typed_core)
+    ids = {item["id"] for item in providers["providers"]}
+    assert "openrouter" in ids
+    assert "openai" in ids
+
+    methods = await opencode_provider_auth(core=typed_core)
+    openai_types = [item["type"] for item in methods["openai"]]
+    assert openai_types == ["oauth", "api"]
+
+
+@pytest.mark.asyncio
+async def test_auth_set_and_remove_round_trip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_path = tmp_path / "provider_auth.json"
+    monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+    try:
+        saved = await opencode_auth_set(
+            providerID="openrouter",
+            auth={"type": "api", "key": "sk-or-test"},
+            core=typed_core,
+        )
+        assert saved is True
+        assert os.environ.get("OPENROUTER_API_KEY") == "sk-or-test"
+
+        providers = await opencode_provider_list(core=typed_core)
+        assert "openrouter" in providers["connected"]
+
+        records = get_provider_auth_records()
+        assert records["openrouter"]["key"] == "sk-or-test"
+
+        removed = await opencode_auth_remove(providerID="openrouter")
+        assert removed is True
+        assert "openrouter" not in get_provider_auth_records()
+    finally:
+        os.environ.pop("OPENROUTER_API_KEY", None)
+
+
+@pytest.mark.asyncio
+async def test_auth_set_bad_payload_returns_400(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_path = tmp_path / "provider_auth_invalid.json"
+    monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
+
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+    with pytest.raises(HTTPException) as exc:
+        await opencode_auth_set(
+            providerID="openrouter",
+            auth={"type": "api"},
+            core=typed_core,
+        )
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_oauth_routes_delegate_to_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    async def _authorize(provider_id: str, method: int) -> dict[str, str]:
+        seen["authorize"] = (provider_id, method)
+        return {
+            "url": "https://example.com/device",
+            "method": "auto",
+            "instructions": "Enter code: ABCD",
+        }
+
+    async def _callback(provider_id: str, method: int, code: str | None = None) -> bool:
+        seen["callback"] = (provider_id, method, code)
+        return True
+
+    monkeypatch.setattr(routes_module, "provider_oauth_authorize", _authorize)
+    monkeypatch.setattr(routes_module, "provider_oauth_callback", _callback)
+
+    authorized = await opencode_provider_oauth_authorize(
+        providerID="openai",
+        request=ProviderOAuthAuthorizeRequest(method=1),
+    )
+    assert authorized["method"] == "auto"
+    assert seen["authorize"] == ("openai", 1)
+
+    completed = await opencode_provider_oauth_callback(
+        providerID="openai",
+        request=ProviderOAuthCallbackRequest(method=1, code="token-code"),
+    )
+    assert completed is True
+    assert seen["callback"] == ("openai", 1, "token-code")
+
+
+@pytest.mark.asyncio
+async def test_api_v1_aliases_match_opencode_routes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_path = tmp_path / "provider_auth_aliases.json"
+    monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
+
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    config = await api_config_get(core=typed_core)
+    assert config["default_agent"] == "default"
+
+    updated = await api_config_update(
+        config={"model": "openai/gpt-5", "default_agent": "builder"},
+        core=typed_core,
+    )
+    assert updated["default_agent"] == "builder"
+
+    providers = await api_config_providers(core=typed_core)
+    assert isinstance(providers["providers"], list)
+
+    provider_list = await api_provider_list(core=typed_core)
+    assert "all" in provider_list
+
+    methods = await api_provider_auth(core=typed_core)
+    assert "openai" in methods
+
+    saved = await api_auth_set(
+        providerID="openrouter",
+        auth={"type": "api", "key": "sk-alias"},
+        core=typed_core,
+    )
+    assert saved is True
+
+    removed = await api_auth_remove(providerID="openrouter")
+    assert removed is True
+
+    seen: dict[str, Any] = {}
+
+    async def _authorize(provider_id: str, method: int) -> dict[str, str]:
+        seen["authorize"] = f"{provider_id}:{method}"
+        return {
+            "url": "https://example.com/device",
+            "method": "auto",
+            "instructions": "Enter code: ABCD",
+        }
+
+    async def _callback(provider_id: str, method: int, code: str | None = None) -> bool:
+        seen["callback"] = f"{provider_id}:{method}:{code}"
+        return True
+
+    monkeypatch.setattr(routes_module, "provider_oauth_authorize", _authorize)
+    monkeypatch.setattr(routes_module, "provider_oauth_callback", _callback)
+
+    auth_data = await api_provider_oauth_authorize(
+        providerID="openai",
+        request=ProviderOAuthAuthorizeRequest(method=0),
+    )
+    assert auth_data["method"] == "auto"
+    assert seen["authorize"] == "openai:0"
+
+    callback_ok = await api_provider_oauth_callback(
+        providerID="openai",
+        request=ProviderOAuthCallbackRequest(method=0, code="alias-code"),
+    )
+    assert callback_ok is True
+    assert seen["callback"] == "openai:0:alias-code"
+
+
+def test_http_route_wiring_for_config_provider_auth(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_path = tmp_path / "provider_auth_http.json"
+    monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
+
+    async def _authorize(provider_id: str, method: int) -> dict[str, str]:
+        del provider_id, method
+        return {
+            "url": "https://example.com/device",
+            "method": "auto",
+            "instructions": "Enter code: TEST",
+        }
+
+    async def _callback(provider_id: str, method: int, code: str | None = None) -> bool:
+        del provider_id, method, code
+        return True
+
+    monkeypatch.setattr(routes_module, "provider_oauth_authorize", _authorize)
+    monkeypatch.setattr(routes_module, "provider_oauth_callback", _callback)
+
+    core = _Core(tmp_path)
+    cast(Any, routes_module.router).core = cast(Any, core)
+    app = FastAPI()
+    app.include_router(routes_module.router)
+
+    with TestClient(app) as client:
+        config_response = client.get("/config")
+        assert config_response.status_code == 200
+
+        config_alias_response = client.get("/api/v1/config")
+        assert config_alias_response.status_code == 200
+
+        provider_response = client.get("/provider")
+        assert provider_response.status_code == 200
+
+        provider_alias_response = client.get("/api/v1/provider")
+        assert provider_alias_response.status_code == 200
+
+        auth_methods_response = client.get("/provider/auth")
+        assert auth_methods_response.status_code == 200
+
+        auth_set_response = client.put(
+            "/auth/openrouter",
+            json={"type": "api", "key": "sk-http"},
+        )
+        assert auth_set_response.status_code == 200
+        assert auth_set_response.json() is True
+
+        auth_remove_response = client.delete("/api/v1/auth/openrouter")
+        assert auth_remove_response.status_code == 200
+        assert auth_remove_response.json() is True
+
+        oauth_authorize_response = client.post(
+            "/provider/openai/oauth/authorize",
+            json={"method": 0},
+        )
+        assert oauth_authorize_response.status_code == 200
+
+        oauth_callback_response = client.post(
+            "/api/v1/provider/openai/oauth/callback",
+            json={"method": 0},
+        )
+        assert oauth_callback_response.status_code == 200
+        assert oauth_callback_response.json() is True

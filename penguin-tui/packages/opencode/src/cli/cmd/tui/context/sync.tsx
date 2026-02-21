@@ -464,14 +464,67 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             [model.id]: model,
           },
         }
-        const list = await fetch(new URL("/api/v1/conversations", sdk.url))
-          .then((res) => (res.ok ? res.json() : undefined))
-          .then((data) => (Array.isArray(data?.conversations) ? data.conversations : []))
-          .catch(() => [])
-        const roster = await fetch(new URL("/api/v1/agents", sdk.url))
-          .then((res) => (res.ok ? res.json() : undefined))
-          .then((data) => (Array.isArray(data) ? data : []))
-          .catch(() => [])
+        const [providersData, providerListData, configData, providerAuthData, list, roster] = await Promise.all([
+          fetch(new URL("/config/providers", sdk.url))
+            .then((res) => (res.ok ? res.json() : undefined))
+            .catch(() => undefined),
+          fetch(new URL("/provider", sdk.url))
+            .then((res) => (res.ok ? res.json() : undefined))
+            .catch(() => undefined),
+          fetch(new URL("/config", sdk.url))
+            .then((res) => (res.ok ? res.json() : undefined))
+            .catch(() => undefined),
+          fetch(new URL("/provider/auth", sdk.url))
+            .then((res) => (res.ok ? res.json() : undefined))
+            .catch(() => undefined),
+          fetch(new URL("/api/v1/conversations", sdk.url))
+            .then((res) => (res.ok ? res.json() : undefined))
+            .then((data) => (Array.isArray(data?.conversations) ? data.conversations : []))
+            .catch(() => []),
+          fetch(new URL("/api/v1/agents", sdk.url))
+            .then((res) => (res.ok ? res.json() : undefined))
+            .then((data) => (Array.isArray(data) ? data : []))
+            .catch(() => []),
+        ])
+        const providers = Array.isArray(providersData?.providers) ? providersData.providers : [provider]
+        const providerDefault =
+          providersData && typeof providersData.default === "object" && providersData.default
+            ? providersData.default
+            : { [provider.id]: model.id }
+        const providerNext =
+          providerListData &&
+          Array.isArray(providerListData.all) &&
+          providerListData.default &&
+          Array.isArray(providerListData.connected)
+            ? providerListData
+            : {
+                all: [
+                  {
+                    id: provider.id,
+                    name: provider.name,
+                    env: provider.env,
+                    models: {
+                      [model.id]: {
+                        id: model.id,
+                        name: model.name,
+                        release_date: model.release_date,
+                        attachment: model.capabilities.attachment,
+                        reasoning: model.capabilities.reasoning,
+                        temperature: model.capabilities.temperature,
+                        tool_call: model.capabilities.toolcall,
+                        limit: model.limit,
+                        status: model.status,
+                        options: {},
+                      },
+                    },
+                  },
+                ],
+                default: { [provider.id]: model.id },
+                connected: [provider.id],
+              }
+        const providerAuth =
+          providerAuthData && typeof providerAuthData === "object" ? providerAuthData : {}
+        const config = configData && typeof configData === "object" ? configData : { share: "disabled" }
         const mapped: PenguinSession[] = list.map((item: { [key: string]: unknown }) => {
           const sid = typeof item.id === "string" ? item.id : crypto.randomUUID()
           const title = typeof item.title === "string" ? item.title : `Session ${sid.slice(-8)}`
@@ -553,39 +606,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           session.map((item: PenguinSession) => [item.id, { type: "idle" as const }]),
         )
         batch(() => {
-          setStore("provider", reconcile([provider]))
-          setStore("provider_default", reconcile({ penguin: model.id }))
-          setStore(
-            "provider_next",
-            reconcile({
-              all: [
-                {
-                  id: provider.id,
-                  name: provider.name,
-                  env: provider.env,
-                  models: {
-                    [model.id]: {
-                      id: model.id,
-                      name: model.name,
-                      release_date: model.release_date,
-                      attachment: model.capabilities.attachment,
-                      reasoning: model.capabilities.reasoning,
-                      temperature: model.capabilities.temperature,
-                      tool_call: model.capabilities.toolcall,
-                      limit: model.limit,
-                      status: model.status,
-                      options: {},
-                    },
-                  },
-                },
-              ],
-              default: { penguin: model.id },
-              connected: [provider.id],
-            }),
-          )
+          setStore("provider", reconcile(providers))
+          setStore("provider_default", reconcile(providerDefault))
+          setStore("provider_next", reconcile(providerNext))
+          setStore("provider_auth", reconcile(providerAuth))
           setStore("agent", reconcile(agent.length ? agent : [baseAgent]))
           setStore("command", reconcile(command))
-          setStore("config", reconcile({ share: "disabled" }))
+          setStore("config", reconcile(config))
           setStore("session", reconcile(session))
           setStore("session_status", reconcile(status))
           setStore(

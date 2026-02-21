@@ -7,18 +7,29 @@
 - SSE compatibility and OpenCode event translation are operational.
 - Multi-session directory binding and request-scoped execution context are in place.
 - Stream-state routing now uses request scope (`session_id:agent_id`) in core streaming paths.
+- Engine initialization fallback bug was fixed (Engine now initializes in web mode, no silent legacy fallback).
+- Stream chunk/finalize now propagate explicit session hints, reducing cross-session finalize collisions.
 - Tool/stream session status lifecycle now balances `busy`/`idle` in the adapter path to prevent stuck-after-first-message flows.
-- Production-safe concurrent session behavior is still in hardening/audit.
+- Production-safe concurrent session behavior is still in hardening/audit, but latest two-session manual runs are now mostly stable.
 
 ## Objective
 
 Make concurrent OpenCode web sessions production-safe for same-agent (`default`)
 multi-turn usage across different repos, without queued/stuck UI states.
 
+## Latest Validation (2026-02-21)
+
+- Manual two-session runs (Cadence + Tuxford) on one `penguin-web` process now complete multi-turn chat in parallel with correct directory/session wiring.
+- Prior cross-session content bleed was reduced after explicit `session_id`/`conversation_id` propagation through streaming chunk + finalize paths.
+- Remaining gate is sustained stress confidence (longer parallel prompt runs) before declaring production-safe.
+- Phase C parity wiring landed for config/provider/auth endpoints and alias routes; Penguin-mode TUI bootstrap now fetches backend config/provider/auth payloads first (with fallback), and new route/service tests are in place.
+- Provider/config/auth backend was refactored toward Penguin-first services (`provider_catalog`, `provider_credentials`, `provider_auth`) with OpenCode-specific mapping isolated to compatibility adapters.
+
 ## Root Cause Hypothesis
 
-Streaming lifecycle is currently scoped by `agent_id` (often `"default"`), not by
-`session_id`, so concurrent sessions collide in shared stream state.
+Streaming lifecycle was historically scoped by `agent_id` (often `"default"`)
+instead of `session_id`, which caused concurrent sessions to collide in shared
+stream state.
 
 ## Additional Audit Finding (Single-Session Stuck)
 
@@ -96,6 +107,10 @@ imbalance:
   exactly once per iteration.
 - Avoid double-finalize races between `_llm_step` and outer loop.
 
+**Progress (2026-02-19)**
+- Engine finalize paths now pass explicit `agent_id` + current session-derived scope hints.
+- Core finalize path now accepts explicit `session_id`/`conversation_id`/`stream_scope_id` and resolves deterministic scope keys.
+
 **Exit criteria**
 - Every streaming iteration produces exactly one finalization path with consistent
   scope.
@@ -134,6 +149,10 @@ imbalance:
 
 **Exit criteria**
 - TUI never remains in `QUEUED` due to missing assistant completion event.
+
+**Progress (2026-02-19)**
+- Latest manual runs no longer reproduce the original first-message stuck behavior.
+- Continue auditing for rare queued states under heavier concurrent traffic.
 
 ### Phase 5: TUI adapter consistency cleanup
 
@@ -247,11 +266,11 @@ No known one-message cap found. Relevant constants to revisit/configure:
 
 - [x] SSE endpoint streams events without timeouts
 - [x] OpenCode TUI can connect and display streaming text
-- [~] Tool execution renders correctly (remaining busy/idle lifecycle hardening)
-- [~] Session/agent filtering works (concurrent default-agent finalization in progress)
+- [x] Tool execution renders correctly with balanced busy/idle in current adapter path
+- [~] Session/agent filtering works (hardening landed; sustained stress validation pending)
 - [x] No regression to existing WS/REST endpoints
 
 ---
 
-**Last Updated:** 2026-02-18
+**Last Updated:** 2026-02-19
 **Branch:** refactor-penguin-backend-tui

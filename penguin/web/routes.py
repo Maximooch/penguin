@@ -49,6 +49,18 @@ from penguin.web.services.system_status import (
     get_path_info,
     get_vcs_info,
 )
+from penguin.web.services.opencode_provider import (
+    apply_auth_to_runtime,
+    build_config_payload,
+    build_config_providers_payload,
+    build_provider_list_payload,
+    get_provider_auth_records,
+    provider_auth_methods,
+    provider_oauth_authorize,
+    provider_oauth_callback,
+    remove_provider_auth_record,
+    set_provider_auth_record,
+)
 from penguin.system.execution_context import (
     ExecutionContext,
     execution_context_scope,
@@ -219,6 +231,15 @@ class LLMConfigRequest(BaseModel):
     link_agent_id: Optional[str] = None  # Link agent ID for multi-agent scenarios
     link_workspace_id: Optional[str] = None  # Link workspace ID for org billing
     link_api_key: Optional[str] = None  # Link API key for production auth
+
+
+class ProviderOAuthAuthorizeRequest(BaseModel):
+    method: int = 0
+
+
+class ProviderOAuthCallbackRequest(BaseModel):
+    method: int = 0
+    code: Optional[str] = None
 
 
 # Memory API models
@@ -1234,6 +1255,214 @@ async def opencode_lsp_status(
     except Exception as e:
         logger.error(f"lsp.status error: {e}")
         raise HTTPException(status_code=500, detail="Failed to load lsp status")
+
+
+@router.get("/config")
+async def opencode_config_get(core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible config endpoint."""
+    try:
+        return build_config_payload(core)
+    except Exception as e:
+        logger.error(f"config.get error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load config")
+
+
+@router.patch("/config")
+async def opencode_config_update(
+    config: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """OpenCode-compatible config update endpoint."""
+    payload = config if isinstance(config, dict) else {}
+
+    try:
+        model_id = payload.get("model")
+        if isinstance(model_id, str) and model_id.strip():
+            ok = await core.load_model(model_id.strip())
+            if not ok:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Failed to load model '{model_id.strip()}'",
+                )
+
+        default_agent = payload.get("default_agent")
+        if isinstance(default_agent, str) and default_agent.strip():
+            _validate_agent_id(default_agent)
+            core.set_active_agent(default_agent)
+
+        return build_config_payload(core)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"config.update error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update config")
+
+
+@router.get("/config/providers")
+async def opencode_config_providers(core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible config providers endpoint."""
+    try:
+        return build_config_providers_payload(core)
+    except Exception as e:
+        logger.error(f"config.providers error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load config providers")
+
+
+@router.get("/provider")
+async def opencode_provider_list(core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible provider list endpoint."""
+    try:
+        return build_provider_list_payload(core)
+    except Exception as e:
+        logger.error(f"provider.list error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load providers")
+
+
+@router.get("/provider/auth")
+async def opencode_provider_auth(core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible provider auth methods endpoint."""
+    try:
+        return provider_auth_methods(core)
+    except Exception as e:
+        logger.error(f"provider.auth error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load provider auth")
+
+
+@router.put("/auth/{providerID}")
+async def opencode_auth_set(
+    providerID: str,
+    auth: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """OpenCode-compatible provider auth write endpoint."""
+    payload = auth if isinstance(auth, dict) else {}
+    try:
+        set_provider_auth_record(providerID, payload)
+        record = get_provider_auth_records().get(providerID.strip().lower())
+        if isinstance(record, dict):
+            apply_auth_to_runtime(core, providerID, record)
+        return True
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"auth.set error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to set auth credentials")
+
+
+@router.delete("/auth/{providerID}")
+async def opencode_auth_remove(providerID: str):
+    """OpenCode-compatible provider auth delete endpoint."""
+    try:
+        return remove_provider_auth_record(providerID)
+    except Exception as e:
+        logger.error(f"auth.remove error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to remove auth credentials")
+
+
+@router.post("/provider/{providerID}/oauth/authorize")
+async def opencode_provider_oauth_authorize(
+    providerID: str,
+    request: Optional[ProviderOAuthAuthorizeRequest] = None,
+):
+    """OpenCode-compatible provider OAuth authorize endpoint."""
+    method = request.method if isinstance(request, ProviderOAuthAuthorizeRequest) else 0
+    try:
+        return await provider_oauth_authorize(providerID, method)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"provider.oauth.authorize error: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to authorize provider OAuth"
+        )
+
+
+@router.post("/provider/{providerID}/oauth/callback")
+async def opencode_provider_oauth_callback(
+    providerID: str,
+    request: Optional[ProviderOAuthCallbackRequest] = None,
+):
+    """OpenCode-compatible provider OAuth callback endpoint."""
+    method = request.method if isinstance(request, ProviderOAuthCallbackRequest) else 0
+    code = request.code if isinstance(request, ProviderOAuthCallbackRequest) else None
+    try:
+        return await provider_oauth_callback(providerID, method, code=code)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"provider.oauth.callback error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to process provider OAuth")
+
+
+@router.get("/api/v1/config")
+async def api_config_get(core: PenguinCore = Depends(get_core)):
+    """Alias for OpenCode-compatible config endpoint."""
+    return await opencode_config_get(core=core)
+
+
+@router.patch("/api/v1/config")
+async def api_config_update(
+    config: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Alias for OpenCode-compatible config update endpoint."""
+    return await opencode_config_update(config=config, core=core)
+
+
+@router.get("/api/v1/config/providers")
+async def api_config_providers(core: PenguinCore = Depends(get_core)):
+    """Alias for OpenCode-compatible config providers endpoint."""
+    return await opencode_config_providers(core=core)
+
+
+@router.get("/api/v1/provider")
+async def api_provider_list(core: PenguinCore = Depends(get_core)):
+    """Alias for OpenCode-compatible provider list endpoint."""
+    return await opencode_provider_list(core=core)
+
+
+@router.get("/api/v1/provider/auth")
+async def api_provider_auth(core: PenguinCore = Depends(get_core)):
+    """Alias for OpenCode-compatible provider auth methods endpoint."""
+    return await opencode_provider_auth(core=core)
+
+
+@router.put("/api/v1/auth/{providerID}")
+async def api_auth_set(
+    providerID: str,
+    auth: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Alias for OpenCode-compatible provider auth write endpoint."""
+    return await opencode_auth_set(providerID=providerID, auth=auth, core=core)
+
+
+@router.delete("/api/v1/auth/{providerID}")
+async def api_auth_remove(providerID: str):
+    """Alias for OpenCode-compatible provider auth delete endpoint."""
+    return await opencode_auth_remove(providerID=providerID)
+
+
+@router.post("/api/v1/provider/{providerID}/oauth/authorize")
+async def api_provider_oauth_authorize(
+    providerID: str,
+    request: Optional[ProviderOAuthAuthorizeRequest] = None,
+):
+    """Alias for OpenCode-compatible provider OAuth authorize endpoint."""
+    return await opencode_provider_oauth_authorize(
+        providerID=providerID, request=request
+    )
+
+
+@router.post("/api/v1/provider/{providerID}/oauth/callback")
+async def api_provider_oauth_callback(
+    providerID: str,
+    request: Optional[ProviderOAuthCallbackRequest] = None,
+):
+    """Alias for OpenCode-compatible provider OAuth callback endpoint."""
+    return await opencode_provider_oauth_callback(
+        providerID=providerID, request=request
+    )
 
 
 @router.get("/api/v1/path")
