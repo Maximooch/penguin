@@ -97,6 +97,7 @@ class PartEventAdapter:
         self._active_tool_parts: set[str] = set()
         self._active_tool_counts_by_message: Dict[str, int] = {}
         self._session_status: str = "idle"
+        self._default_directory: Optional[str] = None
         self._last_id_ts = 0
         self._last_id_inc = 0
         self._action_active: Optional[str] = None
@@ -115,6 +116,13 @@ class PartEventAdapter:
         """Set current session ID for all subsequent events."""
         self._session_id = session_id
 
+    def set_directory(self, directory: Optional[str]) -> None:
+        """Set default directory for path metadata when context is absent."""
+        if isinstance(directory, str) and directory.strip():
+            self._default_directory = directory.strip()
+            return
+        self._default_directory = None
+
     def _path(self) -> Dict[str, str]:
         try:
             from penguin.system.execution_context import get_current_execution_context
@@ -124,7 +132,7 @@ class PartEventAdapter:
                 return {"cwd": context.directory, "root": context.directory}
         except Exception:
             pass
-        cwd = os.getcwd()
+        cwd = self._default_directory or os.getenv("PENGUIN_CWD") or os.getcwd()
         return {"cwd": cwd, "root": cwd}
 
     def _next_id(self, prefix: str) -> str:

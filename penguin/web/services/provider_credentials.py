@@ -220,6 +220,7 @@ def _provider_env_candidates(provider_id: str) -> list[str]:
         "openai": ["OPENAI_API_KEY"],
         "anthropic": ["ANTHROPIC_API_KEY"],
         "google": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+        "ollama": ["OLLAMA_HOST"],
     }
     if pid in mapping:
         return mapping[pid]

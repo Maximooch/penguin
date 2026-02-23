@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 from pathlib import Path
+import subprocess
 from typing import Any, Optional
 
 from penguin import __version__
@@ -92,8 +94,13 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
         runtime, "project_root", None
     )
     metadata = getattr(session, "metadata", {})
+    session_dirs = getattr(core, "_opencode_session_directories", {})
 
     directory = ""
+    if isinstance(session_dirs, dict):
+        mapped = session_dirs.get(str(session.id))
+        if isinstance(mapped, str) and mapped.strip():
+            directory = mapped
     if isinstance(metadata, dict) and isinstance(metadata.get("directory"), str):
         directory = metadata["directory"]
     if not directory and runtime_dir:
@@ -110,7 +117,7 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
     if updated <= 0:
         updated = created
 
-    return {
+    payload: dict[str, Any] = {
         "id": str(session.id),
         "slug": str(session.id),
         "projectID": "penguin",
@@ -122,6 +129,413 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
             "updated": updated,
         },
     }
+
+    if isinstance(metadata, dict):
+        parent_id = (
+            metadata.get("parentID")
+            or metadata.get("parent_id")
+            or metadata.get("continued_from")
+        )
+        if isinstance(parent_id, str) and parent_id.strip():
+            payload["parentID"] = parent_id.strip()
+
+        archived_raw = metadata.get("archived") or metadata.get("archived_at_ms")
+        archived_ms: int | None = None
+        if isinstance(archived_raw, int):
+            archived_ms = archived_raw
+        elif isinstance(archived_raw, str) and archived_raw.strip().isdigit():
+            archived_ms = int(archived_raw.strip())
+        if archived_ms and archived_ms > 0:
+            payload["time"]["archived"] = archived_ms
+
+        permission_rules = metadata.get("permission")
+        if isinstance(permission_rules, list):
+            payload["permission"] = permission_rules
+
+    return payload
+
+
+def _manager_for_new_session(core: Any, parent_id: str | None = None) -> Any:
+    """Resolve owning session manager for new session creation."""
+    if parent_id:
+        _session, parent_manager = _find_session(core, parent_id)
+        if parent_manager is not None:
+            return parent_manager
+
+    conversation_manager = getattr(core, "conversation_manager", None)
+    if conversation_manager is None:
+        return None
+
+    current_agent_id = getattr(conversation_manager, "current_agent_id", "default")
+    agent_managers = getattr(conversation_manager, "agent_session_managers", {})
+    if isinstance(agent_managers, dict):
+        manager = agent_managers.get(current_agent_id)
+        if manager is not None:
+            return manager
+
+    return getattr(conversation_manager, "session_manager", None)
+
+
+def create_session_info(
+    core: Any,
+    *,
+    title: str | None = None,
+    parent_id: str | None = None,
+    directory: str | None = None,
+    permission: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Create a session and return OpenCode Session.Info payload."""
+    manager = _manager_for_new_session(core, parent_id=parent_id)
+    if manager is None:
+        raise ValueError("Session manager is not available")
+
+    session = manager.create_session()
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        session.metadata = metadata
+
+    if isinstance(title, str) and title.strip():
+        metadata["title"] = title.strip()
+    if isinstance(parent_id, str) and parent_id.strip():
+        metadata["parentID"] = parent_id.strip()
+    if isinstance(directory, str) and directory.strip():
+        metadata["directory"] = directory.strip()
+    if isinstance(permission, list):
+        metadata["permission"] = permission
+
+    manager.mark_session_modified(session.id)
+    manager.save_session(session)
+
+    return _build_session_info(core, session, manager)
+
+
+def update_session_info(
+    core: Any,
+    session_id: str,
+    *,
+    title: str | None = None,
+    archived: int | None = None,
+) -> Optional[dict[str, Any]]:
+    """Update a session and return OpenCode Session.Info payload."""
+    session, manager = _find_session(core, session_id)
+    if session is None or manager is None:
+        return None
+
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        session.metadata = metadata
+
+    if isinstance(title, str):
+        stripped_title = title.strip()
+        if stripped_title:
+            metadata["title"] = stripped_title
+        elif "title" in metadata:
+            metadata.pop("title", None)
+
+    if archived is not None:
+        if archived > 0:
+            metadata["archived_at_ms"] = int(archived)
+        else:
+            metadata.pop("archived_at_ms", None)
+
+    manager.mark_session_modified(session.id)
+    manager.save_session(session)
+
+    refreshed, refreshed_manager = _find_session(core, session_id)
+    if refreshed is None or refreshed_manager is None:
+        return None
+    return _build_session_info(core, refreshed, refreshed_manager)
+
+
+def remove_session_info(core: Any, session_id: str) -> bool:
+    """Delete a session by id."""
+    _session, manager = _find_session(core, session_id)
+    if manager is None:
+        return False
+    deleted = bool(manager.delete_session(session_id))
+    if deleted:
+        session_dirs = getattr(core, "_opencode_session_directories", None)
+        if isinstance(session_dirs, dict):
+            session_dirs.pop(session_id, None)
+    return deleted
+
+
+def list_session_statuses(core: Any) -> dict[str, dict[str, Any]]:
+    """Return OpenCode SessionStatus map for all known sessions."""
+    statuses: dict[str, dict[str, Any]] = {}
+
+    for info in list_session_infos(core):
+        statuses[str(info["id"])] = {"type": "idle"}
+
+    stream_states = getattr(core, "_opencode_stream_states", None)
+    if isinstance(stream_states, dict):
+        for session_id, state in stream_states.items():
+            if not isinstance(state, dict):
+                continue
+            is_active = bool(state.get("active"))
+            statuses[str(session_id)] = {"type": "busy" if is_active else "idle"}
+
+    adapters = getattr(core, "_tui_adapters", None)
+    if isinstance(adapters, dict):
+        for session_id, adapter in adapters.items():
+            adapter_status = getattr(adapter, "_session_status", None)
+            if adapter_status in {"busy", "idle"}:
+                statuses[str(session_id)] = {"type": adapter_status}
+
+    for session_id in list(statuses.keys()):
+        messages = get_session_messages(core, session_id, limit=1)
+        if not messages:
+            continue
+        last = messages[-1]
+        info = last.get("info") if isinstance(last, dict) else None
+        if not isinstance(info, dict):
+            continue
+        role = info.get("role")
+        raw_time = info.get("time")
+        time_data: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
+        completed = time_data.get("completed")
+        if role == "user":
+            statuses[session_id] = {"type": "busy"}
+        elif role == "assistant" and not completed:
+            statuses[session_id] = {"type": "busy"}
+
+    return statuses
+
+
+def _line_counts(diff_text: str) -> tuple[int, int]:
+    additions = 0
+    deletions = 0
+    for line in diff_text.splitlines():
+        if line.startswith("+++") or line.startswith("---"):
+            continue
+        if line.startswith("+"):
+            additions += 1
+        elif line.startswith("-"):
+            deletions += 1
+    return additions, deletions
+
+
+def _extract_file_from_diff(diff_text: str) -> str | None:
+    for line in diff_text.splitlines():
+        if line.startswith("+++ b/"):
+            return line[6:].strip()
+        if line.startswith("+++ "):
+            candidate = line[4:].strip()
+            if candidate != "/dev/null":
+                return candidate
+    return None
+
+
+def _infer_file_path(part: dict[str, Any], state: dict[str, Any]) -> str:
+    raw_input = state.get("input")
+    input_data: dict[str, Any] = raw_input if isinstance(raw_input, dict) else {}
+    raw_metadata = state.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+
+    for key in ("filePath", "path", "file", "target"):
+        value = input_data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    for key in ("filePath", "path", "file"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    tool_name = part.get("tool")
+    if isinstance(tool_name, str) and tool_name.strip() == "write":
+        value = input_data.get("file")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return ""
+
+
+def _build_file_diff(
+    *,
+    file_path: str,
+    before: str,
+    after: str,
+    additions: int,
+    deletions: int,
+) -> dict[str, Any]:
+    return {
+        "file": file_path,
+        "before": before,
+        "after": after,
+        "additions": max(additions, 0),
+        "deletions": max(deletions, 0),
+    }
+
+
+def _diffs_from_tool_part(part: dict[str, Any]) -> list[dict[str, Any]]:
+    state = part.get("state")
+    if not isinstance(state, dict):
+        return []
+    if state.get("status") not in {"completed", "error"}:
+        return []
+
+    raw_metadata = state.get("metadata")
+    metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    raw_diff = metadata.get("diff")
+    diff_text = raw_diff if isinstance(raw_diff, str) else ""
+    file_path = _infer_file_path(part, state)
+
+    if diff_text:
+        additions, deletions = _line_counts(diff_text)
+        if not file_path:
+            file_path = _extract_file_from_diff(diff_text) or "unknown"
+        return [
+            _build_file_diff(
+                file_path=file_path,
+                before="",
+                after=diff_text,
+                additions=additions,
+                deletions=deletions,
+            )
+        ]
+
+    raw_input = state.get("input")
+    input_data: dict[str, Any] = raw_input if isinstance(raw_input, dict) else {}
+    content = input_data.get("content")
+    if isinstance(file_path, str) and file_path and isinstance(content, str):
+        additions = len(content.splitlines())
+        return [
+            _build_file_diff(
+                file_path=file_path,
+                before="",
+                after=content,
+                additions=additions,
+                deletions=0,
+            )
+        ]
+
+    output = state.get("output")
+    if isinstance(output, str) and "\n" in output and file_path:
+        additions, deletions = _line_counts(output)
+        if additions > 0 or deletions > 0:
+            return [
+                _build_file_diff(
+                    file_path=file_path,
+                    before="",
+                    after=output,
+                    additions=additions,
+                    deletions=deletions,
+                )
+            ]
+
+    return []
+
+
+def _run_git(args: list[str], cwd: str) -> str:
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def _session_directory(core: Any, session: Any) -> str:
+    metadata = getattr(session, "metadata", {})
+    if isinstance(metadata, dict):
+        raw_directory = metadata.get("directory")
+        if isinstance(raw_directory, str) and raw_directory.strip():
+            return str(Path(raw_directory).expanduser())
+
+    session_dirs = getattr(core, "_opencode_session_directories", {})
+    if isinstance(session_dirs, dict):
+        mapped = session_dirs.get(str(getattr(session, "id", "")))
+        if isinstance(mapped, str) and mapped.strip():
+            return mapped
+
+    runtime = getattr(core, "runtime_config", None)
+    runtime_dir = getattr(runtime, "active_root", None) or getattr(
+        runtime, "project_root", None
+    )
+    if isinstance(runtime_dir, str) and runtime_dir.strip():
+        return runtime_dir
+
+    env_dir = os.getenv("PENGUIN_CWD")
+    if isinstance(env_dir, str) and env_dir.strip():
+        return env_dir
+
+    return str(Path.cwd())
+
+
+def _git_fallback_diffs(directory: str) -> list[dict[str, Any]]:
+    worktree = _run_git(["rev-parse", "--show-toplevel"], directory)
+    if not worktree:
+        return []
+
+    changed = _run_git(["diff", "--name-only"], worktree)
+    files = [line.strip() for line in changed.splitlines() if line.strip()]
+    diffs: list[dict[str, Any]] = []
+    for relative_path in files:
+        patch = _run_git(["diff", "--", relative_path], worktree)
+        additions, deletions = _line_counts(patch)
+        diffs.append(
+            _build_file_diff(
+                file_path=relative_path,
+                before="",
+                after=patch,
+                additions=additions,
+                deletions=deletions,
+            )
+        )
+    return diffs
+
+
+def get_session_diff(
+    core: Any,
+    session_id: str,
+    *,
+    message_id: str | None = None,
+) -> Optional[list[dict[str, Any]]]:
+    """Return OpenCode FileDiff[] derived from persisted message/tool transcript."""
+    session, _manager = _find_session(core, session_id)
+    if session is None:
+        return None
+
+    rows = get_session_messages(core, session_id)
+    if rows is None:
+        return None
+
+    selected_rows: list[dict[str, Any]] = []
+    if isinstance(message_id, str) and message_id.strip():
+        for row in rows:
+            info = row.get("info") if isinstance(row, dict) else None
+            if isinstance(info, dict) and info.get("id") == message_id:
+                selected_rows.append(row)
+    else:
+        selected_rows = [row for row in rows if isinstance(row, dict)]
+
+    by_file: dict[str, dict[str, Any]] = {}
+    for row in selected_rows:
+        parts = row.get("parts")
+        if not isinstance(parts, list):
+            continue
+        for part in parts:
+            if not isinstance(part, dict) or part.get("type") != "tool":
+                continue
+            for diff in _diffs_from_tool_part(part):
+                file_key = str(diff.get("file") or "unknown")
+                by_file[file_key] = diff
+
+    if by_file:
+        return list(by_file.values())
+
+    return _git_fallback_diffs(_session_directory(core, session))
 
 
 def list_session_infos(

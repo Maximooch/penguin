@@ -6,8 +6,8 @@ payload shapes. They derive provider/model data from Penguin runtime state.
 
 from __future__ import annotations
 
+import os
 from typing import Any
-
 
 _PROVIDER_METADATA: dict[str, dict[str, Any]] = {
     "openai": {
@@ -43,6 +43,40 @@ _PROVIDER_METADATA: dict[str, dict[str, Any]] = {
 }
 
 
+def canonical_model_id(provider_id: str, model_id: str) -> str:
+    """Return provider-local model id.
+
+    Provider-local IDs should not repeat the provider prefix for providers that
+    already namespace model IDs at the provider layer (for example
+    ``openai/gpt-5`` under provider ``openai`` becomes ``gpt-5``).
+    """
+    model_value = str(model_id or "").strip()
+    provider_value = str(provider_id or "").strip().lower()
+    if not model_value:
+        return model_value
+    if not provider_value:
+        return model_value
+
+    if "/" not in model_value:
+        return model_value
+
+    prefix, remainder = model_value.split("/", 1)
+    if prefix.strip().lower() == provider_value and remainder.strip():
+        return remainder.strip()
+    return model_value
+
+
+def qualified_model_ref(provider_id: str, model_id: str) -> str:
+    """Return ``provider/model`` selector used by config payloads."""
+    provider_value = str(provider_id or "").strip().lower()
+    canonical = canonical_model_id(provider_value, model_id)
+    if not canonical:
+        return canonical
+    if provider_value:
+        return f"{provider_value}/{canonical}"
+    return canonical
+
+
 def model_provider(model_id: str, conf: dict[str, Any]) -> str:
     """Resolve model provider from config and model id."""
     provider = conf.get("provider")
@@ -50,7 +84,7 @@ def model_provider(model_id: str, conf: dict[str, Any]) -> str:
         return provider.strip().lower()
     if "/" in model_id:
         return model_id.split("/", 1)[0].strip().lower()
-    return "openrouter"
+    return "unknown"
 
 
 def model_limit(conf: dict[str, Any]) -> tuple[int, int]:
@@ -94,13 +128,11 @@ def provider_api(provider_id: str) -> tuple[str, str]:
     metadata = _PROVIDER_METADATA.get(provider_id.strip().lower())
     if not isinstance(metadata, dict):
         return "", "@ai-sdk/openai-compatible"
-    api_url = (
-        metadata.get("api_url") if isinstance(metadata.get("api_url"), str) else ""
-    )
+    raw_api_url = metadata.get("api_url")
+    api_url = raw_api_url if isinstance(raw_api_url, str) else ""
+    raw_api_npm = metadata.get("api_npm")
     api_npm = (
-        metadata.get("api_npm")
-        if isinstance(metadata.get("api_npm"), str)
-        else "@ai-sdk/openai-compatible"
+        raw_api_npm if isinstance(raw_api_npm, str) else "@ai-sdk/openai-compatible"
     )
     return api_url, api_npm
 
@@ -118,11 +150,7 @@ def current_model_string(core: Any) -> str | None:
     if not isinstance(model_id, str) or not model_id:
         return None
 
-    if "/" in model_id:
-        return model_id
-    if isinstance(provider_id, str) and provider_id:
-        return f"{provider_id}/{model_id}"
-    return model_id
+    return qualified_model_ref(str(provider_id or ""), model_id)
 
 
 def collect_provider_models(core: Any) -> dict[str, dict[str, dict[str, Any]]]:
@@ -136,7 +164,22 @@ def collect_provider_models(core: Any) -> dict[str, dict[str, dict[str, Any]]]:
                 continue
             conf = raw_conf if isinstance(raw_conf, dict) else {}
             provider_id = model_provider(model_id, conf)
-            providers.setdefault(provider_id, {})[model_id] = conf
+            canonical = canonical_model_id(provider_id, model_id)
+            providers.setdefault(provider_id, {})[canonical] = conf
+
+    available_models = (
+        core.list_available_models() if hasattr(core, "list_available_models") else []
+    )
+    if isinstance(available_models, list):
+        for item in available_models:
+            if not isinstance(item, dict):
+                continue
+            raw_model_id = item.get("id") or item.get("model")
+            if not isinstance(raw_model_id, str) or not raw_model_id.strip():
+                continue
+            provider_id = model_provider(raw_model_id, item)
+            canonical = canonical_model_id(provider_id, raw_model_id)
+            providers.setdefault(provider_id, {}).setdefault(canonical, dict(item))
 
     current_model = (
         core.get_current_model() if hasattr(core, "get_current_model") else None
@@ -146,11 +189,12 @@ def collect_provider_models(core: Any) -> dict[str, dict[str, dict[str, Any]]]:
         provider_id = current_model.get("provider")
         if isinstance(model_id, str) and model_id:
             pid = (
-                provider_id
-                if isinstance(provider_id, str) and provider_id
+                provider_id.strip().lower()
+                if isinstance(provider_id, str) and provider_id.strip()
                 else model_provider(model_id, current_model)
             )
-            providers.setdefault(pid, {}).setdefault(model_id, current_model)
+            canonical = canonical_model_id(pid, model_id)
+            providers.setdefault(pid, {}).setdefault(canonical, current_model)
 
     return providers
 
@@ -165,4 +209,15 @@ def provider_ids(core: Any) -> set[str]:
         provider_id = current_model.get("provider")
         if isinstance(provider_id, str) and provider_id.strip():
             ids.add(provider_id.strip().lower())
+    ids.update(env_connected_provider_ids())
+    return ids
+
+
+def env_connected_provider_ids() -> set[str]:
+    """Return providers with connection hints present in environment."""
+    ids: set[str] = set()
+    for provider_id in _PROVIDER_METADATA:
+        candidates = provider_env(provider_id)
+        if any(os.getenv(name) for name in candidates):
+            ids.add(provider_id)
     return ids

@@ -393,21 +393,29 @@ For each phase, validate with:
 - [~] B2. Implement `session.list`, `session.get`, `session.messages` with OpenCode-shaped payloads.
   - Owner: `ConversationManager` + `penguin/web/services/session_view.py` adapters.
   - Acceptance: TUI loads sessions and history without Penguin-mode-only shims.
-- [ ] B3. Implement `session.status`, `session.update`, `session.delete`, `session.create`.
+- [x] B3. Implement `session.status`, `session.update`, `session.delete`, `session.create`.
   - Owner: web routes + `ConversationManager` + service adapters.
   - Acceptance: create/rename/delete session flows work from TUI.
+  - Progress (2026-02-21): added `/session/status`, `POST /session`, `PATCH /session/{id}`, `DELETE /session/{id}` and `/api/v1/*` aliases, backed by `session_view` service helpers with route/service coverage in `tests/api/test_opencode_session_routes.py` and `tests/api/test_session_view_service.py`.
 
 ### Track C: Settings / Provider / Model UX
-- [~] C1. Implement `config.get` with runtime config + reasoning + active model metadata.
+- [x] C1. Implement `config.get` with runtime config + reasoning + active model metadata.
   - Owner: `penguin/web/routes.py`, `core.runtime_config`, model config adapters.
   - Acceptance: settings panel reflects current values and capabilities.
-- [~] C2. Implement `config.providers` and `provider.list` mapped from Penguin model configs.
+  - Progress (2026-02-22): `config.get` now merges resolved config settings with runtime state, includes richer reasoning metadata (`enabled/effort/max_tokens/exclude/supported`), and emits active model/runtime capability metadata via the `penguin` block.
+- [x] C2. Implement `config.providers` and `provider.list` mapped from Penguin model configs.
   - Owner: `penguin/config`, `penguin/llm/model_config.py`, route adapters.
   - Acceptance: model/provider picker loads valid options.
+  - Progress (2026-02-22): provider/model IDs now use provider-local model IDs with provider-qualified selector strings for `config.model`; `config.providers.default` uses local model IDs; provider sets include env-connected providers and `list_available_models()` runtime sources so picker defaults and connected-state are consistent.
+  - Progress (2026-02-22): OpenRouter-authenticated sessions now merge live OpenRouter catalog models into provider payloads (`config.providers` and `provider.list`) with cached fetches, so the TUI picker can surface broader gateway model options beyond static config entries.
 - [~] C3. Implement provider auth contract (`provider.auth`, `auth.set/remove`, OAuth authorize/callback).
   - Owner: web routes + provider auth store service.
   - Acceptance: endpoint set supports OpenRouter API-key auth and OpenAI/ChatGPT Pro OAuth handshake flow with stable payloads.
   - Finalization note: current OpenAI device OAuth uses a compatibility client id mirrored from OpenCode; one of the last Phase C steps is to make client id fully Penguin-owned/configurable (env override first, then first-party registration when available).
+  - C3 closeout checklist:
+    - [x] Add env override for OAuth client id (`PENGUIN_OPENAI_OAUTH_CLIENT_ID`).
+    - [ ] Register Penguin first-party OpenAI OAuth client id and switch default to Penguin-owned id.
+    - [ ] Keep compatibility fallback id only as an explicit fallback path (not the default) after rollout validation.
   - Progress (2026-02-19): starting Phase C implementation with a dedicated Penguin provider-auth store and OpenCode-compatible config/provider endpoints.
   - Progress (2026-02-20): wired `/config`, `/config/providers`, `/provider`, `/provider/auth`, `/auth/{providerID}`, and `/provider/{providerID}/oauth/*` in `penguin/web/routes.py`; added `/api/v1/*` aliases; added route + service tests (`tests/api/test_opencode_provider_routes.py`, `tests/api/test_opencode_provider_service.py`); switched Penguin-mode TUI bootstrap to consume backend config/provider/auth endpoints first with fallback.
   - Progress (2026-02-21): refactored provider/auth backend into general-purpose services (`provider_catalog.py`, `provider_credentials.py`, `provider_auth.py`) and reduced `opencode_provider.py` to compatibility mapping wrappers; credentials default to user-global `~/.config/penguin/providers/credentials.json` (0600, atomic writes) with legacy-path compatibility.
@@ -417,9 +425,10 @@ For each phase, validate with:
 - [x] D1. Implement `vcs.get` with real git-backed branch + dirty status.
   - Owner: `penguin/web/routes.py` + lightweight git adapter utility.
   - Acceptance: sidebar shows branch and updates after branch switch.
-- [ ] D2. Implement `session.diff` using persisted snapshots/tool outputs and/or git diff.
+- [x] D2. Implement `session.diff` using persisted snapshots/tool outputs and/or git diff.
   - Owner: conversation persistence + route adapters.
   - Acceptance: diff sidebar/widget populates with changed files + patch data.
+  - Progress (2026-02-21): `/session/{id}/diff` and `/api/v1/session/{id}/diff` now return FileDiff entries sourced primarily from persisted transcript tool metadata, with git diff fallback when transcript diffs are unavailable.
 - [x] D3. Emit `vcs.branch.updated` when branch changes are detected.
   - Owner: event bus + vcs poll/trigger hook.
   - Acceptance: TUI updates branch without restart.
@@ -447,6 +456,7 @@ For each phase, validate with:
   - Progress: stream callback and finalize paths now forward explicit `session_id`/`conversation_id` hints to avoid fallback-to-global session labeling.
   - Progress: Engine finalize call sites pass session-derived scope hints for deterministic message completion routing.
   - Progress: `PartEventAdapter` now balances session `busy`/`idle` lifecycle for both stream and tool-only flows and finalizes tool-created assistant messages.
+  - Progress (2026-02-21): `PartEventAdapter` path metadata now prefers session/runtime/execution-context directory via `set_directory`, and core adapter acquisition propagates session-resolved directory hints so event paths no longer rely on global cwd in normal request flow.
 - [x] H3. Add explicit parallel multi-session API tests (two sessions, two repos, concurrent prompts/actions).
   - Owner: `tests/api/*`.
   - Acceptance: no cross-session directory bleed under concurrent execution.
@@ -460,6 +470,7 @@ For each phase, validate with:
     - Verify concurrent same-process requests across different repos/sessions do not cross-write files/messages.
     - Verify fallback (legacy/no-engine) path behavior is documented and gated if not fully isolated.
   - Progress (2026-02-19): fixed Engine construction ordering to prevent accidental legacy fallback in web runtime; remaining work is sustained concurrency soak coverage and final checklist sign-off.
+  - Progress (2026-02-21): targeted parity/concurrency regression pack passed (`33 passed`) including `tests/api/test_concurrent_session_isolation.py`, `tests/api/test_session_directory_binding.py`, and `tests/api/test_sse_and_status_scoping.py`; keep track open until extended soak + manual gate repeats are complete.
 
 #### Concurrent hardening execution mirror (from `tui-opencode-port.md`)
 - Objective: production-safe concurrent OpenCode web sessions for same-agent (`default`) multi-turn usage across repos, without queued/stuck UI.

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from fastapi import FastAPI, HTTPException
@@ -34,7 +33,11 @@ from penguin.web.routes import (
     opencode_provider_oauth_authorize,
     opencode_provider_oauth_callback,
 )
+from penguin.web.services import opencode_provider as provider_service
 from penguin.web.services.opencode_provider import get_provider_auth_records
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class _Core:
@@ -96,7 +99,7 @@ async def test_config_get_and_update(tmp_path: Path) -> None:
     typed_core = cast(Any, core)
 
     before = await opencode_config_get(core=typed_core)
-    assert before["model"] == "openai/gpt-5-codex"
+    assert before["model"] == "openrouter/openai/gpt-5-codex"
     assert before["default_agent"] == "default"
 
     updated = await opencode_config_update(
@@ -134,6 +137,221 @@ async def test_config_providers_and_auth_methods(tmp_path: Path) -> None:
     methods = await opencode_provider_auth(core=typed_core)
     openai_types = [item["type"] for item in methods["openai"]]
     assert openai_types == ["oauth", "api"]
+
+
+@pytest.mark.asyncio
+async def test_config_payload_canonicalizes_unqualified_current_model(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    core._current_model["provider"] = "openai"
+    core._current_model["model"] = "gpt-5"
+    typed_core = cast(Any, core)
+
+    config = await opencode_config_get(core=typed_core)
+    assert config["model"] == "openai/gpt-5"
+
+    providers = await opencode_config_providers(core=typed_core)
+    assert providers["default"]["openai"] == "gpt-5"
+
+
+@pytest.mark.asyncio
+async def test_config_providers_use_provider_local_model_ids(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    providers = await opencode_config_providers(core=typed_core)
+    openai = next(item for item in providers["providers"] if item["id"] == "openai")
+    openrouter = next(
+        item for item in providers["providers"] if item["id"] == "openrouter"
+    )
+
+    assert "gpt-5" in openai["models"]
+    assert "openai/gpt-5" not in openai["models"]
+    assert "openai/gpt-5-codex" in openrouter["models"]
+    assert providers["default"]["openrouter"] == "openai/gpt-5-codex"
+
+
+@pytest.mark.asyncio
+async def test_config_get_includes_runtime_and_reasoning_metadata(
+    tmp_path: Path,
+) -> None:
+    class _Runtime:
+        execution_mode = "project"
+        active_root = str(tmp_path)
+        project_root = str(tmp_path)
+        workspace_root = str(tmp_path)
+
+        def to_dict(self) -> dict[str, Any]:
+            return {
+                "project_root": str(tmp_path),
+                "workspace_root": str(tmp_path),
+                "execution_mode": "project",
+                "active_root": str(tmp_path),
+                "security_mode": "workspace",
+                "security_enabled": True,
+            }
+
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+    typed_core.runtime_config = _Runtime()
+    typed_core.model_config = SimpleNamespace(
+        provider="openrouter",
+        api_key=None,
+        reasoning_enabled=True,
+        reasoning_effort="high",
+        reasoning_max_tokens=2048,
+        reasoning_exclude=False,
+        supports_reasoning=True,
+        vision_enabled=True,
+    )
+
+    config = await opencode_config_get(core=typed_core)
+    assert config["reasoning"]["enabled"] is True
+    assert config["reasoning"]["effort"] == "high"
+    assert config["reasoning"]["max_tokens"] == 2048
+    assert config["reasoning"]["supported"] is True
+    assert config["penguin"]["security_mode"] == "workspace"
+    assert (
+        config["penguin"]["current_model"]["qualified"]
+        == "openrouter/openai/gpt-5-codex"
+    )
+
+
+@pytest.mark.asyncio
+async def test_config_payload_qualifies_gateway_model_with_provider_prefix(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    config = await opencode_config_get(core=typed_core)
+    assert config["model"] == "openrouter/openai/gpt-5-codex"
+
+
+@pytest.mark.asyncio
+async def test_config_update_accepts_provider_qualified_model_selector(
+    tmp_path: Path,
+) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    updated = await opencode_config_update(
+        config={"model": "openrouter/openai/gpt-5-codex"},
+        core=typed_core,
+    )
+    assert core.loaded_model == "openai/gpt-5-codex"
+    assert updated["model"].endswith("openai/gpt-5-codex")
+
+
+@pytest.mark.asyncio
+async def test_provider_list_includes_env_connected_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "http://localhost:11434")
+
+    core = _Core(tmp_path)
+    core.config.model_configs = {}
+    core._current_model = {
+        "provider": "openai",
+        "model": "gpt-5",
+        "client_preference": "native",
+    }
+    typed_core = cast(Any, core)
+
+    providers = await opencode_provider_list(core=typed_core)
+    all_ids = {item["id"] for item in providers["all"]}
+    assert "ollama" in all_ids
+    assert "ollama" in providers["connected"]
+
+
+@pytest.mark.asyncio
+async def test_openrouter_catalog_expands_provider_payloads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_path = tmp_path / "provider_auth_openrouter_catalog.json"
+    monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    cache = cast(Any, getattr(provider_service, "_OPENROUTER_CATALOG_CACHE"))
+    cache["fetched_at"] = 0.0
+    cache["models"] = {}
+
+    class _CatalogResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "data": [
+                    {
+                        "id": "openai/gpt-5-mini",
+                        "name": "GPT-5 Mini",
+                        "context_length": 256000,
+                        "created": 1720000000,
+                        "architecture": {"input_modalities": ["text", "image"]},
+                        "top_provider": {"max_completion_tokens": 32768},
+                    }
+                ]
+            }
+
+    class _CatalogClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        def __enter__(self) -> _CatalogClient:
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            del exc_type, exc, tb
+            return False
+
+        def get(self, url: str, headers: dict[str, str]) -> _CatalogResponse:
+            assert "openrouter.ai/api/v1/models" in url
+            assert headers["Authorization"].startswith("Bearer ")
+            return _CatalogResponse()
+
+    monkeypatch.setattr(provider_service.httpx, "Client", _CatalogClient)
+
+    core = _Core(tmp_path)
+    core.config.model_configs = {}
+    core._current_model = {
+        "provider": "openai",
+        "model": "gpt-5",
+        "client_preference": "native",
+    }
+    typed_core = cast(Any, core)
+
+    saved = await opencode_auth_set(
+        providerID="openrouter",
+        auth={"type": "api", "key": "sk-or-catalog"},
+        core=typed_core,
+    )
+    assert saved is True
+
+    providers_payload = await opencode_config_providers(core=typed_core)
+    openrouter = next(
+        item for item in providers_payload["providers"] if item["id"] == "openrouter"
+    )
+    assert openrouter["source"] == "api"
+    assert "openai/gpt-5-mini" in openrouter["models"]
+    assert (
+        openrouter["models"]["openai/gpt-5-mini"]["capabilities"]["attachment"] is True
+    )
+
+    provider_payload = await opencode_provider_list(core=typed_core)
+    openrouter_provider = next(
+        item for item in provider_payload["all"] if item["id"] == "openrouter"
+    )
+    assert "openai/gpt-5-mini" in openrouter_provider["models"]
+    assert openrouter_provider["models"]["openai/gpt-5-mini"]["reasoning"] is True
+    assert openrouter_provider["models"]["openai/gpt-5-mini"][
+        "release_date"
+    ].startswith("2024-")
 
 
 @pytest.mark.asyncio

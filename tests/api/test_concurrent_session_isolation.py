@@ -226,3 +226,166 @@ async def test_rest_chat_respects_streaming_flag(tmp_path: Path) -> None:
 
     assert response["response"] == "ok"
     assert seen_kwargs["streaming"] is True
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_model_selector_loads_requested_model(tmp_path: Path) -> None:
+    repo = tmp_path / "chat_repo_model_switch"
+    repo.mkdir()
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self.config = SimpleNamespace(model_configs={})
+            self._opencode_session_directories: dict[str, str] = {}
+            self._current_model = {
+                "provider": "openrouter",
+                "model": "openai/gpt-4.1-mini",
+            }
+            self.load_calls: list[str] = []
+
+        def get_current_model(self) -> dict[str, str]:
+            return dict(self._current_model)
+
+        async def load_model(self, model_id: str) -> bool:
+            self.load_calls.append(model_id)
+            if model_id != "openai/gpt-5-mini":
+                return False
+            self._current_model = {
+                "provider": "openrouter",
+                "model": "openai/gpt-5-mini",
+            }
+            return True
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return {"assistant_response": "ok", "action_results": []}
+
+    core = _Core()
+    request = MessageRequest(
+        text="ping",
+        model="openrouter/openai/gpt-5-mini",
+        session_id="session_model_switch",
+        directory=str(repo),
+        streaming=False,
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["response"] == "ok"
+    assert core.load_calls == ["openrouter/openai/gpt-5-mini", "openai/gpt-5-mini"]
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_model_selector_skips_reloading_current_model(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "chat_repo_model_same"
+    repo.mkdir()
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+            self.load_calls: list[str] = []
+
+        def get_current_model(self) -> dict[str, str]:
+            return {
+                "provider": "openrouter",
+                "model": "openai/gpt-5-mini",
+            }
+
+        async def load_model(self, model_id: str) -> bool:
+            self.load_calls.append(model_id)
+            return True
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return {"assistant_response": "ok", "action_results": []}
+
+    core = _Core()
+    request = MessageRequest(
+        text="ping",
+        model="openrouter/openai/gpt-5-mini",
+        session_id="session_model_same",
+        directory=str(repo),
+        streaming=False,
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["response"] == "ok"
+    assert core.load_calls == []
+
+
+@pytest.mark.asyncio
+async def test_parallel_chat_requests_sustained_isolation(tmp_path: Path) -> None:
+    repo_a = tmp_path / "sustained_repo_a"
+    repo_b = tmp_path / "sustained_repo_b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+
+    captured_contexts: list[tuple[str | None, str | None]] = []
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            current = get_current_execution_context()
+            session_id = current.session_id if current else None
+            directory = current.directory if current else None
+            captured_contexts.append((session_id, directory))
+            await asyncio.sleep(0.005)
+            return {
+                "assistant_response": f"session={session_id}|dir={directory}",
+                "action_results": [],
+            }
+
+    core = _Core()
+
+    async def _send(session_id: str, directory: Path, turn: int) -> dict[str, Any]:
+        request = MessageRequest(
+            text=f"turn {turn} from {session_id}",
+            session_id=session_id,
+            conversation_id=session_id,
+            directory=str(directory),
+            streaming=False,
+        )
+        return await handle_chat_message(request, core=cast(Any, core))
+
+    for turn in range(1, 11):
+        response_a, response_b = await asyncio.gather(
+            _send("sustained_a", repo_a, turn),
+            _send("sustained_b", repo_b, turn),
+        )
+        assert str(repo_a.resolve()) in response_a["response"]
+        assert str(repo_b.resolve()) in response_b["response"]
+        assert "sustained_a" in response_a["response"]
+        assert "sustained_b" in response_b["response"]
+
+    assert len(captured_contexts) == 20
+    assert all(
+        not (session_id == "sustained_a" and directory == str(repo_b.resolve()))
+        for session_id, directory in captured_contexts
+    )
+    assert all(
+        not (session_id == "sustained_b" and directory == str(repo_a.resolve()))
+        for session_id, directory in captured_contexts
+    )
+    assert core._opencode_session_directories["sustained_a"] == str(repo_a.resolve())
+    assert core._opencode_session_directories["sustained_b"] == str(repo_b.resolve())

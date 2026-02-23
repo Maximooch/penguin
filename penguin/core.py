@@ -3632,12 +3632,39 @@ class PenguinCore:
     def _get_tui_adapter(self, session_id: Optional[str]) -> Any:
         """Return a session-scoped TUI adapter to avoid cross-session bleed."""
         sid = session_id or "unknown"
+
+        resolved_directory = None
+        session_dirs = getattr(self, "_opencode_session_directories", None)
+        if isinstance(session_dirs, dict):
+            mapped = session_dirs.get(sid)
+            if isinstance(mapped, str) and mapped.strip():
+                resolved_directory = mapped.strip()
+        if not resolved_directory:
+            execution_context = get_current_execution_context()
+            if execution_context and execution_context.directory:
+                resolved_directory = execution_context.directory
+        if not resolved_directory:
+            runtime = getattr(self, "runtime_config", None)
+            runtime_dir = getattr(runtime, "active_root", None) or getattr(
+                runtime, "project_root", None
+            )
+            if isinstance(runtime_dir, str) and runtime_dir.strip():
+                resolved_directory = runtime_dir.strip()
+        if not resolved_directory:
+            env_dir = os.getenv("PENGUIN_CWD")
+            if isinstance(env_dir, str) and env_dir.strip():
+                resolved_directory = env_dir.strip()
+        if not resolved_directory:
+            resolved_directory = os.getcwd()
+
         adapters = getattr(self, "_tui_adapters", None)
         if not isinstance(adapters, dict):
             adapters = {}
             self._tui_adapters = adapters
         adapter = adapters.get(sid)
         if adapter is not None:
+            if hasattr(adapter, "set_directory"):
+                adapter.set_directory(resolved_directory)
             return adapter
 
         from penguin.tui_adapter import PartEventAdapter
@@ -3647,6 +3674,8 @@ class PenguinCore:
             persist_callback=self._persist_opencode_event,
         )
         adapter.set_session(sid)
+        if hasattr(adapter, "set_directory"):
+            adapter.set_directory(resolved_directory)
         adapters[sid] = adapter
         return adapter
 
@@ -4187,6 +4216,26 @@ class PenguinCore:
 
             entry = messages.get(message_id)
             if not isinstance(entry, dict):
+                session_dirs = getattr(self, "_opencode_session_directories", {})
+                mapped_directory = (
+                    session_dirs.get(session_id)
+                    if isinstance(session_dirs, dict)
+                    else None
+                )
+                context = get_current_execution_context()
+                context_directory = context.directory if context else None
+                runtime_directory = getattr(
+                    getattr(self, "runtime_config", None),
+                    "active_root",
+                    None,
+                )
+                fallback_directory = (
+                    mapped_directory
+                    or context_directory
+                    or runtime_directory
+                    or os.getenv("PENGUIN_CWD")
+                    or os.getcwd()
+                )
                 entry = {
                     "info": {
                         "id": message_id,
@@ -4200,7 +4249,7 @@ class PenguinCore:
                         "providerID": getattr(self.model_config, "provider", "penguin"),
                         "mode": "chat",
                         "agent": "default",
-                        "path": {"cwd": os.getcwd(), "root": os.getcwd()},
+                        "path": {"cwd": fallback_directory, "root": fallback_directory},
                         "cost": 0,
                         "tokens": {
                             "input": 0,

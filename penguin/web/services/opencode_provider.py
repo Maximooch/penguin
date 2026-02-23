@@ -5,11 +5,15 @@ Business logic is delegated to general-purpose provider services.
 
 from __future__ import annotations
 
+import logging
+import os
+import time
 from datetime import datetime, timezone
-from typing import Any, Optional
+from threading import RLock
+from typing import Any
 
-import httpx
-
+from penguin.config import load_config
+from penguin.web.services import provider_auth as provider_auth_service
 from penguin.web.services.provider_auth import (
     _OPENAI_OAUTH_DEVICE_URL,
     _PENDING_OAUTH,
@@ -18,13 +22,16 @@ from penguin.web.services.provider_auth import (
     provider_auth_methods as auth_methods_for_providers,
 )
 from penguin.web.services.provider_catalog import (
+    canonical_model_id,
     collect_provider_models,
     current_model_string,
+    env_connected_provider_ids,
     model_limit,
     provider_api,
     provider_env,
     provider_ids,
     provider_name,
+    qualified_model_ref,
 )
 from penguin.web.services.provider_credentials import (
     apply_credentials_to_runtime,
@@ -34,6 +41,186 @@ from penguin.web.services.provider_credentials import (
     remove_provider_credential,
     set_provider_credential,
 )
+
+# Compatibility export used by existing tests/patch points.
+httpx = provider_auth_service.httpx
+
+logger = logging.getLogger(__name__)
+
+_OPENROUTER_CATALOG_URL = "https://openrouter.ai/api/v1/models"
+_OPENROUTER_CATALOG_TTL_SECONDS = 600.0
+_OPENROUTER_CATALOG_LOCK = RLock()
+_OPENROUTER_CATALOG_CACHE: dict[str, Any] = {
+    "fetched_at": 0.0,
+    "models": {},
+}
+
+
+def _supports_reasoning_model(model_id: str) -> bool:
+    value = model_id.lower()
+    return any(
+        token in value
+        for token in (
+            "o1",
+            "o3",
+            "r1",
+            "thinking",
+            "reasoning",
+            "gpt-5",
+            "claude-3.7",
+            "claude-4",
+            "gemini-2.5",
+            "deepseek-r1",
+        )
+    )
+
+
+def _openrouter_release_date(raw_value: Any) -> str | None:
+    if isinstance(raw_value, str) and raw_value.strip():
+        return raw_value.strip()
+    if isinstance(raw_value, (int, float)) and raw_value > 0:
+        try:
+            return datetime.fromtimestamp(float(raw_value), tz=timezone.utc).isoformat()
+        except Exception:
+            return None
+    return None
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _openrouter_catalog_models(api_key: str | None = None) -> dict[str, dict[str, Any]]:
+    if not isinstance(api_key, str) or not api_key.strip():
+        api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not api_key:
+        return {}
+
+    now = time.time()
+    with _OPENROUTER_CATALOG_LOCK:
+        fetched_at = float(_OPENROUTER_CATALOG_CACHE.get("fetched_at") or 0.0)
+        cached_models = _OPENROUTER_CATALOG_CACHE.get("models")
+        if (
+            isinstance(cached_models, dict)
+            and cached_models
+            and now - fetched_at <= _OPENROUTER_CATALOG_TTL_SECONDS
+        ):
+            return {
+                str(key): value
+                for key, value in cached_models.items()
+                if isinstance(key, str) and isinstance(value, dict)
+            }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    site_url = os.getenv("OPENROUTER_SITE_URL")
+    site_title = os.getenv("OPENROUTER_SITE_TITLE") or "Penguin"
+    if site_url:
+        headers["HTTP-Referer"] = site_url
+    if site_title:
+        headers["X-Title"] = site_title
+
+    discovered: dict[str, dict[str, Any]] = {}
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(_OPENROUTER_CATALOG_URL, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+
+        data = payload.get("data") if isinstance(payload, dict) else None
+        models = data if isinstance(data, list) else []
+
+        for item in models:
+            if not isinstance(item, dict):
+                continue
+            raw_model_id = item.get("id")
+            if not isinstance(raw_model_id, str) or not raw_model_id.strip():
+                continue
+
+            model_id = raw_model_id.strip()
+            key = canonical_model_id("openrouter", model_id)
+            raw_context = item.get("context_length")
+            context_window = _coerce_positive_int(raw_context, 131072)
+
+            top_provider: dict[str, Any] = {}
+            top_provider_payload = item.get("top_provider")
+            if isinstance(top_provider_payload, dict):
+                top_provider = top_provider_payload
+            raw_output = top_provider.get("max_completion_tokens") or item.get(
+                "max_output_tokens"
+            )
+            max_output = _coerce_positive_int(raw_output, max(context_window // 4, 1))
+
+            architecture: dict[str, Any] = {}
+            architecture_payload = item.get("architecture")
+            if isinstance(architecture_payload, dict):
+                architecture = architecture_payload
+            modalities = architecture.get("input_modalities")
+            modality = architecture.get("modality")
+            vision_enabled = bool(
+                isinstance(modalities, list)
+                and any(str(value).lower() == "image" for value in modalities)
+            )
+            if not vision_enabled and isinstance(modality, str):
+                modality_lower = modality.lower()
+                vision_enabled = (
+                    "image" in modality_lower or "multimodal" in modality_lower
+                )
+
+            conf: dict[str, Any] = {
+                "provider": "openrouter",
+                "model": model_id,
+                "name": item.get("name") or model_id,
+                "context_window": context_window,
+                "max_output_tokens": max_output,
+                "vision_enabled": vision_enabled,
+                "reasoning_enabled": _supports_reasoning_model(model_id),
+            }
+            release_date = _openrouter_release_date(item.get("created"))
+            if release_date:
+                conf["release_date"] = release_date
+
+            discovered[key] = conf
+    except Exception as exc:
+        logger.debug("OpenRouter model catalog fetch failed: %s", exc)
+        return {}
+
+    with _OPENROUTER_CATALOG_LOCK:
+        _OPENROUTER_CATALOG_CACHE["fetched_at"] = time.time()
+        _OPENROUTER_CATALOG_CACHE["models"] = discovered
+    return discovered
+
+
+def _merge_openrouter_catalog_models(
+    provider_models: dict[str, dict[str, dict[str, Any]]],
+    auth_records: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    openrouter_record = auth_records.get("openrouter")
+    record_key = ""
+    if (
+        isinstance(openrouter_record, dict)
+        and openrouter_record.get("type") == "api"
+        and isinstance(openrouter_record.get("key"), str)
+    ):
+        record_key = openrouter_record["key"].strip()
+
+    discovered = _openrouter_catalog_models(api_key=record_key)
+    if not discovered:
+        return provider_models
+
+    merged: dict[str, dict[str, dict[str, Any]]] = {
+        provider_id: dict(models) for provider_id, models in provider_models.items()
+    }
+    openrouter_models = merged.setdefault("openrouter", {})
+    for model_id, conf in discovered.items():
+        openrouter_models.setdefault(model_id, conf)
+    return merged
 
 
 def _config_model_payload(
@@ -50,7 +237,9 @@ def _config_model_payload(
         )
     )
     name = conf.get("name") or conf.get("model") or model_id
-    now = datetime.now(timezone.utc).isoformat()
+    release_date = conf.get("release_date")
+    if not isinstance(release_date, str) or not release_date.strip():
+        release_date = "1970-01-01T00:00:00+00:00"
 
     return {
         "id": model_id,
@@ -94,7 +283,7 @@ def _config_model_payload(
         "status": "active",
         "options": {},
         "headers": {},
-        "release_date": now,
+        "release_date": release_date,
     }
 
 
@@ -110,12 +299,14 @@ def _provider_list_model_payload(
             isinstance(conf.get("reasoning"), dict) and conf["reasoning"].get("enabled")
         )
     )
-    now = datetime.now(timezone.utc).isoformat()
+    release_date = conf.get("release_date")
+    if not isinstance(release_date, str) or not release_date.strip():
+        release_date = "1970-01-01T00:00:00+00:00"
 
     return {
         "id": model_id,
         "name": conf.get("name") or conf.get("model") or model_id,
-        "release_date": now,
+        "release_date": release_date,
         "attachment": bool(conf.get("vision_enabled", False)),
         "reasoning": reasoning_enabled,
         "temperature": True,
@@ -131,20 +322,72 @@ def _provider_list_model_payload(
 
 def build_config_payload(core: Any) -> dict[str, Any]:
     """Build OpenCode-compatible ``config.get`` payload."""
+    config_data = load_config()
+    if not isinstance(config_data, dict):
+        config_data = {}
+
+    experimental_payload = {"disable_paste_summary": False}
+    raw_experimental = config_data.get("experimental")
+    if isinstance(raw_experimental, dict):
+        experimental_payload.update(raw_experimental)
+
     payload: dict[str, Any] = {
-        "share": "disabled",
-        "experimental": {"disable_paste_summary": False},
+        "share": str(config_data.get("share") or "disabled"),
+        "experimental": experimental_payload,
     }
+
+    passthrough_keys = (
+        "theme",
+        "keybinds",
+        "tui",
+        "lsp",
+        "formatter",
+        "plugin",
+        "disabled_providers",
+        "enabled_providers",
+        "small_model",
+    )
+    for key in passthrough_keys:
+        value = config_data.get(key)
+        if value is not None:
+            payload[key] = value
+
+    provider_overrides = config_data.get("provider")
+    if isinstance(provider_overrides, dict):
+        payload["provider"] = provider_overrides
+
+    current_model = (
+        core.get_current_model() if hasattr(core, "get_current_model") else None
+    )
+    current_provider = ""
+    current_model_id = ""
+    if isinstance(current_model, dict):
+        raw_provider = current_model.get("provider")
+        if isinstance(raw_provider, str) and raw_provider.strip():
+            current_provider = raw_provider.strip().lower()
+
+        raw_model = current_model.get("model")
+        if isinstance(raw_model, str) and raw_model.strip():
+            current_model_id = canonical_model_id(current_provider, raw_model)
 
     model = current_model_string(core)
     if model:
         payload["model"] = model
+    elif isinstance(config_data.get("model"), str) and config_data["model"].strip():
+        payload["model"] = config_data["model"].strip()
+
+    if current_provider:
+        payload["provider"] = current_provider
 
     current_agent = getattr(
         getattr(core, "conversation_manager", None), "current_agent_id", None
     )
     if isinstance(current_agent, str) and current_agent:
         payload["default_agent"] = current_agent
+    elif isinstance(config_data.get("default_agent"), str):
+        default_agent = config_data.get("default_agent", "").strip()
+        if default_agent:
+            payload["default_agent"] = default_agent
 
     model_config = getattr(core, "model_config", None)
     if model_config is not None:
@@ -154,15 +397,50 @@ def build_config_payload(core: Any) -> dict[str, Any]:
         effort = getattr(model_config, "reasoning_effort", None)
         if isinstance(effort, str) and effort:
             reasoning["effort"] = effort
+        max_tokens = getattr(model_config, "reasoning_max_tokens", None)
+        if isinstance(max_tokens, int) and max_tokens > 0:
+            reasoning["max_tokens"] = max_tokens
+        if bool(getattr(model_config, "reasoning_exclude", False)):
+            reasoning["exclude"] = True
+        supports_reasoning = getattr(model_config, "supports_reasoning", None)
+        if isinstance(supports_reasoning, bool):
+            reasoning["supported"] = supports_reasoning
         payload["reasoning"] = reasoning
 
     runtime_config = getattr(core, "runtime_config", None)
     if runtime_config is not None:
+        runtime_dict: dict[str, Any] = {}
+        if hasattr(runtime_config, "to_dict"):
+            maybe_runtime = runtime_config.to_dict()
+            if isinstance(maybe_runtime, dict):
+                runtime_dict = maybe_runtime
+
+        capabilities = {
+            "reasoning_enabled": bool(
+                getattr(model_config, "reasoning_enabled", False)
+            ),
+            "reasoning_supported": bool(
+                getattr(model_config, "supports_reasoning", False)
+            ),
+            "vision_enabled": bool(getattr(model_config, "vision_enabled", False)),
+        }
+
         payload["penguin"] = {
+            **runtime_dict,
             "execution_mode": getattr(runtime_config, "execution_mode", None),
             "active_root": getattr(runtime_config, "active_root", None),
             "project_root": getattr(runtime_config, "project_root", None),
             "workspace_root": getattr(runtime_config, "workspace_root", None),
+            "current_model": {
+                "provider": current_provider or None,
+                "id": current_model_id or None,
+                "qualified": (
+                    qualified_model_ref(current_provider, current_model_id)
+                    if current_provider and current_model_id
+                    else None
+                ),
+            },
+            "capabilities": capabilities,
         }
 
     return payload
@@ -170,9 +448,14 @@ def build_config_payload(core: Any) -> dict[str, Any]:
 
 def build_config_providers_payload(core: Any) -> dict[str, Any]:
     """Build OpenCode-compatible ``config.providers`` payload."""
-    provider_models = collect_provider_models(core)
+    config_provider_models = collect_provider_models(core)
     providers: list[dict[str, Any]] = []
     default: dict[str, str] = {}
+    auth_records = get_provider_credentials()
+    provider_models = _merge_openrouter_catalog_models(
+        config_provider_models,
+        auth_records,
+    )
 
     current_model = (
         core.get_current_model() if hasattr(core, "get_current_model") else None
@@ -181,20 +464,42 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
     current_model_id = ""
     if isinstance(current_model, dict):
         current_provider = str(current_model.get("provider") or "")
-        current_model_id = str(current_model.get("model") or "")
+        current_model_id = canonical_model_id(
+            current_provider,
+            str(current_model.get("model") or ""),
+        )
 
-    for provider_id, models in sorted(
-        provider_models.items(), key=lambda item: item[0]
-    ):
+    provider_set = set(provider_models.keys())
+    provider_set.update(auth_records.keys())
+    provider_set.update(env_connected_provider_ids())
+    if current_provider:
+        provider_set.add(current_provider)
+
+    for provider_id in sorted(provider_set):
+        models = provider_models.get(provider_id, {})
         mapped_models = {
             model_id: _config_model_payload(model_id, provider_id, conf)
             for model_id, conf in sorted(models.items(), key=lambda item: item[0])
         }
+        source = "config"
+        config_models = config_provider_models.get(provider_id, {})
+        if mapped_models and provider_id == "openrouter" and not config_models:
+            source = (
+                "api" if provider_connected(provider_id, auth_records) else "custom"
+            )
+        elif not mapped_models:
+            source = (
+                "env"
+                if any(os.getenv(name) for name in provider_env(provider_id))
+                else "api"
+                if provider_connected(provider_id, auth_records)
+                else "custom"
+            )
         providers.append(
             {
                 "id": provider_id,
                 "name": provider_name(provider_id),
-                "source": "config",
+                "source": source,
                 "env": provider_env(provider_id),
                 "options": {},
                 "models": mapped_models,
@@ -214,8 +519,12 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
 
 def build_provider_list_payload(core: Any) -> dict[str, Any]:
     """Build OpenCode-compatible ``provider.list`` payload."""
-    provider_models = collect_provider_models(core)
+    config_provider_models = collect_provider_models(core)
     auth_records = get_provider_credentials()
+    provider_models = _merge_openrouter_catalog_models(
+        config_provider_models,
+        auth_records,
+    )
 
     all_providers: list[dict[str, Any]] = []
     default: dict[str, str] = {}
@@ -228,11 +537,19 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
     current_model_id = ""
     if isinstance(current_model, dict):
         current_provider = str(current_model.get("provider") or "")
-        current_model_id = str(current_model.get("model") or "")
+        current_model_id = canonical_model_id(
+            current_provider,
+            str(current_model.get("model") or ""),
+        )
 
-    for provider_id, models in sorted(
-        provider_models.items(), key=lambda item: item[0]
-    ):
+    provider_set = set(provider_models.keys())
+    provider_set.update(auth_records.keys())
+    provider_set.update(env_connected_provider_ids())
+    if current_provider:
+        provider_set.add(current_provider)
+
+    for provider_id in sorted(provider_set):
+        models = provider_models.get(provider_id, {})
         mapped_models = {
             model_id: _provider_list_model_payload(model_id, provider_id, conf)
             for model_id, conf in sorted(models.items(), key=lambda item: item[0])
@@ -265,7 +582,7 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
 
 
 def provider_auth_methods(
-    core: Optional[Any] = None,
+    core: Any | None = None,
 ) -> dict[str, list[dict[str, str]]]:
     """Build OpenCode-compatible provider auth methods map."""
     ids = provider_ids(core) if core is not None else set()
@@ -297,7 +614,7 @@ async def provider_oauth_authorize(
 async def provider_oauth_callback(
     provider_id: str,
     method_index: int,
-    code: Optional[str] = None,
+    code: str | None = None,
 ) -> bool:
     """Compatibility wrapper to complete provider OAuth flow."""
     return await callback_provider_oauth(provider_id, method_index, code=code)
@@ -320,10 +637,10 @@ __all__ = [
     "build_config_providers_payload",
     "build_provider_list_payload",
     "get_provider_auth_records",
+    "get_provider_credential",
     "provider_auth_methods",
     "provider_oauth_authorize",
     "provider_oauth_callback",
     "remove_provider_auth_record",
     "set_provider_auth_record",
-    "get_provider_credential",
 ]

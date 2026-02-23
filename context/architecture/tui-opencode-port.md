@@ -17,13 +17,32 @@
 Make concurrent OpenCode web sessions production-safe for same-agent (`default`)
 multi-turn usage across different repos, without queued/stuck UI states.
 
-## Latest Validation (2026-02-21)
+## Latest Validation (2026-02-22)
 
 - Manual two-session runs (Cadence + Tuxford) on one `penguin-web` process now complete multi-turn chat in parallel with correct directory/session wiring.
 - Prior cross-session content bleed was reduced after explicit `session_id`/`conversation_id` propagation through streaming chunk + finalize paths.
 - Remaining gate is sustained stress confidence (longer parallel prompt runs) before declaring production-safe.
 - Phase C parity wiring landed for config/provider/auth endpoints and alias routes; Penguin-mode TUI bootstrap now fetches backend config/provider/auth payloads first (with fallback), and new route/service tests are in place.
 - Provider/config/auth backend was refactored toward Penguin-first services (`provider_catalog`, `provider_credentials`, `provider_auth`) with OpenCode-specific mapping isolated to compatibility adapters.
+- Session parity Track B3 and diff parity Track D2 are now wired in backend routes/services (`session.status/create/update/delete` and `session.diff`, including `/api/v1/*` aliases).
+- Phase C closeout updates landed for `config.get` and provider/model catalog consistency (provider-local model IDs + provider-qualified selectors + env-connected provider visibility).
+- OpenRouter-backed provider payloads now enrich `config.providers` and
+  `provider.list` with live catalog models when OpenRouter auth is present,
+  reducing model-picker mismatch vs CLI `/models` behavior.
+- Targeted regression pack is green: `41 passed` across session/provider parity,
+  concurrent session isolation, session directory binding, and SSE
+  status-scoping suites.
+
+## Operational Notes (Phase C)
+
+- `PENGUIN_PROVIDER_CREDENTIALS_STORE` overrides provider credential storage
+  path (default: `~/.config/penguin/providers/credentials.json`).
+- Credential writes are atomic and permissioned to `0600`.
+- `PENGUIN_PROVIDER_AUTH_STORE` remains a legacy compatibility override.
+- `PENGUIN_OPENAI_OAUTH_CLIENT_ID` overrides the OpenAI device OAuth client id.
+- Current OpenAI OAuth default is compatibility-oriented (OpenCode/Codex client
+  id). Endgame C3 hardening keeps this fallback only for compatibility and
+  tracks first-party Penguin client registration as the long-term target.
 
 ## Root Cause Hypothesis
 
@@ -272,5 +291,5 @@ No known one-message cap found. Relevant constants to revisit/configure:
 
 ---
 
-**Last Updated:** 2026-02-19
+**Last Updated:** 2026-02-22
 **Branch:** refactor-penguin-backend-tui

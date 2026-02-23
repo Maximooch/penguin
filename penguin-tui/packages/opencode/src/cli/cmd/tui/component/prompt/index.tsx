@@ -73,6 +73,14 @@ export function Prompt(props: PromptProps) {
   const renderer = useRenderer()
   const { theme, syntax } = useTheme()
   const kv = useKV()
+  const model = createMemo(() => {
+    const parsed = local.model.parsed()
+    const current = local.model.current()
+    if (!current) return parsed.model
+    if (parsed.model === current.modelID) return parsed.model
+    if (parsed.model.includes(current.modelID)) return parsed.model
+    return `${parsed.model} (${current.modelID})`
+  })
   const gen = iife(() => {
     const state = { ts: 0, inc: 0 }
     return {
@@ -648,6 +656,7 @@ export function Prompt(props: PromptProps) {
         },
         body: JSON.stringify({
           text: inputText,
+          model: `${selectedModel.providerID}/${selectedModel.modelID}`,
           session_id: sessionID,
           agent_id: agent.name,
           directory: process.cwd(),
@@ -1080,7 +1089,7 @@ export function Prompt(props: PromptProps) {
               <Show when={store.mode === "normal"}>
                 <box flexDirection="row" gap={1}>
                   <text flexShrink={0} fg={keybind.leader ? theme.textMuted : theme.text}>
-                    {local.model.parsed().model}
+                    {model()}
                   </text>
                   <text fg={theme.textMuted}>{local.model.parsed().provider}</text>
                   <Show when={showVariant()}>

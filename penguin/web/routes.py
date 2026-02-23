@@ -39,9 +39,14 @@ from penguin.web.services.conversations import (
     list_conversations_payload,
 )
 from penguin.web.services.session_view import (
+    create_session_info,
+    get_session_diff,
     get_session_info,
     get_session_messages,
     list_session_infos,
+    list_session_statuses,
+    remove_session_info,
+    update_session_info,
 )
 from penguin.web.services.system_status import (
     get_formatter_status,
@@ -177,6 +182,7 @@ class MessageRequest(BaseModel):
     include_reasoning: Optional[bool] = False
     agent_id: Optional[str] = None
     directory: Optional[str] = None
+    model: Optional[str] = None
 
 
 class StreamResponse(BaseModel):
@@ -1278,11 +1284,30 @@ async def opencode_config_update(
     try:
         model_id = payload.get("model")
         if isinstance(model_id, str) and model_id.strip():
-            ok = await core.load_model(model_id.strip())
+            requested_model = model_id.strip()
+            candidates: list[str] = [requested_model]
+            if "/" in requested_model:
+                _, remainder = requested_model.split("/", 1)
+                if remainder and remainder not in candidates:
+                    candidates.append(remainder)
+
+            model_configs = getattr(getattr(core, "config", None), "model_configs", {})
+            if isinstance(model_configs, dict) and len(candidates) == 2:
+                full = candidates[0]
+                short = candidates[1]
+                if short in model_configs and full not in model_configs:
+                    candidates = [short, full]
+
+            ok = False
+            for candidate in candidates:
+                ok = await core.load_model(candidate)
+                if ok:
+                    break
+
             if not ok:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Failed to load model '{model_id.strip()}'",
+                    detail=f"Failed to load model '{requested_model}'",
                 )
 
         default_agent = payload.get("default_agent")
@@ -1687,6 +1712,56 @@ async def handle_chat_message(
             agent_id=request.agent_id,
             directory=bound_directory or request.directory,
         )
+
+        requested_model = (
+            request.model.strip() if isinstance(request.model, str) else ""
+        )
+        if requested_model:
+            current_model = (
+                core.get_current_model() if hasattr(core, "get_current_model") else None
+            )
+            current_raw = ""
+            current_provider = ""
+            if isinstance(current_model, dict):
+                raw_model = current_model.get("model")
+                raw_provider = current_model.get("provider")
+                if isinstance(raw_model, str):
+                    current_raw = raw_model.strip()
+                if isinstance(raw_provider, str):
+                    current_provider = raw_provider.strip()
+            current_qualified = (
+                f"{current_provider}/{current_raw}"
+                if current_provider and current_raw
+                else ""
+            )
+
+            if requested_model not in {current_raw, current_qualified}:
+                candidates: list[str] = [requested_model]
+                if "/" in requested_model:
+                    _, remainder = requested_model.split("/", 1)
+                    if remainder and remainder not in candidates:
+                        candidates.append(remainder)
+
+                model_configs = getattr(
+                    getattr(core, "config", None), "model_configs", {}
+                )
+                if isinstance(model_configs, dict) and len(candidates) == 2:
+                    full = candidates[0]
+                    short = candidates[1]
+                    if short in model_configs and full not in model_configs:
+                        candidates = [short, full]
+
+                loaded = False
+                for candidate in candidates:
+                    loaded = await core.load_model(candidate)
+                    if loaded:
+                        break
+
+                if not loaded:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Failed to load model '{requested_model}'",
+                    )
 
         # Maybe?
         # # If no conversation_id is provided, try to use the most recent one
@@ -2710,6 +2785,86 @@ async def session_list(
     )
 
 
+@router.get("/session/status")
+async def session_status(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+):
+    """OpenCode-compatible session.status endpoint."""
+    requested_directory = directory if isinstance(directory, str) else None
+    resolved_directory = normalize_directory(requested_directory)
+    if requested_directory and not resolved_directory:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid directory: {requested_directory}",
+        )
+
+    statuses = list_session_statuses(core)
+    if not resolved_directory:
+        return statuses
+
+    filtered: Dict[str, Dict[str, Any]] = {}
+    for session_id, status in statuses.items():
+        info = get_session_info(core, session_id)
+        if info is None:
+            continue
+        session_dir = normalize_directory(info.get("directory"))
+        if session_dir == resolved_directory:
+            filtered[session_id] = status
+    return filtered
+
+
+@router.post("/session")
+async def session_create(
+    payload: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+):
+    """OpenCode-compatible session.create endpoint."""
+    body = payload if isinstance(payload, dict) else {}
+    title = body.get("title")
+    parent_id = body.get("parentID")
+    permission = body.get("permission")
+
+    if title is not None and not isinstance(title, str):
+        raise HTTPException(status_code=400, detail="title must be a string")
+    if parent_id is not None and not isinstance(parent_id, str):
+        raise HTTPException(status_code=400, detail="parentID must be a string")
+    if permission is not None and not isinstance(permission, list):
+        raise HTTPException(status_code=400, detail="permission must be a list")
+
+    if isinstance(parent_id, str) and parent_id.strip():
+        parent = get_session_info(core, parent_id)
+        if parent is None:
+            raise HTTPException(
+                status_code=404, detail=f"Session {parent_id} not found"
+            )
+
+    requested_directory = directory if isinstance(directory, str) else None
+    resolved_directory = normalize_directory(requested_directory)
+    if requested_directory and not resolved_directory:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid directory: {requested_directory}",
+        )
+
+    try:
+        info = create_session_info(
+            core,
+            title=title if isinstance(title, str) else None,
+            parent_id=parent_id if isinstance(parent_id, str) else None,
+            directory=resolved_directory,
+            permission=permission if isinstance(permission, list) else None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    bound_directory = _bind_session_directory(core, info.get("id"), resolved_directory)
+    if bound_directory:
+        info["directory"] = bound_directory
+    return info
+
+
 @router.get("/session/{session_id}")
 async def session_get(session_id: str, core: PenguinCore = Depends(get_core)):
     """OpenCode-compatible session get endpoint."""
@@ -2717,6 +2872,55 @@ async def session_get(session_id: str, core: PenguinCore = Depends(get_core)):
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     return session
+
+
+@router.patch("/session/{session_id}")
+async def session_update(
+    session_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """OpenCode-compatible session.update endpoint."""
+    body = payload if isinstance(payload, dict) else {}
+    title = body.get("title")
+    archived = None
+
+    if title is not None and not isinstance(title, str):
+        raise HTTPException(status_code=400, detail="title must be a string")
+
+    time_data = body.get("time")
+    if isinstance(time_data, dict) and time_data.get("archived") is not None:
+        raw_archived = time_data.get("archived")
+        if isinstance(raw_archived, int):
+            archived = raw_archived
+        elif isinstance(raw_archived, str) and raw_archived.strip().isdigit():
+            archived = int(raw_archived.strip())
+        else:
+            raise HTTPException(status_code=400, detail="time.archived must be an int")
+
+    updated = update_session_info(
+        core,
+        session_id,
+        title=title if isinstance(title, str) else None,
+        archived=archived,
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    return updated
+
+
+@router.delete("/session/{session_id}")
+async def session_delete(session_id: str, core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible session.delete endpoint."""
+    existing = get_session_info(core, session_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    removed = remove_session_info(core, session_id)
+    if not removed:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to delete session {session_id}"
+        )
+    return True
 
 
 @router.get("/session/{session_id}/message")
@@ -2730,6 +2934,19 @@ async def session_messages(
     if messages is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     return messages
+
+
+@router.get("/session/{session_id}/diff")
+async def session_diff(
+    session_id: str,
+    core: PenguinCore = Depends(get_core),
+    messageID: Optional[str] = Query(None),
+):
+    """OpenCode-compatible session.diff endpoint."""
+    diffs = get_session_diff(core, session_id, message_id=messageID)
+    if diffs is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    return diffs
 
 
 @router.get("/api/v1/session")
@@ -2752,10 +2969,45 @@ async def api_session_list(
     )
 
 
+@router.get("/api/v1/session/status")
+async def api_session_status(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+):
+    """Alias for OpenCode-compatible session.status endpoint."""
+    return await session_status(core=core, directory=directory)
+
+
+@router.post("/api/v1/session")
+async def api_session_create(
+    payload: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+):
+    """Alias for OpenCode-compatible session.create endpoint."""
+    return await session_create(payload=payload, core=core, directory=directory)
+
+
 @router.get("/api/v1/session/{session_id}")
 async def api_session_get(session_id: str, core: PenguinCore = Depends(get_core)):
     """Alias for OpenCode-compatible session get endpoint."""
     return await session_get(session_id, core)
+
+
+@router.patch("/api/v1/session/{session_id}")
+async def api_session_update(
+    session_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Alias for OpenCode-compatible session.update endpoint."""
+    return await session_update(session_id, payload=payload, core=core)
+
+
+@router.delete("/api/v1/session/{session_id}")
+async def api_session_delete(session_id: str, core: PenguinCore = Depends(get_core)):
+    """Alias for OpenCode-compatible session.delete endpoint."""
+    return await session_delete(session_id, core=core)
 
 
 @router.get("/api/v1/session/{session_id}/message")
@@ -2766,6 +3018,16 @@ async def api_session_messages(
 ):
     """Alias for OpenCode-compatible session.messages endpoint."""
     return await session_messages(session_id, core, limit=limit)
+
+
+@router.get("/api/v1/session/{session_id}/diff")
+async def api_session_diff(
+    session_id: str,
+    core: PenguinCore = Depends(get_core),
+    messageID: Optional[str] = Query(None),
+):
+    """Alias for OpenCode-compatible session.diff endpoint."""
+    return await session_diff(session_id, core=core, messageID=messageID)
 
 
 # Conversation-specific checkpointing

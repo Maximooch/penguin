@@ -171,6 +171,8 @@ Documentation = "https://penguin-rho.vercel.app"
 [project.scripts]
 penguin = "penguin.cli.cli:app"
 penguin-web = "penguin.web.server:main"
+penguin-opencode = "penguin.cli.opencode_launcher:main"
+penguin-tui = "penguin.cli.opencode_launcher:main"
 penguin-tui-proto = "penguin.penguin.cli.tui_prototype_mock:main"
 
 [tool.setuptools.packages.find]

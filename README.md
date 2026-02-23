@@ -62,7 +62,25 @@ penguin config setup
 # Start using Penguin
 penguin              # Interactive CLI chat
 penguin-web          # Web API server (if [web] installed)
+penguin-opencode     # OpenCode TUI launcher (auto-starts web locally)
 ```
+
+### OpenCode Provider Auth Environment
+
+When using the OpenCode-compatible TUI/web provider auth routes, these
+environment variables control OAuth and credential-store behavior:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PENGUIN_OPENAI_OAUTH_CLIENT_ID` | Overrides the OpenAI device-flow OAuth client id used by Penguin web auth endpoints. | Compatibility fallback client id (OpenCode/Codex) |
+| `PENGUIN_PROVIDER_CREDENTIALS_STORE` | Overrides the user-global provider credentials store path. | `~/.config/penguin/providers/credentials.json` |
+
+Notes:
+- The credentials store is written atomically and permissioned to `0600`.
+- `PENGUIN_PROVIDER_AUTH_STORE` is still honored as a legacy override for
+  compatibility during migration.
+- OpenAI OAuth currently defaults to a compatibility client id; Penguin tracks
+  first-party client registration as a final C3 hardening step.
 
 <!-- #TODO: double check if accurate.  -->
 
@@ -274,7 +292,23 @@ penguin project task create PROJECT_ID "Task description"
 
 # Web API server (requires [web] extra)
 penguin-web
+
+# OpenCode TUI (uses cwd as project root, auto-starts local web if needed)
+penguin-opencode
 ```
+
+Notes for `penguin-opencode`:
+- It prefers Penguin's local OpenCode sources (`penguin-tui/packages/opencode`) so you run the Penguin-patched TUI, not a generic global OpenCode build.
+- If you run from outside the Penguin repo, set `PENGUIN_OPENCODE_DIR` to that local path, for example:
+
+```bash
+export PENGUIN_OPENCODE_DIR="/path/to/penguin/penguin-tui/packages/opencode"
+uvx --from "/path/to/penguin" penguin-opencode "$PWD"
+```
+
+- First run via `uvx` can take longer while web dependencies are prepared; use a larger startup window if needed (for example `--web-timeout 120`).
+
+- To intentionally use your globally installed OpenCode binary, pass `--use-global-opencode`.
 
 For detailed usage, see the [documentation](https://penguin-rho.vercel.app).
 
