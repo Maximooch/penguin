@@ -28,6 +28,7 @@ import { useArgs } from "./args"
 import { batch, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import type { Path } from "@opencode-ai/sdk"
+import { hydrateSessionSnapshot } from "./session-hydration"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
@@ -231,16 +232,18 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const normalized =
             info.role === "assistant"
               ? {
-                  parentID: "root",
-                  agent: "penguin",
-                  path: {
-                    cwd: process.cwd(),
-                    root: process.cwd(),
-                  },
-                  modelID: "penguin-default",
-                  providerID: "penguin",
-                  mode: "chat",
                   ...info,
+                  parentID: info.parentID ?? "root",
+                  agent: info.agent ?? "penguin",
+                  path:
+                    info.path ??
+                    ({
+                      cwd: process.cwd(),
+                      root: process.cwd(),
+                    } as const),
+                  modelID: info.modelID ?? "penguin-default",
+                  providerID: info.providerID ?? "penguin",
+                  mode: info.mode ?? "chat",
                 }
               : info
           const messages = store.message[normalized.sessionID]
@@ -769,25 +772,29 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           return last.time.completed ? "idle" : "working"
         },
         async sync(sessionID: string) {
-          if (sdk.penguin) return
           if (fullSyncedSessions.has(sessionID)) return
-          const [session, messages, todo, diff] = await Promise.all([
-            sdk.client.session.get({ sessionID }, { throwOnError: true }),
-            sdk.client.session.messages({ sessionID, limit: 100 }),
-            sdk.client.session.todo({ sessionID }),
-            sdk.client.session.diff({ sessionID }),
-          ])
+          const fallback = sdk.penguin ? store.session.find((item) => item.id === sessionID) : undefined
+          const hydrated = await hydrateSessionSnapshot(sdk.client, sessionID, {
+            fallbackSession: fallback,
+          })
           setStore(
             produce((draft) => {
-              const match = Binary.search(draft.session, sessionID, (s) => s.id)
-              if (match.found) draft.session[match.index] = session.data!
-              if (!match.found) draft.session.splice(match.index, 0, session.data!)
-              draft.todo[sessionID] = todo.data ?? []
-              draft.message[sessionID] = messages.data!.map((x) => x.info)
-              for (const message of messages.data!) {
+              if (sdk.penguin) {
+                const index = draft.session.findIndex((item) => item.id === sessionID)
+                if (index >= 0) draft.session[index] = hydrated.session
+                if (index < 0) draft.session.push(hydrated.session)
+              }
+              if (!sdk.penguin) {
+                const match = Binary.search(draft.session, sessionID, (s) => s.id)
+                if (match.found) draft.session[match.index] = hydrated.session
+                if (!match.found) draft.session.splice(match.index, 0, hydrated.session)
+              }
+              draft.todo[sessionID] = hydrated.todo
+              draft.message[sessionID] = hydrated.messages.map((x) => x.info)
+              for (const message of hydrated.messages) {
                 draft.part[message.info.id] = message.parts
               }
-              draft.session_diff[sessionID] = diff.data ?? []
+              draft.session_diff[sessionID] = hydrated.diff
             }),
           )
           fullSyncedSessions.add(sessionID)
