@@ -204,6 +204,107 @@ def test_get_session_messages_falls_back_to_legacy_messages():
     assert all(item["parts"][0]["type"] == "text" for item in messages)
 
 
+def test_get_session_messages_merges_transcript_with_legacy_rows():
+    now = datetime.now().isoformat()
+    session = _session("session_merge", "Merged Session", now)
+    session.messages.append(
+        Message(
+            id="msg_user",
+            role="user",
+            content="hello",
+            category=MessageCategory.DIALOG,
+            timestamp=now,
+        )
+    )
+    session.messages.append(
+        Message(
+            id="msg_assistant",
+            role="assistant",
+            content="assistant from legacy",
+            category=MessageCategory.DIALOG,
+            timestamp=now,
+        )
+    )
+    session.metadata[TRANSCRIPT_KEY] = {
+        "order": ["msg_assistant"],
+        "messages": {
+            "msg_assistant": {
+                "info": {
+                    "id": "msg_assistant",
+                    "sessionID": session.id,
+                    "role": "assistant",
+                    "time": {"created": 1, "completed": 2},
+                    "parentID": "root",
+                    "modelID": "m",
+                    "providerID": "p",
+                    "mode": "chat",
+                    "agent": "default",
+                    "path": {"cwd": "/tmp", "root": "/tmp"},
+                    "cost": 0,
+                    "tokens": {
+                        "input": 0,
+                        "output": 0,
+                        "reasoning": 0,
+                        "cache": {"read": 0, "write": 0},
+                    },
+                },
+                "part_order": ["part_transcript"],
+                "parts": {
+                    "part_transcript": {
+                        "id": "part_transcript",
+                        "sessionID": session.id,
+                        "messageID": "msg_assistant",
+                        "type": "text",
+                        "text": "assistant from transcript",
+                    }
+                },
+            }
+        },
+    }
+    core = _core([session])
+
+    messages = get_session_messages(core, session.id)
+
+    assert messages is not None
+    assert [item["info"]["id"] for item in messages] == ["msg_user", "msg_assistant"]
+    assert messages[0]["parts"][0]["text"] == "hello"
+    assert messages[1]["parts"][0]["text"] == "assistant from transcript"
+
+
+def test_list_session_infos_handles_mutating_index():
+    now = "2026-02-03T00:00:00"
+    session = _session("session_primary", "Primary", now)
+
+    class _MutatingManager(_Manager):
+        def load_session(self, session_id: str):
+            if "session_secondary" not in self.session_index:
+                self.session_index["session_secondary"] = {
+                    "created_at": now,
+                    "last_active": now,
+                    "title": "Secondary",
+                }
+            return super().load_session(session_id)
+
+    mutating = _MutatingManager([session])
+    conversation_manager = SimpleNamespace(
+        session_manager=mutating,
+        agent_session_managers={"default": mutating},
+    )
+    runtime_config = SimpleNamespace(
+        active_root="/tmp/workspace", project_root="/tmp/workspace"
+    )
+    model_config = SimpleNamespace(model="test-model", provider="test-provider")
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        runtime_config=runtime_config,
+        model_config=model_config,
+    )
+
+    result = list_session_infos(core)
+
+    assert any(item["id"] == "session_primary" for item in result)
+
+
 def test_get_session_info_returns_none_for_missing_session():
     core = _core([])
     assert get_session_info(core, "session_missing") is None

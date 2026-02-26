@@ -27,6 +27,7 @@ import { useExit } from "./exit"
 import { useArgs } from "./args"
 import { batch, onMount } from "solid-js"
 import { Log } from "@/util/log"
+import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
 import { hydrateSessionSnapshot } from "./session-hydration"
 
@@ -371,7 +372,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           if (sdk.penguin) {
             const url = new URL("/lsp", sdk.url)
             url.searchParams.set("directory", process.cwd())
-            url.searchParams.set("session_id", sdk.sessionID ?? "penguin")
             fetch(url)
               .then((res) => (res.ok ? res.json() : []))
               .then((data) => setStore("lsp", reconcile(Array.isArray(data) ? data : [])))
@@ -408,7 +408,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           }
         }
         const now = Date.now()
-        const id = sdk.sessionID ?? "penguin"
         const stamp = (value?: string) => {
           const time = value ? Date.parse(value) : NaN
           return Number.isFinite(time) ? time : now
@@ -467,7 +466,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             [model.id]: model,
           },
         }
-        const [providersData, providerListData, configData, providerAuthData, list, roster] = await Promise.all([
+        const sessionsUrl = iife(() => {
+          const url = new URL("/session", sdk.url)
+          url.searchParams.set("directory", process.cwd())
+          url.searchParams.set("limit", "50")
+          return url
+        })
+        const [providersData, providerListData, configData, providerAuthData, sessionsData, roster] = await Promise.all([
           fetch(new URL("/config/providers", sdk.url))
             .then((res) => (res.ok ? res.json() : undefined))
             .catch(() => undefined),
@@ -480,15 +485,22 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           fetch(new URL("/provider/auth", sdk.url))
             .then((res) => (res.ok ? res.json() : undefined))
             .catch(() => undefined),
-          fetch(new URL("/api/v1/conversations", sdk.url))
+          fetch(sessionsUrl)
             .then((res) => (res.ok ? res.json() : undefined))
-            .then((data) => (Array.isArray(data?.conversations) ? data.conversations : []))
+            .then((data) => (Array.isArray(data) ? data : []))
             .catch(() => []),
           fetch(new URL("/api/v1/agents", sdk.url))
             .then((res) => (res.ok ? res.json() : undefined))
             .then((data) => (Array.isArray(data) ? data : []))
             .catch(() => []),
         ])
+        const list =
+          sessionsData.length > 0
+            ? sessionsData
+            : await fetch(new URL("/api/v1/conversations", sdk.url))
+                .then((res) => (res.ok ? res.json() : undefined))
+                .then((data) => (Array.isArray(data?.conversations) ? data.conversations : []))
+                .catch(() => [])
         const providers = Array.isArray(providersData?.providers) ? providersData.providers : [provider]
         const providerDefault =
           providersData && typeof providersData.default === "object" && providersData.default
@@ -531,39 +543,30 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         const mapped: PenguinSession[] = list.map((item: { [key: string]: unknown }) => {
           const sid = typeof item.id === "string" ? item.id : crypto.randomUUID()
           const title = typeof item.title === "string" ? item.title : `Session ${sid.slice(-8)}`
-          const created = stamp(typeof item.created_at === "string" ? item.created_at : undefined)
-          const updated = stamp(typeof item.last_active === "string" ? item.last_active : undefined)
+          const time = item.time
+          const created =
+            typeof time === "object" && time && "created" in time && typeof time.created === "number"
+              ? time.created
+              : stamp(typeof item.created_at === "string" ? item.created_at : undefined)
+          const updated =
+            typeof time === "object" && time && "updated" in time && typeof time.updated === "number"
+              ? time.updated
+              : stamp(typeof item.last_active === "string" ? item.last_active : undefined)
+          const directory = typeof item.directory === "string" ? item.directory : process.cwd()
           return {
             id: sid,
-            slug: sid,
-            projectID: "penguin",
-            directory: process.cwd(),
+            slug: typeof item.slug === "string" ? item.slug : sid,
+            projectID: typeof item.projectID === "string" ? item.projectID : "penguin",
+            directory,
             title,
-            version: "penguin",
+            version: typeof item.version === "string" ? item.version : "penguin",
             time: {
               created,
               updated,
             },
           }
         })
-        const exists = mapped.some((item: PenguinSession) => item.id === id)
-        const session: PenguinSession[] = exists
-          ? mapped
-          : [
-              {
-                id,
-                slug: id,
-                projectID: "penguin",
-                directory: process.cwd(),
-                title: "Penguin Session",
-                version: "penguin",
-                time: {
-                  created: now,
-                  updated: now,
-                },
-              },
-              ...mapped,
-            ]
+        const session: PenguinSession[] = mapped
         const baseAgent = {
           name: "penguin",
           mode: "primary" as const,
@@ -628,7 +631,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         const systemUrl = (pathname: string) => {
           const url = new URL(pathname, sdk.url)
           url.searchParams.set("directory", process.cwd())
-          url.searchParams.set("session_id", id)
           return url
         }
 

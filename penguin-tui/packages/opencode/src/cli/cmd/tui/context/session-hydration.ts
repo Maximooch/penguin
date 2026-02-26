@@ -62,7 +62,7 @@ export async function hydrateSessionSnapshot(
         if (x) return x
         throw new Error(`Session ${sessionID} not found`)
       }),
-    withFallback(client.session.messages({ sessionID, limit: 100 }), []),
+    withFallback(client.session.messages({ sessionID, limit: 300 }), []),
     client.session.todo ? withFallback(client.session.todo({ sessionID }), []) : Promise.resolve([]),
     client.session.diff ? withFallback(client.session.diff({ sessionID }), []) : Promise.resolve([]),
   ])

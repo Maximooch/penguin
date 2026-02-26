@@ -397,6 +397,12 @@ For each phase, validate with:
   - Owner: web routes + `ConversationManager` + service adapters.
   - Acceptance: create/rename/delete session flows work from TUI.
   - Progress (2026-02-21): added `/session/status`, `POST /session`, `PATCH /session/{id}`, `DELETE /session/{id}` and `/api/v1/*` aliases, backed by `session_view` service helpers with route/service coverage in `tests/api/test_opencode_session_routes.py` and `tests/api/test_session_view_service.py`.
+- [ ] B4. Implement `session.summarize` (title generation) + emit `session.updated` title refresh.
+  - Owner: web routes + `session_view` service + conversation summarization adapter.
+  - Acceptance: resumed sessions show generated titles in picker/tab/header without manual rename.
+- [ ] B5. Implement `session.abort` and wire cancel semantics for active stream/tool runs.
+  - Owner: web routes + stream manager/session state in `core.py`.
+  - Acceptance: pressing cancel key in TUI reliably stops in-flight assistant output.
 
 ### Track C: Settings / Provider / Model UX
 - [x] C1. Implement `config.get` with runtime config + reasoning + active model metadata.
@@ -505,6 +511,38 @@ For each phase, validate with:
 - [ ] E4. Implement variant/mode + reasoning effort plumbing in `session.prompt`/config.
   - Owner: route adapter + `core.process` parameter mapping.
   - Acceptance: toggling mode/effort affects runtime behavior and is reflected in metadata.
+- [ ] E5. Complete command palette parity (`Ctrl+P`) including settings/workflow commands in Penguin mode.
+  - Owner: TUI command registry + route parity adapters.
+  - Acceptance: settings and session/model/agent actions are discoverable from the palette.
+- [ ] E6. Implement agent mode parity (`plan`/`build`/default) and mode-aware routing.
+  - Owner: TUI agent context + backend prompt/command dispatch metadata.
+  - Acceptance: mode switch changes runtime behavior and is preserved in message metadata.
+- [ ] E7. Complete sub-agent lifecycle parity.
+  - Owner: agent roster API, message routing, session hierarchy handling.
+  - Acceptance: sub-agent tasks appear as first-class sessions with reliable replay/navigation.
+- [ ] E8. Context/tokens/cost telemetry parity in sidebar/header.
+  - Owner: backend usage accounting + TUI metadata rendering.
+  - Acceptance: token usage, context %, and spend reflect real provider usage (including OpenRouter).
+- [ ] E9. Context-window/truncation visualization parity (no compaction assumptions).
+  - Owner: session metadata payloads + TUI context widgets.
+  - Acceptance: users can see context pressure/truncation behavior even when compaction is not used.
+- [ ] E10. Reasoning variants parity (`Ctrl+T` effort/options) in Penguin mode.
+  - Owner: config endpoints + prompt payload schema + TUI variant UI.
+  - Acceptance: reasoning variant controls are available and affect model requests.
+
+### Track I: Penguin-mode UX and Runtime Ergonomics
+- [ ] I1. Resolve occasional queued/stuck turn behavior under streaming-heavy runs.
+  - Owner: stream lifecycle ordering + event flush/completion audit (`core.py`, TUI sync state).
+  - Acceptance: turns consistently move busy -> idle without stranded queued prompts.
+- [ ] I2. Ensure TUI/server directory coherence when launched from different working dirs.
+  - Owner: launcher/runtime directory handshake + immutable session directory binding.
+  - Acceptance: tool execution roots match active project immediately, without corrective follow-up commands.
+- [ ] I3. Finish Penguin branding pass in Penguin mode.
+  - Owner: TUI home/status/footer copy + theme/assets.
+  - Acceptance: no confusing OpenCode-specific branding in Penguin mode (logo/footer/help text), while preserving upstream defaults outside Penguin mode.
+- [ ] I4. Add explicit exit/cancel keybind guidance and safer default behavior for `Ctrl+C`/interrupt flows.
+  - Owner: keybind layer + prompt/session route handlers.
+  - Acceptance: users can predictably interrupt or exit without leaving stuck state.
 
 ### Track F: LSP / Formatter / Path (Real, not stubbed)
 - [x] F1. Implement `path.get` from runtime roots (`directory`, `worktree`, `home`).

@@ -120,7 +120,7 @@ export const TuiThreadCommand = cmd({
     })
 
     const base = args.url ?? process.env.PENGUIN_WEB_URL ?? "http://localhost:8000"
-    const sessionID = args.session ?? crypto.randomUUID()
+    const sessionID = args.session
     const url = base
     const customFetch = undefined
     const events = undefined
@@ -134,7 +134,7 @@ export const TuiThreadCommand = cmd({
       sessionID,
       args: {
         continue: args.continue,
-        sessionID,
+        sessionID: args.session,
         agent: args.agent,
         model: args.model,
         prompt,

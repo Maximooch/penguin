@@ -96,7 +96,6 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
 
     const streamPenguin = async () => {
       const base = new URL("/api/v1/events/sse", props.url)
-      if (sessionID) base.searchParams.set("session_id", sessionID)
       if (props.directory) base.searchParams.set("directory", props.directory)
       const reader = await (props.fetch ?? fetch)(base, {
         signal: abort.signal,

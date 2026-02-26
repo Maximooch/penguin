@@ -14,12 +14,15 @@ import { usePromptRef } from "../context/prompt"
 import { Installation } from "@/installation"
 import { useKV } from "../context/kv"
 import { useCommandDialog } from "../component/dialog-command"
+import { useSDK } from "@tui/context/sdk"
+import { TextAttributes } from "@opentui/core"
 
 // TODO: what is the best way to do this?
 let once = false
 
 export function Home() {
   const sync = useSync()
+  const sdk = useSDK()
   const kv = useKV()
   const { theme } = useTheme()
   const route = useRouteData("home")
@@ -95,7 +98,14 @@ export function Home() {
     <>
       <box flexGrow={1} justifyContent="center" alignItems="center" paddingLeft={2} paddingRight={2} gap={1}>
         <box height={3} />
-        <Logo />
+        <Show
+          when={sdk.penguin}
+          fallback={<Logo />}
+        >
+          <text fg={theme.text} attributes={TextAttributes.BOLD}>
+            Penguin
+          </text>
+        </Show>
         <box width="100%" maxWidth={75} zIndex={1000} paddingTop={1}>
           <Prompt
             ref={(r) => {

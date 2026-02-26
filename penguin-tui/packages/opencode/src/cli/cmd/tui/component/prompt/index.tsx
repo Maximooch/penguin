@@ -525,11 +525,47 @@ export function Prompt(props: PromptProps) {
       promptModelWarning()
       return
     }
-    const sessionID = props.sessionID
-      ? props.sessionID
-      : sdk.penguin
-        ? sdk.sessionID ?? crypto.randomUUID()
-        : await sdk.client.session.create({}).then((x) => x.data!.id)
+    const sessionID = await iife(async () => {
+      if (props.sessionID) return props.sessionID
+      if (sdk.sessionID) return sdk.sessionID
+
+      if (sdk.penguin) {
+        const createUrl = new URL("/session", sdk.url)
+        createUrl.searchParams.set("directory", process.cwd())
+        const created = await fetch(createUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({}),
+        })
+          .then((res) => (res.ok ? res.json() : undefined))
+          .catch(() => undefined)
+        if (created && typeof created.id === "string" && created.id) return created.id
+      }
+
+      return await sdk.client.session
+        .create({})
+        .then((x) => x.data?.id)
+        .then((id) => {
+          if (id) return id
+          throw new Error("Session create returned empty id")
+        })
+    }).catch((e) => {
+      const msg = e instanceof Error ? e.message : String(e)
+      toast.show({
+        variant: "error",
+        message: `Failed to start session: ${msg}`,
+      })
+      return undefined
+    })
+    if (!sessionID) return
+    if (sdk.penguin && !props.sessionID) {
+      route.navigate({
+        type: "session",
+        sessionID,
+      })
+    }
     const messageID = sdk.penguin ? gen.next("msg") : Identifier.ascending("message")
     let inputText = store.prompt.input
 

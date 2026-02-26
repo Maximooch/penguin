@@ -171,21 +171,25 @@ export function Session() {
     return new CustomSpeedScroll(3)
   })
 
-  createEffect(async () => {
-    await sync.session
-      .sync(route.sessionID)
-      .then(() => {
-        if (scroll) scroll.scrollBy(100_000)
-      })
-      .catch((e) => {
-        console.error(e)
-        toast.show({
-          message: `Session not found: ${route.sessionID}`,
-          variant: "error",
-        })
-        return navigate({ type: "home" })
-      })
-  })
+  createEffect(
+    on(
+      () => route.sessionID,
+      (sessionID) => {
+        void sync.session
+          .sync(sessionID)
+          .then(() => {
+            if (scroll) scroll.scrollBy(100_000)
+          })
+          .catch((e) => {
+            console.error(e)
+            toast.show({
+              message: `Failed to load session: ${sessionID}`,
+              variant: "error",
+            })
+          })
+      },
+    ),
+  )
 
   const toast = useToast()
   const sdk = useSDK()
