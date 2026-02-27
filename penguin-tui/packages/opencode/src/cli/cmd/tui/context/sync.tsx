@@ -18,6 +18,8 @@ import type {
   ProviderAuthMethod,
   VcsInfo,
 } from "@opencode-ai/sdk/v2"
+import fs from "fs"
+import path from "path"
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useSDK } from "@tui/context/sdk"
 import { Binary } from "@opencode-ai/util/binary"
@@ -30,6 +32,52 @@ import { Log } from "@/util/log"
 import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
 import { hydrateSessionSnapshot } from "./session-hydration"
+
+type SessionUsage = {
+  current_total_tokens: number
+  max_context_window_tokens: number | null
+  available_tokens: number
+  percentage: number | null
+  truncations: {
+    total_truncations: number
+    messages_removed: number
+    tokens_freed: number
+  }
+}
+
+const parseUsage = (raw: unknown): SessionUsage | undefined => {
+  if (typeof raw !== "object" || !raw) return undefined
+  const root = raw as Record<string, unknown>
+  const usage =
+    typeof root.usage === "object" && root.usage
+      ? (root.usage as Record<string, unknown>)
+      : root
+
+  const current = usage.current_total_tokens
+  if (typeof current !== "number") return undefined
+
+  const max = usage.max_context_window_tokens
+  const available = usage.available_tokens
+  const percentage = usage.percentage
+  const trunc =
+    typeof usage.truncations === "object" && usage.truncations
+      ? (usage.truncations as Record<string, unknown>)
+      : {}
+
+  return {
+    current_total_tokens: current,
+    max_context_window_tokens: typeof max === "number" ? max : null,
+    available_tokens: typeof available === "number" ? available : 0,
+    percentage: typeof percentage === "number" ? percentage : null,
+    truncations: {
+      total_truncations:
+        typeof trunc.total_truncations === "number" ? trunc.total_truncations : 0,
+      messages_removed:
+        typeof trunc.messages_removed === "number" ? trunc.messages_removed : 0,
+      tokens_freed: typeof trunc.tokens_freed === "number" ? trunc.tokens_freed : 0,
+    },
+  }
+}
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
   name: "Sync",
@@ -52,6 +100,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session: Session[]
       session_status: {
         [sessionID: string]: SessionStatus
+      }
+      session_usage: {
+        [sessionID: string]: SessionUsage
       }
       session_diff: {
         [sessionID: string]: Snapshot.FileDiff[]
@@ -92,6 +143,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       provider_default: {},
       session: [],
       session_status: {},
+      session_usage: {},
       session_diff: {},
       todo: {},
       message: {},
@@ -106,8 +158,152 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     const sdk = useSDK()
 
+    const normalizeDirectory = (value?: string) => {
+      if (!value || typeof value !== "string") return undefined
+      const trimmed = value.trim()
+      if (!trimmed) return undefined
+      const resolved = iife(() => {
+        try {
+          if (fs.realpathSync.native) return fs.realpathSync.native(trimmed)
+        } catch {
+          // no-op
+        }
+        try {
+          return fs.realpathSync(trimmed)
+        } catch {
+          // no-op
+        }
+        try {
+          return path.resolve(trimmed)
+        } catch {
+          return trimmed
+        }
+      })
+      return resolved.replace(/\\/g, "/")
+    }
+
+    const resolveDirectory = (sessionID?: string) => {
+      if (sessionID) {
+        const session = store.session.find((item) => item.id === sessionID)
+        if (session?.directory) return session.directory
+      }
+      if (store.path.directory) return store.path.directory
+      if (sdk.directory) return sdk.directory
+      return process.cwd()
+    }
+
+    const appDirectory = () => normalizeDirectory(resolveDirectory())
+
+    const sessionDirectory = (sessionID?: string) => {
+      if (!sessionID) return undefined
+      const session = store.session.find((item) => item.id === sessionID)
+      return normalizeDirectory(session?.directory)
+    }
+
+    const eventSessionID = (event: { properties: unknown }) => {
+      const props = event.properties
+      if (!props || typeof props !== "object") return undefined
+      const root = props as Record<string, unknown>
+      const direct = root.sessionID ?? root.session_id ?? root.conversation_id
+      if (typeof direct === "string" && direct) return direct
+      const info = root.info
+      if (info && typeof info === "object") {
+        const infoSession =
+          (info as Record<string, unknown>).sessionID ??
+          (info as Record<string, unknown>).session_id ??
+          (info as Record<string, unknown>).conversation_id
+        if (typeof infoSession === "string" && infoSession) return infoSession
+      }
+      const part = root.part
+      if (part && typeof part === "object") {
+        const partSession =
+          (part as Record<string, unknown>).sessionID ??
+          (part as Record<string, unknown>).session_id ??
+          (part as Record<string, unknown>).conversation_id
+        if (typeof partSession === "string" && partSession) return partSession
+      }
+      return undefined
+    }
+
+    const eventDirectory = (event: { properties: unknown }) => {
+      const props = event.properties
+      if (!props || typeof props !== "object") return undefined
+      const root = props as Record<string, unknown>
+      if (typeof root.directory === "string" && root.directory) return root.directory
+      const info = root.info
+      if (info && typeof info === "object") {
+        const infoRoot = info as Record<string, unknown>
+        if (typeof infoRoot.directory === "string" && infoRoot.directory) return infoRoot.directory
+        const pathRoot = infoRoot.path
+        if (pathRoot && typeof pathRoot === "object") {
+          const cwd = (pathRoot as Record<string, unknown>).cwd
+          if (typeof cwd === "string" && cwd) return cwd
+        }
+      }
+      const pathRoot = root.path
+      if (pathRoot && typeof pathRoot === "object") {
+        const cwd = (pathRoot as Record<string, unknown>).cwd
+        if (typeof cwd === "string" && cwd) return cwd
+      }
+      const part = root.part
+      if (part && typeof part === "object") {
+        const partRoot = part as Record<string, unknown>
+        if (typeof partRoot.directory === "string" && partRoot.directory) return partRoot.directory
+      }
+      return undefined
+    }
+
+    const usageRefreshInFlight = new Set<string>()
+    const usageRefreshAt = new Map<string, number>()
+
+    const refreshSessionUsage = (sessionID: string) => {
+      if (!sdk.penguin || !sessionID) return
+      const baseDir = appDirectory()
+      const sessionDir = sessionDirectory(sessionID)
+      if (sessionDir && baseDir && sessionDir !== baseDir) return
+      if (!store.session.some((item) => item.id === sessionID)) return
+      const now = Date.now()
+      const last = usageRefreshAt.get(sessionID) ?? 0
+      if (usageRefreshInFlight.has(sessionID) || now - last < 400) return
+      usageRefreshInFlight.add(sessionID)
+      usageRefreshAt.set(sessionID, now)
+      const url = new URL(`/session/${encodeURIComponent(sessionID)}`, sdk.url)
+      fetch(url)
+        .then((res) => (res.ok ? res.json() : undefined))
+        .then((data) => {
+          const usage = parseUsage(data)
+          if (!usage) return
+          setStore("session_usage", sessionID, reconcile(usage))
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          usageRefreshInFlight.delete(sessionID)
+        })
+    }
+
     sdk.event.listen((e) => {
       const event = e.details
+      if (sdk.penguin) {
+        const sid = eventSessionID(event)
+        const dir = normalizeDirectory(eventDirectory(event))
+        const baseDir = appDirectory()
+        if (sid) {
+          const sidDir = sessionDirectory(sid)
+          if (sidDir && baseDir && sidDir !== baseDir) return
+          if (!sidDir && dir && baseDir && dir !== baseDir) return
+        }
+        if (!sid) {
+          if (dir && baseDir && dir !== baseDir) return
+          if (
+            !dir &&
+            (event.type === "lsp.updated" ||
+              event.type === "lsp.client.diagnostics" ||
+              event.type === "vcs.branch.updated")
+          ) {
+            return
+          }
+        }
+      }
       switch (event.type) {
         case "server.instance.disposed":
           bootstrap()
@@ -224,6 +420,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "session.status": {
           setStore("session_status", event.properties.sessionID, event.properties.status)
+          if (sdk.penguin && event.properties.status.type === "idle") {
+            refreshSessionUsage(event.properties.sessionID)
+          }
           break
         }
 
@@ -256,6 +455,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             const match = messages.findIndex((item) => item.id === normalized.id)
             if (match !== -1) {
               setStore("message", normalized.sessionID, match, reconcile(normalized))
+              if (
+                normalized.role === "assistant" &&
+                typeof normalized.time === "object" &&
+                !!normalized.time?.completed
+              ) {
+                refreshSessionUsage(normalized.sessionID)
+              }
               break
             }
             setStore(
@@ -283,6 +489,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                   }),
                 )
               })
+            }
+            if (
+              normalized.role === "assistant" &&
+              typeof normalized.time === "object" &&
+              !!normalized.time?.completed
+            ) {
+              refreshSessionUsage(normalized.sessionID)
             }
             break
           }
@@ -316,6 +529,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                 }),
               )
             })
+          }
+          if (
+            normalized.role === "assistant" &&
+            typeof normalized.time === "object" &&
+            !!normalized.time?.completed
+          ) {
+            refreshSessionUsage(normalized.sessionID)
           }
           break
         }
@@ -370,8 +590,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "lsp.updated": {
           if (sdk.penguin) {
+            const sid = eventSessionID(event)
+            const scopedDirectory = eventDirectory(event) ?? resolveDirectory(sid)
+            const normalizedScoped = normalizeDirectory(scopedDirectory)
+            const normalizedBase = appDirectory()
+            if (!scopedDirectory) break
+            if (normalizedScoped && normalizedBase && normalizedScoped !== normalizedBase) break
             const url = new URL("/lsp", sdk.url)
-            url.searchParams.set("directory", process.cwd())
+            url.searchParams.set("directory", scopedDirectory)
             fetch(url)
               .then((res) => (res.ok ? res.json() : []))
               .then((data) => setStore("lsp", reconcile(Array.isArray(data) ? data : [])))
@@ -466,9 +692,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             [model.id]: model,
           },
         }
+        const directory = store.path.directory || sdk.directory || process.cwd()
         const sessionsUrl = iife(() => {
           const url = new URL("/session", sdk.url)
-          url.searchParams.set("directory", process.cwd())
+          url.searchParams.set("directory", directory)
           url.searchParams.set("limit", "50")
           return url
         })
@@ -552,12 +779,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             typeof time === "object" && time && "updated" in time && typeof time.updated === "number"
               ? time.updated
               : stamp(typeof item.last_active === "string" ? item.last_active : undefined)
-          const directory = typeof item.directory === "string" ? item.directory : process.cwd()
+          const directoryValue =
+            typeof item.directory === "string" ? item.directory : directory
           return {
             id: sid,
             slug: typeof item.slug === "string" ? item.slug : sid,
             projectID: typeof item.projectID === "string" ? item.projectID : "penguin",
-            directory,
+            directory: directoryValue,
             title,
             version: typeof item.version === "string" ? item.version : "penguin",
             time: {
@@ -566,6 +794,17 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             },
           }
         })
+        const usage = list.reduce(
+          (acc: Record<string, SessionUsage>, item: { [key: string]: unknown }) => {
+            const sid = typeof item.id === "string" ? item.id : ""
+            if (!sid) return acc
+            const next = parseUsage(item)
+            if (!next) return acc
+            acc[sid] = next
+            return acc
+          },
+          {} as Record<string, SessionUsage>,
+        )
         const session: PenguinSession[] = mapped
         const baseAgent = {
           name: "penguin",
@@ -620,17 +859,18 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("command", reconcile(command))
           setStore("config", reconcile(config))
           setStore("session", reconcile(session))
+          setStore("session_usage", reconcile(usage))
           setStore("session_status", reconcile(status))
           setStore(
             "path",
-            reconcile({ home: "", state: "", config: "", worktree: "", directory: process.cwd() }),
+            reconcile({ home: "", state: "", config: "", worktree: "", directory }),
           )
           setStore("status", "complete")
         })
 
         const systemUrl = (pathname: string) => {
           const url = new URL(pathname, sdk.url)
-          url.searchParams.set("directory", process.cwd())
+          url.searchParams.set("directory", directory)
           return url
         }
 
@@ -767,10 +1007,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const session = result.session.get(sessionID)
           if (!session) return "idle"
           if (session.time.compacting) return "compacting"
+          const live = store.session_status[sessionID]
+          if (live?.type === "busy") return "working"
+          if (live?.type === "idle") return "idle"
           const messages = store.message[sessionID] ?? []
           const last = messages.at(-1)
           if (!last) return "idle"
-          if (last.role === "user") return "working"
+          if (last.role !== "assistant") return "idle"
           return last.time.completed ? "idle" : "working"
         },
         async sync(sessionID: string) {
@@ -791,6 +1034,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                 if (match.found) draft.session[match.index] = hydrated.session
                 if (!match.found) draft.session.splice(match.index, 0, hydrated.session)
               }
+              const usage = parseUsage(hydrated.session)
+              if (usage) draft.session_usage[sessionID] = usage
               draft.todo[sessionID] = hydrated.todo
               draft.message[sessionID] = hydrated.messages.map((x) => x.info)
               for (const message of hydrated.messages) {

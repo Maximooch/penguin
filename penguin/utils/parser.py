@@ -602,7 +602,9 @@ class ActionExecutor:
 
     def _execute_code(self, params: str) -> str:
         logger.debug(f"Executing code: {params}")
-        return self.tool_manager.execute_code(params)
+        context = get_current_execution_context()
+        cwd = context.directory if context and context.directory else None
+        return self.tool_manager.execute_code(params, cwd=cwd)
 
     def _execute_command(self, params: str) -> str:
         """Execute a shell command using the tool manager."""

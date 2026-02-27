@@ -229,6 +229,62 @@ async def test_rest_chat_respects_streaming_flag(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rest_chat_parts_forward_context_and_materialize_images(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "chat_repo_parts"
+    repo.mkdir()
+    seen_kwargs: dict[str, Any] = {}
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            seen_kwargs.update(kwargs)
+            image_paths = kwargs.get("input_data", {}).get("image_paths", [])
+            if image_paths:
+                seen_kwargs["image_exists_during_process"] = Path(
+                    image_paths[0]
+                ).exists()
+            return {"assistant_response": "ok", "action_results": []}
+
+    core = _Core()
+    request = MessageRequest(
+        text="describe image",
+        session_id="session_parts",
+        directory=str(repo),
+        streaming=False,
+        parts=[
+            {
+                "type": "file",
+                "mime": "image/png",
+                "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOQOt9kAAAAASUVORK5CYII=",
+                "source": {"type": "file", "path": "README.md"},
+            }
+        ],
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["response"] == "ok"
+    assert seen_kwargs["context_files"] == ["README.md"]
+    image_paths = seen_kwargs["input_data"]["image_paths"]
+    assert isinstance(image_paths, list)
+    assert image_paths
+    image_path = image_paths[0]
+    assert isinstance(image_path, str)
+    assert not image_path.startswith("data:")
+    assert seen_kwargs["image_exists_during_process"] is True
+    assert not Path(image_path).exists()
+
+
+@pytest.mark.asyncio
 async def test_rest_chat_model_selector_loads_requested_model(tmp_path: Path) -> None:
     repo = tmp_path / "chat_repo_model_switch"
     repo.mkdir()

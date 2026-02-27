@@ -11,6 +11,7 @@ from typing import Any, Optional
 from penguin import __version__
 
 TRANSCRIPT_KEY = "_opencode_transcript_v1"
+USAGE_KEY = "_opencode_usage_v1"
 
 
 def _iso_to_ms(value: Optional[str]) -> int:
@@ -152,6 +153,18 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
         if isinstance(permission_rules, list):
             payload["permission"] = permission_rules
 
+        usage_snapshot = metadata.get(USAGE_KEY)
+        if isinstance(usage_snapshot, dict):
+            payload["usage"] = {
+                "current_total_tokens": usage_snapshot.get("current_total_tokens", 0),
+                "max_context_window_tokens": usage_snapshot.get(
+                    "max_context_window_tokens"
+                ),
+                "available_tokens": usage_snapshot.get("available_tokens", 0),
+                "percentage": usage_snapshot.get("percentage", 0),
+                "truncations": usage_snapshot.get("truncations", {}),
+            }
+
     return payload
 
 
@@ -284,6 +297,12 @@ def list_session_statuses(core: Any) -> dict[str, dict[str, Any]]:
             if adapter_status in {"busy", "idle"}:
                 statuses[str(session_id)] = {"type": adapter_status}
 
+    active_requests = getattr(core, "_opencode_active_requests", None)
+    if isinstance(active_requests, dict):
+        for session_id, count in active_requests.items():
+            if isinstance(count, int) and count > 0:
+                statuses[str(session_id)] = {"type": "busy"}
+
     for session_id in list(statuses.keys()):
         messages = get_session_messages(core, session_id, limit=1)
         if not messages:
@@ -296,9 +315,7 @@ def list_session_statuses(core: Any) -> dict[str, dict[str, Any]]:
         raw_time = info.get("time")
         time_data: dict[str, Any] = raw_time if isinstance(raw_time, dict) else {}
         completed = time_data.get("completed")
-        if role == "user":
-            statuses[session_id] = {"type": "busy"}
-        elif role == "assistant" and not completed:
+        if role == "assistant" and not completed:
             statuses[session_id] = {"type": "busy"}
 
     return statuses

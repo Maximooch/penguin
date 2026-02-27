@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.services.session_view import (
     TRANSCRIPT_KEY,
+    USAGE_KEY,
     create_session_info,
     get_session_diff,
     get_session_info,
@@ -108,6 +109,28 @@ def test_list_session_infos_sorted_and_filtered():
 
     filtered = list_session_infos(core, search="alpha")
     assert [item["id"] for item in filtered] == ["session_a"]
+
+
+def test_session_info_includes_usage_snapshot():
+    session = _session("session_usage", "Usage Session", "2026-02-03T00:00:00")
+    session.metadata[USAGE_KEY] = {
+        "current_total_tokens": 1200,
+        "max_context_window_tokens": 128000,
+        "available_tokens": 126800,
+        "percentage": 0.9375,
+        "truncations": {
+            "total_truncations": 2,
+            "messages_removed": 4,
+            "tokens_freed": 800,
+        },
+    }
+    core = _core([session])
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["usage"]["current_total_tokens"] == 1200
+    assert info["usage"]["truncations"]["total_truncations"] == 2
 
 
 def test_get_session_messages_prefers_persisted_transcript():
@@ -364,6 +387,16 @@ def test_list_session_statuses_prefers_busy_signals():
 
     statuses = list_session_statuses(core)
     assert statuses["session_status"]["type"] == "busy"
+
+
+def test_list_session_statuses_marks_active_requests_busy():
+    now = datetime.now().isoformat()
+    session = _session("session_active", "Active Session", now)
+    core = _core([session])
+    core._opencode_active_requests = {"session_active": 1}
+
+    statuses = list_session_statuses(core)
+    assert statuses["session_active"]["type"] == "busy"
 
 
 def test_get_session_diff_prefers_transcript_tool_parts():

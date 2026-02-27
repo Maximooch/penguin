@@ -143,6 +143,8 @@ export function Prompt(props: PromptProps) {
     mode: "normal" | "shell"
     extmarkToPartIndex: Map<number, number>
     interrupt: number
+    pending: boolean
+    pendingSeenBusy: boolean
     placeholder: number
   }>({
     placeholder: Math.floor(Math.random() * PLACEHOLDERS.length),
@@ -153,6 +155,22 @@ export function Prompt(props: PromptProps) {
     mode: "normal",
     extmarkToPartIndex: new Map(),
     interrupt: 0,
+    pending: false,
+    pendingSeenBusy: false,
+  })
+
+  const busy = createMemo(() => status().type !== "idle" || (sdk.penguin && store.pending))
+
+  createEffect(() => {
+    if (!sdk.penguin) return
+    if (!store.pending) return
+    if (status().type !== "idle") {
+      if (!store.pendingSeenBusy) setStore("pendingSeenBusy", true)
+      return
+    }
+    if (!store.pendingSeenBusy) return
+    setStore("pending", false)
+    setStore("pendingSeenBusy", false)
   })
 
   // Initialize agent/model/variant from last user message when session changes
@@ -224,16 +242,27 @@ export function Prompt(props: PromptProps) {
         keybind: "session_interrupt",
         category: "Session",
         hidden: true,
-        enabled: status().type !== "idle",
+        enabled: sdk.penguin ? !!props.sessionID && (store.pending || status().type !== "idle") : status().type !== "idle",
         onSelect: (dialog) => {
           if (autocomplete.visible) return
-          if (!input.focused) return
+          if (!input.focused && !sdk.penguin) return
           // TODO: this should be its own command
           if (store.mode === "shell") {
             setStore("mode", "normal")
             return
           }
           if (!props.sessionID) return
+
+          if (sdk.penguin) {
+            sdk.client.session.abort({
+              sessionID: props.sessionID,
+            })
+            setStore("pending", false)
+            setStore("pendingSeenBusy", false)
+            setStore("interrupt", 0)
+            dialog.clear()
+            return
+          }
 
           setStore("interrupt", store.interrupt + 1)
 
@@ -530,8 +559,10 @@ export function Prompt(props: PromptProps) {
       if (sdk.sessionID) return sdk.sessionID
 
       if (sdk.penguin) {
+        const directory =
+          sync.session.get(props.sessionID ?? sdk.sessionID ?? "")?.directory ?? process.cwd()
         const createUrl = new URL("/session", sdk.url)
-        createUrl.searchParams.set("directory", process.cwd())
+        createUrl.searchParams.set("directory", directory)
         const created = await fetch(createUrl, {
           method: "POST",
           headers: {
@@ -566,6 +597,10 @@ export function Prompt(props: PromptProps) {
         sessionID,
       })
     }
+    const directory =
+      sync.session.get(sessionID)?.directory ||
+      sync.session.get(props.sessionID ?? "")?.directory ||
+      process.cwd()
     const messageID = sdk.penguin ? gen.next("msg") : Identifier.ascending("message")
     let inputText = store.prompt.input
 
@@ -577,16 +612,22 @@ export function Prompt(props: PromptProps) {
       const partIndex = store.extmarkToPartIndex.get(extmark.id)
       if (partIndex !== undefined) {
         const part = store.prompt.parts[partIndex]
-        if (part?.type === "text" && part.text) {
-          const before = inputText.slice(0, extmark.start)
-          const after = inputText.slice(extmark.end)
+        if (!part) continue
+        const before = inputText.slice(0, extmark.start)
+        const after = inputText.slice(extmark.end)
+        if (part.type === "text" && part.text) {
           inputText = before + part.text + after
+          continue
+        }
+        if (sdk.penguin) {
+          inputText = before + after
         }
       }
     }
 
     // Filter out text parts (pasted content) since they're now expanded inline
     const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
+    const fileParts = nonTextParts.filter((part) => part.type === "file")
 
     // Capture mode before it gets reset
     const currentMode = store.mode
@@ -594,6 +635,24 @@ export function Prompt(props: PromptProps) {
     const agent = local.agent.current()
 
     if (sdk.penguin) {
+      const imagePaths = fileParts.reduce((acc, part) => {
+        if (typeof part.url !== "string" || !part.url.trim()) return acc
+        if (typeof part.mime !== "string") return acc
+        if (!part.mime.startsWith("image/")) return acc
+        acc.push(part.url.trim())
+        return acc
+      }, [] as string[])
+      const contextFiles = fileParts.reduce((acc, part) => {
+        if (typeof part.mime === "string" && part.mime.startsWith("image/")) return acc
+        const source = part.source
+        const sourcePath =
+          source && typeof source === "object" && "path" in source ? source.path : undefined
+        if (typeof sourcePath !== "string" || !sourcePath.trim()) return acc
+        if (sourcePath.startsWith("data:")) return acc
+        acc.push(sourcePath.trim())
+        return acc
+      }, [] as string[])
+
       if (inputText.startsWith("/")) {
         const name = inputText.split("\n", 1)[0].slice(1).trim()
         if (name === "settings") {
@@ -665,6 +724,13 @@ export function Prompt(props: PromptProps) {
         type: "message.part.updated",
         properties: { part, delta: inputText },
       })
+      sdk.event.emit("session.status", {
+        type: "session.status",
+        properties: {
+          sessionID,
+          status: { type: "busy" as const },
+        },
+      })
       history.append({
         ...store.prompt,
         mode: currentMode,
@@ -684,6 +750,8 @@ export function Prompt(props: PromptProps) {
         setStore("prompt", "input", "")
       })
       props.onSubmit?.()
+      setStore("pending", true)
+      setStore("pendingSeenBusy", false)
       const url = new URL("/api/v1/chat/message", sdk.url)
       fetch(url, {
         method: "POST",
@@ -695,11 +763,16 @@ export function Prompt(props: PromptProps) {
           model: `${selectedModel.providerID}/${selectedModel.modelID}`,
           session_id: sessionID,
           agent_id: agent.name,
-          directory: process.cwd(),
+          directory,
           streaming: true,
           client_message_id: messageID,
+          image_paths: imagePaths,
+          context_files: contextFiles,
         }),
-      }).catch(() => {})
+      }).catch(() => {
+        setStore("pending", false)
+        setStore("pendingSeenBusy", false)
+      })
       return
     }
 
@@ -986,6 +1059,23 @@ export function Prompt(props: PromptProps) {
                   setStore("extmarkToPartIndex", new Map())
                   return
                 }
+                if (
+                  sdk.penguin &&
+                  props.sessionID &&
+                  (keybind.match("session_interrupt", e) || e.name === "escape")
+                ) {
+                  const active = store.pending || status().type !== "idle"
+                  if (active) {
+                    sdk.client.session.abort({
+                      sessionID: props.sessionID,
+                    }).catch(() => {})
+                    setStore("pending", false)
+                    setStore("pendingSeenBusy", false)
+                    setStore("interrupt", 0)
+                    e.preventDefault()
+                    return
+                  }
+                }
                 if (keybind.match("app_exit", e)) {
                   if (store.prompt.input === "") {
                     await exit()
@@ -1051,37 +1141,54 @@ export function Prompt(props: PromptProps) {
 
                 // trim ' from the beginning and end of the pasted content. just
                 // ' and nothing else
-                const filepath = pastedContent.replace(/^'+|'+$/g, "").replace(/\\ /g, " ")
-                const isUrl = /^(https?):\/\//.test(filepath)
-                if (!isUrl) {
+                const target = pastedContent.replace(/^'+|'+$/g, "").replace(/\\ /g, " ")
+                const candidates = target
+                  .split(/\r?\n/)
+                  .map((item) => item.trim())
+                  .filter((item) => !!item)
+                const paths = candidates
+                  .map((item) => {
+                    if (item.startsWith("file://")) {
+                      try {
+                        return decodeURIComponent(new URL(item).pathname)
+                      } catch {
+                        return item.replace(/^file:\/\//, "")
+                      }
+                    }
+                    return item
+                  })
+                  .map((item) => item.replace(/^'+|'+$/g, "").replace(/\\ /g, " "))
+
+                let hasFile = false
+                for (const filePath of paths) {
                   try {
-                    const file = Bun.file(filepath)
-                    // Handle SVG as raw text content, not as base64 image
+                    const file = Bun.file(filePath)
+                    if (!(await file.exists())) continue
+                    hasFile = true
                     if (file.type === "image/svg+xml") {
                       event.preventDefault()
                       const content = await file.text().catch(() => {})
                       if (content) {
                         pasteText(content, `[SVG: ${file.name ?? "image"}]`)
-                        return
                       }
+                      continue
                     }
-                    if (file.type.startsWith("image/")) {
-                      event.preventDefault()
-                      const content = await file
-                        .arrayBuffer()
-                        .then((buffer) => Buffer.from(buffer).toString("base64"))
-                        .catch(() => {})
-                      if (content) {
-                        await pasteImage({
-                          filename: file.name,
-                          mime: file.type,
-                          content,
-                        })
-                        return
-                      }
-                    }
+                    if (!file.type.startsWith("image/")) continue
+                    event.preventDefault()
+                    const content = await file
+                      .arrayBuffer()
+                      .then((buffer) => Buffer.from(buffer).toString("base64"))
+                      .catch(() => {})
+                    if (!content) continue
+                    await pasteImage({
+                      filename: file.name,
+                      mime: file.type,
+                      content,
+                    })
                   } catch {}
                 }
+
+                if (hasFile) return
 
                 const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
                 if (
@@ -1166,7 +1273,7 @@ export function Prompt(props: PromptProps) {
           />
         </box>
         <box flexDirection="row" justifyContent="space-between">
-          <Show when={status().type !== "idle"} fallback={<text />}>
+          <Show when={busy()} fallback={<text />}>
             <box
               flexDirection="row"
               gap={1}

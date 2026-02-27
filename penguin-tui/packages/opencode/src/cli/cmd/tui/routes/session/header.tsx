@@ -35,6 +35,7 @@ export function Header() {
   const sync = useSync()
   const session = createMemo(() => sync.session.get(route.sessionID)!)
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
+  const usage = createMemo(() => sync.data.session_usage[route.sessionID])
 
   const cost = createMemo(() => {
     const total = pipe(
@@ -48,6 +49,20 @@ export function Header() {
   })
 
   const context = createMemo(() => {
+    const current = usage()
+    if (current) {
+      const max = current.max_context_window_tokens
+      const percentage =
+        typeof max === "number" && max > 0
+          ? Math.round((current.current_total_tokens / max) * 100)
+          : current.percentage
+      let result = current.current_total_tokens.toLocaleString()
+      if (typeof percentage === "number") result += "  " + percentage + "%"
+      if (current.truncations.total_truncations > 0) {
+        result += "  " + current.truncations.total_truncations + " trunc"
+      }
+      return result
+    }
     const last = messages().findLast((x) => x.role === "assistant" && x.tokens.output > 0) as AssistantMessage
     if (!last) return
     const total =

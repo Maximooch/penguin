@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -16,6 +17,7 @@ from penguin.system.execution_context import (
     get_current_execution_context,
 )
 from penguin.tools.tool_manager import ToolManager
+from penguin.utils.parser import ActionExecutor
 
 
 def test_execution_context_scope_sets_and_resets(tmp_path: Path):
@@ -93,6 +95,34 @@ def test_stream_scope_prefers_execution_context_agent(tmp_path: Path):
         resolved = core._resolve_stream_scope_id(context, agent_id=None)
 
     assert resolved == "session_scope:penguin"
+
+
+def test_action_executor_execute_code_uses_scoped_directory(tmp_path: Path):
+    scoped = tmp_path / "scoped"
+    scoped.mkdir()
+
+    class _ToolManager:
+        def __init__(self):
+            self.calls: list[tuple[str, str | None]] = []
+
+        def execute_code(self, code: str, cwd: str | None = None) -> str:
+            self.calls.append((code, cwd))
+            return cwd or ""
+
+    tool_manager = _ToolManager()
+    executor = ActionExecutor(
+        tool_manager=tool_manager,  # type: ignore[arg-type]
+        task_manager=cast(Any, SimpleNamespace()),
+    )
+
+    with execution_context_scope(
+        ExecutionContext(session_id="s-code", directory=str(scoped))
+    ):
+        result = executor._execute_code("print('hi')")
+
+    assert tool_manager.calls
+    assert tool_manager.calls[-1][1] == str(scoped)
+    assert result == str(scoped)
 
 
 @pytest.mark.asyncio

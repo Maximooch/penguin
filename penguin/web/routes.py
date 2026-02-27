@@ -15,12 +15,15 @@ from pydantic import BaseModel  # type: ignore
 from dataclasses import asdict  # type: ignore
 from datetime import datetime  # type: ignore
 import asyncio
+import base64
 import copy
 import json
 import logging
+import mimetypes
 import os
 from pathlib import Path
 import shutil
+import tempfile
 import uuid
 import websockets
 import httpx
@@ -183,6 +186,106 @@ class MessageRequest(BaseModel):
     agent_id: Optional[str] = None
     directory: Optional[str] = None
     model: Optional[str] = None
+    parts: Optional[List[Dict[str, Any]]] = None
+
+
+def _extract_paths_from_parts(
+    parts: Optional[List[Dict[str, Any]]],
+) -> tuple[List[str], List[str]]:
+    """Extract context file paths and image payloads from OpenCode parts."""
+    if not isinstance(parts, list):
+        return [], []
+
+    context_files: List[str] = []
+    image_paths: List[str] = []
+
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if str(part.get("type", "")).strip().lower() != "file":
+            continue
+
+        source = part.get("source")
+        source_path = source.get("path") if isinstance(source, dict) else None
+        if isinstance(source_path, str) and source_path.strip():
+            path_value = source_path.strip()
+            if not path_value.startswith("data:") and path_value not in context_files:
+                context_files.append(path_value)
+
+        url = part.get("url")
+        mime = part.get("mime")
+        if not isinstance(url, str) or not url.strip():
+            continue
+        url_value = url.strip()
+        mime_value = mime.strip().lower() if isinstance(mime, str) else ""
+        if not (mime_value.startswith("image/") or url_value.startswith("data:image/")):
+            continue
+        if url_value not in image_paths:
+            image_paths.append(url_value)
+
+    return context_files, image_paths
+
+
+def _materialize_image_paths(
+    image_paths: List[str],
+    *,
+    directory: Optional[str],
+) -> tuple[List[str], List[str]]:
+    """Convert data URLs to temporary files and return usable paths.
+
+    Returns:
+        Tuple of (resolved image paths, temp file paths to clean up).
+    """
+    resolved: List[str] = []
+    temp_files: List[str] = []
+
+    target_directory = normalize_directory(directory)
+    temp_root = (
+        Path(target_directory) / ".penguin" / "tmp_images"
+        if target_directory
+        else Path(tempfile.gettempdir()) / "penguin_tmp_images"
+    )
+
+    for item in image_paths:
+        value = item.strip() if isinstance(item, str) else ""
+        if not value:
+            continue
+
+        if not value.startswith("data:"):
+            resolved.append(value)
+            continue
+
+        if "," not in value:
+            resolved.append(value)
+            continue
+
+        header, encoded = value.split(",", 1)
+        if not header.startswith("data:") or ";base64" not in header.lower():
+            resolved.append(value)
+            continue
+
+        mime = header[5:].split(";", 1)[0].strip().lower() or "application/octet-stream"
+        suffix = mimetypes.guess_extension(mime) or ".bin"
+        if suffix == ".jpe":
+            suffix = ".jpg"
+
+        try:
+            payload = base64.b64decode(encoded, validate=False)
+        except Exception:
+            resolved.append(value)
+            continue
+
+        try:
+            temp_root.mkdir(parents=True, exist_ok=True)
+            temp_path = temp_root / f"upload_{uuid.uuid4().hex}{suffix}"
+            temp_path.write_bytes(payload)
+            temp_str = str(temp_path)
+            resolved.append(temp_str)
+            temp_files.append(temp_str)
+        except Exception:
+            resolved.append(value)
+
+    return resolved, temp_files
 
 
 class StreamResponse(BaseModel):
@@ -1691,6 +1794,7 @@ async def handle_chat_message(
     request: MessageRequest, core: PenguinCore = Depends(get_core)
 ):
     """Process a chat message, with optional conversation support."""
+    temp_image_files: List[str] = []
     try:
         if request.agent_id:
             _validate_agent_id(request.agent_id)
@@ -1705,6 +1809,18 @@ async def handle_chat_message(
             effective_session_id,
             request.directory,
         )
+
+        part_context_files, part_image_paths = _extract_paths_from_parts(request.parts)
+        context_files = list(request.context_files or [])
+        for file_path in part_context_files:
+            if file_path not in context_files:
+                context_files.append(file_path)
+
+        image_paths = list(request.image_paths or [])
+        for image_path in part_image_paths:
+            if image_path not in image_paths:
+                image_paths.append(image_path)
+
         execution_context = _build_execution_context(
             core,
             session_id=effective_session_id,
@@ -1777,14 +1893,20 @@ async def handle_chat_message(
         input_data = {"text": request.text}
 
         # Add image paths if provided (with limit enforcement)
-        if request.image_paths:
-            if len(request.image_paths) > MAX_IMAGES_PER_REQUEST:
+        if image_paths:
+            if len(image_paths) > MAX_IMAGES_PER_REQUEST:
                 logger.warning(
-                    f"Truncating image_paths from {len(request.image_paths)} to {MAX_IMAGES_PER_REQUEST}"
+                    f"Truncating image_paths from {len(image_paths)} to {MAX_IMAGES_PER_REQUEST}"
                 )
-                input_data["image_paths"] = request.image_paths[:MAX_IMAGES_PER_REQUEST]
-            else:
-                input_data["image_paths"] = request.image_paths
+                image_paths = image_paths[:MAX_IMAGES_PER_REQUEST]
+
+            materialized_paths, created_files = _materialize_image_paths(
+                image_paths,
+                directory=bound_directory or request.directory,
+            )
+            if created_files:
+                temp_image_files.extend(created_files)
+            input_data["image_paths"] = materialized_paths
 
         # If reasoning is requested, capture reasoning chunks via a local callback
         reasoning_buf: List[str] = []
@@ -1804,16 +1926,22 @@ async def handle_chat_message(
 
         # Process the message with all available options
         with execution_context_scope(execution_context):
-            process_result = await core.process(
-                input_data=input_data,
-                context=request.context,
-                conversation_id=request.conversation_id,
-                agent_id=request.agent_id,
-                max_iterations=request.max_iterations or 100,
-                context_files=request.context_files,
-                streaming=effective_streaming,
-                stream_callback=stream_cb,
-            )
+            request_gate = getattr(core, "_opencode_request_gate", None)
+            if not isinstance(request_gate, asyncio.Lock):
+                request_gate = asyncio.Lock()
+                setattr(core, "_opencode_request_gate", request_gate)
+
+            async with request_gate:
+                process_result = await core.process(
+                    input_data=input_data,
+                    context=request.context,
+                    conversation_id=request.conversation_id,
+                    agent_id=request.agent_id,
+                    max_iterations=request.max_iterations or 100,
+                    context_files=context_files or request.context_files,
+                    streaming=effective_streaming,
+                    stream_callback=stream_cb,
+                )
 
         # Build response
         resp: Dict[str, Any] = {
@@ -1828,6 +1956,12 @@ async def handle_chat_message(
     except Exception as e:
         logger.error(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        for temp_file in temp_image_files:
+            try:
+                Path(temp_file).unlink(missing_ok=True)
+            except Exception:
+                logger.debug("Failed to clean temp image file", exc_info=True)
 
 
 @router.websocket("/api/v1/chat/stream")
@@ -2923,6 +3057,20 @@ async def session_delete(session_id: str, core: PenguinCore = Depends(get_core))
     return True
 
 
+@router.post("/session/{session_id}/abort")
+async def session_abort(session_id: str, core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible session.abort endpoint."""
+    existing = get_session_info(core, session_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    handler = getattr(core, "abort_session", None)
+    if not callable(handler):
+        return False
+    result = await handler(session_id)
+    return bool(result)
+
+
 @router.get("/session/{session_id}/message")
 async def session_messages(
     session_id: str,
@@ -3008,6 +3156,12 @@ async def api_session_update(
 async def api_session_delete(session_id: str, core: PenguinCore = Depends(get_core)):
     """Alias for OpenCode-compatible session.delete endpoint."""
     return await session_delete(session_id, core=core)
+
+
+@router.post("/api/v1/session/{session_id}/abort")
+async def api_session_abort(session_id: str, core: PenguinCore = Depends(get_core)):
+    """Alias for OpenCode-compatible session.abort endpoint."""
+    return await session_abort(session_id, core=core)
 
 
 @router.get("/api/v1/session/{session_id}/message")

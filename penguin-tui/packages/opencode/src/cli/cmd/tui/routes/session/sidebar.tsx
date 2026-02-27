@@ -19,6 +19,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   const diff = createMemo(() => sync.data.session_diff[props.sessionID] ?? [])
   const todo = createMemo(() => sync.data.todo[props.sessionID] ?? [])
   const messages = createMemo(() => sync.data.message[props.sessionID] ?? [])
+  const usage = createMemo(() => sync.data.session_usage[props.sessionID])
 
   const [expanded, setExpanded] = createStore({
     mcp: true,
@@ -49,6 +50,18 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   })
 
   const context = createMemo(() => {
+    const current = usage()
+    if (current) {
+      const max = current.max_context_window_tokens
+      const percentage =
+        typeof max === "number" && max > 0
+          ? Math.round((current.current_total_tokens / max) * 100)
+          : current.percentage
+      return {
+        tokens: current.current_total_tokens.toLocaleString(),
+        percentage,
+      }
+    }
     const last = messages().findLast((x) => x.role === "assistant" && x.tokens.output > 0) as AssistantMessage
     if (!last) return
     const total =
@@ -97,6 +110,10 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
               <text fg={theme.textMuted}>{context()?.tokens ?? 0} tokens</text>
               <text fg={theme.textMuted}>{context()?.percentage ?? 0}% used</text>
               <text fg={theme.textMuted}>{cost()} spent</text>
+              <Show when={(usage()?.truncations.total_truncations ?? 0) > 0}>
+                <text fg={theme.textMuted}>{usage()?.truncations.total_truncations ?? 0} truncations</text>
+                <text fg={theme.textMuted}>{usage()?.truncations.tokens_freed ?? 0} tokens freed</text>
+              </Show>
             </box>
             <Show when={mcpEntries().length > 0}>
               <box>

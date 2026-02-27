@@ -11,12 +11,14 @@ from fastapi import HTTPException
 
 from penguin.system.state import Session
 from penguin.web.routes import (
+    api_session_abort,
     api_session_create,
     api_session_delete,
     api_session_diff,
     api_session_status,
     api_session_update,
     session_create,
+    session_abort,
     session_delete,
     session_diff,
     session_get,
@@ -90,6 +92,11 @@ class _Core:
             agent_session_managers={"default": manager},
         )
         self.model_config = SimpleNamespace(model="openai/gpt-5", provider="openai")
+        self.abort_calls: list[str] = []
+
+    async def abort_session(self, session_id: str) -> bool:
+        self.abort_calls.append(session_id)
+        return True
 
 
 @pytest.mark.asyncio
@@ -118,6 +125,10 @@ async def test_session_create_update_status_diff_delete_roundtrip(
 
     status_map = await session_status(core=typed_core)
     assert status_map[session_id]["type"] == "idle"
+
+    aborted = await session_abort(session_id, core=typed_core)
+    assert aborted is True
+    assert core.abort_calls == [session_id]
 
     session_obj = core.conversation_manager.session_manager.load_session(session_id)
     assert session_obj is not None
@@ -187,3 +198,22 @@ async def test_session_alias_endpoints_work(tmp_path: Path) -> None:
 
     deleted = await api_session_delete(session_id, core=typed_core)
     assert deleted is True
+
+
+@pytest.mark.asyncio
+async def test_session_abort_alias_and_missing_session(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    created = await api_session_create(
+        payload={"title": "Abort Alias"}, core=typed_core
+    )
+    session_id = created["id"]
+
+    aborted = await api_session_abort(session_id, core=typed_core)
+    assert aborted is True
+    assert core.abort_calls == [session_id]
+
+    with pytest.raises(HTTPException) as exc:
+        await session_abort("session_missing", core=typed_core)
+    assert exc.value.status_code == 404

@@ -231,6 +231,20 @@ export function Session() {
     }
   })
 
+  useKeyboard((evt) => {
+    if (!sdk.penguin) return
+    if (!(keybind.match("session_interrupt", evt) || evt.name === "escape")) return
+    const state = sync.data.session_status?.[route.sessionID]
+    const active = state?.type !== "idle" || !!pending()
+    if (!active) return
+    sdk.client.session
+      .abort({
+        sessionID: route.sessionID,
+      })
+      .catch(() => {})
+    evt.preventDefault?.()
+  })
+
   // Helper: Find next visible message boundary in direction
   const findNextVisibleMessage = (direction: "next" | "prev"): string | null => {
     const children = scroll.getChildren()

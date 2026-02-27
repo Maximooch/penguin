@@ -693,6 +693,9 @@ class PenguinCore:
             persist_callback=self._persist_opencode_event,
         )
         self._tui_adapters: Dict[str, Any] = {}
+        self._opencode_abort_sessions: set[str] = set()
+        self._opencode_active_requests: Dict[str, int] = {}
+        self._opencode_process_tasks: Dict[str, Set[asyncio.Task[Any]]] = {}
 
         # Subscribe to stream events and translate to OpenCode format
         self._subscribe_to_stream_events()
@@ -1505,6 +1508,75 @@ class PenguinCore:
         """
         self._stream_manager.cleanup_agent(agent_id)
 
+    async def _emit_opencode_session_status(
+        self,
+        session_id: str,
+        status_type: str,
+    ) -> None:
+        """Emit OpenCode session.status event for a session."""
+        sid = session_id.strip() if isinstance(session_id, str) else ""
+        if not sid:
+            return
+        await self.event_bus.emit(
+            "opencode_event",
+            {
+                "type": "session.status",
+                "properties": {
+                    "sessionID": sid,
+                    "status": {"type": status_type},
+                },
+            },
+        )
+
+    async def abort_session(self, session_id: str) -> bool:
+        """Abort active streaming/tool state for a session."""
+        sid = session_id.strip() if isinstance(session_id, str) else ""
+        if not sid:
+            return False
+
+        self._opencode_abort_sessions.add(sid)
+        aborted = False
+
+        tasks_map = getattr(self, "_opencode_process_tasks", None)
+        if isinstance(tasks_map, dict):
+            active_tasks = list(tasks_map.get(sid, set()))
+            for task in active_tasks:
+                if task.done():
+                    continue
+                task.cancel()
+                aborted = True
+
+        states = getattr(self, "_opencode_stream_states", None)
+        state = states.get(sid) if isinstance(states, dict) else None
+        if isinstance(state, dict):
+            message_id = state.get("message_id")
+            part_id = state.get("part_id")
+            if isinstance(message_id, str) and isinstance(part_id, str):
+                adapter = self._get_tui_adapter(sid)
+                try:
+                    await adapter.on_stream_end(message_id, part_id)
+                    aborted = True
+                except Exception:
+                    logger.debug(
+                        "Failed to force-finalize aborted stream", exc_info=True
+                    )
+            state["active"] = False
+            state["stream_id"] = None
+            state["part_id"] = None
+
+        for scope in list(self._stream_manager.get_active_agents()):
+            if scope != sid and not scope.startswith(f"{sid}:"):
+                continue
+            for event in self._stream_manager.abort(agent_id=scope):
+                event_data = dict(event.data) if isinstance(event.data, dict) else {}
+                event_data["session_id"] = sid
+                event_data["conversation_id"] = sid
+                await self.emit_ui_event(event.event_type, event_data)
+                aborted = True
+
+        await self._emit_opencode_session_status(sid, "idle")
+        return aborted
+
     def get_token_usage(self) -> Dict[str, Dict[str, int]]:
         """Get token usage via conversation manager"""
         try:
@@ -2264,6 +2336,31 @@ class PenguinCore:
                     f"Failed to activate agent '{agent_id}' on ConversationManager: {agent_err}"
                 )
 
+        execution_context = get_current_execution_context()
+        request_session_id = (
+            execution_context.session_id
+            if execution_context and execution_context.session_id
+            else conversation_id
+        )
+        request_task = asyncio.current_task()
+        request_tracked = False
+        if isinstance(request_session_id, str) and request_session_id:
+            self._opencode_abort_sessions.discard(request_session_id)
+            if request_task is not None:
+                tasks = self._opencode_process_tasks.get(request_session_id)
+                if not isinstance(tasks, set):
+                    tasks = set()
+                    self._opencode_process_tasks[request_session_id] = tasks
+                tasks.add(request_task)
+                request_tracked = True
+
+                next_count = (
+                    self._opencode_active_requests.get(request_session_id, 0) + 1
+                )
+                self._opencode_active_requests[request_session_id] = next_count
+                if next_count == 1:
+                    await self._emit_opencode_session_status(request_session_id, "busy")
+
         try:
             # Load conversation if ID provided
             if conversation_id:
@@ -2469,6 +2566,27 @@ class PenguinCore:
             # Engine retries once with stream=False, then raises LLMEmptyResponseError.
             # WALLET_GUARD in finalize_streaming_message injects placeholder for empty streams.
 
+            token_data = conversation_manager.get_token_usage()
+            try:
+                current_session = conversation_manager.get_current_session()
+                if current_session and isinstance(
+                    getattr(current_session, "metadata", None), dict
+                ):
+                    current_session.metadata["_opencode_usage_v1"] = {
+                        "current_total_tokens": token_data.get(
+                            "current_total_tokens", 0
+                        ),
+                        "max_context_window_tokens": token_data.get(
+                            "max_context_window_tokens",
+                            token_data.get("max_tokens"),
+                        ),
+                        "available_tokens": token_data.get("available_tokens", 0),
+                        "percentage": token_data.get("percentage", 0),
+                        "truncations": token_data.get("truncations", {}),
+                    }
+            except Exception:
+                logger.debug("Unable to persist usage snapshot", exc_info=True)
+
             # Ensure conversation is saved after processing
             conversation_manager.save()
 
@@ -2497,10 +2615,18 @@ class PenguinCore:
                     )
 
             # Ensure token usage is emitted after processing
-            token_data = conversation_manager.get_token_usage()
             await self.emit_ui_event("token_update", token_data)
 
             return response
+
+        except asyncio.CancelledError:
+            if isinstance(request_session_id, str) and request_session_id:
+                self._opencode_abort_sessions.discard(request_session_id)
+            return {
+                "assistant_response": "",
+                "action_results": [],
+                "aborted": True,
+            }
 
         except Exception as e:
             error_msg = f"Error in process method: {str(e)}"
@@ -2522,6 +2648,30 @@ class PenguinCore:
                 "action_results": [],
                 "error": str(e),
             }
+
+        finally:
+            if (
+                request_tracked
+                and isinstance(request_session_id, str)
+                and request_session_id
+            ):
+                tasks = self._opencode_process_tasks.get(request_session_id)
+                if isinstance(tasks, set) and request_task is not None:
+                    tasks.discard(request_task)
+                    if not tasks:
+                        self._opencode_process_tasks.pop(request_session_id, None)
+
+                current_count = self._opencode_active_requests.get(
+                    request_session_id, 0
+                )
+                if current_count > 1:
+                    self._opencode_active_requests[request_session_id] = (
+                        current_count - 1
+                    )
+                else:
+                    self._opencode_active_requests.pop(request_session_id, None)
+                    self._opencode_abort_sessions.discard(request_session_id)
+                    await self._emit_opencode_session_status(request_session_id, "idle")
 
     def list_conversations(
         self,
@@ -3114,6 +3264,24 @@ class PenguinCore:
         resolved_scope_id = stream_scope_id or self._resolve_stream_scope_id(
             execution_context, agent_id
         )
+        resolved_session_id = session_id or conversation_id
+        if execution_context:
+            resolved_session_id = (
+                execution_context.session_id
+                or execution_context.conversation_id
+                or resolved_session_id
+            )
+
+        abort_sessions = getattr(self, "_opencode_abort_sessions", None)
+        if not isinstance(abort_sessions, set):
+            abort_sessions = set()
+            setattr(self, "_opencode_abort_sessions", abort_sessions)
+
+        if (
+            isinstance(resolved_session_id, str)
+            and resolved_session_id in abort_sessions
+        ):
+            raise asyncio.CancelledError(f"Session {resolved_session_id} aborted")
 
         # Delegate to AgentStreamingStateManager
         filtered = self._filter_internal_markers_from_event({"chunk": chunk})
@@ -4072,11 +4240,35 @@ class PenguinCore:
     async def _on_tui_lsp_updated(self, event_type: str, data: Dict[str, Any]) -> None:
         if event_type != "lsp.updated":
             return
+        properties = dict(data or {})
+        context = get_current_execution_context()
+        session_id = (
+            properties.get("sessionID")
+            or properties.get("session_id")
+            or properties.get("conversation_id")
+        )
+        if not session_id and context is not None:
+            session_id = context.session_id or context.conversation_id
+        if session_id:
+            properties.setdefault("sessionID", session_id)
+            properties.setdefault("conversation_id", session_id)
+
+        if "directory" not in properties:
+            directory = context.directory if context is not None else None
+            if not directory and session_id:
+                session_dirs = getattr(self, "_opencode_session_directories", None)
+                if isinstance(session_dirs, dict):
+                    mapped = session_dirs.get(str(session_id))
+                    if isinstance(mapped, str) and mapped.strip():
+                        directory = mapped
+            if directory:
+                properties["directory"] = directory
+
         await self.event_bus.emit(
             "opencode_event",
             {
                 "type": "lsp.updated",
-                "properties": data or {},
+                "properties": properties,
             },
         )
 
@@ -4085,11 +4277,35 @@ class PenguinCore:
     ) -> None:
         if event_type != "lsp.client.diagnostics":
             return
+        properties = dict(data or {})
+        context = get_current_execution_context()
+        session_id = (
+            properties.get("sessionID")
+            or properties.get("session_id")
+            or properties.get("conversation_id")
+        )
+        if not session_id and context is not None:
+            session_id = context.session_id or context.conversation_id
+        if session_id:
+            properties.setdefault("sessionID", session_id)
+            properties.setdefault("conversation_id", session_id)
+
+        if "directory" not in properties:
+            directory = context.directory if context is not None else None
+            if not directory and session_id:
+                session_dirs = getattr(self, "_opencode_session_directories", None)
+                if isinstance(session_dirs, dict):
+                    mapped = session_dirs.get(str(session_id))
+                    if isinstance(mapped, str) and mapped.strip():
+                        directory = mapped
+            if directory:
+                properties["directory"] = directory
+
         await self.event_bus.emit(
             "opencode_event",
             {
                 "type": "lsp.client.diagnostics",
-                "properties": data or {},
+                "properties": properties,
             },
         )
 
