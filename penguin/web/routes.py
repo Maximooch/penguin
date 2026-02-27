@@ -25,6 +25,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import uuid
+from urllib.parse import unquote, urlparse
 import websockets
 import httpx
 
@@ -205,19 +206,33 @@ def _extract_paths_from_parts(
         if str(part.get("type", "")).strip().lower() != "file":
             continue
 
+        mime = part.get("mime")
+        mime_value = mime.strip().lower() if isinstance(mime, str) else ""
+
         source = part.get("source")
         source_path = source.get("path") if isinstance(source, dict) else None
         if isinstance(source_path, str) and source_path.strip():
             path_value = source_path.strip()
-            if not path_value.startswith("data:") and path_value not in context_files:
+            if mime_value.startswith("image/"):
+                candidate = (
+                    os.path.isabs(path_value)
+                    or path_value.startswith("./")
+                    or path_value.startswith("../")
+                    or path_value.startswith("~/")
+                )
+                if (
+                    candidate
+                    and not path_value.startswith("data:")
+                    and path_value not in image_paths
+                ):
+                    image_paths.append(path_value)
+            elif not path_value.startswith("data:") and path_value not in context_files:
                 context_files.append(path_value)
 
         url = part.get("url")
-        mime = part.get("mime")
         if not isinstance(url, str) or not url.strip():
             continue
         url_value = url.strip()
-        mime_value = mime.strip().lower() if isinstance(mime, str) else ""
         if not (mime_value.startswith("image/") or url_value.startswith("data:image/")):
             continue
         if url_value not in image_paths:
@@ -251,8 +266,15 @@ def _materialize_image_paths(
         if not value:
             continue
 
+        candidate = value
+        if value.startswith("file://"):
+            parsed = urlparse(value)
+            candidate = unquote(parsed.path) if parsed.path else value
+
         if not value.startswith("data:"):
-            resolved.append(value)
+            if not os.path.isabs(candidate) and target_directory:
+                candidate = str((Path(target_directory) / candidate).resolve())
+            resolved.append(candidate)
             continue
 
         if "," not in value:

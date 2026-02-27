@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -265,8 +266,14 @@ async def test_rest_chat_parts_forward_context_and_materialize_images(
                 "type": "file",
                 "mime": "image/png",
                 "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOQOt9kAAAAASUVORK5CYII=",
+                "source": {"type": "file", "path": "image.png"},
+            },
+            {
+                "type": "file",
+                "mime": "text/plain",
+                "url": "README.md",
                 "source": {"type": "file", "path": "README.md"},
-            }
+            },
         ],
     )
 
@@ -282,6 +289,65 @@ async def test_rest_chat_parts_forward_context_and_materialize_images(
     assert not image_path.startswith("data:")
     assert seen_kwargs["image_exists_during_process"] is True
     assert not Path(image_path).exists()
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_accepts_local_image_paths_without_temp_cleanup(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "chat_repo_local_image"
+    repo.mkdir()
+    image = repo / "drag.png"
+    image.write_bytes(
+        base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOQOt9kAAAAASUVORK5CYII="
+        )
+    )
+
+    seen_kwargs: dict[str, Any] = {}
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            seen_kwargs.update(kwargs)
+            image_paths = kwargs.get("input_data", {}).get("image_paths", [])
+            if image_paths:
+                seen_kwargs["image_exists_during_process"] = Path(
+                    image_paths[0]
+                ).exists()
+            return {"assistant_response": "ok", "action_results": []}
+
+    core = _Core()
+    request = MessageRequest(
+        text="describe image",
+        session_id="session_local_image",
+        directory=str(repo),
+        streaming=False,
+        image_paths=[str(image)],
+        parts=[
+            {
+                "type": "file",
+                "mime": "image/png",
+                "url": str(image),
+                "source": {"type": "file", "path": str(image)},
+            }
+        ],
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["response"] == "ok"
+    image_paths = seen_kwargs["input_data"]["image_paths"]
+    assert image_paths == [str(image)]
+    assert seen_kwargs["image_exists_during_process"] is True
+    assert image.exists()
 
 
 @pytest.mark.asyncio

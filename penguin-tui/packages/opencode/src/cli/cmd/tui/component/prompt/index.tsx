@@ -635,13 +635,34 @@ export function Prompt(props: PromptProps) {
     const agent = local.agent.current()
 
     if (sdk.penguin) {
-      const imagePaths = fileParts.reduce((acc, part) => {
-        if (typeof part.url !== "string" || !part.url.trim()) return acc
-        if (typeof part.mime !== "string") return acc
-        if (!part.mime.startsWith("image/")) return acc
-        acc.push(part.url.trim())
-        return acc
-      }, [] as string[])
+      const imagePaths = fileParts
+        .reduce((acc, part) => {
+          if (typeof part.mime !== "string") return acc
+          if (!part.mime.startsWith("image/")) return acc
+
+          const source = part.source
+          const sourcePath =
+            source && typeof source === "object" && "path" in source ? source.path : undefined
+          if (typeof sourcePath === "string" && sourcePath.trim()) {
+            acc.push(sourcePath.trim())
+            return acc
+          }
+
+          if (typeof part.url !== "string" || !part.url.trim()) return acc
+          const raw = part.url.trim()
+          if (raw.startsWith("file://")) {
+            try {
+              acc.push(decodeURIComponent(new URL(raw).pathname))
+              return acc
+            } catch {
+              acc.push(raw.replace(/^file:\/\//, ""))
+              return acc
+            }
+          }
+          acc.push(raw)
+          return acc
+        }, [] as string[])
+        .filter((item, index, all) => all.indexOf(item) === index)
       const contextFiles = fileParts.reduce((acc, part) => {
         if (typeof part.mime === "string" && part.mime.startsWith("image/")) return acc
         const source = part.source
@@ -768,6 +789,7 @@ export function Prompt(props: PromptProps) {
           client_message_id: messageID,
           image_paths: imagePaths,
           context_files: contextFiles,
+          parts: nonTextParts,
         }),
       }).catch(() => {
         setStore("pending", false)
@@ -898,7 +920,8 @@ export function Prompt(props: PromptProps) {
     )
   }
 
-  async function pasteImage(file: { filename?: string; content: string; mime: string }) {
+  async function pasteImage(file: { filename?: string; content?: string; mime: string; path?: string }) {
+    if (!file.path && !file.content) return
     const currentOffset = input.visualCursor.offset
     const extmarkStart = currentOffset
     const count = store.prompt.parts.filter((x) => x.type === "file").length
@@ -920,10 +943,10 @@ export function Prompt(props: PromptProps) {
       type: "file" as const,
       mime: file.mime,
       filename: file.filename,
-      url: `data:${file.mime};base64,${file.content}`,
+      url: file.path ? file.path : `data:${file.mime};base64,${file.content}`,
       source: {
         type: "file",
-        path: file.filename ?? "",
+        path: file.path ?? file.filename ?? "",
         text: {
           start: extmarkStart,
           end: extmarkEnd,
@@ -1159,14 +1182,14 @@ export function Prompt(props: PromptProps) {
                   })
                   .map((item) => item.replace(/^'+|'+$/g, "").replace(/\\ /g, " "))
 
-                let hasFile = false
+                let handledFile = false
                 for (const filePath of paths) {
                   try {
                     const file = Bun.file(filePath)
                     if (!(await file.exists())) continue
-                    hasFile = true
                     if (file.type === "image/svg+xml") {
                       event.preventDefault()
+                      handledFile = true
                       const content = await file.text().catch(() => {})
                       if (content) {
                         pasteText(content, `[SVG: ${file.name ?? "image"}]`)
@@ -1175,20 +1198,16 @@ export function Prompt(props: PromptProps) {
                     }
                     if (!file.type.startsWith("image/")) continue
                     event.preventDefault()
-                    const content = await file
-                      .arrayBuffer()
-                      .then((buffer) => Buffer.from(buffer).toString("base64"))
-                      .catch(() => {})
-                    if (!content) continue
+                    handledFile = true
                     await pasteImage({
                       filename: file.name,
                       mime: file.type,
-                      content,
+                      path: filePath,
                     })
                   } catch {}
                 }
 
-                if (hasFile) return
+                if (handledFile) return
 
                 const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
                 if (
