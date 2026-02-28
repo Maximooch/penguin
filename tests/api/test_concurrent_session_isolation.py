@@ -330,12 +330,11 @@ async def test_rest_chat_accepts_local_image_paths_without_temp_cleanup(
         session_id="session_local_image",
         directory=str(repo),
         streaming=False,
-        image_paths=[str(image)],
         parts=[
             {
                 "type": "file",
                 "mime": "image/png",
-                "url": str(image),
+                "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAOQOt9kAAAAASUVORK5CYII=",
                 "source": {"type": "file", "path": str(image)},
             }
         ],

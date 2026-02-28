@@ -627,7 +627,6 @@ export function Prompt(props: PromptProps) {
 
     // Filter out text parts (pasted content) since they're now expanded inline
     const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
-    const fileParts = nonTextParts.filter((part) => part.type === "file")
 
     // Capture mode before it gets reset
     const currentMode = store.mode
@@ -635,47 +634,11 @@ export function Prompt(props: PromptProps) {
     const agent = local.agent.current()
 
     if (sdk.penguin) {
-      const imagePaths = fileParts
-        .reduce((acc, part) => {
-          if (typeof part.mime !== "string") return acc
-          if (!part.mime.startsWith("image/")) return acc
-
-          const source = part.source
-          const sourcePath =
-            source && typeof source === "object" && "path" in source ? source.path : undefined
-          if (typeof sourcePath === "string" && sourcePath.trim()) {
-            acc.push(sourcePath.trim())
-            return acc
-          }
-
-          if (typeof part.url !== "string" || !part.url.trim()) return acc
-          const raw = part.url.trim()
-          if (raw.startsWith("file://")) {
-            try {
-              acc.push(decodeURIComponent(new URL(raw).pathname))
-              return acc
-            } catch {
-              acc.push(raw.replace(/^file:\/\//, ""))
-              return acc
-            }
-          }
-          acc.push(raw)
-          return acc
-        }, [] as string[])
-        .filter((item, index, all) => all.indexOf(item) === index)
-      const contextFiles = fileParts.reduce((acc, part) => {
-        if (typeof part.mime === "string" && part.mime.startsWith("image/")) return acc
-        const source = part.source
-        const sourcePath =
-          source && typeof source === "object" && "path" in source ? source.path : undefined
-        if (typeof sourcePath !== "string" || !sourcePath.trim()) return acc
-        if (sourcePath.startsWith("data:")) return acc
-        acc.push(sourcePath.trim())
-        return acc
-      }, [] as string[])
-
-      if (inputText.startsWith("/")) {
-        const name = inputText.split("\n", 1)[0].slice(1).trim()
+      const firstLine = inputText.split("\n", 1)[0].trim()
+      const firstToken = firstLine.split(/\s+/, 1)[0] ?? ""
+      const penguinCommand = /^\/[a-z_][a-z0-9_-]*$/i.test(firstToken)
+      if (penguinCommand) {
+        const name = firstToken.slice(1)
         if (name === "settings") {
           toast.show({
             variant: "info",
@@ -787,8 +750,6 @@ export function Prompt(props: PromptProps) {
           directory,
           streaming: true,
           client_message_id: messageID,
-          image_paths: imagePaths,
-          context_files: contextFiles,
           parts: nonTextParts,
         }),
       }).catch(() => {
@@ -920,8 +881,7 @@ export function Prompt(props: PromptProps) {
     )
   }
 
-  async function pasteImage(file: { filename?: string; content?: string; mime: string; path?: string }) {
-    if (!file.path && !file.content) return
+  async function pasteImage(file: { filename?: string; content: string; mime: string }) {
     const currentOffset = input.visualCursor.offset
     const extmarkStart = currentOffset
     const count = store.prompt.parts.filter((x) => x.type === "file").length
@@ -943,10 +903,10 @@ export function Prompt(props: PromptProps) {
       type: "file" as const,
       mime: file.mime,
       filename: file.filename,
-      url: file.path ? file.path : `data:${file.mime};base64,${file.content}`,
+      url: `data:${file.mime};base64,${file.content}`,
       source: {
         type: "file",
-        path: file.path ?? file.filename ?? "",
+        path: file.filename ?? "",
         text: {
           start: extmarkStart,
           end: extmarkEnd,
@@ -1164,50 +1124,100 @@ export function Prompt(props: PromptProps) {
 
                 // trim ' from the beginning and end of the pasted content. just
                 // ' and nothing else
-                const target = pastedContent.replace(/^'+|'+$/g, "").replace(/\\ /g, " ")
-                const candidates = target
-                  .split(/\r?\n/)
-                  .map((item) => item.trim())
-                  .filter((item) => !!item)
-                const paths = candidates
-                  .map((item) => {
-                    if (item.startsWith("file://")) {
-                      try {
-                        return decodeURIComponent(new URL(item).pathname)
-                      } catch {
-                        return item.replace(/^file:\/\//, "")
-                      }
-                    }
-                    return item
-                  })
-                  .map((item) => item.replace(/^'+|'+$/g, "").replace(/\\ /g, " "))
+                const filepath = pastedContent.replace(/^'+|'+$/g, "").replace(/\\ /g, " ")
+                const matches = normalizedText.match(
+                  /(?:\/|[A-Za-z]:\\)[^\n\r]*?\.(?:png|jpg|jpeg|gif|webp|bmp|svg)/gi,
+                )
+                const rawPaths = (matches ?? [])
+                  .map((item) => item.replace(/^'+|'+$/g, "").trim())
+                  .filter((item, index, all) => !!item && all.indexOf(item) === index)
+                const paths = (matches ?? [])
+                  .map((item) => item.replace(/^'+|'+$/g, "").replace(/\\ /g, " ").trim())
+                  .filter((item, index, all) => !!item && all.indexOf(item) === index)
+                const candidates = [filepath, ...rawPaths, ...paths]
+                  .map((item) => item.replace(/^'+|'+$/g, "").replace(/\\ /g, " ").trim())
+                  .filter((item, index, all) => !!item && all.indexOf(item) === index)
 
-                let handledFile = false
-                for (const filePath of paths) {
+                const pathLike =
+                  candidates.length > 1 ||
+                  filepath.startsWith("/") ||
+                  filepath.startsWith("./") ||
+                  filepath.startsWith("../") ||
+                  filepath.startsWith("~/") ||
+                  filepath.startsWith("file://") ||
+                  /^[A-Za-z]:[\\/]/.test(filepath)
+
+                if (pathLike) {
+                  // Prevent default paste immediately so local path text does not
+                  // get inserted before we convert to [Image n].
+                  event.preventDefault()
+                }
+
+                for (const entry of candidates) {
+                  const local = entry.startsWith("file://")
+                    ? iife(() => {
+                        try {
+                          return decodeURIComponent(new URL(entry).pathname)
+                        } catch {
+                          return entry.replace(/^file:\/\//, "")
+                        }
+                      })
+                    : entry
+                  const isUrl = /^(https?):\/\//.test(local)
+                  if (isUrl) continue
                   try {
-                    const file = Bun.file(filePath)
-                    if (!(await file.exists())) continue
+                    const file = Bun.file(local)
+                    const exists = await file.exists().catch(() => false)
+                    if (!exists) continue
+
+                    // Handle SVG as raw text content, not as base64 image
                     if (file.type === "image/svg+xml") {
                       event.preventDefault()
-                      handledFile = true
                       const content = await file.text().catch(() => {})
                       if (content) {
                         pasteText(content, `[SVG: ${file.name ?? "image"}]`)
+                        return
                       }
-                      continue
                     }
-                    if (!file.type.startsWith("image/")) continue
-                    event.preventDefault()
-                    handledFile = true
-                    await pasteImage({
-                      filename: file.name,
-                      mime: file.type,
-                      path: filePath,
-                    })
+                    if (file.type.startsWith("image/")) {
+                      event.preventDefault()
+                      const content = await file
+                        .arrayBuffer()
+                        .then((buffer) => Buffer.from(buffer).toString("base64"))
+                        .catch(() => {})
+                      if (content) {
+                        const remove = [entry, local, filepath, ...rawPaths, ...paths]
+                          .filter((item, index, all) => !!item && all.indexOf(item) === index)
+                          .flatMap((item) => [
+                            item,
+                            item.replace(/\\ /g, " "),
+                            item.replace(/ /g, "\\ "),
+                          ])
+                          .filter((item, index, all) => !!item && all.indexOf(item) === index)
+                        const cleaned = remove
+                          .reduce((text, item) => text.split(item).join(" "), normalizedText)
+                          .replace(/\s+/g, " ")
+                          .trim()
+                        if (cleaned) {
+                          input.insertText(`${cleaned} `)
+                        }
+                        await pasteImage({
+                          filename: file.name,
+                          mime: file.type,
+                          content,
+                        })
+                        return
+                      }
+                    }
                   } catch {}
                 }
 
-                if (handledFile) return
+                if (pathLike) {
+                  // No valid image detected from a path-like paste; preserve
+                  // original pasted text behavior.
+                  input.insertText(normalizedText)
+                  return
+                }
 
                 const lineCount = (pastedContent.match(/\n/g)?.length ?? 0) + 1
                 if (

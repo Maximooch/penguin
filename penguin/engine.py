@@ -2072,6 +2072,7 @@ class Engine:
         if not hasattr(cm, "core") or not cm.core:
             return assistant_response
 
+        finalized_content = ""
         try:
             session = (
                 cm.get_current_session() if hasattr(cm, "get_current_session") else None
@@ -2085,6 +2086,7 @@ class Engine:
             if finalized and finalized.get("content"):
                 old_len = len(assistant_response) if assistant_response else 0
                 assistant_response = finalized["content"]
+                finalized_content = assistant_response
                 logger.debug(
                     f"[AUTO-CONTINUE FIX] Using finalized content for parsing. "
                     f"Length: {old_len} -> {len(assistant_response)}"
@@ -2097,6 +2099,32 @@ class Engine:
             logger.debug("Finalized streaming message with reasoning")
         except Exception as _fin_err:
             logger.warning("Failed to finalise streaming message: %s", _fin_err)
+
+        if assistant_response and not finalized_content:
+            try:
+                session_messages = (
+                    cm.conversation.session.messages
+                    if hasattr(cm.conversation, "session")
+                    else []
+                )
+                last_msg = session_messages[-1] if session_messages else None
+                message_already_added = (
+                    last_msg
+                    and last_msg.role == "assistant"
+                    and last_msg.content == assistant_response
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to inspect conversation for streaming fallback persistence"
+                )
+                message_already_added = False
+
+            if not message_already_added:
+                cm.conversation.add_assistant_message(assistant_response)
+                logger.debug(
+                    "Persisted non-chunk streaming response as assistant message (%s chars)",
+                    len(assistant_response),
+                )
 
         return assistant_response
 

@@ -2590,29 +2590,35 @@ class PenguinCore:
             # Ensure conversation is saved after processing
             conversation_manager.save()
 
-            # Emit assistant message event after processing (if not streamed)
-            # When *streaming* was active we streamed the full message live and
-            # `finalize_streaming_message` already handled persistence / UI
-            # events.  Emitting another `message` here would duplicate the
-            # assistant reply.  Therefore we only emit when streaming is **not**
-            # enabled for this call.
-            if not streaming and response and "assistant_response" in response:
+            # Emit assistant message event after processing.
+            # Streaming paths usually update UI via chunk events; however, some
+            # provider failures return only a final error/note string with zero
+            # chunks. In that case emit a message event so users can see it.
+            if response and "assistant_response" in response:
                 assistant_message = response["assistant_response"]
                 if assistant_message:
-                    logger.debug(
-                        "Emitting assistant message event (non-streaming): %s…",
-                        assistant_message[:30],
-                    )
-                    await self.emit_ui_event(
-                        "message",
-                        {
-                            "role": "assistant",
-                            "content": assistant_message,
-                            "category": MessageCategory.DIALOG,
-                            "metadata": {},
-                            **({"agent_id": agent_id} if agent_id else {}),
-                        },
-                    )
+                    emit_assistant_event = not streaming
+                    if streaming:
+                        stripped = assistant_message.lstrip()
+                        if stripped.startswith("[Error:") or stripped.startswith(
+                            "[Note:"
+                        ):
+                            emit_assistant_event = True
+                    if emit_assistant_event:
+                        logger.debug(
+                            "Emitting assistant message event: %s…",
+                            assistant_message[:30],
+                        )
+                        await self.emit_ui_event(
+                            "message",
+                            {
+                                "role": "assistant",
+                                "content": assistant_message,
+                                "category": MessageCategory.DIALOG,
+                                "metadata": {},
+                                **({"agent_id": agent_id} if agent_id else {}),
+                            },
+                        )
 
             # Ensure token usage is emitted after processing
             await self.emit_ui_event("token_update", token_data)

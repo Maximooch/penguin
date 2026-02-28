@@ -211,6 +211,7 @@ def _extract_paths_from_parts(
 
         source = part.get("source")
         source_path = source.get("path") if isinstance(source, dict) else None
+        source_image_selected = False
         if isinstance(source_path, str) and source_path.strip():
             path_value = source_path.strip()
             if mime_value.startswith("image/"):
@@ -226,8 +227,12 @@ def _extract_paths_from_parts(
                     and path_value not in image_paths
                 ):
                     image_paths.append(path_value)
+                    source_image_selected = True
             elif not path_value.startswith("data:") and path_value not in context_files:
                 context_files.append(path_value)
+
+        if source_image_selected:
+            continue
 
         url = part.get("url")
         if not isinstance(url, str) or not url.strip():
@@ -1929,6 +1934,23 @@ async def handle_chat_message(
             if created_files:
                 temp_image_files.extend(created_files)
             input_data["image_paths"] = materialized_paths
+            existing_count = sum(
+                1
+                for value in materialized_paths
+                if isinstance(value, str) and os.path.exists(value)
+            )
+            unresolved_data_urls = sum(
+                1
+                for value in materialized_paths
+                if isinstance(value, str) and value.startswith("data:")
+            )
+            logger.info(
+                "Image input received session=%s count=%s existing=%s data_urls=%s",
+                effective_session_id,
+                len(materialized_paths),
+                existing_count,
+                unresolved_data_urls,
+            )
 
         # If reasoning is requested, capture reasoning chunks via a local callback
         reasoning_buf: List[str] = []
