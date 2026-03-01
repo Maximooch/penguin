@@ -15,6 +15,7 @@ from penguin.web.routes import (
     api_session_create,
     api_session_delete,
     api_session_diff,
+    api_session_todo,
     api_session_status,
     api_session_update,
     session_create,
@@ -22,10 +23,11 @@ from penguin.web.routes import (
     session_delete,
     session_diff,
     session_get,
+    session_todo,
     session_status,
     session_update,
 )
-from penguin.web.services.session_view import TRANSCRIPT_KEY
+from penguin.web.services.session_view import TODO_KEY, TRANSCRIPT_KEY
 
 
 class _Manager:
@@ -130,6 +132,9 @@ async def test_session_create_update_status_diff_delete_roundtrip(
     assert aborted is True
     assert core.abort_calls == [session_id]
 
+    todos = await session_todo(session_id, core=typed_core)
+    assert todos == []
+
     session_obj = core.conversation_manager.session_manager.load_session(session_id)
     assert session_obj is not None
     session_obj.metadata[TRANSCRIPT_KEY] = {
@@ -192,6 +197,22 @@ async def test_session_alias_endpoints_work(tmp_path: Path) -> None:
         core=typed_core,
     )
     assert updated["title"] == "Alias 2"
+
+    manager = core.conversation_manager.session_manager
+    session_obj = manager.load_session(session_id)
+    assert session_obj is not None
+    session_obj.metadata[TODO_KEY] = [
+        {
+            "id": "todo_1",
+            "content": "Verify alias todo endpoint",
+            "status": "pending",
+            "priority": "medium",
+        }
+    ]
+
+    todos = await api_session_todo(session_id, core=typed_core)
+    assert len(todos) == 1
+    assert todos[0]["content"] == "Verify alias todo endpoint"
 
     diffs = await api_session_diff(session_id, core=typed_core, messageID=None)
     assert isinstance(diffs, list)

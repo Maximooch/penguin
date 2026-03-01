@@ -9,7 +9,11 @@ import pytest
 
 from penguin.core import PenguinCore
 from penguin.system.state import Session
-from penguin.web.services.session_view import TRANSCRIPT_KEY, get_session_messages
+from penguin.web.services.session_view import (
+    TODO_KEY,
+    TRANSCRIPT_KEY,
+    get_session_messages,
+)
 
 
 @pytest.mark.parametrize(
@@ -54,6 +58,36 @@ from penguin.web.services.session_view import TRANSCRIPT_KEY, get_session_messag
                 "comparePath": "src/b.py",
                 "semantic": True,
             },
+        ),
+        (
+            "todowrite",
+            {
+                "todos": [
+                    {
+                        "id": "todo_1",
+                        "content": "Track todo progress",
+                        "status": "pending",
+                        "priority": "medium",
+                    }
+                ]
+            },
+            "todowrite",
+            {
+                "todos": [
+                    {
+                        "id": "todo_1",
+                        "content": "Track todo progress",
+                        "status": "pending",
+                        "priority": "medium",
+                    }
+                ]
+            },
+        ),
+        (
+            "todoread",
+            {},
+            "todoread",
+            {},
         ),
     ],
 )
@@ -121,6 +155,30 @@ def test_map_action_result_metadata_extracts_diff_for_edit_with_pattern() -> Non
     assert metadata["filePath"] == "src/main.py"
     assert metadata["diff"].startswith("--- a/src/main.py")
     assert "+DEBUG = True" in metadata["diff"]
+
+
+def test_map_action_result_metadata_extracts_todos_for_todowrite() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    result = (
+        "[\n"
+        "  {\n"
+        '    "id": "todo_1",\n'
+        '    "content": "Implement todo endpoint",\n'
+        '    "status": "pending",\n'
+        '    "priority": "high"\n'
+        "  }\n"
+        "]"
+    )
+
+    metadata = core._map_action_result_metadata(
+        "todowrite",
+        result,
+        existing=None,
+        tool_input={"todos": []},
+    )
+
+    assert metadata["todos"][0]["id"] == "todo_1"
+    assert metadata["todos"][0]["content"] == "Implement todo endpoint"
 
 
 def test_map_action_result_metadata_moves_diff_to_attempted_diff_on_error() -> None:
@@ -226,6 +284,49 @@ class _SessionManager:
         self._save_calls += 1
         self.sessions[session.id] = (session, False)
         return True
+
+
+@pytest.mark.asyncio
+async def test_todo_updated_event_persists_and_emits_opencode_event() -> None:
+    session = Session(id="session_todo")
+    manager = _SessionManager(session)
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={"default": manager},
+    )
+    emitted: list[tuple[str, dict[str, Any]]] = []
+
+    class _EventBus:
+        async def emit(self, event_type: str, data: dict[str, Any]) -> None:
+            emitted.append((event_type, data))
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "conversation_manager", conversation_manager)
+    setattr(core, "event_bus", _EventBus())
+    setattr(core, "_opencode_session_directories", {session.id: "/tmp/project"})
+
+    await core._on_tui_todo_updated(
+        "todo.updated",
+        {
+            "sessionID": session.id,
+            "todos": [
+                {
+                    "id": "todo_1",
+                    "content": "Implement todo parity",
+                    "status": "in_progress",
+                    "priority": "high",
+                }
+            ],
+        },
+    )
+
+    assert session.metadata[TODO_KEY][0]["content"] == "Implement todo parity"
+    assert emitted
+    event_type, payload = emitted[-1]
+    assert event_type == "opencode_event"
+    assert payload["type"] == "todo.updated"
+    assert payload["properties"]["sessionID"] == session.id
+    assert payload["properties"]["todos"][0]["status"] == "in_progress"
 
 
 @pytest.mark.asyncio

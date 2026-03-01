@@ -82,6 +82,8 @@ class ActionType(Enum):
     PROCESS_SEND = "process_send"
     PROCESS_EXIT = "process_exit"
     WORKSPACE_SEARCH = "workspace_search"
+    TODOWRITE = "todowrite"
+    TODOREAD = "todoread"
     # Task Management Actions
     TASK_CREATE = "task_create"
     TASK_UPDATE = "task_update"
@@ -447,6 +449,8 @@ class ActionExecutor:
             ActionType.PROCESS_SEND: self._process_send,
             ActionType.PROCESS_EXIT: self._process_exit,
             ActionType.WORKSPACE_SEARCH: self._workspace_search,
+            ActionType.TODOWRITE: self._todo_write,
+            ActionType.TODOREAD: self._todo_read,
             ActionType.MULTIEDIT: self._multiedit,
             # Project management handlers
             ActionType.PROJECT_CREATE: self._project_create,
@@ -1566,6 +1570,187 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             return output
         except Exception as e:
             return f"Error displaying project: {str(e)}"
+
+    def _normalize_todo_items(self, raw_items: Any) -> List[Dict[str, str]]:
+        """Normalize todo payloads to OpenCode-compatible Todo[] shape."""
+        if not isinstance(raw_items, list):
+            return []
+
+        normalized: List[Dict[str, str]] = []
+        statuses = {"pending", "in_progress", "completed", "cancelled"}
+        priorities = {"high", "medium", "low"}
+        seen_ids = set()
+
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+
+            content_raw = item.get("content")
+            if isinstance(content_raw, str):
+                content = content_raw.strip()
+            elif content_raw is None:
+                content = ""
+            else:
+                content = str(content_raw).strip()
+            if not content:
+                continue
+
+            status_raw = item.get("status", "pending")
+            status = (
+                status_raw.strip().lower()
+                if isinstance(status_raw, str)
+                else str(status_raw).strip().lower()
+            )
+            if status not in statuses:
+                status = "pending"
+
+            priority_raw = item.get("priority", "medium")
+            priority = (
+                priority_raw.strip().lower()
+                if isinstance(priority_raw, str)
+                else str(priority_raw).strip().lower()
+            )
+            if priority not in priorities:
+                priority = "medium"
+
+            todo_id_raw = item.get("id")
+            if isinstance(todo_id_raw, str) and todo_id_raw.strip():
+                todo_id = todo_id_raw.strip()
+            else:
+                todo_id = f"todo_{base64.urlsafe_b64encode(os.urandom(6)).decode('ascii').rstrip('=')}"
+
+            if todo_id in seen_ids:
+                suffix = 2
+                candidate = f"{todo_id}_{suffix}"
+                while candidate in seen_ids:
+                    suffix += 1
+                    candidate = f"{todo_id}_{suffix}"
+                todo_id = candidate
+
+            seen_ids.add(todo_id)
+            normalized.append(
+                {
+                    "id": todo_id,
+                    "content": content,
+                    "status": status,
+                    "priority": priority,
+                }
+            )
+
+        return normalized
+
+    def _parse_todo_params(self, params: str) -> List[Dict[str, str]]:
+        """Parse todowrite payload from JSON object or JSON array."""
+        content = (params or "").strip()
+        if not content:
+            return []
+
+        payload = json.loads(content)
+        if isinstance(payload, dict):
+            maybe_items = payload.get("todos")
+            if isinstance(maybe_items, list):
+                return self._normalize_todo_items(maybe_items)
+            if {"content", "status", "priority", "id"} & set(payload.keys()):
+                return self._normalize_todo_items([payload])
+            raise ValueError("todowrite expects JSON array or object with 'todos'")
+
+        if isinstance(payload, list):
+            return self._normalize_todo_items(payload)
+
+        raise ValueError("todowrite expects JSON array or object with 'todos'")
+
+    def _resolve_todo_session(self) -> tuple[Optional[str], Any, Any]:
+        """Resolve the active session and manager for todo operations."""
+        context = get_current_execution_context()
+        context_session_id = None
+        if context is not None:
+            context_session_id = context.session_id or context.conversation_id
+
+        conversation = self.conversation_system
+        if conversation is None:
+            return None, None, None
+
+        core = getattr(conversation, "core", None)
+        if core is not None and context_session_id:
+            finder = getattr(core, "_find_session_store", None)
+            if callable(finder):
+                session, manager = finder(str(context_session_id))
+                if session is not None and manager is not None:
+                    return str(context_session_id), session, manager
+
+        manager = getattr(conversation, "session_manager", None)
+        if context_session_id and manager is not None:
+            loader = getattr(manager, "load_session", None)
+            if callable(loader):
+                session = loader(str(context_session_id))
+                if session is not None:
+                    return str(context_session_id), session, manager
+
+        getter = getattr(conversation, "get_current_session", None)
+        if callable(getter):
+            session = getter()
+            if session is not None and manager is not None:
+                resolved_id = str(
+                    context_session_id or getattr(session, "id", "") or ""
+                )
+                if resolved_id:
+                    return resolved_id, session, manager
+
+        return None, None, None
+
+    async def _todo_write(self, params: str) -> str:
+        """Persist session-scoped todos. Format: JSON array or {"todos": [...]}"""
+        try:
+            todos = self._parse_todo_params(params)
+        except Exception as e:
+            return f"Error: Invalid todowrite payload: {e}"
+
+        session_id, session, manager = self._resolve_todo_session()
+        if not session_id or session is None or manager is None:
+            return "Error: Unable to resolve session for todowrite"
+
+        metadata = getattr(session, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            session.metadata = metadata
+        metadata["_opencode_todo_v1"] = todos
+
+        mark_modified = getattr(manager, "mark_session_modified", None)
+        if callable(mark_modified):
+            mark_modified(session.id)
+        saver = getattr(manager, "save_session", None)
+        if callable(saver):
+            saver(session)
+
+        if self._ui_event_cb:
+            try:
+                event_payload: Dict[str, Any] = {
+                    "sessionID": session_id,
+                    "conversation_id": session_id,
+                    "todos": todos,
+                }
+                context = get_current_execution_context()
+                if context is not None and context.directory:
+                    event_payload["directory"] = context.directory
+                await self._ui_event_cb("todo.updated", event_payload)
+            except Exception as e:
+                logger.debug(f"UI event emit failed (todo.updated): {e}")
+
+        return json.dumps(todos, indent=2)
+
+    def _todo_read(self, params: str) -> str:
+        """Read session-scoped todos as JSON."""
+        _ = params
+        session_id, session, _manager = self._resolve_todo_session()
+        if not session_id or session is None:
+            return "Error: Unable to resolve session for todoread"
+
+        metadata = getattr(session, "metadata", None)
+        if not isinstance(metadata, dict):
+            return "[]"
+
+        todos = self._normalize_todo_items(metadata.get("_opencode_todo_v1"))
+        return json.dumps(todos, indent=2)
 
     def _task_create(self, params: str) -> str:
         """Create a new task. Format: name:description[:project_name]"""

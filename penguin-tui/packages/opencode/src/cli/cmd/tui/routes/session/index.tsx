@@ -35,7 +35,7 @@ import type { ReadTool } from "@/tool/read"
 import type { WriteTool } from "@/tool/write"
 import { BashTool } from "@/tool/bash"
 import type { GlobTool } from "@/tool/glob"
-import { TodoWriteTool } from "@/tool/todo"
+import { TodoReadTool, TodoWriteTool } from "@/tool/todo"
 import type { GrepTool } from "@/tool/grep"
 import type { ListTool } from "@/tool/ls"
 import type { EditTool } from "@/tool/edit"
@@ -1478,6 +1478,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={props.part.tool === "todowrite"}>
           <TodoWrite {...toolprops} />
         </Match>
+        <Match when={props.part.tool === "todoread"}>
+          <TodoRead {...(toolprops as ToolProps<typeof TodoReadTool>)} />
+        </Match>
         <Match when={props.part.tool === "question"}>
           <Question {...toolprops} />
         </Match>
@@ -2030,6 +2033,27 @@ function TodoWrite(props: ToolProps<typeof TodoWriteTool>) {
       <Match when={true}>
         <InlineTool icon="⚙" pending="Updating todos..." complete={false} part={props.part}>
           Updating todos...
+        </InlineTool>
+      </Match>
+    </Switch>
+  )
+}
+
+function TodoRead(props: ToolProps<typeof TodoReadTool>) {
+  return (
+    <Switch>
+      <Match when={props.metadata.todos?.length}>
+        <BlockTool title="# Todos" part={props.part}>
+          <box>
+            <For each={props.metadata.todos ?? []}>
+              {(todo) => <TodoItem status={todo.status} content={todo.content} />}
+            </For>
+          </box>
+        </BlockTool>
+      </Match>
+      <Match when={true}>
+        <InlineTool icon="⚙" pending="Reading todos..." complete={false} part={props.part}>
+          Reading todos...
         </InlineTool>
       </Match>
     </Switch>

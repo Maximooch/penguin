@@ -3803,6 +3803,9 @@ class PenguinCore:
             "lsp.client.diagnostics", self._tui_lsp_diagnostics_handler
         )
 
+        self._tui_todo_updated_handler = self._on_tui_todo_updated
+        self.event_bus.subscribe("todo.updated", self._tui_todo_updated_handler)
+
     def _get_tui_adapter(self, session_id: Optional[str]) -> Any:
         """Return a session-scoped TUI adapter to avoid cross-session bleed."""
         sid = session_id or "unknown"
@@ -3992,6 +3995,91 @@ class PenguinCore:
                 return value.strip()
         return ""
 
+    def _normalize_todo_items(self, value: Any) -> list[Dict[str, str]]:
+        if isinstance(value, dict):
+            value = value.get("todos")
+        if not isinstance(value, list):
+            return []
+
+        statuses = {"pending", "in_progress", "completed", "cancelled"}
+        priorities = {"high", "medium", "low"}
+        normalized: list[Dict[str, str]] = []
+        seen_ids: set[str] = set()
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                continue
+
+            content_raw = item.get("content")
+            if isinstance(content_raw, str):
+                content = content_raw.strip()
+            elif content_raw is None:
+                content = ""
+            else:
+                content = str(content_raw).strip()
+            if not content:
+                continue
+
+            status_raw = item.get("status", "pending")
+            status = (
+                status_raw.strip().lower()
+                if isinstance(status_raw, str)
+                else str(status_raw).strip().lower()
+            )
+            if status not in statuses:
+                status = "pending"
+
+            priority_raw = item.get("priority", "medium")
+            priority = (
+                priority_raw.strip().lower()
+                if isinstance(priority_raw, str)
+                else str(priority_raw).strip().lower()
+            )
+            if priority not in priorities:
+                priority = "medium"
+
+            todo_id_raw = item.get("id")
+            todo_id = (
+                todo_id_raw.strip()
+                if isinstance(todo_id_raw, str) and todo_id_raw.strip()
+                else f"todo_{index + 1}"
+            )
+            if todo_id in seen_ids:
+                suffix = 2
+                candidate = f"{todo_id}_{suffix}"
+                while candidate in seen_ids:
+                    suffix += 1
+                    candidate = f"{todo_id}_{suffix}"
+                todo_id = candidate
+            seen_ids.add(todo_id)
+
+            normalized.append(
+                {
+                    "id": todo_id,
+                    "content": content,
+                    "status": status,
+                    "priority": priority,
+                }
+            )
+
+        return normalized
+
+    def _extract_todos_from_result(self, result: Any) -> list[Dict[str, str]]:
+        if isinstance(result, list):
+            return self._normalize_todo_items(result)
+        if isinstance(result, dict):
+            return self._normalize_todo_items(result)
+        if result is None:
+            return []
+
+        text = str(result).strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return []
+        return self._normalize_todo_items(parsed)
+
     def _map_action_to_tool(
         self, action: str, params: Any
     ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
@@ -4014,6 +4102,20 @@ class PenguinCore:
         if action_name == "execute_command":
             tool_input = {"command": raw, "description": "Shell"}
             return "bash", tool_input, metadata
+
+        if action_name == "todowrite":
+            todos = self._normalize_todo_items(params)
+            if not todos and isinstance(params, str):
+                try:
+                    parsed = json.loads(params)
+                    todos = self._normalize_todo_items(parsed)
+                except Exception:
+                    todos = []
+            tool_input = {"todos": todos}
+            return "todowrite", tool_input, metadata
+
+        if action_name == "todoread":
+            return "todoread", {}, metadata
 
         if action_name == "apply_diff":
             if isinstance(params, dict):
@@ -4327,6 +4429,10 @@ class PenguinCore:
 
         if action_name in {"execute", "execute_command"}:
             metadata.setdefault("output", "" if result is None else str(result))
+        if status != "error" and action_name in {"todowrite", "todoread"}:
+            todos = self._extract_todos_from_result(result)
+            if todos:
+                metadata["todos"] = todos
         if status != "error" and action_name in {
             "replace_lines",
             "edit_with_pattern",
@@ -4356,7 +4462,7 @@ class PenguinCore:
 
         tool_name = data.get("type") or data.get("action") or "unknown"
         params = data.get("params")
-        if isinstance(params, str) and params.strip().startswith("{"):
+        if isinstance(params, str) and params.strip().startswith(("{", "[")):
             try:
                 import json
 
@@ -4464,6 +4570,55 @@ class PenguinCore:
         await adapter.on_tool_end(part_id, result, error=error, metadata=merged_meta)
         self._opencode_tool_parts.pop(tool_key, None)
         self._opencode_tool_info.pop(tool_key, None)
+
+    async def _on_tui_todo_updated(self, event_type: str, data: Dict[str, Any]) -> None:
+        if event_type != "todo.updated":
+            return
+
+        properties = dict(data or {})
+        context = get_current_execution_context()
+        session_id = (
+            properties.get("sessionID")
+            or properties.get("session_id")
+            or properties.get("conversation_id")
+        )
+        if not session_id and context is not None:
+            session_id = context.session_id or context.conversation_id
+        if not session_id:
+            return
+
+        properties.setdefault("sessionID", session_id)
+        properties.setdefault("conversation_id", session_id)
+
+        normalized_todos = self._normalize_todo_items(properties.get("todos"))
+        try:
+            from penguin.web.services.session_view import update_session_todo
+
+            persisted = update_session_todo(self, str(session_id), normalized_todos)
+            if isinstance(persisted, list):
+                normalized_todos = persisted
+        except Exception:
+            pass
+        properties["todos"] = normalized_todos
+
+        if "directory" not in properties:
+            directory = context.directory if context is not None else None
+            if not directory:
+                session_dirs = getattr(self, "_opencode_session_directories", None)
+                if isinstance(session_dirs, dict):
+                    mapped = session_dirs.get(str(session_id))
+                    if isinstance(mapped, str) and mapped.strip():
+                        directory = mapped
+            if directory:
+                properties["directory"] = directory
+
+        await self.event_bus.emit(
+            "opencode_event",
+            {
+                "type": "todo.updated",
+                "properties": properties,
+            },
+        )
 
     async def _on_tui_lsp_updated(self, event_type: str, data: Dict[str, Any]) -> None:
         if event_type != "lsp.updated":

@@ -502,12 +502,14 @@ For each phase, validate with:
   - Latest manual signal (2026-02-19): two-session same-server runs are now mostly stable; keep this track open until repeated long-run stress passes complete.
 
 ### Track E: Plan/TODO + Agent Features
-- [ ] E1. Implement `session.todo` from `ProjectManager` task graph. # NOTE: a new todo tool would be great, that can be connected to a task/project, or independent of. This would cover 80% of what we're looking for here.
-  - Owner: `penguin/project` + route adapter.
+- [x] E1. Implement `session.todo` with standalone session-scoped todo storage (OpenCode parity first; decoupled from `ProjectManager` task graph).
+  - Owner: `penguin/web/services/session_view.py`, `penguin/web/routes.py`, parser/core todo handlers.
   - Acceptance: todo panel shows stable list with statuses.
-- [ ] E2. Emit `todo.updated` on task create/update/complete.
-  - Owner: project/task layer event emission.
+  - Progress (2026-02-28): added `GET /session/{id}/todo` (+ `/api/v1` alias) backed by persisted `_opencode_todo_v1` session metadata.
+- [x] E2. Emit `todo.updated` for `todowrite`/todo mutation flows.
+  - Owner: parser/core event emission + SSE bridge.
   - Acceptance: todo panel updates live.
+  - Progress (2026-02-28): `todowrite` now persists normalized todos and emits `todo.updated`; core bridges event to OpenCode-shaped `opencode_event` payload.
 - [ ] E3. Implement `app.agents` and ensure message/tool events carry `agent_id` consistently.
   - Owner: `core.py` agent roster + event adapter.
   - Acceptance: multi/sub-agent UI and filtering behave correctly.
@@ -546,6 +548,24 @@ For each phase, validate with:
 - [ ] I4. Add explicit exit/cancel keybind guidance and safer default behavior for `Ctrl+C`/interrupt flows.
   - Owner: keybind layer + prompt/session route handlers.
   - Acceptance: users can predictably interrupt or exit without leaving stuck state.
+
+### Track J: Core/TUI Bridge Extraction (Final Cleanup)
+- [ ] J1. Extract OpenCode/TUI event subscription + handlers from `core.py` into a dedicated bridge module.
+  - Owner: `penguin/core.py`, `penguin/tui_adapter/*`.
+  - Acceptance: `core.py` delegates stream/action/todo/lsp event wiring and handler execution without behavior change.
+- [ ] J2. Extract action-to-tool mapping + result metadata shaping into a dedicated mapping module.
+  - Owner: `penguin/tui_adapter/tool_mapping.py`.
+  - Acceptance: `_map_action_to_tool` and `_map_action_result_metadata` logic no longer lives in `core.py`.
+- [ ] J3. Extract transcript persistence + session store lookup helpers into a focused persistence module.
+  - Owner: `penguin/tui_adapter/transcript_store.py`.
+  - Acceptance: `_persist_opencode_event` path is moved behind a focused interface and replay tests remain green.
+- [ ] J4. Extract session runtime bookkeeping (`abort`, active request counters, `session.status` emit) into a runtime helper.
+  - Owner: `penguin/tui_adapter/session_runtime.py`.
+  - Acceptance: request lifecycle semantics are unchanged and concurrency/session-status tests remain green.
+- [ ] J5. Make `core.py` a thin orchestrator for TUI compatibility concerns.
+  - Owner: `penguin/core.py`.
+  - Acceptance: no OpenCode parity regressions and measurable net `core.py` line-count reduction.
+  - Note: align sequencing with `context/architecture/core-refactor-plan.md` so extraction work composes with existing refactor phases.
 
 ### Track F: LSP / Formatter / Path (Real, not stubbed)
 - [x] F1. Implement `path.get` from runtime roots (`directory`, `worktree`, `home`).
@@ -592,9 +612,10 @@ For each phase, validate with:
 - `provider.auth()` / OAuth -> stub or no-op until auth workflows exist.
 
 ### Plan + TODO
-- `session.todo({ sessionID })` -> `ProjectManager` tasks + `ConversationManager` summaries.
-  - Response: `{ items: [{ id, title, status, owner?, updatedAt? }] }`
-- `todo.updated` event -> emit when tasks change.
+- `session.todo({ sessionID })` -> standalone session-scoped todo storage in session metadata (`_opencode_todo_v1`) for OpenCode parity.
+  - Response: `Todo[]` (`[{ id, content, status, priority }]`).
+- `todo.updated` event -> emit on `todowrite` / todo mutation flows and mirror through OpenCode-shaped SSE events.
+- Future extension: optionally bridge standalone todo storage with `ProjectManager` tasks after parity/stability milestones.
 
 ### Agent modes + variants
 - `session.prompt({ sessionID, agent, model, variant, parts })` -> `core.process()` with mode/variant metadata.

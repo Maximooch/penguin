@@ -47,6 +47,7 @@ from penguin.web.services.session_view import (
     get_session_diff,
     get_session_info,
     get_session_messages,
+    get_session_todo,
     list_session_infos,
     list_session_statuses,
     remove_session_info,
@@ -3128,6 +3129,15 @@ async def session_messages(
     return messages
 
 
+@router.get("/session/{session_id}/todo")
+async def session_todo(session_id: str, core: PenguinCore = Depends(get_core)):
+    """OpenCode-compatible session.todo endpoint."""
+    todos = get_session_todo(core, session_id)
+    if todos is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    return todos
+
+
 @router.get("/session/{session_id}/diff")
 async def session_diff(
     session_id: str,
@@ -3216,6 +3226,12 @@ async def api_session_messages(
 ):
     """Alias for OpenCode-compatible session.messages endpoint."""
     return await session_messages(session_id, core, limit=limit)
+
+
+@router.get("/api/v1/session/{session_id}/todo")
+async def api_session_todo(session_id: str, core: PenguinCore = Depends(get_core)):
+    """Alias for OpenCode-compatible session.todo endpoint."""
+    return await session_todo(session_id, core=core)
 
 
 @router.get("/api/v1/session/{session_id}/diff")

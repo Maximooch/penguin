@@ -437,6 +437,48 @@ Manually trigger workspace re-indexing for memory.
 
 
 # =============================================================================
+# TODO TRACKING TOOLS
+# =============================================================================
+
+TODO_TOOLS = """
+## Todo Tracking
+
+### todowrite
+Create or replace the session todo list.
+
+**When to use:**
+- Tasks with 3+ distinct implementation steps
+- User explicitly asks for a todo list
+- Multi-file or multi-phase work where progress tracking helps
+
+**Format:** `<todowrite>[{...}, {...}]</todowrite>` or `<todowrite>{"todos": [...]}</todowrite>`
+
+**Todo item schema:**
+- `id` (string) - Stable identifier
+- `content` (string) - Task description
+- `status` (pending|in_progress|completed|cancelled)
+- `priority` (high|medium|low)
+
+**Example:**
+```actionxml
+<todowrite>{"todos":[
+  {"id":"todo_1","content":"Add session.todo endpoint","status":"in_progress","priority":"high"},
+  {"id":"todo_2","content":"Emit todo.updated SSE events","status":"pending","priority":"medium"}
+]}</todowrite>
+```
+
+### todoread
+Read the current session todo list.
+
+**When to use:**
+- Resuming interrupted work
+- Verifying next incomplete step before continuing
+
+**Format:** `<todoread></todoread>`
+"""
+
+
+# =============================================================================
 # BROWSER AUTOMATION TOOLS
 # =============================================================================
 
@@ -542,6 +584,7 @@ TOOL_GUIDE = "\n\n".join(
         EXECUTION_TOOLS,
         SEARCH_TOOLS,
         MEMORY_TOOLS,
+        TODO_TOOLS,
         COMPLETION_TOOLS,
     ]
 )

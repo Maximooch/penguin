@@ -12,6 +12,10 @@ from penguin import __version__
 
 TRANSCRIPT_KEY = "_opencode_transcript_v1"
 USAGE_KEY = "_opencode_usage_v1"
+TODO_KEY = "_opencode_todo_v1"
+
+_TODO_STATUS_VALUES = {"pending", "in_progress", "completed", "cancelled"}
+_TODO_PRIORITY_VALUES = {"high", "medium", "low"}
 
 
 def _iso_to_ms(value: Optional[str]) -> int:
@@ -684,6 +688,106 @@ def _legacy_message_to_with_parts(
         "text": text,
     }
     return {"info": info, "parts": [part]}
+
+
+def _normalize_todo_items(raw: Any) -> list[dict[str, str]]:
+    """Normalize todo payloads to OpenCode-compatible Todo[] shape."""
+    if not isinstance(raw, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+
+        content_raw = item.get("content")
+        if isinstance(content_raw, str):
+            content = content_raw.strip()
+        elif content_raw is None:
+            content = ""
+        else:
+            content = str(content_raw).strip()
+        if not content:
+            continue
+
+        status_raw = item.get("status", "pending")
+        status = (
+            status_raw.strip().lower()
+            if isinstance(status_raw, str)
+            else str(status_raw).strip().lower()
+        )
+        if status not in _TODO_STATUS_VALUES:
+            status = "pending"
+
+        priority_raw = item.get("priority", "medium")
+        priority = (
+            priority_raw.strip().lower()
+            if isinstance(priority_raw, str)
+            else str(priority_raw).strip().lower()
+        )
+        if priority not in _TODO_PRIORITY_VALUES:
+            priority = "medium"
+
+        todo_id_raw = item.get("id")
+        todo_id = (
+            todo_id_raw.strip()
+            if isinstance(todo_id_raw, str) and todo_id_raw.strip()
+            else f"todo_{index + 1}"
+        )
+        if todo_id in seen_ids:
+            suffix = 2
+            candidate = f"{todo_id}_{suffix}"
+            while candidate in seen_ids:
+                suffix += 1
+                candidate = f"{todo_id}_{suffix}"
+            todo_id = candidate
+
+        seen_ids.add(todo_id)
+        normalized.append(
+            {
+                "id": todo_id,
+                "content": content,
+                "status": status,
+                "priority": priority,
+            }
+        )
+
+    return normalized
+
+
+def get_session_todo(core: Any, session_id: str) -> Optional[list[dict[str, str]]]:
+    """Return OpenCode Todo[] for a session."""
+    session, _manager = _find_session(core, session_id)
+    if session is None:
+        return None
+
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        return []
+
+    return _normalize_todo_items(metadata.get(TODO_KEY))
+
+
+def update_session_todo(
+    core: Any, session_id: str, todos: Any
+) -> Optional[list[dict[str, str]]]:
+    """Persist OpenCode Todo[] for a session and return normalized items."""
+    session, manager = _find_session(core, session_id)
+    if session is None or manager is None:
+        return None
+
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        metadata = {}
+        session.metadata = metadata
+
+    normalized = _normalize_todo_items(todos)
+    metadata[TODO_KEY] = normalized
+
+    manager.mark_session_modified(session.id)
+    manager.save_session(session)
+    return normalized
 
 
 def get_session_messages(

@@ -7,15 +7,18 @@ from types import SimpleNamespace
 
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.services.session_view import (
+    TODO_KEY,
     TRANSCRIPT_KEY,
     USAGE_KEY,
     create_session_info,
     get_session_diff,
     get_session_info,
     get_session_messages,
+    get_session_todo,
     list_session_infos,
     list_session_statuses,
     remove_session_info,
+    update_session_todo,
     update_session_info,
 )
 
@@ -292,6 +295,43 @@ def test_get_session_messages_merges_transcript_with_legacy_rows():
     assert [item["info"]["id"] for item in messages] == ["msg_user", "msg_assistant"]
     assert messages[0]["parts"][0]["text"] == "hello"
     assert messages[1]["parts"][0]["text"] == "assistant from transcript"
+
+
+def test_session_todo_round_trip():
+    session = _session("session_todo", "Todo Session", "2026-02-03T00:00:00")
+    core = _core([session])
+
+    persisted = update_session_todo(
+        core,
+        session.id,
+        [
+            {
+                "id": "todo_1",
+                "content": "Implement session.todo endpoint",
+                "status": "in_progress",
+                "priority": "high",
+            },
+            {
+                "id": "todo_2",
+                "content": "Emit todo.updated events",
+                "status": "pending",
+                "priority": "medium",
+            },
+        ],
+    )
+
+    assert persisted is not None
+    assert len(persisted) == 2
+    assert session.metadata[TODO_KEY] == persisted
+
+    todos = get_session_todo(core, session.id)
+    assert todos == persisted
+
+
+def test_session_todo_returns_none_for_missing_session():
+    core = _core([])
+    assert get_session_todo(core, "session_missing") is None
+    assert update_session_todo(core, "session_missing", []) is None
 
 
 def test_list_session_infos_handles_mutating_index():

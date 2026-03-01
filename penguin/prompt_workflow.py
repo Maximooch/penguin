@@ -4,10 +4,8 @@ Target: ~3,000 tokens
 Combines: ITUV cycle + Ralph persistence + context management + large codebase handling
 """
 
-
-
 # Legacy export for backward compatibility
-PENGUIN_WORKFLOW = '''
+PENGUIN_WORKFLOW = """
 ## Development Workflow
 
 ### 1. Spec & Domain Modeling (BEFORE coding)
@@ -122,7 +120,7 @@ Focus on quality:
 - Check file existence before creating
 - Use enhanced tools for better error messages
 - Keep atomic changes for easy rollback
-'''
+"""
 
 # =============================================================================
 # RALPH PERSISTENCE PHILOSOPHY
@@ -427,6 +425,23 @@ data:
 """
 
 # =============================================================================
+# TODO WORKFLOW
+# =============================================================================
+
+TODO_WORKFLOW = """
+## Todo Workflow
+
+Use todos for non-trivial multi-step implementation work.
+
+- Create/update the list with `<todowrite>`
+- Keep exactly one todo item in `in_progress` when actively implementing
+- Mark items `completed` immediately after finishing the step
+- Use `<todoread>` before resuming interrupted work
+
+For trivial one-step requests, skip todo tools.
+"""
+
+# =============================================================================
 # 247 JOURNAL SYSTEM (Session Continuity)
 # =============================================================================
 
@@ -530,19 +545,33 @@ COMPLETION_GUIDE = """
 # =============================================================================
 
 WORKFLOW_GUIDE = (
-    JOURNAL_247 + "\n\n" +
-    RALPH_PERSISTENCE + "\\n\\n" +
-    ITUV_WORKFLOW + "\\n\\n" +
-    INVESTIGATION_WORKFLOW + "\\n\\n" +
-    EXECUTION_WORKFLOW + "\\n\\n" +
-    TOOL_RESULTS + "\\n\\n" +
-    GIT_COMMITS + "\\n\\n" +
-    DOCS_CACHE + "\\n\\n" +
-    CONTEXT_MANAGEMENT + "\\n\\n" +
-    LARGE_CODEBASE + "\\n\\n" +
-    CODE_FORMATTING + "\\n\\n" +
-    COMPLETION_GUIDE
+    JOURNAL_247
+    + "\n\n"
+    + RALPH_PERSISTENCE
+    + "\\n\\n"
+    + ITUV_WORKFLOW
+    + "\\n\\n"
+    + INVESTIGATION_WORKFLOW
+    + "\\n\\n"
+    + EXECUTION_WORKFLOW
+    + "\\n\\n"
+    + TOOL_RESULTS
+    + "\\n\\n"
+    + GIT_COMMITS
+    + "\\n\\n"
+    + DOCS_CACHE
+    + "\\n\\n"
+    + CONTEXT_MANAGEMENT
+    + "\\n\\n"
+    + LARGE_CODEBASE
+    + "\\n\\n"
+    + CODE_FORMATTING
+    + "\\n\\n"
+    + TODO_WORKFLOW
+    + "\\n\\n"
+    + COMPLETION_GUIDE
 )
+
 
 def get_workflow_guide() -> str:
     """Get the complete workflow documentation."""
