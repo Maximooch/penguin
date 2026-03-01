@@ -376,15 +376,18 @@ For each phase, validate with:
 12. Endpoint remains responsive in large repos.
 
 ### Track A: Stabilize Existing Work
-- [~] A1. Persist tool parts in session history and replay them in `/session.messages`.
+- [x] A1. Persist tool parts in session history and replay them in `/session.messages`.
   - Owner: `penguin/tui_adapter/part_events.py`, `penguin/web/routes.py` + new `penguin/web/services/session_view.py`, `ConversationManager` storage adapters.
   - Acceptance: reload shows identical tool cards/order as live run.
-- [ ] A2. Extend action-to-tool mapping coverage for remaining common actions.
+  - Progress (2026-02-28): added persistence/replay regression coverage for live `message.*` + `message.part.*` tool events and transcript order replay.
+- [x] A2. Extend action-to-tool mapping coverage for remaining common actions.
   - Owner: `penguin/core.py` mapping helpers.
   - Acceptance: no major action appears as generic white inline text in TUI.
-- [ ] A3. Add diff metadata generation for `replace_lines` and `edit_with_pattern`.
+  - Progress (2026-02-28): expanded coding-workflow action mapping (`enhanced_write`, `multiedit`, `insert_lines`, `delete_lines`, `enhanced_diff`, `workspace_search`) to OpenCode tool cards.
+- [x] A3. Add diff metadata generation for `replace_lines` and `edit_with_pattern`.
   - Owner: `penguin/core.py` mapper + `penguin/tools/core/support.py` helpers.
   - Acceptance: these actions render block diff views in OpenCode TUI.
+  - Progress (2026-02-28): `replace_lines` now returns unified diff output, `edit_with_pattern` emits workspace-relative diff headers, and action-result metadata extraction now persists `metadata.diff` for replay/session diff.
 
 ### Track B: API/Service Refactor (No dedicated compatibility router by default)
 - [ ] B1. Split `penguin/web/routes.py` by concern (session/config/system/status) with shared service modules.

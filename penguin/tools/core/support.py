@@ -1749,6 +1749,32 @@ def generate_diff_patch(original_content, new_content, file_path="file"):
     return "".join(diff)
 
 
+def _diff_display_path(
+    requested_path: str,
+    resolved_path: Path,
+    workspace_path: Optional[str] = None,
+) -> str:
+    if isinstance(requested_path, str) and requested_path.strip():
+        candidate = requested_path.strip()
+        if not os.path.isabs(candidate):
+            return candidate
+        if workspace_path:
+            try:
+                workspace_root = Path(workspace_path).resolve()
+                return str(Path(candidate).resolve().relative_to(workspace_root))
+            except Exception:
+                return candidate
+        return candidate
+
+    if workspace_path:
+        try:
+            workspace_root = Path(workspace_path).resolve()
+            return str(resolved_path.resolve().relative_to(workspace_root))
+        except Exception:
+            pass
+    return str(resolved_path)
+
+
 def edit_file_with_pattern(
     file_path, search_pattern, replacement, backup=True, workspace_path=None
 ):
@@ -1824,7 +1850,11 @@ def edit_file_with_pattern(
         )
 
         # Generate diff to show what changed
-        diff = generate_diff_patch(original_content, modified_content, str(target_path))
+        diff = generate_diff_patch(
+            original_content,
+            modified_content,
+            _diff_display_path(file_path, target_path, workspace_path),
+        )
 
         return f"Successfully edited {target_path}:\n{diff}"
 
@@ -2135,6 +2165,7 @@ def replace_lines(
         # Read original
         with open(safe_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
+        original_content = "".join(lines)
 
         # Validate line numbers
         if start_line < 1:
@@ -2169,14 +2200,26 @@ def replace_lines(
         with open(safe_path, "w", encoding="utf-8") as f:
             f.writelines(result_lines)
 
+        modified_content = "".join(result_lines)
+        diff = generate_diff_patch(
+            original_content,
+            modified_content,
+            _diff_display_path(path, safe_path, workspace_path),
+        )
+
         # Verify if requested
         if verify:
             with open(safe_path, "r", encoding="utf-8") as f:
                 verify_content = f.read()
             new_hash = hashlib.md5(verify_content.encode()).hexdigest()[:8]
-            return f"Replaced lines {start_line}-{end_line} in {safe_path} (backup: {backup_path}) [verify: {new_hash}]"
+            summary = (
+                f"Replaced lines {start_line}-{end_line} in {safe_path} "
+                f"(backup: {backup_path}) [verify: {new_hash}]"
+            )
+            return f"{summary}\n{diff}" if diff else summary
 
-        return f"Replaced lines {start_line}-{end_line} in {safe_path} (backup: {backup_path})"
+        summary = f"Replaced lines {start_line}-{end_line} in {safe_path} (backup: {backup_path})"
+        return f"{summary}\n{diff}" if diff else summary
 
     except Exception as e:
         return f"Error in replace_lines: {str(e)}\n{traceback.format_exc()}"

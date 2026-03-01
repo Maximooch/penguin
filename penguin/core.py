@@ -3962,6 +3962,36 @@ class PenguinCore:
         body = cleaned.lstrip("\n")
         return f"{header}{body}"
 
+    def _extract_unified_diff_from_result(self, result: Any) -> str:
+        if result is None:
+            return ""
+        text = str(result)
+        if not text:
+            return ""
+
+        lines = text.strip().splitlines()
+        start_index = -1
+        for index, line in enumerate(lines):
+            if line.startswith("--- "):
+                start_index = index
+                break
+        if start_index < 0:
+            return ""
+
+        diff_lines = lines[start_index:]
+        if not any(line.startswith("+++ ") for line in diff_lines):
+            return ""
+        return "\n".join(diff_lines).strip()
+
+    def _extract_tool_file_path(self, tool_input: Any) -> str:
+        if not isinstance(tool_input, dict):
+            return ""
+        for key in ("filePath", "file_path", "path", "file", "target"):
+            value = tool_input.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
     def _map_action_to_tool(
         self, action: str, params: Any
     ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
@@ -4021,6 +4051,8 @@ class PenguinCore:
                     tool_input["startLine"] = start_line
                 if isinstance(end_line, int):
                     tool_input["endLine"] = end_line
+                if isinstance(params.get("new_content"), str):
+                    tool_input["newContent"] = params.get("new_content")
             else:
                 parts = raw.split(":", 3)
                 if len(parts) >= 4:
@@ -4028,13 +4060,73 @@ class PenguinCore:
                     try:
                         start_line = int(parts[1].strip())
                         end_line = int(parts[2].strip())
+                        content = parts[3]
+                        verify = True
+                        if ":" in content:
+                            content_part, flag = content.rsplit(":", 1)
+                            flag_stripped = flag.strip().lower()
+                            if (
+                                flag_stripped in {"true", "false"}
+                                and "\n" not in flag
+                                and "\r" not in flag
+                            ):
+                                verify = flag_stripped == "true"
+                                content = content_part
                         tool_input = {
                             "filePath": path,
                             "startLine": start_line,
                             "endLine": end_line,
+                            "newContent": content,
+                            "verify": verify,
                         }
                     except ValueError:
                         tool_input = {"filePath": path}
+            return "edit", tool_input, metadata
+
+        if action_name == "insert_lines":
+            if isinstance(params, dict):
+                tool_input = {
+                    "filePath": params.get("path") or params.get("file_path") or "",
+                    "newContent": params.get("new_content") or "",
+                }
+                after_line = params.get("after_line")
+                if isinstance(after_line, int):
+                    tool_input["afterLine"] = after_line
+            else:
+                parts = raw.split(":", 2)
+                if len(parts) >= 3:
+                    tool_input = {
+                        "filePath": parts[0].strip(),
+                        "newContent": parts[2],
+                    }
+                    try:
+                        tool_input["afterLine"] = int(parts[1].strip())
+                    except ValueError:
+                        pass
+            return "edit", tool_input, metadata
+
+        if action_name == "delete_lines":
+            if isinstance(params, dict):
+                tool_input = {
+                    "filePath": params.get("path") or params.get("file_path") or "",
+                }
+                start_line = params.get("start_line")
+                end_line = params.get("end_line")
+                if isinstance(start_line, int):
+                    tool_input["startLine"] = start_line
+                if isinstance(end_line, int):
+                    tool_input["endLine"] = end_line
+            else:
+                parts = raw.split(":", 2)
+                if len(parts) >= 3:
+                    tool_input = {
+                        "filePath": parts[0].strip(),
+                    }
+                    try:
+                        tool_input["startLine"] = int(parts[1].strip())
+                        tool_input["endLine"] = int(parts[2].strip())
+                    except ValueError:
+                        pass
             return "edit", tool_input, metadata
 
         if action_name == "edit_with_pattern":
@@ -4044,11 +4136,15 @@ class PenguinCore:
                     "pattern": params.get("search_pattern") or params.get("pattern"),
                     "replacement": params.get("replacement"),
                 }
+                if isinstance(params.get("backup"), bool):
+                    tool_input["backup"] = params.get("backup")
             else:
                 content = raw
+                backup: Optional[bool] = None
                 parts = raw.rsplit(":", 1)
                 if len(parts) == 2 and parts[1].strip().lower() in ("true", "false"):
                     content = parts[0]
+                    backup = parts[1].strip().lower() == "true"
                 fields = content.split(":", 2)
                 if len(fields) >= 3:
                     tool_input = {
@@ -4056,7 +4152,94 @@ class PenguinCore:
                         "pattern": fields[1],
                         "replacement": fields[2],
                     }
+                    if backup is not None:
+                        tool_input["backup"] = backup
             return "edit", tool_input, metadata
+
+        if action_name == "enhanced_write":
+            if isinstance(params, dict):
+                tool_input = {
+                    "filePath": params.get("path") or params.get("file_path") or "",
+                    "content": params.get("content") or "",
+                }
+                if isinstance(params.get("backup"), bool):
+                    tool_input["backup"] = params.get("backup")
+            else:
+                first_sep = raw.find(":")
+                if first_sep != -1:
+                    file_path = raw[:first_sep].strip()
+                    remainder = raw[first_sep + 1 :]
+                    backup = True
+                    content = remainder
+                    if ":" in remainder:
+                        content_part, flag = remainder.rsplit(":", 1)
+                        flag_stripped = flag.strip().lower()
+                        if (
+                            flag_stripped in {"true", "false"}
+                            and "\n" not in flag
+                            and "\r" not in flag
+                        ):
+                            backup = flag_stripped == "true"
+                            content = content_part
+                    tool_input = {
+                        "filePath": file_path,
+                        "content": content,
+                        "backup": backup,
+                    }
+            return "write", tool_input, metadata
+
+        if action_name == "multiedit":
+            apply_flag: Optional[bool] = None
+            content = raw
+            if isinstance(params, dict):
+                content = str(params.get("content") or "")
+                if isinstance(params.get("apply"), bool):
+                    apply_flag = params.get("apply")
+            else:
+                first_line = content.split("\n", 1)[0].strip().lower()
+                if first_line.startswith("apply=") or first_line.startswith("apply:"):
+                    maybe_value = first_line.split("=", 1)[-1].split(":", 1)[-1].strip()
+                    if maybe_value in {"true", "false"}:
+                        apply_flag = maybe_value == "true"
+            tool_input = {
+                "filePath": "(multiple files)",
+                "content": content,
+            }
+            if apply_flag is not None:
+                tool_input["apply"] = apply_flag
+            return "edit", tool_input, metadata
+
+        if action_name == "enhanced_diff":
+            if isinstance(params, dict):
+                tool_input = {
+                    "filePath": params.get("file1") or params.get("path1") or "",
+                    "comparePath": params.get("file2") or params.get("path2") or "",
+                }
+                if isinstance(params.get("semantic"), bool):
+                    tool_input["semantic"] = params.get("semantic")
+            else:
+                parts = raw.split(":", 2)
+                tool_input = {
+                    "filePath": parts[0].strip() if len(parts) > 0 else "",
+                    "comparePath": parts[1].strip() if len(parts) > 1 else "",
+                }
+                if len(parts) > 2 and parts[2].strip().lower() in {"true", "false"}:
+                    tool_input["semantic"] = parts[2].strip().lower() == "true"
+            return "read", tool_input, metadata
+
+        if action_name == "workspace_search":
+            if isinstance(params, dict):
+                tool_input = {
+                    "pattern": params.get("query") or params.get("pattern") or "",
+                    "path": params.get("path") or ".",
+                }
+            else:
+                parts = raw.split(":", 1)
+                tool_input = {
+                    "pattern": parts[0].strip() if len(parts) > 0 else "",
+                    "path": ".",
+                }
+            return "grep", tool_input, metadata
 
         if action_name == "enhanced_read":
             if isinstance(params, dict):
@@ -4120,12 +4303,43 @@ class PenguinCore:
         return action_name or "unknown", tool_input, metadata
 
     def _map_action_result_metadata(
-        self, action: str, result: Any, existing: Optional[Dict[str, Any]] = None
+        self,
+        action: str,
+        result: Any,
+        existing: Optional[Dict[str, Any]] = None,
+        tool_input: Optional[Dict[str, Any]] = None,
+        status: Optional[str] = None,
     ) -> Dict[str, Any]:
         metadata = dict(existing or {})
         action_name = (action or "").strip().lower()
+        if status == "error" and action_name in {
+            "apply_diff",
+            "replace_lines",
+            "edit_with_pattern",
+            "enhanced_write",
+            "insert_lines",
+            "delete_lines",
+            "multiedit",
+        }:
+            raw_diff = metadata.pop("diff", None)
+            if isinstance(raw_diff, str) and raw_diff.strip():
+                metadata["attemptedDiff"] = raw_diff
+
         if action_name in {"execute", "execute_command"}:
             metadata.setdefault("output", "" if result is None else str(result))
+        if status != "error" and action_name in {
+            "replace_lines",
+            "edit_with_pattern",
+            "enhanced_write",
+            "insert_lines",
+            "delete_lines",
+        }:
+            file_path = self._extract_tool_file_path(tool_input)
+            if file_path:
+                metadata.setdefault("filePath", file_path)
+            diff_text = self._extract_unified_diff_from_result(result)
+            if diff_text:
+                metadata["diff"] = self._ensure_unified_diff(file_path, diff_text)
         return metadata
 
     async def _on_tui_action(self, event_type: str, data: Dict[str, Any]) -> None:
@@ -4233,11 +4447,19 @@ class PenguinCore:
 
         status = data.get("status")
         result = data.get("result")
+        if (
+            status != "error"
+            and isinstance(result, str)
+            and result.lstrip().lower().startswith("error")
+        ):
+            status = "error"
         error = result if status == "error" else None
         merged_meta = self._map_action_result_metadata(
             action_name,
             result,
             info.get("metadata") if isinstance(info, dict) else None,
+            info.get("input") if isinstance(info, dict) else None,
+            status,
         )
         await adapter.on_tool_end(part_id, result, error=error, metadata=merged_meta)
         self._opencode_tool_parts.pop(tool_key, None)

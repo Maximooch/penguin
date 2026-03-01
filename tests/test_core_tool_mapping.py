@@ -1,0 +1,320 @@
+"""Tests for OpenCode tool mapping and transcript persistence."""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+
+from penguin.core import PenguinCore
+from penguin.system.state import Session
+from penguin.web.services.session_view import TRANSCRIPT_KEY, get_session_messages
+
+
+@pytest.mark.parametrize(
+    ("action", "params", "expected_tool", "expected_values"),
+    [
+        (
+            "insert_lines",
+            {"path": "src/main.py", "after_line": 4, "new_content": "print('x')"},
+            "edit",
+            {"filePath": "src/main.py", "afterLine": 4},
+        ),
+        (
+            "delete_lines",
+            {"path": "src/main.py", "start_line": 5, "end_line": 7},
+            "edit",
+            {"filePath": "src/main.py", "startLine": 5, "endLine": 7},
+        ),
+        (
+            "enhanced_write",
+            {"path": "README.md", "content": "hello", "backup": True},
+            "write",
+            {"filePath": "README.md", "content": "hello", "backup": True},
+        ),
+        (
+            "multiedit",
+            {"content": "apply=true\nfile.py:\n@@ -1 +1 @@\n-a\n+b\n", "apply": True},
+            "edit",
+            {"filePath": "(multiple files)", "apply": True},
+        ),
+        (
+            "workspace_search",
+            {"query": "TODO"},
+            "grep",
+            {"pattern": "TODO", "path": "."},
+        ),
+        (
+            "enhanced_diff",
+            {"file1": "src/a.py", "file2": "src/b.py", "semantic": True},
+            "read",
+            {
+                "filePath": "src/a.py",
+                "comparePath": "src/b.py",
+                "semantic": True,
+            },
+        ),
+    ],
+)
+def test_map_action_to_tool_covers_common_coding_workflows(
+    action: str,
+    params: Any,
+    expected_tool: str,
+    expected_values: dict[str, Any],
+) -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(action, params)
+
+    assert mapped_tool == expected_tool
+    assert isinstance(tool_input, dict)
+    for key, value in expected_values.items():
+        assert tool_input.get(key) == value
+    assert isinstance(metadata, dict)
+
+
+def test_map_action_result_metadata_extracts_diff_for_replace_lines() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    result = (
+        "Replaced lines 2-2 in src/main.py\n"
+        "--- a/src/main.py\n"
+        "+++ b/src/main.py\n"
+        "@@ -1,3 +1,3 @@\n"
+        " line1\n"
+        "-line2\n"
+        "+line2_updated\n"
+        " line3\n"
+    )
+
+    metadata = core._map_action_result_metadata(
+        "replace_lines",
+        result,
+        existing={"source": "test"},
+        tool_input={"filePath": "src/main.py"},
+    )
+
+    assert metadata["source"] == "test"
+    assert metadata["filePath"] == "src/main.py"
+    assert metadata["diff"].startswith("--- a/src/main.py")
+    assert "+++ b/src/main.py" in metadata["diff"]
+
+
+def test_map_action_result_metadata_extracts_diff_for_edit_with_pattern() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+    result = (
+        "Successfully edited src/main.py:\n"
+        "--- a/src/main.py\n"
+        "+++ b/src/main.py\n"
+        "@@ -1 +1 @@\n"
+        "-DEBUG = False\n"
+        "+DEBUG = True\n"
+    )
+
+    metadata = core._map_action_result_metadata(
+        "edit_with_pattern",
+        result,
+        existing=None,
+        tool_input={"filePath": "src/main.py"},
+    )
+
+    assert metadata["filePath"] == "src/main.py"
+    assert metadata["diff"].startswith("--- a/src/main.py")
+    assert "+DEBUG = True" in metadata["diff"]
+
+
+def test_map_action_result_metadata_moves_diff_to_attempted_diff_on_error() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    metadata = core._map_action_result_metadata(
+        "apply_diff",
+        "Error applying diff",
+        existing={"diff": "--- a/file.txt\n+++ b/file.txt\n@@\n-old\n+new\n"},
+        tool_input={"filePath": "file.txt"},
+        status="error",
+    )
+
+    assert "diff" not in metadata
+    assert metadata["attemptedDiff"].startswith("--- a/file.txt")
+
+
+@pytest.mark.asyncio
+async def test_action_result_with_error_text_is_treated_as_error_status() -> None:
+    class _Adapter:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def on_tool_end(
+            self,
+            part_id: str,
+            output: Any,
+            error: Any = None,
+            metadata: dict[str, Any] | None = None,
+        ) -> None:
+            self.calls.append(
+                {
+                    "part_id": part_id,
+                    "output": output,
+                    "error": error,
+                    "metadata": metadata or {},
+                }
+            )
+
+    core = PenguinCore.__new__(PenguinCore)
+    adapter = _Adapter()
+    setattr(core, "_opencode_tool_parts", {"session_1:call_1": "part_1"})
+    setattr(
+        core,
+        "_opencode_tool_info",
+        {
+            "session_1:call_1": {
+                "metadata": {
+                    "diff": "--- a/file.txt\n+++ b/file.txt\n@@\n-old\n+new\n"
+                },
+                "input": {"filePath": "file.txt"},
+                "action": "apply_diff",
+            }
+        },
+    )
+    setattr(core, "_opencode_stream_states", {})
+    setattr(core, "_get_tui_adapter", lambda _session_id: adapter)
+
+    await core._on_tui_action_result(
+        "action_result",
+        {
+            "session_id": "session_1",
+            "id": "call_1",
+            "status": "completed",
+            "result": "Error parsing diff: Unknown line 13 '+- Item one'",
+            "action": "apply_diff",
+        },
+    )
+
+    assert adapter.calls
+    recorded = adapter.calls[-1]
+    assert recorded["part_id"] == "part_1"
+    assert isinstance(recorded["error"], str)
+    assert recorded["error"].startswith("Error parsing diff")
+    assert "diff" not in recorded["metadata"]
+    assert recorded["metadata"]["attemptedDiff"].startswith("--- a/file.txt")
+
+
+class _SessionManager:
+    def __init__(self, session: Session):
+        self.sessions: dict[str, tuple[Session, bool]] = {session.id: (session, False)}
+        self.session_index: dict[str, dict[str, Any]] = {
+            session.id: {
+                "created_at": session.created_at,
+                "last_active": session.last_active,
+                "title": session.metadata.get("title", ""),
+            }
+        }
+        self._save_calls: int = 0
+
+    def load_session(self, session_id: str) -> Session | None:
+        item = self.sessions.get(session_id)
+        if item is None:
+            return None
+        return item[0]
+
+    def mark_session_modified(self, session_id: str) -> None:
+        item = self.sessions.get(session_id)
+        if item is not None:
+            self.sessions[session_id] = (item[0], True)
+
+    def save_session(self, session: Session) -> bool:
+        self._save_calls += 1
+        self.sessions[session.id] = (session, False)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_persist_opencode_events_replays_tool_parts_in_order() -> None:
+    session = Session(id="session_track_a")
+    manager = _SessionManager(session)
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={"default": manager},
+    )
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "conversation_manager", conversation_manager)
+    setattr(
+        core, "model_config", SimpleNamespace(model="openai/gpt-5", provider="openai")
+    )
+    setattr(
+        core,
+        "runtime_config",
+        SimpleNamespace(active_root="/tmp/project", project_root="/tmp/project"),
+    )
+    setattr(core, "_opencode_session_directories", {session.id: "/tmp/project"})
+
+    await core._persist_opencode_event(
+        "message.updated",
+        {
+            "id": "msg_1",
+            "sessionID": session.id,
+            "role": "assistant",
+            "time": {"created": 1},
+            "parentID": "root",
+            "modelID": "openai/gpt-5",
+            "providerID": "openai",
+            "mode": "chat",
+            "agent": "default",
+            "path": {"cwd": "/tmp/project", "root": "/tmp/project"},
+            "cost": 0,
+            "tokens": {
+                "input": 0,
+                "output": 0,
+                "reasoning": 0,
+                "cache": {"read": 0, "write": 0},
+            },
+        },
+    )
+    await core._persist_opencode_event(
+        "message.part.updated",
+        {
+            "part": {
+                "id": "part_text",
+                "sessionID": session.id,
+                "messageID": "msg_1",
+                "type": "text",
+                "text": "working on it",
+            }
+        },
+    )
+    await core._persist_opencode_event(
+        "message.part.updated",
+        {
+            "part": {
+                "id": "part_tool",
+                "sessionID": session.id,
+                "messageID": "msg_1",
+                "type": "tool",
+                "tool": "edit",
+                "callID": "call_1",
+                "state": {
+                    "status": "completed",
+                    "input": {"filePath": "src/app.py"},
+                    "metadata": {
+                        "diff": "--- a/src/app.py\n+++ b/src/app.py\n@@\n-old\n+new\n"
+                    },
+                    "time": {"start": 1, "end": 2},
+                },
+            }
+        },
+    )
+
+    transcript = session.metadata.get(TRANSCRIPT_KEY)
+    assert isinstance(transcript, dict)
+    assert transcript.get("order") == ["msg_1"]
+
+    message_entry = transcript.get("messages", {}).get("msg_1")
+    assert isinstance(message_entry, dict)
+    assert message_entry.get("part_order") == ["part_text", "part_tool"]
+    assert manager._save_calls >= 1
+
+    rows = get_session_messages(core, session.id)
+    assert rows is not None
+    assert len(rows) == 1
+    assert [part["id"] for part in rows[0]["parts"]] == ["part_text", "part_tool"]
