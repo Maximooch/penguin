@@ -31,7 +31,7 @@ import { batch, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
-import { hydrateSessionSnapshot } from "./session-hydration"
+import { hydrateSessionSnapshot, mergeHydratedMessages } from "./session-hydration"
 
 type SessionUsage = {
   current_total_tokens: number
@@ -638,6 +638,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           const time = value ? Date.parse(value) : NaN
           return Number.isFinite(time) ? time : now
         }
+        const unwrap = (value: unknown) => {
+          if (!value || typeof value !== "object") return value
+          const record = value as Record<string, unknown>
+          if (!("data" in record)) return value
+          const keys = Object.keys(record)
+          const wrapper = keys.every((key) => key === "data" || key === "meta")
+          return wrapper ? record.data : value
+        }
         const model = {
           id: "penguin-default",
           providerID: "penguin",
@@ -728,17 +736,22 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                 .then((res) => (res.ok ? res.json() : undefined))
                 .then((data) => (Array.isArray(data?.conversations) ? data.conversations : []))
                 .catch(() => [])
-        const providers = Array.isArray(providersData?.providers) ? providersData.providers : [provider]
+        const providersPayload = unwrap(providersData) as Record<string, unknown> | undefined
+        const providerListPayload = unwrap(providerListData) as Record<string, unknown> | undefined
+        const configPayload = unwrap(configData)
+        const providerAuthPayload = unwrap(providerAuthData)
+
+        const providers = Array.isArray(providersPayload?.providers) ? providersPayload.providers : [provider]
         const providerDefault =
-          providersData && typeof providersData.default === "object" && providersData.default
-            ? providersData.default
+          providersPayload && typeof providersPayload.default === "object" && providersPayload.default
+            ? (providersPayload.default as Record<string, string>)
             : { [provider.id]: model.id }
         const providerNext =
-          providerListData &&
-          Array.isArray(providerListData.all) &&
-          providerListData.default &&
-          Array.isArray(providerListData.connected)
-            ? providerListData
+          providerListPayload &&
+          Array.isArray(providerListPayload.all) &&
+          providerListPayload.default &&
+          Array.isArray(providerListPayload.connected)
+            ? (providerListPayload as ProviderListResponse)
             : {
                 all: [
                   {
@@ -765,8 +778,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                 connected: [provider.id],
               }
         const providerAuth =
-          providerAuthData && typeof providerAuthData === "object" ? providerAuthData : {}
-        const config = configData && typeof configData === "object" ? configData : { share: "disabled" }
+          providerAuthPayload && typeof providerAuthPayload === "object"
+            ? (providerAuthPayload as Record<string, ProviderAuthMethod[]>)
+            : {}
+        const config = configPayload && typeof configPayload === "object" ? configPayload : { share: "disabled" }
         const mapped: PenguinSession[] = list.map((item: { [key: string]: unknown }) => {
           const sid = typeof item.id === "string" ? item.id : crypto.randomUUID()
           const title = typeof item.title === "string" ? item.title : `Session ${sid.slice(-8)}`
@@ -1037,7 +1052,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               const usage = parseUsage(hydrated.session)
               if (usage) draft.session_usage[sessionID] = usage
               draft.todo[sessionID] = hydrated.todo
-              draft.message[sessionID] = hydrated.messages.map((x) => x.info)
+              draft.message[sessionID] = sdk.penguin
+                ? mergeHydratedMessages(
+                    draft.message[sessionID],
+                    hydrated.messages,
+                    draft.part,
+                  )
+                : hydrated.messages.map((x) => x.info)
               for (const message of hydrated.messages) {
                 draft.part[message.info.id] = message.parts
               }

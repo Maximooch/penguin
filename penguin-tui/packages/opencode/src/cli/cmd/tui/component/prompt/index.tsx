@@ -541,6 +541,14 @@ export function Prompt(props: PromptProps) {
   ])
 
   async function submit() {
+    const resolveSessionID = (value: unknown): string | undefined => {
+      if (typeof value === "string" && value.trim()) return value.trim()
+      if (!value || typeof value !== "object") return undefined
+      const record = value as Record<string, unknown>
+      if (typeof record.id === "string" && record.id.trim()) return record.id.trim()
+      return resolveSessionID(record.data)
+    }
+
     if (props.disabled) return
     if (autocomplete?.visible) return
     if (!store.prompt.input) return
@@ -569,19 +577,31 @@ export function Prompt(props: PromptProps) {
             "Content-Type": "application/json",
           },
           body: JSON.stringify({}),
+        }).then(async (res) => {
+          if (!res.ok) {
+            const details = await res.text().catch(() => "")
+            throw new Error(
+              details
+                ? `Session create failed (${res.status}): ${details}`
+                : `Session create failed (${res.status})`,
+            )
+          }
+          return res.json().catch(() => undefined)
         })
-          .then((res) => (res.ok ? res.json() : undefined))
-          .catch(() => undefined)
-        if (created && typeof created.id === "string" && created.id) return created.id
+        const createdID = resolveSessionID(created)
+        if (createdID) return createdID
+        const details =
+          created && typeof created === "object"
+            ? `response keys: ${Object.keys(created as Record<string, unknown>).join(",") || "none"}`
+            : `response type: ${typeof created}`
+        throw new Error(`Session create returned empty id (${details})`)
       }
 
-      return await sdk.client.session
-        .create({})
-        .then((x) => x.data?.id)
-        .then((id) => {
-          if (id) return id
-          throw new Error("Session create returned empty id")
-        })
+      return await sdk.client.session.create({}).then((result) => {
+        const id = resolveSessionID(result)
+        if (id) return id
+        throw new Error("Session create returned empty id")
+      })
     }).catch((e) => {
       const msg = e instanceof Error ? e.message : String(e)
       toast.show({

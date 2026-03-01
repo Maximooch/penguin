@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { Message, Part, Session } from "@opencode-ai/sdk/v2"
 import {
   hydrateSessionSnapshot,
+  mergeHydratedMessages,
   type SessionHydrationClient,
 } from "../../../src/cli/cmd/tui/context/session-hydration"
 
@@ -146,5 +147,129 @@ describe("sync hydration", () => {
     await expect(hydrateSessionSnapshot(client, "ses_missing")).rejects.toThrow(
       "Session ses_missing not found",
     )
+  })
+
+  test("preserves optimistic user message when hydration is empty", () => {
+    const optimistic: Message = {
+      id: "msg_local_1",
+      sessionID: "ses_reopen",
+      role: "user",
+      agent: "build",
+      model: { providerID: "openrouter", modelID: "openai/gpt-5-mini" },
+      time: { created: 10_000 },
+    }
+    const optimisticParts: Part[] = [
+      {
+        id: "part_local_1",
+        sessionID: "ses_reopen",
+        messageID: "msg_local_1",
+        type: "text",
+        text: "first prompt",
+      },
+    ]
+
+    const merged = mergeHydratedMessages(
+      [optimistic],
+      [],
+      { [optimistic.id]: optimisticParts },
+    )
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]?.id).toBe("msg_local_1")
+  })
+
+  test("drops optimistic duplicate when hydrated user message is equivalent", () => {
+    const optimistic: Message = {
+      id: "msg_local_1",
+      sessionID: "ses_reopen",
+      role: "user",
+      agent: "build",
+      model: { providerID: "openrouter", modelID: "openai/gpt-5-mini" },
+      time: { created: 10_000 },
+    }
+    const optimisticParts: Part[] = [
+      {
+        id: "part_local_1",
+        sessionID: "ses_reopen",
+        messageID: "msg_local_1",
+        type: "text",
+        text: "first prompt",
+      },
+    ]
+    const hydratedUser: Message = {
+      id: "msg_server_1",
+      sessionID: "ses_reopen",
+      role: "user",
+      agent: "build",
+      model: { providerID: "openrouter", modelID: "openai/gpt-5-mini" },
+      time: { created: 10_020 },
+    }
+    const hydratedParts: Part[] = [
+      {
+        id: "part_server_1",
+        sessionID: "ses_reopen",
+        messageID: "msg_server_1",
+        type: "text",
+        text: "first prompt",
+      },
+    ]
+
+    const merged = mergeHydratedMessages(
+      [optimistic],
+      [{ info: hydratedUser, parts: hydratedParts }],
+      { [optimistic.id]: optimisticParts },
+    )
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]?.id).toBe("msg_server_1")
+  })
+
+  test("keeps repeated prompt text when timestamps are far apart", () => {
+    const optimistic: Message = {
+      id: "msg_local_2",
+      sessionID: "ses_reopen",
+      role: "user",
+      agent: "build",
+      model: { providerID: "openrouter", modelID: "openai/gpt-5-mini" },
+      time: { created: 100_000 },
+    }
+    const optimisticParts: Part[] = [
+      {
+        id: "part_local_2",
+        sessionID: "ses_reopen",
+        messageID: "msg_local_2",
+        type: "text",
+        text: "same text",
+      },
+    ]
+    const hydratedUser: Message = {
+      id: "msg_server_old",
+      sessionID: "ses_reopen",
+      role: "user",
+      agent: "build",
+      model: { providerID: "openrouter", modelID: "openai/gpt-5-mini" },
+      time: { created: 1_000 },
+    }
+    const hydratedParts: Part[] = [
+      {
+        id: "part_server_old",
+        sessionID: "ses_reopen",
+        messageID: "msg_server_old",
+        type: "text",
+        text: "same text",
+      },
+    ]
+
+    const merged = mergeHydratedMessages(
+      [optimistic],
+      [{ info: hydratedUser, parts: hydratedParts }],
+      { [optimistic.id]: optimisticParts },
+    )
+
+    expect(merged).toHaveLength(2)
+    expect(merged.map((item) => item.id)).toEqual([
+      "msg_server_old",
+      "msg_local_2",
+    ])
   })
 })
