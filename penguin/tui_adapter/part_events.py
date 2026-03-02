@@ -512,6 +512,47 @@ class PartEventAdapter:
         self._active_parts.pop(part_id, None)
         await self._sync_session_status()
 
+    async def abort(self, reason: str = "Tool execution was interrupted") -> bool:
+        """Abort active stream/tool parts and force session idle state."""
+        changed = False
+
+        message_id = self._current_message_id
+        text_part_id = self._current_text_part_id
+        if self._stream_active:
+            if isinstance(message_id, str) and isinstance(text_part_id, str):
+                await self.on_stream_end(message_id, text_part_id)
+                changed = True
+            else:
+                if isinstance(message_id, str):
+                    message = self._active_messages.get(message_id)
+                    if message and message.time_completed is None:
+                        message.time_completed = time.time()
+                        await self._emit(
+                            "message.updated", self._message_to_dict(message)
+                        )
+                        changed = True
+                self._stream_active = False
+                self._current_reasoning_part_id = None
+                self._current_text_part_id = None
+
+        for tool_part_id in list(self._active_tool_parts):
+            part = self._active_parts.get(tool_part_id)
+            if part is None:
+                self._active_tool_parts.discard(tool_part_id)
+                continue
+            await self.on_tool_end(
+                tool_part_id,
+                "",
+                error=reason,
+                metadata={"aborted": True},
+            )
+            changed = True
+
+        self._action_active = None
+        self._action_buffer = ""
+        await self._sync_session_status()
+        return changed
+
     async def on_user_message(self, content: str) -> str:
         """Called when user sends a message."""
         message_id = self._next_id("msg")

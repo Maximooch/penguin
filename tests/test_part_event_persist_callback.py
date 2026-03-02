@@ -67,6 +67,36 @@ async def test_tool_only_lifecycle_balances_session_status_and_completes_message
 
 
 @pytest.mark.asyncio
+async def test_adapter_abort_marks_running_tool_as_error_and_idles():
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_abort")
+
+    await adapter.on_tool_start(
+        "bash",
+        {"command": "sleep 30"},
+        tool_call_id="call_abort",
+    )
+
+    changed = await adapter.abort()
+    assert changed is True
+
+    status_events = _opencode_events(bus, "session.status")
+    assert [item["status"]["type"] for item in status_events] == ["busy", "idle"]
+
+    tool_updates = [
+        item.get("part", {})
+        for item in _opencode_events(bus, "message.part.updated")
+        if item.get("part", {}).get("type") == "tool"
+    ]
+    assert tool_updates
+    final_tool = tool_updates[-1]
+    assert final_tool["state"]["status"] == "error"
+    assert final_tool["state"]["error"] == "Tool execution was interrupted"
+    assert final_tool["state"]["metadata"]["aborted"] is True
+
+
+@pytest.mark.asyncio
 async def test_tool_events_attach_to_completed_stream_message_when_available():
     bus = _EventBus()
     adapter = PartEventAdapter(bus)

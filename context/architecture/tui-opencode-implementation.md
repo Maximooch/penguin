@@ -403,9 +403,10 @@ For each phase, validate with:
 - [ ] B4. Implement `session.summarize` (title generation) + emit `session.updated` title refresh.
   - Owner: web routes + `session_view` service + conversation summarization adapter.
   - Acceptance: resumed sessions show generated titles in picker/tab/header without manual rename.
-- [ ] B5. Implement `session.abort` and wire cancel semantics for active stream/tool runs.
+- [~] B5. Implement `session.abort` and wire cancel semantics for active stream/tool runs.
   - Owner: web routes + stream manager/session state in `core.py`.
   - Acceptance: pressing cancel key in TUI reliably stops in-flight assistant output.
+  - Progress (2026-03-01): `session.abort` now cancels active + queued `/api/v1/chat/message` tasks, force-finalizes active stream/tool parts as aborted errors, clears per-session in-flight tool tracking, and emits deterministic `session.status=idle` events; deep subprocess hard-kill remains deferred.
 
 ### Track C: Settings / Provider / Model UX
 - [x] C1. Implement `config.get` with runtime config + reasoning + active model metadata.

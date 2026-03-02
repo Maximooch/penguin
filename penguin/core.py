@@ -1537,6 +1537,17 @@ class PenguinCore:
         self._opencode_abort_sessions.add(sid)
         aborted = False
 
+        adapter = self._get_tui_adapter(sid)
+        adapter_abort = getattr(adapter, "abort", None)
+        if callable(adapter_abort):
+            try:
+                adapter_aborted = await adapter_abort(
+                    reason="Tool execution was interrupted"
+                )
+                aborted = bool(adapter_aborted) or aborted
+            except Exception:
+                logger.debug("Failed to abort active TUI parts", exc_info=True)
+
         tasks_map = getattr(self, "_opencode_process_tasks", None)
         if isinstance(tasks_map, dict):
             active_tasks = list(tasks_map.get(sid, set()))
@@ -1551,8 +1562,11 @@ class PenguinCore:
         if isinstance(state, dict):
             message_id = state.get("message_id")
             part_id = state.get("part_id")
-            if isinstance(message_id, str) and isinstance(part_id, str):
-                adapter = self._get_tui_adapter(sid)
+            if (
+                not callable(adapter_abort)
+                and isinstance(message_id, str)
+                and isinstance(part_id, str)
+            ):
                 try:
                     await adapter.on_stream_end(message_id, part_id)
                     aborted = True
@@ -1563,6 +1577,20 @@ class PenguinCore:
             state["active"] = False
             state["stream_id"] = None
             state["part_id"] = None
+
+        tool_parts = getattr(self, "_opencode_tool_parts", None)
+        if isinstance(tool_parts, dict):
+            for key in [
+                k for k in tool_parts if isinstance(k, str) and k.startswith(f"{sid}:")
+            ]:
+                tool_parts.pop(key, None)
+
+        tool_info = getattr(self, "_opencode_tool_info", None)
+        if isinstance(tool_info, dict):
+            for key in [
+                k for k in tool_info if isinstance(k, str) and k.startswith(f"{sid}:")
+            ]:
+                tool_info.pop(key, None)
 
         for scope in list(self._stream_manager.get_active_agents()):
             if scope != sid and not scope.startswith(f"{sid}:"):
@@ -3885,6 +3913,13 @@ class PenguinCore:
                 "part_id": None,
             }
             stream_states[session_id] = state
+
+        is_final = bool(data.get("is_final"))
+        is_aborted = bool(data.get("aborted"))
+        if is_aborted and is_final and not state.get("active") and not chunk:
+            state["stream_id"] = None
+            state["part_id"] = None
+            return
 
         # Auto-detect stream start (first chunk or new stream_id)
         if (not state.get("active")) or state.get("stream_id") != stream_id:

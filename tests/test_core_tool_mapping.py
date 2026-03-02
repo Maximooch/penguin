@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -255,6 +256,103 @@ async def test_action_result_with_error_text_is_treated_as_error_status() -> Non
     assert recorded["error"].startswith("Error parsing diff")
     assert "diff" not in recorded["metadata"]
     assert recorded["metadata"]["attemptedDiff"].startswith("--- a/file.txt")
+
+
+@pytest.mark.asyncio
+async def test_abort_session_cancels_tasks_aborts_adapter_and_clears_tool_maps():
+    class _EventBus:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict[str, Any]]] = []
+
+        async def emit(self, event_type: str, data: dict[str, Any]) -> None:
+            self.events.append((event_type, data))
+
+    class _Adapter:
+        def __init__(self) -> None:
+            self.reasons: list[str] = []
+
+        async def abort(self, reason: str = "Tool execution was interrupted") -> bool:
+            self.reasons.append(reason)
+            return True
+
+    class _StreamManager:
+        def get_active_agents(self) -> list[str]:
+            return []
+
+        def abort(self, agent_id: str | None = None) -> list[Any]:
+            _ = agent_id
+            return []
+
+    async def _sleep_forever() -> None:
+        await asyncio.sleep(60)
+
+    pending_task = asyncio.create_task(_sleep_forever())
+
+    core = PenguinCore.__new__(PenguinCore)
+    bus = _EventBus()
+    adapter = _Adapter()
+
+    setattr(core, "event_bus", bus)
+    setattr(core, "_stream_manager", _StreamManager())
+    setattr(core, "emit_ui_event", lambda *_args, **_kwargs: None)
+    setattr(core, "_get_tui_adapter", lambda _session_id: adapter)
+    setattr(core, "_opencode_abort_sessions", set())
+    setattr(core, "_opencode_process_tasks", {"session_abort": {pending_task}})
+    setattr(
+        core,
+        "_opencode_stream_states",
+        {
+            "session_abort": {
+                "active": False,
+                "stream_id": "stream_1",
+                "message_id": "msg_1",
+                "part_id": "part_1",
+            }
+        },
+    )
+    setattr(
+        core,
+        "_opencode_tool_parts",
+        {
+            "session_abort:call_1": "part_tool",
+            "session_other:call_2": "part_other",
+        },
+    )
+    setattr(
+        core,
+        "_opencode_tool_info",
+        {
+            "session_abort:call_1": {"tool": "bash"},
+            "session_other:call_2": {"tool": "read"},
+        },
+    )
+
+    aborted = await core.abort_session("session_abort")
+
+    assert aborted is True
+    assert adapter.reasons == ["Tool execution was interrupted"]
+
+    with pytest.raises(asyncio.CancelledError):
+        await pending_task
+
+    stream_state = core._opencode_stream_states["session_abort"]
+    assert stream_state["active"] is False
+    assert stream_state["stream_id"] is None
+    assert stream_state["part_id"] is None
+
+    assert "session_abort:call_1" not in core._opencode_tool_parts
+    assert "session_abort:call_1" not in core._opencode_tool_info
+    assert "session_other:call_2" in core._opencode_tool_parts
+    assert "session_other:call_2" in core._opencode_tool_info
+
+    status_events = [
+        payload
+        for event_type, payload in bus.events
+        if event_type == "opencode_event" and payload.get("type") == "session.status"
+    ]
+    assert status_events
+    assert status_events[-1]["properties"]["sessionID"] == "session_abort"
+    assert status_events[-1]["properties"]["status"]["type"] == "idle"
 
 
 class _SessionManager:

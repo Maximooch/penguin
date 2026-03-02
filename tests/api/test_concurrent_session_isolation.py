@@ -230,6 +230,62 @@ async def test_rest_chat_respects_streaming_flag(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rest_chat_queued_request_returns_aborted_when_cancelled(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "chat_repo_queued_cancel"
+    repo.mkdir()
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+            self._opencode_process_tasks: dict[str, set[asyncio.Task[Any]]] = {}
+            self._opencode_request_gate = asyncio.Lock()
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            await asyncio.sleep(0.05)
+            return {"assistant_response": "ok", "action_results": []}
+
+    core = _Core()
+    await core._opencode_request_gate.acquire()
+
+    request = MessageRequest(
+        text="queued cancel",
+        session_id="session_queued_cancel",
+        conversation_id="session_queued_cancel",
+        directory=str(repo),
+        streaming=False,
+    )
+
+    request_task = asyncio.create_task(
+        handle_chat_message(request, core=cast(Any, core))
+    )
+    await asyncio.sleep(0.02)
+
+    tracked = core._opencode_process_tasks.get("session_queued_cancel")
+    assert isinstance(tracked, set)
+    assert request_task in tracked
+
+    request_task.cancel()
+    response = await request_task
+
+    assert response["aborted"] is True
+    assert response["response"] == ""
+    assert response["action_results"] == []
+
+    tracked_after = core._opencode_process_tasks.get("session_queued_cancel")
+    assert not tracked_after or request_task not in tracked_after
+
+    core._opencode_request_gate.release()
+
+
+@pytest.mark.asyncio
 async def test_rest_chat_parts_forward_context_and_materialize_images(
     tmp_path: Path,
 ) -> None:

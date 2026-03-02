@@ -1823,6 +1823,9 @@ async def handle_chat_message(
 ):
     """Process a chat message, with optional conversation support."""
     temp_image_files: List[str] = []
+    request_session_id: Optional[str] = None
+    request_task: Optional[asyncio.Task[Any]] = None
+    request_tracked = False
     try:
         if request.agent_id:
             _validate_agent_id(request.agent_id)
@@ -1832,11 +1835,28 @@ async def handle_chat_message(
 
         # Prefer explicit session_id when provided; conversation_id is continuity metadata.
         effective_session_id = request.session_id or request.conversation_id
+        request_session_id = (
+            effective_session_id if isinstance(effective_session_id, str) else None
+        )
         bound_directory = _bind_session_directory(
             core,
             effective_session_id,
             request.directory,
         )
+
+        if request_session_id:
+            request_task = asyncio.current_task()
+            if request_task is not None:
+                tasks_map = getattr(core, "_opencode_process_tasks", None)
+                if not isinstance(tasks_map, dict):
+                    tasks_map = {}
+                    setattr(core, "_opencode_process_tasks", tasks_map)
+                tasks = tasks_map.get(request_session_id)
+                if not isinstance(tasks, set):
+                    tasks = set()
+                    tasks_map[request_session_id] = tasks
+                tasks.add(request_task)
+                request_tracked = True
 
         part_context_files, part_image_paths = _extract_paths_from_parts(request.parts)
         context_files = list(request.context_files or [])
@@ -1996,12 +2016,23 @@ async def handle_chat_message(
         if request.include_reasoning:
             resp["reasoning"] = "".join(reasoning_buf)
         return resp
+    except asyncio.CancelledError:
+        logger.info("Chat request cancelled for session %s", request_session_id)
+        return {"response": "", "action_results": [], "aborted": True}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
+        if request_tracked and request_session_id and request_task is not None:
+            tasks_map = getattr(core, "_opencode_process_tasks", None)
+            if isinstance(tasks_map, dict):
+                tasks = tasks_map.get(request_session_id)
+                if isinstance(tasks, set):
+                    tasks.discard(request_task)
+                    if not tasks:
+                        tasks_map.pop(request_session_id, None)
         for temp_file in temp_image_files:
             try:
                 Path(temp_file).unlink(missing_ok=True)
