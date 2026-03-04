@@ -617,6 +617,28 @@ def get_session_info(core: Any, session_id: str) -> Optional[dict[str, Any]]:
     return _build_session_info(core, session, manager)
 
 
+def get_session_metadata_title(core: Any, session_id: str) -> Optional[str]:
+    """Return explicit metadata title for a session.
+
+    Returns:
+        None: session does not exist.
+        "": session exists but has no explicit metadata title.
+        non-empty string: explicit metadata title.
+    """
+    session, _manager = _find_session(core, session_id)
+    if session is None:
+        return None
+
+    metadata = getattr(session, "metadata", None)
+    if not isinstance(metadata, dict):
+        return ""
+
+    raw_title = metadata.get("title")
+    if not isinstance(raw_title, str):
+        return ""
+    return raw_title.strip()
+
+
 def _default_assistant_info(
     core: Any, session_id: str, message_id: str
 ) -> dict[str, Any]:

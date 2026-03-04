@@ -230,6 +230,257 @@ async def test_rest_chat_respects_streaming_flag(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rest_chat_auto_refreshes_default_session_title(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "chat_repo_auto_title"
+    repo.mkdir()
+    summarize_calls: list[str] = []
+
+    class _EventBus:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict[str, Any]]] = []
+
+        async def emit(self, event_type: str, data: dict[str, Any]) -> None:
+            self.events.append((event_type, data))
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+            self.event_bus = _EventBus()
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return {"assistant_response": "ok", "action_results": []}
+
+    async def _fake_summarize(
+        _core: Any,
+        session_id: str,
+        *,
+        provider_id: str | None = None,
+        model_id: str | None = None,
+        fallback_text: str | None = None,
+    ) -> dict[str, Any]:
+        del provider_id, model_id
+        assert fallback_text == "ping"
+        summarize_calls.append(session_id)
+        return {
+            "changed": True,
+            "title": "Auto title",
+            "source": "generated",
+            "info": {"id": session_id, "title": "Auto title"},
+        }
+
+    def _fake_get_session_info(_core: Any, session_id: str) -> dict[str, Any]:
+        return {"id": session_id, "title": f"Session {session_id[-8:]}"}
+
+    def _fake_get_session_metadata_title(_core: Any, _session_id: str) -> str:
+        return ""
+
+    monkeypatch.setattr("penguin.web.routes.summarize_session_title", _fake_summarize)
+    monkeypatch.setattr("penguin.web.routes.get_session_info", _fake_get_session_info)
+    monkeypatch.setattr(
+        "penguin.web.routes.get_session_metadata_title",
+        _fake_get_session_metadata_title,
+    )
+
+    core = _Core()
+    request = MessageRequest(
+        text="ping",
+        session_id="session_auto_title",
+        conversation_id="session_auto_title",
+        directory=str(repo),
+        streaming=False,
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+    assert response["response"] == "ok"
+
+    for _ in range(20):
+        tasks = getattr(core, "_opencode_title_tasks", {})
+        if not tasks:
+            break
+        await asyncio.sleep(0.01)
+
+    assert summarize_calls == ["session_auto_title"]
+    assert core.event_bus.events
+    event_type, event_payload = core.event_bus.events[-1]
+    assert event_type == "opencode_event"
+    assert event_payload["type"] == "session.updated"
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_skips_auto_title_refresh_for_custom_title(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "chat_repo_custom_title"
+    repo.mkdir()
+    summarize_calls: list[str] = []
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return {"assistant_response": "ok", "action_results": []}
+
+    async def _fake_summarize(
+        _core: Any,
+        session_id: str,
+        *,
+        provider_id: str | None = None,
+        model_id: str | None = None,
+        fallback_text: str | None = None,
+    ) -> dict[str, Any]:
+        del provider_id, model_id, fallback_text
+        summarize_calls.append(session_id)
+        return {
+            "changed": False,
+            "title": "Custom title",
+            "source": "existing",
+            "info": {"id": session_id, "title": "Custom title"},
+        }
+
+    def _fake_get_session_info(_core: Any, session_id: str) -> dict[str, Any]:
+        return {"id": session_id, "title": "Custom title"}
+
+    def _fake_get_session_metadata_title(_core: Any, _session_id: str) -> str:
+        return "Custom title"
+
+    monkeypatch.setattr("penguin.web.routes.summarize_session_title", _fake_summarize)
+    monkeypatch.setattr("penguin.web.routes.get_session_info", _fake_get_session_info)
+    monkeypatch.setattr(
+        "penguin.web.routes.get_session_metadata_title",
+        _fake_get_session_metadata_title,
+    )
+
+    core = _Core()
+    request = MessageRequest(
+        text="ping",
+        session_id="session_custom_title",
+        conversation_id="session_custom_title",
+        directory=str(repo),
+        streaming=False,
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+    assert response["response"] == "ok"
+
+    for _ in range(10):
+        tasks = getattr(core, "_opencode_title_tasks", {})
+        if not tasks:
+            break
+        await asyncio.sleep(0.01)
+
+    assert summarize_calls == []
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_auto_title_refresh_retries_until_snippets_exist(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "chat_repo_title_retry"
+    repo.mkdir()
+    summarize_calls: list[str] = []
+
+    class _EventBus:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict[str, Any]]] = []
+
+        async def emit(self, event_type: str, data: dict[str, Any]) -> None:
+            self.events.append((event_type, data))
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+            self.event_bus = _EventBus()
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return {"assistant_response": "ok", "action_results": []}
+
+    async def _fake_summarize(
+        _core: Any,
+        session_id: str,
+        *,
+        provider_id: str | None = None,
+        model_id: str | None = None,
+        fallback_text: str | None = None,
+    ) -> dict[str, Any]:
+        del provider_id, model_id
+        assert fallback_text == "ping"
+        summarize_calls.append(session_id)
+        if len(summarize_calls) == 1:
+            return {
+                "changed": False,
+                "title": f"Session {session_id[-8:]}",
+                "source": "heuristic",
+                "snippet_count": 0,
+                "info": {"id": session_id, "title": f"Session {session_id[-8:]}"},
+            }
+        return {
+            "changed": True,
+            "title": "Retried title",
+            "source": "generated",
+            "snippet_count": 1,
+            "info": {"id": session_id, "title": "Retried title"},
+        }
+
+    def _fake_get_session_info(_core: Any, session_id: str) -> dict[str, Any]:
+        return {"id": session_id, "title": f"Session {session_id[-8:]}"}
+
+    def _fake_get_session_metadata_title(_core: Any, _session_id: str) -> str:
+        return ""
+
+    monkeypatch.setattr("penguin.web.routes.summarize_session_title", _fake_summarize)
+    monkeypatch.setattr("penguin.web.routes.get_session_info", _fake_get_session_info)
+    monkeypatch.setattr(
+        "penguin.web.routes.get_session_metadata_title",
+        _fake_get_session_metadata_title,
+    )
+
+    core = _Core()
+    request = MessageRequest(
+        text="ping",
+        session_id="session_retry_12345678",
+        conversation_id="session_retry_12345678",
+        directory=str(repo),
+        streaming=False,
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+    assert response["response"] == "ok"
+
+    for _ in range(40):
+        tasks = getattr(core, "_opencode_title_tasks", {})
+        if not tasks:
+            break
+        await asyncio.sleep(0.01)
+
+    assert summarize_calls == ["session_retry_12345678", "session_retry_12345678"]
+    assert core.event_bus.events
+    event_type, event_payload = core.event_bus.events[-1]
+    assert event_type == "opencode_event"
+    assert event_payload["type"] == "session.updated"
+
+
+@pytest.mark.asyncio
 async def test_rest_chat_queued_request_returns_aborted_when_cancelled(
     tmp_path: Path,
 ) -> None:

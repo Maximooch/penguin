@@ -5,7 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
+
 from penguin.system.state import Message, MessageCategory, Session
+from penguin.web.services.session_summary import summarize_session_title
 from penguin.web.services.session_view import (
     TODO_KEY,
     TRANSCRIPT_KEY,
@@ -332,6 +335,197 @@ def test_session_todo_returns_none_for_missing_session():
     core = _core([])
     assert get_session_todo(core, "session_missing") is None
     assert update_session_todo(core, "session_missing", []) is None
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_title_prefers_model_generation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = _session("session_summary", "Session 1234", "2026-02-03T00:00:00")
+    session.messages.append(
+        Message(
+            id="msg_user",
+            role="user",
+            content="Implement OpenCode session summarize endpoint parity",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:00:00",
+        )
+    )
+    core = _core([session])
+
+    class _FakeAPIClient:
+        def __init__(self, model_config):
+            self.model_config = model_config
+
+        async def get_response(self, messages, **kwargs):
+            del messages, kwargs
+            return "Session summarize parity"
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_summary.APIClient", _FakeAPIClient
+    )
+
+    result = await summarize_session_title(
+        core,
+        session.id,
+        provider_id="openai",
+        model_id="gpt-5",
+    )
+
+    assert result is not None
+    assert result["changed"] is True
+    assert result["source"] == "generated"
+    assert result["title"] == "Session summarize parity"
+
+    info = get_session_info(core, session.id)
+    assert info is not None
+    assert info["title"] == "Session summarize parity"
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_title_falls_back_to_heuristic(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = _session("session_heuristic", "Session heur", "2026-02-03T00:00:00")
+    session.messages.append(
+        Message(
+            id="msg_user",
+            role="user",
+            content="Investigate queued cancel behavior under heavy streaming",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:00:00",
+        )
+    )
+    core = _core([session])
+
+    class _FailingAPIClient:
+        def __init__(self, model_config):
+            del model_config
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_summary.APIClient", _FailingAPIClient
+    )
+
+    result = await summarize_session_title(core, session.id)
+
+    assert result is not None
+    assert result["changed"] is True
+    assert result["source"] == "heuristic"
+    assert result["title"].startswith("Investigate queued cancel behavior")
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_title_rejects_provider_empty_content_note(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = _session("session_note", "Session note", "2026-02-03T00:00:00")
+    session.messages.append(
+        Message(
+            id="msg_user",
+            role="user",
+            content="Start a fresh coding session and inspect workspace",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:00:00",
+        )
+    )
+    core = _core([session])
+
+    class _FakeAPIClient:
+        def __init__(self, model_config):
+            self.model_config = model_config
+
+        async def get_response(self, messages, **kwargs):
+            del messages, kwargs
+            return (
+                "[Note: Model processed the request but returned empty content. "
+                "Try rephrasing...]"
+            )
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_summary.APIClient", _FakeAPIClient
+    )
+
+    result = await summarize_session_title(core, session.id)
+
+    assert result is not None
+    assert result["changed"] is True
+    assert result["source"] == "heuristic"
+    assert result["title"] == "Start a fresh coding session and inspect workspace"
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_title_returns_none_for_missing_session():
+    core = _core([])
+    assert await summarize_session_title(core, "session_missing") is None
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_title_uses_fallback_text_when_no_user_messages(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = _session("session_fallback", "Session back", "2026-02-03T00:00:00")
+    core = _core([session])
+
+    class _FailingAPIClient:
+        def __init__(self, model_config):
+            del model_config
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_summary.APIClient", _FailingAPIClient
+    )
+
+    result = await summarize_session_title(
+        core,
+        session.id,
+        fallback_text="Investigate flaky title update behavior",
+    )
+
+    assert result is not None
+    assert result["changed"] is True
+    assert result["source"] == "heuristic"
+    assert result["used_fallback_text"] is True
+    assert result["snippet_count"] == 1
+    assert result["title"].startswith("Investigate flaky title update behavior")
+
+
+@pytest.mark.asyncio
+async def test_summarize_session_title_persists_when_only_inferred_title_exists(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = _session("session_inferred", "placeholder", "2026-02-03T00:00:00")
+    session.metadata.pop("title", None)
+    session.messages.append(
+        Message(
+            id="msg_user",
+            role="user",
+            content="What is the Jesus prayer?",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:00:00",
+        )
+    )
+    core = _core([session])
+
+    class _FailingAPIClient:
+        def __init__(self, model_config):
+            del model_config
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_summary.APIClient", _FailingAPIClient
+    )
+
+    result = await summarize_session_title(core, session.id)
+
+    assert result is not None
+    assert result["source"] == "heuristic"
+    assert result["changed"] is True
+    assert result["title"] == "What is the Jesus prayer?"
+
+    info = get_session_info(core, session.id)
+    assert info is not None
+    assert info["title"] == "What is the Jesus prayer?"
 
 
 def test_list_session_infos_handles_mutating_index():

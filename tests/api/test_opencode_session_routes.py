@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 import pytest
 from fastapi import HTTPException
@@ -15,6 +15,7 @@ from penguin.web.routes import (
     api_session_create,
     api_session_delete,
     api_session_diff,
+    api_session_summarize,
     api_session_todo,
     api_session_status,
     api_session_update,
@@ -23,6 +24,7 @@ from penguin.web.routes import (
     session_delete,
     session_diff,
     session_get,
+    session_summarize,
     session_todo,
     session_status,
     session_update,
@@ -81,11 +83,20 @@ class _Manager:
 class _Core:
     def __init__(self, workspace: Path) -> None:
         manager = _Manager()
+
+        class _EventBus:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, dict[str, Any]]] = []
+
+            async def emit(self, event_type: str, data: dict[str, Any]) -> None:
+                self.events.append((event_type, data))
+
         self.runtime_config = SimpleNamespace(
             workspace_root=str(workspace),
             project_root=str(workspace),
             active_root=str(workspace),
         )
+        self.event_bus = _EventBus()
         self._opencode_session_directories: dict[str, str] = {}
         self._opencode_stream_states: dict[str, dict[str, Any]] = {}
         self.conversation_manager = SimpleNamespace(
@@ -238,3 +249,89 @@ async def test_session_abort_alias_and_missing_session(tmp_path: Path) -> None:
     with pytest.raises(HTTPException) as exc:
         await session_abort("session_missing", core=typed_core)
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_session_summarize_emits_session_updated_when_title_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    created = await session_create(payload={"title": "Session"}, core=typed_core)
+    session_id = created["id"]
+
+    async def _fake_summarize(*_args: Any, **_kwargs: Any) -> Optional[dict[str, Any]]:
+        return {
+            "changed": True,
+            "title": "Generated title",
+            "source": "generated",
+            "info": {
+                "id": session_id,
+                "title": "Generated title",
+                "directory": str(tmp_path.resolve()),
+            },
+        }
+
+    monkeypatch.setattr("penguin.web.routes.summarize_session_title", _fake_summarize)
+
+    result = await session_summarize(
+        session_id,
+        payload={"providerID": "openai", "modelID": "gpt-5", "auto": False},
+        core=typed_core,
+    )
+    assert result is True
+
+    assert core.event_bus.events
+    event_type, payload = core.event_bus.events[-1]
+    assert event_type == "opencode_event"
+    assert payload["type"] == "session.updated"
+    assert payload["properties"]["info"]["id"] == session_id
+
+
+@pytest.mark.asyncio
+async def test_session_summarize_alias_and_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    created = await session_create(payload={"title": "Session"}, core=typed_core)
+    session_id = created["id"]
+
+    async def _fake_summarize(*_args: Any, **_kwargs: Any) -> Optional[dict[str, Any]]:
+        if _args[1] == "session_missing":
+            return None
+        return {
+            "changed": False,
+            "title": "Session",
+            "source": "existing",
+            "info": created,
+        }
+
+    monkeypatch.setattr("penguin.web.routes.summarize_session_title", _fake_summarize)
+    assert (
+        await api_session_summarize(
+            session_id,
+            payload={"providerID": "openai", "modelID": "gpt-5"},
+            core=typed_core,
+        )
+        is True
+    )
+    assert core.event_bus.events == []
+
+    with pytest.raises(HTTPException) as exc:
+        await session_summarize(
+            session_id,
+            payload={"providerID": 123},
+            core=typed_core,
+        )
+    assert exc.value.status_code == 400
+
+    with pytest.raises(HTTPException) as missing:
+        await session_summarize(
+            "session_missing",
+            payload={"providerID": "openai", "modelID": "gpt-5"},
+            core=typed_core,
+        )
+    assert missing.value.status_code == 404

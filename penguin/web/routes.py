@@ -46,6 +46,7 @@ from penguin.web.services.session_view import (
     create_session_info,
     get_session_diff,
     get_session_info,
+    get_session_metadata_title,
     get_session_messages,
     get_session_todo,
     list_session_infos,
@@ -53,6 +54,7 @@ from penguin.web.services.session_view import (
     remove_session_info,
     update_session_info,
 )
+from penguin.web.services.session_summary import summarize_session_title
 from penguin.web.services.system_status import (
     get_formatter_status,
     get_lsp_status,
@@ -172,6 +174,176 @@ def _build_execution_context(
         workspace_root=effective_directory,
         request_id=str(uuid.uuid4()),
     )
+
+
+async def _emit_session_updated_event(core: PenguinCore, info: Dict[str, Any]) -> None:
+    """Emit OpenCode-shaped session.updated event when session info changes."""
+    event_bus = getattr(core, "event_bus", None)
+    emit = getattr(event_bus, "emit", None)
+    if not callable(emit):
+        return
+
+    try:
+        await emit(
+            "opencode_event",
+            {
+                "type": "session.updated",
+                "properties": {
+                    "info": info,
+                },
+            },
+        )
+    except Exception:
+        logger.debug("Failed to emit session.updated event", exc_info=True)
+
+
+def _title_log_info(message: str, *args: Any) -> None:
+    """Log title/summarize events via app and uvicorn logger."""
+    logger.info(message, *args)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.info(message, *args)
+
+
+async def _refresh_session_title_if_default(
+    core: PenguinCore,
+    session_id: str,
+    *,
+    provider_id: Optional[str] = None,
+    model_id: Optional[str] = None,
+    fallback_text: Optional[str] = None,
+) -> None:
+    """Generate and emit a better title only for default-titled sessions."""
+    max_attempts = 4
+    for attempt in range(1, max_attempts + 1):
+        existing = get_session_info(core, session_id)
+        if not isinstance(existing, dict):
+            _title_log_info(
+                "session.title.auto_refresh session=%s attempt=%s status=missing_session",
+                session_id,
+                attempt,
+            )
+            return
+
+        explicit_title = get_session_metadata_title(core, session_id)
+        if isinstance(explicit_title, str) and explicit_title:
+            _title_log_info(
+                "session.title.auto_refresh session=%s attempt=%s status=already_titled title=%r",
+                session_id,
+                attempt,
+                explicit_title,
+            )
+            return
+
+        result = await summarize_session_title(
+            core,
+            session_id,
+            provider_id=provider_id,
+            model_id=model_id,
+            fallback_text=fallback_text,
+        )
+        if not isinstance(result, dict):
+            _title_log_info(
+                "session.title.auto_refresh session=%s attempt=%s status=no_result",
+                session_id,
+                attempt,
+            )
+            return
+
+        changed = bool(result.get("changed"))
+        info = result.get("info")
+        source = result.get("source")
+        snippet_count = int(result.get("snippet_count", 0))
+        title = result.get("title")
+        used_fallback = bool(result.get("used_fallback_text"))
+
+        if changed and isinstance(info, dict):
+            await _emit_session_updated_event(core, info)
+            _title_log_info(
+                "session.title.auto_refresh session=%s attempt=%s status=updated source=%s snippets=%s fallback=%s title=%r",
+                session_id,
+                attempt,
+                source,
+                snippet_count,
+                used_fallback,
+                title,
+            )
+            return
+
+        if snippet_count <= 0 and attempt < max_attempts:
+            _title_log_info(
+                "session.title.auto_refresh session=%s attempt=%s status=retry_no_user_snippets",
+                session_id,
+                attempt,
+            )
+            await asyncio.sleep(0.15)
+            continue
+
+        _title_log_info(
+            "session.title.auto_refresh session=%s attempt=%s status=unchanged source=%s snippets=%s fallback=%s title=%r",
+            session_id,
+            attempt,
+            source,
+            snippet_count,
+            used_fallback,
+            title,
+        )
+        return
+
+
+def _queue_session_title_refresh(
+    core: PenguinCore,
+    session_id: str,
+    *,
+    provider_id: Optional[str] = None,
+    model_id: Optional[str] = None,
+    fallback_text: Optional[str] = None,
+) -> None:
+    """Schedule non-blocking title refresh, deduped per session."""
+    if not isinstance(session_id, str) or not session_id.strip():
+        return
+
+    tasks = getattr(core, "_opencode_title_tasks", None)
+    if not isinstance(tasks, dict):
+        tasks = {}
+        setattr(core, "_opencode_title_tasks", tasks)
+
+    running = tasks.get(session_id)
+    if isinstance(running, asyncio.Task) and not running.done():
+        _title_log_info(
+            "session.title.auto_refresh session=%s status=skip_already_running",
+            session_id,
+        )
+        return
+
+    task = asyncio.create_task(
+        _refresh_session_title_if_default(
+            core,
+            session_id,
+            provider_id=provider_id,
+            model_id=model_id,
+            fallback_text=fallback_text,
+        )
+    )
+    tasks[session_id] = task
+    _title_log_info(
+        "session.title.auto_refresh session=%s status=scheduled", session_id
+    )
+
+    def _done_callback(done_task: asyncio.Task[Any]) -> None:
+        task_map = getattr(core, "_opencode_title_tasks", None)
+        if isinstance(task_map, dict) and task_map.get(session_id) is done_task:
+            task_map.pop(session_id, None)
+        try:
+            done_task.result()
+        except Exception:
+            logger.debug(
+                "Background session title refresh failed for %s",
+                session_id,
+                exc_info=True,
+            )
+
+    task.add_done_callback(_done_callback)
 
 
 class MessageRequest(BaseModel):
@@ -2009,6 +2181,13 @@ async def handle_chat_message(
                 )
 
         # Build response
+        if request_session_id:
+            _queue_session_title_refresh(
+                core,
+                request_session_id,
+                fallback_text=request.text if isinstance(request.text, str) else None,
+            )
+
         resp: Dict[str, Any] = {
             "response": process_result.get("assistant_response", ""),
             "action_results": process_result.get("action_results", []),
@@ -3147,6 +3326,72 @@ async def session_abort(session_id: str, core: PenguinCore = Depends(get_core)):
     return bool(result)
 
 
+@router.post("/session/{session_id}/summarize")
+async def session_summarize(
+    session_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """OpenCode-compatible session.summarize endpoint.
+
+    Penguin semantics: title generation/refresh without compaction side effects.
+    """
+    body = payload if isinstance(payload, dict) else {}
+    provider_id = body.get("providerID")
+    model_id = body.get("modelID")
+    auto = body.get("auto")
+
+    if provider_id is not None and not isinstance(provider_id, str):
+        raise HTTPException(status_code=400, detail="providerID must be a string")
+    if model_id is not None and not isinstance(model_id, str):
+        raise HTTPException(status_code=400, detail="modelID must be a string")
+    if auto is not None and not isinstance(auto, bool):
+        raise HTTPException(status_code=400, detail="auto must be a boolean")
+
+    _title_log_info(
+        "session.summarize session=%s provider=%s model=%s auto=%s",
+        session_id,
+        provider_id,
+        model_id,
+        auto,
+    )
+
+    result = await summarize_session_title(
+        core,
+        session_id,
+        provider_id=provider_id if isinstance(provider_id, str) else None,
+        model_id=model_id if isinstance(model_id, str) else None,
+    )
+    if result is None:
+        _title_log_info(
+            "session.summarize session=%s status=missing_session", session_id
+        )
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    info = result.get("info") if isinstance(result, dict) else None
+    changed = bool(result.get("changed")) if isinstance(result, dict) else False
+    source = result.get("source") if isinstance(result, dict) else None
+    snippet_count = (
+        int(result.get("snippet_count", 0)) if isinstance(result, dict) else 0
+    )
+    used_fallback = (
+        bool(result.get("used_fallback_text")) if isinstance(result, dict) else False
+    )
+    if changed and isinstance(info, dict):
+        await _emit_session_updated_event(core, info)
+    _title_log_info(
+        "session.summarize session=%s status=ok changed=%s source=%s snippets=%s fallback=%s title=%r",
+        session_id,
+        changed,
+        source,
+        snippet_count,
+        used_fallback,
+        result.get("title") if isinstance(result, dict) else None,
+    )
+
+    return True
+
+
 @router.get("/session/{session_id}/message")
 async def session_messages(
     session_id: str,
@@ -3247,6 +3492,16 @@ async def api_session_delete(session_id: str, core: PenguinCore = Depends(get_co
 async def api_session_abort(session_id: str, core: PenguinCore = Depends(get_core)):
     """Alias for OpenCode-compatible session.abort endpoint."""
     return await session_abort(session_id, core=core)
+
+
+@router.post("/api/v1/session/{session_id}/summarize")
+async def api_session_summarize(
+    session_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Alias for OpenCode-compatible session.summarize endpoint."""
+    return await session_summarize(session_id, payload=payload, core=core)
 
 
 @router.get("/api/v1/session/{session_id}/message")

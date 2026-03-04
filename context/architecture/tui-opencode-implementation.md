@@ -400,13 +400,23 @@ For each phase, validate with:
   - Owner: web routes + `ConversationManager` + service adapters.
   - Acceptance: create/rename/delete session flows work from TUI.
   - Progress (2026-02-21): added `/session/status`, `POST /session`, `PATCH /session/{id}`, `DELETE /session/{id}` and `/api/v1/*` aliases, backed by `session_view` service helpers with route/service coverage in `tests/api/test_opencode_session_routes.py` and `tests/api/test_session_view_service.py`.
-- [ ] B4. Implement `session.summarize` (title generation) + emit `session.updated` title refresh.
-  - Owner: web routes + `session_view` service + conversation summarization adapter.
+- [~] B4. Implement `session.summarize` as Penguin-native title generation (no OpenCode compaction semantics).
+  - Owner: web routes + `session_view` service + lightweight title generation service.
   - Acceptance: resumed sessions show generated titles in picker/tab/header without manual rename.
+  - Contract:
+    - `POST /session/{id}/summarize` (+ `/api/v1/session/{id}/summarize` alias) returns `boolean` for SDK compatibility.
+    - Accept OpenCode-shaped body `{ providerID, modelID, auto? }`; `auto` is accepted as a compatibility field and ignored in v1.
+    - Execute one backend title-generation call (provider/model override when supplied, runtime model fallback otherwise), then apply deterministic heuristic fallback if model generation fails.
+    - Preserve Penguin context-window strategy (no compaction/truncation side effects).
+    - Emit `session.updated` when title changes so TUI session list/header refresh immediately.
+  - Progress (2026-03-03): added `POST /session/{id}/summarize` + `/api/v1` alias; body now accepts OpenCode-compatible `{providerID, modelID, auto?}` (`auto` ignored in v1). Implemented lightweight title-generation service with provider/model override support and deterministic fallback; route now emits OpenCode-shaped `session.updated` on title changes. Added non-blocking auto title refresh after `/api/v1/chat/message` using explicit-metadata-title detection (so inferred first-user titles can still be upgraded), retry-on-empty-snippet handling, request-text fallback snippets, placeholder/empty-content title rejection, and explicit `session.summarize` / `session.title.auto_refresh` server logs for observability.
 - [~] B5. Implement `session.abort` and wire cancel semantics for active stream/tool runs.
   - Owner: web routes + stream manager/session state in `core.py`.
   - Acceptance: pressing cancel key in TUI reliably stops in-flight assistant output.
   - Progress (2026-03-01): `session.abort` now cancels active + queued `/api/v1/chat/message` tasks, force-finalizes active stream/tool parts as aborted errors, clears per-session in-flight tool tracking, and emits deterministic `session.status=idle` events; deep subprocess hard-kill remains deferred.
+- [ ] B6. Add standalone session summary snapshot service (separate from context-window compaction).
+  - Owner: `penguin/web/services/session_view.py` + summary service module + route adapters.
+  - Acceptance: users can request/read concise session summaries without mutating runtime context trimming behavior.
 
 ### Track C: Settings / Provider / Model UX
 - [x] C1. Implement `config.get` with runtime config + reasoning + active model metadata.
@@ -599,6 +609,11 @@ For each phase, validate with:
 - `session.update({ sessionID, title })` -> `ConversationManager.update_session_title()`.
 - `session.delete({ sessionID })` -> `ConversationManager.delete_session()`.
 - `session.status()` -> `ConversationManager.get_status()` + active tool/stream state.
+- `session.summarize({ sessionID, providerID?, modelID?, auto? })` -> Penguin-native title generation endpoint (OpenCode-compatible route shape, non-compaction behavior).
+  - Request compatibility: accept `{ providerID, modelID, auto? }`; ignore `auto` in v1.
+  - Behavior: one backend title-generation call with provider/model override support; fallback to deterministic heuristic title when generation fails.
+  - Response: `boolean`.
+  - Events: emit `session.updated` when title changes.
 
 ### Tool lifecycle + diffs
 - `session.diff({ sessionID })` -> `ConversationManager` + VCS snapshot (see below).
