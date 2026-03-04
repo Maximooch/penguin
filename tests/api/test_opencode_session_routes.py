@@ -135,6 +135,10 @@ async def test_session_create_update_status_diff_delete_roundtrip(
     )
     assert updated["title"] == "Alpha Renamed"
     assert updated["time"]["archived"] == 12345
+    event_type, event_payload = core.event_bus.events[-1]
+    assert event_type == "opencode_event"
+    assert event_payload["type"] == "session.updated"
+    assert event_payload["properties"]["info"]["id"] == session_id
 
     status_map = await session_status(core=typed_core)
     assert status_map[session_id]["type"] == "idle"
@@ -208,6 +212,10 @@ async def test_session_alias_endpoints_work(tmp_path: Path) -> None:
         core=typed_core,
     )
     assert updated["title"] == "Alias 2"
+    event_type, event_payload = core.event_bus.events[-1]
+    assert event_type == "opencode_event"
+    assert event_payload["type"] == "session.updated"
+    assert event_payload["properties"]["info"]["id"] == session_id
 
     manager = core.conversation_manager.session_manager
     session_obj = manager.load_session(session_id)

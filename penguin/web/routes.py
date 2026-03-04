@@ -3295,6 +3295,8 @@ async def session_update(
     )
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    await _emit_session_updated_event(core, updated)
     return updated
 
 
