@@ -844,9 +844,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           .filter((item) => !!item)
         const command = [
           {
-            name: "settings",
-            description: "Show settings locations",
-            template: "/settings",
+            name: "config",
+            description: "Show configuration sources",
+            template: "/config",
             hints: [],
           },
           {

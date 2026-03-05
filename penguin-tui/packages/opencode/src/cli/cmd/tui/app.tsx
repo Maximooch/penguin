@@ -13,6 +13,7 @@ import { LocalProvider, useLocal } from "@tui/context/local"
 import { DialogModel, useConnected } from "@tui/component/dialog-model"
 import { DialogMcp } from "@tui/component/dialog-mcp"
 import { DialogStatus } from "@tui/component/dialog-status"
+import { DialogSettings } from "@tui/component/dialog-settings"
 import { DialogThemeList } from "@tui/component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
 import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command"
@@ -468,6 +469,20 @@ function App() {
       },
       onSelect: () => {
         dialog.replace(() => <DialogStatus />)
+      },
+      category: "System",
+    },
+    {
+      title: "View configuration",
+      value: "config.view",
+      onSelect: () => {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        const directory =
+          (sessionID ? sync.session.get(sessionID)?.directory : undefined) ||
+          sync.data.path.directory ||
+          sdk.directory ||
+          process.cwd()
+        dialog.replace(() => <DialogSettings sessionID={sessionID} directory={directory} />)
       },
       category: "System",
     },

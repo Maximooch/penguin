@@ -27,6 +27,7 @@ import { formatDuration } from "@/util/format"
 import { createColors, createFrames } from "../../ui/spinner.ts"
 import { useDialog } from "@tui/ui/dialog"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
+import { DialogSettings } from "../dialog-settings"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
@@ -611,12 +612,8 @@ export function Prompt(props: PromptProps) {
       return undefined
     })
     if (!sessionID) return
-    if (sdk.penguin && !props.sessionID) {
-      route.navigate({
-        type: "session",
-        sessionID,
-      })
-    }
+    const shouldNavigate = sdk.penguin && !props.sessionID
+    if (input.isDestroyed) return
     const directory =
       sync.session.get(sessionID)?.directory ||
       sync.session.get(props.sessionID ?? "")?.directory ||
@@ -659,12 +656,10 @@ export function Prompt(props: PromptProps) {
       const penguinCommand = /^\/[a-z_][a-z0-9_-]*$/i.test(firstToken)
       if (penguinCommand) {
         const name = firstToken.slice(1)
-        if (name === "settings") {
-          toast.show({
-            variant: "info",
-            message:
-              "Settings live in opencode.json (project root) or ~/.config/opencode/opencode.json",
-          })
+        const showConfig = name === "config" || name === "settings"
+        const keepDialog = showConfig
+        if (showConfig) {
+          dialog.replace(() => <DialogSettings directory={directory} sessionID={sessionID} />)
         } else if (name === "tool_details") {
           const next = !kv.get("tool_details_visibility", true)
           kv.set("tool_details_visibility", next)
@@ -678,21 +673,35 @@ export function Prompt(props: PromptProps) {
           ...store.prompt,
           mode: currentMode,
         })
-        input.extmarks.clear()
+        if (!input.isDestroyed) {
+          input.extmarks.clear()
+        }
         setStore("prompt", {
           input: "",
           parts: [],
         })
         setStore("extmarkToPartIndex", new Map())
-        dialog.clear()
-        input.clear()
-        input.setText("")
-        input.getLayoutNode().markDirty()
-        renderer.requestRender()
+        if (!keepDialog) {
+          dialog.clear()
+        }
+        if (!input.isDestroyed) {
+          input.clear()
+          input.setText("")
+          input.getLayoutNode().markDirty()
+          renderer.requestRender()
+        }
         queueMicrotask(() => {
           setStore("prompt", "input", "")
         })
         props.onSubmit?.()
+        if (shouldNavigate) {
+          setTimeout(() => {
+            route.navigate({
+              type: "session",
+              sessionID,
+            })
+          }, 0)
+        }
         return
       }
       const now = Date.now()
@@ -739,21 +748,33 @@ export function Prompt(props: PromptProps) {
         ...store.prompt,
         mode: currentMode,
       })
-      input.extmarks.clear()
+      if (!input.isDestroyed) {
+        input.extmarks.clear()
+      }
       setStore("prompt", {
         input: "",
         parts: [],
       })
       setStore("extmarkToPartIndex", new Map())
       dialog.clear()
-      input.clear()
-      input.setText("")
-      input.getLayoutNode().markDirty()
-      renderer.requestRender()
+      if (!input.isDestroyed) {
+        input.clear()
+        input.setText("")
+        input.getLayoutNode().markDirty()
+        renderer.requestRender()
+      }
       queueMicrotask(() => {
         setStore("prompt", "input", "")
       })
       props.onSubmit?.()
+      if (shouldNavigate) {
+        setTimeout(() => {
+          route.navigate({
+            type: "session",
+            sessionID,
+          })
+        }, 0)
+      }
       setStore("pending", true)
       setStore("pendingSeenBusy", false)
       const url = new URL("/api/v1/chat/message", sdk.url)

@@ -2,19 +2,24 @@ import { createMemo } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { Keybind } from "@/util/keybind"
 import { pipe, mapValues } from "remeda"
+import { Config } from "@/config/config"
 import type { KeybindsConfig } from "@opencode-ai/sdk/v2"
 import type { ParsedKey, Renderable } from "@opentui/core"
 import { createStore } from "solid-js/store"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { createSimpleContext } from "./helper"
 
+const KEYBINDS = Config.Keybinds.parse({})
+
 export const { use: useKeybind, provider: KeybindProvider } = createSimpleContext({
   name: "Keybind",
   init: () => {
     const sync = useSync()
     const keybinds = createMemo(() => {
+      const raw = Config.Keybinds.safeParse(sync.data.config.keybinds ?? {})
+      const config = raw.success ? raw.data : KEYBINDS
       return pipe(
-        sync.data.config.keybinds ?? {},
+        config,
         mapValues((value) => Keybind.parse(value)),
       )
     })

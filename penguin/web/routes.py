@@ -36,7 +36,10 @@ from penguin.constants import get_engine_max_iterations_default
 from penguin.utils.events import EventBus as UtilsEventBus
 from penguin.cli.events import EventBus as CLIEventBus, EventType
 from penguin.web.health import get_health_monitor
-from penguin.web.services.configuration import runtime_config_payload
+from penguin.web.services.configuration import (
+    runtime_config_payload,
+    settings_locations_payload,
+)
 from penguin.web.services.conversations import (
     create_conversation_payload,
     get_conversation_payload,
@@ -4117,6 +4120,31 @@ async def get_runtime_config(core: PenguinCore = Depends(get_core)):
         return runtime_config_payload(core)
     except Exception as e:
         logger.error(f"Error getting runtime config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/v1/system/settings")
+async def get_system_settings(
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+    conversation_id: Optional[str] = Query(None),
+):
+    """Get Penguin settings locations and runtime metadata."""
+    try:
+        effective_session = session_id or conversation_id
+        path_info = get_path_info(
+            core, directory=directory, session_id=effective_session
+        )
+        effective_directory = (
+            path_info.get("directory") if isinstance(path_info, dict) else None
+        )
+        return settings_locations_payload(
+            core,
+            cwd=effective_directory if isinstance(effective_directory, str) else None,
+        )
+    except Exception as e:
+        logger.error(f"Error getting system settings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
