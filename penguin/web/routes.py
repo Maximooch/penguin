@@ -3299,9 +3299,17 @@ async def session_list(
     limit: Optional[int] = Query(None),
 ):
     """OpenCode-compatible session list endpoint."""
+    requested_directory = directory if isinstance(directory, str) else None
+    resolved_directory = normalize_directory(requested_directory)
+    if requested_directory and not resolved_directory:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid directory: {requested_directory}",
+        )
+
     return list_session_infos(
         core,
-        directory=directory,
+        directory=resolved_directory,
         roots=bool(roots),
         start=start,
         search=search,

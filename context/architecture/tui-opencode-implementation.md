@@ -341,6 +341,16 @@ For each phase, validate with:
 
 ## Executable Task Backlog
 
+### Immediate execution order (2026-03-06)
+1. Close `B2` session discoverability/scoping in TUI bootstrap and session list APIs.
+   - Policy decision: show sessions from the exact requested directory plus sessions in the same git/worktree project root.
+2. Close `E6` mode parity with explicit security-mode review (`read_only`/`workspace`/`full` + approval semantics).
+3. Close `E3` + `E7` sub-agent/event consistency (`agent_id` on message/tool envelopes + reliable sub-agent session lifecycle).
+4. Add response timing telemetry surface (time per response) in backend payloads + TUI display.
+5. Execute Track I stability/ergonomics items.
+6. Finish provider + OAuth closeout (Track C3 completion path).
+7. Run Track J bridge extraction and cleanup last.
+
 ## VCS Hardening Matrix (Worktrees First)
 
 ### Target VCS payload contract
@@ -396,6 +406,8 @@ For each phase, validate with:
 - [~] B2. Implement `session.list`, `session.get`, `session.messages` with OpenCode-shaped payloads.
   - Owner: `ConversationManager` + `penguin/web/services/session_view.py` adapters.
   - Acceptance: TUI loads sessions and history without Penguin-mode-only shims.
+  - Decision (2026-03-06): session visibility should include exact directory matches plus sessions sharing the same git/worktree project root; unrelated directories should be hidden.
+  - Progress (2026-03-06): `session.list` directory filtering now validates/normalizes requested directories and includes sessions from the exact directory plus same git/worktree project identity (git common dir), with exact-directory-only fallback outside git; Penguin-mode bootstrap no longer falls back to unscoped `/api/v1/conversations` when `/session` returns empty.
 - [x] B3. Implement `session.status`, `session.update`, `session.delete`, `session.create`.
   - Owner: web routes + `ConversationManager` + service adapters.
   - Acceptance: create/rename/delete session flows work from TUI.
@@ -606,8 +618,9 @@ For each phase, validate with:
   - Acceptance: OpenCode MCP dialog can connect/disconnect providers.
 
 ### Session + messages
-- `session.list({ start, search, limit })` -> `penguin/web/routes.py` + `penguin/web/services/session_view.py` using `ConversationManager` for list/metadata.
+- `session.list({ start, search, limit, directory? })` -> `penguin/web/routes.py` + `penguin/web/services/session_view.py` using `ConversationManager` for list/metadata.
   - Response: `{ sessions: [{ id, title, time, summary?, agent?, model?, tags? }] }`
+  - Directory scoping (decision 2026-03-06): include sessions bound to the exact requested directory and sessions in the same git/worktree project root; if no git/worktree root is available, fall back to exact-directory-only matching.
 - `session.get({ sessionID })` -> `ConversationManager.get_session(session_id)`.
   - Response: `{ session: { id, title, time, model, provider, agent, status } }`
 - `session.messages({ sessionID, limit })` -> history + OpenCode envelopes.

@@ -729,13 +729,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             .then((data) => (Array.isArray(data) ? data : []))
             .catch(() => []),
         ])
-        const list =
-          sessionsData.length > 0
-            ? sessionsData
-            : await fetch(new URL("/api/v1/conversations", sdk.url))
-                .then((res) => (res.ok ? res.json() : undefined))
-                .then((data) => (Array.isArray(data?.conversations) ? data.conversations : []))
-                .catch(() => [])
+        const list = sessionsData
         const providersPayload = unwrap(providersData) as Record<string, unknown> | undefined
         const providerListPayload = unwrap(providerListData) as Record<string, unknown> | undefined
         const configPayload = unwrap(configData)

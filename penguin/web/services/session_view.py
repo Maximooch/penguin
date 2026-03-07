@@ -467,6 +467,65 @@ def _run_git(args: list[str], cwd: str) -> str:
     return proc.stdout.strip()
 
 
+def _normalize_existing_directory(directory: Any) -> Optional[str]:
+    """Return resolved directory path when it exists, else None."""
+    if not isinstance(directory, str) or not directory.strip():
+        return None
+    try:
+        resolved = Path(directory).expanduser().resolve()
+    except Exception:
+        return None
+    if not resolved.exists() or not resolved.is_dir():
+        return None
+    return str(resolved)
+
+
+def _directory_matches(left: str, right: str) -> bool:
+    """Check whether two directory paths reference the same directory."""
+    if left == right:
+        return True
+    try:
+        return Path(left).samefile(right)
+    except Exception:
+        return False
+
+
+def _git_project_key(
+    directory: str,
+    cache: dict[str, Optional[str]],
+) -> Optional[str]:
+    """Return stable git/worktree identity key for directory filtering."""
+    cached = cache.get(directory)
+    if cached is not None or directory in cache:
+        return cached
+
+    top_level = _run_git(["rev-parse", "--show-toplevel"], directory)
+    if not top_level:
+        cache[directory] = None
+        return None
+
+    common_dir = _run_git(["rev-parse", "--git-common-dir"], directory)
+    if common_dir:
+        common_path = Path(common_dir)
+        if not common_path.is_absolute():
+            common_path = Path(directory) / common_path
+        try:
+            common_resolved = common_path.expanduser().resolve()
+        except Exception:
+            common_resolved = common_path.expanduser()
+        key = f"git:{common_resolved}"
+        cache[directory] = key
+        return key
+
+    try:
+        top_resolved = Path(top_level).expanduser().resolve()
+    except Exception:
+        top_resolved = Path(top_level).expanduser()
+    key = f"root:{top_resolved}"
+    cache[directory] = key
+    return key
+
+
 def _session_directory(core: Any, session: Any) -> str:
     metadata = getattr(session, "metadata", {})
     if isinstance(metadata, dict):
@@ -571,6 +630,13 @@ def list_session_infos(
     """List sessions in OpenCode Session.Info shape."""
     results: list[dict[str, Any]] = []
     lowered_search = search.lower() if search else None
+    normalized_directory = _normalize_existing_directory(directory)
+    project_cache: dict[str, Optional[str]] = {}
+    requested_project_key = (
+        _git_project_key(normalized_directory, project_cache)
+        if normalized_directory
+        else None
+    )
 
     for manager in _iter_session_managers(core):
         index = getattr(manager, "session_index", {})
@@ -594,8 +660,19 @@ def list_session_infos(
 
             if roots and info.get("parentID"):
                 continue
-            if directory and info.get("directory") != directory:
-                continue
+            if normalized_directory:
+                session_directory = _normalize_existing_directory(info.get("directory"))
+                if not session_directory:
+                    continue
+                if not _directory_matches(session_directory, normalized_directory):
+                    if not requested_project_key:
+                        continue
+                    session_project_key = _git_project_key(
+                        session_directory,
+                        project_cache,
+                    )
+                    if session_project_key != requested_project_key:
+                        continue
             if start is not None and info["time"]["updated"] < start:
                 continue
             if lowered_search and lowered_search not in info["title"].lower():

@@ -15,6 +15,7 @@ from penguin.web.routes import (
     api_session_create,
     api_session_delete,
     api_session_diff,
+    api_session_list,
     api_session_summarize,
     api_session_todo,
     api_session_status,
@@ -24,6 +25,7 @@ from penguin.web.routes import (
     session_delete,
     session_diff,
     session_get,
+    session_list,
     session_summarize,
     session_todo,
     session_status,
@@ -238,6 +240,21 @@ async def test_session_alias_endpoints_work(tmp_path: Path) -> None:
 
     deleted = await api_session_delete(session_id, core=typed_core)
     assert deleted is True
+
+
+@pytest.mark.asyncio
+async def test_session_list_rejects_invalid_directory(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+    missing = tmp_path / "does_not_exist"
+
+    with pytest.raises(HTTPException) as exc:
+        await session_list(core=typed_core, directory=str(missing))
+    assert exc.value.status_code == 400
+
+    with pytest.raises(HTTPException) as exc_alias:
+        await api_session_list(core=typed_core, directory=str(missing))
+    assert exc_alias.value.status_code == 400
 
 
 @pytest.mark.asyncio

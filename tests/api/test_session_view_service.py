@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -115,6 +117,73 @@ def test_list_session_infos_sorted_and_filtered():
 
     filtered = list_session_infos(core, search="alpha")
     assert [item["id"] for item in filtered] == ["session_a"]
+
+
+def test_list_session_infos_directory_filter_matches_same_git_project(
+    tmp_path: Path,
+):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    subprocess.run(
+        ["git", "init"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    alpha_dir = project_root / "alpha"
+    beta_dir = project_root / "beta"
+    alpha_dir.mkdir()
+    beta_dir.mkdir()
+
+    external_root = tmp_path / "external"
+    external_root.mkdir()
+    subprocess.run(
+        ["git", "init"],
+        cwd=external_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    external_dir = external_root / "gamma"
+    external_dir.mkdir()
+
+    alpha = _session("session_alpha", "Alpha", "2026-02-01T00:00:00")
+    alpha.metadata["directory"] = str(alpha_dir)
+
+    beta = _session("session_beta", "Beta", "2026-02-02T00:00:00")
+    beta.metadata["directory"] = str(beta_dir)
+
+    gamma = _session("session_gamma", "Gamma", "2026-02-03T00:00:00")
+    gamma.metadata["directory"] = str(external_dir)
+
+    core = _core([alpha, beta, gamma])
+
+    result = list_session_infos(core, directory=str(alpha_dir))
+
+    assert {item["id"] for item in result} == {"session_alpha", "session_beta"}
+
+
+def test_list_session_infos_directory_filter_falls_back_to_exact_directory(
+    tmp_path: Path,
+):
+    alpha_dir = tmp_path / "alpha"
+    beta_dir = tmp_path / "beta"
+    alpha_dir.mkdir()
+    beta_dir.mkdir()
+
+    alpha = _session("session_alpha", "Alpha", "2026-02-01T00:00:00")
+    alpha.metadata["directory"] = str(alpha_dir)
+
+    beta = _session("session_beta", "Beta", "2026-02-02T00:00:00")
+    beta.metadata["directory"] = str(beta_dir)
+
+    core = _core([alpha, beta])
+
+    result = list_session_infos(core, directory=str(alpha_dir))
+
+    assert [item["id"] for item in result] == ["session_alpha"]
 
 
 def test_session_info_includes_usage_snapshot():
