@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from penguin.engine import Engine, EngineSettings
 
@@ -96,3 +98,54 @@ def test_finalize_streaming_response_uses_finalized_content_without_duplicate_sa
 
     assert result == "streamed answer"
     conversation.add_assistant_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_llm_step_returns_usage_from_active_api_client() -> None:
+    conversation = SimpleNamespace(
+        get_formatted_messages=MagicMock(
+            return_value=[{"role": "user", "content": "hi"}]
+        ),
+        session=SimpleNamespace(messages=[]),
+        add_assistant_message=MagicMock(),
+    )
+    conversation_manager = SimpleNamespace(conversation=conversation, core=None)
+
+    handler = SimpleNamespace(
+        get_last_usage=MagicMock(
+            return_value={
+                "input_tokens": 12,
+                "output_tokens": 5,
+                "reasoning_tokens": 2,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "total_tokens": 17,
+                "cost": 0.0003,
+            }
+        )
+    )
+    api_client = SimpleNamespace(
+        get_response=AsyncMock(return_value="hello"),
+        client_handler=handler,
+    )
+
+    engine = Engine(
+        EngineSettings(),
+        cast(Any, conversation_manager),
+        cast(Any, api_client),
+        MagicMock(),
+        MagicMock(),
+    )
+
+    result = await engine._llm_step(tools_enabled=False, streaming=False)
+
+    assert result["assistant_response"] == "hello"
+    assert result["usage"] == {
+        "input_tokens": 12,
+        "output_tokens": 5,
+        "reasoning_tokens": 2,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "total_tokens": 17,
+        "cost": 0.0003,
+    }

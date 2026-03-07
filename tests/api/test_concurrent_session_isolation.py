@@ -230,6 +230,54 @@ async def test_rest_chat_respects_streaming_flag(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_rest_chat_applies_reasoning_variant_per_request(tmp_path: Path) -> None:
+    repo = tmp_path / "chat_repo_variant"
+    repo.mkdir()
+    seen: dict[str, Any] = {}
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+            self.model_config = SimpleNamespace(
+                reasoning_enabled=False,
+                reasoning_effort=None,
+                reasoning_max_tokens=1234,
+                reasoning_exclude=False,
+            )
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            seen["enabled"] = self.model_config.reasoning_enabled
+            seen["effort"] = self.model_config.reasoning_effort
+            seen["max_tokens"] = self.model_config.reasoning_max_tokens
+            return {"assistant_response": "ok", "action_results": []}
+
+    core = _Core()
+    request = MessageRequest(
+        text="ping",
+        session_id="session_variant",
+        directory=str(repo),
+        streaming=False,
+    )
+    setattr(request, "variant", "high")
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["response"] == "ok"
+    assert seen["enabled"] is True
+    assert seen["effort"] == "high"
+    assert seen["max_tokens"] is None
+    assert core.model_config.reasoning_enabled is False
+    assert core.model_config.reasoning_effort is None
+    assert core.model_config.reasoning_max_tokens == 1234
+
+
+@pytest.mark.asyncio
 async def test_rest_chat_auto_refreshes_default_session_title(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

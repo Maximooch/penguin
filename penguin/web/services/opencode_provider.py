@@ -94,6 +94,59 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
+def _coerce_non_negative_float(value: Any, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        return default
+    if parsed < 0:
+        return default
+    return parsed
+
+
+def _model_cost_payload(conf: dict[str, Any]) -> dict[str, Any]:
+    raw_cost = conf.get("cost")
+    if isinstance(raw_cost, dict):
+        raw_cache = raw_cost.get("cache")
+        cache: dict[str, Any] = raw_cache if isinstance(raw_cache, dict) else {}
+        return {
+            "input": _coerce_non_negative_float(raw_cost.get("input"), 0.0),
+            "output": _coerce_non_negative_float(raw_cost.get("output"), 0.0),
+            "cache": {
+                "read": _coerce_non_negative_float(cache.get("read"), 0.0),
+                "write": _coerce_non_negative_float(cache.get("write"), 0.0),
+            },
+        }
+
+    raw_pricing = conf.get("pricing")
+    pricing: dict[str, Any] = raw_pricing if isinstance(raw_pricing, dict) else {}
+    return {
+        "input": _coerce_non_negative_float(pricing.get("prompt"), 0.0),
+        "output": _coerce_non_negative_float(pricing.get("completion"), 0.0),
+        "cache": {
+            "read": _coerce_non_negative_float(pricing.get("input_cache_read"), 0.0),
+            "write": _coerce_non_negative_float(pricing.get("input_cache_write"), 0.0),
+        },
+    }
+
+
+def _model_variants_payload(
+    provider_id: str,
+    reasoning_enabled: bool,
+) -> dict[str, dict[str, Any]] | None:
+    if not reasoning_enabled:
+        return None
+
+    effort_variants = {
+        "low": {"reasoning": {"effort": "low"}},
+        "medium": {"reasoning": {"effort": "medium"}},
+        "high": {"reasoning": {"effort": "high"}},
+    }
+    if provider_id.strip().lower() == "openrouter":
+        return effort_variants
+    return effort_variants
+
+
 def _openrouter_catalog_models(api_key: str | None = None) -> dict[str, dict[str, Any]]:
     if not isinstance(api_key, str) or not api_key.strip():
         api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
@@ -182,6 +235,8 @@ def _openrouter_catalog_models(api_key: str | None = None) -> dict[str, dict[str
                 "vision_enabled": vision_enabled,
                 "reasoning_enabled": _supports_reasoning_model(model_id),
             }
+            if isinstance(item.get("pricing"), dict):
+                conf["pricing"] = item["pricing"]
             release_date = _openrouter_release_date(item.get("created"))
             if release_date:
                 conf["release_date"] = release_date
@@ -241,7 +296,9 @@ def _config_model_payload(
     if not isinstance(release_date, str) or not release_date.strip():
         release_date = "1970-01-01T00:00:00+00:00"
 
-    return {
+    variants = _model_variants_payload(provider_id, reasoning_enabled)
+
+    payload = {
         "id": model_id,
         "providerID": provider_id,
         "name": name,
@@ -271,11 +328,7 @@ def _config_model_payload(
             },
             "interleaved": False,
         },
-        "cost": {
-            "input": 0,
-            "output": 0,
-            "cache": {"read": 0, "write": 0},
-        },
+        "cost": _model_cost_payload(conf),
         "limit": {
             "context": context_limit,
             "output": output_limit,
@@ -285,6 +338,9 @@ def _config_model_payload(
         "headers": {},
         "release_date": release_date,
     }
+    if variants:
+        payload["variants"] = variants
+    return payload
 
 
 def _provider_list_model_payload(
@@ -303,7 +359,9 @@ def _provider_list_model_payload(
     if not isinstance(release_date, str) or not release_date.strip():
         release_date = "1970-01-01T00:00:00+00:00"
 
-    return {
+    variants = _model_variants_payload(provider_id, reasoning_enabled)
+
+    payload = {
         "id": model_id,
         "name": conf.get("name") or conf.get("model") or model_id,
         "release_date": release_date,
@@ -318,6 +376,9 @@ def _provider_list_model_payload(
         "status": "active",
         "options": {},
     }
+    if variants:
+        payload["variants"] = variants
+    return payload
 
 
 def build_config_payload(core: Any) -> dict[str, Any]:

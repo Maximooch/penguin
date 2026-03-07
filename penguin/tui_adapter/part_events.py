@@ -585,6 +585,49 @@ class PartEventAdapter:
 
         return message_id
 
+    async def update_assistant_usage(
+        self,
+        message_id: str,
+        *,
+        tokens: Optional[Dict[str, Any]] = None,
+        cost: Optional[float] = None,
+    ) -> None:
+        """Update assistant message usage/cost metadata and re-emit message.updated."""
+        message = self._active_messages.get(message_id)
+        if message is None:
+            message = Message(
+                id=message_id,
+                session_id=self._session_id or "unknown",
+                role="assistant",
+                time_created=time.time(),
+                time_completed=time.time(),
+                agent_id="default",
+                parent_id="root",
+                path=self._path(),
+            )
+            self._active_messages[message_id] = message
+
+        if message.role != "assistant":
+            return
+
+        if isinstance(tokens, dict):
+            raw_cache = tokens.get("cache")
+            cache: Dict[str, Any] = raw_cache if isinstance(raw_cache, dict) else {}
+            message.tokens = {
+                "input": max(int(tokens.get("input", 0) or 0), 0),
+                "output": max(int(tokens.get("output", 0) or 0), 0),
+                "reasoning": max(int(tokens.get("reasoning", 0) or 0), 0),
+                "cache": {
+                    "read": max(int(cache.get("read", 0) or 0), 0),
+                    "write": max(int(cache.get("write", 0) or 0), 0),
+                },
+            }
+
+        if isinstance(cost, (int, float)):
+            message.cost = max(float(cost), 0.0)
+
+        await self._emit("message.updated", self._message_to_dict(message))
+
     def _message_to_dict(self, msg: Message) -> Dict[str, Any]:
         """Convert Message to OpenCode-compatible dict."""
         base = {

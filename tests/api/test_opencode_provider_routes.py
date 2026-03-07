@@ -293,6 +293,12 @@ async def test_openrouter_catalog_expands_provider_payloads(
                         "name": "GPT-5 Mini",
                         "context_length": 256000,
                         "created": 1720000000,
+                        "pricing": {
+                            "prompt": "0.00000125",
+                            "completion": "0.00001",
+                            "input_cache_read": "0.000000125",
+                            "input_cache_write": "0.00000125",
+                        },
                         "architecture": {"input_modalities": ["text", "image"]},
                         "top_provider": {"max_completion_tokens": 32768},
                     }
@@ -342,6 +348,13 @@ async def test_openrouter_catalog_expands_provider_payloads(
     assert (
         openrouter["models"]["openai/gpt-5-mini"]["capabilities"]["attachment"] is True
     )
+    assert openrouter["models"]["openai/gpt-5-mini"]["cost"]["input"] == 0.00000125
+    assert openrouter["models"]["openai/gpt-5-mini"]["cost"]["output"] == 0.00001
+    assert set(openrouter["models"]["openai/gpt-5-mini"]["variants"].keys()) == {
+        "low",
+        "medium",
+        "high",
+    }
 
     provider_payload = await opencode_provider_list(core=typed_core)
     openrouter_provider = next(
@@ -352,6 +365,9 @@ async def test_openrouter_catalog_expands_provider_payloads(
     assert openrouter_provider["models"]["openai/gpt-5-mini"][
         "release_date"
     ].startswith("2024-")
+    assert set(
+        openrouter_provider["models"]["openai/gpt-5-mini"]["variants"].keys()
+    ) == {"low", "medium", "high"}
 
 
 @pytest.mark.asyncio

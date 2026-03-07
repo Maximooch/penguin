@@ -524,27 +524,34 @@ For each phase, validate with:
 - [ ] E3. Implement `app.agents` and ensure message/tool events carry `agent_id` consistently.
   - Owner: `core.py` agent roster + event adapter.
   - Acceptance: multi/sub-agent UI and filtering behave correctly.
-- [ ] E4. Implement variant/mode + reasoning effort plumbing in `session.prompt`/config.
+- [~] E4. Implement variant/mode + reasoning effort plumbing in `session.prompt`/config.
   - Owner: route adapter + `core.process` parameter mapping.
   - Acceptance: toggling mode/effort affects runtime behavior and is reflected in metadata.
-- [ ] E5. Complete command palette parity (`Ctrl+P`) including settings/workflow commands in Penguin mode.
+- [x] E5. Complete command palette parity (`Ctrl+P`) including settings/workflow commands in Penguin mode.
   - Owner: TUI command registry + route parity adapters.
   - Acceptance: settings and session/model/agent actions are discoverable from the palette.
+  - Progress (2026-03-05): Penguin keybind defaults now hydrate when server config omits `keybinds`, restoring working `Ctrl+P` in Penguin mode; command palette now includes Configuration inspector flow (`/config`, with `/settings` alias) and opens a read-only runtime/config-path dialog.
 - [ ] E6. Implement agent mode parity (`plan`/`build`/default) and mode-aware routing.
   - Owner: TUI agent context + backend prompt/command dispatch metadata.
   - Acceptance: mode switch changes runtime behavior and is preserved in message metadata.
 - [ ] E7. Complete sub-agent lifecycle parity.
   - Owner: agent roster API, message routing, session hierarchy handling.
   - Acceptance: sub-agent tasks appear as first-class sessions with reliable replay/navigation.
-- [ ] E8. Context/tokens/cost telemetry parity in sidebar/header.
+- [~] E8. Context/tokens/cost telemetry parity in sidebar/header.
   - Owner: backend usage accounting + TUI metadata rendering.
   - Acceptance: token usage, context %, and spend reflect real provider usage (including OpenRouter).
+  - Progress (2026-03-05): OpenRouter gateway now captures normalized request usage (`prompt/completion/reasoning/cache`) and reported cost when available, and `core.process` propagates that metadata to the latest assistant `message.updated` envelope so sidebar/header spend + token counters can render non-zero values.
+  - Progress (2026-03-05): Engine now returns per-turn usage from the active resolved API client (including agent-scoped clients), and `core.process` now prefers that engine-returned usage before fallback handler reads to avoid missing cost metadata in multi-agent/session-scoped runs.
+  - Progress (2026-03-05): Usage application now falls back to session-scoped adapter message tracking when stream-state keys are absent, adapter usage updates can upsert missing assistant message state, and OpenRouter/core usage-application logs are mirrored through `uvicorn.error` for runtime observability during live web sessions.
+  - Progress (2026-03-06): direct OpenRouter streaming now attempts low-latency usage recovery via `GET /generation?id=...` when streams are intentionally interrupted early (action/tool interrupt path), reducing `No usage data captured (direct-stream)` gaps without waiting for full stream completion.
 - [ ] E9. Context-window/truncation visualization parity (no compaction assumptions).
   - Owner: session metadata payloads + TUI context widgets.
   - Acceptance: users can see context pressure/truncation behavior even when compaction is not used.
-- [ ] E10. Reasoning variants parity (`Ctrl+T` effort/options) in Penguin mode.
+- [~] E10. Reasoning variants parity (`Ctrl+T` effort/options) in Penguin mode.
   - Owner: config endpoints + prompt payload schema + TUI variant UI.
   - Acceptance: reasoning variant controls are available and affect model requests.
+  - Progress (2026-03-05): `config.providers`/`provider.list` model payloads now expose reasoning variants (`low/medium/high`) for reasoning-capable models (OpenRouter-first), Penguin prompt submit now includes `variant` in `/api/v1/chat/message`, and backend routes apply per-request reasoning-effort overrides without mutating persistent model defaults.
+  - Progress (2026-03-06): `ModelConfig.get_reasoning_config()` now prioritizes explicit `reasoning_effort` overrides before provider-style defaults, so `variant=low|medium|high` reliably changes emitted OpenRouter reasoning payloads for reasoning-capable models (including Anthropic/Gemini-family routing where effort can be mapped upstream).
 
 ### Track I: Penguin-mode UX and Runtime Ergonomics
 - [ ] I1. Resolve occasional queued/stuck turn behavior under streaming-heavy runs.

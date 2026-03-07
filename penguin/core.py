@@ -2595,25 +2595,81 @@ class PenguinCore:
             # WALLET_GUARD in finalize_streaming_message injects placeholder for empty streams.
 
             token_data = conversation_manager.get_token_usage()
+            latest_usage: Dict[str, Any] = {}
             try:
-                current_session = conversation_manager.get_current_session()
-                if current_session and isinstance(
-                    getattr(current_session, "metadata", None), dict
-                ):
-                    current_session.metadata["_opencode_usage_v1"] = {
-                        "current_total_tokens": token_data.get(
-                            "current_total_tokens", 0
-                        ),
-                        "max_context_window_tokens": token_data.get(
-                            "max_context_window_tokens",
-                            token_data.get("max_tokens"),
-                        ),
-                        "available_tokens": token_data.get("available_tokens", 0),
-                        "percentage": token_data.get("percentage", 0),
-                        "truncations": token_data.get("truncations", {}),
-                    }
+                if isinstance(response, dict):
+                    response_usage = response.get("usage")
+                    if isinstance(response_usage, dict):
+                        latest_usage = response_usage
+                if not latest_usage:
+                    latest_usage = self._latest_model_usage()
+
+                if isinstance(token_data, dict) and latest_usage:
+                    current_total_tokens = int(
+                        token_data.get("current_total_tokens", 0) or 0
+                    )
+                    if current_total_tokens <= 0:
+                        usage_total_tokens = int(
+                            latest_usage.get("total_tokens", 0) or 0
+                        )
+                        if usage_total_tokens <= 0:
+                            usage_total_tokens = (
+                                int(latest_usage.get("input_tokens", 0) or 0)
+                                + int(latest_usage.get("output_tokens", 0) or 0)
+                                + int(latest_usage.get("reasoning_tokens", 0) or 0)
+                                + int(latest_usage.get("cache_read_tokens", 0) or 0)
+                                + int(latest_usage.get("cache_write_tokens", 0) or 0)
+                            )
+                        if usage_total_tokens > 0:
+                            token_data = dict(token_data)
+                            token_data["current_total_tokens"] = usage_total_tokens
+                            max_tokens_value = token_data.get(
+                                "max_context_window_tokens"
+                            )
+                            if max_tokens_value is None:
+                                max_tokens_value = token_data.get("max_tokens")
+                            if isinstance(max_tokens_value, (int, float)):
+                                max_tokens_int = int(max_tokens_value)
+                                if max_tokens_int > 0:
+                                    token_data["max_context_window_tokens"] = (
+                                        max_tokens_int
+                                    )
+                                    token_data["max_tokens"] = max_tokens_int
+                                    token_data["available_tokens"] = max(
+                                        max_tokens_int - usage_total_tokens,
+                                        0,
+                                    )
+                                    token_data["percentage"] = (
+                                        usage_total_tokens / max_tokens_int
+                                    ) * 100
+
+                try:
+                    current_session = conversation_manager.get_current_session()
+                    if current_session and isinstance(
+                        getattr(current_session, "metadata", None), dict
+                    ):
+                        current_session.metadata["_opencode_usage_v1"] = {
+                            "current_total_tokens": token_data.get(
+                                "current_total_tokens", 0
+                            ),
+                            "max_context_window_tokens": token_data.get(
+                                "max_context_window_tokens",
+                                token_data.get("max_tokens"),
+                            ),
+                            "available_tokens": token_data.get("available_tokens", 0),
+                            "percentage": token_data.get("percentage", 0),
+                            "truncations": token_data.get("truncations", {}),
+                        }
+                except Exception:
+                    logger.debug("Unable to persist usage snapshot", exc_info=True)
+
+                if latest_usage:
+                    await self._apply_opencode_usage_to_latest_message(
+                        request_session_id,
+                        latest_usage,
+                    )
             except Exception:
-                logger.debug("Unable to persist usage snapshot", exc_info=True)
+                logger.debug("Unable to emit OpenCode usage metadata", exc_info=True)
 
             # Ensure conversation is saved after processing
             conversation_manager.save()
@@ -4987,6 +5043,106 @@ class PenguinCore:
         """Finalize OpenCode streaming."""
         adapter = self._opencode_message_adapters.pop(message_id, self._tui_adapter)
         await adapter.on_stream_end(message_id, part_id)
+
+    def _latest_model_usage(self) -> Dict[str, Any]:
+        """Return normalized usage metadata from active model handler."""
+        handler = getattr(getattr(self, "api_client", None), "client_handler", None)
+        getter = getattr(handler, "get_last_usage", None)
+        if not callable(getter):
+            return {}
+        try:
+            data = getter()
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    async def _apply_opencode_usage_to_latest_message(
+        self,
+        session_id: Optional[str],
+        usage: Dict[str, Any],
+    ) -> None:
+        if not isinstance(session_id, str) or not session_id.strip():
+            return
+        if not isinstance(usage, dict) or not usage:
+            return
+
+        message_id: Optional[str] = None
+        states = getattr(self, "_opencode_stream_states", None)
+        if isinstance(states, dict):
+            state = states.get(session_id)
+            if isinstance(state, dict):
+                state_message_id = state.get("message_id")
+                if isinstance(state_message_id, str) and state_message_id:
+                    message_id = state_message_id
+
+            if not message_id:
+                scoped_prefix = f"{session_id}:"
+                for key, state_value in states.items():
+                    if not isinstance(key, str) or not key.startswith(scoped_prefix):
+                        continue
+                    if not isinstance(state_value, dict):
+                        continue
+                    state_message_id = state_value.get("message_id")
+                    if isinstance(state_message_id, str) and state_message_id:
+                        message_id = state_message_id
+                        break
+
+        adapter = (
+            self._opencode_message_adapters.get(message_id) if message_id else None
+        )
+        if adapter is None:
+            adapter = self._get_tui_adapter(session_id)
+
+        if not message_id:
+            adapter_message_id = getattr(adapter, "_current_message_id", None)
+            if isinstance(adapter_message_id, str) and adapter_message_id:
+                message_id = adapter_message_id
+
+        if not isinstance(message_id, str) or not message_id:
+            return
+
+        updater = getattr(adapter, "update_assistant_usage", None)
+        if not callable(updater):
+            return
+
+        tokens = {
+            "input": int(usage.get("input_tokens", 0) or 0),
+            "output": int(usage.get("output_tokens", 0) or 0),
+            "reasoning": int(usage.get("reasoning_tokens", 0) or 0),
+            "cache": {
+                "read": int(usage.get("cache_read_tokens", 0) or 0),
+                "write": int(usage.get("cache_write_tokens", 0) or 0),
+            },
+        }
+        cost = usage.get("cost")
+        try:
+            normalized_cost = float(cost) if cost is not None else 0.0
+        except Exception:
+            normalized_cost = 0.0
+
+        try:
+            await updater(message_id, tokens=tokens, cost=max(normalized_cost, 0.0))
+            usage_log = (
+                "opencode.usage.applied session=%s message=%s input=%s output=%s "
+                "reasoning=%s cache_read=%s cache_write=%s total=%s cost=%s"
+            )
+            usage_args = (
+                session_id,
+                message_id,
+                tokens["input"],
+                tokens["output"],
+                tokens["reasoning"],
+                tokens["cache"]["read"],
+                tokens["cache"]["write"],
+                int(usage.get("total_tokens", 0) or 0),
+                max(normalized_cost, 0.0),
+            )
+            logger.info(usage_log, *usage_args)
+            uvicorn_logger = logging.getLogger("uvicorn.error")
+            if uvicorn_logger is not logger:
+                uvicorn_logger.info(usage_log, *usage_args)
+        except Exception:
+            logger.debug("Failed to apply OpenCode usage metadata", exc_info=True)
 
     async def _emit_opencode_user_message(self, content: str) -> str:
         """Emit user message in OpenCode format."""

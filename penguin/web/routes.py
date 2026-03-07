@@ -208,6 +208,14 @@ def _title_log_info(message: str, *args: Any) -> None:
         uvicorn_logger.info(message, *args)
 
 
+def _request_log_info(message: str, *args: Any) -> None:
+    """Log request-level observability via app and uvicorn logger."""
+    logger.info(message, *args)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.info(message, *args)
+
+
 async def _refresh_session_title_if_default(
     core: PenguinCore,
     session_id: str,
@@ -363,7 +371,62 @@ class MessageRequest(BaseModel):
     agent_id: Optional[str] = None
     directory: Optional[str] = None
     model: Optional[str] = None
+    variant: Optional[str] = None
     parts: Optional[List[Dict[str, Any]]] = None
+
+
+def _apply_reasoning_variant_override(
+    core: PenguinCore,
+    variant: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    model_config = getattr(core, "model_config", None)
+    if model_config is None:
+        return None
+
+    value = variant.strip().lower() if isinstance(variant, str) else ""
+    if not value:
+        return None
+
+    snapshot = {
+        "reasoning_enabled": getattr(model_config, "reasoning_enabled", False),
+        "reasoning_effort": getattr(model_config, "reasoning_effort", None),
+        "reasoning_max_tokens": getattr(model_config, "reasoning_max_tokens", None),
+        "reasoning_exclude": getattr(model_config, "reasoning_exclude", False),
+    }
+
+    if value in {"low", "medium", "high"}:
+        model_config.reasoning_enabled = True
+        model_config.reasoning_effort = value
+        model_config.reasoning_max_tokens = None
+        model_config.reasoning_exclude = False
+        return snapshot
+
+    if value in {"none", "off"}:
+        model_config.reasoning_enabled = False
+        model_config.reasoning_effort = None
+        model_config.reasoning_max_tokens = None
+        model_config.reasoning_exclude = False
+        return snapshot
+
+    logger.debug("Ignoring unsupported reasoning variant '%s'", value)
+    return None
+
+
+def _restore_reasoning_variant_override(
+    core: PenguinCore,
+    snapshot: Optional[Dict[str, Any]],
+) -> None:
+    if not isinstance(snapshot, dict):
+        return
+
+    model_config = getattr(core, "model_config", None)
+    if model_config is None:
+        return
+
+    model_config.reasoning_enabled = bool(snapshot.get("reasoning_enabled", False))
+    model_config.reasoning_effort = snapshot.get("reasoning_effort")
+    model_config.reasoning_max_tokens = snapshot.get("reasoning_max_tokens")
+    model_config.reasoning_exclude = bool(snapshot.get("reasoning_exclude", False))
 
 
 def _extract_paths_from_parts(
@@ -2001,6 +2064,7 @@ async def handle_chat_message(
     request_session_id: Optional[str] = None
     request_task: Optional[asyncio.Task[Any]] = None
     request_tracked = False
+    reasoning_variant_snapshot: Optional[Dict[str, Any]] = None
     try:
         if request.agent_id:
             _validate_agent_id(request.agent_id)
@@ -2164,6 +2228,37 @@ async def handle_chat_message(
 
             stream_cb = _rest_stream_cb
 
+        reasoning_variant_snapshot = _apply_reasoning_variant_override(
+            core,
+            request.variant,
+        )
+        model_config = getattr(core, "model_config", None)
+        variant_value = (
+            request.variant.strip().lower()
+            if isinstance(request.variant, str) and request.variant.strip()
+            else None
+        )
+        reasoning_payload = None
+        reasoning_getter = getattr(model_config, "get_reasoning_config", None)
+        if callable(reasoning_getter):
+            try:
+                resolved = reasoning_getter()
+                if isinstance(resolved, dict):
+                    reasoning_payload = dict(resolved)
+            except Exception:
+                logger.debug(
+                    "Failed to resolve reasoning payload for request log",
+                    exc_info=True,
+                )
+        if variant_value or reasoning_payload:
+            _request_log_info(
+                "chat.reasoning.request session=%s model=%s variant=%s reasoning=%s",
+                request_session_id or "unknown",
+                getattr(model_config, "model", None),
+                variant_value,
+                reasoning_payload,
+            )
+
         # Process the message with all available options
         with execution_context_scope(execution_context):
             request_gate = getattr(core, "_opencode_request_gate", None)
@@ -2207,6 +2302,7 @@ async def handle_chat_message(
         logger.error(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
+        _restore_reasoning_variant_override(core, reasoning_variant_snapshot)
         if request_tracked and request_session_id and request_task is not None:
             tasks_map = getattr(core, "_opencode_process_tasks", None)
             if isinstance(tasks_map, dict):
@@ -2363,6 +2459,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
             max_iterations = data.get("max_iterations", 100)
             image_paths = data.get("image_paths")  # Multiple images supported
             include_reasoning = bool(data.get("include_reasoning", False))
+            variant = data.get("variant")
             agent_id = data.get("agent_id")
             directory = data.get("directory")
 
@@ -2501,22 +2598,57 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     except Exception as e:
                         logger.error(f"Error enqueuing stream chunk: {e}")
 
-                with execution_context_scope(execution_context):
-                    process_task = asyncio.create_task(
-                        core.process(
-                            input_data=input_data,
-                            conversation_id=conversation_id,
-                            agent_id=agent_id,
-                            max_iterations=max_iterations,
-                            context_files=context_files,
-                            context=context,
-                            streaming=True,
-                            stream_callback=per_request_stream_callback,
+                reasoning_variant_snapshot = _apply_reasoning_variant_override(
+                    core,
+                    variant if isinstance(variant, str) else None,
+                )
+                model_config = getattr(core, "model_config", None)
+                variant_value = (
+                    variant.strip().lower()
+                    if isinstance(variant, str) and variant.strip()
+                    else None
+                )
+                reasoning_payload = None
+                reasoning_getter = getattr(model_config, "get_reasoning_config", None)
+                if callable(reasoning_getter):
+                    try:
+                        resolved = reasoning_getter()
+                        if isinstance(resolved, dict):
+                            reasoning_payload = dict(resolved)
+                    except Exception:
+                        logger.debug(
+                            "Failed to resolve reasoning payload for websocket request log",
+                            exc_info=True,
                         )
+                if variant_value or reasoning_payload:
+                    _request_log_info(
+                        "chat.stream.reasoning.request session=%s model=%s variant=%s reasoning=%s",
+                        effective_session_id or "unknown",
+                        getattr(model_config, "model", None),
+                        variant_value,
+                        reasoning_payload,
                     )
+                try:
+                    with execution_context_scope(execution_context):
+                        process_task = asyncio.create_task(
+                            core.process(
+                                input_data=input_data,
+                                conversation_id=conversation_id,
+                                agent_id=agent_id,
+                                max_iterations=max_iterations,
+                                context_files=context_files,
+                                context=context,
+                                streaming=True,
+                                stream_callback=per_request_stream_callback,
+                            )
+                        )
 
-                # Wait for the core process to finish
-                process_result = await process_task
+                    # Wait for the core process to finish
+                    process_result = await process_task
+                finally:
+                    _restore_reasoning_variant_override(
+                        core, reasoning_variant_snapshot
+                    )
                 logger.info(
                     f"core.process finished. Result keys: {list(process_result.keys())}"
                 )

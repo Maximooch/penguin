@@ -708,6 +708,18 @@ class Engine:
             agent.action_executor or self.action_executor,
         )
 
+    def _extract_usage_from_api_client(self, api_client: Any) -> Dict[str, Any]:
+        """Read normalized usage metadata from the active API client handler."""
+        handler = getattr(api_client, "client_handler", None)
+        getter = getattr(handler, "get_last_usage", None)
+        if not callable(getter):
+            return {}
+        try:
+            usage = getter()
+        except Exception:
+            return {}
+        return usage if isinstance(usage, dict) else {}
+
     # ------------------------------------------------------------------
     # Iteration Loop Helpers
     # ------------------------------------------------------------------
@@ -809,6 +821,7 @@ class Engine:
         """
         last_response = ""
         all_action_results = []
+        latest_usage: Dict[str, Any] = {}
         completion_status = config.default_completion_status
 
         # Reset loop state for this run
@@ -848,6 +861,9 @@ class Engine:
 
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
+                usage_data = response_data.get("usage")
+                if isinstance(usage_data, dict) and usage_data:
+                    latest_usage = usage_data
 
                 logger.debug(
                     f"[LOOP DEBUG] {config.mode} iter {self.current_iteration}: "
@@ -994,6 +1010,7 @@ class Engine:
             "assistant_response": last_response,
             "iterations": self.current_iteration,
             "action_results": all_action_results,
+            "usage": latest_usage,
             "status": completion_status,
             "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
         }
@@ -1190,6 +1207,7 @@ class Engine:
             cm.conversation.prepare_conversation(prompt, image_paths=image_paths)
 
             last_response = ""
+            latest_usage: Dict[str, Any] = {}
 
             # Reset loop state for this run
             self._get_loop_state().reset()
@@ -1224,6 +1242,9 @@ class Engine:
 
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
+                usage_data = response_data.get("usage")
+                if isinstance(usage_data, dict) and usage_data:
+                    latest_usage = usage_data
 
                 # Debug: Log response length and action count to help diagnose loops
                 logger.debug(
@@ -1291,6 +1312,7 @@ class Engine:
                 "assistant_response": last_response,
                 "iterations": self.current_iteration,
                 "action_results": all_action_results,
+                "usage": latest_usage,
                 "status": final_status,
                 "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
             }
@@ -1301,6 +1323,7 @@ class Engine:
                 "assistant_response": f"Error occurred: {str(e)}",
                 "iterations": self.current_iteration,
                 "action_results": all_action_results,
+                "usage": {},
                 "status": "error",
                 "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
             }
@@ -1416,6 +1439,7 @@ class Engine:
                 )
 
         last_response = ""
+        latest_usage: Dict[str, Any] = {}
         completion_status = "iterations_exceeded"  # Default status
 
         try:
@@ -1439,6 +1463,9 @@ class Engine:
 
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
+                usage_data = response_data.get("usage")
+                if isinstance(usage_data, dict) and usage_data:
+                    latest_usage = usage_data
 
                 # Collect action results
                 if iteration_results:
@@ -1595,6 +1622,7 @@ class Engine:
             "iterations": self.current_iteration,
             "status": completion_status,
             "action_results": all_action_results,
+            "usage": latest_usage,
             "task": task_metadata,
             "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
         }
@@ -2250,12 +2278,15 @@ class Engine:
                 cm, action_executor, assistant_response
             )
 
+        usage = self._extract_usage_from_api_client(api_client)
+
         # Note: cm.save() removed - caller (run_response/run_task) handles persistence
         # This avoids redundant saves per iteration
 
         return {
             "assistant_response": assistant_response,
             "action_results": action_results,
+            "usage": usage,
         }
 
     async def _llm_stream(self, prompt: str, *, agent_id: Optional[str] = None):

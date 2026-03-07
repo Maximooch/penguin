@@ -22,9 +22,10 @@ def safe_context_window(context_length: Optional[int]) -> Optional[int]:
 @dataclass
 class ModelConfig:
     """Configuration for a model."""
+
     model: str
     provider: str
-    client_preference: Literal['native', 'litellm', 'openrouter'] = 'native'
+    client_preference: Literal["native", "litellm", "openrouter"] = "native"
     api_base: Optional[str] = None
     api_key: Optional[str] = None
     api_version: Optional[str] = None
@@ -38,15 +39,15 @@ class ModelConfig:
     streaming_enabled: bool = False
     enable_token_counting: bool = True
     vision_enabled: Optional[bool] = None
-    
+
     # Responses API / streaming interrupt controls
     use_responses_api: bool = False
     interrupt_on_action: bool = True
     interrupt_on_tool_call: bool = False
-    
+
     # Reasoning tokens support
     reasoning_enabled: bool = False
-    reasoning_effort: Optional[Literal['low', 'medium', 'high']] = None
+    reasoning_effort: Optional[Literal["low", "medium", "high"]] = None
     reasoning_max_tokens: Optional[int] = None
     reasoning_exclude: bool = False
     supports_reasoning: Optional[bool] = None
@@ -58,27 +59,38 @@ class ModelConfig:
         if self.api_key is None and self.provider:
             self.api_key = os.getenv(f"{self.provider.upper()}_API_KEY")
 
-        if self.client_preference == 'litellm' and "/" not in self.model:
-            print(f"Warning: Model '{self.model}' for LiteLLM preference lacks provider prefix. Assuming '{self.provider}/{self.model}'.")
+        if self.client_preference == "litellm" and "/" not in self.model:
+            print(
+                f"Warning: Model '{self.model}' for LiteLLM preference lacks provider prefix. Assuming '{self.provider}/{self.model}'."
+            )
             self.model = f"{self.provider}/{self.model}"
 
         if self.max_history_tokens is None:
             if self.max_context_window_tokens is not None:
-                self.max_history_tokens = safe_context_window(self.max_context_window_tokens)
+                self.max_history_tokens = safe_context_window(
+                    self.max_context_window_tokens
+                )
             else:
                 self.max_history_tokens = get_default_max_history_tokens()
-        
-        # TODO: move this to the gateway. 
-        # Auto-detect vision support 
+
+        # TODO: move this to the gateway.
+        # Auto-detect vision support
         if self.vision_enabled is None:
             model_lower = self.model.lower()
             if self.provider == "anthropic" and "claude-3" in model_lower:
                 self.vision_enabled = True
-            elif self.provider == "openai" and (("gpt-4" in model_lower and ("vision" in model_lower or "o" in model_lower))):
+            elif self.provider == "openai" and (
+                "gpt-4" in model_lower
+                and ("vision" in model_lower or "o" in model_lower)
+            ):
                 self.vision_enabled = True
-            elif self.provider == "google" and "gemini" in model_lower and "nano" not in model_lower:
+            elif (
+                self.provider == "google"
+                and "gemini" in model_lower
+                and "nano" not in model_lower
+            ):
                 self.vision_enabled = True
-            elif self.client_preference == 'litellm' and 'llava' in model_lower:
+            elif self.client_preference == "litellm" and "llava" in model_lower:
                 self.vision_enabled = True
             else:
                 self.vision_enabled = False
@@ -86,13 +98,15 @@ class ModelConfig:
         # Auto-detect reasoning support
         if self.supports_reasoning is None:
             self.supports_reasoning = self._detect_reasoning_support()
-        
+
         # Set default reasoning configuration for reasoning-capable models
         if self.supports_reasoning and not self.reasoning_enabled:
             # Only auto-enable if user hasn't explicitly configured reasoning
-            if (self.reasoning_effort is None and 
-                self.reasoning_max_tokens is None and 
-                not self.reasoning_exclude):
+            if (
+                self.reasoning_effort is None
+                and self.reasoning_max_tokens is None
+                and not self.reasoning_exclude
+            ):
                 self.reasoning_enabled = True
                 # Set default reasoning effort based on model type
                 if self._uses_effort_style():
@@ -127,30 +141,40 @@ class ModelConfig:
         model_lower = self.model.lower()
 
         # DeepSeek R1 models
-        if "deepseek" in model_lower and ("r1" in model_lower or "reasoning" in model_lower):
+        if "deepseek" in model_lower and (
+            "r1" in model_lower or "reasoning" in model_lower
+        ):
             return True
 
         # OpenAI o-series and GPT-5+ models (reasoning is MANDATORY for GPT-5.2+)
         # See: https://openrouter.ai/openai/gpt-5.2/api - "Mandatory reasoning"
-        if any(pattern in model_lower for pattern in ["o1", "o3", "openai/o", "gpt-5", "gpt-6"]):
+        if any(
+            pattern in model_lower
+            for pattern in ["o1", "o3", "openai/o", "gpt-5", "gpt-6"]
+        ):
             return True
-            
+
         # Gemini thinking models and Gemini 2.5 Pro
-        if "gemini" in model_lower and ("thinking" in model_lower or "2.5" in model_lower or "2-5" in model_lower):
+        if "gemini" in model_lower and (
+            "thinking" in model_lower or "2.5" in model_lower or "2-5" in model_lower
+        ):
             return True
-            
+
         # Anthropic models with reasoning (Claude 3.7+ with reasoning support)
         if "anthropic" in model_lower and "claude" in model_lower:
             # Newer Claude models support reasoning
-            if any(version in model_lower for version in ["3.7", "claude-4", "sonnet-4", "opus-4"]):
+            if any(
+                version in model_lower
+                for version in ["3.7", "claude-4", "sonnet-4", "opus-4"]
+            ):
                 return True
-                
+
         # Grok models
         if "grok" in model_lower:
             return True
-            
+
         return False
-    
+
     def _uses_effort_style(self) -> bool:
         """Check if model uses effort-style reasoning configuration."""
         model_lower = self.model.lower()
@@ -166,34 +190,36 @@ class ModelConfig:
                 "gpt-6",
             ]
         )
-    
+
     def _uses_max_tokens_style(self) -> bool:
         """Check if model uses max_tokens-style reasoning configuration."""
         model_lower = self.model.lower()
-        return any(pattern in model_lower for pattern in ["gemini", "anthropic", "claude", "thinking"])
+        return any(
+            pattern in model_lower
+            for pattern in ["gemini", "anthropic", "claude", "thinking"]
+        )
 
     def get_reasoning_config(self) -> Optional[Dict[str, Any]]:
         """Get the reasoning configuration for API requests."""
         if not self.reasoning_enabled or not self.supports_reasoning:
             return None
-            
-        config = {}
 
-        if self._uses_effort_style():
-            config["effort"] = self.reasoning_effort or "high"
-        elif self._uses_max_tokens_style():
-            if self.reasoning_max_tokens is not None:
-                config["max_tokens"] = self.reasoning_max_tokens
-            else:
-                config["max_tokens"] = 16000
-        elif self.reasoning_effort:
+        config: Dict[str, Any] = {}
+
+        # If effort/max_tokens was explicitly set (e.g., variant override),
+        # preserve that intent across providers.
+        if self.reasoning_effort:
             config["effort"] = self.reasoning_effort
         elif self.reasoning_max_tokens is not None:
             config["max_tokens"] = self.reasoning_max_tokens
-            
+        elif self._uses_effort_style():
+            config["effort"] = "high"
+        elif self._uses_max_tokens_style():
+            config["max_tokens"] = 16000
+
         if self.reasoning_exclude:
             config["exclude"] = True
-            
+
         return config
 
     def get_config(self) -> Dict[str, Any]:
@@ -221,23 +247,25 @@ class ModelConfig:
             config["temperature"] = self.temperature
         if self.max_history_tokens is not None:
             config["max_history_tokens"] = self.max_history_tokens
-        
+
         # Add reasoning config if enabled
         reasoning_config = self.get_reasoning_config()
         if reasoning_config:
             config["reasoning_config"] = reasoning_config
-            
+
         return config
 
     @classmethod
     def from_env(cls):
         provider = os.getenv("PENGUIN_PROVIDER", "anthropic")
         client_pref = os.getenv("PENGUIN_CLIENT_PREFERENCE", "native")
-        
+
         default_model = "anthropic/claude-3-5-sonnet-20240620"
-        if client_pref == 'litellm':
-            default_model = os.getenv("PENGUIN_MODEL", f"{provider}/claude-3-5-sonnet-20240620")
-        elif client_pref == 'openrouter':
+        if client_pref == "litellm":
+            default_model = os.getenv(
+                "PENGUIN_MODEL", f"{provider}/claude-3-5-sonnet-20240620"
+            )
+        elif client_pref == "openrouter":
             # OpenRouter models are typically prefixed with the provider, e.g. "openai/gpt-4o"
             default_model = os.getenv("PENGUIN_MODEL", "openai/gpt-4o")
         else:
@@ -249,8 +277,12 @@ class ModelConfig:
         reasoning_max_tokens = os.getenv("PENGUIN_REASONING_MAX_TOKENS")
         reasoning_exclude = os.getenv("PENGUIN_REASONING_EXCLUDE", "").lower() == "true"
 
-        max_output_env = os.getenv("PENGUIN_MAX_OUTPUT_TOKENS") or os.getenv("PENGUIN_MAX_TOKENS") # TODO: renaming Penguin env vars
-        max_context_env = os.getenv("PENGUIN_MAX_CONTEXT_WINDOW_TOKENS") or os.getenv("PENGUIN_CONTEXT_WINDOW")
+        max_output_env = os.getenv("PENGUIN_MAX_OUTPUT_TOKENS") or os.getenv(
+            "PENGUIN_MAX_TOKENS"
+        )  # TODO: renaming Penguin env vars
+        max_context_env = os.getenv("PENGUIN_MAX_CONTEXT_WINDOW_TOKENS") or os.getenv(
+            "PENGUIN_CONTEXT_WINDOW"
+        )
 
         return cls(
             model=default_model,
@@ -266,19 +298,29 @@ class ModelConfig:
             if os.getenv("PENGUIN_MAX_HISTORY_TOKENS")
             else None,
             vision_enabled=os.getenv("PENGUIN_VISION_ENABLED", "").lower() == "true"
-            if os.getenv("PENGUIN_VISION_ENABLED") != "" else None,
+            if os.getenv("PENGUIN_VISION_ENABLED") != ""
+            else None,
             streaming_enabled=os.getenv("PENGUIN_STREAMING_ENABLED", "true").lower()
             == "true",
             reasoning_enabled=reasoning_enabled,
-            reasoning_effort=reasoning_effort if reasoning_effort in ['low', 'medium', 'high'] else None,
-            reasoning_max_tokens=int(reasoning_max_tokens) if reasoning_max_tokens else None,
+            reasoning_effort=reasoning_effort
+            if reasoning_effort in ["low", "medium", "high"]
+            else None,
+            reasoning_max_tokens=int(reasoning_max_tokens)
+            if reasoning_max_tokens
+            else None,
             reasoning_exclude=reasoning_exclude,
-            use_responses_api=os.getenv("PENGUIN_USE_RESPONSES_API", "false").lower() == "true",
-            interrupt_on_action=os.getenv("PENGUIN_INTERRUPT_ON_ACTION", "true").lower() != "false",
-            interrupt_on_tool_call=os.getenv("PENGUIN_INTERRUPT_ON_TOOL_CALL", "false").lower() == "true",
+            use_responses_api=os.getenv("PENGUIN_USE_RESPONSES_API", "false").lower()
+            == "true",
+            interrupt_on_action=os.getenv("PENGUIN_INTERRUPT_ON_ACTION", "true").lower()
+            != "false",
+            interrupt_on_tool_call=os.getenv(
+                "PENGUIN_INTERRUPT_ON_TOOL_CALL", "false"
+            ).lower()
+            == "true",
             debug_upstream=os.getenv("OPENROUTER_DEBUG", "").lower() == "true",
         )
-    
+
     @classmethod
     def for_model(
         cls,
@@ -288,36 +330,37 @@ class ModelConfig:
         model_configs: Optional[Dict[str, Dict[str, Any]]] = None,
     ):
         """Create ModelConfig for a specific model, dynamically resolving from model_configs.
-        
+
         Args:
             model_name: The model identifier (e.g., "openai/gpt-5")
             provider: Provider override (if None, extracted from model_name or model_configs)
             client_preference: Client preference override
             model_configs: Dict of model-specific configs from config.yml
-        
+
         Returns:
             ModelConfig instance with model-specific settings applied
         """
         # Load model_configs from config if not provided
         if model_configs is None:
             from penguin.config import load_config
+
             config_data = load_config()
             model_configs = config_data.get("model_configs", {})
-        
+
         # Look up model-specific config
         model_specific = model_configs.get(model_name, {})
-        
+
         # Extract provider from model name if not provided
         if provider is None:
             if "/" in model_name:
                 provider = model_name.split("/")[0]
             else:
                 provider = model_specific.get("provider", "openrouter")
-        
+
         # Determine client preference
         if client_preference is None:
             client_preference = model_specific.get("client_preference", provider)
-        
+
         # Build ModelConfig with model-specific settings
         return cls(
             model=model_name,
@@ -327,24 +370,42 @@ class ModelConfig:
             max_output_tokens=model_specific.get("max_output_tokens")
             or model_specific.get("max_tokens")
             or (
-                int(os.getenv("PENGUIN_MAX_OUTPUT_TOKENS") or os.getenv("PENGUIN_MAX_TOKENS"))
-                if (os.getenv("PENGUIN_MAX_OUTPUT_TOKENS") or os.getenv("PENGUIN_MAX_TOKENS"))
+                int(
+                    os.getenv("PENGUIN_MAX_OUTPUT_TOKENS")
+                    or os.getenv("PENGUIN_MAX_TOKENS")
+                )
+                if (
+                    os.getenv("PENGUIN_MAX_OUTPUT_TOKENS")
+                    or os.getenv("PENGUIN_MAX_TOKENS")
+                )
                 else None
             ),
             max_context_window_tokens=model_specific.get("max_context_window_tokens")
             or model_specific.get("context_window")
             or (
-                int(os.getenv("PENGUIN_MAX_CONTEXT_WINDOW_TOKENS") or os.getenv("PENGUIN_CONTEXT_WINDOW"))
-                if (os.getenv("PENGUIN_MAX_CONTEXT_WINDOW_TOKENS") or os.getenv("PENGUIN_CONTEXT_WINDOW"))
+                int(
+                    os.getenv("PENGUIN_MAX_CONTEXT_WINDOW_TOKENS")
+                    or os.getenv("PENGUIN_CONTEXT_WINDOW")
+                )
+                if (
+                    os.getenv("PENGUIN_MAX_CONTEXT_WINDOW_TOKENS")
+                    or os.getenv("PENGUIN_CONTEXT_WINDOW")
+                )
                 else None
             ),
-            temperature=model_specific.get("temperature") or (
-                float(os.getenv("PENGUIN_TEMPERATURE")) if os.getenv("PENGUIN_TEMPERATURE") else 0.7
+            temperature=model_specific.get("temperature")
+            or (
+                float(os.getenv("PENGUIN_TEMPERATURE"))
+                if os.getenv("PENGUIN_TEMPERATURE")
+                else 0.7
             ),
             streaming_enabled=model_specific.get("streaming_enabled", True),
             vision_enabled=model_specific.get("vision_enabled"),
-            max_history_tokens=model_specific.get("max_history_tokens") or (
-                int(os.getenv("PENGUIN_MAX_HISTORY_TOKENS")) if os.getenv("PENGUIN_MAX_HISTORY_TOKENS") else None
+            max_history_tokens=model_specific.get("max_history_tokens")
+            or (
+                int(os.getenv("PENGUIN_MAX_HISTORY_TOKENS"))
+                if os.getenv("PENGUIN_MAX_HISTORY_TOKENS")
+                else None
             ),
             reasoning_enabled=model_specific.get("reasoning", {}).get("enabled", False)
             if isinstance(model_specific.get("reasoning"), dict)
@@ -377,6 +438,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ModelSpecs:
     """Specifications for an LLM model from OpenRouter."""
+
     model_id: str
     name: str
     context_length: int
@@ -418,6 +480,7 @@ class ModelSpecs:
 @dataclass
 class _CacheEntry:
     """Cache entry with TTL."""
+
     specs: ModelSpecs
     fetched_at: float
 
@@ -460,7 +523,9 @@ class ModelSpecsService:
         if enable_disk_cache:
             self._load_disk_cache()
 
-    async def get_specs(self, model_id: str, force_refresh: bool = False) -> Optional[ModelSpecs]:
+    async def get_specs(
+        self, model_id: str, force_refresh: bool = False
+    ) -> Optional[ModelSpecs]:
         """Get specifications for a model."""
         if not force_refresh:
             cached = self._cache.get(model_id)
@@ -474,7 +539,9 @@ class ModelSpecsService:
                 self._save_disk_cache()
         return specs
 
-    async def get_specs_dict(self, model_id: str, force_refresh: bool = False) -> Dict[str, Any]:
+    async def get_specs_dict(
+        self, model_id: str, force_refresh: bool = False
+    ) -> Dict[str, Any]:
         """Get specifications as a dictionary (for backwards compatibility)."""
         specs = await self.get_specs(model_id, force_refresh)
         if specs:
@@ -519,13 +586,17 @@ class ModelSpecsService:
                             continue
                         specs = self._parse_api_model(model)
                         if specs:
-                            self._cache[model_id] = _CacheEntry(specs=specs, fetched_at=now)
+                            self._cache[model_id] = _CacheEntry(
+                                specs=specs, fetched_at=now
+                            )
 
                     self._all_models_fetched = True
                     if self.enable_disk_cache:
                         self._save_disk_cache()
 
-                    logger.info(f"Preloaded {len(self._cache)} model specs from OpenRouter")
+                    logger.info(
+                        f"Preloaded {len(self._cache)} model specs from OpenRouter"
+                    )
                     return len(self._cache)
 
             except Exception as e:
@@ -606,10 +677,21 @@ class ModelSpecsService:
         supports_vision = "image" in modality or "multimodal" in modality.lower()
 
         model_lower = model_id.lower()
-        supports_reasoning = any(pattern in model_lower for pattern in [
-            "o1", "o3", "r1", "thinking", "reasoning", "gpt-5",
-            "claude-3.7", "claude-4", "gemini-2.5", "deepseek-r1",
-        ])
+        supports_reasoning = any(
+            pattern in model_lower
+            for pattern in [
+                "o1",
+                "o3",
+                "r1",
+                "thinking",
+                "reasoning",
+                "gpt-5",
+                "claude-3.7",
+                "claude-4",
+                "gemini-2.5",
+                "deepseek-r1",
+            ]
+        )
 
         return ModelSpecs(
             model_id=model_id,
@@ -637,7 +719,9 @@ class ModelSpecsService:
                 try:
                     specs = ModelSpecs.from_dict(entry_data["specs"])
                     fetched_at = entry_data.get("fetched_at", 0)
-                    self._cache[model_id] = _CacheEntry(specs=specs, fetched_at=fetched_at)
+                    self._cache[model_id] = _CacheEntry(
+                        specs=specs, fetched_at=fetched_at
+                    )
                 except (KeyError, TypeError) as e:
                     logger.debug(f"Skipping invalid cache entry for {model_id}: {e}")
 

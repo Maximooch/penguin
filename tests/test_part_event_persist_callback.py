@@ -122,3 +122,35 @@ async def test_tool_events_attach_to_completed_stream_message_when_available():
     ]
     assert tool_parts
     assert tool_parts[0]["messageID"] == message_id
+
+
+@pytest.mark.asyncio
+async def test_update_assistant_usage_creates_missing_message_and_emits_update():
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_usage")
+
+    await adapter.update_assistant_usage(
+        "msg_usage_1",
+        tokens={
+            "input": 21,
+            "output": 8,
+            "reasoning": 3,
+            "cache": {"read": 2, "write": 1},
+        },
+        cost=0.00042,
+    )
+
+    assistant_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("role") == "assistant" and item.get("id") == "msg_usage_1"
+    ]
+    assert assistant_updates
+    latest = assistant_updates[-1]
+    assert latest["cost"] == pytest.approx(0.00042)
+    assert latest["tokens"]["input"] == 21
+    assert latest["tokens"]["output"] == 8
+    assert latest["tokens"]["reasoning"] == 3
+    assert latest["tokens"]["cache"]["read"] == 2
+    assert latest["tokens"]["cache"]["write"] == 1

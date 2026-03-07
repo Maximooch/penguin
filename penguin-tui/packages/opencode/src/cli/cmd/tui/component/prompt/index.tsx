@@ -790,6 +790,7 @@ export function Prompt(props: PromptProps) {
           agent_id: agent.name,
           directory,
           streaming: true,
+          variant,
           client_message_id: messageID,
           parts: nonTextParts,
         }),
