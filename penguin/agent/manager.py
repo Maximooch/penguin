@@ -31,6 +31,7 @@ class AgentManager:
         self,
         conversation_manager: Any,
         config: Any,
+        runtime_config: Any = None,
         is_paused_fn: Optional[Callable[[str], bool]] = None,
     ):
         """Initialize AgentManager.
@@ -38,10 +39,12 @@ class AgentManager:
         Args:
             conversation_manager: ConversationManager instance
             config: Config instance with agent_personas
+            runtime_config: RuntimeConfig instance for security metadata
             is_paused_fn: Optional function to check if agent is paused
         """
         self._cm = conversation_manager
         self._config = config
+        self._runtime_config = runtime_config
         self._is_paused_fn = is_paused_fn or (lambda _: False)
 
     def get_roster(self) -> List[Dict[str, Any]]:
@@ -69,9 +72,13 @@ class AgentManager:
             agent_ids = []
 
         parent_map = getattr(self._cm, "sub_agent_parent", {}) or {}
-        children_map = self._cm.list_sub_agents() if hasattr(self._cm, "list_sub_agents") else {}
+        children_map = (
+            self._cm.list_sub_agents() if hasattr(self._cm, "list_sub_agents") else {}
+        )
         active_agent = getattr(self._cm, "current_agent_id", None)
         personas = getattr(self._config, "agent_personas", {}) or {}
+        security_mode = getattr(self._runtime_config, "security_mode", None)
+        security_enabled = getattr(self._runtime_config, "security_enabled", None)
 
         roster: List[Dict[str, Any]] = []
         for agent_id in agent_ids:
@@ -91,25 +98,56 @@ class AgentManager:
             if not persona_description and persona_config:
                 persona_description = getattr(persona_config, "description", None)
 
+            permission = metadata.get("permission")
+            permission_rules = permission if isinstance(permission, list) else []
+            raw_agent_mode = metadata.get("_opencode_agent_mode_v1") or metadata.get(
+                "agent_mode"
+            )
+            agent_mode = (
+                raw_agent_mode.strip().lower()
+                if isinstance(raw_agent_mode, str)
+                and raw_agent_mode.strip().lower() in {"plan", "build"}
+                else "build"
+            )
+
             parent = parent_map.get(agent_id)
-            children = list(children_map.get(agent_id, [])) if isinstance(children_map, dict) else []
+            children = (
+                list(children_map.get(agent_id, []))
+                if isinstance(children_map, dict)
+                else []
+            )
 
             preview = None
             if system_prompt:
-                preview = system_prompt if len(system_prompt) <= 80 else system_prompt[:77] + "..."
+                preview = (
+                    system_prompt
+                    if len(system_prompt) <= 80
+                    else system_prompt[:77] + "..."
+                )
 
-            roster.append({
-                "id": agent_id,
-                "persona": persona_name,
-                "persona_description": persona_description,
-                "persona_defined": bool(persona_config),
-                "parent": parent,
-                "children": children,
-                "active": agent_id == active_agent,
-                "paused": self._is_paused_fn(agent_id),
-                "is_sub_agent": parent is not None,
-                "system_prompt_preview": preview,
-            })
+            roster.append(
+                {
+                    "id": agent_id,
+                    "persona": persona_name,
+                    "persona_description": persona_description,
+                    "persona_defined": bool(persona_config),
+                    "parent": parent,
+                    "children": children,
+                    "active": agent_id == active_agent,
+                    "paused": self._is_paused_fn(agent_id),
+                    "is_sub_agent": parent is not None,
+                    "system_prompt_preview": preview,
+                    "permission": permission_rules,
+                    "agent_mode": agent_mode,
+                    "options": {
+                        "agent_mode": agent_mode,
+                        "supports_plan_mode": True,
+                        "can_persist_approval": True,
+                        "security_mode": security_mode,
+                        "security_enabled": security_enabled,
+                    },
+                }
+            )
 
         roster.sort(key=lambda entry: (entry["parent"] or "", entry["id"]))
         return roster
@@ -133,6 +171,7 @@ class AgentManager:
 def get_agent_roster(
     conversation_manager: Any,
     config: Any,
+    runtime_config: Any = None,
     is_paused_fn: Optional[Callable[[str], bool]] = None,
 ) -> List[Dict[str, Any]]:
     """Get agent roster without creating a manager instance.
@@ -140,18 +179,25 @@ def get_agent_roster(
     Args:
         conversation_manager: ConversationManager instance
         config: Config instance
+        runtime_config: RuntimeConfig instance
         is_paused_fn: Optional pause check function
 
     Returns:
         List of agent info dicts
     """
-    return AgentManager(conversation_manager, config, is_paused_fn).get_roster()
+    return AgentManager(
+        conversation_manager,
+        config,
+        runtime_config,
+        is_paused_fn,
+    ).get_roster()
 
 
 def get_agent_profile(
     agent_id: str,
     conversation_manager: Any,
     config: Any,
+    runtime_config: Any = None,
     is_paused_fn: Optional[Callable[[str], bool]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Get single agent profile without creating a manager instance.
@@ -160,12 +206,18 @@ def get_agent_profile(
         agent_id: Agent to look up
         conversation_manager: ConversationManager instance
         config: Config instance
+        runtime_config: RuntimeConfig instance
         is_paused_fn: Optional pause check function
 
     Returns:
         Agent info dict or None
     """
-    return AgentManager(conversation_manager, config, is_paused_fn).get_profile(agent_id)
+    return AgentManager(
+        conversation_manager,
+        config,
+        runtime_config,
+        is_paused_fn,
+    ).get_profile(agent_id)
 
 
 __all__ = [

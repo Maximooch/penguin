@@ -479,6 +479,79 @@ Read the current session todo list.
 
 
 # =============================================================================
+# INTERACTIVE QUESTION TOOL
+# =============================================================================
+
+QUESTION_TOOLS = """
+## Interactive Questions
+
+### question
+Ask the user structured questions during execution and block until they reply.
+
+**When to use:**
+- Missing requirements that materially change implementation
+- Choosing between multiple safe implementation options
+- Confirming constraints (framework, API contract, migration strategy)
+
+**Format:** `<question>{"questions": [...]}</question>`
+
+**Question schema:**
+- `question` (string) - Complete question text
+- `header` (string) - Short tab label (max 30 chars)
+- `options` (array) - List of `{ "label", "description" }`
+- `multiple` (boolean, optional) - Allow selecting multiple options
+- `custom` (boolean, optional) - Allow a custom typed answer (default: true)
+
+**Example - Single choice:**
+```actionxml
+<question>{
+  "questions": [
+    {
+      "question": "Which authentication provider should I implement first?",
+      "header": "Auth Provider",
+      "options": [
+        {"label": "GitHub", "description": "Implement GitHub OAuth first"},
+        {"label": "Google", "description": "Implement Google OAuth first"}
+      ]
+    }
+  ]
+}</question>
+```
+
+**Example - Multiple questions:**
+```actionxml
+<question>{
+  "questions": [
+    {
+      "question": "Which database should be the default?",
+      "header": "Database",
+      "options": [
+        {"label": "Postgres", "description": "Use PostgreSQL"},
+        {"label": "SQLite", "description": "Use SQLite"}
+      ]
+    },
+    {
+      "question": "Which environments should get migrations now?",
+      "header": "Environments",
+      "multiple": true,
+      "options": [
+        {"label": "dev", "description": "Apply in development"},
+        {"label": "staging", "description": "Apply in staging"},
+        {"label": "prod", "description": "Apply in production"}
+      ]
+    }
+  ]
+}</question>
+```
+
+**Important:**
+- Keep labels concise and unambiguous
+- Do not include a generic "Other" option when custom input is enabled
+- The tool pauses execution until the user replies or rejects
+"""
+
+
+# =============================================================================
 # BROWSER AUTOMATION TOOLS
 # =============================================================================
 
@@ -585,6 +658,7 @@ TOOL_GUIDE = "\n\n".join(
         SEARCH_TOOLS,
         MEMORY_TOOLS,
         TODO_TOOLS,
+        QUESTION_TOOLS,
         COMPLETION_TOOLS,
     ]
 )

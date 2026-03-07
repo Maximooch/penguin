@@ -13,9 +13,19 @@ from penguin import __version__
 TRANSCRIPT_KEY = "_opencode_transcript_v1"
 USAGE_KEY = "_opencode_usage_v1"
 TODO_KEY = "_opencode_todo_v1"
+AGENT_MODE_KEY = "_opencode_agent_mode_v1"
 
 _TODO_STATUS_VALUES = {"pending", "in_progress", "completed", "cancelled"}
 _TODO_PRIORITY_VALUES = {"high", "medium", "low"}
+
+
+def _normalize_agent_mode(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"plan", "build"}:
+        return normalized
+    return None
 
 
 def _iso_to_ms(value: Optional[str]) -> int:
@@ -127,6 +137,7 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
         "slug": str(session.id),
         "projectID": "penguin",
         "directory": directory,
+        "agent_mode": "build",
         "title": _infer_title(session),
         "version": __version__,
         "time": {
@@ -136,6 +147,12 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
     }
 
     if isinstance(metadata, dict):
+        metadata_agent_mode = _normalize_agent_mode(
+            metadata.get(AGENT_MODE_KEY) or metadata.get("agent_mode")
+        )
+        if metadata_agent_mode:
+            payload["agent_mode"] = metadata_agent_mode
+
         parent_id = (
             metadata.get("parentID")
             or metadata.get("parent_id")
@@ -200,6 +217,7 @@ def create_session_info(
     parent_id: str | None = None,
     directory: str | None = None,
     permission: list[dict[str, Any]] | None = None,
+    agent_mode: str | None = None,
 ) -> dict[str, Any]:
     """Create a session and return OpenCode Session.Info payload."""
     manager = _manager_for_new_session(core, parent_id=parent_id)
@@ -220,6 +238,9 @@ def create_session_info(
         metadata["directory"] = directory.strip()
     if isinstance(permission, list):
         metadata["permission"] = permission
+    normalized_agent_mode = _normalize_agent_mode(agent_mode)
+    if normalized_agent_mode:
+        metadata[AGENT_MODE_KEY] = normalized_agent_mode
 
     manager.mark_session_modified(session.id)
     manager.save_session(session)
@@ -233,6 +254,7 @@ def update_session_info(
     *,
     title: str | None = None,
     archived: int | None = None,
+    agent_mode: str | None = None,
 ) -> Optional[dict[str, Any]]:
     """Update a session and return OpenCode Session.Info payload."""
     session, manager = _find_session(core, session_id)
@@ -256,6 +278,10 @@ def update_session_info(
             metadata["archived_at_ms"] = int(archived)
         else:
             metadata.pop("archived_at_ms", None)
+
+    normalized_agent_mode = _normalize_agent_mode(agent_mode)
+    if normalized_agent_mode:
+        metadata[AGENT_MODE_KEY] = normalized_agent_mode
 
     manager.mark_session_modified(session.id)
     manager.save_session(session)

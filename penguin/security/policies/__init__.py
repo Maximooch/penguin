@@ -8,8 +8,9 @@ This package contains concrete policy implementations:
 """
 
 from penguin.security.policies.workspace import WorkspaceBoundaryPolicy
+from penguin.security.policies.agent_mode import AgentModePolicy
 
 __all__ = [
     "WorkspaceBoundaryPolicy",
+    "AgentModePolicy",
 ]
-

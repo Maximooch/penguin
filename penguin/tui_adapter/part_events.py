@@ -135,6 +135,21 @@ class PartEventAdapter:
         cwd = self._default_directory or os.getenv("PENGUIN_CWD") or os.getcwd()
         return {"cwd": cwd, "root": cwd}
 
+    def _mode(self) -> str:
+        """Resolve OpenCode message mode from execution context."""
+        try:
+            from penguin.system.execution_context import get_current_execution_context
+
+            context = get_current_execution_context()
+            raw_mode = getattr(context, "agent_mode", None) if context else None
+            if isinstance(raw_mode, str):
+                normalized = raw_mode.strip().lower()
+                if normalized in {"plan", "build"}:
+                    return normalized
+        except Exception:
+            pass
+        return "chat"
+
     def _next_id(self, prefix: str) -> str:
         ts = int(time.time() * 1000)
         if ts == self._last_id_ts:
@@ -257,6 +272,7 @@ class PartEventAdapter:
             agent_id=agent_id,
             parent_id="root",
             path=self._path(),
+            mode=self._mode(),
         )
         self._active_messages[created_message_id] = message
         self._current_message_id = created_message_id
@@ -290,6 +306,7 @@ class PartEventAdapter:
             agent_id=agent_id,
             parent_id="root",
             path=self._path(),
+            mode=self._mode(),
         )
         self._active_messages[message_id] = message
         self._current_message_id = message_id
@@ -566,6 +583,7 @@ class PartEventAdapter:
             agent_id="default",
             parent_id="root",
             path=self._path(),
+            mode=self._mode(),
         )
 
         # Create text part for user message
@@ -604,6 +622,7 @@ class PartEventAdapter:
                 agent_id="default",
                 parent_id="root",
                 path=self._path(),
+                mode=self._mode(),
             )
             self._active_messages[message_id] = message
 

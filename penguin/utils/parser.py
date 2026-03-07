@@ -84,6 +84,7 @@ class ActionType(Enum):
     WORKSPACE_SEARCH = "workspace_search"
     TODOWRITE = "todowrite"
     TODOREAD = "todoread"
+    QUESTION = "question"
     # Task Management Actions
     TASK_CREATE = "task_create"
     TASK_UPDATE = "task_update"
@@ -451,6 +452,7 @@ class ActionExecutor:
             ActionType.WORKSPACE_SEARCH: self._workspace_search,
             ActionType.TODOWRITE: self._todo_write,
             ActionType.TODOREAD: self._todo_read,
+            ActionType.QUESTION: self._question,
             ActionType.MULTIEDIT: self._multiedit,
             # Project management handlers
             ActionType.PROJECT_CREATE: self._project_create,
@@ -1658,6 +1660,188 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             return self._normalize_todo_items(payload)
 
         raise ValueError("todowrite expects JSON array or object with 'todos'")
+
+    def _normalize_question_options(self, raw_items: Any) -> List[Dict[str, str]]:
+        """Normalize question options to OpenCode-compatible shape."""
+        if not isinstance(raw_items, list):
+            return []
+
+        normalized: List[Dict[str, str]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+
+            label_raw = item.get("label")
+            description_raw = item.get("description")
+
+            label = (
+                label_raw.strip()
+                if isinstance(label_raw, str)
+                else str(label_raw).strip()
+                if label_raw is not None
+                else ""
+            )
+            description = (
+                description_raw.strip()
+                if isinstance(description_raw, str)
+                else str(description_raw).strip()
+                if description_raw is not None
+                else ""
+            )
+
+            if not label or not description:
+                continue
+
+            normalized.append(
+                {
+                    "label": label,
+                    "description": description,
+                }
+            )
+
+        return normalized
+
+    def _normalize_question_items(self, raw_items: Any) -> List[Dict[str, Any]]:
+        """Normalize question payload to OpenCode-compatible Question[] shape."""
+        if not isinstance(raw_items, list):
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+
+            question_raw = item.get("question")
+            header_raw = item.get("header")
+
+            question_text = (
+                question_raw.strip()
+                if isinstance(question_raw, str)
+                else str(question_raw).strip()
+                if question_raw is not None
+                else ""
+            )
+            header_text = (
+                header_raw.strip()
+                if isinstance(header_raw, str)
+                else str(header_raw).strip()
+                if header_raw is not None
+                else ""
+            )
+
+            options = self._normalize_question_options(item.get("options"))
+            if not question_text or not header_text or not options:
+                continue
+
+            question_payload: Dict[str, Any] = {
+                "question": question_text,
+                "header": header_text[:30],
+                "options": options,
+            }
+
+            multiple = item.get("multiple")
+            if isinstance(multiple, bool):
+                question_payload["multiple"] = multiple
+
+            custom = item.get("custom")
+            if isinstance(custom, bool):
+                question_payload["custom"] = custom
+
+            normalized.append(question_payload)
+
+        return normalized
+
+    def _parse_question_params(self, params: str) -> List[Dict[str, Any]]:
+        """Parse question payload from JSON object or JSON array."""
+        content = (params or "").strip()
+        if not content:
+            raise ValueError("question expects JSON array or object with 'questions'")
+
+        payload = json.loads(content)
+        if isinstance(payload, dict):
+            maybe_items = payload.get("questions")
+            if isinstance(maybe_items, list):
+                questions = self._normalize_question_items(maybe_items)
+                if questions:
+                    return questions
+                raise ValueError("question payload contains no valid questions")
+            if {"question", "header", "options"} <= set(payload.keys()):
+                questions = self._normalize_question_items([payload])
+                if questions:
+                    return questions
+                raise ValueError("question payload contains no valid questions")
+            raise ValueError("question expects JSON array or object with 'questions'")
+
+        if isinstance(payload, list):
+            questions = self._normalize_question_items(payload)
+            if questions:
+                return questions
+            raise ValueError("question payload contains no valid questions")
+
+        raise ValueError("question expects JSON array or object with 'questions'")
+
+    def _resolve_question_session_id(self) -> Optional[str]:
+        """Resolve active session ID for question operations."""
+        context = get_current_execution_context()
+        if context is not None:
+            session_id = context.session_id or context.conversation_id
+            if isinstance(session_id, str) and session_id:
+                return session_id
+
+        session_id, _session, _manager = self._resolve_todo_session()
+        if isinstance(session_id, str) and session_id:
+            return session_id
+
+        return None
+
+    async def _question(self, params: str) -> str:
+        """Ask structured user questions and wait for answers."""
+        try:
+            questions = self._parse_question_params(params)
+        except Exception as e:
+            return f"Error: Invalid question payload: {e}"
+
+        session_id = self._resolve_question_session_id()
+        if not session_id:
+            return "Error: Unable to resolve session for question"
+
+        try:
+            from penguin.security.question import QuestionStatus, get_question_manager
+
+            context = get_current_execution_context()
+            request_context: Dict[str, Any] = {}
+            if context is not None and isinstance(context.agent_id, str):
+                request_context["agent_id"] = context.agent_id
+            if context is not None and isinstance(context.directory, str):
+                request_context["directory"] = context.directory
+
+            manager = get_question_manager()
+            request = manager.create_request(
+                session_id=session_id,
+                questions=questions,
+                context=request_context,
+            )
+            resolved = await manager.wait_for_resolution(request.id)
+            if resolved is None:
+                return "Error: Question request was not resolved"
+            if resolved.status == QuestionStatus.REJECTED:
+                return "Error: The user rejected this question request"
+
+            answers = resolved.answers or []
+            formatted_pairs: List[str] = []
+            for index, question in enumerate(questions):
+                answer = answers[index] if index < len(answers) else []
+                value = ", ".join(answer) if answer else "Unanswered"
+                formatted_pairs.append(f'"{question["question"]}"="{value}"')
+
+            formatted = ", ".join(formatted_pairs)
+            return (
+                "User has answered your questions: "
+                f"{formatted}. "
+                "You can now continue with the user's answers in mind."
+            )
+        except Exception as e:
+            return f"Error: Failed to ask question: {e}"
 
     def _resolve_todo_session(self) -> tuple[Optional[str], Any, Any]:
         """Resolve the active session and manager for todo operations."""

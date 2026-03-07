@@ -277,6 +277,47 @@ async def test_session_abort_alias_and_missing_session(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_create_and_update_agent_mode(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    created = await session_create(
+        payload={"title": "Mode Session", "agent_mode": "plan"},
+        core=typed_core,
+    )
+    session_id = created["id"]
+    assert created["agent_mode"] == "plan"
+
+    updated = await session_update(
+        session_id,
+        payload={"agent_mode": "build"},
+        core=typed_core,
+    )
+    assert updated["agent_mode"] == "build"
+
+
+@pytest.mark.asyncio
+async def test_session_rejects_invalid_agent_mode(tmp_path: Path) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+
+    with pytest.raises(HTTPException) as exc_create:
+        await session_create(payload={"agent_mode": "invalid"}, core=typed_core)
+    assert exc_create.value.status_code == 400
+
+    created = await session_create(payload={"title": "Mode Session"}, core=typed_core)
+    session_id = created["id"]
+
+    with pytest.raises(HTTPException) as exc_update:
+        await session_update(
+            session_id,
+            payload={"agent_mode": "invalid"},
+            core=typed_core,
+        )
+    assert exc_update.value.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_session_summarize_emits_session_updated_when_title_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

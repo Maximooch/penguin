@@ -1001,6 +1001,7 @@ class PenguinCore:
         manager = AgentManager(
             conversation_manager=getattr(self, "conversation_manager", None),
             config=self.config,
+            runtime_config=getattr(self, "runtime_config", None),
             is_paused_fn=self.is_agent_paused,
         )
         return manager.get_roster()
@@ -1015,6 +1016,7 @@ class PenguinCore:
         manager = AgentManager(
             conversation_manager=getattr(self, "conversation_manager", None),
             config=self.config,
+            runtime_config=getattr(self, "runtime_config", None),
             is_paused_fn=self.is_agent_paused,
         )
         return manager.get_profile(agent_id)
@@ -4207,6 +4209,30 @@ class PenguinCore:
 
         if action_name == "todoread":
             return "todoread", {}, metadata
+
+        if action_name == "question":
+            questions: list[dict[str, Any]] = []
+            if isinstance(params, dict):
+                raw_questions = params.get("questions")
+                if isinstance(raw_questions, list):
+                    questions = [
+                        item for item in raw_questions if isinstance(item, dict)
+                    ]
+            elif isinstance(raw, str) and raw.strip():
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        raw_questions = parsed.get("questions")
+                        if isinstance(raw_questions, list):
+                            questions = [
+                                item for item in raw_questions if isinstance(item, dict)
+                            ]
+                    elif isinstance(parsed, list):
+                        questions = [item for item in parsed if isinstance(item, dict)]
+                except Exception:
+                    questions = []
+            tool_input = {"questions": questions}
+            return "question", tool_input, metadata
 
         if action_name == "apply_diff":
             if isinstance(params, dict):

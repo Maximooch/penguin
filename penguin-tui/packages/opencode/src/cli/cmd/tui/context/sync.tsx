@@ -790,7 +790,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               : stamp(typeof item.last_active === "string" ? item.last_active : undefined)
           const directoryValue =
             typeof item.directory === "string" ? item.directory : directory
-          return {
+          const payload = {
             id: sid,
             slug: typeof item.slug === "string" ? item.slug : sid,
             projectID: typeof item.projectID === "string" ? item.projectID : "penguin",
@@ -802,6 +802,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               updated,
             },
           }
+          const sessionMode = typeof item.agent_mode === "string" ? item.agent_mode : undefined
+          if (sessionMode) {
+            ;(payload as Record<string, unknown>).agent_mode = sessionMode
+          }
+          return payload
         })
         const usage = list.reduce(
           (acc: Record<string, SessionUsage>, item: { [key: string]: unknown }) => {
@@ -827,12 +832,20 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             if (!name) return undefined
             const mode = item.is_sub_agent === true ? ("subagent" as const) : ("primary" as const)
             const hidden = item.hidden === true
+            const permission = Array.isArray(item.permission) ? item.permission : []
+            const rawOptions = item.options
+            const options =
+              rawOptions && typeof rawOptions === "object"
+                ? ({ ...rawOptions } as Record<string, unknown>)
+                : ({} as Record<string, unknown>)
+            const sessionMode = typeof item.agent_mode === "string" ? item.agent_mode : undefined
+            if (sessionMode && !options.agent_mode) options.agent_mode = sessionMode
             return {
               name,
               mode,
               hidden,
-              permission: [],
-              options: {},
+              permission,
+              options,
             }
           })
           .filter((item) => !!item)

@@ -101,6 +101,7 @@ from penguin.tools.repository_tools import (
 _permission_enforcer_imported = False
 _PermissionEnforcer = None
 _WorkspaceBoundaryPolicy = None
+_AgentModePolicy = None
 _PermissionMode = None
 _PermissionResult = None
 _PermissionDeniedError = None
@@ -110,6 +111,7 @@ _check_tool_permission = None
 def _ensure_permission_imports():
     """Lazy import permission modules to avoid circular imports."""
     global _permission_enforcer_imported, _PermissionEnforcer, _WorkspaceBoundaryPolicy
+    global _AgentModePolicy
     global \
         _PermissionMode, \
         _PermissionResult, \
@@ -121,6 +123,7 @@ def _ensure_permission_imports():
             from penguin.security import (
                 PermissionEnforcer,
                 WorkspaceBoundaryPolicy,
+                AgentModePolicy,
                 PermissionMode,
                 PermissionResult,
                 PermissionDeniedError,
@@ -129,6 +132,7 @@ def _ensure_permission_imports():
 
             _PermissionEnforcer = PermissionEnforcer
             _WorkspaceBoundaryPolicy = WorkspaceBoundaryPolicy
+            _AgentModePolicy = AgentModePolicy
             _PermissionMode = PermissionMode
             _PermissionResult = PermissionResult
             _PermissionDeniedError = PermissionDeniedError
@@ -1568,6 +1572,12 @@ class ToolManager:
                             mode=mode,
                         )
                         self._permission_enforcer.add_policy(boundary_policy)
+
+                    # Add mode-aware plan/build policy (hard block in plan mode).
+                    if _AgentModePolicy is not None:
+                        self._permission_enforcer.add_policy(_AgentModePolicy())
+
+                    if _WorkspaceBoundaryPolicy is not None:
                         logger.info(
                             f"Permission enforcer initialized: mode={mode.value}, "
                             f"workspace={self.workspace_root}, project={self.project_root}"

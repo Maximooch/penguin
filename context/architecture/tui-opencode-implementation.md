@@ -17,7 +17,7 @@ Rationale:
 - Centralizes integration logic in Penguin’s web API.
 - Enables incremental parity without reworking UI components.
 
-## Current Status (2026-02-19)
+## Current Status (2026-03-07)
 - SSE streaming works end-to-end for chat in Penguin mode.
 - Session filtering by `session_id` works in SSE.
 - OpenCode-style message/part streaming is active via `opencode_event` bridge.
@@ -44,6 +44,13 @@ Rationale:
 - Streaming scope/finalization now carries explicit session hints (`session_id:agent_id`) across chunk + finalize paths.
 - Manual two-session Cadence/Tuxford runs on one server now complete multi-turn prompts with substantially improved isolation.
 - Session list/history parity is still incomplete vs full OpenCode API.
+- Added OpenCode-compatible permission/question route surface (`/permission`, `/question`, reply/reject variants, plus `/api/v1/*` aliases).
+- Approval callbacks now bridge to OpenCode SSE events (`permission.asked`, `permission.replied`) via `opencode_event` payloads.
+- Added question event callback bridge (`question.asked`, `question.replied`, `question.rejected`) with a dedicated question manager backing store.
+- Added blocking `<question>` action execution in parser/engine flow backed by `QuestionManager.wait_for_resolution`, so runs pause until user reply/reject (OpenCode-style).
+- Agent mode (`build`/`plan`) now persists at session level and is exposed through session payloads.
+- Mode is propagated into request execution context for policy decisions.
+- Plan mode is now hard-enforced at policy layer: non-read tool operations are denied by `AgentModePolicy`.
 
 ## Audit: TUI Expectations (from `penguin-tui`)
 
@@ -204,7 +211,7 @@ The TUI expects these events to drive UI state:
 - Phase 1 (Session list + metadata): **partial**.
 - Phase 2 (Provider/model picker): **partial**.
 - Phase 3 (Tool execution UI + persistence): **partial** (live rendering is strong; persistence/replay still incomplete).
-- Phase 4 (Permissions + questions): **not started**.
+- Phase 4 (Permissions + questions): **partial**.
 - Phase 5 (LSP/Formatter/Path/VCS real implementations, MCP deferred): **partial**.
 
 ### Phase 0: Streaming + Animation Parity (highest priority)
@@ -287,6 +294,8 @@ Goal: approvals and user questions behave like OpenCode.
 
 - Implement `/permission.reply`, `/question.reply`, `/question.reject`.
 - Emit `permission.asked/replied`, `question.asked/replied/rejected`.
+- Progress (2026-03-07): added OpenCode-compatible `/permission` and `/question` listing/reply routes (and `/api/v1/*` aliases), plus SSE bridge events for permission/question ask/reply/reject flows.
+- Progress (2026-03-07): parser now supports `<question>` tool calls with OpenCode-shaped payloads and blocks execution until `question.reply`/`question.reject` resolves the request.
 
 **Architecture Decision (Phase 4)**
 - Wrap Penguin’s permission system with OpenCode-compatible endpoints/events.
@@ -533,9 +542,10 @@ For each phase, validate with:
   - Owner: parser/core event emission + SSE bridge.
   - Acceptance: todo panel updates live.
   - Progress (2026-02-28): `todowrite` now persists normalized todos and emits `todo.updated`; core bridges event to OpenCode-shaped `opencode_event` payload.
-- [ ] E3. Implement `app.agents` and ensure message/tool events carry `agent_id` consistently.
+- [~] E3. Implement `app.agents` and ensure message/tool events carry `agent_id` consistently.
   - Owner: `core.py` agent roster + event adapter.
   - Acceptance: multi/sub-agent UI and filtering behave correctly.
+  - Progress (2026-03-07): enriched agent roster payloads with mode/permission/options metadata for OpenCode TUI parity; full sub-agent lifecycle consistency remains open.
 - [~] E4. Implement variant/mode + reasoning effort plumbing in `session.prompt`/config.
   - Owner: route adapter + `core.process` parameter mapping.
   - Acceptance: toggling mode/effort affects runtime behavior and is reflected in metadata.
@@ -543,9 +553,11 @@ For each phase, validate with:
   - Owner: TUI command registry + route parity adapters.
   - Acceptance: settings and session/model/agent actions are discoverable from the palette.
   - Progress (2026-03-05): Penguin keybind defaults now hydrate when server config omits `keybinds`, restoring working `Ctrl+P` in Penguin mode; command palette now includes Configuration inspector flow (`/config`, with `/settings` alias) and opens a read-only runtime/config-path dialog.
-- [ ] E6. Implement agent mode parity (`plan`/`build`/default) and mode-aware routing.
+- [~] E6. Implement agent mode parity (`plan`/`build`/default) and mode-aware routing.
   - Owner: TUI agent context + backend prompt/command dispatch metadata.
   - Acceptance: mode switch changes runtime behavior and is preserved in message metadata.
+  - Policy decision (2026-03-07): plan mode is hard-blocked at policy layer (not prompt-only).
+  - Progress (2026-03-07): mode now flows from TUI prompt/session update into backend request context, persists on session metadata, and is enforced by `AgentModePolicy` to allow read operations while denying non-read actions in `plan` mode.
 - [ ] E7. Complete sub-agent lifecycle parity.
   - Owner: agent roster API, message routing, session hierarchy handling.
   - Acceptance: sub-agent tasks appear as first-class sessions with reliable replay/navigation.

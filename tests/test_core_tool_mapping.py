@@ -90,6 +90,34 @@ from penguin.web.services.session_view import (
             "todoread",
             {},
         ),
+        (
+            "question",
+            {
+                "questions": [
+                    {
+                        "question": "Which target should I use?",
+                        "header": "Target",
+                        "options": [
+                            {"label": "A", "description": "Use target A"},
+                            {"label": "B", "description": "Use target B"},
+                        ],
+                    }
+                ]
+            },
+            "question",
+            {
+                "questions": [
+                    {
+                        "question": "Which target should I use?",
+                        "header": "Target",
+                        "options": [
+                            {"label": "A", "description": "Use target A"},
+                            {"label": "B", "description": "Use target B"},
+                        ],
+                    }
+                ]
+            },
+        ),
     ],
 )
 def test_map_action_to_tool_covers_common_coding_workflows(

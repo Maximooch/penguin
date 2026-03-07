@@ -159,6 +159,38 @@ export function Prompt(props: PromptProps) {
     pending: false,
     pendingSeenBusy: false,
   })
+  const [agentMode, setAgentMode] = createSignal<"build" | "plan">("build")
+
+  createEffect(() => {
+    if (!props.sessionID) return
+    const session = sync.session.get(props.sessionID) as { agent_mode?: string } | undefined
+    const mode = session?.agent_mode
+    if (mode === "plan" || mode === "build") setAgentMode(mode)
+  })
+
+  function persistAgentMode(sessionID: string, nextMode: "build" | "plan") {
+    const modeUrl = new URL(`/session/${encodeURIComponent(sessionID)}`, sdk.url)
+    fetch(modeUrl, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ agent_mode: nextMode }),
+    }).catch(() => undefined)
+  }
+
+  function applyAgentMode(nextMode: "build" | "plan", options?: { notify?: boolean; sessionID?: string }) {
+    setAgentMode(nextMode)
+    const sessionID = options?.sessionID ?? props.sessionID ?? sdk.sessionID
+    if (sessionID) persistAgentMode(sessionID, nextMode)
+    if (options?.notify === false) return
+    toast.show({ variant: "info", message: `Agent mode: ${nextMode}` })
+  }
+
+  function cycleAgentMode() {
+    const nextMode = agentMode() === "build" ? "plan" : "build"
+    applyAgentMode(nextMode)
+  }
 
   const busy = createMemo(() => status().type !== "idle" || (sdk.penguin && store.pending))
 
@@ -218,6 +250,28 @@ export function Prompt(props: PromptProps) {
           if (!input.focused) return
           submit()
           dialog.clear()
+        },
+      },
+      {
+        title: "Cycle agent mode",
+        value: "prompt.agent_mode.cycle",
+        keybind: "agent_cycle",
+        category: "Agent",
+        hidden: true,
+        enabled: sdk.penguin && store.mode === "normal",
+        onSelect: () => {
+          cycleAgentMode()
+        },
+      },
+      {
+        title: "Cycle agent mode reverse",
+        value: "prompt.agent_mode.cycle.reverse",
+        keybind: "agent_cycle_reverse",
+        category: "Agent",
+        hidden: true,
+        enabled: sdk.penguin && store.mode === "normal",
+        onSelect: () => {
+          cycleAgentMode()
         },
       },
       {
@@ -577,7 +631,7 @@ export function Prompt(props: PromptProps) {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({}),
+          body: JSON.stringify({ agent_mode: agentMode() }),
         }).then(async (res) => {
           if (!res.ok) {
             const details = await res.text().catch(() => "")
@@ -788,6 +842,7 @@ export function Prompt(props: PromptProps) {
           model: `${selectedModel.providerID}/${selectedModel.modelID}`,
           session_id: sessionID,
           agent_id: agent.name,
+          agent_mode: agentMode(),
           directory,
           streaming: true,
           variant,
@@ -1298,7 +1353,11 @@ export function Prompt(props: PromptProps) {
             />
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1}>
               <text fg={highlight()}>
-                {store.mode === "shell" ? "Shell" : Locale.titlecase(local.agent.current().name)}{" "}
+                {store.mode === "shell"
+                  ? "Shell"
+                  : sdk.penguin
+                    ? Locale.titlecase(agentMode())
+                    : Locale.titlecase(local.agent.current().name)}{" "}
               </text>
               <Show when={store.mode === "normal"}>
                 <box flexDirection="row" gap={1}>
@@ -1434,7 +1493,7 @@ export function Prompt(props: PromptProps) {
                     </text>
                   </Show>
                   <text fg={theme.text}>
-                    {keybind.print("agent_cycle")} <span style={{ fg: theme.textMuted }}>agents</span>
+                    {keybind.print("agent_cycle")} <span style={{ fg: theme.textMuted }}>{sdk.penguin ? "mode" : "agents"}</span>
                   </text>
                   <text fg={theme.text}>
                     {keybind.print("command_list")} <span style={{ fg: theme.textMuted }}>commands</span>

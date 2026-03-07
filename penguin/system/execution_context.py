@@ -21,6 +21,7 @@ class ExecutionContext:
     session_id: Optional[str] = None
     conversation_id: Optional[str] = None
     agent_id: Optional[str] = None
+    agent_mode: Optional[str] = None
     directory: Optional[str] = None
     project_root: Optional[str] = None
     workspace_root: Optional[str] = None
@@ -32,6 +33,7 @@ class ExecutionContext:
             "session_id": self.session_id,
             "conversation_id": self.conversation_id,
             "agent_id": self.agent_id,
+            "agent_mode": self.agent_mode,
             "directory": self.directory,
             "project_root": self.project_root,
             "workspace_root": self.workspace_root,

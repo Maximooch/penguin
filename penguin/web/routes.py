@@ -163,6 +163,7 @@ def _build_execution_context(
     session_id: Optional[str],
     conversation_id: Optional[str],
     agent_id: Optional[str],
+    agent_mode: Optional[str],
     directory: Optional[str],
 ) -> ExecutionContext:
     """Create request-scoped execution context for concurrent web sessions."""
@@ -172,11 +173,63 @@ def _build_execution_context(
         session_id=session_id,
         conversation_id=conversation_id,
         agent_id=agent_id,
+        agent_mode=agent_mode,
         directory=effective_directory,
         project_root=effective_directory,
         workspace_root=effective_directory,
         request_id=str(uuid.uuid4()),
     )
+
+
+def _normalize_agent_mode(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"plan", "build"}:
+        return normalized
+    return None
+
+
+def _resolve_agent_mode(
+    core: PenguinCore,
+    requested_mode: Optional[str],
+    session_id: Optional[str],
+) -> str:
+    normalized_request = _normalize_agent_mode(requested_mode)
+    if normalized_request:
+        return normalized_request
+
+    if isinstance(session_id, str) and session_id:
+        info = get_session_info(core, session_id)
+        if isinstance(info, dict):
+            normalized_session = _normalize_agent_mode(info.get("agent_mode"))
+            if normalized_session:
+                return normalized_session
+
+    return "build"
+
+
+async def _persist_session_agent_mode(
+    core: PenguinCore,
+    session_id: Optional[str],
+    agent_mode: Optional[str],
+) -> None:
+    normalized_mode = _normalize_agent_mode(agent_mode)
+    if not normalized_mode:
+        return
+    if not isinstance(session_id, str) or not session_id:
+        return
+
+    existing = get_session_info(core, session_id)
+    if not isinstance(existing, dict):
+        return
+    existing_mode = _normalize_agent_mode(existing.get("agent_mode")) or "build"
+    if existing_mode == normalized_mode:
+        return
+
+    updated = update_session_info(core, session_id, agent_mode=normalized_mode)
+    if isinstance(updated, dict):
+        await _emit_session_updated_event(core, updated)
 
 
 async def _emit_session_updated_event(core: PenguinCore, info: Dict[str, Any]) -> None:
@@ -369,6 +422,7 @@ class MessageRequest(BaseModel):
     image_paths: Optional[List[str]] = None  # Multiple images supported (max 10)
     include_reasoning: Optional[bool] = False
     agent_id: Optional[str] = None
+    agent_mode: Optional[str] = None
     directory: Optional[str] = None
     model: Optional[str] = None
     variant: Optional[str] = None
@@ -655,6 +709,19 @@ class PreApprovalRequest(BaseModel):
     ttl_seconds: Optional[int] = None  # Optional expiration
 
 
+class PermissionReplyAction(BaseModel):
+    """OpenCode-compatible permission reply payload."""
+
+    reply: str  # once | always | reject
+    message: Optional[str] = None
+
+
+class QuestionReplyAction(BaseModel):
+    """OpenCode-compatible question reply payload."""
+
+    answers: List[List[str]]
+
+
 # --- WebSocket Connection Manager for Approvals ---
 
 
@@ -771,11 +838,157 @@ class ApprovalWebSocketManager:
         await self.broadcast("approval_resolved", request_dict)
 
 
+async def _emit_opencode_event(
+    event_type: str,
+    properties: dict[str, Any],
+) -> None:
+    core = getattr(router, "core", None)
+    event_bus = getattr(core, "event_bus", None)
+    emit = getattr(event_bus, "emit", None)
+    if not callable(emit):
+        return
+    await emit(
+        "opencode_event",
+        {
+            "type": event_type,
+            "properties": properties,
+        },
+    )
+
+
+def _schedule_opencode_event(event_type: str, properties: dict[str, Any]) -> None:
+    async def _runner() -> None:
+        try:
+            await _emit_opencode_event(event_type, properties)
+        except Exception:
+            logger.debug("Failed to emit opencode event %s", event_type, exc_info=True)
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_runner())
+        return
+    except RuntimeError:
+        pass
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(_runner())
+        else:
+            loop.run_until_complete(_runner())
+    except Exception:
+        logger.debug("Failed to schedule opencode event %s", event_type, exc_info=True)
+
+
+def _permission_name_for_request(request_dict: dict[str, Any]) -> str:
+    tool_name = request_dict.get("tool_name")
+    if isinstance(tool_name, str):
+        mapping = {
+            "read_file": "read",
+            "enhanced_read": "read",
+            "list_files": "list",
+            "get_file_map": "list",
+            "find_file": "glob",
+            "grep_search": "grep",
+            "create_folder": "edit",
+            "create_file": "edit",
+            "write_to_file": "edit",
+            "enhanced_write": "edit",
+            "apply_diff": "edit",
+            "edit_with_pattern": "edit",
+            "replace_lines": "edit",
+            "insert_lines": "edit",
+            "delete_lines": "edit",
+            "multiedit_apply": "edit",
+            "execute_command": "bash",
+            "code_execution": "bash",
+            "webfetch": "webfetch",
+            "delegate_explore_task": "task",
+            "delegate": "task",
+            "spawn_sub_agent": "task",
+        }
+        mapped = mapping.get(tool_name.strip())
+        if mapped:
+            return mapped
+
+    operation = request_dict.get("operation")
+    if isinstance(operation, str):
+        op = operation.strip().lower()
+        if op.startswith("filesystem.read"):
+            return "read"
+        if op.startswith("filesystem.list"):
+            return "list"
+        if op.startswith("filesystem"):
+            return "edit"
+        if op.startswith("process"):
+            return "bash"
+        if op.startswith("network.fetch"):
+            return "webfetch"
+    return "tool"
+
+
+def _approval_request_to_permission_payload(
+    request_dict: dict[str, Any],
+) -> dict[str, Any]:
+    context = request_dict.get("context")
+    context_data = context if isinstance(context, dict) else {}
+    resource = request_dict.get("resource")
+    patterns = [resource] if isinstance(resource, str) and resource.strip() else ["*"]
+
+    metadata: dict[str, Any] = {
+        "reason": request_dict.get("reason"),
+        "operation": request_dict.get("operation"),
+        "tool_name": request_dict.get("tool_name"),
+        "resource": request_dict.get("resource"),
+    }
+    tool_input = context_data.get("tool_input")
+    if isinstance(tool_input, dict):
+        metadata.update(tool_input)
+
+    payload: dict[str, Any] = {
+        "id": request_dict.get("id"),
+        "sessionID": request_dict.get("session_id") or "",
+        "permission": _permission_name_for_request(request_dict),
+        "patterns": patterns,
+        "always": patterns,
+        "metadata": metadata,
+    }
+
+    tool_payload = context_data.get("tool")
+    if isinstance(tool_payload, dict):
+        message_id = tool_payload.get("messageID")
+        call_id = tool_payload.get("callID")
+        if isinstance(message_id, str) and isinstance(call_id, str):
+            payload["tool"] = {
+                "messageID": message_id,
+                "callID": call_id,
+            }
+
+    return payload
+
+
+def _approval_request_to_permission_reply_payload(
+    request_dict: dict[str, Any],
+) -> dict[str, Any]:
+    status = request_dict.get("status")
+    resolution_scope = request_dict.get("resolution_scope")
+    if status == "approved":
+        reply = "always" if resolution_scope in {"session", "pattern"} else "once"
+    else:
+        reply = "reject"
+    return {
+        "sessionID": request_dict.get("session_id") or "",
+        "requestID": request_dict.get("id"),
+        "reply": reply,
+    }
+
+
 # Singleton instance for approval WebSocket management
 _approval_ws_manager = ApprovalWebSocketManager()
 
 # Flag to track if approval callbacks are registered
 _approval_callbacks_registered = False
+_question_callbacks_registered = False
 
 
 def _setup_approval_websocket_callbacks():
@@ -796,31 +1009,43 @@ def _setup_approval_websocket_callbacks():
         def on_request_created(request):
             """Callback when an approval request is created."""
             try:
+                request_dict = request.to_dict()
                 # Schedule the coroutine in the event loop
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     asyncio.create_task(
-                        _approval_ws_manager.send_approval_required(request.to_dict())
+                        _approval_ws_manager.send_approval_required(request_dict)
                     )
                 else:
                     loop.run_until_complete(
-                        _approval_ws_manager.send_approval_required(request.to_dict())
+                        _approval_ws_manager.send_approval_required(request_dict)
                     )
+
+                _schedule_opencode_event(
+                    "permission.asked",
+                    _approval_request_to_permission_payload(request_dict),
+                )
             except Exception as e:
                 logger.error(f"Error sending approval_required event: {e}")
 
         def on_request_resolved(request):
             """Callback when an approval request is resolved."""
             try:
+                request_dict = request.to_dict()
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     asyncio.create_task(
-                        _approval_ws_manager.send_approval_resolved(request.to_dict())
+                        _approval_ws_manager.send_approval_resolved(request_dict)
                     )
                 else:
                     loop.run_until_complete(
-                        _approval_ws_manager.send_approval_resolved(request.to_dict())
+                        _approval_ws_manager.send_approval_resolved(request_dict)
                     )
+
+                _schedule_opencode_event(
+                    "permission.replied",
+                    _approval_request_to_permission_reply_payload(request_dict),
+                )
             except Exception as e:
                 logger.error(f"Error sending approval_resolved event: {e}")
 
@@ -835,6 +1060,58 @@ def _setup_approval_websocket_callbacks():
         )
     except Exception as e:
         logger.error(f"Failed to setup approval WebSocket callbacks: {e}")
+
+
+def _setup_question_event_callbacks():
+    """Register QuestionManager callbacks for OpenCode event emission."""
+    global _question_callbacks_registered
+    if _question_callbacks_registered:
+        return
+
+    try:
+        from penguin.security.question import get_question_manager
+
+        manager = get_question_manager()
+
+        def on_request_created(request):
+            try:
+                _schedule_opencode_event("question.asked", request.to_dict())
+            except Exception:
+                logger.debug("Failed to emit question.asked", exc_info=True)
+
+        def on_request_answered(request):
+            try:
+                _schedule_opencode_event(
+                    "question.replied",
+                    {
+                        "sessionID": request.session_id,
+                        "requestID": request.id,
+                        "answers": request.answers or [],
+                    },
+                )
+            except Exception:
+                logger.debug("Failed to emit question.replied", exc_info=True)
+
+        def on_request_rejected(request):
+            try:
+                _schedule_opencode_event(
+                    "question.rejected",
+                    {
+                        "sessionID": request.session_id,
+                        "requestID": request.id,
+                    },
+                )
+            except Exception:
+                logger.debug("Failed to emit question.rejected", exc_info=True)
+
+        manager.on_request_created(on_request_created)
+        manager.on_request_answered(on_request_answered)
+        manager.on_request_rejected(on_request_rejected)
+        _question_callbacks_registered = True
+    except ImportError:
+        logger.debug("Question module not available, callbacks not registered")
+    except Exception as e:
+        logger.error("Failed to setup question callbacks: %s", e)
 
 
 router = APIRouter()
@@ -2066,8 +2343,19 @@ async def handle_chat_message(
     request_tracked = False
     reasoning_variant_snapshot: Optional[Dict[str, Any]] = None
     try:
+        _setup_approval_websocket_callbacks()
+        _setup_question_event_callbacks()
+
         if request.agent_id:
             _validate_agent_id(request.agent_id)
+        if (
+            request.agent_mode is not None
+            and _normalize_agent_mode(request.agent_mode) is None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="agent_mode must be one of: plan, build",
+            )
 
         if not request.conversation_id and request.session_id:
             request.conversation_id = request.session_id
@@ -2081,6 +2369,16 @@ async def handle_chat_message(
             core,
             effective_session_id,
             request.directory,
+        )
+        resolved_agent_mode = _resolve_agent_mode(
+            core,
+            request.agent_mode,
+            effective_session_id,
+        )
+        await _persist_session_agent_mode(
+            core,
+            effective_session_id,
+            resolved_agent_mode,
         )
 
         if request_session_id:
@@ -2113,6 +2411,7 @@ async def handle_chat_message(
             session_id=effective_session_id,
             conversation_id=request.conversation_id,
             agent_id=request.agent_id,
+            agent_mode=resolved_agent_mode,
             directory=bound_directory or request.directory,
         )
 
@@ -2322,6 +2621,9 @@ async def handle_chat_message(
 async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core)):
     """Stream chat responses in real-time using a queue."""
     await websocket.accept()
+    _setup_approval_websocket_callbacks()
+    _setup_question_event_callbacks()
+
     response_queue = asyncio.Queue()
     sender_task = None
 
@@ -2461,6 +2763,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
             include_reasoning = bool(data.get("include_reasoning", False))
             variant = data.get("variant")
             agent_id = data.get("agent_id")
+            agent_mode = data.get("agent_mode")
             directory = data.get("directory")
 
             # Prefer explicit session_id when provided; conversation_id is continuity metadata.
@@ -2470,11 +2773,22 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                 effective_session_id,
                 directory,
             )
+            resolved_agent_mode = _resolve_agent_mode(
+                core,
+                agent_mode if isinstance(agent_mode, str) else None,
+                effective_session_id,
+            )
+            await _persist_session_agent_mode(
+                core,
+                effective_session_id,
+                resolved_agent_mode,
+            )
             execution_context = _build_execution_context(
                 core,
                 session_id=effective_session_id,
                 conversation_id=conversation_id,
                 agent_id=agent_id,
+                agent_mode=resolved_agent_mode,
                 directory=bound_directory or directory,
             )
 
@@ -3357,6 +3671,9 @@ async def session_create(
     title = body.get("title")
     parent_id = body.get("parentID")
     permission = body.get("permission")
+    agent_mode = body.get("agent_mode")
+    if agent_mode is None:
+        agent_mode = body.get("agentMode")
 
     if title is not None and not isinstance(title, str):
         raise HTTPException(status_code=400, detail="title must be a string")
@@ -3364,6 +3681,12 @@ async def session_create(
         raise HTTPException(status_code=400, detail="parentID must be a string")
     if permission is not None and not isinstance(permission, list):
         raise HTTPException(status_code=400, detail="permission must be a list")
+    normalized_agent_mode = _normalize_agent_mode(agent_mode)
+    if agent_mode is not None and normalized_agent_mode is None:
+        raise HTTPException(
+            status_code=400,
+            detail="agent_mode must be one of: plan, build",
+        )
 
     if isinstance(parent_id, str) and parent_id.strip():
         parent = get_session_info(core, parent_id)
@@ -3387,6 +3710,7 @@ async def session_create(
             parent_id=parent_id if isinstance(parent_id, str) else None,
             directory=resolved_directory,
             permission=permission if isinstance(permission, list) else None,
+            agent_mode=normalized_agent_mode,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -3416,9 +3740,18 @@ async def session_update(
     body = payload if isinstance(payload, dict) else {}
     title = body.get("title")
     archived = None
+    agent_mode = body.get("agent_mode")
+    if agent_mode is None:
+        agent_mode = body.get("agentMode")
 
     if title is not None and not isinstance(title, str):
         raise HTTPException(status_code=400, detail="title must be a string")
+    normalized_agent_mode = _normalize_agent_mode(agent_mode)
+    if agent_mode is not None and normalized_agent_mode is None:
+        raise HTTPException(
+            status_code=400,
+            detail="agent_mode must be one of: plan, build",
+        )
 
     time_data = body.get("time")
     if isinstance(time_data, dict) and time_data.get("archived") is not None:
@@ -3435,6 +3768,7 @@ async def session_update(
         session_id,
         title=title if isinstance(title, str) else None,
         archived=archived,
+        agent_mode=normalized_agent_mode,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
@@ -4955,6 +5289,7 @@ class MessageEnvelope(BaseModel):
 
 # Lazy import to avoid circular imports
 _approval_manager = None
+_question_manager = None
 
 
 def _get_approval_manager():
@@ -4965,6 +5300,16 @@ def _get_approval_manager():
 
         _approval_manager = get_approval_manager()
     return _approval_manager
+
+
+def _get_question_manager():
+    """Get the singleton QuestionManager instance."""
+    global _question_manager
+    if _question_manager is None:
+        from penguin.security.question import get_question_manager
+
+        _question_manager = get_question_manager()
+    return _question_manager
 
 
 def _get_default_capabilities(mode: str, enabled: bool) -> Dict[str, Any]:
@@ -5239,6 +5584,187 @@ async def get_audit_stats():
         logger.error(f"Error getting audit stats: {str(e)}")
         raise HTTPException(
             status_code=500, detail=f"Error getting audit stats: {str(e)}"
+        )
+
+
+# ==========================================================================
+# OpenCode Permission + Question Endpoints
+# ==========================================================================
+
+
+@router.get("/permission")
+@router.get("/api/v1/permission")
+async def list_pending_permissions(
+    sessionID: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+):
+    """List pending permissions in OpenCode-compatible shape."""
+    try:
+        _setup_approval_websocket_callbacks()
+        manager = _get_approval_manager()
+        target_session = session_id or sessionID
+        pending = manager.get_pending(session_id=target_session)
+        return [
+            _approval_request_to_permission_payload(request.to_dict())
+            for request in pending
+        ]
+    except Exception as e:
+        logger.error("Error listing permissions: %s", e)
+        raise HTTPException(status_code=500, detail=f"Error listing permissions: {e}")
+
+
+@router.post("/permission/{request_id}/reply")
+@router.post("/api/v1/permission/{request_id}/reply")
+async def reply_permission_request(
+    request_id: str,
+    action: PermissionReplyAction,
+):
+    """Reply to a pending permission request.
+
+    Supported replies: ``once`` | ``always`` | ``reject``.
+    """
+    try:
+        from penguin.security.approval import ApprovalScope
+
+        _setup_approval_websocket_callbacks()
+        manager = _get_approval_manager()
+        existing = manager.get_request(request_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Permission request not found: {request_id}",
+            )
+
+        existing_dict = existing.to_dict()
+        if existing_dict.get("status") != "pending":
+            return True
+
+        reply = action.reply.strip().lower() if isinstance(action.reply, str) else ""
+        if reply == "reject":
+            resolved = manager.deny(request_id)
+            if resolved and isinstance(action.message, str) and action.message.strip():
+                resolved.context["message"] = action.message.strip()
+        elif reply == "once":
+            resolved = manager.approve(request_id, scope=ApprovalScope.ONCE)
+        elif reply == "always":
+            raw_pattern = existing_dict.get("resource")
+            pattern = (
+                raw_pattern.strip()
+                if isinstance(raw_pattern, str) and raw_pattern.strip()
+                else "*"
+            )
+            resolved = manager.approve(
+                request_id,
+                scope=ApprovalScope.PATTERN,
+                pattern=pattern,
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="reply must be one of: once, always, reject",
+            )
+
+        if resolved is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Permission request not found or already resolved: {request_id}",
+            )
+
+        return True
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error replying permission request: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error replying permission request: {e}",
+        )
+
+
+@router.get("/question")
+@router.get("/api/v1/question")
+async def list_pending_questions(
+    sessionID: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+):
+    """List pending user questions in OpenCode-compatible shape."""
+    try:
+        _setup_question_event_callbacks()
+        manager = _get_question_manager()
+        target_session = session_id or sessionID
+        pending = manager.list_pending(session_id=target_session)
+        return [request.to_dict() for request in pending]
+    except Exception as e:
+        logger.error("Error listing questions: %s", e)
+        raise HTTPException(status_code=500, detail=f"Error listing questions: {e}")
+
+
+@router.post("/question/{request_id}/reply")
+@router.post("/api/v1/question/{request_id}/reply")
+async def reply_question_request(
+    request_id: str,
+    action: QuestionReplyAction,
+):
+    """Reply to a pending question request."""
+    try:
+        _setup_question_event_callbacks()
+        manager = _get_question_manager()
+        existing = manager.get_request(request_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Question request not found: {request_id}",
+            )
+        if getattr(getattr(existing, "status", None), "value", "") != "pending":
+            return True
+
+        resolved = manager.reply(request_id, answers=action.answers)
+        if resolved is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Question request not found or already resolved: {request_id}",
+            )
+        return True
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error replying question request: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error replying question request: {e}",
+        )
+
+
+@router.post("/question/{request_id}/reject")
+@router.post("/api/v1/question/{request_id}/reject")
+async def reject_question_request(request_id: str):
+    """Reject a pending question request."""
+    try:
+        _setup_question_event_callbacks()
+        manager = _get_question_manager()
+        existing = manager.get_request(request_id)
+        if existing is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Question request not found: {request_id}",
+            )
+        if getattr(existing.status, "value", "") != "pending":
+            return True
+
+        resolved = manager.reject(request_id)
+        if resolved is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Question request not found or already resolved: {request_id}",
+            )
+        return True
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Error rejecting question request: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error rejecting question request: {e}",
         )
 
 

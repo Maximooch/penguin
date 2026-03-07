@@ -1,12 +1,11 @@
-import os
-import json
-import types
 import asyncio
+import json
+import os
 
-from penguin.utils.parser import parse_action, ActionType
-from penguin.tools.tool_manager import ToolManager
-from penguin.llm.openrouter_gateway import OpenRouterGateway
 from penguin.llm.model_config import ModelConfig
+from penguin.llm.openrouter_gateway import OpenRouterGateway
+from penguin.tools.tool_manager import ToolManager
+from penguin.utils.parser import ActionType, parse_action
 
 
 def _dummy_log_error(exc: Exception, context: str = ""):
@@ -23,6 +22,28 @@ def test_parse_action_detects_enhanced_write():
     assert len(actions) == 1
     assert actions[0].action_type == ActionType.ENHANCED_WRITE
     assert actions[0].params.startswith("path/to/file.txt:")
+
+
+def test_parse_action_detects_question():
+    content = """
+    I need your input.
+    <question>{
+      "questions": [
+        {
+          "question": "Choose one",
+          "header": "Choice",
+          "options": [
+            {"label": "A", "description": "Option A"},
+            {"label": "B", "description": "Option B"}
+          ]
+        }
+      ]
+    }</question>
+    """.strip()
+
+    actions = parse_action(content)
+    assert len(actions) == 1
+    assert actions[0].action_type == ActionType.QUESTION
 
 
 def test_tool_manager_get_responses_tools_curated():
@@ -85,6 +106,7 @@ def test_execute_command_structured_error_on_nonzero():
 # COMPREHENSIVE INTEGRATION TESTS for Responses API Streaming
 # ============================================================================
 
+
 def test_streaming_interrupt_on_action_tag():
     """
     Integration test: Verify streaming interrupt when action tag detected.
@@ -109,7 +131,9 @@ def test_streaming_interrupt_on_action_tag():
     assert gw._contains_penguin_action_tags(partial_content) is False
 
     # 2. Complete action tag - should detect
-    complete_content = "I'll help with that. Let me <execute>print('hello')</execute> done"
+    complete_content = (
+        "I'll help with that. Let me <execute>print('hello')</execute> done"
+    )
     assert gw._contains_penguin_action_tags(complete_content) is True
 
     # 3. Verify interrupt flag controls detection usage
@@ -208,7 +232,9 @@ def test_responses_tools_web_search_included():
     # Verify expected curated tools
     function_names = {t["function"]["name"] for t in function_tools}
     expected_tools = {"read_file", "write_to_file", "execute_command", "code_execution"}
-    assert expected_tools.issubset(function_names), f"Missing expected tools. Got: {function_names}"
+    assert expected_tools.issubset(function_names), (
+        f"Missing expected tools. Got: {function_names}"
+    )
 
 
 def test_action_tag_parser_consistency():
@@ -222,6 +248,14 @@ def test_action_tag_parser_consistency():
         ("<execute>ls</execute>", True),
         ("<search>query</search>", True),
         ("<memory_search>context</memory_search>", True),
+        (
+            (
+                '<question>{"questions":[{"question":"Pick one","header":'
+                '"Pick","options":[{"label":"A","description":'
+                '"Option A"}]}]}</question>'
+            ),
+            True,
+        ),
         ("<task_create>Task:Desc</task_create>", True),
         ("Plain text", False),
         ("<invalid>tag</invalid>", False),
@@ -237,12 +271,15 @@ def test_action_tag_parser_consistency():
         parser_found = len(parser_actions) > 0
 
         # They should agree
-        assert gateway_found == parser_found, \
+        assert gateway_found == parser_found, (
             f"Mismatch for '{content}': gateway={gateway_found}, parser={parser_found}"
+        )
 
         # Both should match expectation
-        assert gateway_found == should_detect, \
-            f"Detection failed for '{content}': expected={should_detect}, got={gateway_found}"
+        assert gateway_found == should_detect, (
+            "Detection failed for "
+            f"'{content}': expected={should_detect}, got={gateway_found}"
+        )
 
 
 async def _async_test_tool_call_accumulation():
@@ -296,7 +333,7 @@ def test_reasoning_config_generation():
         provider="openrouter",
         client_preference="openrouter",
         reasoning_enabled=True,
-        reasoning_effort="high"
+        reasoning_effort="high",
     )
     reasoning = config_o1.get_reasoning_config()
     assert reasoning == {"effort": "high"}
@@ -307,7 +344,7 @@ def test_reasoning_config_generation():
         provider="openrouter",
         client_preference="openrouter",
         reasoning_enabled=True,
-        reasoning_max_tokens=3000
+        reasoning_max_tokens=3000,
     )
     reasoning = config_claude.get_reasoning_config()
     assert reasoning == {"max_tokens": 3000}
@@ -317,7 +354,7 @@ def test_reasoning_config_generation():
         model="openai/gpt-4o",
         provider="openrouter",
         client_preference="openrouter",
-        reasoning_enabled=False
+        reasoning_enabled=False,
     )
     reasoning = config_disabled.get_reasoning_config()
     assert reasoning is None
@@ -359,15 +396,30 @@ if __name__ == "__main__":
     print("🧪 Running Responses API Streaming Tests\n")
 
     tests = [
-        ("Parse action detects enhanced_write", test_parse_action_detects_enhanced_write),
-        ("ToolManager get_responses_tools curated", test_tool_manager_get_responses_tools_curated),
+        (
+            "Parse action detects enhanced_write",
+            test_parse_action_detects_enhanced_write,
+        ),
+        (
+            "ToolManager get_responses_tools curated",
+            test_tool_manager_get_responses_tools_curated,
+        ),
         ("Code execution timeout", test_code_execution_timeout),
-        ("Gateway contains Penguin action tags", test_gateway_contains_penguin_action_tags_true_false),
-        ("Execute command structured error on nonzero", test_execute_command_structured_error_on_nonzero),
+        (
+            "Gateway contains Penguin action tags",
+            test_gateway_contains_penguin_action_tags_true_false,
+        ),
+        (
+            "Execute command structured error on nonzero",
+            test_execute_command_structured_error_on_nonzero,
+        ),
         ("Streaming interrupt on action tag", test_streaming_interrupt_on_action_tag),
         ("Telemetry counters", test_telemetry_counters),
         ("Tool timeout structured errors", test_tool_timeout_structured_errors),
-        ("Responses tools web_search included", test_responses_tools_web_search_included),
+        (
+            "Responses tools web_search included",
+            test_responses_tools_web_search_included,
+        ),
         ("Action tag parser consistency", test_action_tag_parser_consistency),
         ("Tool call accumulation", test_tool_call_accumulation),
         ("Reasoning config generation", test_reasoning_config_generation),
@@ -381,9 +433,11 @@ if __name__ == "__main__":
         try:
             # Create a mock monkeypatch for test_code_execution_timeout
             if test_func == test_code_execution_timeout:
+
                 class MockMonkeypatch:
                     def setenv(self, key, value):
                         os.environ[key] = value
+
                 test_func(MockMonkeypatch())
             else:
                 test_func()
@@ -396,8 +450,8 @@ if __name__ == "__main__":
             print(f"💥 {name}: {type(e).__name__}: {e}")
             failed += 1
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Results: {passed} passed, {failed} failed out of {len(tests)} tests")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     sys.exit(0 if failed == 0 else 1)
