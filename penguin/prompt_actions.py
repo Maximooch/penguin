@@ -264,6 +264,10 @@ Compare two files with contextual diff output.
 EXECUTION_TOOLS = """
 ## Execution
 
+**Agent mode awareness:**
+- In `plan` mode, mutating operations are policy-blocked. Prioritize read-only analysis and planning.
+- If a user asks for implementation in `plan` mode, provide a concrete plan and ask to switch to `build` mode.
+
 ### execute
 Run Python code in IPython environment.
 

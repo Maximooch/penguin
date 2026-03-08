@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from penguin.engine import Engine, EngineSettings
+from penguin.system.execution_context import ExecutionContext, execution_context_scope
 
 
 def test_engine_initializes_without_run_state_attribute_error() -> None:
@@ -149,3 +150,45 @@ async def test_llm_step_returns_usage_from_active_api_client() -> None:
         "total_tokens": 17,
         "cost": 0.0003,
     }
+
+
+@pytest.mark.asyncio
+async def test_llm_step_injects_plan_mode_notice() -> None:
+    conversation = SimpleNamespace(
+        get_formatted_messages=MagicMock(
+            return_value=[{"role": "user", "content": "hi"}]
+        ),
+        session=SimpleNamespace(messages=[]),
+        add_assistant_message=MagicMock(),
+    )
+    conversation_manager = SimpleNamespace(conversation=conversation, core=None)
+
+    handler = SimpleNamespace(get_last_usage=MagicMock(return_value=None))
+    api_client = SimpleNamespace(
+        get_response=AsyncMock(return_value="hello"),
+        client_handler=handler,
+    )
+
+    engine = Engine(
+        EngineSettings(),
+        cast(Any, conversation_manager),
+        cast(Any, api_client),
+        MagicMock(),
+        MagicMock(),
+    )
+
+    with execution_context_scope(
+        ExecutionContext(
+            session_id="session-plan", agent_id="default", agent_mode="plan"
+        )
+    ):
+        await engine._llm_step(tools_enabled=False, streaming=False)
+
+    messages = api_client.get_response.await_args.args[0]
+    assert isinstance(messages, list)
+    assert any(
+        isinstance(msg, dict)
+        and msg.get("role") == "system"
+        and "PENGUIN_AGENT_MODE_PLAN" in str(msg.get("content", ""))
+        for msg in messages
+    )

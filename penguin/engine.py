@@ -40,6 +40,7 @@ from penguin.llm.api_client import APIClient  # type: ignore
 from penguin.tools import ToolManager  # type: ignore
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
 from penguin.constants import get_engine_max_iterations_default
+from penguin.system.execution_context import get_current_execution_context
 
 import logging
 
@@ -2220,6 +2221,43 @@ class Engine:
 
         return action_results
 
+    def _apply_agent_mode_notice(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Append a plan-mode system notice for the current request context."""
+        execution_context = get_current_execution_context()
+        if execution_context is None:
+            return messages
+
+        raw_mode = execution_context.agent_mode
+        mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else None
+        if mode != "plan":
+            return messages
+
+        marker = "[PENGUIN_AGENT_MODE_PLAN]"
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") != "system":
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and marker in content:
+                return messages
+
+        notice = (
+            f"{marker} Plan mode is active for this session. You must stay read-only "
+            "and avoid mutating operations. Do not attempt file writes, destructive "
+            "shell commands, or process execution intended to modify state. "
+            "If implementation is required, provide a plan and request build mode."
+        )
+        logger.info(
+            "agent.mode.notice_applied mode=plan session=%s agent=%s",
+            execution_context.session_id,
+            execution_context.agent_id,
+        )
+        return [*messages, {"role": "system", "content": notice}]
+
     async def _llm_step(
         self,
         *,
@@ -2251,6 +2289,7 @@ class Engine:
             agent_id or self.current_agent_id
         )
         messages = cm.conversation.get_formatted_messages()
+        messages = self._apply_agent_mode_notice(messages)
 
         # Step 1: Prepare Responses API tools if enabled
         extra_kwargs = self._prepare_responses_tools(tool_manager)
@@ -2307,6 +2346,7 @@ class Engine:
 
             # Call provider with streaming enabled
             messages = cm.conversation.get_formatted_messages()
+            messages = self._apply_agent_mode_notice(messages)
             full_response = await api_client.get_response(
                 messages,
                 stream=True,

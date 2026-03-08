@@ -608,9 +608,7 @@ class ActionExecutor:
 
     def _execute_code(self, params: str) -> str:
         logger.debug(f"Executing code: {params}")
-        context = get_current_execution_context()
-        cwd = context.directory if context and context.directory else None
-        return self.tool_manager.execute_code(params, cwd=cwd)
+        return self.tool_manager.execute_tool("code_execution", {"code": params})
 
     def _execute_command(self, params: str) -> str:
         """Execute a shell command using the tool manager."""
@@ -888,6 +886,15 @@ class ActionExecutor:
         share_session = bool(payload.get("share_session", False))
         share_cw = bool(payload.get("share_context_window", False))
         background = bool(payload.get("background", False))
+        logger.info(
+            "subagent.spawn.request agent=%s parent=%s share_session=%s "
+            "share_context_window=%s background=%s",
+            agent_id,
+            parent_id,
+            share_session,
+            share_cw,
+            background,
+        )
         shared_context_window_max_tokens = payload.get(
             "shared_context_window_max_tokens", payload.get("shared_cw_max_tokens")
         )  # Accept both keys
@@ -922,6 +929,14 @@ class ActionExecutor:
                 shared_context_window_max_tokens=shared_context_window_max_tokens,
                 **kwargs,
             )
+            logger.info(
+                "subagent.spawn.created agent=%s parent=%s share_session=%s "
+                "share_context_window=%s",
+                agent_id,
+                parent_id,
+                share_session,
+                share_cw,
+            )
         except Exception as e:
             return f"Failed to spawn sub-agent '{agent_id}': {e}"
 
@@ -952,6 +967,12 @@ class ActionExecutor:
                                     "info": info,
                                 },
                             },
+                        )
+                        logger.info(
+                            "subagent.spawn.session_event type=session.created "
+                            "agent=%s session=%s",
+                            agent_id,
+                            session_id,
                         )
         except Exception:
             logger.debug(
@@ -1355,6 +1376,17 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         wait = bool(payload.get("wait", False))
         timeout = payload.get("timeout")
 
+        logger.info(
+            "subagent.delegate.request parent=%s child=%s background=%s "
+            "wait=%s timeout=%s channel=%s",
+            parent,
+            child,
+            background,
+            wait,
+            timeout,
+            channel,
+        )
+
         # Record delegation event in both parent and child logs (best-effort)
         try:
             cm = getattr(core, "conversation_manager", None)
@@ -1407,10 +1439,27 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 if wait:
                     try:
                         result = await executor.wait_for(child, timeout=timeout)
+                        logger.info(
+                            "subagent.delegate.completed parent=%s child=%s "
+                            "background=true waited=true",
+                            parent,
+                            child,
+                        )
                         return f"Delegated to '{child}' (background, waited): {result}"
                     except asyncio.TimeoutError:
+                        logger.info(
+                            "subagent.delegate.timeout parent=%s child=%s timeout=%s",
+                            parent,
+                            child,
+                            timeout,
+                        )
                         return f"Delegated to '{child}' (background, timed out after {timeout}s)"
                 else:
+                    logger.info(
+                        "subagent.delegate.started parent=%s child=%s background=true",
+                        parent,
+                        child,
+                    )
                     return f"Delegated to '{child}' running in background"
             except Exception as e:
                 return f"Failed to delegate background task to '{child}': {e}"
@@ -1423,6 +1472,11 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                     message_type="message",
                     metadata=metadata,
                     channel=channel,
+                )
+                logger.info(
+                    "subagent.delegate.completed parent=%s child=%s background=false",
+                    parent,
+                    child,
                 )
                 return f"Delegated to '{child}' from '{parent}'"
             except Exception as e:

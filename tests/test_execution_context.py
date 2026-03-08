@@ -103,11 +103,18 @@ def test_action_executor_execute_code_uses_scoped_directory(tmp_path: Path):
 
     class _ToolManager:
         def __init__(self):
-            self.calls: list[tuple[str, str | None]] = []
+            self.calls: list[tuple[str, dict[str, Any], str | None]] = []
 
         def execute_code(self, code: str, cwd: str | None = None) -> str:
-            self.calls.append((code, cwd))
-            return cwd or ""
+            raise AssertionError(
+                "ActionExecutor should use execute_tool for code_execution"
+            )
+
+        def execute_tool(self, tool_name: str, tool_input: dict[str, Any]) -> str:
+            context = get_current_execution_context()
+            directory = context.directory if context else None
+            self.calls.append((tool_name, tool_input, directory))
+            return directory or ""
 
     tool_manager = _ToolManager()
     executor = ActionExecutor(
@@ -121,7 +128,10 @@ def test_action_executor_execute_code_uses_scoped_directory(tmp_path: Path):
         result = executor._execute_code("print('hi')")
 
     assert tool_manager.calls
-    assert tool_manager.calls[-1][1] == str(scoped)
+    tool_name, tool_input, call_directory = tool_manager.calls[-1]
+    assert tool_name == "code_execution"
+    assert tool_input["code"] == "print('hi')"
+    assert call_directory == str(scoped)
     assert result == str(scoped)
 
 

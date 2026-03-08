@@ -2412,6 +2412,13 @@ async def handle_chat_message(
             request.agent_mode,
             effective_session_id,
         )
+        _request_log_info(
+            "chat.mode.request session=%s agent=%s mode=%s directory=%s",
+            request_session_id or "unknown",
+            request.agent_id or "default",
+            resolved_agent_mode,
+            bound_directory or request.directory,
+        )
         await _persist_session_agent_mode(
             core,
             effective_session_id,

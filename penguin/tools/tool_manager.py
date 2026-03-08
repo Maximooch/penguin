@@ -2552,8 +2552,35 @@ class ToolManager:
                 if result is not None:
                     _ensure_permission_imports()
                     if result == _PermissionResult.DENY:
+                        agent_id = (
+                            effective_context.get("agent_id")
+                            if isinstance(effective_context, dict)
+                            else None
+                        )
+                        agent_mode = (
+                            effective_context.get("agent_mode")
+                            if isinstance(effective_context, dict)
+                            else None
+                        )
+                        session_id = (
+                            effective_context.get("session_id")
+                            if isinstance(effective_context, dict)
+                            else None
+                        )
+                        request_id = (
+                            effective_context.get("request_id")
+                            if isinstance(effective_context, dict)
+                            else None
+                        )
                         logger.warning(
-                            f"Permission denied for tool '{tool_name}': {reason}"
+                            "permission.denied tool=%s agent=%s mode=%s session=%s "
+                            "request=%s reason=%s",
+                            tool_name,
+                            agent_id,
+                            agent_mode,
+                            session_id,
+                            request_id,
+                            reason,
                         )
                         return json.dumps(
                             {
@@ -2564,7 +2591,15 @@ class ToolManager:
                         )
                     elif result == _PermissionResult.ASK:
                         # Phase 3: Approval flow
-                        logger.info(f"Tool '{tool_name}' requires approval: {reason}")
+                        logger.info(
+                            "permission.approval_required tool=%s agent=%s mode=%s "
+                            "session=%s reason=%s",
+                            tool_name,
+                            effective_context.get("agent_id"),
+                            effective_context.get("agent_mode"),
+                            effective_context.get("session_id"),
+                            reason,
+                        )
 
                         # Extract operation and resource for approval tracking
                         operation = (
@@ -4177,6 +4212,15 @@ class ToolManager:
         share_cw = bool(tool_input.get("share_context_window", False))
         shared_cw_max = tool_input.get("shared_context_window_max_tokens")
         background = bool(tool_input.get("background", False))
+        logger.info(
+            "subagent.spawn.request source=tool agent=%s parent=%s share_session=%s "
+            "share_context_window=%s background=%s",
+            agent_id,
+            parent_id,
+            share_session,
+            share_cw,
+            background,
+        )
 
         kwargs = {}
         for key in (
@@ -4216,6 +4260,15 @@ class ToolManager:
                     return json.dumps({"error": "Core has no create_sub_agent method"})
         except Exception as e:
             return json.dumps({"error": f"Failed to spawn sub-agent: {e}"})
+
+        logger.info(
+            "subagent.spawn.created source=tool agent=%s parent=%s share_session=%s "
+            "share_context_window=%s",
+            agent_id,
+            parent_id,
+            share_session,
+            share_cw,
+        )
 
         # Handle initial_prompt if provided
         initial_prompt = tool_input.get("initial_prompt")

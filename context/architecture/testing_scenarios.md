@@ -131,7 +131,28 @@ Then stop.
 | EC-04 | Background already running | Delegate background to same running child again | Returns "already running" style response |
 | EC-05 | Provider empty response | Force complex/long child run on weak model | System surfaces explicit empty-response error text, stays stable |
 
-## 7) Suggested Run Order (Fast Manual Smoke)
+## 7) Plan-Mode Guardrails
+
+| ID | Scenario | How to run | Expected result |
+|---|---|---|---|
+| PM-01 | Plan mode visibility | Create session with `agent_mode=plan`, send normal prompt | Model behavior reflects read-only planning constraints |
+| PM-02 | Execute write attempt blocked | In plan mode, run `<execute>` writing a file | Permission denied response for `code_execution` / process execution |
+| PM-03 | Execute command mutation blocked | In plan mode, run `<execute_command>touch x</execute_command>` | Permission denied response |
+| PM-04 | Read-only inspection still allowed | In plan mode, run `<search>` or `<enhanced_read>` | Read-only actions continue to work |
+
+### Copy/paste prompt for PM-02
+```text
+Use exactly one tool call and then stop.
+<execute>from pathlib import Path\nPath("plan-mode-write-test.txt").write_text("blocked?")</execute>
+```
+
+### Copy/paste prompt for PM-03
+```text
+Use exactly one tool call and then stop.
+<execute_command>touch plan-mode-shell-write-test.txt</execute_command>
+```
+
+## 8) Suggested Run Order (Fast Manual Smoke)
 1. SA-01 isolated spawn.
 2. SA-03 background spawn.
 3. DG-01 delegation to existing child.
@@ -139,7 +160,7 @@ Then stop.
 5. PAR-05 replay attribution check.
 6. CP-02 tool-calling spawn parity check.
 
-## 8) Pass/Fail Notes Template
+## 9) Pass/Fail Notes Template
 Use this template per scenario:
 
 ```text
@@ -151,7 +172,7 @@ Logs/events of interest:
 Follow-up action:
 ```
 
-## 9) Related Automated Coverage
+## 10) Related Automated Coverage
 - `tests/test_action_executor_subagent_events.py`
 - `tests/system/test_context_sharing.py`
 - `tests/api/test_opencode_session_routes.py`

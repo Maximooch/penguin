@@ -51,6 +51,8 @@ Rationale:
 - Agent mode (`build`/`plan`) now persists at session level and is exposed through session payloads.
 - Mode is propagated into request execution context for policy decisions.
 - Plan mode is now hard-enforced at policy layer: non-read tool operations are denied by `AgentModePolicy`.
+- `<execute>` action now routes through permission-gated `code_execution` tool checks (closing direct IPython bypass path in plan mode).
+- Engine now appends a transient plan-mode system notice to LLM request messages when `agent_mode=plan`, so the model is explicitly informed of read-only constraints.
 
 ## Audit: TUI Expectations (from `penguin-tui`)
 
