@@ -129,6 +129,11 @@ async def test_session_create_update_status_diff_delete_roundtrip(
     session_id = created["id"]
     assert created["title"] == "Alpha Session"
     assert created["directory"] == str(tmp_path.resolve())
+    created_event_type, created_event_payload = core.event_bus.events[-1]
+    assert created_event_type == "opencode_event"
+    assert created_event_payload["type"] == "session.created"
+    assert created_event_payload["properties"]["sessionID"] == session_id
+    assert created_event_payload["properties"]["info"]["id"] == session_id
 
     updated = await session_update(
         session_id,
@@ -192,6 +197,12 @@ async def test_session_create_update_status_diff_delete_roundtrip(
     assert diffs[0]["deletions"] == 1
 
     assert await session_delete(session_id, core=typed_core) is True
+    deleted_event_type, deleted_event_payload = core.event_bus.events[-1]
+    assert deleted_event_type == "opencode_event"
+    assert deleted_event_payload["type"] == "session.deleted"
+    assert deleted_event_payload["properties"]["sessionID"] == session_id
+    assert deleted_event_payload["properties"]["info"]["id"] == session_id
+
     with pytest.raises(HTTPException) as exc:
         await session_get(session_id, core=typed_core)
     assert exc.value.status_code == 404
@@ -326,6 +337,7 @@ async def test_session_summarize_emits_session_updated_when_title_changes(
 
     created = await session_create(payload={"title": "Session"}, core=typed_core)
     session_id = created["id"]
+    core.event_bus.events.clear()
 
     async def _fake_summarize(*_args: Any, **_kwargs: Any) -> Optional[dict[str, Any]]:
         return {
@@ -364,6 +376,7 @@ async def test_session_summarize_alias_and_validation(
 
     created = await session_create(payload={"title": "Session"}, core=typed_core)
     session_id = created["id"]
+    core.event_bus.events.clear()
 
     async def _fake_summarize(*_args: Any, **_kwargs: Any) -> Optional[dict[str, Any]]:
         if _args[1] == "session_missing":

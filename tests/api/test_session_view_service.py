@@ -302,6 +302,51 @@ def test_get_session_messages_falls_back_to_legacy_messages():
     assert all(item["parts"][0]["type"] == "text" for item in messages)
 
 
+def test_get_session_messages_legacy_assistant_preserves_agent_id():
+    now = datetime.now().isoformat()
+    session = _session("session_agent_legacy", "Legacy Agent Session", now)
+    session.metadata["agent_id"] = "child-agent"
+    session.messages.append(
+        Message(
+            id="msg_assistant",
+            role="assistant",
+            content="Child agent response",
+            category=MessageCategory.DIALOG,
+            timestamp=now,
+            agent_id="child-agent",
+        )
+    )
+    core = _core([session])
+
+    messages = get_session_messages(core, session.id)
+
+    assert messages is not None
+    assert len(messages) == 1
+    assert messages[0]["info"]["agent"] == "child-agent"
+
+
+def test_get_session_messages_legacy_assistant_uses_session_agent_fallback():
+    now = datetime.now().isoformat()
+    session = _session("session_agent_fallback", "Fallback Agent Session", now)
+    session.metadata["agent_id"] = "child-fallback"
+    session.messages.append(
+        Message(
+            id="msg_assistant",
+            role="assistant",
+            content="Fallback agent response",
+            category=MessageCategory.DIALOG,
+            timestamp=now,
+        )
+    )
+    core = _core([session])
+
+    messages = get_session_messages(core, session.id)
+
+    assert messages is not None
+    assert len(messages) == 1
+    assert messages[0]["info"]["agent"] == "child-fallback"
+
+
 def test_get_session_messages_merges_transcript_with_legacy_rows():
     now = datetime.now().isoformat()
     session = _session("session_merge", "Merged Session", now)

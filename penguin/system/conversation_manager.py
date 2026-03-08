@@ -317,8 +317,58 @@ class ConversationManager:
         conv.session = session
         conv.system_prompt_sent = False
         conv._modified = True
+
+        parent_agent_id = self.sub_agent_parent.get(agent_id)
+        if isinstance(parent_agent_id, str) and parent_agent_id:
+            self._link_sub_agent_session_metadata(
+                agent_id,
+                parent_agent_id,
+                overwrite_parent_id=True,
+            )
+
         # If switching to this agent is desired, caller should invoke set_current_agent
         return session.id
+
+    def _link_sub_agent_session_metadata(
+        self,
+        agent_id: str,
+        parent_agent_id: str,
+        *,
+        overwrite_parent_id: bool = False,
+    ) -> None:
+        """Attach parent linkage metadata for an isolated sub-agent session."""
+        child_conv = self.agent_sessions.get(agent_id)
+        parent_conv = self.agent_sessions.get(parent_agent_id)
+        if child_conv is None or parent_conv is None:
+            return
+
+        child_session = getattr(child_conv, "session", None)
+        parent_session = getattr(parent_conv, "session", None)
+        if child_session is None:
+            return
+
+        metadata = getattr(child_session, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            child_session.metadata = metadata
+
+        metadata.setdefault("agent_id", agent_id)
+        metadata["parent_agent_id"] = parent_agent_id
+
+        parent_session_id = getattr(parent_session, "id", None)
+        if isinstance(parent_session_id, str) and parent_session_id:
+            if overwrite_parent_id or not metadata.get("parentID"):
+                metadata["parentID"] = parent_session_id
+
+        child_conv._modified = True
+        try:
+            child_conv.save()
+        except Exception:
+            logger.debug(
+                "Failed to persist sub-agent session linkage metadata for '%s'",
+                agent_id,
+                exc_info=True,
+            )
 
     def create_sub_agent(
         self,
@@ -401,6 +451,13 @@ class ConversationManager:
             conv.session.metadata.setdefault("agent_id", agent_id)
         except Exception:  # pragma: no cover - defensive
             pass
+
+        if not share_session:
+            self._link_sub_agent_session_metadata(
+                agent_id,
+                parent_agent_id,
+                overwrite_parent_id=True,
+            )
 
     def save_all(self) -> int:
         """Save all agent conversations. Returns count of successful saves."""

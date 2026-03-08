@@ -743,7 +743,11 @@ def get_session_metadata_title(core: Any, session_id: str) -> Optional[str]:
 
 
 def _default_assistant_info(
-    core: Any, session_id: str, message_id: str
+    core: Any,
+    session_id: str,
+    message_id: str,
+    *,
+    agent_id: str | None = None,
 ) -> dict[str, Any]:
     """Build a minimal valid assistant info envelope."""
     now = int(datetime.now().timestamp() * 1000)
@@ -761,7 +765,9 @@ def _default_assistant_info(
             getattr(core, "model_config", None), "provider", "penguin"
         ),
         "mode": "chat",
-        "agent": "default",
+        "agent": agent_id.strip()
+        if isinstance(agent_id, str) and agent_id.strip()
+        else "default",
         "path": {"cwd": cwd, "root": cwd},
         "cost": 0,
         "tokens": {
@@ -802,7 +808,17 @@ def _legacy_message_to_with_parts(
             },
         }
     else:
-        info = _default_assistant_info(core, session_id, message_id)
+        message_agent = getattr(message, "agent_id", None)
+        if not isinstance(message_agent, str) or not message_agent.strip():
+            metadata = getattr(session, "metadata", {})
+            if isinstance(metadata, dict):
+                message_agent = metadata.get("agent_id")
+        info = _default_assistant_info(
+            core,
+            session_id,
+            message_id,
+            agent_id=message_agent if isinstance(message_agent, str) else None,
+        )
         info["time"] = {"created": created, "completed": created}
 
     part = {
@@ -937,7 +953,17 @@ def get_session_messages(
                     continue
                 info = entry.get("info")
                 if not isinstance(info, dict):
-                    info = _default_assistant_info(core, session_id, str(message_id))
+                    fallback_agent_id = None
+                    if isinstance(metadata, dict):
+                        metadata_agent_id = metadata.get("agent_id")
+                        if isinstance(metadata_agent_id, str):
+                            fallback_agent_id = metadata_agent_id
+                    info = _default_assistant_info(
+                        core,
+                        session_id,
+                        str(message_id),
+                        agent_id=fallback_agent_id,
+                    )
 
                 parts_map = entry.get("parts")
                 part_order = entry.get("part_order")

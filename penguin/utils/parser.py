@@ -925,6 +925,41 @@ class ActionExecutor:
         except Exception as e:
             return f"Failed to spawn sub-agent '{agent_id}': {e}"
 
+        try:
+            event_bus = getattr(core, "event_bus", None)
+            emit = getattr(event_bus, "emit", None)
+            if callable(emit):
+                from penguin.web.services.session_view import get_session_info
+
+                conversation_manager = getattr(core, "conversation_manager", None)
+                conversation = (
+                    conversation_manager.get_agent_conversation(agent_id)
+                    if conversation_manager is not None
+                    else None
+                )
+                session = getattr(conversation, "session", None)
+                session_id = getattr(session, "id", None)
+
+                if isinstance(session_id, str) and session_id:
+                    info = get_session_info(core, session_id)
+                    if isinstance(info, dict):
+                        await emit(
+                            "opencode_event",
+                            {
+                                "type": "session.created",
+                                "properties": {
+                                    "sessionID": session_id,
+                                    "info": info,
+                                },
+                            },
+                        )
+        except Exception:
+            logger.debug(
+                "Failed to emit session.created for spawned sub-agent '%s'",
+                agent_id,
+                exc_info=True,
+            )
+
         initial_prompt = payload.get("initial_prompt")
         if initial_prompt:
             if background:

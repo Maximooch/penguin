@@ -558,9 +558,11 @@ For each phase, validate with:
   - Acceptance: mode switch changes runtime behavior and is preserved in message metadata.
   - Policy decision (2026-03-07): plan mode is hard-blocked at policy layer (not prompt-only).
   - Progress (2026-03-07): mode now flows from TUI prompt/session update into backend request context, persists on session metadata, and is enforced by `AgentModePolicy` to allow read operations while denying non-read actions in `plan` mode.
-- [ ] E7. Complete sub-agent lifecycle parity.
+- [~] E7. Complete sub-agent lifecycle parity.
   - Owner: agent roster API, message routing, session hierarchy handling.
   - Acceptance: sub-agent tasks appear as first-class sessions with reliable replay/navigation.
+  - Progress (2026-03-07): isolated sub-agent sessions now inherit explicit parent linkage metadata (`parentID`, `parent_agent_id`) at creation time, parser `spawn_sub_agent` now emits `session.created` OpenCode events for live TUI discovery, and Penguin-mode sync now handles `session.created` events in the session store path.
+  - Progress (2026-03-07): conversation manager edits were minimized to focused linkage logic (no broad formatting churn), with parity regression pack passing (`62 passed`).
 - [~] E8. Context/tokens/cost telemetry parity in sidebar/header.
   - Owner: backend usage accounting + TUI metadata rendering.
   - Acceptance: token usage, context %, and spend reflect real provider usage (including OpenRouter).

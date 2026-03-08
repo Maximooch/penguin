@@ -232,25 +232,47 @@ async def _persist_session_agent_mode(
         await _emit_session_updated_event(core, updated)
 
 
-async def _emit_session_updated_event(core: PenguinCore, info: Dict[str, Any]) -> None:
-    """Emit OpenCode-shaped session.updated event when session info changes."""
+async def _emit_session_event(
+    core: PenguinCore,
+    event_type: str,
+    info: Dict[str, Any],
+) -> None:
+    """Emit an OpenCode-shaped session lifecycle event."""
     event_bus = getattr(core, "event_bus", None)
     emit = getattr(event_bus, "emit", None)
     if not callable(emit):
         return
 
+    session_id = info.get("id") if isinstance(info, dict) else None
+    properties: Dict[str, Any] = {"info": info}
+    if isinstance(session_id, str) and session_id:
+        properties["sessionID"] = session_id
+
     try:
         await emit(
             "opencode_event",
             {
-                "type": "session.updated",
-                "properties": {
-                    "info": info,
-                },
+                "type": event_type,
+                "properties": properties,
             },
         )
     except Exception:
-        logger.debug("Failed to emit session.updated event", exc_info=True)
+        logger.debug("Failed to emit %s event", event_type, exc_info=True)
+
+
+async def _emit_session_created_event(core: PenguinCore, info: Dict[str, Any]) -> None:
+    """Emit OpenCode-shaped session.created event."""
+    await _emit_session_event(core, "session.created", info)
+
+
+async def _emit_session_updated_event(core: PenguinCore, info: Dict[str, Any]) -> None:
+    """Emit OpenCode-shaped session.updated event."""
+    await _emit_session_event(core, "session.updated", info)
+
+
+async def _emit_session_deleted_event(core: PenguinCore, info: Dict[str, Any]) -> None:
+    """Emit OpenCode-shaped session.deleted event."""
+    await _emit_session_event(core, "session.deleted", info)
 
 
 def _title_log_info(message: str, *args: Any) -> None:
@@ -1548,6 +1570,21 @@ async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_c
 
         if req.initial_prompt:
             await core.send_to_agent(req.id, req.initial_prompt)
+
+        try:
+            conversation = core.conversation_manager.get_agent_conversation(req.id)
+            session = getattr(conversation, "session", None)
+            session_id = getattr(session, "id", None)
+            if isinstance(session_id, str) and session_id:
+                info = get_session_info(core, session_id)
+                if isinstance(info, dict):
+                    await _emit_session_created_event(core, info)
+        except Exception:
+            logger.debug(
+                "Failed to emit session.created for agent '%s'",
+                req.id,
+                exc_info=True,
+            )
 
         return core.get_agent_profile(req.id) or {"id": req.id}
     except HTTPException:
@@ -3718,6 +3755,8 @@ async def session_create(
     bound_directory = _bind_session_directory(core, info.get("id"), resolved_directory)
     if bound_directory:
         info["directory"] = bound_directory
+
+    await _emit_session_created_event(core, info)
     return info
 
 
@@ -3788,6 +3827,8 @@ async def session_delete(session_id: str, core: PenguinCore = Depends(get_core))
         raise HTTPException(
             status_code=500, detail=f"Failed to delete session {session_id}"
         )
+
+    await _emit_session_deleted_event(core, existing)
     return True
 
 

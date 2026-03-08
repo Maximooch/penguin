@@ -552,6 +552,137 @@ Ask the user structured questions during execution and block until they reply.
 
 
 # =============================================================================
+# MULTI-AGENT / MESSAGING TOOLS
+# =============================================================================
+
+AGENT_TOOLS = """
+## Multi-Agent & Messaging
+
+### send_message
+Send a message to another agent, a group of agents, or the human operator.
+
+**When to use:**
+- Agent-to-agent coordination
+- Broadcasting progress updates
+- Asking the user for clarification from an agent workflow
+
+**Format:** `<send_message>{...}</send_message>`
+
+**Payload fields:**
+- `content` (required) - Message body
+- `target` (optional) - Single recipient agent id
+- `targets` (optional) - Multiple recipient agent ids
+- `recipient` (optional) - Alias for `target`
+- `message_type` (optional) - `message` (default), `status`, `action`, `event`
+- `channel` (optional) - Logical room identifier
+- `metadata` (optional) - Additional key/value data
+- `sender` (optional) - Override sender label
+
+**Examples:**
+```actionxml
+<send_message>{"target":"planner","content":"Implementation complete. Please review.","channel":"dev-room"}</send_message>
+```
+
+```actionxml
+<send_message>{"targets":["planner","qa"],"content":"Build passed and tests are green.","message_type":"status"}</send_message>
+```
+
+**Note:** Message routing is push-based. There is no dedicated inbox polling action tag.
+
+
+### spawn_sub_agent
+Create a child agent for isolated or shared-session work.
+
+**When to use:**
+- Split work into parallel streams
+- Isolate exploration/research from the main thread
+- Create specialized helpers with focused instructions
+
+**Format:** `<spawn_sub_agent>{...}</spawn_sub_agent>`
+
+**Payload fields:**
+- `id` (required) - Child agent id
+- `parent` (optional) - Parent agent id (defaults to current agent)
+- `persona`, `system_prompt` (optional)
+- `share_session` (optional, default: `false`)
+- `share_context_window` (optional, default: `false`)
+- `shared_context_window_max_tokens` (optional int)
+- `model_config_id`, `model_overrides`, `model_output_max_tokens` (optional)
+- `default_tools` (optional list; metadata only)
+- `initial_prompt` (optional)
+- `background` (optional, default: `false`)
+
+**Example (isolated child):**
+```actionxml
+<spawn_sub_agent>{"id":"researcher","share_session":false,"share_context_window":false,"initial_prompt":"Summarize docs in /docs"}</spawn_sub_agent>
+```
+
+**Example (background child):**
+```actionxml
+<spawn_sub_agent>{"id":"analyzer","background":true,"initial_prompt":"Audit Python files for security issues"}</spawn_sub_agent>
+```
+
+
+### stop_sub_agent
+Pause a sub-agent, cancelling a running background task when applicable.
+
+**Format:** `<stop_sub_agent>{"id":"researcher"}</stop_sub_agent>`
+
+
+### resume_sub_agent
+Resume a previously paused sub-agent.
+
+**Format:** `<resume_sub_agent>{"id":"researcher"}</resume_sub_agent>`
+
+
+### delegate
+Send a concrete task to an existing sub-agent.
+
+**When to use:**
+- Assign follow-up work to a named child
+- Run background delegated tasks with optional waiting
+
+**Format:** `<delegate>{...}</delegate>`
+
+**Payload fields:**
+- `child` (required) - Target agent id
+- `content` (required) - Task text
+- `parent` (optional) - Parent agent id
+- `channel` (optional) - Logical room/channel
+- `metadata` (optional) - Additional task metadata
+- `background` (optional, default: `false`)
+- `wait` (optional, default: `false`) - Only relevant when `background=true`
+- `timeout` (optional float seconds) - Only relevant when `wait=true`
+
+**Examples:**
+```actionxml
+<delegate>{"child":"researcher","content":"Audit README for missing setup steps.","channel":"dev-room"}</delegate>
+```
+
+```actionxml
+<delegate>{"child":"researcher","content":"Analyze test coverage gaps.","background":true,"wait":true,"timeout":45}</delegate>
+```
+
+
+### delegate_explore_task
+Spawn a lightweight exploration sub-agent that can list files, read files, and search,
+then return a structured summary.
+
+**Format:** `<delegate_explore_task>{...}</delegate_explore_task>`
+
+**Payload fields:**
+- `task` (required) - Exploration objective
+- `directory` (optional) - Starting path (default: current)
+- `max_iterations` (optional int) - Exploration rounds (capped)
+
+**Example:**
+```actionxml
+<delegate_explore_task>{"task":"Map this repo architecture and identify entry points.","directory":".","max_iterations":40}</delegate_explore_task>
+```
+"""
+
+
+# =============================================================================
 # BROWSER AUTOMATION TOOLS
 # =============================================================================
 
@@ -659,6 +790,8 @@ TOOL_GUIDE = "\n\n".join(
         MEMORY_TOOLS,
         TODO_TOOLS,
         QUESTION_TOOLS,
+        AGENT_TOOLS,
+        BROWSER_TOOLS,
         COMPLETION_TOOLS,
     ]
 )
