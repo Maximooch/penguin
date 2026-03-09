@@ -47,7 +47,9 @@ class ModelConfig:
 
     # Reasoning tokens support
     reasoning_enabled: bool = False
-    reasoning_effort: Optional[Literal["low", "medium", "high"]] = None
+    reasoning_effort: Optional[
+        Literal["none", "minimal", "low", "medium", "high", "xhigh"]
+    ] = None
     reasoning_max_tokens: Optional[int] = None
     reasoning_exclude: bool = False
     supports_reasoning: Optional[bool] = None
@@ -201,7 +203,15 @@ class ModelConfig:
 
     def get_reasoning_config(self) -> Optional[Dict[str, Any]]:
         """Get the reasoning configuration for API requests."""
-        if not self.reasoning_enabled or not self.supports_reasoning:
+        if not self.reasoning_enabled:
+            return None
+
+        explicit_override = (
+            self.reasoning_effort is not None
+            or self.reasoning_max_tokens is not None
+            or self.reasoning_exclude
+        )
+        if not self.supports_reasoning and not explicit_override:
             return None
 
         config: Dict[str, Any] = {}
@@ -273,9 +283,15 @@ class ModelConfig:
 
         # Parse reasoning configuration from environment
         reasoning_enabled = os.getenv("PENGUIN_REASONING_ENABLED", "").lower() == "true"
-        reasoning_effort = os.getenv("PENGUIN_REASONING_EFFORT")
+        raw_reasoning_effort = os.getenv("PENGUIN_REASONING_EFFORT")
+        reasoning_effort = (
+            raw_reasoning_effort.strip().lower()
+            if isinstance(raw_reasoning_effort, str) and raw_reasoning_effort.strip()
+            else None
+        )
         reasoning_max_tokens = os.getenv("PENGUIN_REASONING_MAX_TOKENS")
         reasoning_exclude = os.getenv("PENGUIN_REASONING_EXCLUDE", "").lower() == "true"
+        allowed_efforts = {"none", "minimal", "low", "medium", "high", "xhigh"}
 
         max_output_env = os.getenv("PENGUIN_MAX_OUTPUT_TOKENS") or os.getenv(
             "PENGUIN_MAX_TOKENS"
@@ -304,7 +320,7 @@ class ModelConfig:
             == "true",
             reasoning_enabled=reasoning_enabled,
             reasoning_effort=reasoning_effort
-            if reasoning_effort in ["low", "medium", "high"]
+            if reasoning_effort in allowed_efforts
             else None,
             reasoning_max_tokens=int(reasoning_max_tokens)
             if reasoning_max_tokens

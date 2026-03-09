@@ -819,19 +819,24 @@ class OpenRouterGateway:
             f"other_keys={list(kwargs.keys())}"
         )
         reasoning_payload = request_params.get("reasoning")
-        if isinstance(reasoning_payload, dict):
-            reasoning_log = (
-                "[OpenRouterGateway] Reasoning payload model=%s stream=%s payload=%s"
-            )
-            reasoning_args = (
-                request_params.get("model"),
-                use_streaming,
-                reasoning_payload,
-            )
-            self.logger.info(reasoning_log, *reasoning_args)
-            uvicorn_logger = logging.getLogger("uvicorn.error")
-            if uvicorn_logger is not self.logger:
-                uvicorn_logger.info(reasoning_log, *reasoning_args)
+        reasoning_log = (
+            "[OpenRouterGateway] Reasoning payload model=%s stream=%s payload=%s "
+            "enabled=%s supports=%s effort=%s max_tokens=%s exclude=%s"
+        )
+        reasoning_args = (
+            request_params.get("model"),
+            use_streaming,
+            reasoning_payload if isinstance(reasoning_payload, dict) else None,
+            bool(getattr(self.model_config, "reasoning_enabled", False)),
+            getattr(self.model_config, "supports_reasoning", None),
+            getattr(self.model_config, "reasoning_effort", None),
+            getattr(self.model_config, "reasoning_max_tokens", None),
+            bool(getattr(self.model_config, "reasoning_exclude", False)),
+        )
+        self.logger.info(reasoning_log, *reasoning_args)
+        uvicorn_logger = logging.getLogger("uvicorn.error")
+        if uvicorn_logger is not self.logger:
+            uvicorn_logger.info(reasoning_log, *reasoning_args)
 
         full_response_content = ""
         full_reasoning_content = ""

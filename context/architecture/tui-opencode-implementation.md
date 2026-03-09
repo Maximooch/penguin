@@ -582,6 +582,7 @@ For each phase, validate with:
   - Acceptance: reasoning variant controls are available and affect model requests.
   - Progress (2026-03-05): `config.providers`/`provider.list` model payloads now expose reasoning variants (`low/medium/high`) for reasoning-capable models (OpenRouter-first), Penguin prompt submit now includes `variant` in `/api/v1/chat/message`, and backend routes apply per-request reasoning-effort overrides without mutating persistent model defaults.
   - Progress (2026-03-06): `ModelConfig.get_reasoning_config()` now prioritizes explicit `reasoning_effort` overrides before provider-style defaults, so `variant=low|medium|high` reliably changes emitted OpenRouter reasoning payloads for reasoning-capable models (including Anthropic/Gemini-family routing where effort can be mapped upstream).
+  - Progress (2026-03-09): OpenRouter model variant payloads now expose a closer OpenCode effort surface (`none/minimal/low/medium/high/xhigh` for GPT/Gemini-3 families, plus Grok-3-mini low/high), route-level variant overrides now accept expanded effort values (plus `max`/`off` semantics), explicit per-request variants force reasoning payload emission even when capability heuristics are conservative, and OpenRouter gateway logs the resolved reasoning payload/config state for every request.
 
 ### Track I: Penguin-mode UX and Runtime Ergonomics
 - [ ] I1. Resolve occasional queued/stuck turn behavior under streaming-heavy runs.
@@ -628,7 +629,8 @@ For each phase, validate with:
 - [~] F4. Emit `lsp.updated` and `lsp.client.diagnostics` events from file edits.
   - Owner: edit/apply_diff/write tool paths + event bus adapter.
   - Acceptance: diagnostics refresh in TUI after edits.
-  - Progress: events now emit for file-modifying action tools; diagnostics payload enrichment still pending.
+  - Progress: events now emit for file-modifying action tools.
+  - Progress (2026-03-09): diagnostics payloads now include OpenCode-compatible `serverID`/`path` fields plus `count`, normalized severity/source/range entries, and line/column extraction from common tool error messages and structured JSON outputs.
 
 ### Track G: Deferred / Later
 - [ ] G1. MCP compatibility (`mcp.status/connect/disconnect`) after core parity is stable.

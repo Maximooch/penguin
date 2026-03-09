@@ -27,3 +27,17 @@ def test_reasoning_max_tokens_used_when_effort_missing() -> None:
     )
 
     assert config.get_reasoning_config() == {"max_tokens": 4096}
+
+
+def test_explicit_reasoning_effort_overrides_support_detection() -> None:
+    config = ModelConfig(
+        model="z-ai/glm-5",
+        provider="openrouter",
+        client_preference="openrouter",
+        supports_reasoning=False,
+        reasoning_enabled=True,
+        reasoning_effort="xhigh",
+        reasoning_max_tokens=None,
+    )
+
+    assert config.get_reasoning_config() == {"effort": "xhigh"}

@@ -351,9 +351,12 @@ async def test_openrouter_catalog_expands_provider_payloads(
     assert openrouter["models"]["openai/gpt-5-mini"]["cost"]["input"] == 0.00000125
     assert openrouter["models"]["openai/gpt-5-mini"]["cost"]["output"] == 0.00001
     assert set(openrouter["models"]["openai/gpt-5-mini"]["variants"].keys()) == {
+        "none",
+        "minimal",
         "low",
         "medium",
         "high",
+        "xhigh",
     }
 
     provider_payload = await opencode_provider_list(core=typed_core)
@@ -367,7 +370,7 @@ async def test_openrouter_catalog_expands_provider_payloads(
     ].startswith("2024-")
     assert set(
         openrouter_provider["models"]["openai/gpt-5-mini"]["variants"].keys()
-    ) == {"low", "medium", "high"}
+    ) == {"none", "minimal", "low", "medium", "high", "xhigh"}
 
 
 @pytest.mark.asyncio

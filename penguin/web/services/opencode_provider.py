@@ -130,21 +130,50 @@ def _model_cost_payload(conf: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _openrouter_reasoning_variants(
+    model_id: str,
+) -> dict[str, dict[str, Any]] | None:
+    """Return OpenRouter reasoning variants aligned with OpenCode expectations."""
+    value = model_id.strip().lower()
+    if not value:
+        return None
+
+    if any(
+        token in value for token in ("deepseek", "minimax", "glm", "mistral", "kimi")
+    ):
+        return None
+
+    if "grok" in value:
+        if "grok-3-mini" not in value:
+            return None
+        return {
+            "low": {"reasoning": {"effort": "low"}},
+            "high": {"reasoning": {"effort": "high"}},
+        }
+
+    if "gpt" in value or "gemini-3" in value:
+        efforts = ("none", "minimal", "low", "medium", "high", "xhigh")
+        return {effort: {"reasoning": {"effort": effort}} for effort in efforts}
+
+    return None
+
+
 def _model_variants_payload(
     provider_id: str,
+    model_id: str,
     reasoning_enabled: bool,
 ) -> dict[str, dict[str, Any]] | None:
     if not reasoning_enabled:
         return None
 
-    effort_variants = {
+    if provider_id.strip().lower() == "openrouter":
+        return _openrouter_reasoning_variants(model_id)
+
+    return {
         "low": {"reasoning": {"effort": "low"}},
         "medium": {"reasoning": {"effort": "medium"}},
         "high": {"reasoning": {"effort": "high"}},
     }
-    if provider_id.strip().lower() == "openrouter":
-        return effort_variants
-    return effort_variants
 
 
 def _openrouter_catalog_models(api_key: str | None = None) -> dict[str, dict[str, Any]]:
@@ -296,7 +325,7 @@ def _config_model_payload(
     if not isinstance(release_date, str) or not release_date.strip():
         release_date = "1970-01-01T00:00:00+00:00"
 
-    variants = _model_variants_payload(provider_id, reasoning_enabled)
+    variants = _model_variants_payload(provider_id, model_id, reasoning_enabled)
 
     payload = {
         "id": model_id,
@@ -359,7 +388,7 @@ def _provider_list_model_payload(
     if not isinstance(release_date, str) or not release_date.strip():
         release_date = "1970-01-01T00:00:00+00:00"
 
-    variants = _model_variants_payload(provider_id, reasoning_enabled)
+    variants = _model_variants_payload(provider_id, model_id, reasoning_enabled)
 
     payload = {
         "id": model_id,

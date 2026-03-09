@@ -12,6 +12,8 @@ import pytest
 
 from penguin.system.execution_context import ExecutionContext, execution_context_scope
 from penguin.system.execution_context import get_current_execution_context
+from penguin.llm.model_config import ModelConfig
+from penguin.llm.openrouter_gateway import OpenRouterGateway
 from penguin.tools.tool_manager import ToolManager
 from penguin.web.routes import MessageRequest, handle_chat_message
 
@@ -275,6 +277,83 @@ async def test_rest_chat_applies_reasoning_variant_per_request(tmp_path: Path) -
     assert core.model_config.reasoning_enabled is False
     assert core.model_config.reasoning_effort is None
     assert core.model_config.reasoning_max_tokens == 1234
+    assert not hasattr(core.model_config, "supports_reasoning")
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_variant_emits_outbound_reasoning_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "chat_repo_variant_outbound"
+    repo.mkdir()
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    captured: dict[str, Any] = {}
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+            self.model_config = ModelConfig(
+                model="z-ai/glm-5",
+                provider="openrouter",
+                client_preference="openrouter",
+                streaming_enabled=False,
+                reasoning_enabled=False,
+                reasoning_effort=None,
+                reasoning_max_tokens=None,
+                reasoning_exclude=False,
+                supports_reasoning=False,
+            )
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            gateway = OpenRouterGateway(self.model_config)
+
+            async def _fake_direct(
+                request_params: dict[str, Any],
+                reasoning_config: dict[str, Any],
+                use_streaming: bool,
+                stream_callback: Any,
+            ) -> str:
+                del stream_callback
+                captured["request_reasoning"] = request_params.get("reasoning")
+                captured["reasoning_config"] = dict(reasoning_config)
+                captured["use_streaming"] = use_streaming
+                return "ok"
+
+            monkeypatch.setattr(
+                gateway, "_direct_api_call_with_reasoning", _fake_direct
+            )
+            response = await gateway.get_response(
+                messages=[{"role": "user", "content": "ping"}],
+                stream=False,
+            )
+            return {"assistant_response": response, "action_results": []}
+
+    core = _Core()
+    request = MessageRequest(
+        text="ping",
+        session_id="session_variant_payload",
+        directory=str(repo),
+        streaming=False,
+    )
+    setattr(request, "variant", "xhigh")
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["response"] == "ok"
+    assert captured["use_streaming"] is False
+    assert captured["reasoning_config"] == {"effort": "xhigh"}
+    assert captured["request_reasoning"] == {"effort": "xhigh"}
+    assert core.model_config.reasoning_enabled is False
+    assert core.model_config.reasoning_effort is None
+    assert core.model_config.reasoning_max_tokens is None
+    assert core.model_config.supports_reasoning is False
 
 
 @pytest.mark.asyncio

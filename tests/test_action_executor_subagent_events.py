@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from penguin.utils.parser import ActionExecutor, parse_action
+from penguin.utils.parser import ActionExecutor, ActionType, CodeActAction, parse_action
 
 
 class _EventBus:
@@ -269,3 +269,59 @@ async def test_wait_for_agents_action_path_completes_background_agent(
     payload = json.loads(result)
     assert payload["status"] == "ok"
     assert payload["results"]["wait-action-agent"] is not None
+
+
+def test_build_lsp_diagnostics_extracts_line_and_source() -> None:
+    tool_manager = _ToolManager()
+    executor = ActionExecutor(
+        tool_manager=tool_manager,  # type: ignore[arg-type]
+        task_manager=cast(Any, SimpleNamespace()),
+    )
+
+    payload = {
+        "error": "SyntaxError: invalid syntax at line 7, column 3",
+        "returncode": 1,
+    }
+    diagnostics = executor._build_lsp_diagnostics(["src/example.py"], payload)
+
+    assert "src/example.py" in diagnostics
+    entries = diagnostics["src/example.py"]
+    assert entries
+    assert entries[0]["source"] == "penguin"
+    assert entries[0]["range"]["start"]["line"] == 6
+    assert entries[0]["range"]["start"]["character"] == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_action_emits_enriched_lsp_diagnostics_payload() -> None:
+    tool_manager = _ToolManager(
+        result={
+            "error": "TypeError at line 4, column 9",
+            "returncode": 1,
+        }
+    )
+    emitted: list[tuple[str, dict[str, Any]]] = []
+
+    async def _capture(event_type: str, payload: dict[str, Any]) -> None:
+        emitted.append((event_type, payload))
+
+    executor = ActionExecutor(
+        tool_manager=tool_manager,  # type: ignore[arg-type]
+        task_manager=cast(Any, SimpleNamespace()),
+        ui_event_callback=_capture,
+    )
+
+    result = await executor.execute_action(
+        CodeActAction(ActionType.ENHANCED_WRITE, "src/example.py:print('x')")
+    )
+    assert json.loads(result)["returncode"] == 1
+
+    diagnostics_events = [
+        item for item in emitted if item[0] == "lsp.client.diagnostics"
+    ]
+    assert diagnostics_events
+    payload = diagnostics_events[-1][1]
+    assert payload["serverID"] == "penguin"
+    assert payload["path"] == "src/example.py"
+    assert payload["count"] == 1
+    assert "src/example.py" in payload["diagnostics"]

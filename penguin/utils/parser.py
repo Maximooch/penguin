@@ -407,26 +407,136 @@ class ActionExecutor:
     def _build_lsp_diagnostics(
         self, files: List[str], result: Any
     ) -> Dict[str, List[Dict[str, Any]]]:
-        """Build a minimal diagnostics payload for UI refresh events."""
+        """Build diagnostics payload for UI refresh events."""
+
+        def _message_line_char(text: str) -> tuple[int, int]:
+            line_match = re.search(
+                r"(?:line|ln)\s*(\d+)(?:\D+(?:column|col|character|char)\s*(\d+))?",
+                text,
+                re.IGNORECASE,
+            )
+            if line_match:
+                line = max(int(line_match.group(1)) - 1, 0)
+                character = (
+                    max(int(line_match.group(2)) - 1, 0) if line_match.group(2) else 0
+                )
+                return line, character
+
+            colon_match = re.search(r":(\d+):(\d+)", text)
+            if colon_match:
+                return max(int(colon_match.group(1)) - 1, 0), max(
+                    int(colon_match.group(2)) - 1, 0
+                )
+
+            return 0, 0
+
+        def _normalize_entry(raw_entry: Any, fallback_message: str) -> Dict[str, Any]:
+            if not isinstance(raw_entry, dict):
+                line, character = _message_line_char(fallback_message)
+                return {
+                    "severity": 1,
+                    "source": "penguin",
+                    "message": fallback_message,
+                    "range": {
+                        "start": {"line": line, "character": character},
+                        "end": {"line": line, "character": character + 1},
+                    },
+                }
+
+            message = str(raw_entry.get("message") or fallback_message)[:500]
+            severity = raw_entry.get("severity", 1)
+            source = raw_entry.get("source") or "penguin"
+            code = raw_entry.get("code")
+            existing_range = raw_entry.get("range")
+
+            if isinstance(existing_range, dict):
+                start = existing_range.get("start") or {}
+                end = existing_range.get("end") or {}
+                line = int(start.get("line", 0))
+                character = int(start.get("character", 0))
+                end_line = int(end.get("line", line))
+                end_character = int(end.get("character", character + 1))
+            else:
+                line, character = _message_line_char(message)
+                end_line = line
+                end_character = character + 1
+
+            entry: Dict[str, Any] = {
+                "severity": severity,
+                "source": source,
+                "message": message,
+                "range": {
+                    "start": {"line": line, "character": character},
+                    "end": {"line": end_line, "character": end_character},
+                },
+            }
+            if code is not None:
+                entry["code"] = code
+            return entry
+
         text = "" if result is None else str(result)
-        if not text.strip():
+        text = text.strip()
+        if not text:
             return {}
 
-        is_error = text.lower().startswith("error") or "traceback" in text.lower()
-        if not is_error:
-            return {}
+        payload: Dict[str, Any] = {}
+        if isinstance(result, dict):
+            payload = result
+        elif isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except Exception:
+                payload = {}
 
-        message = text.strip().splitlines()[0][:500]
+        diagnostics_payload = payload.get("diagnostics") if payload else None
+        if isinstance(diagnostics_payload, dict):
+            normalized: Dict[str, List[Dict[str, Any]]] = {}
+            for raw_path, entries in diagnostics_payload.items():
+                path = str(raw_path)
+                if files and path and path not in files:
+                    continue
+                if not isinstance(entries, list):
+                    continue
+                normalized[path] = [
+                    _normalize_entry(entry, "LSP diagnostic") for entry in entries
+                ]
+
+            if normalized:
+                return normalized
+
+        error_parts: List[str] = []
+        return_code = payload.get("returncode") if payload else None
+        if isinstance(return_code, int) and return_code != 0:
+            error_parts.append(f"Command failed (exit {return_code})")
+
+        for key in ("error", "stderr", "message", "details"):
+            value = payload.get(key) if payload else None
+            if isinstance(value, str) and value.strip():
+                error_parts.append(value.strip())
+
+        if not error_parts:
+            lowered = text.lower()
+            is_error = lowered.startswith("error") or "traceback" in lowered
+            if not is_error:
+                return {}
+            error_parts.append(text)
+
+        message = " - ".join(error_parts).splitlines()[0][:500]
+        line, character = _message_line_char(message)
         targets = files or [""]
         diagnostics: Dict[str, List[Dict[str, Any]]] = {}
         for path in targets:
             diagnostics[path] = [
                 {
                     "severity": 1,
+                    "source": "penguin",
+                    "code": "tool_action_error",
                     "message": message,
                     "range": {
-                        "start": {"line": 0, "character": 0},
-                        "end": {"line": 0, "character": 1},
+                        "start": {"line": line, "character": character},
+                        "end": {"line": line, "character": character + 1},
                     },
                 }
             ]
@@ -622,6 +732,7 @@ class ActionExecutor:
 
             if self._ui_event_cb and self._is_lsp_refresh_action(action.action_type):
                 files = self._extract_changed_files(action)
+                diagnostics_map = self._build_lsp_diagnostics(files, result)
                 try:
                     await self._ui_event_cb(
                         "lsp.updated",
@@ -635,7 +746,14 @@ class ActionExecutor:
                         {
                             "action": action.action_type.value,
                             "files": files,
-                            "diagnostics": self._build_lsp_diagnostics(files, result),
+                            "serverID": "penguin",
+                            "path": files[0] if files else "",
+                            "count": sum(
+                                len(entries)
+                                for entries in diagnostics_map.values()
+                                if isinstance(entries, list)
+                            ),
+                            "diagnostics": diagnostics_map,
                         },
                     )
                 except Exception as e:

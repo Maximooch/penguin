@@ -451,6 +451,11 @@ class MessageRequest(BaseModel):
     parts: Optional[List[Dict[str, Any]]] = None
 
 
+_REASONING_EFFORT_VARIANTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+_REASONING_MAX_VARIANTS = {"max"}
+_REASONING_DISABLE_VARIANTS = {"off"}
+
+
 def _apply_reasoning_variant_override(
     core: PenguinCore,
     variant: Optional[str],
@@ -468,20 +473,31 @@ def _apply_reasoning_variant_override(
         "reasoning_effort": getattr(model_config, "reasoning_effort", None),
         "reasoning_max_tokens": getattr(model_config, "reasoning_max_tokens", None),
         "reasoning_exclude": getattr(model_config, "reasoning_exclude", False),
+        "supports_reasoning": getattr(model_config, "supports_reasoning", None),
+        "_has_supports_reasoning": hasattr(model_config, "supports_reasoning"),
     }
 
-    if value in {"low", "medium", "high"}:
-        model_config.reasoning_enabled = True
-        model_config.reasoning_effort = value
-        model_config.reasoning_max_tokens = None
-        model_config.reasoning_exclude = False
-        return snapshot
-
-    if value in {"none", "off"}:
+    if value in _REASONING_DISABLE_VARIANTS:
         model_config.reasoning_enabled = False
         model_config.reasoning_effort = None
         model_config.reasoning_max_tokens = None
         model_config.reasoning_exclude = False
+        return snapshot
+
+    if value in _REASONING_EFFORT_VARIANTS:
+        model_config.reasoning_enabled = True
+        model_config.reasoning_effort = value
+        model_config.reasoning_max_tokens = None
+        model_config.reasoning_exclude = False
+        model_config.supports_reasoning = True
+        return snapshot
+
+    if value in _REASONING_MAX_VARIANTS:
+        model_config.reasoning_enabled = True
+        model_config.reasoning_effort = None
+        model_config.reasoning_max_tokens = 32000
+        model_config.reasoning_exclude = False
+        model_config.supports_reasoning = True
         return snapshot
 
     logger.debug("Ignoring unsupported reasoning variant '%s'", value)
@@ -503,6 +519,13 @@ def _restore_reasoning_variant_override(
     model_config.reasoning_effort = snapshot.get("reasoning_effort")
     model_config.reasoning_max_tokens = snapshot.get("reasoning_max_tokens")
     model_config.reasoning_exclude = bool(snapshot.get("reasoning_exclude", False))
+    if snapshot.get("_has_supports_reasoning"):
+        model_config.supports_reasoning = snapshot.get("supports_reasoning")
+    elif hasattr(model_config, "supports_reasoning"):
+        try:
+            delattr(model_config, "supports_reasoning")
+        except Exception:
+            pass
 
 
 def _extract_paths_from_parts(
