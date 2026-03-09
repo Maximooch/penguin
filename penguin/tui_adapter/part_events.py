@@ -173,6 +173,18 @@ class PartEventAdapter:
         output: list[str] = []
         index = 0
 
+        def _is_literal_tag(open_index: int, end_index: Optional[int] = None) -> bool:
+            """Return True when a tag-looking token is escaped/literal markdown text."""
+            if open_index > 0:
+                prev_char = combined[open_index - 1]
+                if prev_char in {"`", "\\"}:
+                    return True
+            if end_index is not None and end_index + 1 < len(combined):
+                next_char = combined[end_index + 1]
+                if next_char == "`":
+                    return True
+            return False
+
         while index < len(combined):
             if self._action_active:
                 close_token = f"</{self._action_active}>"
@@ -194,6 +206,9 @@ class PartEventAdapter:
             output.append(combined[index:open_index])
             end_index = combined.find(">", open_index + 1)
             if end_index == -1:
+                if _is_literal_tag(open_index):
+                    output.append(combined[open_index:])
+                    return "".join(output)
                 fragment = lowered[open_index + 1 :]
                 if fragment.startswith("/"):
                     fragment = fragment[1:]
@@ -207,6 +222,11 @@ class PartEventAdapter:
             is_close = tag_token.startswith("/")
             tag_name = tag_token[1:].strip() if is_close else tag_token
             if tag_name not in self._action_tags:
+                output.append(combined[open_index : end_index + 1])
+                index = end_index + 1
+                continue
+
+            if _is_literal_tag(open_index, end_index):
                 output.append(combined[open_index : end_index + 1])
                 index = end_index + 1
                 continue

@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from enum import Enum
 from html import unescape
@@ -307,6 +308,61 @@ class ActionExecutor:
             pass
         self._ui_event_cb = ui_event_callback
         # No direct initialization of expensive tools, we'll use tool_manager's properties
+
+    def _resolve_subagent_tool_call_id(
+        self,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Resolve best-effort tool call identifier for sub-agent logs."""
+        payload = payload or {}
+        explicit = payload.get("tool_call_id") or payload.get("call_id")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
+
+        context = get_current_execution_context()
+        if context and isinstance(context.request_id, str) and context.request_id:
+            return context.request_id
+        return "-"
+
+    def _log_subagent_event(
+        self,
+        event: str,
+        *,
+        status: str,
+        elapsed_ms: Optional[float] = None,
+        target_agent: Optional[str] = None,
+        parent_agent: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+        level: int = logging.INFO,
+        **fields: Any,
+    ) -> None:
+        """Emit sub-agent logs to both module and uvicorn loggers."""
+        context = get_current_execution_context()
+        session_id = context.session_id if context and context.session_id else "-"
+        agent_id = context.agent_id if context and context.agent_id else "default"
+        call_id = tool_call_id or "-"
+
+        parts = [
+            f"subagent.{event}",
+            f"status={status}",
+            f"session={session_id}",
+            f"agent={agent_id}",
+            f"tool_call_id={call_id}",
+            f"elapsed_ms={0.0 if elapsed_ms is None else round(float(elapsed_ms), 1)}",
+        ]
+        if target_agent:
+            parts.append(f"target_agent={target_agent}")
+        if parent_agent:
+            parts.append(f"parent_agent={parent_agent}")
+
+        for key, value in fields.items():
+            if value is None:
+                continue
+            parts.append(f"{key}={value}")
+
+        message = " ".join(parts)
+        logger.log(level, message)
+        logging.getLogger("uvicorn.error").log(level, message)
 
     def _is_lsp_refresh_action(self, action_type: ActionType) -> bool:
         """Return True if action can modify files and should refresh LSP state."""
@@ -872,18 +928,42 @@ class ActionExecutor:
           - initial_prompt (optional)
           - background (bool, default False): Run agent in background with initial_prompt
         """
+        spawn_started_at = time.monotonic()
+
         try:
             payload = json.loads(params) if params.strip() else {}
         except Exception as e:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                tool_call_id=self._resolve_subagent_tool_call_id(),
+                error="invalid_json",
+            )
             return f"Invalid JSON for spawn_sub_agent: {e}"
 
         agent_id = str(payload.get("id") or "").strip()
         if not agent_id:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                tool_call_id=self._resolve_subagent_tool_call_id(payload),
+                error="missing_id",
+            )
             return "spawn_sub_agent requires 'id'"
 
         conversation = self.conversation_system
         core = getattr(conversation, "core", None)
         if core is None:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                target_agent=agent_id,
+                tool_call_id=self._resolve_subagent_tool_call_id(payload),
+                error="core_unavailable",
+            )
             return "Core unavailable for spawn_sub_agent"
 
         parent_id = str(
@@ -894,14 +974,17 @@ class ActionExecutor:
         share_session = bool(payload.get("share_session", False))
         share_cw = bool(payload.get("share_context_window", False))
         background = bool(payload.get("background", False))
-        logger.info(
-            "subagent.spawn.request agent=%s parent=%s share_session=%s "
-            "share_context_window=%s background=%s",
-            agent_id,
-            parent_id,
-            share_session,
-            share_cw,
-            background,
+        tool_call_id = self._resolve_subagent_tool_call_id(payload)
+        self._log_subagent_event(
+            "spawn.request",
+            status="started",
+            elapsed_ms=0.0,
+            target_agent=agent_id,
+            parent_agent=parent_id,
+            tool_call_id=tool_call_id,
+            share_session=share_session,
+            share_context_window=share_cw,
+            background=background,
         )
         shared_context_window_max_tokens = payload.get(
             "shared_context_window_max_tokens", payload.get("shared_cw_max_tokens")
@@ -937,15 +1020,26 @@ class ActionExecutor:
                 shared_context_window_max_tokens=shared_context_window_max_tokens,
                 **kwargs,
             )
-            logger.info(
-                "subagent.spawn.created agent=%s parent=%s share_session=%s "
-                "share_context_window=%s",
-                agent_id,
-                parent_id,
-                share_session,
-                share_cw,
+            self._log_subagent_event(
+                "spawn.created",
+                status="completed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                target_agent=agent_id,
+                parent_agent=parent_id,
+                tool_call_id=tool_call_id,
+                share_session=share_session,
+                share_context_window=share_cw,
             )
         except Exception as e:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                target_agent=agent_id,
+                parent_agent=parent_id,
+                tool_call_id=tool_call_id,
+                error=str(e),
+            )
             return f"Failed to spawn sub-agent '{agent_id}': {e}"
 
         try:
@@ -976,11 +1070,15 @@ class ActionExecutor:
                                 },
                             },
                         )
-                        logger.info(
-                            "subagent.spawn.session_event type=session.created "
-                            "agent=%s session=%s",
-                            agent_id,
-                            session_id,
+                        self._log_subagent_event(
+                            "spawn.session_event",
+                            status="completed",
+                            elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                            target_agent=agent_id,
+                            parent_agent=parent_id,
+                            tool_call_id=tool_call_id,
+                            event_type="session.created",
+                            child_session=session_id,
                         )
         except Exception:
             logger.debug(
@@ -1014,8 +1112,27 @@ class ActionExecutor:
                             "share_context_window": share_cw,
                         },
                     )
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="started",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        tool_call_id=tool_call_id,
+                        background=True,
+                    )
                     return f"Spawned sub-agent '{agent_id}' running in background (parent='{parent_id}')"
                 except Exception as e:
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        tool_call_id=tool_call_id,
+                        background=True,
+                        error=str(e),
+                    )
                     return f"Failed to spawn background agent '{agent_id}': {e}"
             else:
                 # Synchronous: send message and wait
@@ -1023,6 +1140,18 @@ class ActionExecutor:
                     await core.send_to_agent(agent_id, initial_prompt)
                 except Exception as e:
                     logger.warning(f"Failed to send initial_prompt to {agent_id}: {e}")
+
+        self._log_subagent_event(
+            "spawn.summary",
+            status="completed",
+            elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+            target_agent=agent_id,
+            parent_agent=parent_id,
+            tool_call_id=tool_call_id,
+            background=background,
+            share_session=share_session,
+            share_context_window=share_cw,
+        )
 
         return f"Spawned sub-agent '{agent_id}' (parent='{parent_id}', share_session={share_session}, share_context_window={share_cw})"
 
@@ -1346,9 +1475,17 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             return f"Failed to resume sub-agent '{agent_id}': {e}"
 
     async def _get_agent_status(self, params: str) -> str:
+        status_started_at = time.monotonic()
         try:
             payload = json.loads(params) if params.strip() else {}
         except Exception as e:
+            self._log_subagent_event(
+                "status.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+                tool_call_id=self._resolve_subagent_tool_call_id(),
+                error="invalid_json",
+            )
             return f"Invalid JSON for get_agent_status: {e}"
 
         agent_id = str(payload.get("id") or payload.get("agent_id") or "").strip()
@@ -1358,12 +1495,35 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         if agent_id:
             tool_input["id"] = agent_id
 
-        logger.info(
-            "subagent.status.request agent=%s include_result=%s",
-            agent_id or "all",
-            include_result,
+        tool_call_id = self._resolve_subagent_tool_call_id(payload)
+
+        self._log_subagent_event(
+            "status.request",
+            status="started",
+            elapsed_ms=0.0,
+            target_agent=agent_id or "all",
+            tool_call_id=tool_call_id,
+            include_result=include_result,
         )
-        return self.tool_manager.execute_tool("get_agent_status", tool_input)
+        result = self.tool_manager.execute_tool("get_agent_status", tool_input)
+
+        summary_status = "completed"
+        try:
+            payload_result = json.loads(result) if isinstance(result, str) else {}
+            if isinstance(payload_result, dict) and payload_result.get("error"):
+                summary_status = "failed"
+        except Exception:
+            pass
+
+        self._log_subagent_event(
+            "status.summary",
+            status=summary_status,
+            elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+            target_agent=agent_id or "all",
+            tool_call_id=tool_call_id,
+            include_result=include_result,
+        )
+        return result
 
     async def _wait_for_agents(self, params: str) -> str:
         try:
@@ -1403,6 +1563,30 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             normalized_ids if normalized_ids is not None else "all",
             timeout,
         )
+
+        async_wait_handler = getattr(
+            self.tool_manager,
+            "_execute_wait_for_agents",
+            None,
+        )
+        if callable(async_wait_handler) and asyncio.iscoroutinefunction(
+            async_wait_handler
+        ):
+            raw_result = await async_wait_handler(tool_input)
+            try:
+                parsed = json.loads(raw_result) if isinstance(raw_result, str) else {}
+                if isinstance(parsed, dict):
+                    logger.info(
+                        "subagent.wait.result status=%s elapsed=%s polls=%s ids=%s",
+                        parsed.get("status"),
+                        parsed.get("elapsed_seconds"),
+                        parsed.get("poll_count"),
+                        parsed.get("waited_agent_ids"),
+                    )
+            except Exception:
+                pass
+            return raw_result
+
         return self.tool_manager.execute_tool("wait_for_agents", tool_input)
 
     async def _get_context_info(self, params: str) -> str:
@@ -1468,19 +1652,43 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
           - wait (bool, default False): Wait for result when background=true
           - timeout (float, optional): Timeout in seconds when wait=true
         """
+        delegate_started_at = time.monotonic()
+
         try:
             payload = json.loads(params) if params.strip() else {}
         except Exception as e:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                tool_call_id=self._resolve_subagent_tool_call_id(),
+                error="invalid_json",
+            )
             return f"Invalid JSON for delegate: {e}"
 
         child = str(payload.get("child") or "").strip()
         content = payload.get("content")
         if not child or content is None:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                tool_call_id=self._resolve_subagent_tool_call_id(payload),
+                error="missing_child_or_content",
+            )
             return "delegate requires 'child' and 'content'"
 
         conversation = self.conversation_system
         core = getattr(conversation, "core", None)
         if core is None:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                target_agent=child,
+                tool_call_id=self._resolve_subagent_tool_call_id(payload),
+                error="core_unavailable",
+            )
             return "Core unavailable for delegate"
 
         parent = str(
@@ -1493,16 +1701,19 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         background = bool(payload.get("background", False))
         wait = bool(payload.get("wait", False))
         timeout = payload.get("timeout")
+        tool_call_id = self._resolve_subagent_tool_call_id(payload)
 
-        logger.info(
-            "subagent.delegate.request parent=%s child=%s background=%s "
-            "wait=%s timeout=%s channel=%s",
-            parent,
-            child,
-            background,
-            wait,
-            timeout,
-            channel,
+        self._log_subagent_event(
+            "delegate.request",
+            status="started",
+            elapsed_ms=0.0,
+            target_agent=child,
+            parent_agent=parent,
+            tool_call_id=tool_call_id,
+            background=background,
+            wait=wait,
+            timeout=timeout,
+            channel=channel,
         )
 
         # Record delegation event in both parent and child logs (best-effort)
@@ -1542,6 +1753,16 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 # Check if agent is already running
                 status = executor.get_status(child)
                 if status and status.get("state") in ("pending", "running"):
+                    self._log_subagent_event(
+                        "delegate.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                        target_agent=child,
+                        parent_agent=parent,
+                        tool_call_id=tool_call_id,
+                        background=True,
+                        error="already_running",
+                    )
                     return f"Agent '{child}' is already running a background task"
 
                 await executor.spawn_agent(
@@ -1557,29 +1778,52 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 if wait:
                     try:
                         result = await executor.wait_for(child, timeout=timeout)
-                        logger.info(
-                            "subagent.delegate.completed parent=%s child=%s "
-                            "background=true waited=true",
-                            parent,
-                            child,
+                        self._log_subagent_event(
+                            "delegate.summary",
+                            status="completed",
+                            elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                            target_agent=child,
+                            parent_agent=parent,
+                            tool_call_id=tool_call_id,
+                            background=True,
+                            wait=True,
                         )
                         return f"Delegated to '{child}' (background, waited): {result}"
                     except asyncio.TimeoutError:
-                        logger.info(
-                            "subagent.delegate.timeout parent=%s child=%s timeout=%s",
-                            parent,
-                            child,
-                            timeout,
+                        self._log_subagent_event(
+                            "delegate.summary",
+                            status="timeout",
+                            elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                            target_agent=child,
+                            parent_agent=parent,
+                            tool_call_id=tool_call_id,
+                            background=True,
+                            timeout=timeout,
                         )
                         return f"Delegated to '{child}' (background, timed out after {timeout}s)"
                 else:
-                    logger.info(
-                        "subagent.delegate.started parent=%s child=%s background=true",
-                        parent,
-                        child,
+                    self._log_subagent_event(
+                        "delegate.summary",
+                        status="started",
+                        elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                        target_agent=child,
+                        parent_agent=parent,
+                        tool_call_id=tool_call_id,
+                        background=True,
+                        wait=False,
                     )
                     return f"Delegated to '{child}' running in background"
             except Exception as e:
+                self._log_subagent_event(
+                    "delegate.summary",
+                    status="failed",
+                    elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                    target_agent=child,
+                    parent_agent=parent,
+                    tool_call_id=tool_call_id,
+                    background=True,
+                    error=str(e),
+                )
                 return f"Failed to delegate background task to '{child}': {e}"
         else:
             # Synchronous delegation via message passing
@@ -1591,13 +1835,27 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                     metadata=metadata,
                     channel=channel,
                 )
-                logger.info(
-                    "subagent.delegate.completed parent=%s child=%s background=false",
-                    parent,
-                    child,
+                self._log_subagent_event(
+                    "delegate.summary",
+                    status="completed",
+                    elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                    target_agent=child,
+                    parent_agent=parent,
+                    tool_call_id=tool_call_id,
+                    background=False,
                 )
                 return f"Delegated to '{child}' from '{parent}'"
             except Exception as e:
+                self._log_subagent_event(
+                    "delegate.summary",
+                    status="failed",
+                    elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                    target_agent=child,
+                    parent_agent=parent,
+                    tool_call_id=tool_call_id,
+                    background=False,
+                    error=str(e),
+                )
                 return f"Failed to delegate to '{child}': {e}"
 
     def _workspace_search(self, params: str) -> str:

@@ -53,6 +53,7 @@ Rationale:
 - Plan mode is now hard-enforced at policy layer: non-read tool operations are denied by `AgentModePolicy`.
 - `<execute>` action now routes through permission-gated `code_execution` tool checks (closing direct IPython bypass path in plan mode).
 - Engine now appends a transient plan-mode system notice to LLM request messages when `agent_mode=plan`, so the model is explicitly informed of read-only constraints.
+- Part-event action-tag filtering now treats backtick/escaped tag literals as display text, preventing response truncation when assistants mention examples like ``<spawn_sub_agent>`` inline.
 
 ## Audit: TUI Expectations (from `penguin-tui`)
 

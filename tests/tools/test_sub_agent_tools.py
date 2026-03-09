@@ -14,13 +14,16 @@ Tests the sub-agent tool schemas and basic functionality:
 """
 
 import pytest
-from typing import Any, Dict, List
-from unittest.mock import MagicMock
+import asyncio
+import json
+from typing import Any, Dict, List, Optional
+from unittest.mock import AsyncMock, MagicMock
 
 
 # =============================================================================
 # FIXTURES
 # =============================================================================
+
 
 @pytest.fixture
 def mock_config():
@@ -40,18 +43,39 @@ def mock_log_error():
 def tool_manager(mock_config, mock_log_error):
     """Create a ToolManager instance for testing."""
     from penguin.tools.tool_manager import ToolManager
+
     tm = ToolManager(mock_config, mock_log_error)
     return tm
 
 
-def find_tool_schema(tools: List[Dict], name: str) -> Dict:
+@pytest.fixture
+def mock_async_core():
+    """Create a mock async core compatible with AgentExecutor."""
+    core = MagicMock()
+
+    async def _mock_process(
+        input_data: Dict[str, Any],
+        agent_id: Optional[str] = None,
+    ):
+        await asyncio.sleep(0.02)
+        return {
+            "assistant_response": f"Response from {agent_id}",
+            "agent_id": agent_id,
+        }
+
+    core.process = AsyncMock(side_effect=_mock_process)
+    return core
+
+
+def find_tool_schema(tools: List[Dict], name: str) -> Dict[str, Any]:
     """Find a tool schema by name."""
-    return next((t for t in tools if t.get("name") == name), None)
+    return next((t for t in tools if t.get("name") == name), {})
 
 
 # =============================================================================
 # TOOL SCHEMA TESTS
 # =============================================================================
+
 
 class TestToolSchemas:
     """Test that sub-agent tool schemas are defined correctly."""
@@ -165,6 +189,7 @@ class TestToolSchemas:
 # TOOL HANDLER METHOD TESTS
 # =============================================================================
 
+
 class TestToolHandlerMethods:
     """Test that tool handler methods exist and have correct signatures."""
 
@@ -223,6 +248,7 @@ class TestToolHandlerMethods:
 # SCHEMA PROPERTY VALIDATION TESTS
 # =============================================================================
 
+
 class TestSchemaProperties:
     """Test tool schema property definitions."""
 
@@ -268,6 +294,7 @@ class TestSchemaProperties:
 # TOOL LIST COMPLETENESS TESTS
 # =============================================================================
 
+
 class TestToolListCompleteness:
     """Test that all expected sub-agent tools are present."""
 
@@ -297,6 +324,96 @@ class TestToolListCompleteness:
         tools = tool_manager.get_tools()
         # Should have at least 10 sub-agent tools plus other tools
         assert len(tools) >= 10
+
+
+# =============================================================================
+# WAIT_FOR_AGENTS EXECUTION TESTS
+# =============================================================================
+
+
+class TestWaitForAgentsExecution:
+    """Behavior tests for wait_for_agents execution path."""
+
+    @pytest.mark.asyncio
+    async def test_wait_for_agents_succeeds_with_background_task(
+        self,
+        tool_manager,
+        mock_async_core,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """wait_for_agents should complete when polling background task status."""
+        from penguin.multi.executor import AgentExecutor
+
+        executor = AgentExecutor(mock_async_core, max_concurrent=2)
+        monkeypatch.setattr(
+            "penguin.multi.executor.get_executor",
+            lambda _core=None: executor,
+        )
+
+        await executor.spawn_agent("wait-loop-agent", "quick task")
+
+        raw_result = await tool_manager._execute_wait_for_agents(
+            {
+                "ids": ["wait-loop-agent"],
+                "timeout": 2.0,
+            },
+        )
+
+        payload = json.loads(raw_result)
+        assert payload["status"] == "ok"
+        assert "wait-loop-agent" in payload["results"]
+        assert payload["agent_status"]["wait-loop-agent"]["state"] == "completed"
+        assert payload["elapsed_seconds"] >= 0
+        assert payload["poll_count"] >= 1
+        assert payload["waited_agent_ids"] == ["wait-loop-agent"]
+
+    @pytest.mark.asyncio
+    async def test_wait_for_agents_timeout_returns_partial_status(
+        self,
+        tool_manager,
+        mock_async_core,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """wait_for_agents should timeout cleanly with partial status payload."""
+        from penguin.multi.executor import AgentExecutor
+
+        async def _slow_process(
+            input_data: Dict[str, Any],
+            agent_id: Optional[str] = None,
+        ):
+            await asyncio.sleep(1.0)
+            return {"assistant_response": "slow", "agent_id": agent_id}
+
+        mock_async_core.process = AsyncMock(side_effect=_slow_process)
+        executor = AgentExecutor(mock_async_core, max_concurrent=1)
+        monkeypatch.setattr(
+            "penguin.multi.executor.get_executor",
+            lambda _core=None: executor,
+        )
+
+        await executor.spawn_agent("wait-timeout-agent", "slow task")
+
+        raw_result = await tool_manager._execute_wait_for_agents(
+            {
+                "ids": ["wait-timeout-agent"],
+                "timeout": 0.01,
+            },
+        )
+
+        payload = json.loads(raw_result)
+        assert payload["status"] == "timeout"
+        assert payload["elapsed_seconds"] >= 0.01
+        assert payload["poll_count"] >= 1
+        assert payload["waited_agent_ids"] == ["wait-timeout-agent"]
+        assert payload["results"]["wait-timeout-agent"]["state"] in {
+            "pending",
+            "running",
+            "completed",
+            "failed",
+            "cancelled",
+        }
+
+        await executor.cancel_all()
 
 
 if __name__ == "__main__":

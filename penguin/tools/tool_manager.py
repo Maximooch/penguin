@@ -4139,6 +4139,61 @@ class ToolManager:
         """
         self._core = core
 
+    def _resolve_subagent_tool_call_id(
+        self, tool_input: Optional[Dict[str, Any]]
+    ) -> str:
+        """Resolve best-effort tool call identifier for sub-agent logs."""
+        payload = tool_input or {}
+        explicit = payload.get("tool_call_id") or payload.get("call_id")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
+
+        context = get_current_execution_context_dict()
+        request_id = context.get("request_id")
+        if isinstance(request_id, str) and request_id:
+            return request_id
+        return "-"
+
+    def _log_subagent_event(
+        self,
+        event: str,
+        *,
+        status: str,
+        elapsed_ms: Optional[float] = None,
+        tool_input: Optional[Dict[str, Any]] = None,
+        target_agent: Optional[str] = None,
+        parent_agent: Optional[str] = None,
+        level: int = logging.INFO,
+        **fields: Any,
+    ) -> None:
+        """Emit sub-agent logs to both module and uvicorn loggers."""
+        context = get_current_execution_context_dict()
+        session_id = context.get("session_id") or "-"
+        agent_id = context.get("agent_id") or "default"
+        tool_call_id = self._resolve_subagent_tool_call_id(tool_input)
+
+        parts = [
+            f"subagent.{event}",
+            f"status={status}",
+            f"session={session_id}",
+            f"agent={agent_id}",
+            f"tool_call_id={tool_call_id}",
+            f"elapsed_ms={0.0 if elapsed_ms is None else round(float(elapsed_ms), 1)}",
+        ]
+        if target_agent:
+            parts.append(f"target_agent={target_agent}")
+        if parent_agent:
+            parts.append(f"parent_agent={parent_agent}")
+
+        for key, value in fields.items():
+            if value is None:
+                continue
+            parts.append(f"{key}={value}")
+
+        message = " ".join(parts)
+        logger.log(level, message)
+        logging.getLogger("uvicorn.error").log(level, message)
+
     async def _execute_send_message(self, tool_input: Dict[str, Any]) -> str:
         """Execute send_message tool via MessageBus.
 
@@ -4196,11 +4251,27 @@ class ToolManager:
         Returns:
             JSON string with result
         """
+        spawn_started_at = time.monotonic()
         agent_id = tool_input.get("id", "").strip()
         if not agent_id:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                tool_input=tool_input,
+                error="missing_id",
+            )
             return json.dumps({"error": "spawn_sub_agent requires 'id'"})
 
         if self._core is None:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=agent_id,
+                error="core_unavailable",
+            )
             return json.dumps(
                 {
                     "error": "Core unavailable for spawn_sub_agent. Call set_core() first."
@@ -4212,14 +4283,17 @@ class ToolManager:
         share_cw = bool(tool_input.get("share_context_window", False))
         shared_cw_max = tool_input.get("shared_context_window_max_tokens")
         background = bool(tool_input.get("background", False))
-        logger.info(
-            "subagent.spawn.request source=tool agent=%s parent=%s share_session=%s "
-            "share_context_window=%s background=%s",
-            agent_id,
-            parent_id,
-            share_session,
-            share_cw,
-            background,
+        self._log_subagent_event(
+            "spawn.request",
+            status="started",
+            elapsed_ms=0.0,
+            tool_input=tool_input,
+            target_agent=agent_id,
+            parent_agent=parent_id,
+            source="tool",
+            share_session=share_session,
+            share_context_window=share_cw,
+            background=background,
         )
 
         kwargs = {}
@@ -4257,17 +4331,40 @@ class ToolManager:
                         shared_context_window_max_tokens=shared_cw_max,
                     )
                 else:
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        source="tool",
+                        error="missing_core_create_sub_agent",
+                    )
                     return json.dumps({"error": "Core has no create_sub_agent method"})
         except Exception as e:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=agent_id,
+                parent_agent=parent_id,
+                source="tool",
+                error=str(e),
+            )
             return json.dumps({"error": f"Failed to spawn sub-agent: {e}"})
 
-        logger.info(
-            "subagent.spawn.created source=tool agent=%s parent=%s share_session=%s "
-            "share_context_window=%s",
-            agent_id,
-            parent_id,
-            share_session,
-            share_cw,
+        self._log_subagent_event(
+            "spawn.created",
+            status="completed",
+            elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+            tool_input=tool_input,
+            target_agent=agent_id,
+            parent_agent=parent_id,
+            source="tool",
+            share_session=share_session,
+            share_context_window=share_cw,
         )
 
         # Handle initial_prompt if provided
@@ -4297,6 +4394,16 @@ class ToolManager:
                             "share_context_window": share_cw,
                         },
                     )
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="started",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        source="tool",
+                        background=True,
+                    )
                     return json.dumps(
                         {
                             "status": "ok",
@@ -4309,7 +4416,17 @@ class ToolManager:
                         }
                     )
                 except Exception as e:
-                    logger.error(f"Failed to spawn background agent {agent_id}: {e}")
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        source="tool",
+                        background=True,
+                        error=str(e),
+                    )
                     return json.dumps(
                         {"error": f"Failed to spawn background agent: {e}"}
                     )
@@ -4320,6 +4437,19 @@ class ToolManager:
                         await self._core.send_to_agent(agent_id, initial_prompt)
                 except Exception as e:
                     logger.warning(f"Failed to send initial_prompt to {agent_id}: {e}")
+
+        self._log_subagent_event(
+            "spawn.summary",
+            status="completed",
+            elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+            tool_input=tool_input,
+            target_agent=agent_id,
+            parent_agent=parent_id,
+            source="tool",
+            background=background,
+            share_session=share_session,
+            share_context_window=share_cw,
+        )
 
         return json.dumps(
             {
@@ -4419,8 +4549,27 @@ class ToolManager:
         agent_id = tool_input.get("id", "").strip()
         include_result = bool(tool_input.get("include_result", False))
 
+        status_started_at = time.monotonic()
+        self._log_subagent_event(
+            "status.request",
+            status="started",
+            elapsed_ms=0.0,
+            tool_input=tool_input,
+            target_agent=agent_id or "all",
+            include_result=include_result,
+        )
+
         executor = get_executor()
         if executor is None:
+            self._log_subagent_event(
+                "status.summary",
+                status="completed",
+                elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=agent_id or "all",
+                include_result=include_result,
+                no_executor=True,
+            )
             return json.dumps(
                 {
                     "status": "ok",
@@ -4433,6 +4582,15 @@ class ToolManager:
             # Query specific agent
             status = executor.get_status(agent_id)
             if status is None:
+                self._log_subagent_event(
+                    "status.summary",
+                    status="failed",
+                    elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+                    tool_input=tool_input,
+                    target_agent=agent_id,
+                    include_result=include_result,
+                    error="agent_not_found",
+                )
                 return json.dumps(
                     {"error": f"Agent '{agent_id}' not found in executor"}
                 )
@@ -4440,6 +4598,15 @@ class ToolManager:
             if not include_result:
                 status = {k: v for k, v in status.items() if k != "result"}
 
+            self._log_subagent_event(
+                "status.summary",
+                status="completed",
+                elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=agent_id,
+                include_result=include_result,
+                state=status.get("state"),
+            )
             return json.dumps({"status": "ok", "agent": status})
         else:
             # Query all agents
@@ -4451,6 +4618,15 @@ class ToolManager:
                 }
 
             stats = executor.get_stats()
+            self._log_subagent_event(
+                "status.summary",
+                status="completed",
+                elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent="all",
+                include_result=include_result,
+                total_agents=len(all_status),
+            )
             return json.dumps(
                 {
                     "status": "ok",
@@ -4470,11 +4646,21 @@ class ToolManager:
         """
         from penguin.multi.executor import get_executor
 
+        uvicorn_logger = logging.getLogger("uvicorn.error")
+
         agent_ids = tool_input.get("ids")
         timeout = tool_input.get("timeout")
 
         executor = get_executor()
         if executor is None:
+            logger.info(
+                "subagent.wait.no_executor ids=%s timeout=%s", agent_ids, timeout
+            )
+            uvicorn_logger.info(
+                "subagent.wait.no_executor ids=%s timeout=%s",
+                agent_ids,
+                timeout,
+            )
             return json.dumps(
                 {
                     "status": "ok",
@@ -4483,35 +4669,164 @@ class ToolManager:
                 }
             )
 
-        try:
-            results = await executor.wait_for_all(agent_ids, timeout=timeout)
+        terminal_states = {
+            "completed",
+            "failed",
+            "cancelled",
+            "not_found",
+        }
+
+        if agent_ids is None:
+            ids_to_check = list(executor.get_all_status().keys())
+        else:
+            ids_to_check = [
+                str(agent_id).strip() for agent_id in agent_ids if str(agent_id).strip()
+            ]
+
+        if not ids_to_check:
             return json.dumps(
                 {
                     "status": "ok",
-                    "results": results,
-                    "completed": len(results),
+                    "results": {},
+                    "completed": 0,
+                    "message": "No matching agents to wait for",
                 }
             )
-        except asyncio.TimeoutError:
-            # Return partial results on timeout
-            partial = {}
-            ids_to_check = agent_ids or list(executor._tasks.keys())
-            for aid in ids_to_check:
-                status = executor.get_status(aid)
-                if status:
+
+        logger.info(
+            "subagent.wait.poll_start ids=%s timeout=%s",
+            ids_to_check,
+            timeout,
+        )
+        uvicorn_logger.info(
+            "subagent.wait.poll_start ids=%s timeout=%s",
+            ids_to_check,
+            timeout,
+        )
+
+        poll_interval_seconds = 0.05
+        start = time.monotonic()
+        poll_count = 0
+        next_progress_log_at = 0.0
+
+        while True:
+            poll_count += 1
+            status_by_agent: Dict[str, Dict[str, Any]] = {}
+            all_terminal = True
+            state_counts: Dict[str, int] = {}
+
+            for agent_id in ids_to_check:
+                status = executor.get_status(agent_id)
+                if not isinstance(status, dict):
+                    status = {
+                        "agent_id": agent_id,
+                        "state": "not_found",
+                        "result": None,
+                        "error": "Agent not found",
+                        "metadata": {},
+                    }
+
+                state = str(status.get("state") or "").lower()
+                state_counts[state] = state_counts.get(state, 0) + 1
+                if state not in terminal_states:
+                    all_terminal = False
+
+                status_by_agent[agent_id] = status
+
+            elapsed = time.monotonic() - start
+
+            if elapsed >= next_progress_log_at:
+                logger.info(
+                    "subagent.wait.poll_progress ids=%s elapsed=%.2fs states=%s",
+                    ids_to_check,
+                    elapsed,
+                    state_counts,
+                )
+                uvicorn_logger.info(
+                    "subagent.wait.poll_progress ids=%s elapsed=%.2fs states=%s",
+                    ids_to_check,
+                    elapsed,
+                    state_counts,
+                )
+                next_progress_log_at += 1.0
+
+            if all_terminal:
+                results = {
+                    aid: status_by_agent[aid].get("result") for aid in ids_to_check
+                }
+                logger.info(
+                    "subagent.wait.poll_complete ids=%s elapsed=%.2fs polls=%s states=%s",
+                    ids_to_check,
+                    elapsed,
+                    poll_count,
+                    state_counts,
+                )
+                uvicorn_logger.info(
+                    "subagent.wait.poll_complete ids=%s elapsed=%.2fs polls=%s states=%s",
+                    ids_to_check,
+                    elapsed,
+                    poll_count,
+                    state_counts,
+                )
+                return json.dumps(
+                    {
+                        "status": "ok",
+                        "results": results,
+                        "completed": len(ids_to_check),
+                        "elapsed_seconds": round(elapsed, 3),
+                        "poll_count": poll_count,
+                        "waited_agent_ids": ids_to_check,
+                        "agent_status": status_by_agent,
+                    }
+                )
+
+            if timeout is not None and elapsed >= float(timeout):
+                partial = {}
+                for aid in ids_to_check:
+                    status = status_by_agent.get(aid, {})
+                    state = str(status.get("state") or "unknown")
                     partial[aid] = {
-                        "state": status.get("state"),
+                        "state": state,
                         "result": status.get("result")
-                        if status.get("state") == "completed"
+                        if state == "completed"
                         else None,
                     }
-            return json.dumps(
-                {
-                    "status": "timeout",
-                    "results": partial,
-                    "message": f"Timeout after {timeout}s waiting for agents",
-                }
-            )
+
+                logger.info(
+                    "subagent.wait.poll_timeout ids=%s elapsed=%.2fs timeout=%s polls=%s states=%s",
+                    ids_to_check,
+                    elapsed,
+                    timeout,
+                    poll_count,
+                    state_counts,
+                )
+                uvicorn_logger.info(
+                    "subagent.wait.poll_timeout ids=%s elapsed=%.2fs timeout=%s polls=%s states=%s",
+                    ids_to_check,
+                    elapsed,
+                    timeout,
+                    poll_count,
+                    state_counts,
+                )
+
+                return json.dumps(
+                    {
+                        "status": "timeout",
+                        "results": partial,
+                        "message": f"Timeout after {timeout}s waiting for agents",
+                        "elapsed_seconds": round(elapsed, 3),
+                        "poll_count": poll_count,
+                        "waited_agent_ids": ids_to_check,
+                        "agent_status": status_by_agent,
+                    }
+                )
+
+            sleep_seconds = poll_interval_seconds
+            if timeout is not None:
+                remaining = float(timeout) - elapsed
+                if remaining < sleep_seconds:
+                    sleep_seconds = max(remaining, 0.0)
+            await asyncio.sleep(sleep_seconds)
 
     async def _execute_get_context_info(self, tool_input: Dict[str, Any]) -> str:
         """Get context window sharing information for an agent.
@@ -4597,12 +4912,28 @@ class ToolManager:
         Returns:
             JSON string with result
         """
+        delegate_started_at = time.monotonic()
         child = tool_input.get("child", "").strip()
         content = tool_input.get("content")
         if not child or content is None:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                tool_input=tool_input,
+                error="missing_child_or_content",
+            )
             return json.dumps({"error": "delegate requires 'child' and 'content'"})
 
         if self._core is None:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=child,
+                error="core_unavailable",
+            )
             return json.dumps({"error": "Core unavailable"})
 
         parent = tool_input.get("parent", "default")
@@ -4611,6 +4942,19 @@ class ToolManager:
         background = bool(tool_input.get("background", False))
         wait = bool(tool_input.get("wait", False))
         timeout = tool_input.get("timeout")
+
+        self._log_subagent_event(
+            "delegate.request",
+            status="started",
+            elapsed_ms=0.0,
+            tool_input=tool_input,
+            target_agent=child,
+            parent_agent=parent,
+            background=background,
+            wait=wait,
+            timeout=timeout,
+            channel=channel,
+        )
 
         try:
             if background:
@@ -4629,6 +4973,16 @@ class ToolManager:
                 # Check if agent is already registered in executor
                 status = executor.get_status(child)
                 if status and status.get("state") in ("pending", "running"):
+                    self._log_subagent_event(
+                        "delegate.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=child,
+                        parent_agent=parent,
+                        background=True,
+                        error="already_running",
+                    )
                     return json.dumps(
                         {
                             "error": f"Agent '{child}' is already running a background task"
@@ -4650,6 +5004,16 @@ class ToolManager:
                     # Wait for result
                     try:
                         result = await executor.wait_for(child, timeout=timeout)
+                        self._log_subagent_event(
+                            "delegate.summary",
+                            status="completed",
+                            elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                            tool_input=tool_input,
+                            target_agent=child,
+                            parent_agent=parent,
+                            background=True,
+                            wait=True,
+                        )
                         return json.dumps(
                             {
                                 "status": "ok",
@@ -4661,6 +5025,16 @@ class ToolManager:
                             }
                         )
                     except asyncio.TimeoutError:
+                        self._log_subagent_event(
+                            "delegate.summary",
+                            status="timeout",
+                            elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                            tool_input=tool_input,
+                            target_agent=child,
+                            parent_agent=parent,
+                            background=True,
+                            timeout=timeout,
+                        )
                         return json.dumps(
                             {
                                 "status": "timeout",
@@ -4671,6 +5045,16 @@ class ToolManager:
                             }
                         )
                 else:
+                    self._log_subagent_event(
+                        "delegate.summary",
+                        status="started",
+                        elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=child,
+                        parent_agent=parent,
+                        background=True,
+                        wait=False,
+                    )
                     return json.dumps(
                         {
                             "status": "ok",
@@ -4705,6 +5089,16 @@ class ToolManager:
                     )
                     await bus.send(msg)
 
+                self._log_subagent_event(
+                    "delegate.summary",
+                    status="completed",
+                    elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                    tool_input=tool_input,
+                    target_agent=child,
+                    parent_agent=parent,
+                    background=False,
+                )
+
                 return json.dumps(
                     {
                         "status": "ok",
@@ -4713,6 +5107,16 @@ class ToolManager:
                     }
                 )
         except Exception as e:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=child,
+                parent_agent=parent,
+                background=background,
+                error=str(e),
+            )
             return json.dumps({"error": f"Failed to delegate: {e}"})
 
     async def _execute_delegate_explore_task(self, tool_input: Dict[str, Any]) -> str:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -45,6 +46,25 @@ class _ToolManager:
     def execute_tool(self, tool_name: str, tool_input: dict[str, Any]) -> str:
         self.calls.append((tool_name, tool_input))
         return json.dumps(self._result)
+
+
+class _WaitToolManager:
+    def __init__(self) -> None:
+        self.wait_calls: list[dict[str, Any]] = []
+        self.execute_calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _execute_wait_for_agents(self, tool_input: dict[str, Any]) -> str:
+        self.wait_calls.append(tool_input)
+        return json.dumps(
+            {
+                "status": "ok",
+                "results": {"child-a": "done"},
+            }
+        )
+
+    def execute_tool(self, tool_name: str, tool_input: dict[str, Any]) -> str:
+        self.execute_calls.append((tool_name, tool_input))
+        return json.dumps({"status": "fallback"})
 
 
 @pytest.mark.asyncio
@@ -187,3 +207,65 @@ async def test_context_info_and_sync_context_aliases() -> None:
     assert context_input == {"id": "child-a", "include_stats": True}
     assert sync_name == "sync_context"
     assert sync_input == {"parent": "default", "child": "child-a", "replace": True}
+
+
+@pytest.mark.asyncio
+async def test_wait_for_agents_uses_async_tool_handler() -> None:
+    tool_manager = _WaitToolManager()
+    executor = ActionExecutor(
+        tool_manager=tool_manager,  # type: ignore[arg-type]
+        task_manager=cast(Any, SimpleNamespace()),
+    )
+    executor_any: Any = executor
+
+    result = await executor_any._wait_for_agents(
+        json.dumps({"agent_ids": ["child-a"], "timeout": 5})
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "ok"
+    assert tool_manager.wait_calls
+    assert tool_manager.wait_calls[-1]["ids"] == ["child-a"]
+    assert tool_manager.wait_calls[-1]["timeout"] == 5.0
+    assert not tool_manager.execute_calls
+
+
+@pytest.mark.asyncio
+async def test_wait_for_agents_action_path_completes_background_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from penguin.multi.executor import AgentExecutor
+    from penguin.tools.tool_manager import ToolManager
+
+    core = MagicMock()
+
+    async def _mock_process(
+        input_data: dict[str, Any], agent_id: str = ""
+    ) -> dict[str, Any]:
+        await __import__("asyncio").sleep(0.02)
+        return {"assistant_response": f"done {agent_id}", "agent_id": agent_id}
+
+    core.process = AsyncMock(side_effect=_mock_process)
+    executor_runner = AgentExecutor(core, max_concurrent=1)
+    monkeypatch.setattr(
+        "penguin.multi.executor.get_executor",
+        lambda _core=None: executor_runner,
+    )
+
+    tool_manager = ToolManager(
+        config={"diagnostics": {"enabled": False}},
+        log_error_func=lambda *_args, **_kwargs: None,
+    )
+    action_executor = ActionExecutor(
+        tool_manager=tool_manager,
+        task_manager=cast(Any, SimpleNamespace()),
+    )
+
+    await executor_runner.spawn_agent("wait-action-agent", "quick")
+    result = await action_executor._wait_for_agents(
+        json.dumps({"ids": ["wait-action-agent"], "timeout": 1.0})
+    )
+
+    payload = json.loads(result)
+    assert payload["status"] == "ok"
+    assert payload["results"]["wait-action-agent"] is not None

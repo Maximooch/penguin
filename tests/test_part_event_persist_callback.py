@@ -154,3 +154,35 @@ async def test_update_assistant_usage_creates_missing_message_and_emits_update()
     assert latest["tokens"]["reasoning"] == 3
     assert latest["tokens"]["cache"]["read"] == 2
     assert latest["tokens"]["cache"]["write"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_keeps_literal_action_tag_text_without_truncation():
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_literal")
+
+    message_id, part_id = await adapter.on_stream_start(agent_id="default")
+    await adapter.on_stream_chunk(
+        message_id,
+        part_id,
+        "Use `<spawn_sub_agent>` as inline text. ",
+        "assistant",
+    )
+    await adapter.on_stream_chunk(
+        message_id,
+        part_id,
+        "Response should continue after the literal tag.",
+        "assistant",
+    )
+    await adapter.on_stream_end(message_id, part_id)
+
+    text_parts = [
+        item.get("part", {})
+        for item in _opencode_events(bus, "message.part.updated")
+        if item.get("part", {}).get("type") == "text"
+    ]
+    assert text_parts
+    final_text = text_parts[-1].get("text", "")
+    assert "<spawn_sub_agent>" in final_text
+    assert "Response should continue after the literal tag." in final_text
