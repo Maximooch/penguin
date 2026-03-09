@@ -565,6 +565,7 @@ For each phase, validate with:
   - Acceptance: sub-agent tasks appear as first-class sessions with reliable replay/navigation.
   - Progress (2026-03-07): isolated sub-agent sessions now inherit explicit parent linkage metadata (`parentID`, `parent_agent_id`) at creation time, parser `spawn_sub_agent` now emits `session.created` OpenCode events for live TUI discovery, and Penguin-mode sync now handles `session.created` events in the session store path.
   - Progress (2026-03-07): conversation manager edits were minimized to focused linkage logic (no broad formatting churn), with parity regression pack passing (`62 passed`).
+  - Progress (2026-03-08): ActionXML parser now supports sub-agent status/context lifecycle tags (`get_agent_status`, `wait_for_agents`, `get_context_info`, `sync_context`) with compatibility aliases (`agent_id`, `agent_ids`, `parent_agent_id`, `child_agent_id`) mapped to canonical tool inputs.
 - [~] E8. Context/tokens/cost telemetry parity in sidebar/header.
   - Owner: backend usage accounting + TUI metadata rendering.
   - Acceptance: token usage, context %, and spend reflect real provider usage (including OpenRouter).

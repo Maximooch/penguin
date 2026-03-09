@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from penguin.utils.parser import ActionExecutor
+from penguin.utils.parser import ActionExecutor, parse_action
 
 
 class _EventBus:
@@ -37,6 +37,16 @@ class _Core:
         self.created.append({"agent_id": agent_id, **kwargs})
 
 
+class _ToolManager:
+    def __init__(self, result: dict[str, Any] | None = None) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self._result = result or {"status": "ok"}
+
+    def execute_tool(self, tool_name: str, tool_input: dict[str, Any]) -> str:
+        self.calls.append((tool_name, tool_input))
+        return json.dumps(self._result)
+
+
 @pytest.mark.asyncio
 async def test_spawn_sub_agent_emits_session_created(
     monkeypatch: pytest.MonkeyPatch,
@@ -44,8 +54,8 @@ async def test_spawn_sub_agent_emits_session_created(
     core = _Core("session_child_1")
     conversation = SimpleNamespace(core=core, current_agent_id="default")
     executor = ActionExecutor(
-        tool_manager=SimpleNamespace(),
-        task_manager=SimpleNamespace(),
+        tool_manager=cast(Any, SimpleNamespace()),
+        task_manager=cast(Any, SimpleNamespace()),
         conversation_system=conversation,
     )
 
@@ -84,3 +94,96 @@ async def test_spawn_sub_agent_emits_session_created(
     assert payload["type"] == "session.created"
     assert payload["properties"]["sessionID"] == "session_child_1"
     assert payload["properties"]["info"]["id"] == "session_child_1"
+
+
+def test_parse_action_detects_subagent_status_tags() -> None:
+    content = """
+    <get_agent_status>{"agent_id":"child-a"}</get_agent_status>
+    <wait_for_agents>{"agent_ids":["child-a","child-b"],"timeout":20}</wait_for_agents>
+    <get_context_info>{"agent_id":"child-a","include_stats":true}</get_context_info>
+    <sync_context>{"parent_agent_id":"default","child_agent_id":"child-a"}</sync_context>
+    """.strip()
+
+    actions = parse_action(content)
+    assert [action.action_type.value for action in actions] == [
+        "get_agent_status",
+        "wait_for_agents",
+        "get_context_info",
+        "sync_context",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_agent_status_accepts_agent_id_alias() -> None:
+    tool_manager = _ToolManager()
+    executor = ActionExecutor(
+        tool_manager=tool_manager,  # type: ignore[arg-type]
+        task_manager=cast(Any, SimpleNamespace()),
+    )
+    executor_any: Any = executor
+
+    result = await executor_any._get_agent_status(
+        json.dumps({"agent_id": "child-a", "include_result": True})
+    )
+
+    assert json.loads(result)["status"] == "ok"
+    assert tool_manager.calls
+    tool_name, tool_input = tool_manager.calls[-1]
+    assert tool_name == "get_agent_status"
+    assert tool_input["id"] == "child-a"
+    assert tool_input["include_result"] is True
+
+
+@pytest.mark.asyncio
+async def test_wait_for_agents_accepts_agent_ids_alias() -> None:
+    tool_manager = _ToolManager()
+    executor = ActionExecutor(
+        tool_manager=tool_manager,  # type: ignore[arg-type]
+        task_manager=cast(Any, SimpleNamespace()),
+    )
+    executor_any: Any = executor
+
+    result = await executor_any._wait_for_agents(
+        json.dumps({"agent_ids": ["child-a", "child-b"], "timeout": 15})
+    )
+
+    assert json.loads(result)["status"] == "ok"
+    assert tool_manager.calls
+    tool_name, tool_input = tool_manager.calls[-1]
+    assert tool_name == "wait_for_agents"
+    assert tool_input["ids"] == ["child-a", "child-b"]
+    assert tool_input["timeout"] == 15.0
+
+
+@pytest.mark.asyncio
+async def test_context_info_and_sync_context_aliases() -> None:
+    tool_manager = _ToolManager()
+    executor = ActionExecutor(
+        tool_manager=tool_manager,  # type: ignore[arg-type]
+        task_manager=cast(Any, SimpleNamespace()),
+    )
+    executor_any: Any = executor
+
+    context_result = await executor_any._get_context_info(
+        json.dumps({"agent_id": "child-a", "include_stats": True})
+    )
+    sync_result = await executor_any._sync_context(
+        json.dumps(
+            {
+                "parent_agent_id": "default",
+                "child_agent_id": "child-a",
+                "replace": True,
+            }
+        )
+    )
+
+    assert json.loads(context_result)["status"] == "ok"
+    assert json.loads(sync_result)["status"] == "ok"
+    assert len(tool_manager.calls) == 2
+
+    context_name, context_input = tool_manager.calls[0]
+    sync_name, sync_input = tool_manager.calls[1]
+    assert context_name == "get_context_info"
+    assert context_input == {"id": "child-a", "include_stats": True}
+    assert sync_name == "sync_context"
+    assert sync_input == {"parent": "default", "child": "child-a", "replace": True}

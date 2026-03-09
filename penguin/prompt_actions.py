@@ -639,6 +639,65 @@ Resume a previously paused sub-agent.
 **Format:** `<resume_sub_agent>{"id":"researcher"}</resume_sub_agent>`
 
 
+### get_agent_status
+Query background sub-agent status for one agent or all running agents.
+
+**Format:** `<get_agent_status>{...}</get_agent_status>`
+
+**Payload fields:**
+- `id` (optional) - Agent ID to query
+- `agent_id` (optional alias for `id`)
+- `include_result` (optional, default: `false`) - Include completed result payload
+
+**Examples:**
+```actionxml
+<get_agent_status>{"id":"analyzer"}</get_agent_status>
+```
+
+```actionxml
+<get_agent_status>{"include_result":true}</get_agent_status>
+```
+
+
+### wait_for_agents
+Wait for one or more background sub-agents to complete.
+
+**Format:** `<wait_for_agents>{...}</wait_for_agents>`
+
+**Payload fields:**
+- `ids` (optional list) - Agent IDs to wait for (all if omitted)
+- `agent_ids` (optional alias for `ids`)
+- `timeout` (optional float seconds)
+
+**Example:**
+```actionxml
+<wait_for_agents>{"ids":["analyzer","researcher"],"timeout":60}</wait_for_agents>
+```
+
+
+### get_context_info
+Inspect context-window sharing details for an agent.
+
+**Format:** `<get_context_info>{...}</get_context_info>`
+
+**Payload fields:**
+- `id` (optional) - Agent ID (defaults to current/default)
+- `agent_id` (optional alias for `id`)
+- `include_stats` (optional, default: `false`) - Include token stats
+
+
+### sync_context
+Synchronize context from a parent agent to a child agent.
+
+**Format:** `<sync_context>{...}</sync_context>`
+
+**Payload fields:**
+- `parent` (required) - Parent/source agent
+- `child` (required) - Child/destination agent
+- `parent_agent_id` / `child_agent_id` (optional aliases)
+- `replace` (optional, default: `false`) - Replace existing child context
+
+
 ### delegate
 Send a concrete task to an existing sub-agent.
 

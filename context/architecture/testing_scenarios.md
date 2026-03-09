@@ -16,6 +16,10 @@ Penguin-mode/OpenCode-TUI workflows.
 - `<spawn_sub_agent>{...}</spawn_sub_agent>`
 - `<stop_sub_agent>{...}</stop_sub_agent>`
 - `<resume_sub_agent>{...}</resume_sub_agent>`
+- `<get_agent_status>{...}</get_agent_status>`
+- `<wait_for_agents>{...}</wait_for_agents>`
+- `<get_context_info>{...}</get_context_info>`
+- `<sync_context>{...}</sync_context>`
 - `<delegate>{...}</delegate>`
 - `<delegate_explore_task>{...}</delegate_explore_task>`
 - `<send_message>{...}</send_message>`
@@ -76,6 +80,9 @@ Use exactly one tool call and then stop.
 | DG-02 | Background delegation no wait | `<delegate>` with `background=true`, `wait=false` | Returns immediately; child continues in background |
 | DG-03 | Background delegation with wait | `<delegate>` with `background=true`, `wait=true`, `timeout` | Returns result if completed; timeout message if exceeded |
 | DG-04 | Autonomous explore delegate | `<delegate_explore_task>` with `task` and optional `directory` | Returns structured exploration summary |
+| DG-05 | Status query by id | `<get_agent_status>{"agent_id":"child"}</get_agent_status>` | Returns status for that agent |
+| DG-06 | Wait via alias ids | `<wait_for_agents>{"agent_ids":["child"],"timeout":30}</wait_for_agents>` | Waits for listed agents and returns completion/timeout |
+| DG-07 | Context info + sync | `<get_context_info>` then `<sync_context>` | Context relationship is visible; sync returns success or explicit error |
 
 ### Copy/paste prompt for DG-03
 ```text

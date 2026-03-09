@@ -122,6 +122,10 @@ class ActionType(Enum):
     SPAWN_SUB_AGENT = "spawn_sub_agent"
     STOP_SUB_AGENT = "stop_sub_agent"
     RESUME_SUB_AGENT = "resume_sub_agent"
+    GET_AGENT_STATUS = "get_agent_status"
+    WAIT_FOR_AGENTS = "wait_for_agents"
+    GET_CONTEXT_INFO = "get_context_info"
+    SYNC_CONTEXT = "sync_context"
     DELEGATE = "delegate"
     DELEGATE_EXPLORE_TASK = "delegate_explore_task"
 
@@ -490,6 +494,10 @@ class ActionExecutor:
             ActionType.SPAWN_SUB_AGENT: self._spawn_sub_agent,
             ActionType.STOP_SUB_AGENT: self._stop_sub_agent,
             ActionType.RESUME_SUB_AGENT: self._resume_sub_agent,
+            ActionType.GET_AGENT_STATUS: self._get_agent_status,
+            ActionType.WAIT_FOR_AGENTS: self._wait_for_agents,
+            ActionType.GET_CONTEXT_INFO: self._get_context_info,
+            ActionType.SYNC_CONTEXT: self._sync_context,
             ActionType.DELEGATE: self._delegate,
             ActionType.DELEGATE_EXPLORE_TASK: self._delegate_explore_task,
             # Enhanced file operations
@@ -1336,6 +1344,116 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             return f"Resumed sub-agent '{agent_id}'"
         except Exception as e:
             return f"Failed to resume sub-agent '{agent_id}': {e}"
+
+    async def _get_agent_status(self, params: str) -> str:
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON for get_agent_status: {e}"
+
+        agent_id = str(payload.get("id") or payload.get("agent_id") or "").strip()
+        include_result = bool(payload.get("include_result", False))
+
+        tool_input: Dict[str, Any] = {"include_result": include_result}
+        if agent_id:
+            tool_input["id"] = agent_id
+
+        logger.info(
+            "subagent.status.request agent=%s include_result=%s",
+            agent_id or "all",
+            include_result,
+        )
+        return self.tool_manager.execute_tool("get_agent_status", tool_input)
+
+    async def _wait_for_agents(self, params: str) -> str:
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON for wait_for_agents: {e}"
+
+        raw_ids = payload.get("ids", payload.get("agent_ids"))
+        normalized_ids: Optional[List[str]] = None
+        if raw_ids is None:
+            normalized_ids = None
+        elif isinstance(raw_ids, list):
+            normalized_ids = [
+                str(item).strip() for item in raw_ids if str(item).strip()
+            ]
+        elif isinstance(raw_ids, str):
+            cleaned = raw_ids.strip()
+            normalized_ids = [cleaned] if cleaned else []
+        else:
+            return "wait_for_agents 'ids' must be a list of strings"
+
+        timeout = payload.get("timeout")
+        if timeout is not None:
+            try:
+                timeout = float(timeout)
+            except (TypeError, ValueError):
+                return "wait_for_agents 'timeout' must be numeric"
+
+        tool_input: Dict[str, Any] = {}
+        if normalized_ids is not None:
+            tool_input["ids"] = normalized_ids
+        if timeout is not None:
+            tool_input["timeout"] = timeout
+
+        logger.info(
+            "subagent.wait.request ids=%s timeout=%s",
+            normalized_ids if normalized_ids is not None else "all",
+            timeout,
+        )
+        return self.tool_manager.execute_tool("wait_for_agents", tool_input)
+
+    async def _get_context_info(self, params: str) -> str:
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON for get_context_info: {e}"
+
+        agent_id = str(payload.get("id") or payload.get("agent_id") or "").strip()
+        include_stats = bool(payload.get("include_stats", False))
+
+        tool_input: Dict[str, Any] = {"include_stats": include_stats}
+        if agent_id:
+            tool_input["id"] = agent_id
+
+        logger.info(
+            "subagent.context_info.request agent=%s include_stats=%s",
+            agent_id or "default",
+            include_stats,
+        )
+        return self.tool_manager.execute_tool("get_context_info", tool_input)
+
+    async def _sync_context(self, params: str) -> str:
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON for sync_context: {e}"
+
+        parent = str(
+            payload.get("parent") or payload.get("parent_agent_id") or ""
+        ).strip()
+        child = str(payload.get("child") or payload.get("child_agent_id") or "").strip()
+        replace = bool(payload.get("replace", False))
+
+        if not parent or not child:
+            return "sync_context requires 'parent' and 'child'"
+
+        logger.info(
+            "subagent.context_sync.request parent=%s child=%s replace=%s",
+            parent,
+            child,
+            replace,
+        )
+        return self.tool_manager.execute_tool(
+            "sync_context",
+            {
+                "parent": parent,
+                "child": child,
+                "replace": replace,
+            },
+        )
 
     async def _delegate(self, params: str) -> str:
         """Delegate a task to a sub-agent.
