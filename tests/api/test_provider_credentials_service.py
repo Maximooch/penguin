@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from penguin.web.services import provider_credentials
 
@@ -54,3 +55,27 @@ def test_credentials_reads_legacy_store_when_primary_missing(
 
     records = provider_credentials.get_provider_credentials()
     assert records["openrouter"]["key"] == "legacy-key"
+
+
+def test_apply_oauth_credentials_updates_openai_runtime(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+
+    core = SimpleNamespace(
+        model_config=SimpleNamespace(provider="openai", api_key=None)
+    )
+    provider_credentials.apply_credentials_to_runtime(
+        core,
+        "openai",
+        {
+            "type": "oauth",
+            "access": "oauth-access-token",
+            "refresh": "oauth-refresh-token",
+            "expires": 1700000000000,
+            "accountId": "acct_987",
+        },
+    )
+
+    assert os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] == "oauth-access-token"
+    assert os.environ["OPENAI_ACCOUNT_ID"] == "acct_987"
+    assert core.model_config.api_key == "oauth-access-token"

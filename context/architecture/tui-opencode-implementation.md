@@ -361,7 +361,9 @@ For each phase, validate with:
 3. Close `E3` + `E7` sub-agent/event consistency (`agent_id` on message/tool envelopes + reliable sub-agent session lifecycle).
 4. Add response timing telemetry surface (time per response) in backend payloads + TUI display.
 5. Execute Track I stability/ergonomics items.
-6. Finish provider + OAuth closeout (Track C3 completion path).
+6. Expand provider coverage (OpenAI + Anthropic) before OAuth closeout.
+   - Scope: OpenRouter already in place; defer OpenCode Zen/ZenMux and wider catalog expansion for now.
+   - Execution: Track C4 (provider coverage) -> Track C3 (OAuth closeout).
 7. Run Track J bridge extraction and cleanup last.
 
 ## VCS Hardening Matrix (Worktrees First)
@@ -462,9 +464,26 @@ For each phase, validate with:
     - [ ] Register Penguin first-party OpenAI OAuth client id and switch default to Penguin-owned id.
     - [ ] Keep compatibility fallback id only as an explicit fallback path (not the default) after rollout validation.
   - Progress (2026-02-19): starting Phase C implementation with a dedicated Penguin provider-auth store and OpenCode-compatible config/provider endpoints.
-  - Progress (2026-02-20): wired `/config`, `/config/providers`, `/provider`, `/provider/auth`, `/auth/{providerID}`, and `/provider/{providerID}/oauth/*` in `penguin/web/routes.py`; added `/api/v1/*` aliases; added route + service tests (`tests/api/test_opencode_provider_routes.py`, `tests/api/test_opencode_provider_service.py`); switched Penguin-mode TUI bootstrap to consume backend config/provider/auth endpoints first with fallback.
-  - Progress (2026-02-21): refactored provider/auth backend into general-purpose services (`provider_catalog.py`, `provider_credentials.py`, `provider_auth.py`) and reduced `opencode_provider.py` to compatibility mapping wrappers; credentials default to user-global `~/.config/penguin/providers/credentials.json` (0600, atomic writes) with legacy-path compatibility.
-  - Progress (2026-02-21): OpenAI device OAuth client id is now overridable via `PENGUIN_OPENAI_OAUTH_CLIENT_ID` with compatibility fallback to current OpenCode/Codex client id while first-party Penguin registration is pending.
+   - Progress (2026-02-20): wired `/config`, `/config/providers`, `/provider`, `/provider/auth`, `/auth/{providerID}`, and `/provider/{providerID}/oauth/*` in `penguin/web/routes.py`; added `/api/v1/*` aliases; added route + service tests (`tests/api/test_opencode_provider_routes.py`, `tests/api/test_opencode_provider_service.py`); switched Penguin-mode TUI bootstrap to consume backend config/provider/auth endpoints first with fallback.
+   - Progress (2026-02-21): refactored provider/auth backend into general-purpose services (`provider_catalog.py`, `provider_credentials.py`, `provider_auth.py`) and reduced `opencode_provider.py` to compatibility mapping wrappers; credentials default to user-global `~/.config/penguin/providers/credentials.json` (0600, atomic writes) with legacy-path compatibility.
+   - Progress (2026-02-21): OpenAI device OAuth client id is now overridable via `PENGUIN_OPENAI_OAUTH_CLIENT_ID` with compatibility fallback to current OpenCode/Codex client id while first-party Penguin registration is pending.
+- [~] C4. Expand provider coverage parity beyond OpenRouter (scoped first pass: OpenAI + Anthropic).
+  - Owner: `penguin/web/services/provider_catalog.py`, `penguin/web/services/opencode_provider.py`, model-loading path in `core.py`/`model_config.py`.
+  - Acceptance:
+    - `config.providers` and `provider.list` reliably include OpenAI + Anthropic with OpenCode-compatible metadata even when not explicitly defined in local `model_configs`.
+    - model/provider selection for those entries resolves runtime provider/client wiring correctly.
+  - Scope decision (2026-03-09): do not add OpenCode Zen (`opencode`) or ZenMux in this pass; keep focus on OpenAI + Anthropic because OpenRouter coverage is already implemented.
+  - Progress (2026-03-09): provider payload builders now merge cached `models.dev` catalogs for OpenAI + Anthropic into both `config.providers` and `provider.list` (provider-local model IDs, capability/cost/limit metadata, release dates), while preserving OpenRouter catalog expansion and local-config precedence.
+  - Progress (2026-03-09): provider visibility filters (`enabled_providers`, `disabled_providers`) are now applied consistently to provider/model payload outputs so picker contents match config policy.
+  - Progress (2026-03-09): model switch provider inference now defaults OpenAI/Anthropic selections to native runtime wiring (instead of inheriting OpenRouter from the currently active model), while preserving explicit `openrouter/...` gateway routing.
+  - Progress (2026-03-09): `core.load_model` now resolves provider/client before model-spec lookup, only requires OpenRouter catalog specs for OpenRouter-routed models, and records explicit `_last_model_load_error` reasons for route-level 400 responses.
+  - Progress (2026-03-09): runtime model canonicalization now strips provider prefixes for native OpenAI/Anthropic adapters (e.g. `openai/gpt-5` -> `gpt-5`) and strips `openrouter/` wrapper prefixes for OpenRouter runtime model IDs.
+  - Progress (2026-03-09): Anthropic native adapter streaming now awaits async callbacks and preserves `(chunk, message_type)` semantics (including `thinking_delta -> reasoning`); this fixes dropped stream delivery in async callback pipelines.
+  - Progress (2026-03-09): OpenCode stream bridge now synthesizes a final assistant part delta from finalize payload content when a provider emits no assistant chunk deltas, preventing blank Penguin-mode SSE turns on otherwise successful responses.
+  - Progress (2026-03-09): web startup now rehydrates persisted provider credentials into runtime state so Anthropic/OpenAI API keys from the provider auth store are available immediately after server restart.
+  - Progress (2026-03-10): OpenAI native adapter now accepts `OPENAI_OAUTH_ACCESS_TOKEN` (with optional `OPENAI_ACCOUNT_ID` header) as credential fallback, enabling OpenCode OAuth-connected OpenAI usage in native mode when `OPENAI_API_KEY` is absent.
+  - Progress (2026-03-10): OpenAI streaming now emits a synthetic assistant callback chunk from final response text when delta events are absent (`responses.stream`/SSE done/completed cases), preventing blank OpenAI turns in Penguin-mode SSE clients.
+  - Progress (2026-03-10): OpenAI streaming now maps Responses reasoning-summary event families (`response.reasoning_summary_text.delta`, `response.reasoning_summary_part.*`, and related reasoning deltas) into `reasoning` chunks, and requests concise streamed summaries (`reasoning.summary=concise`) for reasoning-enabled calls so Penguin-mode reasoning parts render for GPT-5.x flows with lower added latency.
 
 ### Track D: Diffs, Files Sidebar, VCS
 - [x] D1. Implement `vcs.get` with real git-backed branch + dirty status.

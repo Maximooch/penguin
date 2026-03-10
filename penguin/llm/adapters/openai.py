@@ -32,16 +32,27 @@ class OpenAIAdapter(BaseAdapter):
 
     def __init__(self, model_config: ModelConfig):
         self.model_config = model_config
-        api_key = model_config.api_key or os.getenv("OPENAI_API_KEY")
+        api_key = (
+            model_config.api_key
+            or os.getenv("OPENAI_API_KEY")
+            or os.getenv("OPENAI_OAUTH_ACCESS_TOKEN")
+        )
         if not api_key:
             raise ValueError(
-                "Missing OpenAI API key. Set OPENAI_API_KEY or model_config.api_key."
+                "Missing OpenAI credentials. Set OPENAI_API_KEY, "
+                "OPENAI_OAUTH_ACCESS_TOKEN, or model_config.api_key."
             )
+
+        default_headers: Dict[str, str] = {}
+        account_id = os.getenv("OPENAI_ACCOUNT_ID")
+        if isinstance(account_id, str) and account_id.strip():
+            default_headers["OpenAI-Account"] = account_id.strip()
 
         # Respect custom base URL if provided (e.g., Azure/OpenAI-compatible gateways)
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=model_config.api_base or None,
+            default_headers=default_headers or None,
         )
 
     @property
@@ -75,7 +86,10 @@ class OpenAIAdapter(BaseAdapter):
 
         processed_messages = await self._process_messages_for_vision(messages)
 
-        reasoning_config = self.model_config.get_reasoning_config()
+        reasoning_config = self._prepare_reasoning_config(
+            self.model_config.get_reasoning_config(),
+            stream=stream,
+        )
         temp_val = (
             temperature if temperature is not None else self.model_config.temperature
         )
@@ -95,7 +109,11 @@ class OpenAIAdapter(BaseAdapter):
             request_params: Dict[str, Any] = {
                 "model": self.model_config.model,
                 "input": input_parts,
-                **({"max_output_tokens": max_output_tokens} if max_output_tokens else {}),
+                **(
+                    {"max_output_tokens": max_output_tokens}
+                    if max_output_tokens
+                    else {}
+                ),
                 **({"reasoning": reasoning_config} if reasoning_config else {}),
             }
         else:
@@ -103,7 +121,11 @@ class OpenAIAdapter(BaseAdapter):
             request_params = {
                 "model": self.model_config.model,
                 "input": input_text,
-                **({"max_output_tokens": max_output_tokens} if max_output_tokens else {}),
+                **(
+                    {"max_output_tokens": max_output_tokens}
+                    if max_output_tokens
+                    else {}
+                ),
                 **({"reasoning": reasoning_config} if reasoning_config else {}),
             }
 
@@ -359,19 +381,24 @@ class OpenAIAdapter(BaseAdapter):
                                 await self._safe_invoke_callback(
                                     stream_callback, delta, "assistant"
                                 )
-                    elif etype in (
-                        "response.thinking.delta",
-                        "response.reasoning.delta",
-                    ):
-                        delta = getattr(event, "delta", "")
-                        if delta and stream_callback:
+                    else:
+                        reasoning_delta = self._extract_reasoning_delta_from_sdk_event(
+                            event
+                        )
+                        if reasoning_delta and stream_callback:
                             await self._safe_invoke_callback(
-                                stream_callback, delta, "reasoning"
+                                stream_callback,
+                                reasoning_delta,
+                                "reasoning",
                             )
                 final = await stream.get_final_response()
                 # Prefer SDK's convenience property if present
                 final_text = getattr(final, "output_text", None)
                 if isinstance(final_text, str) and final_text:
+                    if not accumulated_content and stream_callback:
+                        await self._safe_invoke_callback(
+                            stream_callback, final_text, "assistant"
+                        )
                     return final_text
         except AttributeError:
             # Older SDK without responses.stream async support
@@ -403,6 +430,7 @@ class OpenAIAdapter(BaseAdapter):
         payload["stream"] = True
 
         accumulated_content: List[str] = []
+        completed_text = ""
 
         # Use connection pool for efficient parallel LLM calls
         pool = ConnectionPoolManager.get_instance()
@@ -431,18 +459,36 @@ class OpenAIAdapter(BaseAdapter):
                                 await self._safe_invoke_callback(
                                     stream_callback, delta, "assistant"
                                 )
-                    elif etype in (
-                        "response.thinking.delta",
-                        "response.reasoning.delta",
-                    ):
-                        delta = data.get("delta", "")
-                        if delta and stream_callback:
+                    elif etype == "response.output_text.done":
+                        done_text = data.get("text", "")
+                        if isinstance(done_text, str) and done_text:
+                            completed_text = done_text
+                    elif etype == "response.completed":
+                        response_obj = data.get("response")
+                        extracted = self._extract_text_from_response_object(
+                            response_obj
+                        )
+                        if extracted:
+                            completed_text = extracted
+                    else:
+                        reasoning_delta = (
+                            self._extract_reasoning_delta_from_sse_payload(data)
+                        )
+                        if reasoning_delta and stream_callback:
                             await self._safe_invoke_callback(
-                                stream_callback, delta, "reasoning"
+                                stream_callback,
+                                reasoning_delta,
+                                "reasoning",
                             )
                 except Exception:
                     # Skip malformed lines
                     continue
+        if completed_text:
+            if not accumulated_content and stream_callback:
+                await self._safe_invoke_callback(
+                    stream_callback, completed_text, "assistant"
+                )
+            return completed_text
         return "".join(accumulated_content)
 
     async def _safe_invoke_callback(
@@ -473,6 +519,87 @@ class OpenAIAdapter(BaseAdapter):
                     await loop.run_in_executor(None, cb, chunk)
         except Exception as e:
             logger.error(f"Error in stream callback: {e}")
+
+    def _prepare_reasoning_config(
+        self,
+        reasoning_config: Optional[Dict[str, Any]],
+        *,
+        stream: bool,
+    ) -> Optional[Dict[str, Any]]:
+        """Add OpenAI-specific reasoning options needed for streamed summaries."""
+        if not isinstance(reasoning_config, dict):
+            return reasoning_config
+
+        prepared = dict(reasoning_config)
+        if not stream:
+            return prepared
+        if bool(getattr(self.model_config, "reasoning_exclude", False)):
+            return prepared
+
+        if "summary" not in prepared and "generate_summary" not in prepared:
+            prepared["summary"] = "concise"
+        return prepared
+
+    def _extract_reasoning_delta_from_sdk_event(self, event: Any) -> str:
+        """Extract reasoning text from OpenAI SDK stream events."""
+        etype = getattr(event, "type", None)
+        if etype in {
+            "response.thinking.delta",
+            "response.reasoning.delta",
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_summary.delta",
+        }:
+            return self._coerce_reasoning_text(getattr(event, "delta", ""))
+
+        if etype in {
+            "response.reasoning_summary_part.added",
+            "response.reasoning_summary_part.done",
+        }:
+            part = getattr(event, "part", None)
+            if part is None:
+                return ""
+            return self._coerce_reasoning_text(getattr(part, "text", ""))
+
+        return ""
+
+    def _extract_reasoning_delta_from_sse_payload(self, payload: Any) -> str:
+        """Extract reasoning text from OpenAI HTTP SSE payloads."""
+        if not isinstance(payload, dict):
+            return ""
+
+        etype = payload.get("type")
+        if etype in {
+            "response.thinking.delta",
+            "response.reasoning.delta",
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_summary.delta",
+        }:
+            return self._coerce_reasoning_text(payload.get("delta", ""))
+
+        if etype in {
+            "response.reasoning_summary_part.added",
+            "response.reasoning_summary_part.done",
+        }:
+            part = payload.get("part")
+            if isinstance(part, dict):
+                return self._coerce_reasoning_text(part.get("text", ""))
+
+        return ""
+
+    def _coerce_reasoning_text(self, value: Any) -> str:
+        """Convert provider reasoning payloads to displayable text."""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            for key in ("text", "summary", "content", "delta"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate:
+                    return candidate
+            return ""
+        if value is None:
+            return ""
+        text = str(value)
+        return "" if text in {"", "None", "{}"} else text
 
     def _extract_text_from_response_object(self, resp: Any) -> str:
         """Best-effort extraction of text from a Responses API object/dict."""
@@ -588,7 +715,9 @@ class OpenAIAdapter(BaseAdapter):
                     msg_parts.append({"type": "input_text", "text": str(content)})
 
             if msg_parts:
-                input_items.append({"type": "message", "role": role, "content": msg_parts})
+                input_items.append(
+                    {"type": "message", "role": role, "content": msg_parts}
+                )
 
         if not any_image:
             return None

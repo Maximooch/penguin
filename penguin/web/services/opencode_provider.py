@@ -27,6 +27,7 @@ from penguin.web.services.provider_catalog import (
     current_model_string,
     env_connected_provider_ids,
     model_limit,
+    models_dev_provider_models,
     provider_api,
     provider_env,
     provider_ids,
@@ -54,6 +55,38 @@ _OPENROUTER_CATALOG_CACHE: dict[str, Any] = {
     "fetched_at": 0.0,
     "models": {},
 }
+_MODELS_DEV_PROVIDER_IDS = {"openai", "anthropic"}
+
+
+def _normalize_provider_filter_values(raw_value: Any) -> set[str]:
+    if isinstance(raw_value, str):
+        values = [raw_value]
+    elif isinstance(raw_value, list):
+        values = [item for item in raw_value if isinstance(item, str)]
+    else:
+        values = []
+    return {item.strip().lower() for item in values if item.strip()}
+
+
+def _provider_filters(config_data: dict[str, Any]) -> tuple[set[str], set[str]]:
+    enabled = _normalize_provider_filter_values(config_data.get("enabled_providers"))
+    disabled = _normalize_provider_filter_values(config_data.get("disabled_providers"))
+    return enabled, disabled
+
+
+def _provider_visible(
+    provider_id: str,
+    enabled: set[str],
+    disabled: set[str],
+) -> bool:
+    pid = provider_id.strip().lower()
+    if not pid:
+        return False
+    if enabled and pid not in enabled:
+        return False
+    if pid in disabled:
+        return False
+    return True
 
 
 def _supports_reasoning_model(model_id: str) -> bool:
@@ -307,6 +340,23 @@ def _merge_openrouter_catalog_models(
     return merged
 
 
+def _merge_models_dev_catalog_models(
+    provider_models: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    discovered = models_dev_provider_models(_MODELS_DEV_PROVIDER_IDS)
+    if not discovered:
+        return provider_models
+
+    merged: dict[str, dict[str, dict[str, Any]]] = {
+        provider_id: dict(models) for provider_id, models in provider_models.items()
+    }
+    for provider_id, models in discovered.items():
+        mapped = merged.setdefault(provider_id, {})
+        for model_id, conf in models.items():
+            mapped.setdefault(model_id, conf)
+    return merged
+
+
 def _config_model_payload(
     model_id: str,
     provider_id: str,
@@ -538,6 +588,9 @@ def build_config_payload(core: Any) -> dict[str, Any]:
 
 def build_config_providers_payload(core: Any) -> dict[str, Any]:
     """Build OpenCode-compatible ``config.providers`` payload."""
+    config_data = load_config()
+    if not isinstance(config_data, dict):
+        config_data = {}
     config_provider_models = collect_provider_models(core)
     providers: list[dict[str, Any]] = []
     default: dict[str, str] = {}
@@ -559,13 +612,20 @@ def build_config_providers_payload(core: Any) -> dict[str, Any]:
             str(current_model.get("model") or ""),
         )
 
+    enabled_filters, disabled_filters = _provider_filters(config_data)
+
     provider_set = set(provider_models.keys())
     provider_set.update(auth_records.keys())
     provider_set.update(env_connected_provider_ids())
     if current_provider:
         provider_set.add(current_provider)
 
+    provider_models = _merge_models_dev_catalog_models(provider_models)
+    provider_set.update(provider_models.keys())
+
     for provider_id in sorted(provider_set):
+        if not _provider_visible(provider_id, enabled_filters, disabled_filters):
+            continue
         models = provider_models.get(provider_id, {})
         mapped_models = {
             model_id: _config_model_payload(model_id, provider_id, conf)
@@ -632,13 +692,23 @@ def build_provider_list_payload(core: Any) -> dict[str, Any]:
             str(current_model.get("model") or ""),
         )
 
+    config_data = load_config()
+    if not isinstance(config_data, dict):
+        config_data = {}
+    enabled_filters, disabled_filters = _provider_filters(config_data)
+
     provider_set = set(provider_models.keys())
     provider_set.update(auth_records.keys())
     provider_set.update(env_connected_provider_ids())
     if current_provider:
         provider_set.add(current_provider)
 
+    provider_models = _merge_models_dev_catalog_models(provider_models)
+    provider_set.update(provider_models.keys())
+
     for provider_id in sorted(provider_set):
+        if not _provider_visible(provider_id, enabled_filters, disabled_filters):
+            continue
         models = provider_models.get(provider_id, {})
         mapped_models = {
             model_id: _provider_list_model_payload(model_id, provider_id, conf)

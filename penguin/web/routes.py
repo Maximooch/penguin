@@ -2479,15 +2479,30 @@ async def opencode_config_update(
                     candidates = [short, full]
 
             ok = False
+            last_reason: Optional[str] = None
             for candidate in candidates:
                 ok = await core.load_model(candidate)
                 if ok:
                     break
+                reason = getattr(core, "_last_model_load_error", None)
+                if isinstance(reason, str) and reason.strip():
+                    last_reason = reason.strip()
+
+            if not ok and last_reason:
+                logger.warning(
+                    "config.update model switch failed requested=%s candidates=%s reason=%s",
+                    requested_model,
+                    candidates,
+                    last_reason,
+                )
 
             if not ok:
+                detail = f"Failed to load model '{requested_model}'"
+                if last_reason:
+                    detail = f"{detail}: {last_reason}"
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Failed to load model '{requested_model}'",
+                    detail=detail,
                 )
 
         default_agent = payload.get("default_agent")
@@ -3044,15 +3059,29 @@ async def handle_chat_message(
                         candidates = [short, full]
 
                 loaded = False
+                last_reason: Optional[str] = None
                 for candidate in candidates:
                     loaded = await core.load_model(candidate)
                     if loaded:
                         break
+                    reason = getattr(core, "_last_model_load_error", None)
+                    if isinstance(reason, str) and reason.strip():
+                        last_reason = reason.strip()
+                    _request_log_info(
+                        "chat.model.load_failed session=%s requested=%s candidate=%s reason=%s",
+                        request_session_id or "unknown",
+                        requested_model,
+                        candidate,
+                        last_reason or "unknown",
+                    )
 
                 if not loaded:
+                    detail = f"Failed to load model '{requested_model}'"
+                    if last_reason:
+                        detail = f"{detail}: {last_reason}"
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Failed to load model '{requested_model}'",
+                        detail=detail,
                     )
 
         # Maybe?

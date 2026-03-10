@@ -287,3 +287,11 @@ def apply_credentials_to_runtime(
             os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] = access
         if isinstance(account_id, str) and account_id:
             os.environ["OPENAI_ACCOUNT_ID"] = account_id
+
+        model_config = getattr(core, "model_config", None)
+        if (
+            isinstance(access, str)
+            and access
+            and getattr(model_config, "provider", None) == pid
+        ):
+            setattr(model_config, "api_key", access)

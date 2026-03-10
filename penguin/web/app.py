@@ -21,6 +21,10 @@ from penguin.tools import ToolManager
 from penguin.utils.log_error import log_error
 from penguin.constants import get_engine_max_iterations_default
 from penguin.web.services.system_status import start_vcs_watcher, stop_vcs_watcher
+from penguin.web.services.provider_credentials import (
+    apply_credentials_to_runtime,
+    get_provider_credentials,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,30 @@ def _create_core() -> PenguinCore:
     except Exception as e:
         logger.error(f"Failed to initialize PenguinCore: {str(e)}")
         raise
+
+
+def _rehydrate_provider_credentials(core: PenguinCore) -> None:
+    """Apply persisted provider credentials to runtime environment."""
+    try:
+        records = get_provider_credentials()
+    except Exception:
+        logger.debug("Failed to read persisted provider credentials", exc_info=True)
+        return
+
+    if not isinstance(records, dict) or not records:
+        return
+
+    for provider_id, record in records.items():
+        if not isinstance(provider_id, str) or not isinstance(record, dict):
+            continue
+        try:
+            apply_credentials_to_runtime(core, provider_id, record)
+        except Exception:
+            logger.debug(
+                "Failed to apply persisted provider credentials for %s",
+                provider_id,
+                exc_info=True,
+            )
 
 
 def create_app() -> "FastAPI":
@@ -139,6 +167,7 @@ def create_app() -> "FastAPI":
 
     # Initialize core and attach to router
     core = get_or_create_core()
+    _rehydrate_provider_credentials(core)
     try:
         logger.info(
             "Model configs loaded: %s",

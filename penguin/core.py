@@ -815,6 +815,7 @@ class PenguinCore:
 
         # Defer LiteLLM configuration until first use to avoid import overhead
         self._litellm_configured = False
+        self._last_model_load_error: Optional[str] = None
 
     def _ensure_litellm_configured(self):
         """Configure LiteLLM on first use to avoid import time overhead."""
@@ -3026,60 +3027,154 @@ class PenguinCore:
 
         Returns ``True`` on success, ``False`` otherwise.
         """
-        try:
-            # Fetch model specs from cached service (fast, no API call if cached)
-            model_specs = await fetch_model_specs(model_id)
-            if not model_specs:
-                logger.error(f"Could not fetch specifications for model '{model_id}'")
-                return False
-            logger.info(f"Fetched specs for {model_id}: {model_specs}")
+        self._last_model_load_error = None
 
+        def _coerce_optional_int(value: Any) -> Optional[int]:
+            try:
+                parsed = int(value)
+            except Exception:
+                return None
+            return parsed if parsed > 0 else None
+
+        try:
             # Resolve provider and client preference
             provider, client_pref = self._resolve_model_provider(model_id)
             if not provider:
+                self._last_model_load_error = (
+                    f"Could not resolve provider for model '{model_id}'"
+                )
                 return False
 
-            # Calculate safe context window (85% of raw)
-            context_length = model_specs.get("context_length")
+            provider_value = provider.strip().lower()
+            client_value = client_pref.strip().lower()
+            runtime_model_id = self._canonicalize_runtime_model_id(
+                model_id,
+                provider_value,
+                client_value,
+            )
+
+            model_configs = getattr(self.config, "model_configs", None)
+            if not isinstance(model_configs, dict):
+                model_configs = {}
+            model_lookup_id = (
+                runtime_model_id
+                if runtime_model_id in model_configs and model_id not in model_configs
+                else model_id
+            )
+
+            requires_openrouter_specs = bool(
+                provider_value == "openrouter" or client_value == "openrouter"
+            )
+            model_specs: Dict[str, Any] = {}
+            spec_model_id = (
+                runtime_model_id if provider_value == "openrouter" else model_id
+            )
+
+            if requires_openrouter_specs:
+                model_specs = await fetch_model_specs(spec_model_id)
+                if not model_specs:
+                    self._last_model_load_error = (
+                        f"Could not fetch specifications for model '{spec_model_id}'"
+                    )
+                    logger.error(self._last_model_load_error)
+                    return False
+                logger.info(f"Fetched specs for {spec_model_id}: {model_specs}")
+
+            model_specific = model_configs.get(model_lookup_id, {})
+            if not isinstance(model_specific, dict):
+                model_specific = {}
+
+            context_length = _coerce_optional_int(model_specs.get("context_length"))
+            if context_length is None:
+                context_length = _coerce_optional_int(
+                    model_specific.get("context_window")
+                    or model_specific.get("max_context_window_tokens")
+                )
+
             safe_window = safe_context_window(context_length)
-            max_output = model_specs.get("max_output_tokens") or safe_window
+            max_output = _coerce_optional_int(model_specs.get("max_output_tokens"))
+            if max_output is None:
+                max_output = _coerce_optional_int(
+                    model_specific.get("max_output_tokens")
+                    or model_specific.get("max_tokens")
+                )
+            if max_output is None:
+                max_output = safe_window
 
             # Build and apply new ModelConfig
-            model_configs = getattr(self.config, "model_configs", None) or {}
             new_model_config = ModelConfig.for_model(
-                model_name=model_id,
+                model_name=model_lookup_id,
                 provider=provider,
                 client_preference=client_pref,
                 model_configs=model_configs,
             )
 
+            new_model_config.model = runtime_model_id
+            if context_length is not None:
+                new_model_config.max_context_window_tokens = context_length
+                new_model_config.max_history_tokens = safe_window
+            if max_output is not None:
+                new_model_config.max_output_tokens = max_output
+
             # Apply vision support from actual model specs, but respect explicit user config.
             # Only auto-enable if user hasn't explicitly set vision_enabled in model_configs.
-            user_model_conf = model_configs.get(model_id, {})
-            user_explicit_vision = user_model_conf.get("vision_enabled")
+            user_explicit_vision = model_specific.get("vision_enabled")
             if user_explicit_vision is not None:
                 # User explicitly configured vision - respect their choice
                 new_model_config.vision_enabled = bool(user_explicit_vision)
                 logger.info(
-                    f"Model '{model_id}' vision set to {new_model_config.vision_enabled} (user config)"
+                    f"Model '{runtime_model_id}' vision set to {new_model_config.vision_enabled} (user config)"
                 )
             elif model_specs.get("supports_vision"):
                 # No explicit user config, auto-enable based on model capability
                 new_model_config.vision_enabled = True
-                logger.info(f"Model '{model_id}' supports vision (auto-detected)")
+                logger.info(
+                    f"Model '{runtime_model_id}' supports vision (auto-detected)"
+                )
 
             self._apply_new_model_config(
                 new_model_config, context_window_tokens=safe_window
             )
 
             logger.info(
-                f"Switched to model '{model_id}' (context: {safe_window} tokens, vision: {new_model_config.vision_enabled})"
+                f"Switched to model '{runtime_model_id}' (context: {safe_window} tokens, vision: {new_model_config.vision_enabled})"
             )
             return True
 
         except Exception as e:
+            self._last_model_load_error = str(e)
             logger.error(f"Failed to switch to model '{model_id}': {e}")
             return False
+
+    def _canonicalize_runtime_model_id(
+        self,
+        model_id: str,
+        provider: str,
+        client_preference: str,
+    ) -> str:
+        """Canonicalize model IDs into provider-local form for runtime adapters."""
+        value = str(model_id or "").strip()
+        if not value:
+            return value
+
+        provider_value = str(provider or "").strip().lower()
+        client_value = str(client_preference or "").strip().lower()
+
+        # Native SDK adapters expect provider-local IDs (e.g. `gpt-5`, not `openai/gpt-5`).
+        if client_value == "native" and provider_value in {"openai", "anthropic"}:
+            if "/" in value:
+                prefix, remainder = value.split("/", 1)
+                if prefix.strip().lower() == provider_value and remainder.strip():
+                    return remainder.strip()
+            return value
+
+        # OpenRouter runtime model IDs should not include an extra `openrouter/` prefix.
+        if provider_value == "openrouter" and "/" in value:
+            prefix, remainder = value.split("/", 1)
+            if prefix.strip().lower() == "openrouter" and remainder.strip():
+                return remainder.strip()
+
+        return value
 
     def _resolve_model_provider(self, model_id: str) -> tuple[Optional[str], str]:
         """Resolve provider and client preference for a model ID.
@@ -3105,11 +3200,20 @@ class PenguinCore:
             return None, ""
 
         provider_part = model_id.split("/", 1)[0]
+        provider_part = provider_part.strip().lower()
+
+        if provider_part == "openrouter":
+            client_pref = "openrouter"
+            provider = "openrouter"
+            return provider, client_pref
+
+        native_providers = {"openai", "anthropic", "google", "ollama"}
+        if provider_part in native_providers:
+            return provider_part, "native"
+
         client_pref = (
             self.model_config.client_preference if self.model_config else "native"
         )
-
-        # OpenRouter routes all providers through its gateway
         provider = "openrouter" if client_pref == "openrouter" else provider_part
         return provider, client_pref
 
@@ -4017,6 +4121,51 @@ class PenguinCore:
                 await adapter.on_stream_chunk(message_id, part_id, chunk, message_type)
             except Exception as e:
                 logger.error(f"Failed to emit OpenCode chunk: {e}")
+
+        # Fallback: when provider streaming yields no assistant chunk events but
+        # finalize includes full assistant content, synthesize one part update so
+        # Penguin-mode SSE clients render the response.
+        if is_final and message_id and part_id and not chunk:
+            final_content = data.get("content")
+            if isinstance(final_content, str) and final_content.strip():
+                should_emit_fallback = True
+                try:
+                    active_parts = getattr(adapter, "_active_parts", {})
+                    active_part = (
+                        active_parts.get(part_id)
+                        if isinstance(active_parts, dict)
+                        else None
+                    )
+                    if isinstance(active_part, dict):
+                        existing_text = active_part.get("content", {}).get("text", "")
+                    else:
+                        existing_content = (
+                            getattr(active_part, "content", {}) if active_part else {}
+                        )
+                        existing_text = (
+                            existing_content.get("text", "")
+                            if isinstance(existing_content, dict)
+                            else ""
+                        )
+                    should_emit_fallback = not bool(
+                        isinstance(existing_text, str) and existing_text
+                    )
+                except Exception:
+                    should_emit_fallback = True
+
+                if should_emit_fallback:
+                    try:
+                        await adapter.on_stream_chunk(
+                            message_id,
+                            part_id,
+                            final_content,
+                            "assistant",
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Failed to emit fallback OpenCode final chunk: %s",
+                            e,
+                        )
 
         if data.get("is_final"):
             if message_id and part_id:

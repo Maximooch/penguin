@@ -7,7 +7,11 @@ payload shapes. They derive provider/model data from Penguin runtime state.
 from __future__ import annotations
 
 import os
+import time
+from threading import RLock
 from typing import Any
+
+import httpx
 
 _PROVIDER_METADATA: dict[str, dict[str, Any]] = {
     "openai": {
@@ -41,6 +45,178 @@ _PROVIDER_METADATA: dict[str, dict[str, Any]] = {
         "api_npm": "@ai-sdk/openai-compatible",
     },
 }
+
+_MODELS_DEV_API_URL = "https://models.dev/api.json"
+_MODELS_DEV_CACHE_TTL_SECONDS = 600.0
+_MODELS_DEV_CACHE_LOCK = RLock()
+_MODELS_DEV_CACHE: dict[str, Any] = {
+    "fetched_at": 0.0,
+    "providers": {},
+}
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _coerce_non_negative_float(value: Any, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        return default
+    if parsed < 0:
+        return default
+    return parsed
+
+
+def _models_dev_cost_payload(raw_cost: Any) -> dict[str, Any]:
+    if not isinstance(raw_cost, dict):
+        return {
+            "input": 0.0,
+            "output": 0.0,
+            "cache": {"read": 0.0, "write": 0.0},
+        }
+    return {
+        "input": _coerce_non_negative_float(
+            raw_cost.get("input", raw_cost.get("prompt")),
+            0.0,
+        ),
+        "output": _coerce_non_negative_float(
+            raw_cost.get("output", raw_cost.get("completion")),
+            0.0,
+        ),
+        "cache": {
+            "read": _coerce_non_negative_float(
+                raw_cost.get("cache_read", raw_cost.get("input_cache_read")),
+                0.0,
+            ),
+            "write": _coerce_non_negative_float(
+                raw_cost.get("cache_write", raw_cost.get("input_cache_write")),
+                0.0,
+            ),
+        },
+    }
+
+
+def models_dev_catalog() -> dict[str, dict[str, Any]]:
+    """Return cached models.dev provider catalog keyed by provider id."""
+    now = time.time()
+    with _MODELS_DEV_CACHE_LOCK:
+        fetched_at = float(_MODELS_DEV_CACHE.get("fetched_at") or 0.0)
+        cached = _MODELS_DEV_CACHE.get("providers")
+        if (
+            isinstance(cached, dict)
+            and cached
+            and now - fetched_at <= _MODELS_DEV_CACHE_TTL_SECONDS
+        ):
+            return {
+                str(key): value
+                for key, value in cached.items()
+                if isinstance(key, str) and isinstance(value, dict)
+            }
+
+    fetched: dict[str, dict[str, Any]] = {}
+    headers = {
+        "User-Agent": "penguin-web/1.0 (+https://github.com/maximusputnam/penguin)",
+        "Accept": "application/json",
+    }
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(_MODELS_DEV_API_URL, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+        if isinstance(payload, dict):
+            for provider_id, provider_payload in payload.items():
+                if not isinstance(provider_id, str) or not isinstance(
+                    provider_payload, dict
+                ):
+                    continue
+                fetched[provider_id.strip().lower()] = provider_payload
+    except Exception:
+        return {}
+
+    with _MODELS_DEV_CACHE_LOCK:
+        _MODELS_DEV_CACHE["fetched_at"] = time.time()
+        _MODELS_DEV_CACHE["providers"] = fetched
+
+    return fetched
+
+
+def models_dev_provider_models(
+    target_provider_ids: set[str],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return provider-local model configs derived from models.dev data."""
+    targets = {
+        provider_id.strip().lower()
+        for provider_id in target_provider_ids
+        if isinstance(provider_id, str) and provider_id.strip()
+    }
+    if not targets:
+        return {}
+
+    catalog = models_dev_catalog()
+    if not catalog:
+        return {}
+
+    discovered: dict[str, dict[str, dict[str, Any]]] = {}
+    for provider_id in sorted(targets):
+        provider_payload = catalog.get(provider_id)
+        if not isinstance(provider_payload, dict):
+            continue
+
+        models_payload = provider_payload.get("models")
+        if not isinstance(models_payload, dict):
+            continue
+
+        provider_models: dict[str, dict[str, Any]] = {}
+        for model_key, raw_model in models_payload.items():
+            if isinstance(raw_model, dict):
+                model_payload = raw_model
+            else:
+                continue
+
+            raw_id = model_payload.get("id")
+            if not isinstance(raw_id, str) or not raw_id.strip():
+                if isinstance(model_key, str) and model_key.strip():
+                    raw_id = model_key.strip()
+                else:
+                    continue
+
+            model_id = canonical_model_id(provider_id, raw_id)
+            if not model_id:
+                continue
+
+            raw_limit = model_payload.get("limit")
+            limit_payload = raw_limit if isinstance(raw_limit, dict) else {}
+            context_window = _coerce_positive_int(limit_payload.get("context"), 131072)
+            max_output_tokens = _coerce_positive_int(
+                limit_payload.get("output"), max(context_window // 4, 1)
+            )
+
+            release_date = model_payload.get("release_date")
+            conf: dict[str, Any] = {
+                "provider": provider_id,
+                "model": model_id,
+                "name": model_payload.get("name") or model_id,
+                "context_window": context_window,
+                "max_output_tokens": max_output_tokens,
+                "vision_enabled": bool(model_payload.get("attachment", False)),
+                "reasoning_enabled": bool(model_payload.get("reasoning", False)),
+                "cost": _models_dev_cost_payload(model_payload.get("cost")),
+            }
+            if isinstance(release_date, str) and release_date.strip():
+                conf["release_date"] = release_date.strip()
+
+            provider_models[model_id] = conf
+
+        if provider_models:
+            discovered[provider_id] = provider_models
+
+    return discovered
 
 
 def canonical_model_id(provider_id: str, model_id: str) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from penguin.web import routes as routes_module
 from penguin.web.routes import (
+    MessageRequest,
     ProviderOAuthAuthorizeRequest,
     ProviderOAuthCallbackRequest,
     api_auth_remove,
@@ -23,6 +25,7 @@ from penguin.web.routes import (
     api_provider_list,
     api_provider_oauth_authorize,
     api_provider_oauth_callback,
+    handle_chat_message,
     opencode_auth_remove,
     opencode_auth_set,
     opencode_config_get,
@@ -33,7 +36,10 @@ from penguin.web.routes import (
     opencode_provider_oauth_authorize,
     opencode_provider_oauth_callback,
 )
-from penguin.web.services import opencode_provider as provider_service
+from penguin.web.services import (
+    opencode_provider as provider_service,
+    provider_catalog,
+)
 from penguin.web.services.opencode_provider import get_provider_auth_records
 
 if TYPE_CHECKING:
@@ -122,6 +128,35 @@ async def test_config_update_returns_400_when_model_switch_fails(
     with pytest.raises(HTTPException) as exc:
         await opencode_config_update(config={"model": "openai/gpt-5"}, core=typed_core)
     assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_chat_message_model_load_failure_surfaces_reason(
+    tmp_path: Path,
+) -> None:
+    class _ChatCore(_Core):
+        async def load_model(self, model_id: str) -> bool:
+            self.loaded_model = model_id
+            self._last_model_load_error = "Native anthropic model lookup failed"
+            return False
+
+    core = _ChatCore(tmp_path)
+    typed_core = cast(Any, core)
+
+    request = MessageRequest(
+        text="hello",
+        model="anthropic/claude-3-7-sonnet-latest",
+        directory=str(tmp_path),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await handle_chat_message(request=request, core=typed_core)
+
+    assert exc.value.status_code == 400
+    assert "Failed to load model 'anthropic/claude-3-7-sonnet-latest'" in str(
+        exc.value.detail
+    )
+    assert "Native anthropic model lookup failed" in str(exc.value.detail)
 
 
 @pytest.mark.asyncio
@@ -371,6 +406,160 @@ async def test_openrouter_catalog_expands_provider_payloads(
     assert set(
         openrouter_provider["models"]["openai/gpt-5-mini"]["variants"].keys()
     ) == {"none", "minimal", "low", "medium", "high", "xhigh"}
+
+
+@pytest.mark.asyncio
+async def test_models_dev_catalog_expands_openai_and_anthropic_payloads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = cast(Any, getattr(provider_catalog, "_MODELS_DEV_CACHE"))
+    cache["fetched_at"] = 0.0
+    cache["providers"] = {}
+
+    class _ModelsDevResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, Any]:
+            return {
+                "openai": {
+                    "id": "openai",
+                    "models": {
+                        "gpt-5": {
+                            "id": "gpt-5",
+                            "name": "GPT-5",
+                            "attachment": True,
+                            "reasoning": True,
+                            "release_date": "2026-01-01T00:00:00+00:00",
+                            "limit": {"context": 400000, "output": 128000},
+                            "cost": {
+                                "input": 1.25,
+                                "output": 10.0,
+                                "cache_read": 0.625,
+                                "cache_write": 1.25,
+                            },
+                        }
+                    },
+                },
+                "anthropic": {
+                    "id": "anthropic",
+                    "models": {
+                        "claude-4.5-sonnet": {
+                            "id": "claude-4.5-sonnet",
+                            "name": "Claude 4.5 Sonnet",
+                            "attachment": True,
+                            "reasoning": True,
+                            "release_date": "2026-02-02T00:00:00+00:00",
+                            "limit": {"context": 200000, "output": 64000},
+                            "cost": {
+                                "input": 3.0,
+                                "output": 15.0,
+                                "cache_read": 0.3,
+                            },
+                        }
+                    },
+                },
+            }
+
+    class _ModelsDevClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        def __enter__(self) -> _ModelsDevClient:
+            return self
+
+        def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+            del exc_type, exc, tb
+            return False
+
+        def get(self, url: str, headers: dict[str, str]) -> _ModelsDevResponse:
+            assert "models.dev/api.json" in url
+            assert "User-Agent" in headers
+            return _ModelsDevResponse()
+
+    monkeypatch.setattr(provider_catalog.httpx, "Client", _ModelsDevClient)
+
+    core = _Core(tmp_path)
+    core.config.model_configs = {}
+    core._current_model = {
+        "provider": "openrouter",
+        "model": "openai/gpt-5-codex",
+        "client_preference": "openrouter",
+    }
+    typed_core = cast(Any, core)
+
+    providers_payload = await opencode_config_providers(core=typed_core)
+    provider_ids = {item["id"] for item in providers_payload["providers"]}
+    assert "openai" in provider_ids
+    assert "anthropic" in provider_ids
+
+    openai = next(
+        item for item in providers_payload["providers"] if item["id"] == "openai"
+    )
+    assert "gpt-5" in openai["models"]
+    assert openai["models"]["gpt-5"]["capabilities"]["reasoning"] is True
+
+    anthropic = next(
+        item for item in providers_payload["providers"] if item["id"] == "anthropic"
+    )
+    assert "claude-4.5-sonnet" in anthropic["models"]
+    assert anthropic["models"]["claude-4.5-sonnet"]["cost"]["input"] == 3.0
+
+    provider_payload = await opencode_provider_list(core=typed_core)
+    openai_provider = next(
+        item for item in provider_payload["all"] if item["id"] == "openai"
+    )
+    assert "gpt-5" in openai_provider["models"]
+    assert openai_provider["models"]["gpt-5"]["reasoning"] is True
+
+
+@pytest.mark.asyncio
+async def test_provider_filters_hide_disabled_models_dev_providers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = cast(Any, getattr(provider_catalog, "_MODELS_DEV_CACHE"))
+    cache["fetched_at"] = time.time()
+    cache["providers"] = {
+        "openai": {
+            "id": "openai",
+            "models": {"gpt-5": {"id": "gpt-5", "name": "GPT-5", "limit": {}}},
+        },
+        "anthropic": {
+            "id": "anthropic",
+            "models": {
+                "claude-4.5-sonnet": {
+                    "id": "claude-4.5-sonnet",
+                    "name": "Claude 4.5 Sonnet",
+                    "limit": {},
+                }
+            },
+        },
+    }
+
+    monkeypatch.setattr(
+        provider_service,
+        "load_config",
+        lambda: {
+            "enabled_providers": ["openai", "anthropic"],
+            "disabled_providers": ["anthropic"],
+        },
+    )
+
+    core = _Core(tmp_path)
+    core.config.model_configs = {}
+    typed_core = cast(Any, core)
+
+    providers_payload = await opencode_config_providers(core=typed_core)
+    provider_ids = {item["id"] for item in providers_payload["providers"]}
+    assert "openai" in provider_ids
+    assert "anthropic" not in provider_ids
+
+    provider_payload = await opencode_provider_list(core=typed_core)
+    list_ids = {item["id"] for item in provider_payload["all"]}
+    assert "openai" in list_ids
+    assert "anthropic" not in list_ids
 
 
 @pytest.mark.asyncio
