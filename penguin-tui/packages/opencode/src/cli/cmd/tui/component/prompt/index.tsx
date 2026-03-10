@@ -690,7 +690,9 @@ export function Prompt(props: PromptProps) {
           inputText = before + part.text + after
           continue
         }
-        if (sdk.penguin) {
+        const stripVirtualPart =
+          sdk.penguin && part.type === "file" && typeof part.mime === "string" && part.mime.startsWith("image/")
+        if (stripVirtualPart) {
           inputText = before + after
         }
       }

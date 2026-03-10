@@ -14,6 +14,7 @@ from fastapi import (
 from pydantic import BaseModel  # type: ignore
 from dataclasses import asdict  # type: ignore
 from datetime import datetime  # type: ignore
+from collections import OrderedDict
 import asyncio
 import base64
 import copy
@@ -22,8 +23,11 @@ import logging
 import mimetypes
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
+import time
+from threading import Lock
 import uuid
 from urllib.parse import unquote, urlparse
 import websockets
@@ -105,6 +109,90 @@ def _format_error_response(error: Exception, status_code: int = 500) -> HTTPExce
 
 MAX_IMAGES_PER_REQUEST = 10
 
+_FIND_FILE_CACHE_TTL_SECONDS = 5.0
+_FIND_FILE_CACHE_MAX_DIRECTORIES = 16
+_FIND_FILE_SKIP_DIR_NAMES = {
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "dist",
+    "build",
+    "target",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+}
+_FIND_FILE_INDEX_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+_FIND_FILE_INDEX_CACHE_LOCK = Lock()
+
+
+def _remember_last_scoped_directory(
+    core: PenguinCore, directory: Optional[str]
+) -> Optional[str]:
+    """Remember the latest valid scoped directory for fallback lookups."""
+    normalized = normalize_directory(directory)
+    if not normalized:
+        return None
+    setattr(core, "_opencode_last_scoped_directory", normalized)
+    return normalized
+
+
+def _get_last_scoped_directory(core: PenguinCore) -> Optional[str]:
+    """Return previously scoped directory if still valid."""
+    return normalize_directory(getattr(core, "_opencode_last_scoped_directory", None))
+
+
+def _resolve_scoped_directory_for_find(
+    core: PenguinCore,
+    *,
+    directory: Optional[str],
+    session_id: Optional[str],
+    conversation_id: Optional[str],
+) -> Optional[str]:
+    """Resolve find scope using explicit, session, remembered, and runtime roots."""
+    explicit = _remember_last_scoped_directory(core, directory)
+    if explicit:
+        return explicit
+
+    effective_session = (
+        session_id.strip()
+        if isinstance(session_id, str) and session_id.strip()
+        else (
+            conversation_id.strip()
+            if isinstance(conversation_id, str) and conversation_id.strip()
+            else None
+        )
+    )
+    if effective_session:
+        session_dirs = _ensure_session_directory_map(core)
+        mapped = normalize_directory(session_dirs.get(effective_session))
+        if mapped:
+            _remember_last_scoped_directory(core, mapped)
+            return mapped
+
+    remembered = _get_last_scoped_directory(core)
+    if remembered:
+        return remembered
+
+    runtime = getattr(core, "runtime_config", None)
+    runtime_fallback = normalize_directory(
+        getattr(runtime, "active_root", None)
+        or getattr(runtime, "project_root", None)
+        or getattr(runtime, "workspace_root", None)
+    )
+    if runtime_fallback:
+        _remember_last_scoped_directory(core, runtime_fallback)
+        return runtime_fallback
+
+    workspace_fallback = normalize_directory(WORKSPACE_PATH)
+    if workspace_fallback:
+        _remember_last_scoped_directory(core, workspace_fallback)
+    return workspace_fallback
+
 
 def _ensure_session_directory_map(core: PenguinCore) -> dict[str, str]:
     """Ensure core has a session->directory map and return it."""
@@ -128,7 +216,7 @@ def _bind_session_directory(
         )
 
     if not session_id:
-        return normalize_directory(directory)
+        return _remember_last_scoped_directory(core, directory)
 
     session_dirs = _ensure_session_directory_map(core)
     existing = normalize_directory(session_dirs.get(session_id))
@@ -138,6 +226,7 @@ def _bind_session_directory(
         if requested and Path(existing) != Path(requested):
             try:
                 if Path(existing).samefile(requested):
+                    _remember_last_scoped_directory(core, existing)
                     return existing
             except Exception:
                 pass
@@ -148,10 +237,12 @@ def _bind_session_directory(
                     f"cannot be reassigned to '{requested}'"
                 ),
             )
+        _remember_last_scoped_directory(core, existing)
         return existing
 
     if requested:
         session_dirs[session_id] = requested
+        _remember_last_scoped_directory(core, requested)
         return requested
 
     return None
@@ -454,6 +545,9 @@ class MessageRequest(BaseModel):
 _REASONING_EFFORT_VARIANTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
 _REASONING_MAX_VARIANTS = {"max"}
 _REASONING_DISABLE_VARIANTS = {"off"}
+_INLINE_FILE_REFERENCE_PATTERN = re.compile(
+    r"(?<![\w`])@(\.?[^\s`,.]*(?:\.[^\s`,.]+)*)"
+)
 
 
 def _apply_reasoning_variant_override(
@@ -528,8 +622,83 @@ def _restore_reasoning_variant_override(
             pass
 
 
+def _resolve_context_file_path(
+    value: Optional[str],
+    *,
+    directory: Optional[str],
+) -> Optional[str]:
+    """Resolve local file paths and file URLs to absolute existing files."""
+    if not isinstance(value, str):
+        return None
+
+    candidate = value.strip()
+    if not candidate:
+        return None
+    if candidate.startswith("data:"):
+        return None
+
+    parsed = urlparse(candidate)
+    if parsed.scheme in {"http", "https"}:
+        return None
+    if parsed.scheme == "file":
+        if not parsed.path:
+            return None
+        candidate = unquote(parsed.path)
+    elif "://" in candidate:
+        return None
+
+    candidate = candidate.split("#", 1)[0].split("?", 1)[0].strip()
+    if not candidate:
+        return None
+
+    base_directory = normalize_directory(directory)
+    try:
+        if candidate.startswith("~/"):
+            resolved = Path(candidate).expanduser().resolve()
+        elif os.path.isabs(candidate):
+            resolved = Path(candidate).resolve()
+        elif base_directory:
+            resolved = (Path(base_directory) / candidate).resolve()
+        else:
+            resolved = Path(candidate).resolve()
+    except Exception:
+        return None
+
+    if not resolved.exists() or not resolved.is_file():
+        return None
+    return str(resolved)
+
+
+def _normalize_context_files(
+    context_files: Optional[List[str]],
+    *,
+    directory: Optional[str],
+) -> List[str]:
+    """Normalize context files through the shared file resolver."""
+    normalized: List[str] = []
+    seen: set[str] = set()
+
+    for item in context_files or []:
+        if not isinstance(item, str):
+            continue
+        raw_value = item.strip()
+        if not raw_value:
+            continue
+
+        resolved = _resolve_context_file_path(raw_value, directory=directory)
+        candidate = resolved or raw_value
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+
+    return normalized
+
+
 def _extract_paths_from_parts(
     parts: Optional[List[Dict[str, Any]]],
+    *,
+    directory: Optional[str],
 ) -> tuple[List[str], List[str]]:
     """Extract context file paths and image payloads from OpenCode parts."""
     if not isinstance(parts, list):
@@ -549,39 +718,276 @@ def _extract_paths_from_parts(
 
         source = part.get("source")
         source_path = source.get("path") if isinstance(source, dict) else None
+        source_path_value = source_path.strip() if isinstance(source_path, str) else ""
+
+        url = part.get("url")
+        url_value = url.strip() if isinstance(url, str) else ""
+
         source_image_selected = False
-        if isinstance(source_path, str) and source_path.strip():
-            path_value = source_path.strip()
+        if source_path_value:
             if mime_value.startswith("image/"):
                 candidate = (
-                    os.path.isabs(path_value)
-                    or path_value.startswith("./")
-                    or path_value.startswith("../")
-                    or path_value.startswith("~/")
+                    os.path.isabs(source_path_value)
+                    or source_path_value.startswith("./")
+                    or source_path_value.startswith("../")
+                    or source_path_value.startswith("~/")
                 )
                 if (
                     candidate
-                    and not path_value.startswith("data:")
-                    and path_value not in image_paths
+                    and not source_path_value.startswith("data:")
+                    and source_path_value not in image_paths
                 ):
-                    image_paths.append(path_value)
+                    image_paths.append(source_path_value)
                     source_image_selected = True
-            elif not path_value.startswith("data:") and path_value not in context_files:
-                context_files.append(path_value)
+            elif not source_path_value.startswith("data:"):
+                resolved = _resolve_context_file_path(
+                    source_path_value,
+                    directory=directory,
+                )
+                if resolved and resolved not in context_files:
+                    context_files.append(resolved)
+                    continue
+
+        if not mime_value.startswith("image/") and url_value:
+            resolved_from_url = _resolve_context_file_path(
+                url_value,
+                directory=directory,
+            )
+            if resolved_from_url and resolved_from_url not in context_files:
+                context_files.append(resolved_from_url)
+                continue
 
         if source_image_selected:
             continue
 
-        url = part.get("url")
-        if not isinstance(url, str) or not url.strip():
+        if not url_value:
             continue
-        url_value = url.strip()
         if not (mime_value.startswith("image/") or url_value.startswith("data:image/")):
             continue
         if url_value not in image_paths:
             image_paths.append(url_value)
 
     return context_files, image_paths
+
+
+def _extract_inline_file_references(text: Optional[str]) -> List[str]:
+    """Extract inline @file references using OpenCode-compatible matching."""
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    references: List[str] = []
+    seen: set[str] = set()
+    for match in _INLINE_FILE_REFERENCE_PATTERN.finditer(text):
+        candidate = (match.group(1) or "").strip()
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        references.append(candidate)
+    return references
+
+
+def _resolve_inline_file_reference(
+    reference: str,
+    *,
+    directory: Optional[str],
+) -> Optional[str]:
+    """Resolve an inline @file reference to an existing file path."""
+    value = reference.strip()
+    if not value:
+        return None
+    value = value.split("#", 1)[0].split("?", 1)[0].strip()
+    if not value:
+        return None
+    return _resolve_context_file_path(value, directory=directory)
+
+
+def _extract_context_files_from_text(
+    text: Optional[str],
+    *,
+    directory: Optional[str],
+) -> List[str]:
+    """Resolve existing inline @file references into context file paths."""
+    resolved_files: List[str] = []
+    seen: set[str] = set()
+    for reference in _extract_inline_file_references(text):
+        resolved = _resolve_inline_file_reference(reference, directory=directory)
+        if not resolved or resolved in seen:
+            continue
+        seen.add(resolved)
+        resolved_files.append(resolved)
+    return resolved_files
+
+
+def _normalize_repo_relative(path_value: str) -> str:
+    """Normalize a relative path to POSIX separators."""
+    return path_value.replace(os.sep, "/") if os.sep != "/" else path_value
+
+
+def _scan_find_file_index(directory: str) -> tuple[List[str], List[str]]:
+    """Build a lightweight file/dir index for fast autocomplete searches."""
+    root = Path(directory).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        return [], []
+
+    files: List[str] = []
+    dirs: List[str] = []
+
+    for current_dir, dirnames, filenames in os.walk(str(root), topdown=True):
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in _FIND_FILE_SKIP_DIR_NAMES and name not in {".", ".."}
+        ]
+
+        current_path = Path(current_dir)
+        try:
+            relative_dir = current_path.relative_to(root)
+        except ValueError:
+            continue
+
+        for dirname in dirnames:
+            rel = (
+                (relative_dir / dirname).as_posix()
+                if str(relative_dir) != "."
+                else dirname
+            )
+            dirs.append(f"{_normalize_repo_relative(rel).rstrip('/')}/")
+
+        for filename in filenames:
+            rel = (
+                (relative_dir / filename).as_posix()
+                if str(relative_dir) != "."
+                else filename
+            )
+            files.append(_normalize_repo_relative(rel).rstrip("/"))
+
+    files.sort()
+    dirs.sort()
+    return files, dirs
+
+
+def _get_find_file_index(directory: str) -> tuple[List[str], List[str]]:
+    """Return cached file index for a directory, refreshing on TTL expiry."""
+    normalized = normalize_directory(directory)
+    if not normalized:
+        return [], []
+
+    now = time.monotonic()
+    with _FIND_FILE_INDEX_CACHE_LOCK:
+        cached = _FIND_FILE_INDEX_CACHE.get(normalized)
+        if isinstance(cached, dict) and float(cached.get("expires_at", 0.0)) > now:
+            _FIND_FILE_INDEX_CACHE.move_to_end(normalized)
+            return list(cached.get("files") or []), list(cached.get("dirs") or [])
+
+    files, dirs = _scan_find_file_index(normalized)
+
+    with _FIND_FILE_INDEX_CACHE_LOCK:
+        _FIND_FILE_INDEX_CACHE[normalized] = {
+            "expires_at": now + _FIND_FILE_CACHE_TTL_SECONDS,
+            "files": files,
+            "dirs": dirs,
+        }
+        _FIND_FILE_INDEX_CACHE.move_to_end(normalized)
+        while len(_FIND_FILE_INDEX_CACHE) > _FIND_FILE_CACHE_MAX_DIRECTORIES:
+            _FIND_FILE_INDEX_CACHE.popitem(last=False)
+
+    return files, dirs
+
+
+def _is_hidden_path(path_value: str) -> bool:
+    """Return whether any segment is hidden (starts with '.')."""
+    normalized = path_value.replace("\\", "/").rstrip("/")
+    return any(
+        segment.startswith(".") and len(segment) > 1
+        for segment in normalized.split("/")
+        if segment
+    )
+
+
+def _query_targets_hidden_paths(query: str) -> bool:
+    """Return whether the query intentionally targets hidden paths."""
+    return query.startswith(".") or "/." in query
+
+
+def _sort_hidden_last(items: List[str], query: str) -> List[str]:
+    """Sort hidden entries to the end unless query targets hidden paths."""
+    if _query_targets_hidden_paths(query):
+        return items
+
+    visible: List[str] = []
+    hidden: List[str] = []
+    for item in items:
+        if _is_hidden_path(item):
+            hidden.append(item)
+        else:
+            visible.append(item)
+    return [*visible, *hidden]
+
+
+def _subsequence_gap(query: str, candidate: str) -> Optional[int]:
+    """Return gap score if query is a subsequence of candidate."""
+    cursor = 0
+    last = -1
+    gap = 0
+    for char in query:
+        found = candidate.find(char, cursor)
+        if found < 0:
+            return None
+        if last >= 0:
+            gap += max(found - last - 1, 0)
+        last = found
+        cursor = found + 1
+    return gap
+
+
+def _find_file_match_score(
+    query: str, candidate: str
+) -> Optional[tuple[int, int, int, str]]:
+    """Compute an OpenCode-like fuzzy ranking score for path suggestions."""
+    query_l = query.lower()
+    candidate_l = candidate.lower()
+    basename_l = candidate_l.rstrip("/").split("/")[-1]
+
+    if candidate_l == query_l or basename_l == query_l:
+        return (0, 0, len(candidate), candidate_l)
+    if basename_l.startswith(query_l):
+        return (1, 0, len(candidate), candidate_l)
+    if candidate_l.startswith(query_l):
+        return (2, 0, len(candidate), candidate_l)
+
+    basename_idx = basename_l.find(query_l)
+    if basename_idx >= 0:
+        return (3, basename_idx, len(candidate), candidate_l)
+    candidate_idx = candidate_l.find(query_l)
+    if candidate_idx >= 0:
+        return (4, candidate_idx, len(candidate), candidate_l)
+
+    basename_gap = _subsequence_gap(query_l, basename_l)
+    if basename_gap is not None:
+        return (5, basename_gap, len(candidate), candidate_l)
+
+    candidate_gap = _subsequence_gap(query_l, candidate_l)
+    if candidate_gap is not None:
+        return (6, candidate_gap, len(candidate), candidate_l)
+
+    return None
+
+
+def _search_find_file_items(items: List[str], query: str, limit: int) -> List[str]:
+    """Search indexed file/dir items with deterministic fuzzy ranking."""
+    normalized_query = query.strip().lower()
+    if not normalized_query:
+        return items[:limit]
+
+    ranked: List[tuple[tuple[int, int, int, str], str]] = []
+    for item in items:
+        score = _find_file_match_score(normalized_query, item)
+        if score is None:
+            continue
+        ranked.append((score, item))
+
+    ranked.sort(key=lambda entry: entry[0])
+    return [item for _, item in ranked[:limit]]
 
 
 def _materialize_image_paths(
@@ -1176,8 +1582,6 @@ def _get_coordinator(core: PenguinCore):
 def _validate_agent_id(agent_id: str) -> None:
     if not agent_id or len(agent_id) > 64:
         raise HTTPException(status_code=400, detail="agent_id must be 1-64 chars")
-    import re
-
     if not re.fullmatch(r"[a-z0-9_-]+", agent_id):
         raise HTTPException(status_code=400, detail="agent_id must match ^[a-z0-9_-]+$")
 
@@ -1913,7 +2317,10 @@ async def opencode_path_get(
     """OpenCode-compatible path endpoint."""
     try:
         effective_session = session_id or conversation_id
-        return get_path_info(core, directory=directory, session_id=effective_session)
+        payload = get_path_info(core, directory=directory, session_id=effective_session)
+        if isinstance(payload, dict):
+            _remember_last_scoped_directory(core, payload.get("directory"))
+        return payload
     except Exception as e:
         logger.error(f"path.get error: {e}")
         raise HTTPException(status_code=500, detail="Failed to load path info")
@@ -1929,7 +2336,10 @@ async def opencode_vcs_get(
     """OpenCode-compatible VCS endpoint."""
     try:
         effective_session = session_id or conversation_id
-        return get_vcs_info(core, directory=directory, session_id=effective_session)
+        payload = get_vcs_info(core, directory=directory, session_id=effective_session)
+        if isinstance(payload, dict):
+            _remember_last_scoped_directory(core, payload.get("root"))
+        return payload
     except Exception as e:
         logger.error(f"vcs.get error: {e}")
         raise HTTPException(status_code=500, detail="Failed to load vcs info")
@@ -1945,6 +2355,7 @@ async def opencode_formatter_status(
     """OpenCode-compatible formatter status endpoint."""
     try:
         effective_session = session_id or conversation_id
+        _remember_last_scoped_directory(core, directory)
         return get_formatter_status(
             core, directory=directory, session_id=effective_session
         )
@@ -1963,10 +2374,73 @@ async def opencode_lsp_status(
     """OpenCode-compatible LSP status endpoint."""
     try:
         effective_session = session_id or conversation_id
+        _remember_last_scoped_directory(core, directory)
         return get_lsp_status(core, directory=directory, session_id=effective_session)
     except Exception as e:
         logger.error(f"lsp.status error: {e}")
         raise HTTPException(status_code=500, detail="Failed to load lsp status")
+
+
+@router.get("/find/file")
+async def opencode_find_files(
+    core: PenguinCore = Depends(get_core),
+    query: str = Query(""),
+    dirs: Optional[str] = Query(None),
+    entry_type: Optional[str] = Query(None, alias="type"),
+    limit: Optional[int] = Query(None, ge=1, le=200),
+    directory: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+    conversation_id: Optional[str] = Query(None),
+) -> List[str]:
+    """OpenCode-compatible file/directory search endpoint."""
+    type_value = entry_type.strip().lower() if isinstance(entry_type, str) else None
+    if type_value not in {None, "file", "directory"}:
+        raise HTTPException(
+            status_code=400, detail="type must be 'file' or 'directory'"
+        )
+
+    dirs_enabled = True
+    if isinstance(dirs, str) and dirs.strip():
+        dirs_enabled = dirs.strip().lower() != "false"
+
+    limit_value = int(limit) if isinstance(limit, int) else 10
+    query_value = query.strip() if isinstance(query, str) else ""
+
+    resolved_directory = _resolve_scoped_directory_for_find(
+        core,
+        directory=directory,
+        session_id=session_id,
+        conversation_id=conversation_id,
+    )
+    if not resolved_directory:
+        raise HTTPException(
+            status_code=400, detail="Unable to resolve search directory"
+        )
+
+    files, directories = _get_find_file_index(resolved_directory)
+    kind = type_value or ("file" if not dirs_enabled else "all")
+
+    if not query_value:
+        if kind == "file":
+            return _sort_hidden_last(files, query_value)[:limit_value]
+        return _sort_hidden_last(directories, query_value)[:limit_value]
+
+    items = (
+        files
+        if kind == "file"
+        else directories
+        if kind == "directory"
+        else [*files, *directories]
+    )
+    search_limit = (
+        limit_value * 20
+        if kind == "directory" and not _query_targets_hidden_paths(query_value)
+        else limit_value
+    )
+    matched = _search_find_file_items(
+        items, query_value, max(search_limit, limit_value)
+    )
+    return _sort_hidden_last(matched, query_value)[:limit_value]
 
 
 @router.get("/config")
@@ -2260,6 +2734,30 @@ async def api_lsp_status(
     )
 
 
+@router.get("/api/v1/find/file")
+async def api_find_files(
+    core: PenguinCore = Depends(get_core),
+    query: str = Query(""),
+    dirs: Optional[str] = Query(None),
+    entry_type: Optional[str] = Query(None, alias="type"),
+    limit: Optional[int] = Query(None, ge=1, le=200),
+    directory: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+    conversation_id: Optional[str] = Query(None),
+) -> List[str]:
+    """Alias for OpenCode-compatible file/directory search endpoint."""
+    return await opencode_find_files(
+        core=core,
+        query=query,
+        dirs=dirs,
+        entry_type=entry_type,
+        limit=limit,
+        directory=directory,
+        session_id=session_id,
+        conversation_id=conversation_id,
+    )
+
+
 # Note: unified telemetry endpoint above returns the summary directly
 
 
@@ -2462,11 +2960,36 @@ async def handle_chat_message(
                 tasks.add(request_task)
                 request_tracked = True
 
-        part_context_files, part_image_paths = _extract_paths_from_parts(request.parts)
+        scope_directory = bound_directory or request.directory
+        part_context_files, part_image_paths = _extract_paths_from_parts(
+            request.parts,
+            directory=scope_directory,
+        )
         context_files = list(request.context_files or [])
         for file_path in part_context_files:
             if file_path not in context_files:
                 context_files.append(file_path)
+        inline_context_files = _extract_context_files_from_text(
+            request.text,
+            directory=scope_directory,
+        )
+        for file_path in inline_context_files:
+            if file_path not in context_files:
+                context_files.append(file_path)
+        context_files = _normalize_context_files(
+            context_files,
+            directory=scope_directory,
+        )
+        if context_files:
+            _request_log_info(
+                "chat.context.files session=%s count=%s files=%s",
+                request_session_id or "unknown",
+                len(context_files),
+                [
+                    os.path.basename(path) if isinstance(path, str) else path
+                    for path in context_files[:5]
+                ],
+            )
 
         image_paths = list(request.image_paths or [])
         for image_path in part_image_paths:
@@ -2476,7 +2999,7 @@ async def handle_chat_message(
         execution_context = _build_execution_context(
             core,
             session_id=effective_session_id,
-            conversation_id=request.conversation_id,
+            conversation_id=effective_session_id,
             agent_id=request.agent_id,
             agent_mode=resolved_agent_mode,
             directory=bound_directory or request.directory,
@@ -2555,7 +3078,7 @@ async def handle_chat_message(
 
             materialized_paths, created_files = _materialize_image_paths(
                 image_paths,
-                directory=bound_directory or request.directory,
+                directory=scope_directory,
             )
             if created_files:
                 temp_image_files.extend(created_files)
@@ -2636,10 +3159,10 @@ async def handle_chat_message(
                 process_result = await core.process(
                     input_data=input_data,
                     context=request.context,
-                    conversation_id=request.conversation_id,
+                    conversation_id=effective_session_id,
                     agent_id=request.agent_id,
                     max_iterations=request.max_iterations or 100,
-                    context_files=context_files or request.context_files,
+                    context_files=context_files,
                     streaming=effective_streaming,
                     stream_callback=stream_cb,
                 )
@@ -2827,6 +3350,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
             context = data.get("context")
             max_iterations = data.get("max_iterations", 100)
             image_paths = data.get("image_paths")  # Multiple images supported
+            parts = data.get("parts")
             include_reasoning = bool(data.get("include_reasoning", False))
             variant = data.get("variant")
             agent_id = data.get("agent_id")
@@ -2853,11 +3377,52 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
             execution_context = _build_execution_context(
                 core,
                 session_id=effective_session_id,
-                conversation_id=conversation_id,
+                conversation_id=effective_session_id,
                 agent_id=agent_id,
                 agent_mode=resolved_agent_mode,
                 directory=bound_directory or directory,
             )
+
+            scope_directory = bound_directory or directory
+            part_context_files, part_image_paths = _extract_paths_from_parts(
+                parts if isinstance(parts, list) else None,
+                directory=scope_directory,
+            )
+            merged_context_files = (
+                list(context_files) if isinstance(context_files, list) else []
+            )
+            for file_path in part_context_files:
+                if file_path not in merged_context_files:
+                    merged_context_files.append(file_path)
+            inline_context_files = _extract_context_files_from_text(
+                text,
+                directory=scope_directory,
+            )
+            for file_path in inline_context_files:
+                if file_path not in merged_context_files:
+                    merged_context_files.append(file_path)
+            context_files = _normalize_context_files(
+                merged_context_files,
+                directory=scope_directory,
+            )
+            if context_files:
+                _request_log_info(
+                    "chat.stream.context.files session=%s count=%s files=%s",
+                    effective_session_id or "unknown",
+                    len(context_files),
+                    [
+                        os.path.basename(path) if isinstance(path, str) else path
+                        for path in context_files[:5]
+                    ],
+                )
+
+            merged_image_paths = (
+                list(image_paths) if isinstance(image_paths, list) else []
+            )
+            for image_path in part_image_paths:
+                if image_path not in merged_image_paths:
+                    merged_image_paths.append(image_path)
+            image_paths = merged_image_paths
 
             # Log conversation ID for debugging
             print(
@@ -3014,7 +3579,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                         process_task = asyncio.create_task(
                             core.process(
                                 input_data=input_data,
-                                conversation_id=conversation_id,
+                                conversation_id=effective_session_id,
                                 agent_id=agent_id,
                                 max_iterations=max_iterations,
                                 context_files=context_files,
@@ -3688,6 +4253,8 @@ async def session_list(
             detail=f"Invalid directory: {requested_directory}",
         )
 
+    _remember_last_scoped_directory(core, resolved_directory)
+
     return list_session_infos(
         core,
         directory=resolved_directory,
@@ -3711,6 +4278,8 @@ async def session_status(
             status_code=400,
             detail=f"Invalid directory: {requested_directory}",
         )
+
+    _remember_last_scoped_directory(core, resolved_directory)
 
     statuses = list_session_statuses(core)
     if not resolved_directory:

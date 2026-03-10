@@ -165,6 +165,7 @@ async def test_chat_binding_prefers_session_id_over_conversation_id(
 ) -> None:
     repo = tmp_path / "chat_repo"
     repo.mkdir()
+    seen_kwargs: dict[str, Any] = {}
 
     class _Core:
         def __init__(self) -> None:
@@ -178,7 +179,7 @@ async def test_chat_binding_prefers_session_id_over_conversation_id(
             }
 
         async def process(self, **kwargs):  # type: ignore[no-untyped-def]
-            del kwargs
+            seen_kwargs.update(kwargs)
             return {"assistant_response": "ok", "action_results": []}
 
     core = _Core()
@@ -195,6 +196,7 @@ async def test_chat_binding_prefers_session_id_over_conversation_id(
     assert response["response"] == "ok"
     assert core._opencode_session_directories["session_primary"] == str(repo.resolve())
     assert "stale_conversation_id" not in core._opencode_session_directories
+    assert seen_kwargs["conversation_id"] == "session_primary"
 
 
 @pytest.mark.asyncio
@@ -669,6 +671,8 @@ async def test_rest_chat_parts_forward_context_and_materialize_images(
 ) -> None:
     repo = tmp_path / "chat_repo_parts"
     repo.mkdir()
+    readme = repo / "README.md"
+    readme.write_text("hello", encoding="utf-8")
     seen_kwargs: dict[str, Any] = {}
 
     class _Core:
@@ -705,7 +709,7 @@ async def test_rest_chat_parts_forward_context_and_materialize_images(
             {
                 "type": "file",
                 "mime": "text/plain",
-                "url": "README.md",
+                "url": f"file://{readme.resolve()}",
                 "source": {"type": "file", "path": "README.md"},
             },
         ],
@@ -714,7 +718,7 @@ async def test_rest_chat_parts_forward_context_and_materialize_images(
     response = await handle_chat_message(request, core=cast(Any, core))
 
     assert response["response"] == "ok"
-    assert seen_kwargs["context_files"] == ["README.md"]
+    assert seen_kwargs["context_files"] == [str(readme.resolve())]
     image_paths = seen_kwargs["input_data"]["image_paths"]
     assert isinstance(image_paths, list)
     assert image_paths
@@ -723,6 +727,89 @@ async def test_rest_chat_parts_forward_context_and_materialize_images(
     assert not image_path.startswith("data:")
     assert seen_kwargs["image_exists_during_process"] is True
     assert not Path(image_path).exists()
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_parts_fallback_to_file_url_for_context_file(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "chat_repo_parts_url_fallback"
+    repo.mkdir()
+    readme = repo / "README.md"
+    readme.write_text("hello", encoding="utf-8")
+    seen_kwargs: dict[str, Any] = {}
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            seen_kwargs.update(kwargs)
+            return {"assistant_response": "ok", "action_results": []}
+
+    core = _Core()
+    request = MessageRequest(
+        text="summarize selected file",
+        session_id="session_parts_url_fallback",
+        directory=str(repo),
+        streaming=False,
+        parts=[
+            {
+                "type": "file",
+                "mime": "text/plain",
+                "url": f"file://{readme.resolve()}",
+                "source": {"type": "file", "path": "missing.txt"},
+            }
+        ],
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["response"] == "ok"
+    assert seen_kwargs["context_files"] == [str(readme.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_normalizes_explicit_context_files_against_bound_directory(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "chat_repo_context_files_normalized"
+    repo.mkdir()
+    readme = repo / "README.md"
+    readme.write_text("hello", encoding="utf-8")
+    seen_kwargs: dict[str, Any] = {}
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            seen_kwargs.update(kwargs)
+            return {"assistant_response": "ok", "action_results": []}
+
+    core = _Core()
+    request = MessageRequest(
+        text="summarize",
+        session_id="session_context_files_normalized",
+        directory=str(repo),
+        streaming=False,
+        context_files=["README.md"],
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["response"] == "ok"
+    assert seen_kwargs["context_files"] == [str(readme.resolve())]
 
 
 @pytest.mark.asyncio
@@ -781,6 +868,135 @@ async def test_rest_chat_accepts_local_image_paths_without_temp_cleanup(
     assert image_paths == [str(image)]
     assert seen_kwargs["image_exists_during_process"] is True
     assert image.exists()
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_extracts_inline_file_references_as_context_files(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "chat_repo_inline_context"
+    repo.mkdir()
+    readme = repo / "README.md"
+    readme.write_text("hello", encoding="utf-8")
+    docs_dir = repo / "docs"
+    docs_dir.mkdir()
+    guide = docs_dir / "guide.md"
+    guide.write_text("guide", encoding="utf-8")
+
+    seen_kwargs: dict[str, Any] = {}
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            seen_kwargs.update(kwargs)
+            return {"assistant_response": "ok", "action_results": []}
+
+    core = _Core()
+    request = MessageRequest(
+        text="Check @README.md and @docs/guide.md.",
+        session_id="session_inline_context",
+        directory=str(repo),
+        streaming=False,
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["response"] == "ok"
+    assert seen_kwargs["context_files"] == [
+        str(readme.resolve()),
+        str(guide.resolve()),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_inline_file_references_ignore_non_file_mentions(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "chat_repo_inline_filters"
+    repo.mkdir()
+    ignored = repo / "ignored.md"
+    ignored.write_text("ignore me", encoding="utf-8")
+    included = repo / "included.md"
+    included.write_text("include me", encoding="utf-8")
+
+    seen_kwargs: dict[str, Any] = {}
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            seen_kwargs.update(kwargs)
+            return {"assistant_response": "ok", "action_results": []}
+
+    core = _Core()
+    request = MessageRequest(
+        text=(
+            "Ignore `@ignored.md` and user@example.com and @missing.md, "
+            "but include @included.md"
+        ),
+        session_id="session_inline_filters",
+        directory=str(repo),
+        streaming=False,
+        context_files=["EXPLICIT.md"],
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["response"] == "ok"
+    assert seen_kwargs["context_files"] == ["EXPLICIT.md", str(included.resolve())]
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_inline_file_references_dedupe_equivalent_mentions(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "chat_repo_inline_dedupe"
+    repo.mkdir()
+    file_path = repo / "notes.md"
+    file_path.write_text("notes", encoding="utf-8")
+
+    seen_kwargs: dict[str, Any] = {}
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            seen_kwargs.update(kwargs)
+            return {"assistant_response": "ok", "action_results": []}
+
+    core = _Core()
+    request = MessageRequest(
+        text=(
+            "Use @notes.md and @notes.md, then @./notes.md#L10 and @notes.md?start=10."
+        ),
+        session_id="session_inline_dedupe",
+        directory=str(repo),
+        streaming=False,
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["response"] == "ok"
+    assert seen_kwargs["context_files"] == [str(file_path.resolve())]
 
 
 @pytest.mark.asyncio

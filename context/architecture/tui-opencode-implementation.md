@@ -104,6 +104,7 @@ set to support a fully functional UI.
 
 #### Find / Experimental
 - `find.files({ query, limit, directory })`
+- Progress (2026-03-09): implemented `/find/file` + `/api/v1/find/file` route parity (OpenCode-style `query/dirs/type/limit`), directory+file results with hidden-path ordering, per-directory in-memory index caching for autocomplete bursts, and scoped-directory fallback when explicit `directory` is omitted.
 - `experimental.resource.list()`
 
 #### Permissions / Questions
@@ -675,6 +676,8 @@ For each phase, validate with:
 
 ### Agent modes + variants
 - `session.prompt({ sessionID, agent, model, variant, parts })` -> `core.process()` with mode/variant metadata.
+- Progress (2026-03-09): `/api/v1/chat/message` and websocket chat now include an OpenCode-style inline `@path` fallback parser (matching `ConfigMarkdown.files` behavior) that resolves existing files relative to the bound session directory and appends them to `context_files` when structured `parts` references are absent.
+- Progress (2026-03-09): chat routes now pass the effective session id as `conversation_id` to `core.process`, ensuring session-scoped context file attachments load into the active session even when clients only send `session_id`.
 - Embed `variant`/`mode` in message envelopes and SSE metadata.
 
 ### Reasoning effort / variant
