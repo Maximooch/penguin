@@ -69,6 +69,9 @@ class AnthropicAdapter(BaseAdapter):
             if system_prompt:
                 request_params["system"] = system_prompt.rstrip()
 
+            reasoning_config = self.model_config.get_reasoning_config()
+            self._apply_output_effort(request_params, reasoning_config)
+
             # Make the API call
             safe_params = self._safe_log_content(request_params.copy())
             # logger.warning(f"FINAL REQUEST TO ANTHROPIC: {safe_params}")
@@ -169,6 +172,9 @@ class AnthropicAdapter(BaseAdapter):
             # Add system message if found
             if system_message:
                 request_params["system"] = system_message
+
+            reasoning_config = self.model_config.get_reasoning_config()
+            self._apply_output_effort(request_params, reasoning_config)
 
             # Make sure no trailing whitespace in any message
             self._ensure_no_trailing_whitespace(request_params)
@@ -514,6 +520,40 @@ class AnthropicAdapter(BaseAdapter):
                     await loop.run_in_executor(None, callback, chunk)
         except Exception as exc:
             self.logger.error("Error in Anthropic stream callback: %s", exc)
+
+    def _apply_output_effort(
+        self,
+        request_params: Dict[str, Any],
+        reasoning_config: Optional[Dict[str, Any]],
+    ) -> None:
+        """Apply Anthropic output_config.effort when supported by request config."""
+        if not isinstance(reasoning_config, dict):
+            return
+
+        effort = reasoning_config.get("effort")
+        if not isinstance(effort, str) or not effort.strip():
+            return
+        effort_value = effort.strip().lower()
+        if effort_value not in {"low", "medium", "high", "max"}:
+            return
+
+        extra_body = request_params.get("extra_body")
+        extra_payload: Dict[str, Any]
+        if isinstance(extra_body, dict):
+            extra_payload = dict(extra_body)
+        else:
+            extra_payload = {}
+
+        output_config = extra_payload.get("output_config")
+        output_payload: Dict[str, Any]
+        if isinstance(output_config, dict):
+            output_payload = dict(output_config)
+        else:
+            output_payload = {}
+
+        output_payload["effort"] = effort_value
+        extra_payload["output_config"] = output_payload
+        request_params["extra_body"] = extra_payload
 
     def process_response(self, response: Any) -> Tuple[str, List[Any]]:
         """Process Anthropic API response into standardized format"""

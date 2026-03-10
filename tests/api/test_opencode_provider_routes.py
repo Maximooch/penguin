@@ -426,9 +426,9 @@ async def test_models_dev_catalog_expands_openai_and_anthropic_payloads(
                 "openai": {
                     "id": "openai",
                     "models": {
-                        "gpt-5": {
-                            "id": "gpt-5",
-                            "name": "GPT-5",
+                        "gpt-5.4": {
+                            "id": "gpt-5.4",
+                            "name": "GPT-5.4",
                             "attachment": True,
                             "reasoning": True,
                             "release_date": "2026-01-01T00:00:00+00:00",
@@ -445,9 +445,9 @@ async def test_models_dev_catalog_expands_openai_and_anthropic_payloads(
                 "anthropic": {
                     "id": "anthropic",
                     "models": {
-                        "claude-4.5-sonnet": {
-                            "id": "claude-4.5-sonnet",
-                            "name": "Claude 4.5 Sonnet",
+                        "claude-opus-4-6": {
+                            "id": "claude-opus-4-6",
+                            "name": "Claude Opus 4.6",
                             "attachment": True,
                             "reasoning": True,
                             "release_date": "2026-02-02T00:00:00+00:00",
@@ -497,21 +497,54 @@ async def test_models_dev_catalog_expands_openai_and_anthropic_payloads(
     openai = next(
         item for item in providers_payload["providers"] if item["id"] == "openai"
     )
-    assert "gpt-5" in openai["models"]
-    assert openai["models"]["gpt-5"]["capabilities"]["reasoning"] is True
+    assert "gpt-5.4" in openai["models"]
+    assert openai["models"]["gpt-5.4"]["capabilities"]["reasoning"] is True
+    assert set(openai["models"]["gpt-5.4"]["variants"].keys()) == {
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    }
 
     anthropic = next(
         item for item in providers_payload["providers"] if item["id"] == "anthropic"
     )
-    assert "claude-4.5-sonnet" in anthropic["models"]
-    assert anthropic["models"]["claude-4.5-sonnet"]["cost"]["input"] == 3.0
+    assert "claude-opus-4-6" in anthropic["models"]
+    assert anthropic["models"]["claude-opus-4-6"]["cost"]["input"] == 3.0
+    assert set(anthropic["models"]["claude-opus-4-6"]["variants"].keys()) == {
+        "low",
+        "medium",
+        "high",
+        "max",
+    }
 
     provider_payload = await opencode_provider_list(core=typed_core)
     openai_provider = next(
         item for item in provider_payload["all"] if item["id"] == "openai"
     )
-    assert "gpt-5" in openai_provider["models"]
-    assert openai_provider["models"]["gpt-5"]["reasoning"] is True
+    assert "gpt-5.4" in openai_provider["models"]
+    assert openai_provider["models"]["gpt-5.4"]["reasoning"] is True
+    assert set(openai_provider["models"]["gpt-5.4"]["variants"].keys()) == {
+        "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    }
+
+    anthropic_provider = next(
+        item for item in provider_payload["all"] if item["id"] == "anthropic"
+    )
+    assert "claude-opus-4-6" in anthropic_provider["models"]
+    assert set(anthropic_provider["models"]["claude-opus-4-6"]["variants"].keys()) == {
+        "low",
+        "medium",
+        "high",
+        "max",
+    }
 
 
 @pytest.mark.asyncio

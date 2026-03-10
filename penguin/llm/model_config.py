@@ -48,7 +48,7 @@ class ModelConfig:
     # Reasoning tokens support
     reasoning_enabled: bool = False
     reasoning_effort: Optional[
-        Literal["none", "minimal", "low", "medium", "high", "xhigh"]
+        Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
     ] = None
     reasoning_max_tokens: Optional[int] = None
     reasoning_exclude: bool = False
@@ -291,7 +291,15 @@ class ModelConfig:
         )
         reasoning_max_tokens = os.getenv("PENGUIN_REASONING_MAX_TOKENS")
         reasoning_exclude = os.getenv("PENGUIN_REASONING_EXCLUDE", "").lower() == "true"
-        allowed_efforts = {"none", "minimal", "low", "medium", "high", "xhigh"}
+        allowed_efforts = {
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }
 
         max_output_env = os.getenv("PENGUIN_MAX_OUTPUT_TOKENS") or os.getenv(
             "PENGUIN_MAX_TOKENS"

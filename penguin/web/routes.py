@@ -79,6 +79,7 @@ from penguin.web.services.opencode_provider import (
     provider_oauth_callback,
     remove_provider_auth_record,
     set_provider_auth_record,
+    supported_native_reasoning_variants,
 )
 from penguin.system.execution_context import (
     ExecutionContext,
@@ -576,6 +577,30 @@ def _apply_reasoning_variant_override(
         model_config.reasoning_effort = None
         model_config.reasoning_max_tokens = None
         model_config.reasoning_exclude = False
+        return snapshot
+
+    provider_id = str(getattr(model_config, "provider", "") or "").strip().lower()
+    model_id = str(getattr(model_config, "model", "") or "").strip()
+
+    if provider_id in {"openai", "anthropic"}:
+        supported_native_variants = set(
+            supported_native_reasoning_variants(provider_id, model_id)
+        )
+        if value not in supported_native_variants:
+            logger.debug(
+                "Ignoring unsupported native reasoning variant '%s' for %s/%s (supported=%s)",
+                value,
+                provider_id,
+                model_id,
+                sorted(supported_native_variants),
+            )
+            return None
+
+        model_config.reasoning_enabled = True
+        model_config.reasoning_effort = value
+        model_config.reasoning_max_tokens = None
+        model_config.reasoning_exclude = False
+        model_config.supports_reasoning = True
         return snapshot
 
     if value in _REASONING_EFFORT_VARIANTS:

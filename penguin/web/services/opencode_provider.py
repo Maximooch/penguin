@@ -42,6 +42,10 @@ from penguin.web.services.provider_credentials import (
     remove_provider_credential,
     set_provider_credential,
 )
+from penguin.web.services.reasoning_variants import (
+    native_reasoning_efforts,
+    native_reasoning_variants,
+)
 
 # Compatibility export used by existing tests/patch points.
 httpx = provider_auth_service.httpx
@@ -199,14 +203,31 @@ def _model_variants_payload(
     if not reasoning_enabled:
         return None
 
-    if provider_id.strip().lower() == "openrouter":
+    provider_value = provider_id.strip().lower()
+
+    if provider_value == "openrouter":
         return _openrouter_reasoning_variants(model_id)
+
+    if provider_value in {"openai", "anthropic"}:
+        return native_reasoning_variants(
+            provider_value,
+            model_id,
+            reasoning_enabled=True,
+        )
 
     return {
         "low": {"reasoning": {"effort": "low"}},
         "medium": {"reasoning": {"effort": "medium"}},
         "high": {"reasoning": {"effort": "high"}},
     }
+
+
+def supported_native_reasoning_variants(
+    provider_id: str,
+    model_id: str,
+) -> tuple[str, ...]:
+    """Expose conservative native reasoning efforts for request validation."""
+    return native_reasoning_efforts(provider_id, model_id)
 
 
 def _openrouter_catalog_models(api_key: str | None = None) -> dict[str, dict[str, Any]]:
