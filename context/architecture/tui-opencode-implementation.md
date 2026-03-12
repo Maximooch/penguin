@@ -629,9 +629,10 @@ For each phase, validate with:
     - [x] I2.b Add script surface updates in `pyproject.toml` (`penguin-cli`, `ptui`) and retire `penguin-opencode` naming in user-facing docs/entrypoints.
     - [x] I2.c Add a `tui` optional dependency group and runtime preflight checks for TUI launcher prerequisites.
     - [x] I2.d Implement fail-fast UX for missing TUI runtime with actionable remediation (`pip install "penguin-ai[tui]"`) and explicit `penguin-cli` alternative.
-    - [ ] I2.e Preserve developer override path (`PENGUIN_OPENCODE_DIR`) while introducing sidecar bootstrap/cache/checksum flow for non-dev installs.
+    - [~] I2.e Preserve developer override path (`PENGUIN_OPENCODE_DIR`) while introducing sidecar bootstrap/cache/checksum flow for non-dev installs.
+      - Progress (2026-03-11): launcher now keeps local-source override behavior and adds sidecar bootstrap with cache + checksum verification (`~/.cache/penguin/tui` by default, release URL overridable via env), enabling non-dev TUI runs without Bun/global OpenCode.
     - [~] I2.f Add startup/directory coherence regression tests covering dispatcher routing, web autostart health checks, and session-bound execution roots.
-      - Progress (2026-03-11): added dispatcher routing tests (`tests/test_cli_entrypoint_dispatcher.py`); web autostart + session-bound directory coherence regression coverage remains open.
+      - Progress (2026-03-11): added dispatcher routing tests (`tests/test_cli_entrypoint_dispatcher.py`) and launcher startup regressions (`tests/test_opencode_launcher.py`) for web autostart success/failure and project-directory environment coherence (`PENGUIN_CWD`/`PENGUIN_PROJECT_ROOT`/`PWD`). Session-bound root behavior through full `/session` request flow remains open.
 - [ ] I3. Finish Penguin branding pass in Penguin mode.
   - Owner: TUI home/status/footer copy + theme/assets.
   - Acceptance: no confusing OpenCode-specific branding in Penguin mode (logo/footer/help text), while preserving upstream defaults outside Penguin mode.

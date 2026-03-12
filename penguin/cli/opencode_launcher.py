@@ -8,18 +8,27 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import hashlib
+import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 import time
+import zipfile
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 from urllib.error import URLError
 from urllib.parse import urlparse, urlunparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 LOCAL_HOSTS = {"", "localhost", "127.0.0.1", "0.0.0.0", "::1"}
+DEFAULT_TUI_RELEASE_URL = (
+    "https://api.github.com/repos/anomalyco/opencode/releases/latest"
+)
 
 
 def _normalize_base_url(raw_url: str) -> str:
@@ -246,6 +255,287 @@ def _find_local_opencode_dir() -> Path | None:
     return None
 
 
+def _sidecar_binary_name() -> str:
+    return "opencode.exe" if sys.platform.startswith("win") else "opencode"
+
+
+def _sidecar_cache_root() -> Path:
+    raw = os.getenv("PENGUIN_TUI_CACHE_DIR", "").strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return Path.home() / ".cache" / "penguin" / "tui"
+
+
+def _sidecar_release_url() -> str:
+    raw = os.getenv("PENGUIN_TUI_RELEASE_URL", "").strip()
+    return raw or DEFAULT_TUI_RELEASE_URL
+
+
+def _sidecar_platform_candidates() -> list[str]:
+    machine = platform.machine().strip().lower()
+    if machine in {"amd64", "x86_64", "x64"}:
+        arch = "x64"
+    elif machine in {"arm64", "aarch64"}:
+        arch = "arm64"
+    else:
+        arch = machine
+
+    if sys.platform == "darwin":
+        if arch == "arm64":
+            return ["opencode-darwin-arm64.zip"]
+        if arch == "x64":
+            return ["opencode-darwin-x64.zip", "opencode-darwin-x64-baseline.zip"]
+
+    if sys.platform.startswith("linux"):
+        if arch == "arm64":
+            return ["opencode-linux-arm64.tar.gz", "opencode-linux-arm64-musl.tar.gz"]
+        if arch == "x64":
+            return [
+                "opencode-linux-x64.tar.gz",
+                "opencode-linux-x64-musl.tar.gz",
+                "opencode-linux-x64-baseline.tar.gz",
+                "opencode-linux-x64-baseline-musl.tar.gz",
+            ]
+
+    if sys.platform.startswith("win"):
+        if arch == "x64":
+            return ["opencode-windows-x64.zip", "opencode-windows-x64-baseline.zip"]
+
+    raise RuntimeError(
+        "Unsupported platform for Penguin TUI sidecar bootstrap: "
+        f"{sys.platform}/{machine}"
+    )
+
+
+def _read_json_url(url: str, timeout_seconds: float = 20.0) -> dict[str, Any]:
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "penguin-tui-launcher",
+        },
+    )
+    with urlopen(request, timeout=timeout_seconds) as response:
+        payload = response.read().decode("utf-8")
+    data = json.loads(payload)
+    if isinstance(data, dict):
+        return data
+    raise RuntimeError(f"Invalid JSON payload from sidecar release URL: {url}")
+
+
+def _download_binary_asset(
+    url: str,
+    destination: Path,
+    timeout_seconds: float = 120.0,
+) -> None:
+    request = Request(url, headers={"User-Agent": "penguin-tui-launcher"})
+    with urlopen(request, timeout=timeout_seconds) as response:
+        payload = response.read()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(payload)
+
+
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _verify_asset_digest(archive_path: Path, digest: str | None) -> None:
+    if not digest:
+        return
+
+    value = str(digest).strip()
+    if not value:
+        return
+
+    expected = value.split(":", 1)[1] if ":" in value else value
+    actual = _sha256_file(archive_path)
+    if actual.lower() != expected.lower():
+        raise RuntimeError(
+            "Downloaded Penguin TUI sidecar failed checksum verification "
+            f"(expected={expected}, actual={actual})"
+        )
+
+
+def _extract_archive(archive_path: Path, destination: Path) -> None:
+    destination.mkdir(parents=True, exist_ok=True)
+    lower_name = archive_path.name.lower()
+    if lower_name.endswith(".zip"):
+        with zipfile.ZipFile(archive_path, "r") as archive:
+            for member in archive.namelist():
+                target = (destination / member).resolve()
+                if (
+                    destination.resolve() not in target.parents
+                    and target != destination.resolve()
+                ):
+                    raise RuntimeError(f"Unsafe path in sidecar zip archive: {member}")
+            archive.extractall(destination)
+        return
+
+    if lower_name.endswith(".tar.gz") or lower_name.endswith(".tgz"):
+        with tarfile.open(archive_path, "r:gz") as archive:
+            base = destination.resolve()
+            for member in archive.getmembers():
+                target = (destination / member.name).resolve()
+                if base not in target.parents and target != base:
+                    raise RuntimeError(
+                        f"Unsafe path in sidecar tar archive: {member.name}"
+                    )
+            archive.extractall(destination)
+        return
+
+    raise RuntimeError(f"Unsupported sidecar archive format: {archive_path.name}")
+
+
+def _locate_extracted_binary(search_root: Path) -> Path | None:
+    binary_name = _sidecar_binary_name()
+    exact = search_root / binary_name
+    if exact.exists() and exact.is_file():
+        return exact
+
+    for candidate in search_root.rglob(binary_name):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _read_cached_sidecar_marker(cache_root: Path) -> Path | None:
+    marker = cache_root / "current.json"
+    if not marker.exists():
+        return None
+
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    raw_path = data.get("binary_path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+    binary_path = Path(raw_path).expanduser().resolve()
+    if not binary_path.exists() or not binary_path.is_file():
+        return None
+    return binary_path
+
+
+def _write_cached_sidecar_marker(
+    cache_root: Path,
+    *,
+    binary_path: Path,
+    release_tag: str,
+    asset_name: str,
+) -> None:
+    marker = cache_root / "current.json"
+    payload = {
+        "binary_path": str(binary_path),
+        "release_tag": release_tag,
+        "asset_name": asset_name,
+    }
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _select_release_asset(release: dict[str, Any]) -> dict[str, Any]:
+    assets_raw = release.get("assets")
+    assets = assets_raw if isinstance(assets_raw, list) else []
+    candidates = _sidecar_platform_candidates()
+
+    for wanted in candidates:
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            if str(asset.get("name", "")).strip() == wanted:
+                return asset
+
+    available = [
+        str(asset.get("name", "")).strip()
+        for asset in assets
+        if isinstance(asset, dict) and asset.get("name")
+    ]
+    raise RuntimeError(
+        "No compatible Penguin TUI sidecar asset found for platform "
+        f"{sys.platform}/{platform.machine()}. Available assets: {available}"
+    )
+
+
+def _resolve_sidecar_binary() -> Path:
+    explicit_path = os.getenv("PENGUIN_TUI_BIN_PATH", "").strip()
+    if explicit_path:
+        candidate = Path(explicit_path).expanduser().resolve()
+        if candidate.exists() and candidate.is_file():
+            return candidate
+        raise RuntimeError(
+            f"Configured PENGUIN_TUI_BIN_PATH does not exist: {candidate}"
+        )
+
+    cache_root = _sidecar_cache_root()
+    cached = _read_cached_sidecar_marker(cache_root)
+    if cached is not None:
+        return cached
+
+    release_url = _sidecar_release_url()
+    release = _read_json_url(release_url)
+    asset = _select_release_asset(release)
+
+    asset_name = str(asset.get("name", "")).strip()
+    asset_url = str(asset.get("browser_download_url", "")).strip()
+    if not asset_name or not asset_url:
+        raise RuntimeError("Sidecar release metadata is missing asset download fields")
+
+    release_tag = str(release.get("tag_name", "latest")).strip() or "latest"
+    install_root = cache_root / release_tag / asset_name
+    binary_path = install_root / "bin" / _sidecar_binary_name()
+    if binary_path.exists() and binary_path.is_file():
+        _write_cached_sidecar_marker(
+            cache_root,
+            binary_path=binary_path,
+            release_tag=release_tag,
+            asset_name=asset_name,
+        )
+        return binary_path
+
+    tmp_root = cache_root / ".tmp"
+    tmp_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="sidecar-", dir=str(tmp_root)) as tmp_dir:
+        tmp_dir_path = Path(tmp_dir)
+        archive_path = tmp_dir_path / asset_name
+        _download_binary_asset(asset_url, archive_path)
+        _verify_asset_digest(
+            archive_path, asset.get("digest") if isinstance(asset, dict) else None
+        )
+
+        extracted_dir = tmp_dir_path / "extract"
+        _extract_archive(archive_path, extracted_dir)
+        extracted_binary = _locate_extracted_binary(extracted_dir)
+        if extracted_binary is None:
+            raise RuntimeError(
+                "Downloaded Penguin TUI sidecar archive did not contain an executable"
+            )
+
+        binary_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(extracted_binary, binary_path)
+
+    if not sys.platform.startswith("win"):
+        mode = binary_path.stat().st_mode
+        binary_path.chmod(mode | 0o755)
+
+    _write_cached_sidecar_marker(
+        cache_root,
+        binary_path=binary_path,
+        release_tag=release_tag,
+        asset_name=asset_name,
+    )
+    return binary_path
+
+
 def _build_opencode_command(
     project_dir: Path,
     base_url: str,
@@ -283,6 +573,16 @@ def _build_opencode_command(
         cmd.extend(extra)
         return cmd, local_dir
 
+    try:
+        sidecar_bin = _resolve_sidecar_binary()
+        cmd = [str(sidecar_bin), str(project_dir)]
+        if not has_url_arg:
+            cmd.extend(["--url", base_url])
+        cmd.extend(extra)
+        return cmd, None
+    except RuntimeError as exc:
+        sidecar_error = str(exc)
+
     if use_global_opencode:
         opencode_bin = shutil.which("opencode")
         if opencode_bin:
@@ -295,7 +595,8 @@ def _build_opencode_command(
         "Penguin TUI runtime is not available. Install TUI support with "
         "'pip install \"penguin-ai[tui]\"'. For development, set "
         "PENGUIN_OPENCODE_DIR to your local 'penguin-tui/packages/opencode' "
-        "path, or use --use-global-opencode with an installed 'opencode' binary."
+        "path, or use --use-global-opencode with an installed 'opencode' binary. "
+        f"Sidecar bootstrap error: {sidecar_error}"
     )
 
 

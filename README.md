@@ -306,8 +306,9 @@ penguin
 ```
 
 Notes for Penguin TUI launcher (`penguin` / `ptui`):
-- It prefers Penguin's local OpenCode sources (`penguin-tui/packages/opencode`) so you run the Penguin-patched TUI, not a generic global OpenCode build.
-- If you run from outside the Penguin repo, set `PENGUIN_OPENCODE_DIR` to that local path, for example:
+- It prefers Penguin's local TUI sources (`penguin-tui/packages/opencode`) when available.
+- If local sources are unavailable, it bootstraps a cached TUI sidecar binary with checksum verification under `~/.cache/penguin/tui`.
+- If you run from outside the Penguin repo and want to force local source mode, set `PENGUIN_OPENCODE_DIR` to that path, for example:
 
 ```bash
 export PENGUIN_OPENCODE_DIR="/path/to/penguin/penguin-tui/packages/opencode"
