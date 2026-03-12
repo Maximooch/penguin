@@ -54,6 +54,7 @@ Rationale:
 - `<execute>` action now routes through permission-gated `code_execution` tool checks (closing direct IPython bypass path in plan mode).
 - Engine now appends a transient plan-mode system notice to LLM request messages when `agent_mode=plan`, so the model is explicitly informed of read-only constraints.
 - Part-event action-tag filtering now treats backtick/escaped tag literals as display text, preventing response truncation when assistants mention examples like ``<spawn_sub_agent>`` inline.
+- OpenAI OAuth subscription routing now works end-to-end against the ChatGPT Codex backend with explicit diagnostics (`diag_id` + upstream trace headers), requested-model preservation (for example `gpt-5.4`), and no silent fallback downgrade.
 
 ## Audit: TUI Expectations (from `penguin-tui`)
 
@@ -469,9 +470,11 @@ For each phase, validate with:
   - Progress (2026-02-19): starting Phase C implementation with a dedicated Penguin provider-auth store and OpenCode-compatible config/provider endpoints.
     - Progress (2026-02-20): wired `/config`, `/config/providers`, `/provider`, `/provider/auth`, `/auth/{providerID}`, and `/provider/{providerID}/oauth/*` in `penguin/web/routes.py`; added `/api/v1/*` aliases; added route + service tests (`tests/api/test_opencode_provider_routes.py`, `tests/api/test_opencode_provider_service.py`); switched Penguin-mode TUI bootstrap to consume backend config/provider/auth endpoints first with fallback.
     - Progress (2026-02-21): refactored provider/auth backend into general-purpose services (`provider_catalog.py`, `provider_credentials.py`, `provider_auth.py`) and reduced `opencode_provider.py` to compatibility mapping wrappers; credentials default to user-global `~/.config/penguin/providers/credentials.json` (0600, atomic writes) with legacy-path compatibility.
-    - Progress (2026-02-21): OpenAI device OAuth client id is now overridable via `PENGUIN_OPENAI_OAUTH_CLIENT_ID` with compatibility fallback to current OpenCode/Codex client id while first-party Penguin registration is pending.
-    - Progress (2026-03-11): queued auth-contract alignment refactor before additional OpenAI OAuth subscription routing work so method ordering and diagnostics are stabilized first.
-    - Progress (2026-03-11): auth methods now follow OpenCode ordering (`browser`, `headless`, `api`), OAuth route payloads require explicit `method`, and provider auth emits stage-rich errors for authorize/poll/token/callback failures.
+  - Progress (2026-02-21): OpenAI device OAuth client id is now overridable via `PENGUIN_OPENAI_OAUTH_CLIENT_ID` with compatibility fallback to current OpenCode/Codex client id while first-party Penguin registration is pending.
+  - Progress (2026-03-11): queued auth-contract alignment refactor before additional OpenAI OAuth subscription routing work so method ordering and diagnostics are stabilized first.
+  - Progress (2026-03-11): auth methods now follow OpenCode ordering (`browser`, `headless`, `api`), OAuth route payloads require explicit `method`, and provider auth emits stage-rich errors for authorize/poll/token/callback failures.
+  - Progress (2026-03-11): OAuth callback now applies credentials to runtime immediately; OpenAI OAuth requests now route through the Codex backend with required payload contract updates (system prompt to top-level `instructions`, no `system` role in `input`, assistant history mapped as `output_text`, stream transport on this path, and `max_output_tokens` omitted for Codex-compatibility).
+  - Progress (2026-03-11): OpenAI OAuth diagnostics now include per-request IDs (`oaoc_*`), normalized failure categories, and upstream trace headers; user-visible failures stay concise with a diagnostic ID while server logs retain full details.
 - [~] C4. Expand provider coverage parity beyond OpenRouter (scoped first pass: OpenAI + Anthropic).
   - Owner: `penguin/web/services/provider_catalog.py`, `penguin/web/services/opencode_provider.py`, model-loading path in `core.py`/`model_config.py`.
   - Acceptance:
@@ -617,6 +620,18 @@ For each phase, validate with:
 - [ ] I2. Ensure TUI/server directory coherence when launched from different working dirs.
   - Owner: launcher/runtime directory handshake + immutable session directory binding.
   - Acceptance: tool execution roots match active project immediately, without corrective follow-up commands.
+  - Decision (2026-03-11): use a command dispatcher surface where `penguin` defaults to Penguin TUI, `ptui` is a direct TUI alias, and `penguin-cli` is the explicit headless entrypoint for scripts/automation.
+  - Decision (2026-03-11): TUI runtime is opt-in via `pip install "penguin-ai[tui]"`; base installs remain headless/container-friendly.
+  - Decision (2026-03-11): phase-1 behavior is fail-fast when TUI runtime is unavailable (clear install hint + non-zero exit); automatic fallback to headless CLI is deferred until after startup reliability validation.
+  - Scope guard (2026-03-11): keep `litellm` and `ollama` in base dependencies for now; dependency slimming is tracked separately and is not a blocker for I2 startup work.
+  - I2 execution checklist (planned):
+    - [x] I2.a Add a `penguin` dispatcher entrypoint with deterministic routing (`tui` default, known headless commands/flags pass through to CLI).
+    - [x] I2.b Add script surface updates in `pyproject.toml` (`penguin-cli`, `ptui`) and retire `penguin-opencode` naming in user-facing docs/entrypoints.
+    - [x] I2.c Add a `tui` optional dependency group and runtime preflight checks for TUI launcher prerequisites.
+    - [x] I2.d Implement fail-fast UX for missing TUI runtime with actionable remediation (`pip install "penguin-ai[tui]"`) and explicit `penguin-cli` alternative.
+    - [ ] I2.e Preserve developer override path (`PENGUIN_OPENCODE_DIR`) while introducing sidecar bootstrap/cache/checksum flow for non-dev installs.
+    - [~] I2.f Add startup/directory coherence regression tests covering dispatcher routing, web autostart health checks, and session-bound execution roots.
+      - Progress (2026-03-11): added dispatcher routing tests (`tests/test_cli_entrypoint_dispatcher.py`); web autostart + session-bound directory coherence regression coverage remains open.
 - [ ] I3. Finish Penguin branding pass in Penguin mode.
   - Owner: TUI home/status/footer copy + theme/assets.
   - Acceptance: no confusing OpenCode-specific branding in Penguin mode (logo/footer/help text), while preserving upstream defaults outside Penguin mode.

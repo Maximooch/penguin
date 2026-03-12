@@ -82,6 +82,15 @@ web = [
     "python-multipart>=0.0.7",
 ]
 
+# Penguin TUI runtime (includes local web server dependencies)
+tui = [
+    "fastapi>=0.68.0,<1.0",
+    "uvicorn>=0.15.0",
+    "websockets>=10.0",
+    "jinja2>=3.0.0",
+    "python-multipart>=0.0.7",
+]
+
 # MCP client/server (install when using MCP features)
 mcp = [
     "pyjwt[crypto]>=2.8.0",
@@ -159,7 +168,7 @@ test = [
 
 # Full installation (everything)
 all = [
-    "penguin-ai[web,memory_lance,memory_faiss,memory_chroma,llm_transformers,llm_ollama,browser,pydoll]"
+    "penguin-ai[tui,web,memory_lance,memory_faiss,memory_chroma,llm_transformers,llm_ollama,browser,pydoll]"
 ]
 
 [project.urls]
@@ -169,10 +178,11 @@ Documentation = "https://penguin-rho.vercel.app"
 "Bug Tracker" = "https://github.com/Maximooch/penguin/issues"
 
 [project.scripts]
-penguin = "penguin.cli.cli:app"
+penguin = "penguin.cli.entrypoint:main"
+penguin-cli = "penguin.cli.entrypoint:main_cli"
+ptui = "penguin.cli.entrypoint:main_tui"
 penguin-web = "penguin.web.server:main"
-penguin-opencode = "penguin.cli.opencode_launcher:main"
-penguin-tui = "penguin.cli.opencode_launcher:main"
+penguin-tui = "penguin.cli.entrypoint:main_tui"
 penguin-tui-proto = "penguin.penguin.cli.tui_prototype_mock:main"
 
 [tool.setuptools.packages.find]

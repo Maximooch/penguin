@@ -1,7 +1,7 @@
-"""Launch the OpenCode TUI against Penguin with sane local defaults.
+"""Launch the Penguin TUI against Penguin web with sane local defaults.
 
-This launcher is intended for development workflows where Penguin web and the
-OpenCode TUI are run together from a terminal.
+This launcher is intended for local workflows where Penguin web and the
+Penguin TUI are run together from a terminal.
 """
 
 from __future__ import annotations
@@ -292,11 +292,29 @@ def _build_opencode_command(
             return cmd, None
 
     raise RuntimeError(
-        "Unable to locate Penguin OpenCode TUI sources. Set PENGUIN_OPENCODE_DIR "
-        "to your local 'penguin-tui/packages/opencode' path, or install Penguin "
-        "as an editable tool. Use --use-global-opencode only if you explicitly "
-        "want your global OpenCode binary."
+        "Penguin TUI runtime is not available. Install TUI support with "
+        "'pip install \"penguin-ai[tui]\"'. For development, set "
+        "PENGUIN_OPENCODE_DIR to your local 'penguin-tui/packages/opencode' "
+        "path, or use --use-global-opencode with an installed 'opencode' binary."
     )
+
+
+def _launcher_prog_name() -> str:
+    """Return the active executable name for argparse help output."""
+    script_name = Path(sys.argv[0]).name.strip()
+    return script_name or "penguin"
+
+
+def _ensure_web_runtime_available() -> None:
+    """Fail fast when local web autostart prerequisites are missing."""
+    try:
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
+    except Exception as exc:
+        raise RuntimeError(
+            "Penguin web autostart requires web dependencies. "
+            "Install with 'pip install \"penguin-ai[tui]\"' (or [web]) and retry."
+        ) from exc
 
 
 def _parse_args(
@@ -311,8 +329,8 @@ def _parse_args(
         Parsed known args and unknown pass-through args.
     """
     parser = argparse.ArgumentParser(
-        prog="penguin-opencode",
-        description="Launch OpenCode TUI with Penguin web auto-start.",
+        prog=_launcher_prog_name(),
+        description="Launch Penguin TUI with Penguin web auto-start.",
     )
     parser.add_argument(
         "project",
@@ -383,6 +401,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     should_try_web_start = _is_local_url(base_url) and not args.no_web_autostart
     if not _is_server_running(base_url):
         if should_try_web_start:
+            try:
+                _ensure_web_runtime_available()
+            except RuntimeError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
             print(f"Starting Penguin web server at {base_url}...", file=sys.stderr)
             server_proc = _start_web_server(base_url, env)
             atexit.register(_stop_process, server_proc)
