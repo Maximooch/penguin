@@ -31,6 +31,13 @@ from .adapters import get_adapter  # Keep for native preference
 logger = logging.getLogger(__name__)
 
 
+def _log_error(message: str, *args: Any, exc_info: bool = False) -> None:
+    logger.error(message, *args, exc_info=exc_info)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.error(message, *args, exc_info=exc_info)
+
+
 # ==============================================================================
 # Connection Pool Management for Parallel LLM Calls
 # ==============================================================================
@@ -429,6 +436,66 @@ class APIClient:
 
         return processed
 
+    def _extract_diagnostic_id(self, message: str) -> Optional[str]:
+        marker = "diag_id="
+        start = message.find(marker)
+        if start < 0:
+            return None
+
+        raw = message[start + len(marker) :]
+        chars: List[str] = []
+        for char in raw:
+            if char.isalnum() or char in {"_", "-"}:
+                chars.append(char)
+                continue
+            break
+
+        value = "".join(chars).strip()
+        return value or None
+
+    def _classify_handler_exception(self, error: Exception) -> str:
+        if isinstance(
+            error, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)
+        ):
+            return "timeout"
+        if isinstance(error, httpx.HTTPError):
+            return "network"
+
+        detail = str(error).lower()
+        if "reauth required" in detail or "missing access token" in detail:
+            return "auth"
+        if "access token expired" in detail:
+            return "auth"
+        if "status=401" in detail or "status=403" in detail:
+            return "auth"
+        if "status=400" in detail or "status=404" in detail or "status=422" in detail:
+            return "upstream_request"
+        if "status=429" in detail:
+            return "rate_limit"
+        if "status=500" in detail or "status=502" in detail or "status=503" in detail:
+            return "upstream_unavailable"
+        if "request_timeout" in detail or "stream_timeout" in detail:
+            return "timeout"
+        return "runtime"
+
+    def _format_user_error_message(self, *, category: str, diag_id: str) -> str:
+        if category == "auth":
+            reason = "Provider authentication failed. Reconnect and retry"
+        elif category == "timeout":
+            reason = "LLM request timed out"
+        elif category == "network":
+            reason = "LLM network request failed"
+        elif category == "upstream_request":
+            reason = "LLM upstream rejected the request"
+        elif category == "rate_limit":
+            reason = "LLM upstream rate-limited this request"
+        elif category == "upstream_unavailable":
+            reason = "LLM upstream is unavailable"
+        else:
+            reason = "LLM request failed"
+
+        return f"Error: {reason}. Diagnostic ID: {diag_id}."
+
     async def get_response(
         self,
         messages: List[Dict[str, Any]],
@@ -580,10 +647,24 @@ class APIClient:
             # --- End Ideal Flow ---
 
         except Exception as e:
-            error_message = f"LLM API call failed via {type(self.client_handler).__name__}: {str(e)}"
-            self.logger.error(error_message, exc_info=True)
-            # Return the error message to the user interface
-            return f"Error: {error_message}"
+            handler_name = type(self.client_handler).__name__
+            upstream_diag_id = self._extract_diagnostic_id(str(e))
+            diag_id = upstream_diag_id or f"llm_{os.urandom(5).hex()}"
+            category = self._classify_handler_exception(e)
+
+            _log_error(
+                "[Request:%s] llm.handler.failure diag_id=%s category=%s "
+                "handler=%s provider=%s model=%s detail=%s",
+                request_id_api,
+                diag_id,
+                category,
+                handler_name,
+                getattr(self.model_config, "provider", "unknown"),
+                getattr(self.model_config, "model", "unknown"),
+                str(e),
+                exc_info=True,
+            )
+            return self._format_user_error_message(category=category, diag_id=diag_id)
 
     # --- Methods below might be simplified or removed if get_response handles all ---
 

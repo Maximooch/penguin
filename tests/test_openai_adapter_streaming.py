@@ -106,8 +106,12 @@ class _DummyOpenAIClient:
 
 
 @pytest.mark.asyncio
-async def test_openai_adapter_streaming_ignores_stream_options() -> None:
+async def test_openai_adapter_streaming_ignores_stream_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Ensure Chat Completions `stream_options` is not forwarded to Responses API."""
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
 
     model_config = ModelConfig(
         model="gpt-5.2",
@@ -131,7 +135,12 @@ async def test_openai_adapter_streaming_ignores_stream_options() -> None:
 
 
 @pytest.mark.asyncio
-async def test_openai_adapter_streaming_emits_callback_for_final_only_text() -> None:
+async def test_openai_adapter_streaming_emits_callback_for_final_only_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+
     model_config = ModelConfig(
         model="gpt-5.2",
         provider="openai",
@@ -159,9 +168,12 @@ async def test_openai_adapter_streaming_emits_callback_for_final_only_text() -> 
 
 
 @pytest.mark.asyncio
-async def test_openai_adapter_streaming_maps_reasoning_summary_to_reasoning_chunks() -> (
-    None
-):
+async def test_openai_adapter_streaming_maps_reasoning_summary_to_reasoning_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+
     model_config = ModelConfig(
         model="gpt-5.4",
         provider="openai",

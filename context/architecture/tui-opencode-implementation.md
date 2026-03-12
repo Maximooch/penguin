@@ -460,13 +460,18 @@ For each phase, validate with:
   - Acceptance: endpoint set supports OpenRouter API-key auth and OpenAI/ChatGPT Pro OAuth handshake flow with stable payloads.
   - Finalization note: current OpenAI device OAuth uses a compatibility client id mirrored from OpenCode; one of the last Phase C steps is to make client id fully Penguin-owned/configurable (env override first, then first-party registration when available).
   - C3 closeout checklist:
+    - [x] Decision (2026-03-11): immediately match OpenCode method ordering for OpenAI auth methods (`0=browser`, `1=headless`, `2=api`) even though prior Penguin behavior used `0=headless`.
+    - [x] Refactor provider auth flow shape to OpenCode-style authorize/pending/callback orchestration with provider+method validation.
+    - [x] Add loud stage-tagged OAuth diagnostics/errors (no implicit fallback behavior that hides method/order bugs).
     - [x] Add env override for OAuth client id (`PENGUIN_OPENAI_OAUTH_CLIENT_ID`).
     - [ ] Register Penguin first-party OpenAI OAuth client id and switch default to Penguin-owned id.
     - [ ] Keep compatibility fallback id only as an explicit fallback path (not the default) after rollout validation.
   - Progress (2026-02-19): starting Phase C implementation with a dedicated Penguin provider-auth store and OpenCode-compatible config/provider endpoints.
-   - Progress (2026-02-20): wired `/config`, `/config/providers`, `/provider`, `/provider/auth`, `/auth/{providerID}`, and `/provider/{providerID}/oauth/*` in `penguin/web/routes.py`; added `/api/v1/*` aliases; added route + service tests (`tests/api/test_opencode_provider_routes.py`, `tests/api/test_opencode_provider_service.py`); switched Penguin-mode TUI bootstrap to consume backend config/provider/auth endpoints first with fallback.
-   - Progress (2026-02-21): refactored provider/auth backend into general-purpose services (`provider_catalog.py`, `provider_credentials.py`, `provider_auth.py`) and reduced `opencode_provider.py` to compatibility mapping wrappers; credentials default to user-global `~/.config/penguin/providers/credentials.json` (0600, atomic writes) with legacy-path compatibility.
-   - Progress (2026-02-21): OpenAI device OAuth client id is now overridable via `PENGUIN_OPENAI_OAUTH_CLIENT_ID` with compatibility fallback to current OpenCode/Codex client id while first-party Penguin registration is pending.
+    - Progress (2026-02-20): wired `/config`, `/config/providers`, `/provider`, `/provider/auth`, `/auth/{providerID}`, and `/provider/{providerID}/oauth/*` in `penguin/web/routes.py`; added `/api/v1/*` aliases; added route + service tests (`tests/api/test_opencode_provider_routes.py`, `tests/api/test_opencode_provider_service.py`); switched Penguin-mode TUI bootstrap to consume backend config/provider/auth endpoints first with fallback.
+    - Progress (2026-02-21): refactored provider/auth backend into general-purpose services (`provider_catalog.py`, `provider_credentials.py`, `provider_auth.py`) and reduced `opencode_provider.py` to compatibility mapping wrappers; credentials default to user-global `~/.config/penguin/providers/credentials.json` (0600, atomic writes) with legacy-path compatibility.
+    - Progress (2026-02-21): OpenAI device OAuth client id is now overridable via `PENGUIN_OPENAI_OAUTH_CLIENT_ID` with compatibility fallback to current OpenCode/Codex client id while first-party Penguin registration is pending.
+    - Progress (2026-03-11): queued auth-contract alignment refactor before additional OpenAI OAuth subscription routing work so method ordering and diagnostics are stabilized first.
+    - Progress (2026-03-11): auth methods now follow OpenCode ordering (`browser`, `headless`, `api`), OAuth route payloads require explicit `method`, and provider auth emits stage-rich errors for authorize/poll/token/callback failures.
 - [~] C4. Expand provider coverage parity beyond OpenRouter (scoped first pass: OpenAI + Anthropic).
   - Owner: `penguin/web/services/provider_catalog.py`, `penguin/web/services/opencode_provider.py`, model-loading path in `core.py`/`model_config.py`.
   - Acceptance:

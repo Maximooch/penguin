@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from penguin.web.services import provider_credentials
 
@@ -79,3 +82,35 @@ def test_apply_oauth_credentials_updates_openai_runtime(monkeypatch) -> None:
     assert os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] == "oauth-access-token"
     assert os.environ["OPENAI_ACCOUNT_ID"] == "acct_987"
     assert core.model_config.api_key == "oauth-access-token"
+
+
+def test_oauth_record_refresh_window_helpers() -> None:
+    now_ms = 1_700_000_000_000
+    record = {
+        "type": "oauth",
+        "access": "access-token",
+        "refresh": "refresh-token",
+        "expires": now_ms + 1_000,
+    }
+
+    assert provider_credentials.oauth_record_expired(record, now_ms=now_ms) is False
+    assert (
+        provider_credentials.oauth_record_needs_refresh(
+            record,
+            now_ms=now_ms,
+            refresh_window_ms=5_000,
+        )
+        is True
+    )
+
+    expired = dict(record)
+    expired["expires"] = now_ms - 1
+    assert provider_credentials.oauth_record_expired(expired, now_ms=now_ms) is True
+    assert (
+        provider_credentials.oauth_record_needs_refresh(
+            expired,
+            now_ms=now_ms,
+            refresh_window_ms=0,
+        )
+        is True
+    )

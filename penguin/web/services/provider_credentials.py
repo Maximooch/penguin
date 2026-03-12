@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -14,6 +15,7 @@ logger = logging.getLogger(__name__)
 _CREDENTIALS_STORE_VERSION = 1
 _STORE_ENV = "PENGUIN_PROVIDER_CREDENTIALS_STORE"
 _LEGACY_STORE_ENV = "PENGUIN_PROVIDER_AUTH_STORE"
+_DEFAULT_OAUTH_REFRESH_WINDOW_MS = 5 * 60 * 1000
 
 _CREDENTIALS_LOCK = RLock()
 
@@ -179,6 +181,41 @@ def get_provider_credential(provider_id: str) -> dict[str, Any] | None:
     if not pid:
         return None
     return get_provider_credentials().get(pid)
+
+
+def oauth_record_expired(
+    credential_record: dict[str, Any],
+    *,
+    now_ms: int | None = None,
+) -> bool:
+    """Return whether an OAuth credential record is already expired."""
+    if credential_record.get("type") != "oauth":
+        return False
+    expires = credential_record.get("expires")
+    if not isinstance(expires, int):
+        return False
+    current_ms = now_ms if isinstance(now_ms, int) else int(time.time() * 1000)
+    return expires <= current_ms
+
+
+def oauth_record_needs_refresh(
+    credential_record: dict[str, Any],
+    *,
+    now_ms: int | None = None,
+    refresh_window_ms: int = _DEFAULT_OAUTH_REFRESH_WINDOW_MS,
+) -> bool:
+    """Return whether an OAuth credential should be proactively refreshed."""
+    if credential_record.get("type") != "oauth":
+        return False
+    expires = credential_record.get("expires")
+    if not isinstance(expires, int):
+        return False
+
+    current_ms = now_ms if isinstance(now_ms, int) else int(time.time() * 1000)
+    window_ms = refresh_window_ms if isinstance(refresh_window_ms, int) else 0
+    if window_ms < 0:
+        window_ms = 0
+    return expires <= current_ms + window_ms
 
 
 def set_provider_credential(provider_id: str, payload: dict[str, Any]) -> None:

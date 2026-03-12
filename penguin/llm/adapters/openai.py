@@ -5,17 +5,54 @@ import json
 import logging
 import mimetypes
 import os
+import time
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import httpx  # type: ignore
 import tiktoken  # type: ignore
 from openai import AsyncOpenAI  # type: ignore
 
-from ..model_config import ModelConfig
+from penguin.web.services.provider_auth import (
+    ProviderOAuthError,
+    refresh_provider_oauth,
+)
+from penguin.web.services.provider_credentials import (
+    get_provider_credential,
+    oauth_record_expired,
+    oauth_record_needs_refresh,
+)
+
 from ..api_client import ConnectionPoolManager
+from ..model_config import ModelConfig
 from .base import BaseAdapter
 
 logger = logging.getLogger(__name__)
+
+
+def _log_info(message: str, *args: Any) -> None:
+    logger.info(message, *args)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.info(message, *args)
+
+
+def _log_error(message: str, *args: Any, exc_info: bool = False) -> None:
+    logger.error(message, *args, exc_info=exc_info)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.error(message, *args, exc_info=exc_info)
+
+
+_OPENAI_CODEX_RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses"
+_OPENAI_OAUTH_REFRESH_BUFFER_MS = 5 * 60 * 1000
+_OPENAI_CODEX_TRACE_HEADER_KEYS = (
+    "x-request-id",
+    "request-id",
+    "openai-request-id",
+    "x-openai-request-id",
+    "cf-ray",
+    "x-amzn-trace-id",
+)
 
 
 class OpenAIAdapter(BaseAdapter):
@@ -101,6 +138,24 @@ class OpenAIAdapter(BaseAdapter):
         response_format: Optional[Dict[str, Any]] = kwargs.get("response_format")
         tools: Optional[List[Dict[str, Any]]] = kwargs.get("tools")
         tool_choice: Optional[Union[str, Dict[str, Any]]] = kwargs.get("tool_choice")
+
+        oauth_record = await self._resolve_oauth_record_for_request()
+        if oauth_record is not None:
+            return await self._create_oauth_codex_completion(
+                processed_messages=processed_messages,
+                oauth_record=oauth_record,
+                max_output_tokens=max_output_tokens,
+                temperature=temp_val,
+                stream=stream,
+                stream_callback=stream_callback,
+                reasoning_config=reasoning_config,
+                instructions=instructions,
+                previous_response_id=previous_response_id,
+                conversation_id=conversation_id,
+                response_format=response_format,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
 
         # Build input either as a compact string, or as structured content parts
         # when images are present.
@@ -203,6 +258,725 @@ class OpenAIAdapter(BaseAdapter):
         if isinstance(resp, str):
             return resp
         return str(resp)
+
+    async def _resolve_oauth_record_for_request(self) -> Dict[str, Any] | None:
+        oauth_access = os.getenv("OPENAI_OAUTH_ACCESS_TOKEN")
+        if not isinstance(oauth_access, str) or not oauth_access.strip():
+            return None
+
+        record = get_provider_credential("openai")
+        oauth_record: Dict[str, Any]
+        if isinstance(record, dict) and record.get("type") == "oauth":
+            oauth_record = dict(record)
+        else:
+            oauth_record = {
+                "type": "oauth",
+                "access": oauth_access.strip(),
+            }
+            account_id = os.getenv("OPENAI_ACCOUNT_ID")
+            if isinstance(account_id, str) and account_id.strip():
+                oauth_record["accountId"] = account_id.strip()
+
+        try:
+            refresh_needed = oauth_record_needs_refresh(
+                oauth_record,
+                refresh_window_ms=_OPENAI_OAUTH_REFRESH_BUFFER_MS,
+            )
+        except Exception:
+            refresh_needed = False
+
+        if refresh_needed:
+            refresh = oauth_record.get("refresh")
+            if isinstance(refresh, str) and refresh.strip():
+                try:
+                    oauth_record = await refresh_provider_oauth(
+                        "openai",
+                        credential_record=oauth_record,
+                    )
+                except ProviderOAuthError as exc:
+                    raise RuntimeError(
+                        f"OpenAI OAuth reauth required: refresh failed ({exc})"
+                    ) from exc
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"OpenAI OAuth reauth required: refresh failed ({exc})"
+                    ) from exc
+            elif oauth_record_expired(oauth_record):
+                raise RuntimeError(
+                    "OpenAI OAuth reauth required: access token expired and no "
+                    "refresh token is available"
+                )
+
+        access = oauth_record.get("access")
+        if not isinstance(access, str) or not access.strip():
+            raise RuntimeError("OpenAI OAuth reauth required: missing access token")
+
+        self._apply_oauth_record_to_runtime(oauth_record)
+        return oauth_record
+
+    def _apply_oauth_record_to_runtime(self, oauth_record: Dict[str, Any]) -> None:
+        access = oauth_record.get("access")
+        if isinstance(access, str) and access.strip():
+            os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] = access.strip()
+            self.model_config.api_key = access.strip()
+
+        account_id = oauth_record.get("accountId")
+        if isinstance(account_id, str) and account_id.strip():
+            os.environ["OPENAI_ACCOUNT_ID"] = account_id.strip()
+
+    def _new_codex_diag_id(self) -> str:
+        return f"oaoc_{os.urandom(5).hex()}"
+
+    def _trace_headers(self, response: httpx.Response | None) -> Dict[str, str]:
+        if response is None:
+            return {}
+
+        trace: Dict[str, str] = {}
+        for key in _OPENAI_CODEX_TRACE_HEADER_KEYS:
+            value = response.headers.get(key)
+            if isinstance(value, str) and value.strip():
+                trace[key] = value.strip()
+        return trace
+
+    def _codex_model_for_oauth(self, model_id: str) -> tuple[str, bool]:
+        value = str(model_id or "").strip()
+        if "/" in value:
+            prefix, remainder = value.split("/", 1)
+            if prefix.strip().lower() == "openai" and remainder.strip():
+                value = remainder.strip()
+
+        if not value:
+            raise RuntimeError(
+                "OpenAI OAuth Codex model resolution failed: model id is empty"
+            )
+        return value, False
+
+    def _extract_codex_text_content(self, content: Any) -> str:
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+        if not isinstance(content, list):
+            return ""
+
+        chunks: List[str] = []
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text":
+                text_value = part.get("text")
+                if isinstance(text_value, str) and text_value.strip():
+                    chunks.append(text_value.strip())
+                continue
+            if isinstance(part, str) and part.strip():
+                chunks.append(part.strip())
+
+        return "\n".join(chunks)
+
+    def _dedupe_instruction_parts(self, parts: List[str]) -> List[str]:
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for part in parts:
+            value = part.strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        return deduped
+
+    def _normalize_codex_role(self, role: str) -> str:
+        value = str(role or "user").strip().lower()
+        if value in {"assistant", "developer", "user"}:
+            return value
+        return "user"
+
+    def _codex_text_part_type_for_role(self, role: str) -> str:
+        return "output_text" if role == "assistant" else "input_text"
+
+    def _prepare_codex_messages_and_instructions(
+        self,
+        explicit_instructions: str | None,
+        messages: List[Dict[str, Any]],
+    ) -> tuple[str, List[Dict[str, Any]]]:
+        normalized_messages = self.format_messages(messages)
+        instruction_parts: List[str] = []
+        if isinstance(explicit_instructions, str) and explicit_instructions.strip():
+            instruction_parts.append(explicit_instructions.strip())
+
+        transformed_messages: List[Dict[str, Any]] = []
+        saw_non_system_message = False
+
+        for message in normalized_messages:
+            role = str(message.get("role", "user") or "user").strip().lower()
+
+            if role == "system":
+                system_text = self._extract_codex_text_content(message.get("content"))
+                if not saw_non_system_message:
+                    if system_text:
+                        instruction_parts.append(system_text)
+                    continue
+
+                if system_text:
+                    transformed_messages.append(
+                        {
+                            "role": "user",
+                            "content": f"[SYSTEM NOTE]\n{system_text}",
+                        }
+                    )
+                continue
+
+            saw_non_system_message = True
+
+            if role == "tool":
+                tool_text = self._extract_codex_text_content(message.get("content"))
+                if tool_text:
+                    transformed_messages.append(
+                        {
+                            "role": "user",
+                            "content": f"[TOOL RESULT]\n{tool_text}",
+                        }
+                    )
+                continue
+
+            transformed_messages.append(
+                {
+                    **message,
+                    "role": self._normalize_codex_role(role),
+                }
+            )
+
+        deduped_instructions = self._dedupe_instruction_parts(instruction_parts)
+        resolved_instructions = (
+            "\n\n".join(deduped_instructions)
+            if deduped_instructions
+            else "You are Penguin."
+        )
+        return resolved_instructions, transformed_messages
+
+    def _build_codex_input_items(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        items: List[Dict[str, Any]] = []
+        for message in messages:
+            role = self._normalize_codex_role(
+                str(message.get("role", "user") or "user")
+            )
+            text_part_type = self._codex_text_part_type_for_role(role)
+            content = message.get("content", "")
+            parts: List[Dict[str, Any]] = []
+
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        part_type = str(part.get("type") or "").strip().lower()
+
+                        if part_type in {"text", "input_text", "output_text"}:
+                            text_value = str(part.get("text", ""))
+                            if text_value:
+                                parts.append(
+                                    {"type": text_part_type, "text": text_value}
+                                )
+                            continue
+
+                        if role == "assistant" and part_type == "refusal":
+                            refusal = part.get("refusal")
+                            if isinstance(refusal, str) and refusal:
+                                parts.append({"type": "refusal", "refusal": refusal})
+                            continue
+
+                        if part_type == "image_url" and role != "assistant":
+                            image_url = None
+                            url_obj = part.get("image_url")
+                            if isinstance(url_obj, dict):
+                                maybe_url = url_obj.get("url")
+                                if isinstance(maybe_url, str) and maybe_url:
+                                    image_url = maybe_url
+                            elif isinstance(url_obj, str) and url_obj:
+                                image_url = url_obj
+
+                            if image_url:
+                                parts.append(
+                                    {
+                                        "type": "input_image",
+                                        "image_url": image_url,
+                                    }
+                                )
+                                continue
+
+                        parts.append({"type": text_part_type, "text": str(part)})
+                        continue
+
+                    if isinstance(part, str):
+                        text_value = part
+                        if text_value:
+                            parts.append({"type": text_part_type, "text": text_value})
+                        continue
+
+                    parts.append({"type": text_part_type, "text": str(part)})
+            elif str(content):
+                parts.append({"type": text_part_type, "text": str(content)})
+
+            if parts:
+                items.append({"type": "message", "role": role, "content": parts})
+
+        return items
+
+    async def _create_oauth_codex_completion(
+        self,
+        *,
+        processed_messages: List[Dict[str, Any]],
+        oauth_record: Dict[str, Any],
+        max_output_tokens: int | None,
+        temperature: float,
+        stream: bool,
+        stream_callback: Optional[Callable[[str], None]],
+        reasoning_config: Dict[str, Any] | None,
+        instructions: str | None,
+        previous_response_id: str | None,
+        conversation_id: str | None,
+        response_format: Dict[str, Any] | None,
+        tools: List[Dict[str, Any]] | None,
+        tool_choice: Union[str, Dict[str, Any]] | None,
+    ) -> str:
+        diag_id = self._new_codex_diag_id()
+        model_id, model_fallback = self._codex_model_for_oauth(self.model_config.model)
+        resolved_instructions, codex_messages = (
+            self._prepare_codex_messages_and_instructions(
+                instructions,
+                processed_messages,
+            )
+        )
+        input_items = self._build_codex_input_items(codex_messages)
+
+        payload: Dict[str, Any] = {
+            "model": model_id,
+            "input": input_items,
+            "instructions": resolved_instructions,
+            "store": False,
+        }
+        if isinstance(reasoning_config, dict) and reasoning_config:
+            payload["reasoning"] = reasoning_config
+        if previous_response_id:
+            payload["previous_response_id"] = previous_response_id
+        if conversation_id:
+            payload["conversation"] = conversation_id
+        if response_format:
+            payload["response_format"] = response_format
+        if tools:
+            payload["tools"] = tools
+        if tool_choice:
+            payload["tool_choice"] = tool_choice
+
+        try:
+            uses_effort_style = bool(self.model_config._uses_effort_style())
+        except Exception:
+            uses_effort_style = False
+        if not uses_effort_style:
+            payload["temperature"] = temperature
+
+        access = str(oauth_record.get("access") or "").strip()
+        account_id = str(oauth_record.get("accountId") or "").strip()
+        headers: Dict[str, str] = {
+            "Authorization": f"Bearer {access}",
+            "Content-Type": "application/json",
+            "originator": "penguin",
+            "User-Agent": "penguin-openai-adapter",
+        }
+        if account_id:
+            headers["ChatGPT-Account-Id"] = account_id
+
+        _log_info(
+            "openai.oauth.codex.request_start diag_id=%s requested_stream=%s "
+            "transport_stream=%s model=%s "
+            "model_fallback=%s input_items=%s instructions_present=%s "
+            "store=%s has_account_id=%s has_reasoning=%s",
+            diag_id,
+            stream,
+            True,
+            model_id,
+            model_fallback,
+            len(input_items),
+            bool(resolved_instructions),
+            payload.get("store"),
+            bool(account_id),
+            isinstance(reasoning_config, dict) and bool(reasoning_config),
+        )
+
+        return await self._stream_codex_oauth(
+            payload,
+            headers,
+            stream_callback if stream else None,
+            model_id=model_id,
+            model_fallback=model_fallback,
+            diag_id=diag_id,
+        )
+
+    async def _request_codex_oauth(
+        self,
+        payload: Dict[str, Any],
+        headers: Dict[str, str],
+        *,
+        model_id: str,
+        model_fallback: bool,
+        diag_id: str,
+    ) -> str:
+        started = time.monotonic()
+        response: httpx.Response | None = None
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    _OPENAI_CODEX_RESPONSES_URL,
+                    headers=headers,
+                    json=payload,
+                )
+        except httpx.TimeoutException as exc:
+            self._raise_codex_transport_error(
+                error=exc,
+                payload=payload,
+                model_id=model_id,
+                model_fallback=model_fallback,
+                stage="request_timeout",
+                diag_id=diag_id,
+            )
+        except httpx.HTTPError as exc:
+            self._raise_codex_transport_error(
+                error=exc,
+                payload=payload,
+                model_id=model_id,
+                model_fallback=model_fallback,
+                stage="request_transport",
+                diag_id=diag_id,
+            )
+
+        if response is None:
+            self._raise_codex_transport_error(
+                error=RuntimeError("Missing HTTP response from Codex endpoint"),
+                payload=payload,
+                model_id=model_id,
+                model_fallback=model_fallback,
+                stage="request_response",
+                diag_id=diag_id,
+            )
+        assert response is not None
+
+        latency_ms = int((time.monotonic() - started) * 1000)
+        trace = self._trace_headers(response)
+
+        if response.status_code >= 400:
+            self._raise_codex_error(
+                status_code=response.status_code,
+                detail=self._codex_error_detail(response=response),
+                payload=payload,
+                model_id=model_id,
+                model_fallback=model_fallback,
+                stage="request",
+                diag_id=diag_id,
+                trace=trace,
+                latency_ms=latency_ms,
+            )
+
+        _log_info(
+            "openai.oauth.codex.request_success diag_id=%s stage=request "
+            "status=%s latency_ms=%s model=%s model_fallback=%s trace=%s",
+            diag_id,
+            response.status_code,
+            latency_ms,
+            model_id,
+            model_fallback,
+            trace,
+        )
+
+        body: Any = {}
+        if response.content:
+            try:
+                body = response.json()
+            except Exception:
+                body = response.text
+
+        if isinstance(body, str):
+            return body
+        return self._extract_text_from_response_object(body) or ""
+
+    async def _stream_codex_oauth(
+        self,
+        payload: Dict[str, Any],
+        headers: Dict[str, str],
+        stream_callback: Optional[Callable[[str], None]],
+        *,
+        model_id: str,
+        model_fallback: bool,
+        diag_id: str,
+    ) -> str:
+        stream_payload = dict(payload)
+        stream_payload["stream"] = True
+
+        accumulated_content: List[str] = []
+        completed_text = ""
+        started = time.monotonic()
+        response: httpx.Response | None = None
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream(
+                    "POST",
+                    _OPENAI_CODEX_RESPONSES_URL,
+                    headers=headers,
+                    json=stream_payload,
+                ) as response:
+                    if response.status_code >= 400:
+                        response_text = (await response.aread()).decode(
+                            "utf-8",
+                            errors="replace",
+                        )
+                        latency_ms = int((time.monotonic() - started) * 1000)
+                        self._raise_codex_error(
+                            status_code=response.status_code,
+                            detail=self._codex_error_detail(
+                                response_text=response_text
+                            ),
+                            payload=stream_payload,
+                            model_id=model_id,
+                            model_fallback=model_fallback,
+                            stage="stream_request",
+                            diag_id=diag_id,
+                            trace=self._trace_headers(response),
+                            latency_ms=latency_ms,
+                        )
+
+                    async for line in response.aiter_lines():
+                        if not line or not line.strip():
+                            continue
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+
+                        try:
+                            data = json.loads(data_str)
+                        except Exception:
+                            continue
+
+                        if not isinstance(data, dict):
+                            continue
+
+                        etype = data.get("type")
+                        if etype == "response.output_text.delta":
+                            delta = data.get("delta", "")
+                            if delta:
+                                accumulated_content.append(delta)
+                                if stream_callback:
+                                    await self._safe_invoke_callback(
+                                        stream_callback,
+                                        str(delta),
+                                        "assistant",
+                                    )
+                            continue
+
+                        if etype == "response.output_text.done":
+                            done_text = data.get("text", "")
+                            if isinstance(done_text, str) and done_text:
+                                completed_text = done_text
+                            continue
+
+                        if etype == "response.completed":
+                            response_obj = data.get("response")
+                            extracted = self._extract_text_from_response_object(
+                                response_obj
+                            )
+                            if extracted:
+                                completed_text = extracted
+                            continue
+
+                        reasoning_delta = (
+                            self._extract_reasoning_delta_from_sse_payload(data)
+                        )
+                        if reasoning_delta and stream_callback:
+                            await self._safe_invoke_callback(
+                                stream_callback,
+                                reasoning_delta,
+                                "reasoning",
+                            )
+        except httpx.TimeoutException as exc:
+            self._raise_codex_transport_error(
+                error=exc,
+                payload=stream_payload,
+                model_id=model_id,
+                model_fallback=model_fallback,
+                stage="stream_timeout",
+                diag_id=diag_id,
+            )
+        except httpx.HTTPError as exc:
+            self._raise_codex_transport_error(
+                error=exc,
+                payload=stream_payload,
+                model_id=model_id,
+                model_fallback=model_fallback,
+                stage="stream_transport",
+                diag_id=diag_id,
+            )
+
+        if response is None:
+            self._raise_codex_transport_error(
+                error=RuntimeError("Missing HTTP stream response from Codex endpoint"),
+                payload=stream_payload,
+                model_id=model_id,
+                model_fallback=model_fallback,
+                stage="stream_response",
+                diag_id=diag_id,
+            )
+        assert response is not None
+
+        latency_ms = int((time.monotonic() - started) * 1000)
+        trace = self._trace_headers(response)
+        output_chars = len(completed_text) or len("".join(accumulated_content))
+        _log_info(
+            "openai.oauth.codex.request_success diag_id=%s stage=stream status=%s "
+            "latency_ms=%s model=%s model_fallback=%s output_chars=%s trace=%s",
+            diag_id,
+            response.status_code if response is not None else 0,
+            latency_ms,
+            model_id,
+            model_fallback,
+            output_chars,
+            trace,
+        )
+
+        if completed_text:
+            if not accumulated_content and stream_callback:
+                await self._safe_invoke_callback(
+                    stream_callback,
+                    completed_text,
+                    "assistant",
+                )
+            return completed_text
+
+        return "".join(accumulated_content)
+
+    def _codex_error_detail(
+        self,
+        *,
+        response: httpx.Response | None = None,
+        response_text: str | None = None,
+    ) -> str:
+        if isinstance(response_text, str) and response_text.strip():
+            return response_text.strip()[:500]
+
+        if response is None:
+            return "No response body"
+
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                raw_error = payload.get("error")
+                if isinstance(raw_error, str) and raw_error.strip():
+                    return raw_error.strip()[:500]
+                if isinstance(raw_error, dict):
+                    message = raw_error.get("message")
+                    error_type = raw_error.get("type")
+                    code = raw_error.get("code")
+                    param = raw_error.get("param")
+                    description = raw_error.get("description")
+                    values = [
+                        str(item)
+                        for item in (
+                            message,
+                            error_type,
+                            code,
+                            param,
+                            description,
+                        )
+                        if item
+                    ]
+                    if values:
+                        return " | ".join(values)[:500]
+
+                fallback_values = [
+                    payload.get("message"),
+                    payload.get("type"),
+                    payload.get("code"),
+                    payload.get("param"),
+                    payload.get("detail"),
+                ]
+                compact = [str(item) for item in fallback_values if item]
+                if compact:
+                    return " | ".join(compact)[:500]
+                return json.dumps(payload)[:500]
+            if payload is not None:
+                return str(payload)[:500]
+        except Exception:
+            pass
+
+        try:
+            text = response.text
+            if isinstance(text, str) and text.strip():
+                return text.strip()[:500]
+        except Exception:
+            pass
+
+        return "No response body"
+
+    def _raise_codex_error(
+        self,
+        *,
+        status_code: int,
+        detail: str,
+        payload: Dict[str, Any],
+        model_id: str,
+        model_fallback: bool,
+        stage: str,
+        diag_id: str,
+        trace: Dict[str, str] | None = None,
+        latency_ms: int | None = None,
+    ) -> None:
+        input_payload = payload.get("input")
+        input_is_list = isinstance(input_payload, list)
+        input_items = len(input_payload) if isinstance(input_payload, list) else 0
+        instructions_present = bool(
+            isinstance(payload.get("instructions"), str)
+            and str(payload.get("instructions")).strip()
+        )
+        store_flag = payload.get("store")
+
+        error_message = (
+            f"OpenAI OAuth Codex {stage} failed "
+            f"(diag_id={diag_id}, status={status_code}, model={model_id}, "
+            f"model_fallback={model_fallback}, input_is_list={input_is_list}, "
+            f"input_items={input_items}, instructions_present={instructions_present}, "
+            f"store={store_flag}, latency_ms={latency_ms}) detail={detail}, "
+            f"trace={trace or {}}"
+        )
+        _log_error(error_message)
+
+        if status_code in {401, 403}:
+            raise RuntimeError(f"OpenAI OAuth reauth required: {error_message}")
+        raise RuntimeError(error_message)
+
+    def _raise_codex_transport_error(
+        self,
+        *,
+        error: Exception,
+        payload: Dict[str, Any],
+        model_id: str,
+        model_fallback: bool,
+        stage: str,
+        diag_id: str,
+    ) -> None:
+        input_payload = payload.get("input")
+        input_is_list = isinstance(input_payload, list)
+        input_items = len(input_payload) if isinstance(input_payload, list) else 0
+        instructions_present = bool(
+            isinstance(payload.get("instructions"), str)
+            and str(payload.get("instructions")).strip()
+        )
+        store_flag = payload.get("store")
+
+        error_message = (
+            f"OpenAI OAuth Codex {stage} failed "
+            f"(diag_id={diag_id}, model={model_id}, "
+            f"model_fallback={model_fallback}, input_is_list={input_is_list}, "
+            f"input_items={input_items}, instructions_present={instructions_present}, "
+            f"store={store_flag}, error_type={type(error).__name__}) detail={error}"
+        )
+        _log_error(error_message, exc_info=True)
+        raise RuntimeError(error_message) from error
 
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Pass-through for OpenAI chat format with minimal normalization.
@@ -414,8 +1188,6 @@ class OpenAIAdapter(BaseAdapter):
         stream_callback: Optional[Callable[[str], None]],
     ) -> str:
         """HTTP SSE streaming fallback for the Responses API."""
-        import httpx  # type: ignore
-
         headers = {
             "Authorization": f"Bearer {self.client.api_key}",
             "Content-Type": "application/json",

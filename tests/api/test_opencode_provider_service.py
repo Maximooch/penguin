@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import json
 import time
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 
@@ -42,7 +44,7 @@ def _clear_pending_oauth() -> None:
 
 
 @pytest.mark.asyncio
-async def test_provider_oauth_authorize_sets_pending_state(
+async def test_provider_oauth_authorize_headless_sets_pending_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
@@ -51,7 +53,7 @@ async def test_provider_oauth_authorize_sets_pending_state(
         def __init__(self, timeout: float) -> None:
             self.timeout = timeout
 
-        async def __aenter__(self) -> "_FakeAsyncClient":
+        async def __aenter__(self) -> _FakeAsyncClient:
             return self
 
         async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
@@ -72,7 +74,7 @@ async def test_provider_oauth_authorize_sets_pending_state(
 
     monkeypatch.setattr(provider_service.httpx, "AsyncClient", _FakeAsyncClient)
 
-    result = await provider_service.provider_oauth_authorize("openai", 0)
+    result = await provider_service.provider_oauth_authorize("openai", 1)
 
     assert calls
     assert result["url"] == provider_service._OPENAI_OAUTH_DEVICE_URL
@@ -81,6 +83,43 @@ async def test_provider_oauth_authorize_sets_pending_state(
     assert (
         provider_service._PENDING_OAUTH["openai"]["device_auth_id"] == "device-auth-123"
     )
+    assert provider_service._PENDING_OAUTH["openai"]["type"] == "openai_headless"
+    assert provider_service._PENDING_OAUTH["openai"]["method_index"] == 1
+
+
+@pytest.mark.asyncio
+async def test_provider_oauth_authorize_browser_is_method_zero() -> None:
+    result = await provider_service.provider_oauth_authorize("openai", 0)
+
+    assert result["method"] == "code"
+    assert "oauth/authorize" in result["url"]
+    assert "authorization code" in result["instructions"].lower()
+    assert provider_service._PENDING_OAUTH["openai"]["type"] == "openai_browser"
+    assert provider_service._PENDING_OAUTH["openai"]["method_index"] == 0
+
+
+@pytest.mark.asyncio
+async def test_provider_oauth_callback_browser_requires_code() -> None:
+    await provider_service.provider_oauth_authorize("openai", 0)
+
+    with pytest.raises(ValueError) as exc:
+        await provider_service.provider_oauth_callback("openai", 0)
+
+    assert "requires a code" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_provider_oauth_callback_browser_rejects_state_mismatch() -> None:
+    await provider_service.provider_oauth_authorize("openai", 0)
+
+    with pytest.raises(ValueError) as exc:
+        await provider_service.provider_oauth_callback(
+            "openai",
+            0,
+            code="http://localhost:1455/auth/callback?code=abc123&state=wrong",
+        )
+
+    assert "state does not match" in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -98,7 +137,7 @@ async def test_provider_oauth_callback_persists_oauth_record(
         def __init__(self, timeout: float) -> None:
             self.timeout = timeout
 
-        async def __aenter__(self) -> "_FakeAsyncClient":
+        async def __aenter__(self) -> _FakeAsyncClient:
             return self
 
         async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
@@ -139,8 +178,8 @@ async def test_provider_oauth_callback_persists_oauth_record(
 
     monkeypatch.setattr(provider_service.httpx, "AsyncClient", _FakeAsyncClient)
 
-    await provider_service.provider_oauth_authorize("openai", 0)
-    success = await provider_service.provider_oauth_callback("openai", 0)
+    await provider_service.provider_oauth_authorize("openai", 1)
+    success = await provider_service.provider_oauth_callback("openai", 1)
 
     assert success is True
     assert any(url.endswith("/oauth/token") for url in calls)
@@ -168,7 +207,7 @@ async def test_provider_oauth_respects_client_id_env_override(
         def __init__(self, timeout: float) -> None:
             self.timeout = timeout
 
-        async def __aenter__(self) -> "_FakeAsyncClient":
+        async def __aenter__(self) -> _FakeAsyncClient:
             return self
 
         async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
@@ -211,8 +250,8 @@ async def test_provider_oauth_respects_client_id_env_override(
 
     monkeypatch.setattr(provider_service.httpx, "AsyncClient", _FakeAsyncClient)
 
-    await provider_service.provider_oauth_authorize("openai", 0)
-    ok = await provider_service.provider_oauth_callback("openai", 0)
+    await provider_service.provider_oauth_authorize("openai", 1)
+    ok = await provider_service.provider_oauth_callback("openai", 1)
     assert ok is True
     assert seen["authorize_client_id"] == "penguin-client-id-test"
     assert seen["token_client_id"] == "penguin-client-id-test"
@@ -221,5 +260,84 @@ async def test_provider_oauth_respects_client_id_env_override(
 @pytest.mark.asyncio
 async def test_provider_oauth_callback_requires_pending_state() -> None:
     with pytest.raises(ValueError) as exc:
-        await provider_service.provider_oauth_callback("openai", 0)
+        await provider_service.provider_oauth_callback("openai", 1)
     assert "No pending OAuth authorization" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_provider_oauth_refresh_updates_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_path = tmp_path / "provider_auth_refresh.json"
+    monkeypatch.setenv("PENGUIN_PROVIDER_AUTH_STORE", str(store_path))
+
+    provider_service.set_provider_auth_record(
+        "openai",
+        {
+            "type": "oauth",
+            "access": "access-old",
+            "refresh": "refresh-old",
+            "expires": 1,
+            "accountId": "acct_old",
+        },
+    )
+
+    calls: list[str] = []
+
+    class _FakeAsyncClient:
+        def __init__(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> _FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:  # type: ignore[no-untyped-def]
+            del exc_type, exc, tb
+            return False
+
+        async def post(self, url: str, headers=None, json=None, data=None):  # type: ignore[no-untyped-def]
+            del headers, json
+            calls.append(url)
+            if url.endswith("/oauth/token"):
+                assert isinstance(data, dict)
+                assert data["grant_type"] == "refresh_token"
+                assert data["refresh_token"] == "refresh-old"
+                return _FakeResponse(
+                    200,
+                    {
+                        "access_token": "access-new",
+                        "expires_in": 1800,
+                    },
+                )
+            return _FakeResponse(500, {})
+
+    monkeypatch.setattr(provider_service.httpx, "AsyncClient", _FakeAsyncClient)
+
+    refreshed = await provider_service.provider_auth_service.refresh_provider_oauth(
+        "openai"
+    )
+    assert refreshed["access"] == "access-new"
+    assert refreshed["refresh"] == "refresh-old"
+    assert refreshed["accountId"] == "acct_old"
+    assert any(url.endswith("/oauth/token") for url in calls)
+
+    persisted = provider_service.get_provider_auth_records()["openai"]
+    assert persisted["access"] == "access-new"
+    assert persisted["refresh"] == "refresh-old"
+    assert persisted["accountId"] == "acct_old"
+
+
+@pytest.mark.asyncio
+async def test_provider_oauth_refresh_requires_refresh_token() -> None:
+    with pytest.raises(ValueError) as exc:
+        await provider_service.provider_auth_service.refresh_provider_oauth(
+            "openai",
+            credential_record={
+                "type": "oauth",
+                "access": "access-only",
+                "expires": 1,
+            },
+        )
+
+    assert "missing refresh token" in str(exc.value)

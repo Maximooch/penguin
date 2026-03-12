@@ -14,6 +14,48 @@ import { useKeyboard } from "@opentui/solid"
 import { Clipboard } from "@tui/util/clipboard"
 import { useToast } from "../ui/toast"
 
+function oauthErrorMessage(error: unknown): string {
+  if (!error) return "Authorization failed"
+  if (typeof error === "string") return error
+  if (error instanceof Error && error.message) return error.message
+  if (typeof error !== "object") return "Authorization failed"
+
+  const entry = error as Record<string, unknown>
+  if (typeof entry.message === "string" && entry.message.trim()) {
+    return entry.message.trim()
+  }
+
+  const data = entry.data
+  if (!data || typeof data !== "object") return "Authorization failed"
+  const payload = data as Record<string, unknown>
+
+  if (typeof payload.detail === "string" && payload.detail.trim()) {
+    return payload.detail.trim()
+  }
+
+  if (typeof payload.message === "string" && payload.message.trim()) {
+    return payload.message.trim()
+  }
+
+  if (!Array.isArray(payload.errors) || payload.errors.length === 0) {
+    return "Authorization failed"
+  }
+
+  const first = payload.errors[0]
+  if (typeof first === "string" && first.trim()) return first.trim()
+  if (!first || typeof first !== "object") return "Authorization failed"
+
+  const detail = first as Record<string, unknown>
+  if (typeof detail.message === "string" && detail.message.trim()) {
+    return detail.message.trim()
+  }
+  if (typeof detail.detail === "string" && detail.detail.trim()) {
+    return detail.detail.trim()
+  }
+
+  return "Authorization failed"
+}
+
 const PROVIDER_PRIORITY: Record<string, number> = {
   opencode: 0,
   anthropic: 1,
@@ -124,6 +166,7 @@ function AutoMethod(props: AutoMethodProps) {
   const dialog = useDialog()
   const sync = useSync()
   const toast = useToast()
+  const [error, setError] = createSignal<string>()
 
   useKeyboard((evt) => {
     if (evt.name === "c" && !evt.ctrl && !evt.meta) {
@@ -140,7 +183,9 @@ function AutoMethod(props: AutoMethodProps) {
       method: props.index,
     })
     if (result.error) {
-      dialog.clear()
+      const detail = oauthErrorMessage(result.error)
+      setError(detail)
+      toast.show({ message: detail, variant: "error" })
       return
     }
     await sdk.client.instance.dispose()
@@ -161,6 +206,7 @@ function AutoMethod(props: AutoMethodProps) {
         <text fg={theme.textMuted}>{props.authorization.instructions}</text>
       </box>
       <text fg={theme.textMuted}>Waiting for authorization...</text>
+      <Show when={error()}>{(value) => <text fg={theme.error}>{value()}</text>}</Show>
       <text fg={theme.text}>
         c <span style={{ fg: theme.textMuted }}>copy</span>
       </text>
@@ -179,33 +225,31 @@ function CodeMethod(props: CodeMethodProps) {
   const sdk = useSDK()
   const sync = useSync()
   const dialog = useDialog()
-  const [error, setError] = createSignal(false)
+  const [error, setError] = createSignal<string>()
 
   return (
     <DialogPrompt
       title={props.title}
       placeholder="Authorization code"
       onConfirm={async (value) => {
-        const { error } = await sdk.client.provider.oauth.callback({
+        const result = await sdk.client.provider.oauth.callback({
           providerID: props.providerID,
           method: props.index,
           code: value,
         })
-        if (!error) {
+        if (!result.error) {
           await sdk.client.instance.dispose()
           await sync.bootstrap()
           dialog.replace(() => <DialogModel providerID={props.providerID} />)
           return
         }
-        setError(true)
+        setError(oauthErrorMessage(result.error))
       }}
       description={() => (
         <box gap={1}>
           <text fg={theme.textMuted}>{props.authorization.instructions}</text>
           <Link href={props.authorization.url} fg={theme.primary} />
-          <Show when={error()}>
-            <text fg={theme.error}>Invalid code</text>
-          </Show>
+          <Show when={error()}>{(value) => <text fg={theme.error}>{value()}</text>}</Show>
         </box>
       )}
     />

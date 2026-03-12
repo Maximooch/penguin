@@ -21,6 +21,7 @@ from penguin.web.routes import (
     api_config_get,
     api_config_providers,
     api_config_update,
+    api_instance_dispose,
     api_provider_auth,
     api_provider_list,
     api_provider_oauth_authorize,
@@ -31,6 +32,7 @@ from penguin.web.routes import (
     opencode_config_get,
     opencode_config_providers,
     opencode_config_update,
+    opencode_instance_dispose,
     opencode_provider_auth,
     opencode_provider_list,
     opencode_provider_oauth_authorize,
@@ -171,7 +173,13 @@ async def test_config_providers_and_auth_methods(tmp_path: Path) -> None:
 
     methods = await opencode_provider_auth(core=typed_core)
     openai_types = [item["type"] for item in methods["openai"]]
-    assert openai_types == ["oauth", "api"]
+    assert openai_types == ["oauth", "oauth", "api"]
+    openai_labels = [item["label"] for item in methods["openai"]]
+    assert openai_labels == [
+        "ChatGPT Pro/Plus (browser)",
+        "ChatGPT Pro/Plus (headless)",
+        "Manually enter API key",
+    ]
 
 
 @pytest.mark.asyncio
@@ -685,6 +693,50 @@ async def test_oauth_routes_delegate_to_service(
 
 
 @pytest.mark.asyncio
+async def test_oauth_callback_applies_runtime_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core(tmp_path)
+    typed_core = cast(Any, core)
+    seen: dict[str, Any] = {}
+
+    async def _callback(provider_id: str, method: int, code: str | None = None) -> bool:
+        seen["callback"] = (provider_id, method, code)
+        return True
+
+    def _records() -> dict[str, dict[str, Any]]:
+        return {
+            "openai": {
+                "type": "oauth",
+                "access": "oauth-access",
+                "refresh": "oauth-refresh",
+                "expires": 9_999_999_999_000,
+                "accountId": "acct_test_runtime",
+            }
+        }
+
+    def _apply(core_obj: Any, provider_id: str, auth_record: dict[str, Any]) -> None:
+        seen["runtime"] = (core_obj, provider_id, auth_record)
+
+    monkeypatch.setattr(routes_module, "provider_oauth_callback", _callback)
+    monkeypatch.setattr(routes_module, "get_provider_auth_records", _records)
+    monkeypatch.setattr(routes_module, "apply_auth_to_runtime", _apply)
+
+    completed = await opencode_provider_oauth_callback(
+        providerID="openai",
+        request=ProviderOAuthCallbackRequest(method=0, code="browser-code"),
+        core=typed_core,
+    )
+    assert completed is True
+    assert seen["callback"] == ("openai", 0, "browser-code")
+    runtime_core, runtime_provider, runtime_record = seen["runtime"]
+    assert runtime_core is typed_core
+    assert runtime_provider == "openai"
+    assert runtime_record["accountId"] == "acct_test_runtime"
+
+
+@pytest.mark.asyncio
 async def test_api_v1_aliases_match_opencode_routes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -722,6 +774,12 @@ async def test_api_v1_aliases_match_opencode_routes(
 
     removed = await api_auth_remove(providerID="openrouter")
     assert removed is True
+
+    disposed = await opencode_instance_dispose()
+    assert disposed is True
+
+    disposed_alias = await api_instance_dispose()
+    assert disposed_alias is True
 
     seen: dict[str, Any] = {}
 
@@ -809,11 +867,25 @@ def test_http_route_wiring_for_config_provider_auth(
         assert auth_remove_response.status_code == 200
         assert auth_remove_response.json() is True
 
+        dispose_response = client.post("/instance/dispose")
+        assert dispose_response.status_code == 200
+        assert dispose_response.json() is True
+
+        dispose_alias_response = client.post("/api/v1/instance/dispose")
+        assert dispose_alias_response.status_code == 200
+        assert dispose_alias_response.json() is True
+
         oauth_authorize_response = client.post(
             "/provider/openai/oauth/authorize",
             json={"method": 0},
         )
         assert oauth_authorize_response.status_code == 200
+
+        oauth_authorize_missing_method = client.post(
+            "/provider/openai/oauth/authorize",
+            json={},
+        )
+        assert oauth_authorize_missing_method.status_code == 422
 
         oauth_callback_response = client.post(
             "/api/v1/provider/openai/oauth/callback",
@@ -821,3 +893,9 @@ def test_http_route_wiring_for_config_provider_auth(
         )
         assert oauth_callback_response.status_code == 200
         assert oauth_callback_response.json() is True
+
+        oauth_callback_missing_method = client.post(
+            "/api/v1/provider/openai/oauth/callback",
+            json={},
+        )
+        assert oauth_callback_missing_method.status_code == 422

@@ -1139,11 +1139,11 @@ class LLMConfigRequest(BaseModel):
 
 
 class ProviderOAuthAuthorizeRequest(BaseModel):
-    method: int = 0
+    method: int
 
 
 class ProviderOAuthCallbackRequest(BaseModel):
-    method: int = 0
+    method: int
     code: Optional[str] = None
 
 
@@ -2604,39 +2604,74 @@ async def opencode_auth_remove(providerID: str):
         raise HTTPException(status_code=500, detail="Failed to remove auth credentials")
 
 
+@router.post("/instance/dispose")
+async def opencode_instance_dispose():
+    """OpenCode-compatible instance dispose endpoint."""
+    logger.info("instance.dispose requested")
+    return True
+
+
 @router.post("/provider/{providerID}/oauth/authorize")
 async def opencode_provider_oauth_authorize(
     providerID: str,
-    request: Optional[ProviderOAuthAuthorizeRequest] = None,
+    request: ProviderOAuthAuthorizeRequest,
 ):
     """OpenCode-compatible provider OAuth authorize endpoint."""
-    method = request.method if isinstance(request, ProviderOAuthAuthorizeRequest) else 0
+    method = request.method
     try:
         return await provider_oauth_authorize(providerID, method)
     except ValueError as e:
+        _request_log_info(
+            "provider.oauth.authorize validation error provider=%s method=%s detail=%s",
+            providerID,
+            method,
+            e,
+        )
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"provider.oauth.authorize error: {e}")
+        logger.exception("provider.oauth.authorize unexpected error")
         raise HTTPException(
-            status_code=500, detail="Failed to authorize provider OAuth"
+            status_code=500,
+            detail=f"Failed to authorize provider OAuth: {e}",
         )
 
 
 @router.post("/provider/{providerID}/oauth/callback")
 async def opencode_provider_oauth_callback(
     providerID: str,
-    request: Optional[ProviderOAuthCallbackRequest] = None,
+    request: ProviderOAuthCallbackRequest,
+    core: PenguinCore = Depends(get_core),
 ):
     """OpenCode-compatible provider OAuth callback endpoint."""
-    method = request.method if isinstance(request, ProviderOAuthCallbackRequest) else 0
-    code = request.code if isinstance(request, ProviderOAuthCallbackRequest) else None
+    method = request.method
+    code = request.code
     try:
-        return await provider_oauth_callback(providerID, method, code=code)
+        success = await provider_oauth_callback(providerID, method, code=code)
+        if success:
+            record = get_provider_auth_records().get(providerID.strip().lower())
+            if isinstance(record, dict):
+                try:
+                    apply_auth_to_runtime(core, providerID, record)
+                except Exception:
+                    logger.exception(
+                        "provider.oauth.callback runtime credential apply failure"
+                    )
+                    raise
+        return success
     except ValueError as e:
+        _request_log_info(
+            "provider.oauth.callback validation error provider=%s method=%s detail=%s",
+            providerID,
+            method,
+            e,
+        )
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"provider.oauth.callback error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to process provider OAuth")
+        logger.exception("provider.oauth.callback unexpected error")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process provider OAuth: {e}",
+        )
 
 
 @router.get("/api/v1/config")
@@ -2688,10 +2723,16 @@ async def api_auth_remove(providerID: str):
     return await opencode_auth_remove(providerID=providerID)
 
 
+@router.post("/api/v1/instance/dispose")
+async def api_instance_dispose():
+    """Alias for OpenCode-compatible instance dispose endpoint."""
+    return await opencode_instance_dispose()
+
+
 @router.post("/api/v1/provider/{providerID}/oauth/authorize")
 async def api_provider_oauth_authorize(
     providerID: str,
-    request: Optional[ProviderOAuthAuthorizeRequest] = None,
+    request: ProviderOAuthAuthorizeRequest,
 ):
     """Alias for OpenCode-compatible provider OAuth authorize endpoint."""
     return await opencode_provider_oauth_authorize(
@@ -2702,11 +2743,14 @@ async def api_provider_oauth_authorize(
 @router.post("/api/v1/provider/{providerID}/oauth/callback")
 async def api_provider_oauth_callback(
     providerID: str,
-    request: Optional[ProviderOAuthCallbackRequest] = None,
+    request: ProviderOAuthCallbackRequest,
+    core: PenguinCore = Depends(get_core),
 ):
     """Alias for OpenCode-compatible provider OAuth callback endpoint."""
     return await opencode_provider_oauth_callback(
-        providerID=providerID, request=request
+        providerID=providerID,
+        request=request,
+        core=core,
     )
 
 
