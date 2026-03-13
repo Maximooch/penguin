@@ -12,12 +12,26 @@ on:
 
 jobs:
   build-tui-sidecar:
-    name: Build TUI sidecar artifacts
-    runs-on: ubuntu-latest
+    name: Build TUI sidecar (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
     permissions:
-      contents: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux
+            runner: ubuntu-latest
+            build_os: linux
+          - label: macos
+            runner: macos-latest
+            build_os: darwin
+          - label: windows
+            runner: windows-latest
+            build_os: win32
     env:
       HUSKY: "0"
+      OPENCODE_BUILD_OS: ${{ matrix.build_os }}
 
     steps:
       - name: Checkout repository
@@ -49,6 +63,7 @@ jobs:
         env:
           OPENCODE_VERSION: ${{ env.OPENCODE_VERSION }}
           OPENCODE_CHANNEL: ${{ env.OPENCODE_CHANNEL }}
+          OPENCODE_BUILD_OS: ${{ env.OPENCODE_BUILD_OS }}
         run: bun run script/build.ts
 
       - name: Package sidecar archives
@@ -92,16 +107,35 @@ jobs:
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: penguin-tui-sidecar-${{ env.OPENCODE_VERSION }}
+          name: penguin-tui-sidecar-${{ env.OPENCODE_VERSION }}-${{ matrix.label }}
           path: |
             penguin-tui/packages/opencode/dist/*.zip
             penguin-tui/packages/opencode/dist/*.tar.gz
 
+  publish-release-assets:
+    name: Publish TUI sidecar release assets
+    needs: build-tui-sidecar
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download built sidecar artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: penguin-tui-sidecar-*
+          path: dist
+          merge-multiple: true
+
+      - name: List release upload payload
+        shell: bash
+        run: ls -lah dist
+
       - name: Publish release assets
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            penguin-tui/packages/opencode/dist/*.zip
-            penguin-tui/packages/opencode/dist/*.tar.gz
+            dist/*.zip
+            dist/*.tar.gz
           fail_on_unmatched_files: true

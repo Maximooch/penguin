@@ -28,6 +28,7 @@ console.log("Generated models-snapshot.ts")
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
+const osFilter = (process.env.OPENCODE_BUILD_OS || "").trim()
 
 const allTargets: {
   os: string
@@ -88,8 +89,12 @@ const allTargets: {
   },
 ]
 
+const filteredTargets = osFilter
+  ? allTargets.filter((item) => item.os === osFilter)
+  : allTargets
+
 const targets = singleFlag
-  ? allTargets.filter((item) => {
+  ? filteredTargets.filter((item) => {
       if (item.os !== process.platform || item.arch !== process.arch) {
         return false
       }
@@ -107,7 +112,11 @@ const targets = singleFlag
 
       return true
     })
-  : allTargets
+  : filteredTargets
+
+if (targets.length === 0) {
+  throw new Error(`No build targets selected for OPENCODE_BUILD_OS=${osFilter || "<all>"}`)
+}
 
 await $`rm -rf dist`
 
