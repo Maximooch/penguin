@@ -29,6 +29,7 @@ LOCAL_HOSTS = {"", "localhost", "127.0.0.1", "0.0.0.0", "::1"}
 DEFAULT_TUI_RELEASE_URL = (
     "https://api.github.com/repos/anomalyco/opencode/releases/latest"
 )
+_URL_MODE_CAP_CACHE: dict[str, bool] = {}
 
 
 def _normalize_base_url(raw_url: str) -> str:
@@ -536,6 +537,58 @@ def _resolve_sidecar_binary() -> Path:
     return binary_path
 
 
+def _binary_supports_url_mode(binary: str) -> bool:
+    cache_key = str(Path(binary).expanduser())
+    cached = _URL_MODE_CAP_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    forced = os.getenv("PENGUIN_TUI_LAUNCH_MODE", "").strip().lower()
+    if forced == "url":
+        _URL_MODE_CAP_CACHE[cache_key] = True
+        return True
+    if forced == "attach":
+        _URL_MODE_CAP_CACHE[cache_key] = False
+        return False
+
+    supports_url = False
+    try:
+        result = subprocess.run(
+            [binary, "--help"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        combined = f"{result.stdout}\n{result.stderr}".lower()
+        supports_url = "--url" in combined
+    except Exception:
+        supports_url = False
+
+    _URL_MODE_CAP_CACHE[cache_key] = supports_url
+    return supports_url
+
+
+def _build_binary_tui_command(
+    *,
+    binary: str,
+    project_dir: Path,
+    base_url: str,
+    extra_args: list[str],
+    has_url_arg: bool,
+) -> list[str]:
+    if _binary_supports_url_mode(binary):
+        cmd = [binary, str(project_dir)]
+        if not has_url_arg:
+            cmd.extend(["--url", base_url])
+        cmd.extend(extra_args)
+        return cmd
+
+    cmd = [binary, "attach", base_url, "--dir", str(project_dir)]
+    cmd.extend(extra_args)
+    return cmd
+
+
 def _build_opencode_command(
     project_dir: Path,
     base_url: str,
@@ -575,10 +628,13 @@ def _build_opencode_command(
 
     try:
         sidecar_bin = _resolve_sidecar_binary()
-        cmd = [str(sidecar_bin), str(project_dir)]
-        if not has_url_arg:
-            cmd.extend(["--url", base_url])
-        cmd.extend(extra)
+        cmd = _build_binary_tui_command(
+            binary=str(sidecar_bin),
+            project_dir=project_dir,
+            base_url=base_url,
+            extra_args=extra,
+            has_url_arg=has_url_arg,
+        )
         return cmd, None
     except RuntimeError as exc:
         sidecar_error = str(exc)
@@ -586,9 +642,13 @@ def _build_opencode_command(
     if use_global_opencode:
         opencode_bin = shutil.which("opencode")
         if opencode_bin:
-            cmd = [opencode_bin, str(project_dir)]
-            # Global OpenCode builds may not expose --url. Prefer env-based routing.
-            cmd.extend(extra)
+            cmd = _build_binary_tui_command(
+                binary=opencode_bin,
+                project_dir=project_dir,
+                base_url=base_url,
+                extra_args=extra,
+                has_url_arg=has_url_arg,
+            )
             return cmd, None
 
     raise RuntimeError(

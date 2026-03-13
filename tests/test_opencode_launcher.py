@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import tarfile
 import zipfile
 from types import SimpleNamespace
@@ -55,6 +56,27 @@ def _build_archive_bytes(asset_name: str, binary_name: str) -> bytes:
     return buf.getvalue()
 
 
+def test_binary_supports_url_mode_from_help_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = getattr(opencode_launcher, "_URL_MODE_CAP_CACHE")
+    cache.clear()
+
+    def _run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        return subprocess.CompletedProcess(
+            args=["opencode", "--help"],
+            returncode=0,
+            stdout="... --url penguin web server url ...",
+            stderr="",
+        )
+
+    monkeypatch.setattr(opencode_launcher.subprocess, "run", _run)
+
+    supports = getattr(opencode_launcher, "_binary_supports_url_mode")
+    assert supports("/tmp/opencode") is True
+
+
 def test_build_command_uses_sidecar_when_local_source_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -69,6 +91,9 @@ def test_build_command_uses_sidecar_when_local_source_missing(
     monkeypatch.setattr(
         opencode_launcher, "_resolve_sidecar_binary", lambda: sidecar_bin
     )
+    monkeypatch.setattr(
+        opencode_launcher, "_binary_supports_url_mode", lambda binary: True
+    )
 
     cmd, cwd = opencode_launcher._build_opencode_command(
         project_dir,
@@ -81,6 +106,83 @@ def test_build_command_uses_sidecar_when_local_source_missing(
     assert cmd[0] == str(sidecar_bin)
     assert "--url" in cmd
     assert cmd[-2:] == ["--foo", "bar"]
+
+
+def test_build_command_uses_attach_mode_when_binary_lacks_url_option(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    sidecar_bin = tmp_path / opencode_launcher._sidecar_binary_name()
+    sidecar_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(opencode_launcher, "_find_local_opencode_dir", lambda: None)
+    monkeypatch.setattr(opencode_launcher.shutil, "which", lambda name: None)
+    monkeypatch.setattr(
+        opencode_launcher, "_resolve_sidecar_binary", lambda: sidecar_bin
+    )
+    monkeypatch.setattr(
+        opencode_launcher, "_binary_supports_url_mode", lambda binary: False
+    )
+
+    cmd, cwd = opencode_launcher._build_opencode_command(
+        project_dir,
+        "http://localhost:8000",
+        [],
+        use_global_opencode=False,
+    )
+
+    assert cwd is None
+    assert cmd == [
+        str(sidecar_bin),
+        "attach",
+        "http://localhost:8000",
+        "--dir",
+        str(project_dir),
+    ]
+
+
+def test_build_command_uses_global_attach_mode_when_requested(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    global_bin = "/usr/local/bin/opencode"
+
+    monkeypatch.setattr(opencode_launcher, "_find_local_opencode_dir", lambda: None)
+    monkeypatch.setattr(
+        opencode_launcher,
+        "_resolve_sidecar_binary",
+        lambda: (_ for _ in ()).throw(RuntimeError("sidecar unavailable")),
+    )
+    monkeypatch.setattr(
+        opencode_launcher.shutil,
+        "which",
+        lambda name: global_bin if name == "opencode" else None,
+    )
+    monkeypatch.setattr(
+        opencode_launcher, "_binary_supports_url_mode", lambda binary: False
+    )
+
+    cmd, cwd = opencode_launcher._build_opencode_command(
+        project_dir,
+        "http://localhost:8000",
+        ["--session", "abc123"],
+        use_global_opencode=True,
+    )
+
+    assert cwd is None
+    assert cmd == [
+        global_bin,
+        "attach",
+        "http://localhost:8000",
+        "--dir",
+        str(project_dir),
+        "--session",
+        "abc123",
+    ]
 
 
 def test_build_command_error_surfaces_sidecar_bootstrap_detail(
