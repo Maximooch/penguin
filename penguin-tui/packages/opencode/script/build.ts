@@ -111,10 +111,19 @@ const targets = singleFlag
 
 await $`rm -rf dist`
 
+const coreVersion = pkg.dependencies["@opentui/core"]
+const watcherVersion = pkg.dependencies["@parcel/watcher"]
+const nativeTargets = Array.from(
+  new Map(targets.map((item) => [`${item.os}-${item.arch}`, item])).values(),
+)
+
 const binaries: Record<string, string> = {}
 if (!skipInstall) {
-  await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`
-  await $`bun install --os="*" --cpu="*" @parcel/watcher@${pkg.dependencies["@parcel/watcher"]}`
+  await $`bun add --no-save --ignore-scripts --exact @opentui/core@${coreVersion}`
+  for (const item of nativeTargets) {
+    await $`bun add --no-save --ignore-scripts --exact --os=${item.os} --cpu=${item.arch} @opentui/core-${item.os}-${item.arch}@${coreVersion}`
+  }
+  await $`bun add --no-save --ignore-scripts --exact @parcel/watcher@${watcherVersion}`
 }
 for (const item of targets) {
   const name = [
