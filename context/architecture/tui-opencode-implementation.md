@@ -632,6 +632,7 @@ For each phase, validate with:
     - [~] I2.e Preserve developer override path (`PENGUIN_OPENCODE_DIR`) while introducing sidecar bootstrap/cache/checksum flow for non-dev installs.
       - Progress (2026-03-11): launcher now keeps local-source override behavior and adds sidecar bootstrap with cache + checksum verification (`~/.cache/penguin/tui` by default, release URL overridable via env), enabling non-dev TUI runs without Bun/global OpenCode.
       - Progress (2026-03-11): sidecar default release source now points to Penguin repo releases (not upstream OpenCode), launcher enforces Penguin compatibility for sidecar binaries (`--url` support required), and global `opencode` fallback remains attach-mode only when explicitly requested.
+      - Follow-up (post-merge cleanup): remove temporary branch-specific trigger from `.github/workflows/publish-tui.yml` (`refactor-penguin-backend-tui`) after mainline validation is complete.
     - [~] I2.f Add startup/directory coherence regression tests covering dispatcher routing, web autostart health checks, and session-bound execution roots.
       - Progress (2026-03-11): added dispatcher routing tests (`tests/test_cli_entrypoint_dispatcher.py`) and launcher startup regressions (`tests/test_opencode_launcher.py`) for web autostart success/failure and project-directory environment coherence (`PENGUIN_CWD`/`PENGUIN_PROJECT_ROOT`/`PWD`). Session-bound root behavior through full `/session` request flow remains open.
 - [ ] I3. Finish Penguin branding pass in Penguin mode.
