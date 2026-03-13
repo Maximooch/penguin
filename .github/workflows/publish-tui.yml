@@ -14,24 +14,66 @@ jobs:
   build-tui-sidecar:
     name: Build TUI sidecar (${{ matrix.label }})
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - label: linux
+          - label: linux-arm64
             runner: ubuntu-latest
             build_os: linux
+            build_targets: opencode-linux-arm64
+            include_baseline: "1"
+            timeout_minutes: 45
+          - label: linux-x64
+            runner: ubuntu-latest
+            build_os: linux
+            build_targets: opencode-linux-x64
+            include_baseline: "1"
+            timeout_minutes: 45
+          - label: linux-x64-baseline
+            runner: ubuntu-latest
+            build_os: linux
+            build_targets: opencode-linux-x64-baseline
+            include_baseline: "1"
+            timeout_minutes: 45
+          - label: linux-arm64-musl
+            runner: ubuntu-latest
+            build_os: linux
+            build_targets: opencode-linux-arm64-musl
+            include_baseline: "1"
+            timeout_minutes: 45
+          - label: linux-x64-musl
+            runner: ubuntu-latest
+            build_os: linux
+            build_targets: opencode-linux-x64-musl
+            include_baseline: "1"
+            timeout_minutes: 45
+          - label: linux-x64-baseline-musl
+            runner: ubuntu-latest
+            build_os: linux
+            build_targets: opencode-linux-x64-baseline-musl
+            include_baseline: "1"
+            timeout_minutes: 45
           - label: macos
             runner: macos-latest
             build_os: darwin
+            build_targets: opencode-darwin-arm64,opencode-darwin-x64,opencode-darwin-x64-baseline
+            include_baseline: "1"
+            timeout_minutes: 30
           - label: windows
             runner: windows-latest
             build_os: win32
+            build_targets: opencode-windows-x64
+            include_baseline: "0"
+            timeout_minutes: 30
     env:
       HUSKY: "0"
       OPENCODE_BUILD_OS: ${{ matrix.build_os }}
+      OPENCODE_BUILD_TARGETS: ${{ matrix.build_targets }}
+      OPENCODE_BUILD_INCLUDE_BASELINE: ${{ matrix.include_baseline }}
 
     steps:
       - name: Checkout repository
@@ -64,6 +106,8 @@ jobs:
           OPENCODE_VERSION: ${{ env.OPENCODE_VERSION }}
           OPENCODE_CHANNEL: ${{ env.OPENCODE_CHANNEL }}
           OPENCODE_BUILD_OS: ${{ env.OPENCODE_BUILD_OS }}
+          OPENCODE_BUILD_TARGETS: ${{ env.OPENCODE_BUILD_TARGETS }}
+          OPENCODE_BUILD_INCLUDE_BASELINE: ${{ env.OPENCODE_BUILD_INCLUDE_BASELINE }}
         run: bun run script/build.ts
 
       - name: Package sidecar archives

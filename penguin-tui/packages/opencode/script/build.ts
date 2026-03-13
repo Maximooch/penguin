@@ -29,6 +29,11 @@ const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
 const osFilter = (process.env.OPENCODE_BUILD_OS || "").trim()
+const includeBaseline = process.env.OPENCODE_BUILD_INCLUDE_BASELINE !== "0"
+const targetFilter = (process.env.OPENCODE_BUILD_TARGETS || "")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean)
 
 const allTargets: {
   os: string
@@ -89,12 +94,32 @@ const allTargets: {
   },
 ]
 
+function targetName(item: (typeof allTargets)[number]) {
+  return [
+    pkg.name,
+    item.os === "win32" ? "windows" : item.os,
+    item.arch,
+    item.avx2 === false ? "baseline" : undefined,
+    item.abi === undefined ? undefined : item.abi,
+  ]
+    .filter(Boolean)
+    .join("-")
+}
+
 const filteredTargets = osFilter
   ? allTargets.filter((item) => item.os === osFilter)
   : allTargets
 
+const scopedTargets = includeBaseline
+  ? filteredTargets
+  : filteredTargets.filter((item) => item.avx2 !== false)
+
+const selectedTargets = targetFilter.length
+  ? scopedTargets.filter((item) => targetFilter.includes(targetName(item)))
+  : scopedTargets
+
 const targets = singleFlag
-  ? filteredTargets.filter((item) => {
+  ? selectedTargets.filter((item) => {
       if (item.os !== process.platform || item.arch !== process.arch) {
         return false
       }
@@ -112,10 +137,14 @@ const targets = singleFlag
 
       return true
     })
-  : filteredTargets
+  : selectedTargets
 
 if (targets.length === 0) {
-  throw new Error(`No build targets selected for OPENCODE_BUILD_OS=${osFilter || "<all>"}`)
+  throw new Error(
+    `No build targets selected for OPENCODE_BUILD_OS=${osFilter || "<all>"} ` +
+      `OPENCODE_BUILD_INCLUDE_BASELINE=${includeBaseline ? "1" : "0"} ` +
+      `OPENCODE_BUILD_TARGETS=${targetFilter.join("|") || "<all>"}`,
+  )
 }
 
 await $`rm -rf dist`
@@ -135,16 +164,7 @@ if (!skipInstall) {
   await $`bun add --no-save --ignore-scripts --exact @parcel/watcher@${watcherVersion}`
 }
 for (const item of targets) {
-  const name = [
-    pkg.name,
-    // changing to win32 flags npm for some reason
-    item.os === "win32" ? "windows" : item.os,
-    item.arch,
-    item.avx2 === false ? "baseline" : undefined,
-    item.abi === undefined ? undefined : item.abi,
-  ]
-    .filter(Boolean)
-    .join("-")
+  const name = targetName(item)
   console.log(`building ${name}`)
   await $`mkdir -p dist/${name}/bin`
 
