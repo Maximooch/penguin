@@ -56,6 +56,16 @@ def _build_archive_bytes(asset_name: str, binary_name: str) -> bytes:
     return buf.getvalue()
 
 
+def test_default_release_url_points_to_penguin_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PENGUIN_TUI_RELEASE_URL", raising=False)
+    assert (
+        opencode_launcher._sidecar_release_url()
+        == "https://api.github.com/repos/Maximooch/penguin/releases/latest"
+    )
+
+
 def test_binary_supports_url_mode_from_help_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -108,7 +118,7 @@ def test_build_command_uses_sidecar_when_local_source_missing(
     assert cmd[-2:] == ["--foo", "bar"]
 
 
-def test_build_command_uses_attach_mode_when_binary_lacks_url_option(
+def test_build_command_rejects_incompatible_sidecar_without_url_option(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -126,21 +136,15 @@ def test_build_command_uses_attach_mode_when_binary_lacks_url_option(
         opencode_launcher, "_binary_supports_url_mode", lambda binary: False
     )
 
-    cmd, cwd = opencode_launcher._build_opencode_command(
-        project_dir,
-        "http://localhost:8000",
-        [],
-        use_global_opencode=False,
-    )
+    with pytest.raises(RuntimeError) as exc:
+        opencode_launcher._build_opencode_command(
+            project_dir,
+            "http://localhost:8000",
+            [],
+            use_global_opencode=False,
+        )
 
-    assert cwd is None
-    assert cmd == [
-        str(sidecar_bin),
-        "attach",
-        "http://localhost:8000",
-        "--dir",
-        str(project_dir),
-    ]
+    assert "not compatible" in str(exc.value)
 
 
 def test_build_command_uses_global_attach_mode_when_requested(

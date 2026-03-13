@@ -308,6 +308,7 @@ penguin
 Notes for Penguin TUI launcher (`penguin` / `ptui`):
 - It prefers Penguin's local TUI sources (`penguin-tui/packages/opencode`) when available.
 - If local sources are unavailable, it bootstraps a cached TUI sidecar binary with checksum verification under `~/.cache/penguin/tui`.
+- Sidecar downloads default to Penguin GitHub releases; override with `PENGUIN_TUI_RELEASE_URL` for staging/testing mirrors.
 - If you run from outside the Penguin repo and want to force local source mode, set `PENGUIN_OPENCODE_DIR` to that path, for example:
 
 ```bash

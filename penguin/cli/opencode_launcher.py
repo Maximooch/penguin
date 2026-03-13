@@ -27,7 +27,7 @@ from urllib.request import Request, urlopen
 
 LOCAL_HOSTS = {"", "localhost", "127.0.0.1", "0.0.0.0", "::1"}
 DEFAULT_TUI_RELEASE_URL = (
-    "https://api.github.com/repos/anomalyco/opencode/releases/latest"
+    "https://api.github.com/repos/Maximooch/penguin/releases/latest"
 )
 _URL_MODE_CAP_CACHE: dict[str, bool] = {}
 
@@ -576,13 +576,22 @@ def _build_binary_tui_command(
     base_url: str,
     extra_args: list[str],
     has_url_arg: bool,
+    require_url_mode: bool,
 ) -> list[str]:
-    if _binary_supports_url_mode(binary):
+    supports_url_mode = _binary_supports_url_mode(binary)
+    if supports_url_mode:
         cmd = [binary, str(project_dir)]
         if not has_url_arg:
             cmd.extend(["--url", base_url])
         cmd.extend(extra_args)
         return cmd
+
+    if require_url_mode:
+        raise RuntimeError(
+            "Downloaded Penguin TUI sidecar is not compatible with Penguin "
+            "(missing '--url' support). Clear your sidecar cache or set "
+            "PENGUIN_TUI_RELEASE_URL to a Penguin TUI release endpoint."
+        )
 
     cmd = [binary, "attach", base_url, "--dir", str(project_dir)]
     cmd.extend(extra_args)
@@ -634,6 +643,7 @@ def _build_opencode_command(
             base_url=base_url,
             extra_args=extra,
             has_url_arg=has_url_arg,
+            require_url_mode=True,
         )
         return cmd, None
     except RuntimeError as exc:
@@ -648,6 +658,7 @@ def _build_opencode_command(
                 base_url=base_url,
                 extra_args=extra,
                 has_url_arg=has_url_arg,
+                require_url_mode=False,
             )
             return cmd, None
 
