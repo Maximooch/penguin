@@ -102,15 +102,25 @@ jobs:
 
       - name: List packaged artifacts
         shell: bash
-        run: ls -lah penguin-tui/packages/opencode/dist/*.zip penguin-tui/packages/opencode/dist/*.tar.gz
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          dist = Path("penguin-tui/packages/opencode/dist")
+          archives = sorted(list(dist.glob("*.zip")) + list(dist.glob("*.tar.gz")))
+          if not archives:
+              raise SystemExit("no packaged TUI archives found")
+
+          for path in archives:
+              size_mib = path.stat().st_size / (1024 * 1024)
+              print(f"{path}  {size_mib:.2f} MiB")
+          PY
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
           name: penguin-tui-sidecar-${{ env.OPENCODE_VERSION }}-${{ matrix.label }}
-          path: |
-            penguin-tui/packages/opencode/dist/*.zip
-            penguin-tui/packages/opencode/dist/*.tar.gz
+          path: penguin-tui/packages/opencode/dist
 
   publish-release-assets:
     name: Publish TUI sidecar release assets
