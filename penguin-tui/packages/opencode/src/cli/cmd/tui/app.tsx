@@ -38,6 +38,9 @@ import open from "open"
 import { writeHeapSnapshot } from "v8"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 
+const PENGUIN_DOCS_URL = "https://penguin-rho.vercel.app"
+const OPENCODE_DOCS_URL = "https://opencode.ai/docs"
+
 async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
   // can't set raw mode if not a TTY
   if (!process.stdin.isTTY) return "dark"
@@ -522,7 +525,7 @@ function App() {
       title: "Open docs",
       value: "docs.open",
       onSelect: () => {
-        open("https://opencode.ai/docs").catch(() => {})
+        open(sdk.penguin ? PENGUIN_DOCS_URL : OPENCODE_DOCS_URL).catch(() => {})
         dialog.clear()
       },
       category: "System",
@@ -626,10 +629,13 @@ function App() {
     if (!currentModel) return
     if (currentModel.providerID === "openrouter" && !kv.get("openrouter_warning", false)) {
       untrack(() => {
+        const message = sdk.penguin
+          ? "OpenRouter is convenient, but some routed providers behave inconsistently in Penguin.\n\nFor the most reliable results, prefer direct provider connections or OpenRouter models you have already validated yourself."
+          : "While openrouter is a convenient way to access LLMs your request will often be routed to subpar providers that do not work well in our testing.\n\nFor reliable access to models check out OpenCode Zen\nhttps://opencode.ai/zen"
         DialogAlert.show(
           dialog,
           "Warning",
-          "While openrouter is a convenient way to access LLMs your request will often be routed to subpar providers that do not work well in our testing.\n\nFor reliable access to models check out OpenCode Zen\nhttps://opencode.ai/zen",
+          message,
         ).then(() => kv.set("openrouter_warning", true))
       })
     }
@@ -691,7 +697,9 @@ function App() {
     toast.show({
       variant: "info",
       title: "Update Available",
-      message: `OpenCode v${evt.properties.version} is available. Run 'opencode upgrade' to update manually.`,
+      message: sdk.penguin
+        ? `Penguin TUI build v${evt.properties.version} is available. Refresh your Penguin installation or sidecar runtime to update.`
+        : `OpenCode v${evt.properties.version} is available. Run 'opencode upgrade' to update manually.`,
       duration: 10000,
     })
   })

@@ -1,5 +1,6 @@
-import { createMemo, createSignal, For } from "solid-js"
+import { createMemo, For } from "solid-js"
 import { DEFAULT_THEMES, useTheme } from "@tui/context/theme"
+import { useSDK } from "@tui/context/sdk"
 
 const themeCount = Object.keys(DEFAULT_THEMES).length
 const themeTip = `Use {highlight}/theme{/highlight} or {highlight}Ctrl+X T{/highlight} to switch between ${themeCount} built-in themes`
@@ -30,9 +31,37 @@ function parse(tip: string): TipPart[] {
   return parts
 }
 
+function hideInPenguin(tip: string) {
+  const lower = tip.toLowerCase()
+  return [
+    "opencode.ai",
+    "opencode ",
+    "/opencode",
+    "opencode.json",
+    ".opencode/",
+    "opencode zen",
+    "opencode auto-",
+    "ghcr.io/anomalyco/opencode",
+  ].some((item) => lower.includes(item))
+}
+
+function penguinTips() {
+  return TIPS.filter((tip) => !hideInPenguin(tip)).concat([
+    "Use {highlight}/connect{/highlight} to add API keys for OpenAI, Anthropic, OpenRouter, and more",
+    "Use {highlight}penguin-cli{/highlight} for headless scripting and automation",
+    "Use {highlight}penguin-web{/highlight} to start the Penguin backend manually if needed",
+    "Run {highlight}/status{/highlight} to inspect LSP, formatter, and provider state in Penguin mode",
+  ])
+}
+
 export function Tips() {
   const theme = useTheme().theme
-  const parts = parse(TIPS[Math.floor(Math.random() * TIPS.length)])
+  const sdk = useSDK()
+  const activeTips = createMemo(() => (sdk.penguin ? penguinTips() : TIPS))
+  const parts = createMemo(() => {
+    const tips = activeTips()
+    return parse(tips[Math.floor(Math.random() * tips.length)])
+  })
 
   return (
     <box flexDirection="row" maxWidth="100%">
@@ -40,7 +69,7 @@ export function Tips() {
         ● Tip{" "}
       </text>
       <text flexShrink={1}>
-        <For each={parts}>
+        <For each={parts()}>
           {(part) => <span style={{ fg: part.highlight ? theme.text : theme.textMuted }}>{part.text}</span>}
         </For>
       </text>
@@ -48,6 +77,7 @@ export function Tips() {
   )
 }
 
+// TODO: make this Penguin specific
 const TIPS = [
   "Type {highlight}@{/highlight} followed by a filename to fuzzy search and attach files",
   "Start a message with {highlight}!{/highlight} to run shell commands directly (e.g., {highlight}!ls -la{/highlight})",

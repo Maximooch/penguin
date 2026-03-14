@@ -1,13 +1,25 @@
-import { TextAttributes, RGBA } from "@opentui/core"
-import { For, type JSX } from "solid-js"
+import { useTerminalDimensions } from "@opentui/solid"
+import { RGBA, TextAttributes } from "@opentui/core"
+import { For, createMemo, type JSX } from "solid-js"
 import { useTheme, tint } from "@tui/context/theme"
 import { logo, marks } from "@/cli/logo"
 
-// Shadow markers (rendered chars in parens):
-// _ = full shadow cell (space with bg=shadow)
-// ^ = letter top, shadow bottom (▀ with fg=letter, bg=shadow)
-// ~ = shadow top only (▀ with fg=shadow)
+type Segment = {
+  text: string
+  fg: RGBA
+}
+
 const SHADOW_MARKER = new RegExp(`[${marks}]`)
+const MIN_PENGUIN_WORDMARK_WIDTH = 88
+const PENGUIN_WORDMARK_FG = RGBA.fromHex("#f5f7fb")
+
+function renderSegments(segments: Segment[]): JSX.Element[] {
+  return segments.map((segment) => (
+    <text fg={segment.fg} selectable={false}>
+      {segment.text}
+    </text>
+  ))
+}
 
 export function Logo() {
   const { theme } = useTheme()
@@ -80,6 +92,51 @@ export function Logo() {
           </box>
         )}
       </For>
+    </box>
+  )
+}
+
+function PenguinWordmark() {
+  const dimensions = useTerminalDimensions()
+  const compact = createMemo(() => dimensions().width < 120 || dimensions().width < MIN_PENGUIN_WORDMARK_WIDTH)
+
+  const lines = createMemo(() => {
+    // TODO: Make the Penguin wordmark palette theme-aware after Penguin mode theming stabilizes.
+    if (compact()) {
+      return [
+        [{ text: "██████╗ ███████╗███╗   ██╗ ██████╗ ██╗   ██╗██╗███╗   ██╗", fg: PENGUIN_WORDMARK_FG }],
+        [{ text: "██╔══██╗██╔════╝████╗  ██║██╔════╝ ██║   ██║██║████╗  ██║", fg: PENGUIN_WORDMARK_FG }],
+        [{ text: "██████╔╝█████╗  ██╔██╗ ██║██║  ███╗██║   ██║██║██╔██╗ ██║", fg: PENGUIN_WORDMARK_FG }],
+        [{ text: "██╔═══╝ ██╔══╝  ██║╚██╗██║██║   ██║██║   ██║██║██║╚██╗██║", fg: PENGUIN_WORDMARK_FG }],
+        [{ text: "██║     ███████╗██║ ╚████║╚██████╔╝╚██████╔╝██║██║ ╚████║", fg: PENGUIN_WORDMARK_FG }],
+        [{ text: "╚═╝     ╚══════╝╚═╝  ╚═══╝ ╚═════╝  ╚═════╝ ╚═╝╚═╝  ╚═══╝", fg: PENGUIN_WORDMARK_FG }],
+      ]
+    }
+
+    return [
+      [{ text: "ooooooooo.                                                 o8o", fg: PENGUIN_WORDMARK_FG }],
+      [{ text: "`888   `Y88.                                               `\"'", fg: PENGUIN_WORDMARK_FG }],
+      [{ text: " 888   .d88'  .ooooo.  ooo. .oo.    .oooooooo oooo  oooo  oooo  ooo. .oo.", fg: PENGUIN_WORDMARK_FG }],
+      [{ text: " 888ooo88P'  d88' `88b `888P\"Y88b  888' `88b  `888  `888  `888  `888P\"Y88b", fg: PENGUIN_WORDMARK_FG }],
+      [{ text: " 888         888ooo888  888   888  888   888   888   888   888   888   888", fg: PENGUIN_WORDMARK_FG }],
+      [{ text: " 888         888    .o  888   888  `88bod8P'   888   888   888   888   888", fg: PENGUIN_WORDMARK_FG }],
+      [{ text: "o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V\"V8P' o888o o888o o888o", fg: PENGUIN_WORDMARK_FG }],
+      [{ text: "                                   d\"     YD", fg: PENGUIN_WORDMARK_FG }],
+      [{ text: "                                   \"Y88888P'", fg: PENGUIN_WORDMARK_FG }],
+    ]
+  })
+
+  return (
+    <box>
+      <For each={lines()}>{(line) => <box flexDirection="row">{renderSegments(line)}</box>}</For>
+    </box>
+  )
+}
+
+export function PenguinLogo() {
+  return (
+    <box alignItems="center">
+      <PenguinWordmark />
     </box>
   )
 }

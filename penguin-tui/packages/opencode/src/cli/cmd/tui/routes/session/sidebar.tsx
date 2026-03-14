@@ -11,9 +11,11 @@ import { useKeybind } from "../../context/keybind"
 import { useDirectory } from "../../context/directory"
 import { useKV } from "../../context/kv"
 import { TodoItem } from "../../component/todo-item"
+import { useSDK } from "../../context/sdk"
 
 export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   const sync = useSync()
+  const sdk = useSDK()
   const { theme } = useTheme()
   const session = createMemo(() => sync.session.get(props.sessionID)!)
   const diff = createMemo(() => sync.data.session_diff[props.sessionID] ?? [])
@@ -301,7 +303,11 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                     ✕
                   </text>
                 </box>
-                <text fg={theme.textMuted}>OpenCode includes free models so you can start immediately.</text>
+                <text fg={theme.textMuted}>
+                  {sdk.penguin
+                    ? "Connect a provider to start using models in Penguin."
+                    : "OpenCode includes free models so you can start immediately."}
+                </text>
                 <text fg={theme.textMuted}>
                   Connect from 75+ providers to use other models, including Claude, GPT, Gemini etc
                 </text>
@@ -317,11 +323,20 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
             <span style={{ fg: theme.text }}>{directory().split("/").at(-1)}</span>
           </text>
           <text fg={theme.textMuted}>
-            <span style={{ fg: theme.success }}>•</span> <b>Open</b>
-            <span style={{ fg: theme.text }}>
-              <b>Code</b>
-            </span>{" "}
-            <span>{Installation.VERSION}</span>
+            <Show
+              when={sdk.penguin}
+              fallback={
+                <>
+                  <span style={{ fg: theme.success }}>•</span> <b>Open</b>
+                  <span style={{ fg: theme.text }}>
+                    <b>Code</b>
+                  </span>{" "}
+                  <span>{Installation.VERSION}</span>
+                </>
+              }
+            >
+              <span style={{ fg: theme.primary }}>•</span> <b>Penguin</b> <span>{Installation.VERSION}</span>
+            </Show>
           </text>
         </box>
       </box>

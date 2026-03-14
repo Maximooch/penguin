@@ -271,7 +271,7 @@ function ApiMethod(props: ApiMethodProps) {
       title={props.title}
       placeholder="API key"
       description={
-        props.providerID === "opencode" ? (
+        props.providerID === "opencode" && !sdk.penguin ? (
           <box gap={1}>
             <text fg={theme.textMuted}>
               OpenCode Zen gives you access to all the best coding models at the cheapest prices with a single API key.

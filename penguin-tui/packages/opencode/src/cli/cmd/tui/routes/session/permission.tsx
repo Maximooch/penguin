@@ -138,6 +138,7 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
   })
 
   const { theme } = useTheme()
+  const appName = createMemo(() => (sdk.penguin ? "Penguin" : "OpenCode"))
 
   return (
     <Switch>
@@ -147,11 +148,11 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
           body={
             <Switch>
               <Match when={props.request.always.length === 1 && props.request.always[0] === "*"}>
-                <TextBody title={"This will allow " + props.request.permission + " until OpenCode is restarted."} />
+                <TextBody title={"This will allow " + props.request.permission + " until " + appName() + " is restarted."} />
               </Match>
               <Match when={true}>
                 <box paddingLeft={1} gap={1}>
-                  <text fg={theme.textMuted}>This will allow the following patterns until OpenCode is restarted</text>
+                  <text fg={theme.textMuted}>This will allow the following patterns until {appName()} is restarted</text>
                   <box>
                     <For each={props.request.always}>
                       {(pattern) => (
@@ -300,7 +301,9 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
 
 function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: () => void }) {
   let input: TextareaRenderable
+  const sdk = useSDK()
   const { theme } = useTheme()
+  const appName = createMemo(() => (sdk.penguin ? "Penguin" : "OpenCode"))
   const keybind = useKeybind()
   const textareaKeybindings = useTextareaKeybindings()
   const dimensions = useTerminalDimensions()
@@ -334,7 +337,7 @@ function RejectPrompt(props: { onConfirm: (message: string) => void; onCancel: (
           <text fg={theme.text}>Reject permission</text>
         </box>
         <box paddingLeft={1}>
-          <text fg={theme.textMuted}>Tell OpenCode what to do differently</text>
+          <text fg={theme.textMuted}>Tell {appName()} what to do differently</text>
         </box>
       </box>
       <box

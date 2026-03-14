@@ -2,7 +2,7 @@ import { Prompt, type PromptRef } from "@tui/component/prompt"
 import { createMemo, Match, onMount, Show, Switch } from "solid-js"
 import { useTheme } from "@tui/context/theme"
 import { useKeybind } from "@tui/context/keybind"
-import { Logo } from "../component/logo"
+import { Logo, PenguinLogo } from "../component/logo"
 import { Tips } from "../component/tips"
 import { Locale } from "@/util/locale"
 import { useSync } from "../context/sync"
@@ -15,7 +15,6 @@ import { Installation } from "@/installation"
 import { useKV } from "../context/kv"
 import { useCommandDialog } from "../component/dialog-command"
 import { useSDK } from "@tui/context/sdk"
-import { TextAttributes } from "@opentui/core"
 
 // TODO: what is the best way to do this?
 let once = false
@@ -102,9 +101,7 @@ export function Home() {
           when={sdk.penguin}
           fallback={<Logo />}
         >
-          <text fg={theme.text} attributes={TextAttributes.BOLD}>
-            Penguin
-          </text>
+          <PenguinLogo />
         </Show>
         <box width="100%" maxWidth={75} zIndex={1000} paddingTop={1}>
           <Prompt

@@ -641,6 +641,8 @@ For each phase, validate with:
 - [ ] I3. Finish Penguin branding pass in Penguin mode.
   - Owner: TUI home/status/footer copy + theme/assets.
   - Acceptance: no confusing OpenCode-specific branding in Penguin mode (logo/footer/help text), while preserving upstream defaults outside Penguin mode.
+  - Progress (2026-03-13): Penguin-mode copy now replaces major OpenCode brand leaks in visible TUI surfaces, including the OpenRouter warning dialog, docs link target, status/version labels, sidebar getting-started/footer text, permission prompts, update toast, and rotating tips. Remaining cleanup is mostly deeper command/help/optional provider-branding polish.
+  - Progress (2026-03-13): home screen now uses a dedicated Penguin visual treatment above the wordmark, with a `FrameBufferRenderable` prototype driven by image-derived color data from `context/Penguin-Mountain.jpg` and a text wordmark fallback for narrower terminals.
 - [ ] I4. Add explicit exit/cancel keybind guidance and safer default behavior for `Ctrl+C`/interrupt flows.
   - Owner: keybind layer + prompt/session route handlers.
   - Acceptance: users can predictably interrupt or exit without leaving stuck state.
