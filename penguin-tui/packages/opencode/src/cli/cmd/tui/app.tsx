@@ -37,6 +37,7 @@ import { ArgsProvider, useArgs, type Args } from "./context/args"
 import open from "open"
 import { writeHeapSnapshot } from "v8"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
+import { exitSession } from "./util/exit"
 
 const PENGUIN_DOCS_URL = "https://penguin-rho.vercel.app"
 const OPENCODE_DOCS_URL = "https://opencode.ai/docs"
@@ -537,7 +538,17 @@ function App() {
         name: "exit",
         aliases: ["quit", "q"],
       },
-      onSelect: () => exit(),
+      onSelect: async () => {
+        const sessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        await exitSession({
+          busy: sessionID ? sync.data.session_status?.[sessionID]?.type !== "idle" : false,
+          sessionID,
+          dialog,
+          sdk,
+          sync,
+          exit,
+        })
+      },
       category: "System",
     },
     {

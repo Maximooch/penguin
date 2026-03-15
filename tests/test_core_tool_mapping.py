@@ -17,6 +17,14 @@ from penguin.web.services.session_view import (
 )
 
 
+class _EventBus:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(self, event_name: str, payload: dict[str, Any]) -> None:
+        self.events.append((event_name, payload))
+
+
 @pytest.mark.parametrize(
     ("action", "params", "expected_tool", "expected_values"),
     [
@@ -208,6 +216,33 @@ def test_map_action_result_metadata_extracts_todos_for_todowrite() -> None:
 
     assert metadata["todos"][0]["id"] == "todo_1"
     assert metadata["todos"][0]["content"] == "Implement todo endpoint"
+
+
+@pytest.mark.asyncio
+async def test_core_created_tui_adapter_suppresses_live_session_status_events() -> None:
+    bus = _EventBus()
+    core = PenguinCore.__new__(PenguinCore)
+
+    async def _persist(event_type: str, properties: dict[str, Any]) -> None:
+        del event_type, properties
+
+    setattr(core, "event_bus", bus)
+    setattr(core, "_persist_opencode_event", _persist)
+    setattr(core, "_tui_adapters", {})
+    setattr(core, "_opencode_session_directories", {})
+
+    adapter = core._get_tui_adapter("session_busy")
+    assert getattr(adapter, "_emit_session_status_events") is False
+
+    part_id = await adapter.on_tool_start("bash", {"command": "pwd"})
+    await adapter.on_tool_end(part_id, "ok")
+
+    status_events = [
+        payload
+        for event_type, payload in bus.events
+        if event_type == "opencode_event" and payload.get("type") == "session.status"
+    ]
+    assert status_events == []
 
 
 def test_map_action_result_metadata_moves_diff_to_attempted_diff_on_error() -> None:

@@ -32,6 +32,7 @@ import { DialogAlert } from "../../ui/dialog-alert"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
+import { exitSession } from "../../util/exit"
 
 export type PromptProps = {
   sessionID?: string
@@ -1160,7 +1161,14 @@ export function Prompt(props: PromptProps) {
                 }
                 if (keybind.match("app_exit", e)) {
                   if (store.prompt.input === "") {
-                    await exit()
+                    await exitSession({
+                      busy: store.pending || status().type !== "idle",
+                      sessionID: props.sessionID,
+                      dialog,
+                      sdk,
+                      sync,
+                      exit,
+                    })
                     // Don't preventDefault - let textarea potentially handle the event
                     e.preventDefault()
                     return
@@ -1477,10 +1485,10 @@ export function Prompt(props: PromptProps) {
                   })()}
                 </box>
               </box>
-              <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
+              <text fg={store.interrupt > 0 && !sdk.penguin ? theme.primary : theme.text}>
                 esc{" "}
-                <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
-                  {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
+                <span style={{ fg: store.interrupt > 0 && !sdk.penguin ? theme.primary : theme.textMuted }}>
+                  {sdk.penguin ? "interrupt" : store.interrupt > 0 ? "again to interrupt" : "interrupt"}
                 </span>
               </text>
             </box>
@@ -1499,6 +1507,9 @@ export function Prompt(props: PromptProps) {
                   </text>
                   <text fg={theme.text}>
                     {keybind.print("command_list")} <span style={{ fg: theme.textMuted }}>commands</span>
+                  </text>
+                  <text fg={theme.text}>
+                    {keybind.print("app_exit")} <span style={{ fg: theme.textMuted }}>exit</span>
                   </text>
                 </Match>
                 <Match when={store.mode === "shell"}>

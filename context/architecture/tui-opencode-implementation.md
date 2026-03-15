@@ -617,6 +617,13 @@ For each phase, validate with:
 - [ ] I1. Resolve occasional queued/stuck turn behavior under streaming-heavy runs.
   - Owner: stream lifecycle ordering + event flush/completion audit (`core.py`, TUI sync state).
   - Acceptance: turns consistently move busy -> idle without stranded queued prompts.
+  - Finding (2026-03-14): the visible "running" animation gap is not a spinner-widget issue; Penguin prompt UI already animates whenever `session.status != idle`, but backend session status can briefly flip to idle between stream end and subsequent tool/action work because the current TUI adapter only considers `_stream_active || _active_tool_parts` when deriving busy state.
+  - Finding (2026-03-14): compared to the OpenCode reference, Penguin adds a `pending` submit shim in the prompt component to bridge submit -> first busy event, but that shim does not cover post-stream action gaps; root fix belongs in backend turn lifecycle/state, not a larger client-side spinner hack.
+  - Execution plan (2026-03-14):
+    - [ ] I1.a Introduce turn-level active bookkeeping in `penguin/tui_adapter/part_events.py` so session busy remains true from prompt submission until the full think/act turn is finalized.
+    - [ ] I1.b Prevent idle transitions in the stream -> tool/action handoff window; only emit idle when no stream, no active tool parts, and no active turn bookkeeping remain.
+    - [ ] I1.c Add focused regression coverage for busy-state continuity across text streaming, tool-only phases, and abort/finalize paths.
+  - Progress (2026-03-14): core-created TUI adapters no longer emit live `session.status` transitions themselves; live busy/idle for Penguin prompt runs is now driven by request-level session status from `core.process_message`, avoiding the stream-end -> tool-start idle flicker that made action phases look stalled. Added regression coverage to lock the adapter behavior.
 - [ ] I2. Ensure TUI/server directory coherence when launched from different working dirs.
   - Owner: launcher/runtime directory handshake + immutable session directory binding.
   - Acceptance: tool execution roots match active project immediately, without corrective follow-up commands.
@@ -646,6 +653,13 @@ For each phase, validate with:
 - [ ] I4. Add explicit exit/cancel keybind guidance and safer default behavior for `Ctrl+C`/interrupt flows.
   - Owner: keybind layer + prompt/session route handlers.
   - Acceptance: users can predictably interrupt or exit without leaving stuck state.
+  - Decision (2026-03-14): when the app is busy and the user exits, default to `confirm interrupt + exit` (not silent exit and not hard block-until-idle).
+  - Finding (2026-03-14): Penguin currently has multiple immediate-abort paths (`prompt` command path, prompt keydown path, session route path) while the footer/help text still implies OpenCode-style two-step `esc again to interrupt`, so guidance and behavior are out of sync.
+  - Execution plan (2026-03-14):
+    - [ ] I4.a Remove `ctrl+c` from the default `app_exit` binding while preserving it as input-clear only.
+    - [ ] I4.b Add a busy-session exit confirmation flow that interrupts the current session before exiting.
+    - [ ] I4.c Unify interrupt handling/copy across prompt + session routes so visible guidance matches real behavior.
+  - Progress (2026-03-14): default `app_exit` no longer includes `ctrl+c` (leaving `ctrl+c` as input-clear only), prompt/session/app-exit flows now use a shared `interrupt + exit` confirmation path for busy Penguin sessions, and the prompt footer no longer misleadingly tells Penguin users to press escape twice when interrupt is immediate.
 
 ### Track J: Core/TUI Bridge Extraction (Final Cleanup)
 - [ ] J1. Extract OpenCode/TUI event subscription + handlers from `core.py` into a dedicated bridge module.

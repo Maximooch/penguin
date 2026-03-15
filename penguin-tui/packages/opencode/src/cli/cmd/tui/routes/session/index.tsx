@@ -57,6 +57,7 @@ import { DialogConfirm } from "@tui/ui/dialog-confirm"
 import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
+import { exitSession } from "../../util/exit"
 import { Sidebar } from "./sidebar"
 import { Flag } from "@/flag/flag"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
@@ -221,13 +222,22 @@ export function Session() {
   let scroll: ScrollBoxRenderable
   let prompt: PromptRef
   const keybind = useKeybind()
+  const dialog = useDialog()
 
   // Allow exit when in child session (prompt is hidden)
   const exit = useExit()
-  useKeyboard((evt) => {
+  useKeyboard(async (evt) => {
     if (!session()?.parentID) return
     if (keybind.match("app_exit", evt)) {
-      exit()
+      evt.preventDefault?.()
+      await exitSession({
+        busy: sync.data.session_status?.[route.sessionID]?.type !== "idle",
+        sessionID: route.sessionID,
+        dialog,
+        sdk,
+        sync,
+        exit,
+      })
     }
   })
 
@@ -935,7 +945,6 @@ export function Session() {
     }
   })
 
-  const dialog = useDialog()
   const renderer = useRenderer()
 
   // snap to bottom when session changes

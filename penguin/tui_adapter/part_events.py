@@ -84,9 +84,11 @@ class PartEventAdapter:
         persist_callback: Optional[
             Callable[[str, Dict[str, Any]], Optional[Awaitable[None]]]
         ] = None,
+        emit_session_status_events: bool = True,
     ):
         self.event_bus = event_bus
         self.persist_callback = persist_callback
+        self._emit_session_status_events = bool(emit_session_status_events)
         self._active_messages: Dict[str, Message] = {}
         self._active_parts: Dict[str, Part] = {}
         self._session_id: Optional[str] = None
@@ -270,6 +272,8 @@ class PartEventAdapter:
         if next_status == self._session_status:
             return
         self._session_status = next_status
+        if not self._emit_session_status_events:
+            return
         await self._emit_session_status(next_status)
 
     async def _ensure_tool_message(

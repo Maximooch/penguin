@@ -691,6 +691,7 @@ class PenguinCore:
         self._tui_adapter = PartEventAdapter(
             self.event_bus,
             persist_callback=self._persist_opencode_event,
+            emit_session_status_events=False,
         )
         self._tui_adapters: Dict[str, Any] = {}
         self._opencode_abort_sessions: set[str] = set()
@@ -4039,6 +4040,7 @@ class PenguinCore:
         adapter = PartEventAdapter(
             self.event_bus,
             persist_callback=self._persist_opencode_event,
+            emit_session_status_events=False,
         )
         adapter.set_session(sid)
         if hasattr(adapter, "set_directory"):
