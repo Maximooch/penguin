@@ -645,11 +645,12 @@ For each phase, validate with:
       - Follow-up (post-merge cleanup): remove temporary branch-specific trigger from `.github/workflows/publish-tui.yml` (`refactor-penguin-backend-tui`) after mainline validation is complete.
     - [~] I2.f Add startup/directory coherence regression tests covering dispatcher routing, web autostart health checks, and session-bound execution roots.
       - Progress (2026-03-11): added dispatcher routing tests (`tests/test_cli_entrypoint_dispatcher.py`) and launcher startup regressions (`tests/test_opencode_launcher.py`) for web autostart success/failure and project-directory environment coherence (`PENGUIN_CWD`/`PENGUIN_PROJECT_ROOT`/`PWD`). Session-bound root behavior through full `/session` request flow remains open.
-- [ ] I3. Finish Penguin branding pass in Penguin mode.
+- [x] I3. Finish Penguin branding pass in Penguin mode.
   - Owner: TUI home/status/footer copy + theme/assets.
   - Acceptance: no confusing OpenCode-specific branding in Penguin mode (logo/footer/help text), while preserving upstream defaults outside Penguin mode.
   - Progress (2026-03-13): Penguin-mode copy now replaces major OpenCode brand leaks in visible TUI surfaces, including the OpenRouter warning dialog, docs link target, status/version labels, sidebar getting-started/footer text, permission prompts, update toast, and rotating tips. Remaining cleanup is mostly deeper command/help/optional provider-branding polish.
   - Progress (2026-03-13): home screen now uses a dedicated Penguin visual treatment above the wordmark, with a `FrameBufferRenderable` prototype driven by image-derived color data from `context/Penguin-Mountain.jpg` and a text wordmark fallback for narrower terminals.
+  - Progress (2026-03-14): standalone TUI command descriptors now read as Penguin, the home screen has been simplified to a clean white Penguin wordmark, and remaining `OpenCode`/`opencode.ai` strings in TUI source are restricted to upstream-preserving fallback branches or tips that are filtered out in Penguin mode.
 - [ ] I4. Add explicit exit/cancel keybind guidance and safer default behavior for `Ctrl+C`/interrupt flows.
   - Owner: keybind layer + prompt/session route handlers.
   - Acceptance: users can predictably interrupt or exit without leaving stuck state.
