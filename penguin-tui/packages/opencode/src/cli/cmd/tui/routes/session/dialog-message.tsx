@@ -5,6 +5,8 @@ import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import { Clipboard } from "@tui/util/clipboard"
 import type { PromptInfo } from "@tui/component/prompt/history"
+import { useToast } from "@tui/ui/toast"
+import { apiErrorMessage } from "@tui/util/api-error"
 
 export function DialogMessage(props: {
   messageID: string
@@ -15,6 +17,7 @@ export function DialogMessage(props: {
   const sdk = useSDK()
   const message = createMemo(() => sync.data.message[props.sessionID]?.find((x) => x.id === props.messageID))
   const route = useRoute()
+  const toast = useToast()
 
   return (
     <DialogSelect
@@ -80,6 +83,17 @@ export function DialogMessage(props: {
               sessionID: props.sessionID,
               messageID: props.messageID,
             })
+            if (result.error || !result.data?.id) {
+              toast.show({
+                variant: "error",
+                message: apiErrorMessage(
+                  result.error,
+                  "Forking is not available yet in this Penguin build.",
+                ),
+              })
+              dialog.clear()
+              return
+            }
             const initialPrompt = (() => {
               const msg = message()
               if (!msg) return undefined
@@ -96,7 +110,7 @@ export function DialogMessage(props: {
               )
             })()
             route.navigate({
-              sessionID: result.data!.id,
+              sessionID: result.data.id,
               type: "session",
               initialPrompt,
             })

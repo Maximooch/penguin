@@ -12,6 +12,8 @@ import pytest
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.services.session_summary import summarize_session_title
 from penguin.web.services.session_view import (
+    REVERT_KEY,
+    SUMMARY_KEY,
     TODO_KEY,
     TRANSCRIPT_KEY,
     USAGE_KEY,
@@ -206,6 +208,33 @@ def test_session_info_includes_usage_snapshot():
     assert info is not None
     assert info["usage"]["current_total_tokens"] == 1200
     assert info["usage"]["truncations"]["total_truncations"] == 2
+
+
+def test_session_info_includes_revert_and_summary_payloads():
+    session = _session("session_revert", "Revert Session", "2026-02-03T00:00:00")
+    session.metadata[REVERT_KEY] = {
+        "messageID": "msg_user_1",
+        "partID": "part_1",
+        "snapshot": "revert_123",
+        "diff": "--- a/src/app.py\n+++ b/src/app.py\n",
+        "hiddenMessageIDs": ["msg_user_1", "msg_assistant_1"],
+    }
+    session.metadata[SUMMARY_KEY] = {
+        "additions": 2,
+        "deletions": 1,
+        "files": 1,
+        "diffs": [{"file": "src/app.py", "additions": 2, "deletions": 1}],
+    }
+    core = _core([session])
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["revert"]["messageID"] == "msg_user_1"
+    assert info["revert"]["snapshot"] == "revert_123"
+    assert info["revert"]["hiddenMessageIDs"] == ["msg_user_1", "msg_assistant_1"]
+    assert info["summary"]["files"] == 1
+    assert info["summary"]["diffs"][0]["file"] == "src/app.py"
 
 
 def test_get_session_messages_prefers_persisted_transcript():

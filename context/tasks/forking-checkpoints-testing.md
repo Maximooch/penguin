@@ -17,18 +17,185 @@ Validate the remaining gap between existing conversation checkpoint/branch capab
   - `penguin/core.py:2031` create checkpoint
   - `penguin/core.py:2060` branch from checkpoint
   - `/api/v1/checkpoints/*` routes in `penguin/web/routes.py:5118`
-- But the OpenCode-compatible session endpoints are not wired yet:
-  - `/session/{id}/fork` currently 404s
-  - no OpenCode-shaped `/session/{id}/revert` / `/session/{id}/unrevert` routes are currently present in `penguin/web/routes.py`
-- Current TUI failure mode:
-  - `dialog-message.tsx` assumes `result.data!.id` and crashes if the backend route is missing or returns a different shape
+- OpenCode-compatible fork/revert routes are now present in Penguin web:
+  - `POST /session/{id}/fork`
+  - `POST /session/{id}/revert`
+  - `POST /session/{id}/unrevert`
+- Checkpoint branch route now returns real session info alongside legacy `branch_id`.
+- Current remaining gaps from manual validation:
+  - forking works well end-to-end from the TUI
+  - revert/unrevert is only partially there: the backend works, but the TUI still feels like it is hiding a suffix of conversation state rather than providing an intuitive rollback/redo experience
+  - checkpoint creation/branch/rollback is still not exposed in the TUI surface, so users cannot discover it from normal session/message actions
 
-## Minimum Merge Bar (If Choosing To Finish This Pre-Merge)
+## Locked Decisions
 
-- [ ] `POST /session/{session_id}/fork` exists and returns OpenCode-shaped `Session.Info`
-- [ ] TUI fork action creates a new child/branch session and navigates to it
-- [ ] Revert and unrevert routes exist and update TUI state cleanly
-- [ ] Branch/checkpoint semantics are documented enough that users know what is and is not supported
+- [x] TUI `fork` means: clone transcript history up to `messageID` into a new session.
+- [x] Forked sessions should remain parallel roots in the session list (title lineage, not `parentID` subagent linkage).
+- [x] Revert and unrevert should be fully exposed in Penguin web before merge.
+- [x] Checkpoint branches should materialize as real sessions that can be opened from the normal session list; branch switching does not require a graph view in v1.
+
+## Implementation Plan
+
+### Phase 1: Stop TUI fork crashes immediately
+
+1. Add defensive handling in:
+   - `penguin-tui/packages/opencode/src/cli/cmd/tui/routes/session/dialog-message.tsx`
+   - `penguin-tui/packages/opencode/src/cli/cmd/tui/routes/session/dialog-fork-from-timeline.tsx`
+2. If `sdk.client.session.fork(...)` returns no `data.id` or an error:
+   - show a toast/dialog error,
+   - do not navigate,
+   - do not crash.
+
+### Phase 2: Add OpenCode-compatible fork API
+
+Add routes in `penguin/web/routes.py`:
+
+- `POST /session/{session_id}/fork`
+- `POST /api/v1/session/{session_id}/fork`
+
+Suggested request body:
+
+```json
+{
+  "messageID": "optional-message-id"
+}
+```
+
+Suggested response:
+- OpenCode-shaped `Session.Info`
+
+Implementation shape:
+
+- Add a focused service module, likely `penguin/web/services/session_fork.py`
+- Main function:
+
+```python
+fork_session(
+    core,
+    session_id: str,
+    *,
+    message_id: str | None = None,
+    directory: str | None = None,
+) -> dict[str, Any]
+```
+
+Behavior:
+
+1. Resolve source session and owning manager.
+2. Create a new saved session via the owning manager.
+3. Copy transcript/messages/parts up to `message_id`.
+4. Preserve directory binding/project identity.
+5. Set lineage metadata such as:
+   - `forked_from_session_id`
+   - `forked_from_message_id`
+6. Generate a user-friendly fork title (`<title> (fork #n)`).
+7. Return `get_session_info(...)` for the new session.
+8. Emit `session.created`.
+
+### Phase 3: Add OpenCode-compatible revert / unrevert API
+
+Add routes in `penguin/web/routes.py`:
+
+- `POST /session/{session_id}/revert`
+- `POST /api/v1/session/{session_id}/revert`
+- `POST /session/{session_id}/unrevert`
+- `POST /api/v1/session/{session_id}/unrevert`
+
+Suggested request bodies:
+
+```json
+{
+  "messageID": "message-id",
+  "partID": "optional-part-id"
+}
+```
+
+and
+
+```json
+{}
+```
+
+Suggested response:
+- updated OpenCode-shaped `Session.Info`
+
+Implementation shape:
+
+- Add a focused service module, likely `penguin/web/services/session_revert.py`
+- Main functions:
+
+```python
+revert_session(core, session_id: str, *, message_id: str, part_id: str | None = None) -> dict[str, Any]
+unrevert_session(core, session_id: str) -> dict[str, Any]
+```
+
+Behavior:
+
+1. Refuse revert/unrevert when session is busy.
+2. Track the snapshot/filesystem state needed to restore later.
+3. Compute/store revert metadata in session metadata:
+   - `messageID`
+   - `partID`
+   - `snapshot`
+   - `diff`
+4. Recompute session diff/summary and emit update events.
+5. On unrevert, restore snapshot and clear revert metadata.
+
+### Phase 4: Expose revert metadata in session payloads
+
+Extend `penguin/web/services/session_view.py` so `_build_session_info(...)` maps session metadata into the OpenCode fields expected by the TUI:
+
+- `revert`
+- `summary`
+
+This is required for:
+
+- `Undo previous message`
+- `Redo`
+- reverted-range rendering in the session view
+
+### Phase 5: Bridge checkpoints and branches to real sessions
+
+Keep the existing checkpoint system, but make branch creation materialize a real session that the TUI can open through the existing session list.
+
+Likely patch points:
+
+- `penguin/core.py`
+- `penguin/system/conversation_manager.py`
+- `penguin/system/checkpoint_manager.py`
+- `penguin/web/routes.py`
+
+Goal:
+
+1. Branch from checkpoint produces a real saved session.
+2. That session appears in `/session` and `/session/{id}`.
+3. The TUI can switch branches using the normal session list, since there is no graph UI in v1.
+
+### Phase 6: Validation and regression tests
+
+Add/extend tests in:
+
+- `tests/api/test_opencode_session_routes.py`
+- `tests/api/test_session_view_service.py`
+- likely new:
+  - `tests/api/test_session_fork_routes.py`
+  - `tests/api/test_session_revert_routes.py`
+
+Minimum automated coverage:
+
+- fork returns `Session.Info`
+- fork copies history only through requested `messageID`
+- fork emits `session.created`
+- revert stores metadata and updates diff/summary
+- unrevert clears metadata and restores state
+- checkpoint branch returns a real new session
+
+## Minimum Merge Bar (Current)
+
+- [x] `POST /session/{session_id}/fork` exists and returns OpenCode-shaped `Session.Info`
+- [x] TUI fork action creates a new child/branch session and navigates to it
+- [~] Revert and unrevert routes exist, but TUI state/UX still needs another practical pass before calling it complete
+- [~] Branch/checkpoint semantics are mostly documented in backend behavior, but checkpoint UI discoverability is still absent in the TUI
 
 ## Validation Flow
 
@@ -59,6 +226,7 @@ Validate the remaining gap between existing conversation checkpoint/branch capab
 - [ ] Confirm:
   - revert route exists
   - TUI marks reverted range correctly
+  - new post-revert turns remain visible
   - diff/sidebar state updates
 - [ ] Trigger unrevert
 - [ ] Confirm state restores cleanly
@@ -68,9 +236,8 @@ Validate the remaining gap between existing conversation checkpoint/branch capab
 - [ ] Create a manual checkpoint through backend checkpoint routes
 - [ ] Confirm checkpoint listing works
 - [ ] Confirm branching from a checkpoint creates a usable conversation branch
-- [ ] Decide whether TUI forking should map directly to:
-  - session/message clone semantics, or
-  - checkpoint-backed branch semantics
+- [ ] Confirm branched checkpoint session appears in the normal session list
+- [ ] Decide whether checkpoint creation/branch/rollback needs a first-class TUI dialog before merge, or is explicitly deferred
 
 ### 6. Reload / Persistence
 
@@ -99,6 +266,22 @@ Validate the remaining gap between existing conversation checkpoint/branch capab
 - `penguin-tui/packages/opencode/src/cli/cmd/tui/routes/session/dialog-message.tsx:79`
 - add defensive handling before assuming `result.data!.id`
 
+### Revert / unrevert feels functionally wrong in the TUI
+
+- `penguin-tui/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx`
+- `penguin/web/services/session_revert.py`
+- likely issue areas:
+  - hidden-message selection and rendering
+  - repeated undo/redo anchor selection
+  - mixing new post-revert turns with hidden reverted history
+
+### Checkpointing is not discoverable in the TUI
+
+- add a TUI command/dialog surface, likely in:
+  - `penguin-tui/packages/opencode/src/cli/cmd/tui/routes/session/dialog-message.tsx`
+  - `penguin-tui/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx`
+  - new `dialog-checkpoints.tsx`
+
 ### Revert / unrevert not plugged into Penguin web
 
 - `penguin-tui/packages/opencode/src/session/revert.ts:23`
@@ -116,18 +299,18 @@ Validate the remaining gap between existing conversation checkpoint/branch capab
 
 ## Design Decisions To Lock Before Full Wiring
 
-- [ ] Should TUI `fork` mean:
-  - clone transcript up to `messageID` into a new session, or
-  - create a checkpoint-backed branch and load it?
-- [ ] Should forked sessions set `parentID`, or remain parallel roots with title lineage only?
-- [ ] Should revert/unrevert be fully exposed in Penguin web before merge, or deferred post-merge with defensive TUI guards?
+- [x] TUI `fork` means clone transcript up to `messageID` into a new session.
+- [x] Forked sessions remain parallel roots with title lineage only.
+- [x] Revert/unrevert should be fully exposed in Penguin web before merge.
+- [x] Checkpoint branches should become real sessions navigated through the session list.
 
 ## Recommended Short-Term Path
 
-1. Add defensive TUI handling for missing fork route/shape
-2. Add OpenCode-compatible `/session/{id}/fork` route returning `Session.Info`
-3. Reuse existing checkpoint/branching internals where practical, but keep the external contract simple
-4. Defer deeper checkpoint UX until after merge if the simple fork flow is enough
+1. Add defensive TUI fork handling so the UI never crashes.
+2. Add OpenCode-compatible `/session/{id}/fork` route returning `Session.Info`.
+3. Add `/session/{id}/revert` and `/session/{id}/unrevert` plus session payload mapping for `revert` and `summary`.
+4. Bridge checkpoint branching into real saved sessions navigable via the normal session list.
+5. Use the session list as the branch-navigation UX in v1; defer any graph-style UI.
 
 ## Manual Evidence To Capture
 

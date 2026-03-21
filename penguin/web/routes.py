@@ -61,6 +61,8 @@ from penguin.web.services.session_view import (
     remove_session_info,
     update_session_info,
 )
+from penguin.web.services.session_fork import fork_session
+from penguin.web.services.session_revert import revert_session, unrevert_session
 from penguin.web.services.session_summary import summarize_session_title
 from penguin.web.services.system_status import (
     get_formatter_status,
@@ -365,6 +367,27 @@ async def _emit_session_updated_event(core: PenguinCore, info: Dict[str, Any]) -
 async def _emit_session_deleted_event(core: PenguinCore, info: Dict[str, Any]) -> None:
     """Emit OpenCode-shaped session.deleted event."""
     await _emit_session_event(core, "session.deleted", info)
+
+
+async def _emit_session_diff_event(
+    core: PenguinCore, session_id: str, diff: List[Dict[str, Any]]
+) -> None:
+    emit = getattr(getattr(core, "event_bus", None), "emit", None)
+    if not callable(emit):
+        return
+    try:
+        await emit(
+            "opencode_event",
+            {
+                "type": "session.diff",
+                "properties": {
+                    "sessionID": session_id,
+                    "diff": diff,
+                },
+            },
+        )
+    except Exception:
+        logger.debug("Failed to emit session.diff event", exc_info=True)
 
 
 def _title_log_info(message: str, *args: Any) -> None:
@@ -4513,6 +4536,124 @@ async def session_update(
     return updated
 
 
+class SessionForkRequest(BaseModel):
+    messageID: Optional[str] = None
+
+
+class SessionRevertRequest(BaseModel):
+    messageID: Optional[str] = None
+    partID: Optional[str] = None
+
+
+@router.post("/session/{session_id}/fork")
+async def session_fork(
+    session_id: str,
+    payload: Optional[SessionForkRequest] = None,
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+):
+    """OpenCode-compatible session.fork endpoint."""
+    source = get_session_info(core, session_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    requested_directory = directory if isinstance(directory, str) else None
+    resolved_directory = normalize_directory(requested_directory)
+    if requested_directory and not resolved_directory:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid directory: {requested_directory}",
+        )
+
+    body = payload if isinstance(payload, SessionForkRequest) else SessionForkRequest()
+    if body.messageID is not None and not isinstance(body.messageID, str):
+        raise HTTPException(status_code=400, detail="messageID must be a string")
+
+    info = fork_session(
+        core,
+        session_id,
+        message_id=body.messageID,
+        directory=resolved_directory,
+    )
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    bound_directory = _bind_session_directory(
+        core, info.get("id"), info.get("directory")
+    )
+    if bound_directory:
+        info["directory"] = bound_directory
+
+    await _emit_session_created_event(core, info)
+    return info
+
+
+@router.post("/session/{session_id}/revert")
+async def session_revert(
+    session_id: str,
+    payload: Optional[SessionRevertRequest] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """OpenCode-compatible session.revert endpoint."""
+    existing = get_session_info(core, session_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    body = (
+        payload if isinstance(payload, SessionRevertRequest) else SessionRevertRequest()
+    )
+    if not isinstance(body.messageID, str) or not body.messageID.strip():
+        raise HTTPException(
+            status_code=400, detail="messageID must be a non-empty string"
+        )
+    if body.partID is not None and not isinstance(body.partID, str):
+        raise HTTPException(status_code=400, detail="partID must be a string")
+
+    try:
+        result = revert_session(
+            core,
+            session_id,
+            message_id=body.messageID.strip(),
+            part_id=body.partID.strip()
+            if isinstance(body.partID, str) and body.partID.strip()
+            else None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    info, diffs = result
+    await _emit_session_updated_event(core, info)
+    await _emit_session_diff_event(core, session_id, diffs)
+    return info
+
+
+@router.post("/session/{session_id}/unrevert")
+async def session_unrevert(
+    session_id: str,
+    core: PenguinCore = Depends(get_core),
+):
+    """OpenCode-compatible session.unrevert endpoint."""
+    existing = get_session_info(core, session_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    try:
+        result = unrevert_session(core, session_id)
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    info, diffs = result
+    await _emit_session_updated_event(core, info)
+    await _emit_session_diff_event(core, session_id, diffs)
+    return info
+
+
 @router.delete("/session/{session_id}")
 async def session_delete(session_id: str, core: PenguinCore = Depends(get_core)):
     """OpenCode-compatible session.delete endpoint."""
@@ -4703,6 +4844,41 @@ async def api_session_update(
 async def api_session_delete(session_id: str, core: PenguinCore = Depends(get_core)):
     """Alias for OpenCode-compatible session.delete endpoint."""
     return await session_delete(session_id, core=core)
+
+
+@router.post("/api/v1/session/{session_id}/fork")
+async def api_session_fork(
+    session_id: str,
+    payload: Optional[SessionForkRequest] = None,
+    core: PenguinCore = Depends(get_core),
+    directory: Optional[str] = Query(None),
+):
+    """Alias for OpenCode-compatible session.fork endpoint."""
+    return await session_fork(
+        session_id,
+        payload=payload,
+        core=core,
+        directory=directory,
+    )
+
+
+@router.post("/api/v1/session/{session_id}/revert")
+async def api_session_revert(
+    session_id: str,
+    payload: Optional[SessionRevertRequest] = None,
+    core: PenguinCore = Depends(get_core),
+):
+    """Alias for OpenCode-compatible session.revert endpoint."""
+    return await session_revert(session_id, payload=payload, core=core)
+
+
+@router.post("/api/v1/session/{session_id}/unrevert")
+async def api_session_unrevert(
+    session_id: str,
+    core: PenguinCore = Depends(get_core),
+):
+    """Alias for OpenCode-compatible session.unrevert endpoint."""
+    return await session_unrevert(session_id, core=core)
 
 
 @router.post("/api/v1/session/{session_id}/abort")
@@ -5213,12 +5389,27 @@ async def branch_from_checkpoint(
         )
 
         if branch_id:
+            current_session = getattr(
+                getattr(
+                    getattr(core, "conversation_manager", None), "session_manager", None
+                ),
+                "current_session",
+                None,
+            )
+            session_info = None
+            current_session_id = getattr(current_session, "id", None)
+            if isinstance(current_session_id, str):
+                session_info = get_session_info(core, current_session_id)
+                if isinstance(session_info, dict):
+                    await _emit_session_created_event(core, session_info)
+
             return {
                 "branch_id": branch_id,
                 "source_checkpoint_id": checkpoint_id,
                 "status": "created",
                 "name": request.name,
                 "description": request.description,
+                "session": session_info,
             }
         else:
             raise HTTPException(

@@ -14,6 +14,9 @@ TRANSCRIPT_KEY = "_opencode_transcript_v1"
 USAGE_KEY = "_opencode_usage_v1"
 TODO_KEY = "_opencode_todo_v1"
 AGENT_MODE_KEY = "_opencode_agent_mode_v1"
+REVERT_KEY = "_opencode_revert_v1"
+SUMMARY_KEY = "_opencode_summary_v1"
+REVERT_SNAPSHOT_KEY = "_opencode_revert_snapshot_v1"
 
 _TODO_STATUS_VALUES = {"pending", "in_progress", "completed", "cancelled"}
 _TODO_PRIORITY_VALUES = {"high", "medium", "low"}
@@ -185,6 +188,37 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
                 "percentage": usage_snapshot.get("percentage", 0),
                 "truncations": usage_snapshot.get("truncations", {}),
             }
+
+        summary_snapshot = metadata.get(SUMMARY_KEY)
+        if isinstance(summary_snapshot, dict):
+            summary_payload: dict[str, Any] = {
+                "additions": int(summary_snapshot.get("additions", 0) or 0),
+                "deletions": int(summary_snapshot.get("deletions", 0) or 0),
+                "files": int(summary_snapshot.get("files", 0) or 0),
+            }
+            diffs = summary_snapshot.get("diffs")
+            if isinstance(diffs, list):
+                summary_payload["diffs"] = diffs
+            payload["summary"] = summary_payload
+
+        revert_snapshot = metadata.get(REVERT_KEY)
+        if isinstance(revert_snapshot, dict):
+            revert: dict[str, Any] = {}
+            for key in ("messageID", "partID", "snapshot", "diff"):
+                value = revert_snapshot.get(key)
+                if isinstance(value, str) and value.strip():
+                    revert[key] = value.strip()
+            hidden_ids = revert_snapshot.get("hiddenMessageIDs")
+            if isinstance(hidden_ids, list):
+                normalized = [
+                    str(item).strip()
+                    for item in hidden_ids
+                    if isinstance(item, str) and item.strip()
+                ]
+                if normalized:
+                    revert["hiddenMessageIDs"] = normalized
+            if isinstance(revert.get("messageID"), str):
+                payload["revert"] = revert
 
     return payload
 

@@ -7,12 +7,15 @@ import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import { useDialog } from "../../ui/dialog"
 import type { PromptInfo } from "@tui/component/prompt/history"
+import { useToast } from "@tui/ui/toast"
+import { apiErrorMessage } from "@tui/util/api-error"
 
 export function DialogForkFromTimeline(props: { sessionID: string; onMove: (messageID: string) => void }) {
   const sync = useSync()
   const dialog = useDialog()
   const sdk = useSDK()
   const route = useRoute()
+  const toast = useToast()
 
   onMount(() => {
     dialog.setSize("large")
@@ -36,6 +39,17 @@ export function DialogForkFromTimeline(props: { sessionID: string; onMove: (mess
             sessionID: props.sessionID,
             messageID: message.id,
           })
+          if (forked.error || !forked.data?.id) {
+            toast.show({
+              variant: "error",
+              message: apiErrorMessage(
+                forked.error,
+                "Forking is not available yet in this Penguin build.",
+              ),
+            })
+            dialog.clear()
+            return
+          }
           const parts = sync.data.part[message.id] ?? []
           const initialPrompt = parts.reduce(
             (agg, part) => {
@@ -48,7 +62,7 @@ export function DialogForkFromTimeline(props: { sessionID: string; onMove: (mess
             { input: "", parts: [] as PromptInfo["parts"] },
           )
           route.navigate({
-            sessionID: forked.data!.id,
+            sessionID: forked.data.id,
             type: "session",
             initialPrompt,
           })

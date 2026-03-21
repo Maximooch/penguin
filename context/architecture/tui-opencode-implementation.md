@@ -612,6 +612,29 @@ For each phase, validate with:
   - Progress (2026-03-06): `ModelConfig.get_reasoning_config()` now prioritizes explicit `reasoning_effort` overrides before provider-style defaults, so `variant=low|medium|high` reliably changes emitted OpenRouter reasoning payloads for reasoning-capable models (including Anthropic/Gemini-family routing where effort can be mapped upstream).
   - Progress (2026-03-09): OpenRouter model variant payloads now expose a closer OpenCode effort surface (`none/minimal/low/medium/high/xhigh` for GPT/Gemini-3 families, plus Grok-3-mini low/high), route-level variant overrides now accept expanded effort values (plus `max`/`off` semantics), explicit per-request variants force reasoning payload emission even when capability heuristics are conservative, and OpenRouter gateway logs the resolved reasoning payload/config state for every request.
   - Progress (2026-03-10): native provider variant handling is now provider/model-aware for OpenAI + Anthropic with conservative exposure (to avoid unsupported effort submissions), route-level overrides validate against those provider/model effort sets, and Anthropic native requests now map accepted effort variants through `output_config.effort` (`extra_body`) to match current Claude API guidance.
+- [~] E11. Implement session fork/revert/checkpoint bridge parity.
+  - Owner: `penguin/web/routes.py`, `penguin/web/services/session_view.py`, new session fork/revert services, and TUI fork dialogs.
+  - Acceptance: TUI fork no longer crashes, `session.fork` / `session.revert` / `session.unrevert` routes exist and return OpenCode-shaped `Session.Info`, checkpoint branches materialize as real sessions navigable through the normal session list, and the resulting TUI UX is stable enough for repeated undo/redo and branch navigation.
+  - Locked decisions (2026-03-17):
+    - TUI `fork` means clone transcript history up to `messageID` into a new session.
+    - Forked sessions remain parallel roots (title lineage only, not `parentID` subagent linkage).
+    - Revert/unrevert should be fully exposed in Penguin web before merge.
+    - Checkpoint branches should materialize as real sessions navigated through the session list (no graph UI required in v1).
+  - Execution order (2026-03-17):
+    - [x] E11.a Add defensive TUI handling in fork dialogs so missing/invalid fork responses show an error instead of crashing.
+    - [x] E11.b Add OpenCode-compatible `POST /session/{id}/fork` (+ `/api/v1` alias) returning `Session.Info` via a dedicated session-fork service.
+    - [~] E11.c Add `POST /session/{id}/revert` and `POST /session/{id}/unrevert` (+ `/api/v1` aliases) and map `revert`/`summary` fields into session payloads.
+    - [~] E11.d Bridge checkpoint branching so a branch creates a real saved session visible in `/session` and the TUI session list.
+    - [x] E11.e Add focused route/service regression coverage and validate with `context/tasks/forking-checkpoints-testing.md`.
+  - Progress (2026-03-17): fork dialogs in Penguin mode now fail safely with a visible error toast when the backend route/shape is missing, instead of dereferencing `result.data!.id` and crashing the TUI.
+  - Progress (2026-03-17): added `POST /session/{id}/fork` (+ `/api/v1` alias) backed by a dedicated `session_fork` service that clones transcript/message history up to an optional `messageID`, preserves directory binding, returns OpenCode-shaped `Session.Info`, and emits `session.created`.
+  - Progress (2026-03-17): added `POST /session/{id}/revert` and `POST /session/{id}/unrevert` (+ `/api/v1` aliases) backed by a dedicated `session_revert` service that restores file state from reverse diffs, stores OpenCode-shaped revert metadata/summaries, and emits `session.updated` plus `session.diff`.
+  - Progress (2026-03-17): checkpoint branching now persists the branched session through the session manager, carries directory/title metadata forward, and the checkpoint branch route now returns the created session info alongside the legacy `branch_id` so branch sessions appear in the normal session list.
+  - Progress (2026-03-17): focused regression pack passed for fork/revert/checkpoint branch flows (`56 passed`) including new route/service tests and existing checkpoint/core coverage.
+  - Manual validation note (2026-03-18): TUI forking is working well end-to-end in live use, and forked sessions behave as intended in the session list. Revert/unrevert is only partially there: backend routes and metadata work, but the TUI still behaves like a metadata-driven concealment layer rather than a fully intuitive conversation rollback in repeated/manual use. Checkpoint branching is now represented as real sessions in the backend route response, but there is still no dedicated TUI surface for listing/creating/checking checkpoints.
+  - Remaining work (2026-03-18):
+    - [ ] E11.c.1 Finalize TUI revert/unrevert UX so repeated revert/redo/new-turn flows are stable and intuitive in practice, not just API-complete.
+    - [ ] E11.d.1 Add TUI checkpoint creation/branch/rollback surfaces (or explicitly defer them post-merge and keep branch navigation via the session list only).
 
 ### Track I: Penguin-mode UX and Runtime Ergonomics
 - [ ] I1. Resolve occasional queued/stuck turn behavior under streaming-heavy runs.

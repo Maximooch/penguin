@@ -464,8 +464,9 @@ export function Session() {
       onSelect: async (dialog) => {
         const status = sync.data.session_status?.[route.sessionID]
         if (status?.type !== "idle") await sdk.client.session.abort({ sessionID: route.sessionID }).catch(() => {})
-        const revert = session()?.revert?.messageID
-        const message = messages().findLast((x) => (!revert || x.id < revert) && x.role === "user")
+        const hidden = hiddenMessageSet()
+        const rows = messages().filter((item) => !hidden.has(item.id))
+        const message = rows.findLast((item) => item.role === "user")
         if (!message) return
         sdk.client.session
           .revert({
@@ -502,9 +503,11 @@ export function Session() {
       },
       onSelect: (dialog) => {
         dialog.clear()
-        const messageID = session()?.revert?.messageID
-        if (!messageID) return
-        const message = messages().find((x) => x.role === "user" && x.id > messageID)
+        const hidden = hiddenMessageSet()
+        const currentID = revertMessageID()
+        const revertedUsers = messages().filter((item) => hidden.has(item.id) && item.role === "user")
+        const current = revertedUsers.findIndex((item) => item.id === currentID)
+        const message = revertedUsers[current >= 0 ? current + 1 : 0]
         if (!message) {
           sdk.client.session.unrevert({
             sessionID: route.sessionID,
@@ -730,10 +733,9 @@ export function Session() {
       keybind: "messages_copy",
       category: "Session",
       onSelect: (dialog) => {
-        const revertID = session()?.revert?.messageID
-        const lastAssistantMessage = messages().findLast(
-          (msg) => msg.role === "assistant" && (!revertID || msg.id < revertID),
-        )
+        const hidden = hiddenMessageSet()
+        const rows = messages().filter((item) => !hidden.has(item.id))
+        const lastAssistantMessage = rows.findLast((msg) => msg.role === "assistant")
         if (!lastAssistantMessage) {
           toast.show({ message: "No assistant messages found", variant: "error" })
           dialog.clear()
@@ -900,6 +902,25 @@ export function Session() {
 
   const revertInfo = createMemo(() => session()?.revert)
   const revertMessageID = createMemo(() => revertInfo()?.messageID)
+  const hiddenMessageIDs = createMemo(() => {
+    const info = revertInfo() as ({ hiddenMessageIDs?: string[] } & NonNullable<ReturnType<typeof revertInfo>>) | undefined
+    const hidden = info?.hiddenMessageIDs
+    if (Array.isArray(hidden) && hidden.length > 0) return hidden
+
+    const messageID = revertMessageID()
+    if (!messageID) return []
+    const index = messages().findIndex((item) => item.id === messageID)
+    if (index < 0) return []
+    return messages()
+      .slice(index)
+      .map((item) => item.id)
+  })
+  const hiddenMessageSet = createMemo(() => new Set(hiddenMessageIDs()))
+  const revertIndex = createMemo(() => {
+    const hidden = hiddenMessageIDs()
+    if (hidden.length === 0) return -1
+    return messages().findIndex((item) => item.id === hidden[0])
+  })
 
   const revertDiffFiles = createMemo(() => {
     const diffText = revertInfo()?.diff ?? ""
@@ -928,9 +949,8 @@ export function Session() {
   })
 
   const revertRevertedMessages = createMemo(() => {
-    const messageID = revertMessageID()
-    if (!messageID) return []
-    return messages().filter((x) => x.id >= messageID && x.role === "user")
+    const hidden = hiddenMessageSet()
+    return messages().filter((item) => hidden.has(item.id) && item.role === "user")
   })
 
   const revert = createMemo(() => {
@@ -1053,7 +1073,7 @@ export function Session() {
                         )
                       })()}
                     </Match>
-                    <Match when={revert()?.messageID && message.id >= revert()!.messageID}>
+                    <Match when={hiddenMessageSet().has(message.id)}>
                       <></>
                     </Match>
                     <Match when={message.role === "user"}>
