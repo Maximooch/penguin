@@ -237,6 +237,21 @@ def test_session_info_includes_revert_and_summary_payloads():
     assert info["summary"]["diffs"][0]["file"] == "src/app.py"
 
 
+def test_session_info_includes_subagent_lineage_fields():
+    session = _session("session_child", "Child Session", "2026-02-03T00:00:00")
+    session.metadata["parentID"] = "session_parent"
+    session.metadata["agent_id"] = "sub_agent_alpha"
+    session.metadata["parent_agent_id"] = "default"
+    core = _core([session])
+
+    info = get_session_info(core, session.id)
+
+    assert info is not None
+    assert info["parentID"] == "session_parent"
+    assert info["agent_id"] == "sub_agent_alpha"
+    assert info["parent_agent_id"] == "default"
+
+
 def test_get_session_messages_prefers_persisted_transcript():
     session = _session(
         "session_transcript", "Transcript Session", "2026-02-03T00:00:00"

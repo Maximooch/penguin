@@ -595,6 +595,17 @@ For each phase, validate with:
   - Progress (2026-03-07): isolated sub-agent sessions now inherit explicit parent linkage metadata (`parentID`, `parent_agent_id`) at creation time, parser `spawn_sub_agent` now emits `session.created` OpenCode events for live TUI discovery, and Penguin-mode sync now handles `session.created` events in the session store path.
   - Progress (2026-03-07): conversation manager edits were minimized to focused linkage logic (no broad formatting churn), with parity regression pack passing (`62 passed`).
   - Progress (2026-03-08): ActionXML parser now supports sub-agent status/context lifecycle tags (`get_agent_status`, `wait_for_agents`, `get_context_info`, `sync_context`) with compatibility aliases (`agent_id`, `agent_ids`, `parent_agent_id`, `child_agent_id`) mapped to canonical tool inputs.
+  - Finding (2026-03-18): live isolated subagent spawning is mostly wired, but persistence/reload/list visibility are not. Penguin bootstrap drops useful child lineage in the TUI store, some update paths still assume id-sorted session arrays, and `parent_agent_id` is not consistently surfaced through session payloads/events.
+  - Locked decisions (2026-03-18): merge target focuses on isolated child sessions (`share_session = false`) as first-class TUI sessions; shared-session subagents remain out of scope for child-session navigation parity; session list remains the primary navigation surface in v1.
+  - Execution order (2026-03-18):
+    - [x] E7.a Preserve `parentID` / `agent_id` / `parent_agent_id` during Penguin bootstrap and stop relying on unsorted-session `Binary.search` assumptions in `penguin-tui/.../context/sync.tsx`.
+    - [x] E7.b Expand backend session payload lineage in `penguin/web/services/session_view.py` so `/session` and emitted session events carry the same child-agent metadata.
+    - [x] E7.c Unify `session.created` emission and directory binding across all isolated subagent spawn paths (`parser`, route-level agent create, tool/core helpers).
+    - [ ] E7.d Improve session list child discoverability/behavior after reload without requiring a graph/tree view.
+    - [ ] E7.e Add reload + multi-child regression coverage and validate with `context/tasks/subagent-tui-testing.md`.
+  - Progress (2026-03-18): Penguin bootstrap session mapping now preserves `parentID` plus extra lineage/session metadata fields, and live session create/update/delete handling in TUI sync no longer depends on `Binary.search` over potentially unsorted session arrays.
+  - Progress (2026-03-18): backend session payloads now expose `agent_id` and `parent_agent_id` alongside `parentID`, and session view regression coverage now locks those lineage fields into `Session.Info` responses.
+  - Progress (2026-03-18): isolated subagent spawn paths now share a single backend post-create helper (`publish_sub_agent_session_created`) that binds child session directories from the parent and emits consistent `session.created` events across parser, route-level agent creation, and tool-driven spawns.
 - [~] E8. Context/tokens/cost telemetry parity in sidebar/header.
   - Owner: backend usage accounting + TUI metadata rendering.
   - Acceptance: token usage, context %, and spend reflect real provider usage (including OpenRouter).

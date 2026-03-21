@@ -45,6 +45,12 @@ type SessionUsage = {
   }
 }
 
+type PenguinSession = Session & {
+  agent_mode?: string
+  agent_id?: string
+  parent_agent_id?: string
+}
+
 const parseUsage = (raw: unknown): SessionUsage | undefined => {
   if (typeof raw !== "object" || !raw) return undefined
   const root = raw as Record<string, unknown>
@@ -157,6 +163,33 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     })
 
     const sdk = useSDK()
+
+    const sessionIndex = (sessionID: string) => store.session.findIndex((item) => item.id === sessionID)
+
+    const upsertSession = (session: Session) => {
+      const index = sessionIndex(session.id)
+      if (index !== -1) {
+        setStore("session", index, reconcile(session))
+        return
+      }
+      setStore(
+        "session",
+        produce((draft) => {
+          draft.push(session)
+        }),
+      )
+    }
+
+    const removeSession = (sessionID: string) => {
+      const index = sessionIndex(sessionID)
+      if (index === -1) return
+      setStore(
+        "session",
+        produce((draft) => {
+          draft.splice(index, 1)
+        }),
+      )
+    }
 
     const normalizeDirectory = (value?: string) => {
       if (!value || typeof value !== "string") return undefined
@@ -392,30 +425,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
 
         case "session.deleted": {
-          const result = Binary.search(store.session, event.properties.info.id, (s) => s.id)
-          if (result.found) {
-            setStore(
-              "session",
-              produce((draft) => {
-                draft.splice(result.index, 1)
-              }),
-            )
-          }
+          removeSession(event.properties.info.id)
           break
         }
         case "session.created":
         case "session.updated": {
-          const result = Binary.search(store.session, event.properties.info.id, (s) => s.id)
-          if (result.found) {
-            setStore("session", result.index, reconcile(event.properties.info))
-            break
-          }
-          setStore(
-            "session",
-            produce((draft) => {
-              draft.splice(result.index, 0, event.properties.info)
-            }),
-          )
+          upsertSession(event.properties.info)
           break
         }
 
@@ -622,18 +637,6 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     async function bootstrap() {
       console.log("bootstrapping")
       if (sdk.penguin) {
-        type PenguinSession = {
-          id: string
-          slug: string
-          projectID: string
-          directory: string
-          title: string
-          version: string
-          time: {
-            created: number
-            updated: number
-          }
-        }
         const now = Date.now()
         const stamp = (value?: string) => {
           const time = value ? Date.parse(value) : NaN
@@ -791,7 +794,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               : stamp(typeof item.last_active === "string" ? item.last_active : undefined)
           const directoryValue =
             typeof item.directory === "string" ? item.directory : directory
-          const payload = {
+          const payload: PenguinSession = {
             id: sid,
             slug: typeof item.slug === "string" ? item.slug : sid,
             projectID: typeof item.projectID === "string" ? item.projectID : "penguin",
@@ -803,10 +806,48 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               updated,
             },
           }
+          const parentID = typeof item.parentID === "string" ? item.parentID : undefined
+          if (parentID) payload.parentID = parentID
+          const permission = Array.isArray(item.permission) ? item.permission : undefined
+          if (permission) payload.permission = permission as Session["permission"]
+          const share = item.share
+          if (share && typeof share === "object" && typeof (share as { url?: unknown }).url === "string") {
+            payload.share = { url: (share as { url: string }).url }
+          }
+          const summary = item.summary
+          if (summary && typeof summary === "object") {
+            const source = summary as Record<string, unknown>
+            if (
+              typeof source.additions === "number" &&
+              typeof source.deletions === "number" &&
+              typeof source.files === "number"
+            ) {
+              payload.summary = {
+                additions: source.additions,
+                deletions: source.deletions,
+                files: source.files,
+                diffs: Array.isArray(source.diffs) ? (source.diffs as Session["summary"] extends { diffs?: infer T } ? T : never) : undefined,
+              }
+            }
+          }
+          const revert = item.revert
+          if (revert && typeof revert === "object" && typeof (revert as { messageID?: unknown }).messageID === "string") {
+            const source = revert as Record<string, unknown>
+            payload.revert = {
+              messageID: String(source.messageID),
+              ...(typeof source.partID === "string" ? { partID: source.partID } : {}),
+              ...(typeof source.snapshot === "string" ? { snapshot: source.snapshot } : {}),
+              ...(typeof source.diff === "string" ? { diff: source.diff } : {}),
+            }
+          }
           const sessionMode = typeof item.agent_mode === "string" ? item.agent_mode : undefined
           if (sessionMode) {
-            ;(payload as Record<string, unknown>).agent_mode = sessionMode
+            payload.agent_mode = sessionMode
           }
+          const agentID = typeof item.agent_id === "string" ? item.agent_id : undefined
+          if (agentID) payload.agent_id = agentID
+          const parentAgentID = typeof item.parent_agent_id === "string" ? item.parent_agent_id : undefined
+          if (parentAgentID) payload.parent_agent_id = parentAgentID
           return payload
         })
         const usage = list.reduce(

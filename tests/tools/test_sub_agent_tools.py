@@ -19,6 +19,8 @@ import json
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock
 
+from penguin.core import PenguinCore
+
 
 # =============================================================================
 # FIXTURES
@@ -242,6 +244,74 @@ class TestToolHandlerMethods:
         """Test _execute_sync_context method exists."""
         assert hasattr(tool_manager, "_execute_sync_context")
         assert callable(tool_manager._execute_sync_context)
+
+
+@pytest.mark.asyncio
+async def test_spawn_sub_agent_emits_created_and_binds_directory(tool_manager):
+    class _EventBus:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict[str, Any]]] = []
+
+        async def emit(self, event_type: str, payload: dict[str, Any]) -> None:
+            self.events.append((event_type, payload))
+
+    class _ConversationManager:
+        def __init__(self) -> None:
+            self._parent = MagicMock()
+            self._parent.session = MagicMock(
+                id="session_parent",
+                metadata={"directory": "/tmp/tool-parent"},
+            )
+            self._child = MagicMock()
+            self._child.session = MagicMock(id="session_child", metadata={})
+
+        def create_sub_agent(self, agent_id: str, **kwargs: Any) -> None:
+            del agent_id, kwargs
+
+        def get_agent_conversation(self, agent_id: str) -> Any:
+            return self._parent if agent_id == "default" else self._child
+
+    class _Core:
+        def __init__(self) -> None:
+            self.event_bus = _EventBus()
+            self.conversation_manager = _ConversationManager()
+            self.runtime_config = MagicMock(active_root="/tmp/tool-parent")
+            self._opencode_session_directories: dict[str, str] = {}
+
+        def create_sub_agent(self, agent_id: str, **kwargs: Any) -> None:
+            del agent_id, kwargs
+
+    core = _Core()
+    helper = getattr(PenguinCore, "publish_sub_agent_session_created")
+    setattr(core, "publish_sub_agent_session_created", helper.__get__(core))
+    tool_manager.set_core(core)
+
+    info = {
+        "id": "session_child",
+        "title": "Child Session",
+        "directory": "/tmp/tool-parent",
+        "projectID": "penguin",
+        "slug": "session_child",
+        "version": "test",
+        "time": {"created": 1, "updated": 1},
+    }
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "penguin.web.services.session_view.get_session_info",
+        lambda _core, session_id: info if session_id == "session_child" else None,
+    )
+    try:
+        result = await tool_manager._execute_spawn_sub_agent(
+            {"id": "child-agent", "parent": "default", "share_session": False}
+        )
+    finally:
+        monkeypatch.undo()
+
+    payload = json.loads(result)
+    assert payload["status"] == "ok"
+    assert core._opencode_session_directories["session_child"] == "/tmp/tool-parent"
+    assert core.event_bus.events[-1][1]["type"] == "session.created"
 
 
 # =============================================================================

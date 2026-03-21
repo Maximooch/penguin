@@ -164,6 +164,16 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
         if isinstance(parent_id, str) and parent_id.strip():
             payload["parentID"] = parent_id.strip()
 
+        agent_id = metadata.get("agent_id") or metadata.get("agentID")
+        if isinstance(agent_id, str) and agent_id.strip():
+            payload["agent_id"] = agent_id.strip()
+
+        parent_agent_id = metadata.get("parent_agent_id") or metadata.get(
+            "parentAgentID"
+        )
+        if isinstance(parent_agent_id, str) and parent_agent_id.strip():
+            payload["parent_agent_id"] = parent_agent_id.strip()
+
         archived_raw = metadata.get("archived") or metadata.get("archived_at_ms")
         archived_ms: int | None = None
         if isinstance(archived_raw, int):

@@ -4325,7 +4325,7 @@ class ToolManager:
                 if hasattr(self._core, "conversation_manager"):
                     self._core.conversation_manager.create_sub_agent(
                         agent_id,
-                        parent_id=parent_id,
+                        parent_agent_id=parent_id,
                         share_session=share_session,
                         share_context_window=share_cw,
                         shared_context_window_max_tokens=shared_cw_max,
@@ -4366,6 +4366,21 @@ class ToolManager:
             share_session=share_session,
             share_context_window=share_cw,
         )
+
+        try:
+            publish = getattr(self._core, "publish_sub_agent_session_created", None)
+            if callable(publish):
+                await publish(
+                    agent_id,
+                    parent_agent_id=parent_id,
+                    share_session=share_session,
+                )
+        except Exception:
+            logger.debug(
+                "Failed to emit session.created for tool-spawned sub-agent '%s'",
+                agent_id,
+                exc_info=True,
+            )
 
         # Handle initial_prompt if provided
         initial_prompt = tool_input.get("initial_prompt")

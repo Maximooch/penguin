@@ -2038,6 +2038,20 @@ async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_c
         else:
             core.ensure_agent_conversation(req.id, system_prompt=req.system_prompt)
 
+        if parent:
+            try:
+                await core.publish_sub_agent_session_created(
+                    req.id,
+                    parent_agent_id=parent,
+                    share_session=bool(req.share_session),
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to emit session.created for agent '%s'",
+                    req.id,
+                    exc_info=True,
+                )
+
         if req.activate:
             core.set_active_agent(req.id)
 
@@ -2046,20 +2060,21 @@ async def create_agent(req: AgentSpawnRequest, core: PenguinCore = Depends(get_c
         if req.initial_prompt:
             await core.send_to_agent(req.id, req.initial_prompt)
 
-        try:
-            conversation = core.conversation_manager.get_agent_conversation(req.id)
-            session = getattr(conversation, "session", None)
-            session_id = getattr(session, "id", None)
-            if isinstance(session_id, str) and session_id:
-                info = get_session_info(core, session_id)
-                if isinstance(info, dict):
-                    await _emit_session_created_event(core, info)
-        except Exception:
-            logger.debug(
-                "Failed to emit session.created for agent '%s'",
-                req.id,
-                exc_info=True,
-            )
+        if not parent:
+            try:
+                conversation = core.conversation_manager.get_agent_conversation(req.id)
+                session = getattr(conversation, "session", None)
+                session_id = getattr(session, "id", None)
+                if isinstance(session_id, str) and session_id:
+                    info = get_session_info(core, session_id)
+                    if isinstance(info, dict):
+                        await _emit_session_created_event(core, info)
+            except Exception:
+                logger.debug(
+                    "Failed to emit session.created for agent '%s'",
+                    req.id,
+                    exc_info=True,
+                )
 
         return core.get_agent_profile(req.id) or {"id": req.id}
     except HTTPException:

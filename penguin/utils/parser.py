@@ -1161,43 +1161,24 @@ class ActionExecutor:
             return f"Failed to spawn sub-agent '{agent_id}': {e}"
 
         try:
-            event_bus = getattr(core, "event_bus", None)
-            emit = getattr(event_bus, "emit", None)
-            if callable(emit):
-                from penguin.web.services.session_view import get_session_info
-
-                conversation_manager = getattr(core, "conversation_manager", None)
-                conversation = (
-                    conversation_manager.get_agent_conversation(agent_id)
-                    if conversation_manager is not None
-                    else None
+            publish = getattr(core, "publish_sub_agent_session_created", None)
+            if callable(publish):
+                info = await publish(
+                    agent_id,
+                    parent_agent_id=parent_id,
+                    share_session=share_session,
                 )
-                session = getattr(conversation, "session", None)
-                session_id = getattr(session, "id", None)
-
-                if isinstance(session_id, str) and session_id:
-                    info = get_session_info(core, session_id)
-                    if isinstance(info, dict):
-                        await emit(
-                            "opencode_event",
-                            {
-                                "type": "session.created",
-                                "properties": {
-                                    "sessionID": session_id,
-                                    "info": info,
-                                },
-                            },
-                        )
-                        self._log_subagent_event(
-                            "spawn.session_event",
-                            status="completed",
-                            elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
-                            target_agent=agent_id,
-                            parent_agent=parent_id,
-                            tool_call_id=tool_call_id,
-                            event_type="session.created",
-                            child_session=session_id,
-                        )
+                if isinstance(info, dict):
+                    self._log_subagent_event(
+                        "spawn.session_event",
+                        status="completed",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        tool_call_id=tool_call_id,
+                        event_type="session.created",
+                        child_session=info.get("id"),
+                    )
         except Exception:
             logger.debug(
                 "Failed to emit session.created for spawned sub-agent '%s'",

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from penguin.core import PenguinCore
 from penguin.utils.parser import ActionExecutor, ActionType, CodeActAction, parse_action
 
 
@@ -23,9 +24,20 @@ class _EventBus:
 class _ConversationManager:
     def __init__(self, session_id: str) -> None:
         self._session_id = session_id
+        self._child = SimpleNamespace(
+            session=SimpleNamespace(id=session_id, metadata={}), _modified=False
+        )
+        self._parent = SimpleNamespace(
+            session=SimpleNamespace(
+                id="session_parent", metadata={"directory": "/tmp/workspace"}
+            ),
+            _modified=False,
+        )
 
-    def get_agent_conversation(self, _agent_id: str) -> Any:
-        return SimpleNamespace(session=SimpleNamespace(id=self._session_id))
+    def get_agent_conversation(self, agent_id: str) -> Any:
+        if agent_id == "default":
+            return self._parent
+        return self._child
 
 
 class _Core:
@@ -33,6 +45,10 @@ class _Core:
         self.event_bus = _EventBus()
         self.conversation_manager = _ConversationManager(session_id)
         self.created: list[dict[str, Any]] = []
+        self.runtime_config = SimpleNamespace(active_root="/tmp/workspace")
+        self._opencode_session_directories: dict[str, str] = {}
+        helper = getattr(PenguinCore, "publish_sub_agent_session_created")
+        self.publish_sub_agent_session_created = helper.__get__(self)
 
     def create_sub_agent(self, agent_id: str, **kwargs: Any) -> None:
         self.created.append({"agent_id": agent_id, **kwargs})
@@ -114,6 +130,7 @@ async def test_spawn_sub_agent_emits_session_created(
     assert payload["type"] == "session.created"
     assert payload["properties"]["sessionID"] == "session_child_1"
     assert payload["properties"]["info"]["id"] == "session_child_1"
+    assert core._opencode_session_directories["session_child_1"] == "/tmp/workspace"
 
 
 def test_parse_action_detects_subagent_status_tags() -> None:
