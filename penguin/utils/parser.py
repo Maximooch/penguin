@@ -1219,6 +1219,7 @@ class ActionExecutor:
             )
             return f"Failed to spawn sub-agent '{agent_id}': {e}"
 
+        session_info: Dict[str, Any] = {}
         try:
             publish = getattr(core, "publish_sub_agent_session_created", None)
             if callable(publish):
@@ -1228,6 +1229,7 @@ class ActionExecutor:
                     share_session=share_session,
                 )
                 if isinstance(info, dict):
+                    session_info = dict(info)
                     ui_metadata: Dict[str, Any] = {
                         "summary": [
                             {
@@ -1284,6 +1286,9 @@ class ActionExecutor:
                             "parent": parent_id,
                             "share_session": share_session,
                             "share_context_window": share_cw,
+                            "session_id": session_info.get("id"),
+                            "directory": session_info.get("directory"),
+                            "agent_mode": session_info.get("agent_mode"),
                         },
                     )
                     self._log_subagent_event(
@@ -1309,9 +1314,18 @@ class ActionExecutor:
                     )
                     return f"Failed to spawn background agent '{agent_id}': {e}"
             else:
-                # Synchronous: send message and wait
+                # Synchronous: run the child prompt in the child session and block
                 try:
-                    await core.send_to_agent(agent_id, initial_prompt)
+                    if hasattr(core, "run_agent_prompt_in_session"):
+                        await core.run_agent_prompt_in_session(
+                            agent_id,
+                            initial_prompt,
+                            session_id=session_info.get("id"),
+                            directory=session_info.get("directory"),
+                            agent_mode=session_info.get("agent_mode"),
+                        )
+                    else:
+                        await core.send_to_agent(agent_id, initial_prompt)
                 except Exception as e:
                     logger.warning(f"Failed to send initial_prompt to {agent_id}: {e}")
 

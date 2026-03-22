@@ -612,8 +612,8 @@ For each phase, validate with:
     - [x] E7.c Unify `session.created` emission and directory binding across all isolated subagent spawn paths (`parser`, route-level agent create, tool/core helpers).
     - [x] E7.d Improve session list child discoverability/behavior after reload without requiring a graph/tree view.
     - [~] E7.e Add reload + multi-child regression coverage and validate with `context/tasks/subagent-tui-testing.md`.
-    - [ ] E7.f Bridge isolated subagent spawns to OpenCode-style clickable task block cards (`metadata.sessionId` + summary) in the parent transcript.
-    - [ ] E7.g Bind background isolated subagent execution to the child session/conversation scope so child transcript/tool routing matches OpenCode expectations.
+    - [x] E7.f Bridge isolated subagent spawns to OpenCode-style clickable task block cards (`metadata.sessionId` + summary) in the parent transcript.
+    - [~] E7.g Bind background isolated subagent execution to the child session/conversation scope so child transcript/tool routing matches OpenCode expectations.
   - E7.f implementation notes (2026-03-21):
     - First-pass scope should target isolated `spawn_sub_agent` parity before broader `delegate_explore_task` cosmetics, because only isolated spawns create real child sessions that can open from the parent transcript.
     - Reuse the existing TUI `Task` renderer by bridging backend tool parts as `tool="task"` with `input.description`, `input.subagent_type`, non-empty `metadata.summary`, and `metadata.sessionId` when the child session is known.
@@ -625,6 +625,9 @@ For each phase, validate with:
   - Progress (2026-03-21): focused TUI regressions now cover child-session list grouping, family navigation ordering, unsorted session-store upserts/removals, and basic child-lineage hydration; manual validation from `context/tasks/subagent-tui-testing.md` remains open.
   - Finding (2026-03-21): the most visible remaining parity gap is no longer session list behavior. The missing OpenCode feel is the parent transcript bridge: isolated `spawn_sub_agent` / `delegate_explore_task` flows still render as generic tool output/raw child transcript instead of the existing upstream `Task` block card.
   - Implementation note (2026-03-21): prefer reusing the current TUI `Task` renderer (`penguin-tui/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx`) by shaping Penguin backend tool metadata to match OpenCode (`tool="task"`, `metadata.sessionId`, synthetic/rolling `summary`) rather than adding any Penguin-only UI.
+  - Progress (2026-03-21): isolated `spawn_sub_agent` now bridges to the existing OpenCode `Task` card path in Penguin mode (`tool="task"` with `metadata.sessionId`/`title`/summary), so parent transcripts render clickable child-session cards without custom TUI UI.
+  - Progress (2026-03-21): child execution now prefers a dedicated `run_agent_prompt_in_session(...)` path that resolves child `session_id`/directory/agent mode, applies request-scoped execution context, and is used by both background executor runs and foreground isolated spawn flows.
+  - Manual signal (2026-03-21): live Penguin TUI validation now shows (a) clickable subagent task cards in the parent transcript, (b) successful child-session navigation, and (c) child assistant replies appearing in the child session for isolated background subagents; one more manual tool-using child run is still recommended before calling E7.g complete.
 - [~] E8. Context/tokens/cost telemetry parity in sidebar/header.
   - Owner: backend usage accounting + TUI metadata rendering.
   - Acceptance: token usage, context %, and spend reflect real provider usage (including OpenRouter).

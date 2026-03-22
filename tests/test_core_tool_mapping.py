@@ -5,10 +5,16 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from penguin.core import PenguinCore
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+    get_current_execution_context,
+)
 from penguin.system.state import Session
 from penguin.web.services.session_view import (
     TODO_KEY,
@@ -285,6 +291,60 @@ def test_map_action_result_metadata_promotes_spawn_sub_agent_to_clickable_task_c
     assert metadata["summary"][0]["tool"] == "subagent"
     assert metadata["summary"][0]["state"]["status"] == "completed"
     assert metadata["summary"][0]["state"]["title"] == "Smoke Agent Session"
+
+
+@pytest.mark.asyncio
+async def test_run_agent_prompt_in_session_overrides_parent_execution_scope(
+    tmp_path,
+) -> None:
+    parent_dir = tmp_path / "parent"
+    child_dir = tmp_path / "child"
+    parent_dir.mkdir()
+    child_dir.mkdir()
+
+    child_session = SimpleNamespace(
+        id="session_child",
+        metadata={"directory": str(child_dir), "agent_mode": "build"},
+    )
+    conversation_manager = SimpleNamespace(
+        get_agent_conversation=lambda _agent_id: SimpleNamespace(session=child_session)
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def _process(**kwargs: Any) -> dict[str, Any]:
+        captured["kwargs"] = kwargs
+        captured["context"] = get_current_execution_context()
+        return {"assistant_response": "done"}
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "conversation_manager", conversation_manager)
+    setattr(core, "_opencode_session_directories", {"session_child": str(child_dir)})
+    setattr(core, "process", AsyncMock(side_effect=_process))
+
+    with execution_context_scope(
+        ExecutionContext(
+            session_id="session_parent",
+            conversation_id="session_parent",
+            agent_id="default",
+            agent_mode="build",
+            directory=str(parent_dir),
+            project_root=str(parent_dir),
+            workspace_root=str(parent_dir),
+        )
+    ):
+        runner = getattr(core, "run_agent_prompt_in_session")
+        result = await runner("child-agent", "Child prompt")
+
+    assert result["assistant_response"] == "done"
+    assert captured["kwargs"]["conversation_id"] == "session_child"
+    assert captured["kwargs"]["agent_id"] == "child-agent"
+    context = captured["context"]
+    assert context is not None
+    assert context.session_id == "session_child"
+    assert context.conversation_id == "session_child"
+    assert context.agent_id == "child-agent"
+    assert context.directory == str(child_dir)
 
 
 @pytest.mark.asyncio

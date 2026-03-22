@@ -13,6 +13,12 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from typing import Any, Dict
 
+from penguin.system.execution_context import (
+    ExecutionContext,
+    execution_context_scope,
+    get_current_execution_context,
+)
+
 from penguin.multi.executor import (
     AgentExecutor,
     AgentState,
@@ -25,6 +31,7 @@ from penguin.multi.executor import (
 # =============================================================================
 # FIXTURES
 # =============================================================================
+
 
 @pytest.fixture
 def mock_core():
@@ -50,6 +57,7 @@ def executor(mock_core):
 def reset_global_executor():
     """Reset global executor before/after each test."""
     import penguin.multi.executor as executor_module
+
     original = executor_module._executor_instance
     executor_module._executor_instance = None
     yield
@@ -60,12 +68,13 @@ def reset_global_executor():
 # BASIC INITIALIZATION TESTS
 # =============================================================================
 
+
 class TestExecutorInitialization:
     """Test AgentExecutor initialization."""
 
     def test_default_max_concurrent(self, mock_core):
         """Test default max_concurrent from environment."""
-        with patch.dict('os.environ', {'PENGUIN_MAX_CONCURRENT_TASKS': '5'}):
+        with patch.dict("os.environ", {"PENGUIN_MAX_CONCURRENT_TASKS": "5"}):
             executor = AgentExecutor(mock_core)
             assert executor.max_concurrent == 5
 
@@ -83,6 +92,7 @@ class TestExecutorInitialization:
 # =============================================================================
 # AGENT SPAWNING TESTS
 # =============================================================================
+
 
 class TestAgentSpawning:
     """Test agent spawning functionality."""
@@ -103,14 +113,95 @@ class TestAgentSpawning:
     async def test_spawn_agent_with_metadata(self, executor):
         """Test spawning agent with metadata."""
         await executor.spawn_agent(
-            "meta-agent",
-            "Test prompt",
-            metadata={"role": "researcher", "priority": 1}
+            "meta-agent", "Test prompt", metadata={"role": "researcher", "priority": 1}
         )
 
         status = executor.get_status("meta-agent")
         assert status["metadata"]["role"] == "researcher"
         assert status["metadata"]["priority"] == 1
+
+    @pytest.mark.asyncio
+    async def test_spawn_agent_uses_scoped_core_runner_when_available(self, mock_core):
+        mock_core.run_agent_prompt_in_session = AsyncMock(
+            return_value={"assistant_response": "Response from child"}
+        )
+        executor = AgentExecutor(mock_core, max_concurrent=3)
+
+        await executor.spawn_agent(
+            "child-agent",
+            "Test prompt",
+            metadata={
+                "session_id": "session_child",
+                "directory": "/tmp/project",
+                "agent_mode": "build",
+            },
+        )
+        await executor.wait_for("child-agent", timeout=5.0)
+
+        mock_core.run_agent_prompt_in_session.assert_awaited_once_with(
+            "child-agent",
+            "Test prompt",
+            session_id="session_child",
+            directory="/tmp/project",
+            agent_mode="build",
+        )
+
+    @pytest.mark.asyncio
+    async def test_spawn_agent_scopes_execution_context_from_parent_request(
+        self, tmp_path
+    ):
+        captured: dict[str, Any] = {}
+        child_directory = str(tmp_path)
+
+        core = MagicMock()
+
+        async def _runner(
+            agent_id: str,
+            prompt: str,
+            *,
+            session_id: str | None = None,
+            directory: str | None = None,
+            agent_mode: str | None = None,
+        ):
+            captured["agent_id"] = agent_id
+            captured["prompt"] = prompt
+            captured["session_id"] = session_id
+            captured["directory"] = directory
+            captured["agent_mode"] = agent_mode
+            context = get_current_execution_context()
+            captured["execution_context"] = context
+            return {"assistant_response": "done"}
+
+        core.run_agent_prompt_in_session = AsyncMock(side_effect=_runner)
+        executor = AgentExecutor(core, max_concurrent=3)
+
+        with execution_context_scope(
+            ExecutionContext(
+                session_id="session_parent",
+                conversation_id="session_parent",
+                agent_id="default",
+                agent_mode="build",
+                directory="/tmp/parent",
+                project_root="/tmp/parent",
+                workspace_root="/tmp/parent",
+            )
+        ):
+            await executor.spawn_agent(
+                "child-agent",
+                "Child prompt",
+                metadata={
+                    "session_id": "session_child",
+                    "directory": child_directory,
+                    "agent_mode": "build",
+                },
+            )
+            await executor.wait_for("child-agent", timeout=5.0)
+
+        context = captured["execution_context"]
+        assert context is not None
+        assert context.session_id == "session_parent"
+        assert captured["session_id"] == "session_child"
+        assert captured["directory"] == child_directory
 
     @pytest.mark.asyncio
     async def test_spawn_duplicate_agent_fails(self, executor):
@@ -141,6 +232,7 @@ class TestAgentSpawning:
 # AGENT STATE TESTS
 # =============================================================================
 
+
 class TestAgentState:
     """Test agent state transitions."""
 
@@ -162,6 +254,7 @@ class TestAgentState:
     @pytest.mark.asyncio
     async def test_failed_state_on_error(self, mock_core):
         """Test FAILED state when agent encounters error."""
+
         async def failing_process(*args, **kwargs):
             raise Exception("Simulated failure")
 
@@ -180,6 +273,7 @@ class TestAgentState:
     @pytest.mark.asyncio
     async def test_cancelled_state(self, executor):
         """Test CANCELLED state after cancel() call."""
+
         # Create a slow-running agent
         async def slow_process(*args, **kwargs):
             await asyncio.sleep(10)  # Very long
@@ -200,6 +294,7 @@ class TestAgentState:
 # =============================================================================
 # WAIT OPERATIONS TESTS
 # =============================================================================
+
 
 class TestWaitOperations:
     """Test wait operations for agents."""
@@ -223,11 +318,13 @@ class TestWaitOperations:
     @pytest.mark.asyncio
     async def test_wait_for_all(self, executor):
         """Test waiting for all agents."""
-        await executor.spawn_agents([
-            ("all-1", "Task 1"),
-            ("all-2", "Task 2"),
-            ("all-3", "Task 3"),
-        ])
+        await executor.spawn_agents(
+            [
+                ("all-1", "Task 1"),
+                ("all-2", "Task 2"),
+                ("all-3", "Task 3"),
+            ]
+        )
 
         results = await executor.wait_for_all(timeout=5.0)
 
@@ -239,15 +336,16 @@ class TestWaitOperations:
     @pytest.mark.asyncio
     async def test_wait_for_specific_agents(self, executor):
         """Test waiting for specific subset of agents."""
-        await executor.spawn_agents([
-            ("specific-1", "Task 1"),
-            ("specific-2", "Task 2"),
-            ("specific-3", "Task 3"),
-        ])
+        await executor.spawn_agents(
+            [
+                ("specific-1", "Task 1"),
+                ("specific-2", "Task 2"),
+                ("specific-3", "Task 3"),
+            ]
+        )
 
         results = await executor.wait_for_all(
-            agent_ids=["specific-1", "specific-3"],
-            timeout=5.0
+            agent_ids=["specific-1", "specific-3"], timeout=5.0
         )
 
         assert len(results) == 2
@@ -258,6 +356,7 @@ class TestWaitOperations:
     @pytest.mark.asyncio
     async def test_wait_timeout(self, mock_core):
         """Test that wait times out correctly."""
+
         async def very_slow(*args, **kwargs):
             await asyncio.sleep(100)
             return "Done"
@@ -274,6 +373,7 @@ class TestWaitOperations:
 # =============================================================================
 # CONCURRENCY CONTROL TESTS
 # =============================================================================
+
 
 class TestConcurrencyControl:
     """Test concurrency control via semaphore."""
@@ -318,10 +418,12 @@ class TestConcurrencyControl:
         assert stats["semaphore_value"] == 3  # max_concurrent
 
         # Spawn agents
-        await executor.spawn_agents([
-            ("sem-1", "Task 1"),
-            ("sem-2", "Task 2"),
-        ])
+        await executor.spawn_agents(
+            [
+                ("sem-1", "Task 1"),
+                ("sem-2", "Task 2"),
+            ]
+        )
 
         await executor.wait_for_all(timeout=5.0)
 
@@ -334,12 +436,14 @@ class TestConcurrencyControl:
 # CANCEL OPERATIONS TESTS
 # =============================================================================
 
+
 class TestCancelOperations:
     """Test cancel operations."""
 
     @pytest.mark.asyncio
     async def test_cancel_running_agent(self, mock_core):
         """Test cancelling a running agent."""
+
         async def slow_process(*args, **kwargs):
             await asyncio.sleep(10)
             return "Done"
@@ -374,6 +478,7 @@ class TestCancelOperations:
     @pytest.mark.asyncio
     async def test_cancel_all(self, mock_core):
         """Test cancelling all running agents."""
+
         async def slow_process(*args, **kwargs):
             await asyncio.sleep(10)
             return "Done"
@@ -395,12 +500,14 @@ class TestCancelOperations:
 # PAUSE/RESUME TESTS
 # =============================================================================
 
+
 class TestPauseResume:
     """Test pause and resume operations."""
 
     @pytest.mark.asyncio
     async def test_pause_running_agent(self, mock_core):
         """Test pausing a running agent."""
+
         async def slow_process(*args, **kwargs):
             await asyncio.sleep(10)
             return "Done"
@@ -425,6 +532,7 @@ class TestPauseResume:
     @pytest.mark.asyncio
     async def test_resume_paused_agent(self, mock_core):
         """Test resuming a paused agent."""
+
         async def slow_process(*args, **kwargs):
             await asyncio.sleep(10)
             return "Done"
@@ -457,6 +565,7 @@ class TestPauseResume:
 # CLEANUP TESTS
 # =============================================================================
 
+
 class TestCleanup:
     """Test cleanup operations."""
 
@@ -474,6 +583,7 @@ class TestCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_running_agent_fails(self, mock_core):
         """Test that cleanup of running agent fails."""
+
         async def slow_process(*args, **kwargs):
             await asyncio.sleep(10)
             return "Done"
@@ -490,11 +600,13 @@ class TestCleanup:
     @pytest.mark.asyncio
     async def test_cleanup_all(self, executor):
         """Test cleaning up all completed agents."""
-        await executor.spawn_agents([
-            ("cleanup-1", "Task 1"),
-            ("cleanup-2", "Task 2"),
-            ("cleanup-3", "Task 3"),
-        ])
+        await executor.spawn_agents(
+            [
+                ("cleanup-1", "Task 1"),
+                ("cleanup-2", "Task 2"),
+                ("cleanup-3", "Task 3"),
+            ]
+        )
 
         await executor.wait_for_all(timeout=5.0)
 
@@ -507,6 +619,7 @@ class TestCleanup:
 # =============================================================================
 # STATUS AND STATS TESTS
 # =============================================================================
+
 
 class TestStatusAndStats:
     """Test status and statistics methods."""
@@ -532,10 +645,12 @@ class TestStatusAndStats:
     @pytest.mark.asyncio
     async def test_get_all_status(self, executor):
         """Test getting status of all agents."""
-        await executor.spawn_agents([
-            ("all-status-1", "Task 1"),
-            ("all-status-2", "Task 2"),
-        ])
+        await executor.spawn_agents(
+            [
+                ("all-status-1", "Task 1"),
+                ("all-status-2", "Task 2"),
+            ]
+        )
 
         await executor.wait_for_all(timeout=5.0)
 
@@ -548,10 +663,12 @@ class TestStatusAndStats:
     @pytest.mark.asyncio
     async def test_get_stats(self, executor):
         """Test getting executor statistics."""
-        await executor.spawn_agents([
-            ("stats-1", "Task 1"),
-            ("stats-2", "Task 2"),
-        ])
+        await executor.spawn_agents(
+            [
+                ("stats-1", "Task 1"),
+                ("stats-2", "Task 2"),
+            ]
+        )
 
         await executor.wait_for_all(timeout=5.0)
 
@@ -566,6 +683,7 @@ class TestStatusAndStats:
 # =============================================================================
 # GLOBAL EXECUTOR TESTS
 # =============================================================================
+
 
 class TestGlobalExecutor:
     """Test global executor singleton pattern."""
@@ -604,6 +722,7 @@ class TestGlobalExecutor:
 # PARALLEL EXECUTION VERIFICATION
 # =============================================================================
 
+
 class TestParallelExecution:
     """Verify that agents actually run in parallel."""
 
@@ -621,6 +740,7 @@ class TestParallelExecution:
         executor = AgentExecutor(mock_core, max_concurrent=4)
 
         import time
+
         start = time.time()
 
         # Spawn all agents

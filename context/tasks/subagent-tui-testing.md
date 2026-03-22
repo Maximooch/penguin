@@ -30,10 +30,8 @@ Validate that Penguin sub-agents are usable as first-class child sessions in the
 
 ## Current Gaps
 
-- Parent transcript parity is still missing: isolated subagent spawns render as generic tool output/raw transcript instead of OpenCode-style clickable `Task` block cards.
-- Backend tool metadata for isolated `spawn_sub_agent` / `delegate_explore_task` does not yet reliably emit OpenCode `task`-style fields such as `metadata.sessionId` and rolling `summary`.
-- Background isolated child runs are not yet consistently bound to the child session/conversation execution context, so child work can land as raw inline output instead of proper child-session transcript/tool cards.
-- Manual validation is still open for the full parent-card -> child-session -> reload/navigation loop, even though automated coverage is now better.
+- Manual validation is still open for a full tool-using child run plus reload/reconnect after the child has produced real tool cards/messages.
+- `delegate_explore_task` still trails `spawn_sub_agent` in visible parity; the most complete validated path is isolated `spawn_sub_agent`.
 - Shared-session subagents intentionally do not become child sessions; the merge target should focus on isolated subagents as first-class TUI child sessions.
 
 ## Locked Decisions
@@ -88,22 +86,23 @@ Validate that Penguin sub-agents are usable as first-class child sessions in the
 2. [x] Add/extend tests for bootstrap-rehydrated `parentID` and lineage.
 3. [~] Validate a parent with at least two children through reload and repeated navigation.
 
-### Phase 6: Bridge isolated subagents to OpenCode-style task cards
+### Phase 6: Bridge isolated subagents to OpenCode-style task cards (mostly complete)
 
-1. First-pass scope: map isolated `spawn_sub_agent` flows to OpenCode `task` card metadata in Penguin backend bridge code.
-2. Defer `delegate_explore_task` cosmetics unless it is upgraded to a real child-session flow; clickable parent cards only make sense when a child session exists.
-3. Populate `metadata.sessionId` as soon as the child session exists.
-4. Attach the minimum metadata shape needed to reuse the upstream `Task` renderer:
+1. [x] First-pass scope: map isolated `spawn_sub_agent` flows to OpenCode `task` card metadata in Penguin backend bridge code.
+2. [~] Defer `delegate_explore_task` cosmetics unless it is upgraded to a real child-session flow; clickable parent cards only make sense when a child session exists.
+3. [x] Populate `metadata.sessionId` as soon as the child session exists.
+4. [x] Attach the minimum metadata shape needed to reuse the upstream `Task` renderer:
    - `title`
    - `model` when available
    - synthetic or rolling `summary`
-5. Reuse `penguin-tui/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx` existing `Task` component instead of adding custom Penguin-only UI.
+5. [x] Reuse `penguin-tui/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx` existing `Task` component instead of adding custom Penguin-only UI.
 
-### Phase 7: Bind child execution to the child transcript
+### Phase 7: Bind child execution to the child transcript (partial, strong progress)
 
-1. Ensure background isolated child runs enter `core.process(...)` with child `session_id` / `conversation_id` / execution context.
-2. Confirm child tool/message events persist in the child session and are replayable after reload.
-3. Keep the parent transcript limited to task-card context/status, not raw child XML/tool stream.
+1. [x] Ensure background isolated child runs enter `core.process(...)` with child `session_id` / `conversation_id` / execution context.
+2. [~] Confirm child tool/message events persist in the child session and are replayable after reload.
+3. [x] Keep the parent transcript limited to task-card context/status, not raw child XML/tool stream.
+4. [x] Route foreground (`background=false`) isolated spawn prompts through the same child-session runner rather than the old message-bus-only path.
 
 ## Recommended Execution Order
 
@@ -143,6 +142,8 @@ Validate that Penguin sub-agents are usable as first-class child sessions in the
 - [ ] Confirm clicking the card opens the child session
 - [ ] Confirm the parent transcript does not dump the child transcript inline
 
+Latest signal (2026-03-21): passing manually for isolated `spawn_sub_agent`.
+
 ### 3. Discovery
 
 - [ ] Confirm the child exists in TUI session state
@@ -164,6 +165,8 @@ Validate that Penguin sub-agents are usable as first-class child sessions in the
   - assistant messages land in the child session, not the parent
   - tool cards land in the child session, not the parent
   - parent session shows task-card context/status but not a merged child transcript
+
+Latest signal (2026-03-21): passing manually for a lightweight reply-only child run; still re-run this section with a tool-using child before declaring full closure.
 
 ### 6. Multiple Children
 

@@ -330,6 +330,91 @@ async def test_spawn_sub_agent_emits_created_and_binds_directory(tool_manager):
     )
 
 
+@pytest.mark.asyncio
+async def test_spawn_sub_agent_runs_foreground_prompt_in_child_session(tool_manager):
+    class _EventBus:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict[str, Any]]] = []
+
+        async def emit(self, event_type: str, payload: dict[str, Any]) -> None:
+            self.events.append((event_type, payload))
+
+    class _ConversationManager:
+        def __init__(self) -> None:
+            self._parent = MagicMock()
+            self._parent.session = MagicMock(
+                id="session_parent",
+                metadata={"directory": "/tmp/tool-parent"},
+            )
+            self._child = MagicMock()
+            self._child.session = MagicMock(id="session_child", metadata={})
+
+        def create_sub_agent(self, agent_id: str, **kwargs: Any) -> None:
+            del agent_id, kwargs
+
+        def get_agent_conversation(self, agent_id: str) -> Any:
+            return self._parent if agent_id == "default" else self._child
+
+    class _Core:
+        def __init__(self) -> None:
+            self.event_bus = _EventBus()
+            self.conversation_manager = _ConversationManager()
+            self.runtime_config = MagicMock(active_root="/tmp/tool-parent")
+            self._opencode_session_directories: dict[str, str] = {}
+            self.run_agent_prompt_in_session = AsyncMock(
+                return_value={"assistant_response": "done"}
+            )
+
+        def create_sub_agent(self, agent_id: str, **kwargs: Any) -> None:
+            del agent_id, kwargs
+
+    core = _Core()
+    helper = getattr(PenguinCore, "publish_sub_agent_session_created")
+    setattr(core, "publish_sub_agent_session_created", helper.__get__(core))
+    tool_manager.set_core(core)
+
+    info = {
+        "id": "session_child",
+        "title": "Child Session",
+        "directory": "/tmp/tool-parent",
+        "parentID": "session_parent",
+        "agent_id": "child-agent",
+        "parent_agent_id": "default",
+        "projectID": "penguin",
+        "slug": "session_child",
+        "version": "test",
+        "time": {"created": 1, "updated": 1},
+    }
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "penguin.web.services.session_view.get_session_info",
+        lambda _core, session_id: info if session_id == "session_child" else None,
+    )
+    try:
+        result = await tool_manager._execute_spawn_sub_agent(
+            {
+                "id": "child-agent",
+                "parent": "default",
+                "share_session": False,
+                "background": False,
+                "initial_prompt": "Reply from the child session.",
+            }
+        )
+    finally:
+        monkeypatch.undo()
+
+    payload = json.loads(result)
+    assert payload["status"] == "ok"
+    core.run_agent_prompt_in_session.assert_awaited_once_with(
+        "child-agent",
+        "Reply from the child session.",
+        session_id="session_child",
+        directory="/tmp/tool-parent",
+        agent_mode=None,
+    )
+
+
 # =============================================================================
 # SCHEMA PROPERTY VALIDATION TESTS
 # =============================================================================

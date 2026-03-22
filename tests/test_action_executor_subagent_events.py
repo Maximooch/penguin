@@ -47,6 +47,9 @@ class _Core:
         self.created: list[dict[str, Any]] = []
         self.runtime_config = SimpleNamespace(active_root="/tmp/workspace")
         self._opencode_session_directories: dict[str, str] = {}
+        self.run_agent_prompt_in_session = AsyncMock(
+            return_value={"assistant_response": "done"}
+        )
         helper = getattr(PenguinCore, "publish_sub_agent_session_created")
         self.publish_sub_agent_session_created = helper.__get__(self)
 
@@ -201,6 +204,58 @@ async def test_spawn_sub_agent_action_result_emits_task_card_metadata(
     assert metadata["title"] == "Child Session"
     assert metadata["summary"][0]["tool"] == "subagent"
     assert metadata["summary"][0]["state"]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_spawn_sub_agent_runs_foreground_prompt_in_child_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core("session_child_1")
+    conversation = SimpleNamespace(core=core, current_agent_id="default")
+    executor = ActionExecutor(
+        tool_manager=cast(Any, SimpleNamespace()),
+        task_manager=cast(Any, SimpleNamespace()),
+        conversation_system=conversation,
+    )
+
+    def _fake_session_info(_core: Any, session_id: str) -> dict[str, Any]:
+        return {
+            "id": session_id,
+            "title": "Child Session",
+            "directory": "/tmp/workspace",
+            "parentID": "session_parent",
+            "agent_id": "child-agent",
+            "parent_agent_id": "default",
+            "projectID": "penguin",
+            "slug": session_id,
+            "version": "test",
+            "time": {"created": 1, "updated": 1},
+        }
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_view.get_session_info",
+        _fake_session_info,
+    )
+
+    payload = json.dumps(
+        {
+            "id": "child-agent",
+            "share_session": False,
+            "share_context_window": False,
+            "background": False,
+            "initial_prompt": "Run in the child session.",
+        }
+    )
+    result = await executor._spawn_sub_agent(payload)
+
+    assert "Spawned sub-agent 'child-agent'" in result
+    core.run_agent_prompt_in_session.assert_awaited_once_with(
+        "child-agent",
+        "Run in the child session.",
+        session_id="session_child_1",
+        directory="/tmp/workspace",
+        agent_mode=None,
+    )
 
 
 def test_parse_action_detects_subagent_status_tags() -> None:

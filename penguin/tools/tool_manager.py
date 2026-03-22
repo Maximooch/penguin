@@ -4412,6 +4412,9 @@ class ToolManager:
                             "parent": parent_id,
                             "share_session": share_session,
                             "share_context_window": share_cw,
+                            "session_id": session_info.get("id"),
+                            "directory": session_info.get("directory"),
+                            "agent_mode": session_info.get("agent_mode"),
                         },
                     )
                     self._log_subagent_event(
@@ -4453,9 +4456,17 @@ class ToolManager:
                         {"error": f"Failed to spawn background agent: {e}"}
                     )
             else:
-                # Synchronous: send message and wait
+                # Synchronous: run the child prompt in the child session and block
                 try:
-                    if hasattr(self._core, "send_to_agent"):
+                    if hasattr(self._core, "run_agent_prompt_in_session"):
+                        await self._core.run_agent_prompt_in_session(
+                            agent_id,
+                            initial_prompt,
+                            session_id=session_info.get("id"),
+                            directory=session_info.get("directory"),
+                            agent_mode=session_info.get("agent_mode"),
+                        )
+                    elif hasattr(self._core, "send_to_agent"):
                         await self._core.send_to_agent(agent_id, initial_prompt)
                 except Exception as e:
                     logger.warning(f"Failed to send initial_prompt to {agent_id}: {e}")
