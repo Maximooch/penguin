@@ -55,6 +55,10 @@ Rationale:
 - Engine now appends a transient plan-mode system notice to LLM request messages when `agent_mode=plan`, so the model is explicitly informed of read-only constraints.
 - Part-event action-tag filtering now treats backtick/escaped tag literals as display text, preventing response truncation when assistants mention examples like ``<spawn_sub_agent>`` inline.
 - OpenAI OAuth subscription routing now works end-to-end against the ChatGPT Codex backend with explicit diagnostics (`diag_id` + upstream trace headers), requested-model preservation (for example `gpt-5.4`), and no silent fallback downgrade.
+- Penguin-mode session list now groups child sessions under their parent after reload, and sync/bootstrap no longer relies on id-sorted session arrays for child create/update/delete handling.
+- Automated TUI regressions now cover child-session list grouping, family navigation ordering, unsorted session-store updates, and basic child-lineage hydration.
+- Remaining subagent visual parity gap: isolated subagent spawns still bridge as generic tool output instead of OpenCode-style clickable task block cards with `metadata.sessionId` + summary.
+- Remaining child-session execution gap: background isolated subagent runs still need stronger child-session execution-context binding so child messages/tool cards land in the child transcript instead of raw inline output in the parent.
 
 ## Audit: TUI Expectations (from `penguin-tui`)
 
@@ -291,6 +295,11 @@ Goal: tool events render and persist in history.
 - `list_files_filtered` -> `list`.
 - `find_files_enhanced` -> `glob`.
 - `search` -> `grep`.
+
+**Planned subagent parity upgrade**
+- Isolated `spawn_sub_agent` / `delegate_explore_task` flows should bridge to the existing OpenCode `task` card surface instead of generic inline tool output.
+- Backend payloads should populate `metadata.sessionId` as soon as the child session exists, plus a small synthetic/rolling `summary` so the upstream TUI `Task` renderer can show the clickable block card without custom Penguin UI.
+- Background child execution should run under the child session/conversation scope so child tool cards and transcript entries stay in the child session after navigation.
 
 For the exact mapping, see `context/architecture/tui-opencode-tool-bridge.md`.
 
@@ -591,7 +600,7 @@ For each phase, validate with:
   - Progress (2026-03-07): mode now flows from TUI prompt/session update into backend request context, persists on session metadata, and is enforced by `AgentModePolicy` to allow read operations while denying non-read actions in `plan` mode.
 - [~] E7. Complete sub-agent lifecycle parity.
   - Owner: agent roster API, message routing, session hierarchy handling.
-  - Acceptance: sub-agent tasks appear as first-class sessions with reliable replay/navigation.
+  - Acceptance: isolated sub-agent tasks appear as first-class sessions with reliable replay/navigation, and parent transcripts render OpenCode-style clickable task cards that open the child session.
   - Progress (2026-03-07): isolated sub-agent sessions now inherit explicit parent linkage metadata (`parentID`, `parent_agent_id`) at creation time, parser `spawn_sub_agent` now emits `session.created` OpenCode events for live TUI discovery, and Penguin-mode sync now handles `session.created` events in the session store path.
   - Progress (2026-03-07): conversation manager edits were minimized to focused linkage logic (no broad formatting churn), with parity regression pack passing (`62 passed`).
   - Progress (2026-03-08): ActionXML parser now supports sub-agent status/context lifecycle tags (`get_agent_status`, `wait_for_agents`, `get_context_info`, `sync_context`) with compatibility aliases (`agent_id`, `agent_ids`, `parent_agent_id`, `child_agent_id`) mapped to canonical tool inputs.
@@ -601,11 +610,21 @@ For each phase, validate with:
     - [x] E7.a Preserve `parentID` / `agent_id` / `parent_agent_id` during Penguin bootstrap and stop relying on unsorted-session `Binary.search` assumptions in `penguin-tui/.../context/sync.tsx`.
     - [x] E7.b Expand backend session payload lineage in `penguin/web/services/session_view.py` so `/session` and emitted session events carry the same child-agent metadata.
     - [x] E7.c Unify `session.created` emission and directory binding across all isolated subagent spawn paths (`parser`, route-level agent create, tool/core helpers).
-    - [ ] E7.d Improve session list child discoverability/behavior after reload without requiring a graph/tree view.
-    - [ ] E7.e Add reload + multi-child regression coverage and validate with `context/tasks/subagent-tui-testing.md`.
+    - [x] E7.d Improve session list child discoverability/behavior after reload without requiring a graph/tree view.
+    - [~] E7.e Add reload + multi-child regression coverage and validate with `context/tasks/subagent-tui-testing.md`.
+    - [ ] E7.f Bridge isolated subagent spawns to OpenCode-style clickable task block cards (`metadata.sessionId` + summary) in the parent transcript.
+    - [ ] E7.g Bind background isolated subagent execution to the child session/conversation scope so child transcript/tool routing matches OpenCode expectations.
+  - E7.f implementation notes (2026-03-21):
+    - First-pass scope should target isolated `spawn_sub_agent` parity before broader `delegate_explore_task` cosmetics, because only isolated spawns create real child sessions that can open from the parent transcript.
+    - Reuse the existing TUI `Task` renderer by bridging backend tool parts as `tool="task"` with `input.description`, `input.subagent_type`, non-empty `metadata.summary`, and `metadata.sessionId` when the child session is known.
+    - Keep shared-session subagents on the generic tool path for now; do not fake clickable child-session cards when no child session exists.
   - Progress (2026-03-18): Penguin bootstrap session mapping now preserves `parentID` plus extra lineage/session metadata fields, and live session create/update/delete handling in TUI sync no longer depends on `Binary.search` over potentially unsorted session arrays.
   - Progress (2026-03-18): backend session payloads now expose `agent_id` and `parent_agent_id` alongside `parentID`, and session view regression coverage now locks those lineage fields into `Session.Info` responses.
   - Progress (2026-03-18): isolated subagent spawn paths now share a single backend post-create helper (`publish_sub_agent_session_created`) that binds child session directories from the parent and emits consistent `session.created` events across parser, route-level agent creation, and tool-driven spawns.
+  - Progress (2026-03-21): session list child discoverability is now in place in Penguin mode; child sessions are grouped/indented under the parent, and active-session reload/bootstrap refreshes no longer reuse stale hydration state.
+  - Progress (2026-03-21): focused TUI regressions now cover child-session list grouping, family navigation ordering, unsorted session-store upserts/removals, and basic child-lineage hydration; manual validation from `context/tasks/subagent-tui-testing.md` remains open.
+  - Finding (2026-03-21): the most visible remaining parity gap is no longer session list behavior. The missing OpenCode feel is the parent transcript bridge: isolated `spawn_sub_agent` / `delegate_explore_task` flows still render as generic tool output/raw child transcript instead of the existing upstream `Task` block card.
+  - Implementation note (2026-03-21): prefer reusing the current TUI `Task` renderer (`penguin-tui/packages/opencode/src/cli/cmd/tui/routes/session/index.tsx`) by shaping Penguin backend tool metadata to match OpenCode (`tool="task"`, `metadata.sessionId`, synthetic/rolling `summary`) rather than adding any Penguin-only UI.
 - [~] E8. Context/tokens/cost telemetry parity in sidebar/header.
   - Owner: backend usage accounting + TUI metadata rendering.
   - Acceptance: token usage, context %, and spend reflect real provider usage (including OpenRouter).

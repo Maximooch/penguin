@@ -762,6 +762,7 @@ class PenguinCore:
                 TokenBudgetStop,
                 WallClockStop,
             )  # type: ignore
+
             # Propagate the model's streaming preference into the Engine so that
             # multi-step run modes (RunMode → Engine.run_task) inherit the same
             # behaviour as interactive chat.  Without this, Engine defaults to
@@ -2331,9 +2332,9 @@ class PenguinCore:
                 try:
                     current_session = self.conversation_manager.get_current_session()
                     if current_session:
-                        info["conversation_manager"]["current_session_id"] = (
-                            current_session.id
-                        )
+                        info["conversation_manager"][
+                            "current_session_id"
+                        ] = current_session.id
                         info["conversation_manager"]["total_messages"] = len(
                             current_session.messages
                         )
@@ -2383,11 +2384,11 @@ class PenguinCore:
                 "timestamp": datetime.now().isoformat(),
                 "initialization": {
                     "core_initialized": getattr(self, "initialized", False),
-                    "fast_startup_enabled": getattr(
-                        self.tool_manager, "fast_startup", False
-                    )
-                    if hasattr(self, "tool_manager")
-                    else False,
+                    "fast_startup_enabled": (
+                        getattr(self.tool_manager, "fast_startup", False)
+                        if hasattr(self, "tool_manager")
+                        else False
+                    ),
                 },
             }
 
@@ -2410,9 +2411,11 @@ class PenguinCore:
         wait=wait_exponential(multiplier=1, min=4, max=10),
         reraise=True,
         retry=retry_if_exception_type(Exception),
-        retry_error_callback=lambda retry_state: None
-        if isinstance(retry_state.outcome.exception(), KeyboardInterrupt)
-        else retry_state.outcome.exception(),
+        retry_error_callback=lambda retry_state: (
+            None
+            if isinstance(retry_state.outcome.exception(), KeyboardInterrupt)
+            else retry_state.outcome.exception()
+        ),
     )
     async def process(
         self,
@@ -4014,9 +4017,11 @@ class PenguinCore:
         """Get comprehensive startup performance statistics."""
         stats = {
             "profiling_summary": profiler.get_summary(),
-            "tool_manager_stats": self.tool_manager.get_startup_stats()
-            if hasattr(self.tool_manager, "get_startup_stats")
-            else {},
+            "tool_manager_stats": (
+                self.tool_manager.get_startup_stats()
+                if hasattr(self.tool_manager, "get_startup_stats")
+                else {}
+            ),
             "memory_provider_initialized": hasattr(
                 self.tool_manager, "_memory_provider"
             )
@@ -4090,9 +4095,9 @@ class PenguinCore:
             status["indexing_task_status"] = {
                 "done": task.done(),
                 "cancelled": task.cancelled(),
-                "exception": str(task.exception())
-                if task.done() and task.exception()
-                else None,
+                "exception": (
+                    str(task.exception()) if task.done() and task.exception() else None
+                ),
             }
 
         return status
@@ -4450,6 +4455,98 @@ class PenguinCore:
             return []
         return self._normalize_todo_items(parsed)
 
+    def _parse_action_payload(self, params: Any) -> Dict[str, Any]:
+        if isinstance(params, dict):
+            return dict(params)
+        if not isinstance(params, str):
+            return {}
+        text = params.strip()
+        if not text.startswith("{"):
+            return {}
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+        return {}
+
+    def _humanize_subagent_name(self, value: Any) -> str:
+        text = str(value or "subagent").strip() or "subagent"
+        return text.replace("_", " ").replace("-", " ")
+
+    def _summarize_subagent_description(self, value: Any, fallback: str) -> str:
+        text = " ".join(str(value or "").split()).strip()
+        if not text:
+            return fallback
+        if len(text) <= 120:
+            return text
+        return text[:117].rstrip() + "..."
+
+    def _build_task_card_summary(
+        self,
+        label: str,
+        status: str,
+        *,
+        item_id: Optional[str] = None,
+        title: Optional[str] = None,
+    ) -> list[Dict[str, Any]]:
+        state: Dict[str, Any] = {"status": status}
+        if isinstance(title, str) and title.strip():
+            state["title"] = title.strip()
+        return [
+            {
+                "id": item_id or f"task_{label.lower().replace(' ', '_')}",
+                "tool": label,
+                "state": state,
+            }
+        ]
+
+    def _summary_status(self, metadata: Dict[str, Any], default: str) -> str:
+        summary = metadata.get("summary")
+        if not isinstance(summary, list) or not summary:
+            return default
+        first = summary[0]
+        if not isinstance(first, dict):
+            return default
+        state = first.get("state")
+        if not isinstance(state, dict):
+            return default
+        value = state.get("status")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return default
+
+    def _build_spawn_subagent_task_card(
+        self, params: Any
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        payload = self._parse_action_payload(params)
+        share_session = bool(payload.get("share_session", False))
+        if share_session:
+            if isinstance(params, dict):
+                return dict(params), {}
+            return {"params": params}, {}
+
+        raw_agent = payload.get("persona") or payload.get("id") or "subagent"
+        subagent_type = self._humanize_subagent_name(raw_agent)
+        description = self._summarize_subagent_description(
+            payload.get("description") or payload.get("initial_prompt"),
+            f"Subagent session for {subagent_type}",
+        )
+        tool_input = {
+            "description": description,
+            "prompt": payload.get("initial_prompt") or "",
+            "subagent_type": subagent_type,
+        }
+        metadata = {
+            "summary": self._build_task_card_summary(
+                "subagent",
+                "running",
+                item_id=str(payload.get("id") or "subagent"),
+            )
+        }
+        return tool_input, metadata
+
     def _map_action_to_tool(
         self, action: str, params: Any
     ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
@@ -4510,6 +4607,12 @@ class PenguinCore:
                     questions = []
             tool_input = {"questions": questions}
             return "question", tool_input, metadata
+
+        if action_name == "spawn_sub_agent":
+            tool_input, metadata = self._build_spawn_subagent_task_card(params)
+            if metadata:
+                return "task", tool_input, metadata
+            return action_name, tool_input, metadata
 
         if action_name == "apply_diff":
             if isinstance(params, dict):
@@ -4805,8 +4908,11 @@ class PenguinCore:
         existing: Optional[Dict[str, Any]] = None,
         tool_input: Optional[Dict[str, Any]] = None,
         status: Optional[str] = None,
+        event_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         metadata = dict(existing or {})
+        if isinstance(event_metadata, dict):
+            metadata.update(event_metadata)
         action_name = (action or "").strip().lower()
         if status == "error" and action_name in {
             "apply_diff",
@@ -4840,6 +4946,46 @@ class PenguinCore:
             diff_text = self._extract_unified_diff_from_result(result)
             if diff_text:
                 metadata["diff"] = self._ensure_unified_diff(file_path, diff_text)
+        if action_name == "spawn_sub_agent":
+            payload = self._parse_action_payload(result)
+            if (
+                isinstance(payload.get("session_id"), str)
+                and payload["session_id"].strip()
+            ):
+                metadata.setdefault("sessionId", payload["session_id"].strip())
+            if (
+                isinstance(payload.get("session_title"), str)
+                and payload["session_title"].strip()
+            ):
+                metadata.setdefault("title", payload["session_title"].strip())
+            label = "subagent"
+            item_id = None
+            if (
+                isinstance(metadata.get("sessionId"), str)
+                and metadata["sessionId"].strip()
+            ):
+                item_id = metadata["sessionId"].strip()
+            title = (
+                metadata.get("title")
+                if isinstance(metadata.get("title"), str)
+                else None
+            )
+            summary_status = (
+                "error"
+                if status == "error"
+                else self._summary_status(
+                    metadata,
+                    "completed",
+                )
+            )
+            if status != "error":
+                summary_status = "completed"
+            metadata["summary"] = self._build_task_card_summary(
+                label,
+                summary_status,
+                item_id=item_id,
+                title=title if status != "error" else "Subagent session failed",
+            )
         return metadata
 
     async def _on_tui_action(self, event_type: str, data: Dict[str, Any]) -> None:
@@ -4960,6 +5106,7 @@ class PenguinCore:
             info.get("metadata") if isinstance(info, dict) else None,
             info.get("input") if isinstance(info, dict) else None,
             status,
+            data.get("metadata") if isinstance(data.get("metadata"), dict) else None,
         )
         await adapter.on_tool_end(part_id, result, error=error, metadata=merged_meta)
         self._opencode_tool_parts.pop(tool_key, None)

@@ -307,7 +307,55 @@ class ActionExecutor:
         except Exception:
             pass
         self._ui_event_cb = ui_event_callback
+        self._ui_action_metadata: Dict[str, Dict[str, Any]] = {}
         # No direct initialization of expensive tools, we'll use tool_manager's properties
+
+    def _inject_tool_call_id(self, params: str, action_id: str) -> str:
+        """Inject an internal tool_call_id into JSON action payloads."""
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception:
+            return params
+
+        if not isinstance(payload, dict):
+            return params
+        if (
+            isinstance(payload.get("tool_call_id"), str)
+            and payload["tool_call_id"].strip()
+        ):
+            return params
+        payload["tool_call_id"] = action_id
+        try:
+            return json.dumps(payload)
+        except Exception:
+            return params
+
+    def _prepare_action_params(self, action: CodeActAction, action_id: str) -> Any:
+        """Prepare handler params without mutating the original parsed action."""
+        if action.action_type == ActionType.SPAWN_SUB_AGENT and isinstance(
+            action.params, str
+        ):
+            return self._inject_tool_call_id(action.params, action_id)
+        return action.params
+
+    def _record_ui_action_metadata(
+        self, action_id: str, metadata: Optional[Dict[str, Any]]
+    ) -> None:
+        """Persist transient UI metadata for the matching action_result event."""
+        if not isinstance(action_id, str) or not action_id or action_id == "-":
+            return
+        if not isinstance(metadata, dict) or not metadata:
+            return
+        self._ui_action_metadata[action_id] = dict(metadata)
+
+    def _consume_ui_action_metadata(self, action_id: str) -> Optional[Dict[str, Any]]:
+        """Return and remove transient UI metadata for an action."""
+        if not isinstance(action_id, str) or not action_id:
+            return None
+        metadata = self._ui_action_metadata.pop(action_id, None)
+        if isinstance(metadata, dict) and metadata:
+            return metadata
+        return None
 
     def _resolve_subagent_tool_call_id(
         self,
@@ -550,18 +598,23 @@ class ActionExecutor:
                 "ActionExecutor executing %s using ToolManager id=%s file_root=%s mode=%s",
                 action.action_type.value,
                 hex(id(self.tool_manager)) if self.tool_manager else None,
-                getattr(self.tool_manager, "_file_root", None)
-                if self.tool_manager
-                else None,
-                getattr(self.tool_manager, "file_root_mode", None)
-                if self.tool_manager
-                else None,
+                (
+                    getattr(self.tool_manager, "_file_root", None)
+                    if self.tool_manager
+                    else None
+                ),
+                (
+                    getattr(self.tool_manager, "file_root_mode", None)
+                    if self.tool_manager
+                    else None
+                ),
             )
         except Exception:
             pass
         import uuid
 
         action_id = str(uuid.uuid4())[:8]
+        handler_params = self._prepare_action_params(action, action_id)
 
         # --------------------------------------------------
         # Emit *start* UI event
@@ -697,14 +750,14 @@ class ActionExecutor:
 
             if asyncio.iscoroutinefunction(handler):
                 logger.debug(f"Executing async handler for {action.action_type.value}")
-                result = await handler(action.params)
+                result = await handler(handler_params)
             else:
                 logger.debug(
                     f"Executing sync handler for {action.action_type.value} in thread pool"
                 )
                 # Offload synchronous tools to thread pool to avoid blocking the event loop.
                 # asyncio.to_thread preserves contextvars for per-request execution context.
-                result = await asyncio.to_thread(handler, action.params)
+                result = await asyncio.to_thread(handler, handler_params)
 
                 if asyncio.iscoroutine(result):
                     result = await result
@@ -716,16 +769,18 @@ class ActionExecutor:
             if self._ui_event_cb:
                 try:
                     logger.debug(f"UI-emit success action_result id={action_id}")
+                    event_payload: Dict[str, Any] = {
+                        "id": action_id,
+                        "status": "completed",
+                        "result": result if isinstance(result, str) else str(result),
+                        "action": action.action_type.value,
+                    }
+                    metadata = self._consume_ui_action_metadata(action_id)
+                    if metadata:
+                        event_payload["metadata"] = metadata
                     await self._ui_event_cb(
                         "action_result",
-                        {
-                            "id": action_id,
-                            "status": "completed",
-                            "result": result
-                            if isinstance(result, str)
-                            else str(result),
-                            "action": action.action_type.value,  # Standardized field name
-                        },
+                        event_payload,
                     )
                 except Exception as e:
                     logger.debug(f"UI event emit failed (action result): {e}")
@@ -767,14 +822,18 @@ class ActionExecutor:
             if self._ui_event_cb:
                 try:
                     logger.debug(f"UI-emit error action_result id={action_id}")
+                    event_payload: Dict[str, Any] = {
+                        "id": action_id,
+                        "status": "error",
+                        "result": error_message,
+                        "action": action.action_type.value,
+                    }
+                    metadata = self._consume_ui_action_metadata(action_id)
+                    if metadata:
+                        event_payload["metadata"] = metadata
                     await self._ui_event_cb(
                         "action_result",
-                        {
-                            "id": action_id,
-                            "status": "error",
-                            "result": error_message,
-                            "action": action.action_type.value,  # Standardized field name
-                        },
+                        event_payload,
                     )
                 except Exception as ee:
                     logger.debug(f"UI event emit failed (action error): {ee}")
@@ -1169,6 +1228,22 @@ class ActionExecutor:
                     share_session=share_session,
                 )
                 if isinstance(info, dict):
+                    ui_metadata: Dict[str, Any] = {
+                        "summary": [
+                            {
+                                "id": str(info.get("id") or tool_call_id or agent_id),
+                                "tool": "subagent",
+                                "state": {
+                                    "status": "completed",
+                                    "title": str(info.get("title") or "").strip()
+                                    or "Subagent session ready",
+                                },
+                            }
+                        ],
+                        "sessionId": info.get("id"),
+                        "title": info.get("title") or f"Subagent session ({agent_id})",
+                    }
+                    self._record_ui_action_metadata(tool_call_id, ui_metadata)
                     self._log_subagent_event(
                         "spawn.session_event",
                         status="completed",
@@ -2241,16 +2316,12 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             label = (
                 label_raw.strip()
                 if isinstance(label_raw, str)
-                else str(label_raw).strip()
-                if label_raw is not None
-                else ""
+                else str(label_raw).strip() if label_raw is not None else ""
             )
             description = (
                 description_raw.strip()
                 if isinstance(description_raw, str)
-                else str(description_raw).strip()
-                if description_raw is not None
-                else ""
+                else str(description_raw).strip() if description_raw is not None else ""
             )
 
             if not label or not description:
@@ -2281,16 +2352,12 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             question_text = (
                 question_raw.strip()
                 if isinstance(question_raw, str)
-                else str(question_raw).strip()
-                if question_raw is not None
-                else ""
+                else str(question_raw).strip() if question_raw is not None else ""
             )
             header_text = (
                 header_raw.strip()
                 if isinstance(header_raw, str)
-                else str(header_raw).strip()
-                if header_raw is not None
-                else ""
+                else str(header_raw).strip() if header_raw is not None else ""
             )
 
             options = self._normalize_question_options(item.get("options"))

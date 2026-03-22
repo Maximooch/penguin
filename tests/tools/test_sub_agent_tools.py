@@ -290,6 +290,9 @@ async def test_spawn_sub_agent_emits_created_and_binds_directory(tool_manager):
         "id": "session_child",
         "title": "Child Session",
         "directory": "/tmp/tool-parent",
+        "parentID": "session_parent",
+        "agent_id": "child-agent",
+        "parent_agent_id": "default",
         "projectID": "penguin",
         "slug": "session_child",
         "version": "test",
@@ -310,8 +313,21 @@ async def test_spawn_sub_agent_emits_created_and_binds_directory(tool_manager):
 
     payload = json.loads(result)
     assert payload["status"] == "ok"
+    assert payload["session_id"] == "session_child"
+    assert payload["session_title"] == "Child Session"
     assert core._opencode_session_directories["session_child"] == "/tmp/tool-parent"
     assert core.event_bus.events[-1][1]["type"] == "session.created"
+    assert (
+        core.event_bus.events[-1][1]["properties"]["info"]["parentID"]
+        == "session_parent"
+    )
+    assert (
+        core.event_bus.events[-1][1]["properties"]["info"]["agent_id"] == "child-agent"
+    )
+    assert (
+        core.event_bus.events[-1][1]["properties"]["info"]["parent_agent_id"]
+        == "default"
+    )
 
 
 # =============================================================================

@@ -27,11 +27,13 @@ import { createSimpleContext } from "./helper"
 import type { Snapshot } from "@/snapshot"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
+import { useRoute } from "./route"
 import { batch, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import { iife } from "@/util/iife"
 import type { Path } from "@opencode-ai/sdk"
 import { hydrateSessionSnapshot, mergeHydratedMessages } from "./session-hydration"
+import { expandSessionSearchResults, removeSessionRecord, upsertSessionRecord } from "../util/session-family"
 
 type SessionUsage = {
   current_total_tokens: number
@@ -54,10 +56,7 @@ type PenguinSession = Session & {
 const parseUsage = (raw: unknown): SessionUsage | undefined => {
   if (typeof raw !== "object" || !raw) return undefined
   const root = raw as Record<string, unknown>
-  const usage =
-    typeof root.usage === "object" && root.usage
-      ? (root.usage as Record<string, unknown>)
-      : root
+  const usage = typeof root.usage === "object" && root.usage ? (root.usage as Record<string, unknown>) : root
 
   const current = usage.current_total_tokens
   if (typeof current !== "number") return undefined
@@ -66,9 +65,7 @@ const parseUsage = (raw: unknown): SessionUsage | undefined => {
   const available = usage.available_tokens
   const percentage = usage.percentage
   const trunc =
-    typeof usage.truncations === "object" && usage.truncations
-      ? (usage.truncations as Record<string, unknown>)
-      : {}
+    typeof usage.truncations === "object" && usage.truncations ? (usage.truncations as Record<string, unknown>) : {}
 
   return {
     current_total_tokens: current,
@@ -76,10 +73,8 @@ const parseUsage = (raw: unknown): SessionUsage | undefined => {
     available_tokens: typeof available === "number" ? available : 0,
     percentage: typeof percentage === "number" ? percentage : null,
     truncations: {
-      total_truncations:
-        typeof trunc.total_truncations === "number" ? trunc.total_truncations : 0,
-      messages_removed:
-        typeof trunc.messages_removed === "number" ? trunc.messages_removed : 0,
+      total_truncations: typeof trunc.total_truncations === "number" ? trunc.total_truncations : 0,
+      messages_removed: typeof trunc.messages_removed === "number" ? trunc.messages_removed : 0,
       tokens_freed: typeof trunc.tokens_freed === "number" ? trunc.tokens_freed : 0,
     },
   }
@@ -163,32 +158,18 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     })
 
     const sdk = useSDK()
+    const route = useRoute()
+    const fullSyncedSessions = new Set<string>()
 
     const sessionIndex = (sessionID: string) => store.session.findIndex((item) => item.id === sessionID)
 
     const upsertSession = (session: Session) => {
-      const index = sessionIndex(session.id)
-      if (index !== -1) {
-        setStore("session", index, reconcile(session))
-        return
-      }
-      setStore(
-        "session",
-        produce((draft) => {
-          draft.push(session)
-        }),
-      )
+      setStore("session", reconcile(upsertSessionRecord(store.session, session)))
     }
 
     const removeSession = (sessionID: string) => {
-      const index = sessionIndex(sessionID)
-      if (index === -1) return
-      setStore(
-        "session",
-        produce((draft) => {
-          draft.splice(index, 1)
-        }),
-      )
+      if (sessionIndex(sessionID) === -1) return
+      setStore("session", reconcile(removeSessionRecord(store.session, sessionID)))
     }
 
     const normalizeDirectory = (value?: string) => {
@@ -314,6 +295,38 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         })
     }
 
+    const syncSessionSnapshot = async (sessionID: string, force = false) => {
+      if (!force && fullSyncedSessions.has(sessionID)) return
+
+      const fallback = sdk.penguin ? store.session.find((item) => item.id === sessionID) : undefined
+      const hydrated = await hydrateSessionSnapshot(sdk.client, sessionID, {
+        fallbackSession: fallback,
+      })
+      setStore(
+        produce((draft) => {
+          if (sdk.penguin) {
+            draft.session = upsertSessionRecord(draft.session, hydrated.session)
+          }
+          if (!sdk.penguin) {
+            const match = Binary.search(draft.session, sessionID, (s) => s.id)
+            if (match.found) draft.session[match.index] = hydrated.session
+            if (!match.found) draft.session.splice(match.index, 0, hydrated.session)
+          }
+          const usage = parseUsage(hydrated.session)
+          if (usage) draft.session_usage[sessionID] = usage
+          draft.todo[sessionID] = hydrated.todo
+          draft.message[sessionID] = sdk.penguin
+            ? mergeHydratedMessages(draft.message[sessionID], hydrated.messages, draft.part)
+            : hydrated.messages.map((x) => x.info)
+          for (const message of hydrated.messages) {
+            draft.part[message.info.id] = message.parts
+          }
+          draft.session_diff[sessionID] = hydrated.diff
+        }),
+      )
+      fullSyncedSessions.add(sessionID)
+    }
+
     sdk.event.listen((e) => {
       const event = e.details
       if (sdk.penguin) {
@@ -339,7 +352,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       }
       switch (event.type) {
         case "server.instance.disposed":
-          bootstrap()
+          fullSyncedSessions.clear()
+          void bootstrap(true)
           break
         case "permission.replied": {
           const requests = store.permission[event.properties.sessionID]
@@ -425,7 +439,22 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           break
 
         case "session.deleted": {
-          removeSession(event.properties.info.id)
+          const sessionID = event.properties.info.id
+          removeSession(sessionID)
+          fullSyncedSessions.delete(sessionID)
+          setStore(
+            produce((draft) => {
+              const messages = draft.message[sessionID] ?? []
+              for (const message of messages) {
+                delete draft.part[message.id]
+              }
+              delete draft.message[sessionID]
+              delete draft.todo[sessionID]
+              delete draft.session_diff[sessionID]
+              delete draft.session_status[sessionID]
+              delete draft.session_usage[sessionID]
+            }),
+          )
           break
         }
         case "session.created":
@@ -546,11 +575,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               )
             })
           }
-          if (
-            normalized.role === "assistant" &&
-            typeof normalized.time === "object" &&
-            !!normalized.time?.completed
-          ) {
+          if (normalized.role === "assistant" && typeof normalized.time === "object" && !!normalized.time?.completed) {
             refreshSessionUsage(normalized.sessionID)
           }
           break
@@ -634,9 +659,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const exit = useExit()
     const args = useArgs()
 
-    async function bootstrap() {
+    async function bootstrap(refreshActive = false) {
       console.log("bootstrapping")
       if (sdk.penguin) {
+        fullSyncedSessions.clear()
         const now = Date.now()
         const stamp = (value?: string) => {
           const time = value ? Date.parse(value) : NaN
@@ -711,28 +737,30 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           url.searchParams.set("limit", "50")
           return url
         })
-        const [providersData, providerListData, configData, providerAuthData, sessionsData, roster] = await Promise.all([
-          fetch(new URL("/config/providers", sdk.url))
-            .then((res) => (res.ok ? res.json() : undefined))
-            .catch(() => undefined),
-          fetch(new URL("/provider", sdk.url))
-            .then((res) => (res.ok ? res.json() : undefined))
-            .catch(() => undefined),
-          fetch(new URL("/config", sdk.url))
-            .then((res) => (res.ok ? res.json() : undefined))
-            .catch(() => undefined),
-          fetch(new URL("/provider/auth", sdk.url))
-            .then((res) => (res.ok ? res.json() : undefined))
-            .catch(() => undefined),
-          fetch(sessionsUrl)
-            .then((res) => (res.ok ? res.json() : undefined))
-            .then((data) => (Array.isArray(data) ? data : []))
-            .catch(() => []),
-          fetch(new URL("/api/v1/agents", sdk.url))
-            .then((res) => (res.ok ? res.json() : undefined))
-            .then((data) => (Array.isArray(data) ? data : []))
-            .catch(() => []),
-        ])
+        const [providersData, providerListData, configData, providerAuthData, sessionsData, roster] = await Promise.all(
+          [
+            fetch(new URL("/config/providers", sdk.url))
+              .then((res) => (res.ok ? res.json() : undefined))
+              .catch(() => undefined),
+            fetch(new URL("/provider", sdk.url))
+              .then((res) => (res.ok ? res.json() : undefined))
+              .catch(() => undefined),
+            fetch(new URL("/config", sdk.url))
+              .then((res) => (res.ok ? res.json() : undefined))
+              .catch(() => undefined),
+            fetch(new URL("/provider/auth", sdk.url))
+              .then((res) => (res.ok ? res.json() : undefined))
+              .catch(() => undefined),
+            fetch(sessionsUrl)
+              .then((res) => (res.ok ? res.json() : undefined))
+              .then((data) => (Array.isArray(data) ? data : []))
+              .catch(() => []),
+            fetch(new URL("/api/v1/agents", sdk.url))
+              .then((res) => (res.ok ? res.json() : undefined))
+              .then((data) => (Array.isArray(data) ? data : []))
+              .catch(() => []),
+          ],
+        )
         const list = sessionsData
         const providersPayload = unwrap(providersData) as Record<string, unknown> | undefined
         const providerListPayload = unwrap(providerListData) as Record<string, unknown> | undefined
@@ -792,8 +820,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             typeof time === "object" && time && "updated" in time && typeof time.updated === "number"
               ? time.updated
               : stamp(typeof item.last_active === "string" ? item.last_active : undefined)
-          const directoryValue =
-            typeof item.directory === "string" ? item.directory : directory
+          const directoryValue = typeof item.directory === "string" ? item.directory : directory
           const payload: PenguinSession = {
             id: sid,
             slug: typeof item.slug === "string" ? item.slug : sid,
@@ -826,12 +853,18 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                 additions: source.additions,
                 deletions: source.deletions,
                 files: source.files,
-                diffs: Array.isArray(source.diffs) ? (source.diffs as Session["summary"] extends { diffs?: infer T } ? T : never) : undefined,
+                diffs: Array.isArray(source.diffs)
+                  ? (source.diffs as Session["summary"] extends { diffs?: infer T } ? T : never)
+                  : undefined,
               }
             }
           }
           const revert = item.revert
-          if (revert && typeof revert === "object" && typeof (revert as { messageID?: unknown }).messageID === "string") {
+          if (
+            revert &&
+            typeof revert === "object" &&
+            typeof (revert as { messageID?: unknown }).messageID === "string"
+          ) {
             const source = revert as Record<string, unknown>
             payload.revert = {
               messageID: String(source.messageID),
@@ -911,9 +944,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             hints: [],
           },
         ]
-        const status = Object.fromEntries(
-          session.map((item: PenguinSession) => [item.id, { type: "idle" as const }]),
-        )
+        const status = Object.fromEntries(session.map((item: PenguinSession) => [item.id, { type: "idle" as const }]))
         batch(() => {
           setStore("provider", reconcile(providers))
           setStore("provider_default", reconcile(providerDefault))
@@ -925,10 +956,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("session", reconcile(session))
           setStore("session_usage", reconcile(usage))
           setStore("session_status", reconcile(status))
-          setStore(
-            "path",
-            reconcile({ home: "", state: "", config: "", worktree: "", directory }),
-          )
+          setStore("path", reconcile({ home: "", state: "", config: "", worktree: "", directory }))
           setStore("status", "complete")
         })
 
@@ -963,6 +991,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             if (path) setStore("path", reconcile(path))
           })
         })
+        const activeSessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        if (activeSessionID && (refreshActive || store.session.some((item) => item.id === activeSessionID))) {
+          await syncSessionSnapshot(activeSessionID, true)
+        }
         return
       }
       const start = Date.now() - 30 * 24 * 60 * 60 * 1000
@@ -1045,10 +1077,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     }
 
     onMount(() => {
-      bootstrap()
+      void bootstrap()
     })
 
-    const fullSyncedSessions = new Set<string>()
     const result = {
       data: store,
       set: setStore,
@@ -1058,15 +1089,15 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       get ready() {
         return store.status !== "loading"
       },
-        session: {
-          get(sessionID: string) {
-            if (sdk.penguin) {
-              return store.session.find((item) => item.id === sessionID)
-            }
-            const match = Binary.search(store.session, sessionID, (s) => s.id)
-            if (match.found) return store.session[match.index]
-            return undefined
-          },
+      session: {
+        get(sessionID: string) {
+          if (sdk.penguin) {
+            return store.session.find((item) => item.id === sessionID)
+          }
+          const match = Binary.search(store.session, sessionID, (s) => s.id)
+          if (match.found) return store.session[match.index]
+          return undefined
+        },
         status(sessionID: string) {
           const session = result.session.get(sessionID)
           if (!session) return "idle"
@@ -1081,40 +1112,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           return last.time.completed ? "idle" : "working"
         },
         async sync(sessionID: string) {
-          if (fullSyncedSessions.has(sessionID)) return
-          const fallback = sdk.penguin ? store.session.find((item) => item.id === sessionID) : undefined
-          const hydrated = await hydrateSessionSnapshot(sdk.client, sessionID, {
-            fallbackSession: fallback,
-          })
-          setStore(
-            produce((draft) => {
-              if (sdk.penguin) {
-                const index = draft.session.findIndex((item) => item.id === sessionID)
-                if (index >= 0) draft.session[index] = hydrated.session
-                if (index < 0) draft.session.push(hydrated.session)
-              }
-              if (!sdk.penguin) {
-                const match = Binary.search(draft.session, sessionID, (s) => s.id)
-                if (match.found) draft.session[match.index] = hydrated.session
-                if (!match.found) draft.session.splice(match.index, 0, hydrated.session)
-              }
-              const usage = parseUsage(hydrated.session)
-              if (usage) draft.session_usage[sessionID] = usage
-              draft.todo[sessionID] = hydrated.todo
-              draft.message[sessionID] = sdk.penguin
-                ? mergeHydratedMessages(
-                    draft.message[sessionID],
-                    hydrated.messages,
-                    draft.part,
-                  )
-                : hydrated.messages.map((x) => x.info)
-              for (const message of hydrated.messages) {
-                draft.part[message.info.id] = message.parts
-              }
-              draft.session_diff[sessionID] = hydrated.diff
-            }),
-          )
-          fullSyncedSessions.add(sessionID)
+          await syncSessionSnapshot(sessionID)
         },
       },
       bootstrap,

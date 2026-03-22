@@ -58,6 +58,7 @@ import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { exitSession } from "../../util/exit"
+import { getSessionFamily } from "../../util/session-family"
 import { Sidebar } from "./sidebar"
 import { Flag } from "@/flag/flag"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
@@ -115,10 +116,9 @@ export function Session() {
   const promptRef = usePromptRef()
   const session = createMemo(() => sync.session.get(route.sessionID))
   const children = createMemo(() => {
-    const parentID = session()?.parentID ?? session()?.id
-    return sync.data.session
-      .filter((x) => x.parentID === parentID || x.id === parentID)
-      .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    const current = session()?.id
+    if (!current) return []
+    return getSessionFamily(sync.data.session, current)
   })
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
   const permissions = createMemo(() => {
@@ -903,7 +903,9 @@ export function Session() {
   const revertInfo = createMemo(() => session()?.revert)
   const revertMessageID = createMemo(() => revertInfo()?.messageID)
   const hiddenMessageIDs = createMemo(() => {
-    const info = revertInfo() as ({ hiddenMessageIDs?: string[] } & NonNullable<ReturnType<typeof revertInfo>>) | undefined
+    const info = revertInfo() as
+      | ({ hiddenMessageIDs?: string[] } & NonNullable<ReturnType<typeof revertInfo>>)
+      | undefined
     const hidden = info?.hiddenMessageIDs
     if (Array.isArray(hidden) && hidden.length > 0) return hidden
 

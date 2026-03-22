@@ -100,6 +100,9 @@ async def test_spawn_sub_agent_emits_session_created(
             "id": session_id,
             "title": "Child Session",
             "directory": "/tmp/workspace",
+            "parentID": "session_parent",
+            "agent_id": "child-agent",
+            "parent_agent_id": "default",
             "projectID": "penguin",
             "slug": session_id,
             "version": "test",
@@ -130,7 +133,74 @@ async def test_spawn_sub_agent_emits_session_created(
     assert payload["type"] == "session.created"
     assert payload["properties"]["sessionID"] == "session_child_1"
     assert payload["properties"]["info"]["id"] == "session_child_1"
+    assert payload["properties"]["info"]["parentID"] == "session_parent"
+    assert payload["properties"]["info"]["agent_id"] == "child-agent"
+    assert payload["properties"]["info"]["parent_agent_id"] == "default"
     assert core._opencode_session_directories["session_child_1"] == "/tmp/workspace"
+
+
+@pytest.mark.asyncio
+async def test_spawn_sub_agent_action_result_emits_task_card_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core("session_child_1")
+    conversation = SimpleNamespace(core=core, current_agent_id="default")
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def _ui_event(event_type: str, payload: dict[str, Any]) -> None:
+        events.append((event_type, payload))
+
+    executor = ActionExecutor(
+        tool_manager=cast(Any, SimpleNamespace()),
+        task_manager=cast(Any, SimpleNamespace()),
+        conversation_system=conversation,
+        ui_event_callback=_ui_event,
+    )
+
+    def _fake_session_info(_core: Any, session_id: str) -> dict[str, Any]:
+        return {
+            "id": session_id,
+            "title": "Child Session",
+            "directory": "/tmp/workspace",
+            "parentID": "session_parent",
+            "agent_id": "child-agent",
+            "parent_agent_id": "default",
+            "projectID": "penguin",
+            "slug": session_id,
+            "version": "test",
+            "time": {"created": 1, "updated": 1},
+        }
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_view.get_session_info",
+        _fake_session_info,
+    )
+
+    action = CodeActAction(
+        ActionType.SPAWN_SUB_AGENT,
+        json.dumps(
+            {
+                "id": "child-agent",
+                "share_session": False,
+                "share_context_window": False,
+                "background": True,
+                "initial_prompt": "Smoke test only.",
+            }
+        ),
+    )
+
+    result = await executor.execute_action(action)
+
+    assert "Spawned sub-agent 'child-agent'" in result
+    action_result = [
+        payload for event_type, payload in events if event_type == "action_result"
+    ]
+    assert action_result
+    metadata = action_result[-1]["metadata"]
+    assert metadata["sessionId"] == "session_child_1"
+    assert metadata["title"] == "Child Session"
+    assert metadata["summary"][0]["tool"] == "subagent"
+    assert metadata["summary"][0]["state"]["status"] == "completed"
 
 
 def test_parse_action_detects_subagent_status_tags() -> None:

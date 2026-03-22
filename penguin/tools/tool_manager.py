@@ -48,10 +48,7 @@ _pydoll_import_error = None
 def _ensure_pydoll_imports():
     """Lazy import PyDoll tools only when needed."""
     global _pydoll_tools_imported, _pydoll_import_error
-    global \
-        pydoll_browser_manager, \
-        PyDollBrowserNavigationTool, \
-        PyDollBrowserInteractionTool
+    global pydoll_browser_manager, PyDollBrowserNavigationTool, PyDollBrowserInteractionTool
     global PyDollBrowserScreenshotTool, PyDollBrowserScrollTool
 
     if not _pydoll_tools_imported and _pydoll_import_error is None:
@@ -112,11 +109,7 @@ def _ensure_permission_imports():
     """Lazy import permission modules to avoid circular imports."""
     global _permission_enforcer_imported, _PermissionEnforcer, _WorkspaceBoundaryPolicy
     global _AgentModePolicy
-    global \
-        _PermissionMode, \
-        _PermissionResult, \
-        _PermissionDeniedError, \
-        _check_tool_permission
+    global _PermissionMode, _PermissionResult, _PermissionDeniedError, _check_tool_permission
 
     if not _permission_enforcer_imported:
         try:
@@ -2641,9 +2634,11 @@ class ToolManager:
                                     session_id=session_id,
                                     context={
                                         "tool_input": tool_input,
-                                        "agent_id": effective_context.get("agent_id")
-                                        if effective_context
-                                        else None,
+                                        "agent_id": (
+                                            effective_context.get("agent_id")
+                                            if effective_context
+                                            else None
+                                        ),
                                     },
                                 )
 
@@ -3466,8 +3461,9 @@ class ToolManager:
                                     imports.append(import_name)
                                     all_imports[relative_path].append(import_name)
 
-                                    if include_external or not self._is_external_import(
-                                        node.module
+                                    if (
+                                        include_external
+                                        or not self._is_external_import(node.module)
                                     ):
                                         dependency_graph[relative_path].add(node.module)
 
@@ -3527,9 +3523,11 @@ class ToolManager:
                 "total_lines": complexity_metrics["total_lines"],
                 "functions": complexity_metrics["total_functions"],
                 "classes": complexity_metrics["total_classes"],
-                "imports": sum(len(imports) for imports in all_imports.values())
-                if all_imports
-                else 0,
+                "imports": (
+                    sum(len(imports) for imports in all_imports.values())
+                    if all_imports
+                    else 0
+                ),
             }
 
             return json.dumps(analysis_results, indent=2)
@@ -3619,12 +3617,14 @@ class ToolManager:
                 [f for f in all_functions if f["args"] > 5]
             ),
             "async_percentage": (
-                len([f for f in all_functions if f["is_async"]])
-                / len(all_functions)
-                * 100
-            )
-            if all_functions
-            else 0,
+                (
+                    len([f for f in all_functions if f["is_async"]])
+                    / len(all_functions)
+                    * 100
+                )
+                if all_functions
+                else 0
+            ),
         }
 
     async def reindex_workspace(
@@ -3760,9 +3760,11 @@ class ToolManager:
                 "file_types": file_types,
                 "statistics": stats,
                 "provider": type(memory_provider).__name__,
-                "provider_stats": await memory_provider.get_memory_stats()
-                if hasattr(memory_provider, "get_memory_stats")
-                else {},
+                "provider_stats": (
+                    await memory_provider.get_memory_stats()
+                    if hasattr(memory_provider, "get_memory_stats")
+                    else {}
+                ),
             }
 
             logger.info(
@@ -3912,9 +3914,9 @@ class ToolManager:
             metadata = {
                 "file_type": "generic",
                 "path": str(file_path),
-                "extension": file_path.suffix[1:]
-                if file_path.suffix
-                else "no_extension",
+                "extension": (
+                    file_path.suffix[1:] if file_path.suffix else "no_extension"
+                ),
                 "size_bytes": len(content.encode("utf-8")),
                 "indexed_at": datetime.now().isoformat(),
             }
@@ -4367,14 +4369,17 @@ class ToolManager:
             share_context_window=share_cw,
         )
 
+        session_info: Dict[str, Any] = {}
         try:
             publish = getattr(self._core, "publish_sub_agent_session_created", None)
             if callable(publish):
-                await publish(
+                info = await publish(
                     agent_id,
                     parent_agent_id=parent_id,
                     share_session=share_session,
                 )
+                if isinstance(info, dict):
+                    session_info = dict(info)
         except Exception:
             logger.debug(
                 "Failed to emit session.created for tool-spawned sub-agent '%s'",
@@ -4428,6 +4433,8 @@ class ToolManager:
                             "share_context_window": share_cw,
                             "background": True,
                             "message": f"Agent '{agent_id}' spawned and running in background",
+                            "session_id": session_info.get("id"),
+                            "session_title": session_info.get("title"),
                         }
                     )
                 except Exception as e:
@@ -4474,6 +4481,8 @@ class ToolManager:
                 "share_session": share_session,
                 "share_context_window": share_cw,
                 "background": background,
+                "session_id": session_info.get("id"),
+                "session_title": session_info.get("title"),
             }
         )
 
@@ -4802,9 +4811,9 @@ class ToolManager:
                     state = str(status.get("state") or "unknown")
                     partial[aid] = {
                         "state": state,
-                        "result": status.get("result")
-                        if state == "completed"
-                        else None,
+                        "result": (
+                            status.get("result") if state == "completed" else None
+                        ),
                     }
 
                 logger.info(

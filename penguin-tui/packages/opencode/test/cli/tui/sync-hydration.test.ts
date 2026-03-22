@@ -136,6 +136,27 @@ describe("sync hydration", () => {
     expect(result.messages.length).toBe(1)
   })
 
+  test("preserves child session lineage when hydrating a reopened session", async () => {
+    const child = {
+      ...session,
+      id: "ses_child",
+      slug: "ses_child",
+      title: "Child Session",
+      parentID: "ses_parent",
+    }
+    const client: SessionHydrationClient = {
+      session: {
+        get: async () => ({ data: child }),
+        messages: async () => ({ data: [{ info: user, parts }] }),
+      },
+    }
+
+    const result = await hydrateSessionSnapshot(client, "ses_child")
+
+    expect(result.session.id).toBe("ses_child")
+    expect(result.session.parentID).toBe("ses_parent")
+  })
+
   test("throws when session is missing and no fallback exists", async () => {
     const client: SessionHydrationClient = {
       session: {
@@ -144,9 +165,7 @@ describe("sync hydration", () => {
       },
     }
 
-    await expect(hydrateSessionSnapshot(client, "ses_missing")).rejects.toThrow(
-      "Session ses_missing not found",
-    )
+    await expect(hydrateSessionSnapshot(client, "ses_missing")).rejects.toThrow("Session ses_missing not found")
   })
 
   test("preserves optimistic user message when hydration is empty", () => {
@@ -168,11 +187,7 @@ describe("sync hydration", () => {
       },
     ]
 
-    const merged = mergeHydratedMessages(
-      [optimistic],
-      [],
-      { [optimistic.id]: optimisticParts },
-    )
+    const merged = mergeHydratedMessages([optimistic], [], { [optimistic.id]: optimisticParts })
 
     expect(merged).toHaveLength(1)
     expect(merged[0]?.id).toBe("msg_local_1")
@@ -214,11 +229,9 @@ describe("sync hydration", () => {
       },
     ]
 
-    const merged = mergeHydratedMessages(
-      [optimistic],
-      [{ info: hydratedUser, parts: hydratedParts }],
-      { [optimistic.id]: optimisticParts },
-    )
+    const merged = mergeHydratedMessages([optimistic], [{ info: hydratedUser, parts: hydratedParts }], {
+      [optimistic.id]: optimisticParts,
+    })
 
     expect(merged).toHaveLength(1)
     expect(merged[0]?.id).toBe("msg_server_1")
@@ -260,16 +273,11 @@ describe("sync hydration", () => {
       },
     ]
 
-    const merged = mergeHydratedMessages(
-      [optimistic],
-      [{ info: hydratedUser, parts: hydratedParts }],
-      { [optimistic.id]: optimisticParts },
-    )
+    const merged = mergeHydratedMessages([optimistic], [{ info: hydratedUser, parts: hydratedParts }], {
+      [optimistic.id]: optimisticParts,
+    })
 
     expect(merged).toHaveLength(2)
-    expect(merged.map((item) => item.id)).toEqual([
-      "msg_server_old",
-      "msg_local_2",
-    ])
+    expect(merged.map((item) => item.id)).toEqual(["msg_server_old", "msg_local_2"])
   })
 })

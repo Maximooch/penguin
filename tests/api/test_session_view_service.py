@@ -252,6 +252,31 @@ def test_session_info_includes_subagent_lineage_fields():
     assert info["parent_agent_id"] == "default"
 
 
+def test_list_session_infos_keeps_child_sessions_visible_until_roots_filter_is_used():
+    parent = _session("session_parent", "Parent Session", "2026-02-01T00:00:00")
+    child_a = _session("session_child_a", "Child A", "2026-02-02T00:00:00")
+    child_b = _session("session_child_b", "Child B", "2026-02-03T00:00:00")
+    child_a.metadata["parentID"] = parent.id
+    child_a.metadata["agent_id"] = "child-a"
+    child_a.metadata["parent_agent_id"] = "default"
+    child_b.metadata["parentID"] = parent.id
+    child_b.metadata["agent_id"] = "child-b"
+    child_b.metadata["parent_agent_id"] = "default"
+    core = _core([parent, child_a, child_b])
+
+    visible = list_session_infos(core)
+    roots_only = list_session_infos(core, roots=True)
+
+    assert [item["id"] for item in visible] == [
+        "session_child_b",
+        "session_child_a",
+        "session_parent",
+    ]
+    assert visible[0]["parentID"] == parent.id
+    assert visible[1]["parentID"] == parent.id
+    assert [item["id"] for item in roots_only] == ["session_parent"]
+
+
 def test_get_session_messages_prefers_persisted_transcript():
     session = _session(
         "session_transcript", "Transcript Session", "2026-02-03T00:00:00"

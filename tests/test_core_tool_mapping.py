@@ -145,6 +145,42 @@ def test_map_action_to_tool_covers_common_coding_workflows(
     assert isinstance(metadata, dict)
 
 
+def test_map_action_to_tool_maps_isolated_spawn_sub_agent_to_task_card() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "spawn_sub_agent",
+        {
+            "id": "smoke_agent",
+            "share_session": False,
+            "initial_prompt": "Smoke test only. List the first 5 top-level items.",
+        },
+    )
+
+    assert mapped_tool == "task"
+    assert tool_input["subagent_type"] == "smoke agent"
+    assert tool_input["description"].startswith("Smoke test only.")
+    assert metadata["summary"][0]["tool"] == "subagent"
+    assert metadata["summary"][0]["state"]["status"] == "running"
+
+
+def test_map_action_to_tool_keeps_shared_session_spawn_sub_agent_generic() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "spawn_sub_agent",
+        {
+            "id": "shared_agent",
+            "share_session": True,
+            "initial_prompt": "Use the parent session.",
+        },
+    )
+
+    assert mapped_tool == "spawn_sub_agent"
+    assert tool_input["id"] == "shared_agent"
+    assert metadata == {}
+
+
 def test_map_action_result_metadata_extracts_diff_for_replace_lines() -> None:
     core = PenguinCore.__new__(PenguinCore)
     result = (
@@ -216,6 +252,39 @@ def test_map_action_result_metadata_extracts_todos_for_todowrite() -> None:
 
     assert metadata["todos"][0]["id"] == "todo_1"
     assert metadata["todos"][0]["content"] == "Implement todo endpoint"
+
+
+def test_map_action_result_metadata_promotes_spawn_sub_agent_to_clickable_task_card() -> (
+    None
+):
+    core = PenguinCore.__new__(PenguinCore)
+
+    metadata = core._map_action_result_metadata(
+        "spawn_sub_agent",
+        "Spawned sub-agent 'smoke_agent' running in background",
+        existing={
+            "summary": [
+                {
+                    "id": "smoke_agent",
+                    "tool": "subagent",
+                    "state": {"status": "running"},
+                }
+            ]
+        },
+        tool_input={"subagent_type": "smoke agent"},
+        status="completed",
+        event_metadata={
+            "sessionId": "session_child",
+            "title": "Smoke Agent Session",
+        },
+    )
+
+    assert metadata["sessionId"] == "session_child"
+    assert metadata["title"] == "Smoke Agent Session"
+    assert metadata["summary"][0]["id"] == "session_child"
+    assert metadata["summary"][0]["tool"] == "subagent"
+    assert metadata["summary"][0]["state"]["status"] == "completed"
+    assert metadata["summary"][0]["state"]["title"] == "Smoke Agent Session"
 
 
 @pytest.mark.asyncio
@@ -319,6 +388,79 @@ async def test_action_result_with_error_text_is_treated_as_error_status() -> Non
     assert recorded["error"].startswith("Error parsing diff")
     assert "diff" not in recorded["metadata"]
     assert recorded["metadata"]["attemptedDiff"].startswith("--- a/file.txt")
+
+
+@pytest.mark.asyncio
+async def test_action_result_uses_subagent_task_card_metadata() -> None:
+    class _Adapter:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def on_tool_end(
+            self,
+            part_id: str,
+            output: Any,
+            error: Any = None,
+            metadata: dict[str, Any] | None = None,
+        ) -> None:
+            self.calls.append(
+                {
+                    "part_id": part_id,
+                    "output": output,
+                    "error": error,
+                    "metadata": metadata or {},
+                }
+            )
+
+    core = PenguinCore.__new__(PenguinCore)
+    adapter = _Adapter()
+    setattr(core, "_opencode_tool_parts", {"session_parent:call_task": "part_task"})
+    setattr(
+        core,
+        "_opencode_tool_info",
+        {
+            "session_parent:call_task": {
+                "metadata": {
+                    "summary": [
+                        {
+                            "id": "smoke_agent",
+                            "tool": "subagent",
+                            "state": {"status": "running"},
+                        }
+                    ]
+                },
+                "input": {
+                    "description": "Smoke test only.",
+                    "subagent_type": "smoke agent",
+                },
+                "action": "spawn_sub_agent",
+            }
+        },
+    )
+    setattr(core, "_opencode_stream_states", {})
+    setattr(core, "_get_tui_adapter", lambda _session_id: adapter)
+
+    await core._on_tui_action_result(
+        "action_result",
+        {
+            "session_id": "session_parent",
+            "id": "call_task",
+            "status": "completed",
+            "result": "Spawned sub-agent 'smoke_agent' running in background",
+            "action": "spawn_sub_agent",
+            "metadata": {
+                "sessionId": "session_child",
+                "title": "Smoke Agent Session",
+            },
+        },
+    )
+
+    assert adapter.calls
+    recorded = adapter.calls[-1]
+    assert recorded["part_id"] == "part_task"
+    assert recorded["metadata"]["sessionId"] == "session_child"
+    assert recorded["metadata"]["summary"][0]["state"]["status"] == "completed"
+    assert recorded["metadata"]["summary"][0]["state"]["title"] == "Smoke Agent Session"
 
 
 @pytest.mark.asyncio
