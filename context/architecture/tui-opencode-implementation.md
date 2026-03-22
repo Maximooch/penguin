@@ -57,8 +57,10 @@ Rationale:
 - OpenAI OAuth subscription routing now works end-to-end against the ChatGPT Codex backend with explicit diagnostics (`diag_id` + upstream trace headers), requested-model preservation (for example `gpt-5.4`), and no silent fallback downgrade.
 - Penguin-mode session list now groups child sessions under their parent after reload, and sync/bootstrap no longer relies on id-sorted session arrays for child create/update/delete handling.
 - Automated TUI regressions now cover child-session list grouping, family navigation ordering, unsorted session-store updates, and basic child-lineage hydration.
-- Remaining subagent visual parity gap: isolated subagent spawns still bridge as generic tool output instead of OpenCode-style clickable task block cards with `metadata.sessionId` + summary.
-- Remaining child-session execution gap: background isolated subagent runs still need stronger child-session execution-context binding so child messages/tool cards land in the child transcript instead of raw inline output in the parent.
+- Isolated `spawn_sub_agent` now reuses the upstream OpenCode `Task` card path in the parent transcript, with clickable child-session cards backed by `metadata.sessionId` + summary/title metadata.
+- Child session execution now prefers a dedicated session-scoped runner, so isolated foreground/background subagent replies can land in the child transcript instead of only appearing inline in the parent.
+- Remaining pip-installed TUI gap: sidecar bootstrap currently resolves against Penguin GitHub `releases/latest`; exact installed-version lookup and release coupling for `penguin-ai[tui]` remain follow-up work.
+- Remaining release/workflow cleanup: remove the temporary branch-specific TUI publish trigger after merge, validate clean-machine `pip install "penguin-ai[tui]"` bootstrap, and revisit Windows baseline artifact coverage after release stabilization.
 
 ## Audit: TUI Expectations (from `penguin-tui`)
 
@@ -699,6 +701,14 @@ For each phase, validate with:
       - Progress (2026-03-12): Linux sidecar targets are now split into separate matrix jobs (glibc/musl/baseline variants isolated) so a single slow/failing Linux artifact cannot stall the entire branch-validation workflow for hours.
       - Temporary branch-validation concession (2026-03-12): Windows matrix leg skips baseline sidecar builds for now because Bun baseline executable extraction has been flaky on hosted Windows runners; restore baseline Windows artifact coverage after merge/release stabilization.
       - Follow-up (post-merge cleanup): remove temporary branch-specific trigger from `.github/workflows/publish-tui.yml` (`refactor-penguin-backend-tui`) after mainline validation is complete.
+      - Follow-up (post-merge version-aware lookup checklist):
+        - [ ] Prefer exact installed-package lookup for stable installs by resolving the installed `penguin-ai` version first and querying `releases/tags/v{version}` before falling back to `releases/latest`.
+        - [ ] Keep launcher precedence explicit: `PENGUIN_TUI_BIN_PATH` -> local source / `PENGUIN_OPENCODE_DIR` -> exact Penguin release asset -> explicit release URL override -> global `opencode` only when requested.
+        - [ ] Make cache markers/version invalidation release-aware so an older cached sidecar is not silently reused after Python package upgrades.
+        - [ ] Keep Python package and TUI sidecar assets coupled to the same `vX.Y.Z` GitHub release so `pip install "penguin-ai[tui]"` and sidecar bootstrap target one coherent version.
+        - [ ] Add a fresh-environment bootstrap smoke test for `pip install "penguin-ai[tui]"` that exercises real sidecar download, checksum verification, and launch against Penguin web.
+        - [ ] Decide whether Windows baseline artifacts should be restored or intentionally dropped after mainline release stabilization.
+      - Merge note: exact-version sidecar lookup is desirable for polished PyPI installs, but not a blocker for merging the current TUI/backend parity work because sidecar bootstrap, checksum verification, and local-source overrides already function.
     - [~] I2.f Add startup/directory coherence regression tests covering dispatcher routing, web autostart health checks, and session-bound execution roots.
       - Progress (2026-03-11): added dispatcher routing tests (`tests/test_cli_entrypoint_dispatcher.py`) and launcher startup regressions (`tests/test_opencode_launcher.py`) for web autostart success/failure and project-directory environment coherence (`PENGUIN_CWD`/`PENGUIN_PROJECT_ROOT`/`PWD`). Session-bound root behavior through full `/session` request flow remains open.
 - [x] I3. Finish Penguin branding pass in Penguin mode.
