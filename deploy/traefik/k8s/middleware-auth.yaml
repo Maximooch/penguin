@@ -1,0 +1,9 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: penguin-auth
+  namespace: penguin
+spec:
+  forwardAuth:
+    address: http://oauth2-proxy:4181/oauth2/auth
+    trustForwardHeader

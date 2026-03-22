@@ -1,0 +1,10 @@
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: penguin-ratelimit
+  namespace: penguin
+spec:
+  rateLimit:
+    average: 100
+    burst: 50
+    period: 1m

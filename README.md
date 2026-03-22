@@ -53,6 +53,9 @@ pip install penguin-ai
 # Optional: Install with web interface 
 pip install penguin-ai[web]
 
+# Optional: Install Penguin TUI runtime
+pip install "penguin-ai[tui]"
+
 # Set up your API key (OpenRouter recommended)
 export OPENROUTER_API_KEY="your_api_key"  # On Windows: set OPENROUTER_API_KEY=...
 
@@ -60,9 +63,28 @@ export OPENROUTER_API_KEY="your_api_key"  # On Windows: set OPENROUTER_API_KEY=.
 penguin config setup
 
 # Start using Penguin
-penguin              # Interactive CLI chat
-penguin-web          # Web API server (if [web] installed)
+penguin              # Penguin TUI launcher (requires [tui], auto-starts web locally)
+ptui                 # Direct Penguin TUI alias
+penguin-cli          # Headless CLI (automation/scripts)
+penguin-web          # Web API server (if [web]/[tui] installed)
 ```
+
+### OpenCode Provider Auth Environment
+
+When using the OpenCode-compatible TUI/web provider auth routes, these
+environment variables control OAuth and credential-store behavior:
+
+| Variable | Purpose | Default |
+|---|---|---|
+| `PENGUIN_OPENAI_OAUTH_CLIENT_ID` | Overrides the OpenAI device-flow OAuth client id used by Penguin web auth endpoints. | Compatibility fallback client id (OpenCode/Codex) |
+| `PENGUIN_PROVIDER_CREDENTIALS_STORE` | Overrides the user-global provider credentials store path. | `~/.config/penguin/providers/credentials.json` |
+
+Notes:
+- The credentials store is written atomically and permissioned to `0600`.
+- `PENGUIN_PROVIDER_AUTH_STORE` is still honored as a legacy override for
+  compatibility during migration.
+- OpenAI OAuth currently defaults to a compatibility client id; Penguin tracks
+  first-party client registration as a final C3 hardening step.
 
 <!-- #TODO: double check if accurate.  -->
 
@@ -227,6 +249,9 @@ pip install penguin-ai
 # With web interface
 pip install penguin-ai[web]
 
+# With Penguin TUI runtime (recommended for `penguin` / `ptui` launcher)
+pip install "penguin-ai[tui]"
+
 # With memory providers
 pip install penguin-ai[memory_faiss]    # FAISS + sentence-transformers  
 pip install penguin-ai[memory_lance]    # LanceDB
@@ -252,6 +277,7 @@ pip install uv && python uv_setup.py    # Automated UV setup
 
 | Extra | Description | 
 |-------|-------------|
+| `[tui]` | Penguin TUI launcher runtime + local web dependencies |
 | `[web]` | FastAPI server + WebSocket support |
 | `[memory_faiss]` | FAISS vector search + embeddings |
 | `[memory_lance]` | LanceDB vector database |
@@ -263,7 +289,7 @@ pip install uv && python uv_setup.py    # Automated UV setup
 
 ```bash
 # Interactive chat
-penguin
+penguin-cli
 
 # Run setup wizard
 penguin config setup
@@ -274,7 +300,25 @@ penguin project task create PROJECT_ID "Task description"
 
 # Web API server (requires [web] extra)
 penguin-web
+
+# Penguin TUI (uses cwd as project root, auto-starts local web if needed)
+penguin
 ```
+
+Notes for Penguin TUI launcher (`penguin` / `ptui`):
+- It prefers Penguin's local TUI sources (`penguin-tui/packages/opencode`) when available.
+- If local sources are unavailable, it bootstraps a cached TUI sidecar binary with checksum verification under `~/.cache/penguin/tui`.
+- Sidecar downloads default to Penguin GitHub releases; override with `PENGUIN_TUI_RELEASE_URL` for staging/testing mirrors.
+- If you run from outside the Penguin repo and want to force local source mode, set `PENGUIN_OPENCODE_DIR` to that path, for example:
+
+```bash
+export PENGUIN_OPENCODE_DIR="/path/to/penguin/penguin-tui/packages/opencode"
+uvx --from "/path/to/penguin" ptui "$PWD"
+```
+
+- First run via `uvx` can take longer while web dependencies are prepared; use a larger startup window if needed (for example `--web-timeout 120`).
+
+- To intentionally use your globally installed OpenCode binary, pass `--use-global-opencode`.
 
 For detailed usage, see the [documentation](https://penguin-rho.vercel.app).
 

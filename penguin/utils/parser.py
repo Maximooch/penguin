@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from enum import Enum
 from html import unescape
@@ -18,6 +19,7 @@ from penguin.local_task.manager import ProjectManager
 from penguin.tools import ToolManager
 from penguin.utils.process_manager import ProcessManager
 from penguin.system.conversation import MessageCategory
+from penguin.system.execution_context import get_current_execution_context
 from penguin.tools.browser_tools import BrowserScreenshotTool, browser_manager
 from penguin.constants import (
     DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP,
@@ -81,6 +83,9 @@ class ActionType(Enum):
     PROCESS_SEND = "process_send"
     PROCESS_EXIT = "process_exit"
     WORKSPACE_SEARCH = "workspace_search"
+    TODOWRITE = "todowrite"
+    TODOREAD = "todoread"
+    QUESTION = "question"
     # Task Management Actions
     TASK_CREATE = "task_create"
     TASK_UPDATE = "task_update"
@@ -118,6 +123,10 @@ class ActionType(Enum):
     SPAWN_SUB_AGENT = "spawn_sub_agent"
     STOP_SUB_AGENT = "stop_sub_agent"
     RESUME_SUB_AGENT = "resume_sub_agent"
+    GET_AGENT_STATUS = "get_agent_status"
+    WAIT_FOR_AGENTS = "wait_for_agents"
+    GET_CONTEXT_INFO = "get_context_info"
+    SYNC_CONTEXT = "sync_context"
     DELEGATE = "delegate"
     DELEGATE_EXPLORE_TASK = "delegate_explore_task"
 
@@ -298,7 +307,288 @@ class ActionExecutor:
         except Exception:
             pass
         self._ui_event_cb = ui_event_callback
+        self._ui_action_metadata: Dict[str, Dict[str, Any]] = {}
         # No direct initialization of expensive tools, we'll use tool_manager's properties
+
+    def _inject_tool_call_id(self, params: str, action_id: str) -> str:
+        """Inject an internal tool_call_id into JSON action payloads."""
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception:
+            return params
+
+        if not isinstance(payload, dict):
+            return params
+        if (
+            isinstance(payload.get("tool_call_id"), str)
+            and payload["tool_call_id"].strip()
+        ):
+            return params
+        payload["tool_call_id"] = action_id
+        try:
+            return json.dumps(payload)
+        except Exception:
+            return params
+
+    def _prepare_action_params(self, action: CodeActAction, action_id: str) -> Any:
+        """Prepare handler params without mutating the original parsed action."""
+        if action.action_type == ActionType.SPAWN_SUB_AGENT and isinstance(
+            action.params, str
+        ):
+            return self._inject_tool_call_id(action.params, action_id)
+        return action.params
+
+    def _record_ui_action_metadata(
+        self, action_id: str, metadata: Optional[Dict[str, Any]]
+    ) -> None:
+        """Persist transient UI metadata for the matching action_result event."""
+        if not isinstance(action_id, str) or not action_id or action_id == "-":
+            return
+        if not isinstance(metadata, dict) or not metadata:
+            return
+        self._ui_action_metadata[action_id] = dict(metadata)
+
+    def _consume_ui_action_metadata(self, action_id: str) -> Optional[Dict[str, Any]]:
+        """Return and remove transient UI metadata for an action."""
+        if not isinstance(action_id, str) or not action_id:
+            return None
+        metadata = self._ui_action_metadata.pop(action_id, None)
+        if isinstance(metadata, dict) and metadata:
+            return metadata
+        return None
+
+    def _resolve_subagent_tool_call_id(
+        self,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Resolve best-effort tool call identifier for sub-agent logs."""
+        payload = payload or {}
+        explicit = payload.get("tool_call_id") or payload.get("call_id")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
+
+        context = get_current_execution_context()
+        if context and isinstance(context.request_id, str) and context.request_id:
+            return context.request_id
+        return "-"
+
+    def _log_subagent_event(
+        self,
+        event: str,
+        *,
+        status: str,
+        elapsed_ms: Optional[float] = None,
+        target_agent: Optional[str] = None,
+        parent_agent: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+        level: int = logging.INFO,
+        **fields: Any,
+    ) -> None:
+        """Emit sub-agent logs to both module and uvicorn loggers."""
+        context = get_current_execution_context()
+        session_id = context.session_id if context and context.session_id else "-"
+        agent_id = context.agent_id if context and context.agent_id else "default"
+        call_id = tool_call_id or "-"
+
+        parts = [
+            f"subagent.{event}",
+            f"status={status}",
+            f"session={session_id}",
+            f"agent={agent_id}",
+            f"tool_call_id={call_id}",
+            f"elapsed_ms={0.0 if elapsed_ms is None else round(float(elapsed_ms), 1)}",
+        ]
+        if target_agent:
+            parts.append(f"target_agent={target_agent}")
+        if parent_agent:
+            parts.append(f"parent_agent={parent_agent}")
+
+        for key, value in fields.items():
+            if value is None:
+                continue
+            parts.append(f"{key}={value}")
+
+        message = " ".join(parts)
+        logger.log(level, message)
+        logging.getLogger("uvicorn.error").log(level, message)
+
+    def _is_lsp_refresh_action(self, action_type: ActionType) -> bool:
+        """Return True if action can modify files and should refresh LSP state."""
+        return action_type in {
+            ActionType.APPLY_DIFF,
+            ActionType.MULTIEDIT,
+            ActionType.EDIT_WITH_PATTERN,
+            ActionType.REPLACE_LINES,
+            ActionType.INSERT_LINES,
+            ActionType.DELETE_LINES,
+            ActionType.ENHANCED_WRITE,
+        }
+
+    def _extract_changed_files(self, action: CodeActAction) -> List[str]:
+        """Best-effort extraction of changed file paths from action parameters."""
+        params = action.params or ""
+        if action.action_type == ActionType.APPLY_DIFF:
+            first_sep = params.find(":")
+            if first_sep > 0:
+                return [params[:first_sep].strip()]
+            return []
+
+        if action.action_type in {
+            ActionType.REPLACE_LINES,
+            ActionType.INSERT_LINES,
+            ActionType.DELETE_LINES,
+            ActionType.ENHANCED_WRITE,
+        }:
+            first_sep = params.find(":")
+            if first_sep > 0:
+                return [params[:first_sep].strip()]
+            return []
+
+        if action.action_type == ActionType.EDIT_WITH_PATTERN:
+            parts = params.split(":", 1)
+            if parts and parts[0].strip():
+                return [parts[0].strip()]
+            return []
+
+        return []
+
+    def _build_lsp_diagnostics(
+        self, files: List[str], result: Any
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Build diagnostics payload for UI refresh events."""
+
+        def _message_line_char(text: str) -> tuple[int, int]:
+            line_match = re.search(
+                r"(?:line|ln)\s*(\d+)(?:\D+(?:column|col|character|char)\s*(\d+))?",
+                text,
+                re.IGNORECASE,
+            )
+            if line_match:
+                line = max(int(line_match.group(1)) - 1, 0)
+                character = (
+                    max(int(line_match.group(2)) - 1, 0) if line_match.group(2) else 0
+                )
+                return line, character
+
+            colon_match = re.search(r":(\d+):(\d+)", text)
+            if colon_match:
+                return max(int(colon_match.group(1)) - 1, 0), max(
+                    int(colon_match.group(2)) - 1, 0
+                )
+
+            return 0, 0
+
+        def _normalize_entry(raw_entry: Any, fallback_message: str) -> Dict[str, Any]:
+            if not isinstance(raw_entry, dict):
+                line, character = _message_line_char(fallback_message)
+                return {
+                    "severity": 1,
+                    "source": "penguin",
+                    "message": fallback_message,
+                    "range": {
+                        "start": {"line": line, "character": character},
+                        "end": {"line": line, "character": character + 1},
+                    },
+                }
+
+            message = str(raw_entry.get("message") or fallback_message)[:500]
+            severity = raw_entry.get("severity", 1)
+            source = raw_entry.get("source") or "penguin"
+            code = raw_entry.get("code")
+            existing_range = raw_entry.get("range")
+
+            if isinstance(existing_range, dict):
+                start = existing_range.get("start") or {}
+                end = existing_range.get("end") or {}
+                line = int(start.get("line", 0))
+                character = int(start.get("character", 0))
+                end_line = int(end.get("line", line))
+                end_character = int(end.get("character", character + 1))
+            else:
+                line, character = _message_line_char(message)
+                end_line = line
+                end_character = character + 1
+
+            entry: Dict[str, Any] = {
+                "severity": severity,
+                "source": source,
+                "message": message,
+                "range": {
+                    "start": {"line": line, "character": character},
+                    "end": {"line": end_line, "character": end_character},
+                },
+            }
+            if code is not None:
+                entry["code"] = code
+            return entry
+
+        text = "" if result is None else str(result)
+        text = text.strip()
+        if not text:
+            return {}
+
+        payload: Dict[str, Any] = {}
+        if isinstance(result, dict):
+            payload = result
+        elif isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except Exception:
+                payload = {}
+
+        diagnostics_payload = payload.get("diagnostics") if payload else None
+        if isinstance(diagnostics_payload, dict):
+            normalized: Dict[str, List[Dict[str, Any]]] = {}
+            for raw_path, entries in diagnostics_payload.items():
+                path = str(raw_path)
+                if files and path and path not in files:
+                    continue
+                if not isinstance(entries, list):
+                    continue
+                normalized[path] = [
+                    _normalize_entry(entry, "LSP diagnostic") for entry in entries
+                ]
+
+            if normalized:
+                return normalized
+
+        error_parts: List[str] = []
+        return_code = payload.get("returncode") if payload else None
+        if isinstance(return_code, int) and return_code != 0:
+            error_parts.append(f"Command failed (exit {return_code})")
+
+        for key in ("error", "stderr", "message", "details"):
+            value = payload.get(key) if payload else None
+            if isinstance(value, str) and value.strip():
+                error_parts.append(value.strip())
+
+        if not error_parts:
+            lowered = text.lower()
+            is_error = lowered.startswith("error") or "traceback" in lowered
+            if not is_error:
+                return {}
+            error_parts.append(text)
+
+        message = " - ".join(error_parts).splitlines()[0][:500]
+        line, character = _message_line_char(message)
+        targets = files or [""]
+        diagnostics: Dict[str, List[Dict[str, Any]]] = {}
+        for path in targets:
+            diagnostics[path] = [
+                {
+                    "severity": 1,
+                    "source": "penguin",
+                    "code": "tool_action_error",
+                    "message": message,
+                    "range": {
+                        "start": {"line": line, "character": character},
+                        "end": {"line": line, "character": character + 1},
+                    },
+                }
+            ]
+        return diagnostics
 
     async def execute_action(self, action: CodeActAction) -> str:
         """Execute an action and emit UI events if a callback is provided."""
@@ -308,18 +598,23 @@ class ActionExecutor:
                 "ActionExecutor executing %s using ToolManager id=%s file_root=%s mode=%s",
                 action.action_type.value,
                 hex(id(self.tool_manager)) if self.tool_manager else None,
-                getattr(self.tool_manager, "_file_root", None)
-                if self.tool_manager
-                else None,
-                getattr(self.tool_manager, "file_root_mode", None)
-                if self.tool_manager
-                else None,
+                (
+                    getattr(self.tool_manager, "_file_root", None)
+                    if self.tool_manager
+                    else None
+                ),
+                (
+                    getattr(self.tool_manager, "file_root_mode", None)
+                    if self.tool_manager
+                    else None
+                ),
             )
         except Exception:
             pass
         import uuid
 
         action_id = str(uuid.uuid4())[:8]
+        handler_params = self._prepare_action_params(action, action_id)
 
         # --------------------------------------------------
         # Emit *start* UI event
@@ -378,6 +673,9 @@ class ActionExecutor:
             ActionType.PROCESS_SEND: self._process_send,
             ActionType.PROCESS_EXIT: self._process_exit,
             ActionType.WORKSPACE_SEARCH: self._workspace_search,
+            ActionType.TODOWRITE: self._todo_write,
+            ActionType.TODOREAD: self._todo_read,
+            ActionType.QUESTION: self._question,
             ActionType.MULTIEDIT: self._multiedit,
             # Project management handlers
             ActionType.PROJECT_CREATE: self._project_create,
@@ -415,6 +713,10 @@ class ActionExecutor:
             ActionType.SPAWN_SUB_AGENT: self._spawn_sub_agent,
             ActionType.STOP_SUB_AGENT: self._stop_sub_agent,
             ActionType.RESUME_SUB_AGENT: self._resume_sub_agent,
+            ActionType.GET_AGENT_STATUS: self._get_agent_status,
+            ActionType.WAIT_FOR_AGENTS: self._wait_for_agents,
+            ActionType.GET_CONTEXT_INFO: self._get_context_info,
+            ActionType.SYNC_CONTEXT: self._sync_context,
             ActionType.DELEGATE: self._delegate,
             ActionType.DELEGATE_EXPLORE_TASK: self._delegate_explore_task,
             # Enhanced file operations
@@ -448,14 +750,14 @@ class ActionExecutor:
 
             if asyncio.iscoroutinefunction(handler):
                 logger.debug(f"Executing async handler for {action.action_type.value}")
-                result = await handler(action.params)
+                result = await handler(handler_params)
             else:
                 logger.debug(
                     f"Executing sync handler for {action.action_type.value} in thread pool"
                 )
-                # Offload synchronous tools to thread pool to avoid blocking the event loop
-                loop = asyncio.get_running_loop()
-                result = await loop.run_in_executor(None, handler, action.params)
+                # Offload synchronous tools to thread pool to avoid blocking the event loop.
+                # asyncio.to_thread preserves contextvars for per-request execution context.
+                result = await asyncio.to_thread(handler, handler_params)
 
                 if asyncio.iscoroutine(result):
                     result = await result
@@ -467,19 +769,50 @@ class ActionExecutor:
             if self._ui_event_cb:
                 try:
                     logger.debug(f"UI-emit success action_result id={action_id}")
+                    event_payload: Dict[str, Any] = {
+                        "id": action_id,
+                        "status": "completed",
+                        "result": result if isinstance(result, str) else str(result),
+                        "action": action.action_type.value,
+                    }
+                    metadata = self._consume_ui_action_metadata(action_id)
+                    if metadata:
+                        event_payload["metadata"] = metadata
                     await self._ui_event_cb(
                         "action_result",
-                        {
-                            "id": action_id,
-                            "status": "completed",
-                            "result": result
-                            if isinstance(result, str)
-                            else str(result),
-                            "action": action.action_type.value,  # Standardized field name
-                        },
+                        event_payload,
                     )
                 except Exception as e:
                     logger.debug(f"UI event emit failed (action result): {e}")
+
+            if self._ui_event_cb and self._is_lsp_refresh_action(action.action_type):
+                files = self._extract_changed_files(action)
+                diagnostics_map = self._build_lsp_diagnostics(files, result)
+                try:
+                    await self._ui_event_cb(
+                        "lsp.updated",
+                        {
+                            "action": action.action_type.value,
+                            "files": files,
+                        },
+                    )
+                    await self._ui_event_cb(
+                        "lsp.client.diagnostics",
+                        {
+                            "action": action.action_type.value,
+                            "files": files,
+                            "serverID": "penguin",
+                            "path": files[0] if files else "",
+                            "count": sum(
+                                len(entries)
+                                for entries in diagnostics_map.values()
+                                if isinstance(entries, list)
+                            ),
+                            "diagnostics": diagnostics_map,
+                        },
+                    )
+                except Exception as e:
+                    logger.debug(f"UI event emit failed (lsp refresh): {e}")
             return result
         except Exception as e:
             error_message = (
@@ -489,14 +822,18 @@ class ActionExecutor:
             if self._ui_event_cb:
                 try:
                     logger.debug(f"UI-emit error action_result id={action_id}")
+                    event_payload: Dict[str, Any] = {
+                        "id": action_id,
+                        "status": "error",
+                        "result": error_message,
+                        "action": action.action_type.value,
+                    }
+                    metadata = self._consume_ui_action_metadata(action_id)
+                    if metadata:
+                        event_payload["metadata"] = metadata
                     await self._ui_event_cb(
                         "action_result",
-                        {
-                            "id": action_id,
-                            "status": "error",
-                            "result": error_message,
-                            "action": action.action_type.value,  # Standardized field name
-                        },
+                        event_payload,
                     )
                 except Exception as ee:
                     logger.debug(f"UI event emit failed (action error): {ee}")
@@ -512,7 +849,7 @@ class ActionExecutor:
 
     def _execute_code(self, params: str) -> str:
         logger.debug(f"Executing code: {params}")
-        return self.tool_manager.execute_code(params)
+        return self.tool_manager.execute_tool("code_execution", {"code": params})
 
     def _execute_command(self, params: str) -> str:
         """Execute a shell command using the tool manager."""
@@ -768,18 +1105,42 @@ class ActionExecutor:
           - initial_prompt (optional)
           - background (bool, default False): Run agent in background with initial_prompt
         """
+        spawn_started_at = time.monotonic()
+
         try:
             payload = json.loads(params) if params.strip() else {}
         except Exception as e:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                tool_call_id=self._resolve_subagent_tool_call_id(),
+                error="invalid_json",
+            )
             return f"Invalid JSON for spawn_sub_agent: {e}"
 
         agent_id = str(payload.get("id") or "").strip()
         if not agent_id:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                tool_call_id=self._resolve_subagent_tool_call_id(payload),
+                error="missing_id",
+            )
             return "spawn_sub_agent requires 'id'"
 
         conversation = self.conversation_system
         core = getattr(conversation, "core", None)
         if core is None:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                target_agent=agent_id,
+                tool_call_id=self._resolve_subagent_tool_call_id(payload),
+                error="core_unavailable",
+            )
             return "Core unavailable for spawn_sub_agent"
 
         parent_id = str(
@@ -790,6 +1151,18 @@ class ActionExecutor:
         share_session = bool(payload.get("share_session", False))
         share_cw = bool(payload.get("share_context_window", False))
         background = bool(payload.get("background", False))
+        tool_call_id = self._resolve_subagent_tool_call_id(payload)
+        self._log_subagent_event(
+            "spawn.request",
+            status="started",
+            elapsed_ms=0.0,
+            target_agent=agent_id,
+            parent_agent=parent_id,
+            tool_call_id=tool_call_id,
+            share_session=share_session,
+            share_context_window=share_cw,
+            background=background,
+        )
         shared_context_window_max_tokens = payload.get(
             "shared_context_window_max_tokens", payload.get("shared_cw_max_tokens")
         )  # Accept both keys
@@ -824,8 +1197,71 @@ class ActionExecutor:
                 shared_context_window_max_tokens=shared_context_window_max_tokens,
                 **kwargs,
             )
+            self._log_subagent_event(
+                "spawn.created",
+                status="completed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                target_agent=agent_id,
+                parent_agent=parent_id,
+                tool_call_id=tool_call_id,
+                share_session=share_session,
+                share_context_window=share_cw,
+            )
         except Exception as e:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                target_agent=agent_id,
+                parent_agent=parent_id,
+                tool_call_id=tool_call_id,
+                error=str(e),
+            )
             return f"Failed to spawn sub-agent '{agent_id}': {e}"
+
+        session_info: Dict[str, Any] = {}
+        try:
+            publish = getattr(core, "publish_sub_agent_session_created", None)
+            if callable(publish):
+                info = await publish(
+                    agent_id,
+                    parent_agent_id=parent_id,
+                    share_session=share_session,
+                )
+                if isinstance(info, dict):
+                    session_info = dict(info)
+                    ui_metadata: Dict[str, Any] = {
+                        "summary": [
+                            {
+                                "id": str(info.get("id") or tool_call_id or agent_id),
+                                "tool": "subagent",
+                                "state": {
+                                    "status": "completed",
+                                    "title": str(info.get("title") or "").strip()
+                                    or "Subagent session ready",
+                                },
+                            }
+                        ],
+                        "sessionId": info.get("id"),
+                        "title": info.get("title") or f"Subagent session ({agent_id})",
+                    }
+                    self._record_ui_action_metadata(tool_call_id, ui_metadata)
+                    self._log_subagent_event(
+                        "spawn.session_event",
+                        status="completed",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        tool_call_id=tool_call_id,
+                        event_type="session.created",
+                        child_session=info.get("id"),
+                    )
+        except Exception:
+            logger.debug(
+                "Failed to emit session.created for spawned sub-agent '%s'",
+                agent_id,
+                exc_info=True,
+            )
 
         initial_prompt = payload.get("initial_prompt")
         if initial_prompt:
@@ -850,17 +1286,60 @@ class ActionExecutor:
                             "parent": parent_id,
                             "share_session": share_session,
                             "share_context_window": share_cw,
+                            "session_id": session_info.get("id"),
+                            "directory": session_info.get("directory"),
+                            "agent_mode": session_info.get("agent_mode"),
                         },
+                    )
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="started",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        tool_call_id=tool_call_id,
+                        background=True,
                     )
                     return f"Spawned sub-agent '{agent_id}' running in background (parent='{parent_id}')"
                 except Exception as e:
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        tool_call_id=tool_call_id,
+                        background=True,
+                        error=str(e),
+                    )
                     return f"Failed to spawn background agent '{agent_id}': {e}"
             else:
-                # Synchronous: send message and wait
+                # Synchronous: run the child prompt in the child session and block
                 try:
-                    await core.send_to_agent(agent_id, initial_prompt)
+                    if hasattr(core, "run_agent_prompt_in_session"):
+                        await core.run_agent_prompt_in_session(
+                            agent_id,
+                            initial_prompt,
+                            session_id=session_info.get("id"),
+                            directory=session_info.get("directory"),
+                            agent_mode=session_info.get("agent_mode"),
+                        )
+                    else:
+                        await core.send_to_agent(agent_id, initial_prompt)
                 except Exception as e:
                     logger.warning(f"Failed to send initial_prompt to {agent_id}: {e}")
+
+        self._log_subagent_event(
+            "spawn.summary",
+            status="completed",
+            elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+            target_agent=agent_id,
+            parent_agent=parent_id,
+            tool_call_id=tool_call_id,
+            background=background,
+            share_session=share_session,
+            share_context_window=share_cw,
+        )
 
         return f"Spawned sub-agent '{agent_id}' (parent='{parent_id}', share_session={share_session}, share_context_window={share_cw})"
 
@@ -907,13 +1386,24 @@ class ActionExecutor:
             int(DELEGATE_EXPLORE_TASK_MAX_ITERATIONS_CAP),
         )
 
-        # Get current working directory for context
-        cwd = os.getcwd()
+        # Get request-scoped working directory for context
+        execution_context = get_current_execution_context()
+        cwd = (
+            execution_context.directory
+            if execution_context and execution_context.directory
+            else os.getcwd()
+        )
+
+        def _resolve_explore_path(raw_path: str) -> Path:
+            candidate = Path(raw_path)
+            if candidate.is_absolute():
+                return candidate
+            return (Path(cwd) / candidate).resolve()
 
         # Tool execution functions
         def execute_list_files(path: str) -> str:
             try:
-                p = Path(path)
+                p = _resolve_explore_path(path)
                 if not p.exists():
                     return f"Directory not found: {path}"
                 if not p.is_dir():
@@ -937,7 +1427,7 @@ class ActionExecutor:
 
         def execute_read_file(path: str, max_lines: int = 200) -> str:
             try:
-                p = Path(path)
+                p = _resolve_explore_path(path)
                 if not p.exists():
                     return f"File not found: {path}"
                 if not p.is_file():
@@ -972,7 +1462,7 @@ class ActionExecutor:
                         "--include=*.yaml",
                         "--include=*.yml",
                         pattern,
-                        path,
+                        str(_resolve_explore_path(path)),
                     ],
                     capture_output=True,
                     text=True,
@@ -1172,6 +1662,171 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         except Exception as e:
             return f"Failed to resume sub-agent '{agent_id}': {e}"
 
+    async def _get_agent_status(self, params: str) -> str:
+        status_started_at = time.monotonic()
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            self._log_subagent_event(
+                "status.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+                tool_call_id=self._resolve_subagent_tool_call_id(),
+                error="invalid_json",
+            )
+            return f"Invalid JSON for get_agent_status: {e}"
+
+        agent_id = str(payload.get("id") or payload.get("agent_id") or "").strip()
+        include_result = bool(payload.get("include_result", False))
+
+        tool_input: Dict[str, Any] = {"include_result": include_result}
+        if agent_id:
+            tool_input["id"] = agent_id
+
+        tool_call_id = self._resolve_subagent_tool_call_id(payload)
+
+        self._log_subagent_event(
+            "status.request",
+            status="started",
+            elapsed_ms=0.0,
+            target_agent=agent_id or "all",
+            tool_call_id=tool_call_id,
+            include_result=include_result,
+        )
+        result = self.tool_manager.execute_tool("get_agent_status", tool_input)
+
+        summary_status = "completed"
+        try:
+            payload_result = json.loads(result) if isinstance(result, str) else {}
+            if isinstance(payload_result, dict) and payload_result.get("error"):
+                summary_status = "failed"
+        except Exception:
+            pass
+
+        self._log_subagent_event(
+            "status.summary",
+            status=summary_status,
+            elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+            target_agent=agent_id or "all",
+            tool_call_id=tool_call_id,
+            include_result=include_result,
+        )
+        return result
+
+    async def _wait_for_agents(self, params: str) -> str:
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON for wait_for_agents: {e}"
+
+        raw_ids = payload.get("ids", payload.get("agent_ids"))
+        normalized_ids: Optional[List[str]] = None
+        if raw_ids is None:
+            normalized_ids = None
+        elif isinstance(raw_ids, list):
+            normalized_ids = [
+                str(item).strip() for item in raw_ids if str(item).strip()
+            ]
+        elif isinstance(raw_ids, str):
+            cleaned = raw_ids.strip()
+            normalized_ids = [cleaned] if cleaned else []
+        else:
+            return "wait_for_agents 'ids' must be a list of strings"
+
+        timeout = payload.get("timeout")
+        if timeout is not None:
+            try:
+                timeout = float(timeout)
+            except (TypeError, ValueError):
+                return "wait_for_agents 'timeout' must be numeric"
+
+        tool_input: Dict[str, Any] = {}
+        if normalized_ids is not None:
+            tool_input["ids"] = normalized_ids
+        if timeout is not None:
+            tool_input["timeout"] = timeout
+
+        logger.info(
+            "subagent.wait.request ids=%s timeout=%s",
+            normalized_ids if normalized_ids is not None else "all",
+            timeout,
+        )
+
+        async_wait_handler = getattr(
+            self.tool_manager,
+            "_execute_wait_for_agents",
+            None,
+        )
+        if callable(async_wait_handler) and asyncio.iscoroutinefunction(
+            async_wait_handler
+        ):
+            raw_result = await async_wait_handler(tool_input)
+            try:
+                parsed = json.loads(raw_result) if isinstance(raw_result, str) else {}
+                if isinstance(parsed, dict):
+                    logger.info(
+                        "subagent.wait.result status=%s elapsed=%s polls=%s ids=%s",
+                        parsed.get("status"),
+                        parsed.get("elapsed_seconds"),
+                        parsed.get("poll_count"),
+                        parsed.get("waited_agent_ids"),
+                    )
+            except Exception:
+                pass
+            return raw_result
+
+        return self.tool_manager.execute_tool("wait_for_agents", tool_input)
+
+    async def _get_context_info(self, params: str) -> str:
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON for get_context_info: {e}"
+
+        agent_id = str(payload.get("id") or payload.get("agent_id") or "").strip()
+        include_stats = bool(payload.get("include_stats", False))
+
+        tool_input: Dict[str, Any] = {"include_stats": include_stats}
+        if agent_id:
+            tool_input["id"] = agent_id
+
+        logger.info(
+            "subagent.context_info.request agent=%s include_stats=%s",
+            agent_id or "default",
+            include_stats,
+        )
+        return self.tool_manager.execute_tool("get_context_info", tool_input)
+
+    async def _sync_context(self, params: str) -> str:
+        try:
+            payload = json.loads(params) if params.strip() else {}
+        except Exception as e:
+            return f"Invalid JSON for sync_context: {e}"
+
+        parent = str(
+            payload.get("parent") or payload.get("parent_agent_id") or ""
+        ).strip()
+        child = str(payload.get("child") or payload.get("child_agent_id") or "").strip()
+        replace = bool(payload.get("replace", False))
+
+        if not parent or not child:
+            return "sync_context requires 'parent' and 'child'"
+
+        logger.info(
+            "subagent.context_sync.request parent=%s child=%s replace=%s",
+            parent,
+            child,
+            replace,
+        )
+        return self.tool_manager.execute_tool(
+            "sync_context",
+            {
+                "parent": parent,
+                "child": child,
+                "replace": replace,
+            },
+        )
+
     async def _delegate(self, params: str) -> str:
         """Delegate a task to a sub-agent.
 
@@ -1185,19 +1840,43 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
           - wait (bool, default False): Wait for result when background=true
           - timeout (float, optional): Timeout in seconds when wait=true
         """
+        delegate_started_at = time.monotonic()
+
         try:
             payload = json.loads(params) if params.strip() else {}
         except Exception as e:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                tool_call_id=self._resolve_subagent_tool_call_id(),
+                error="invalid_json",
+            )
             return f"Invalid JSON for delegate: {e}"
 
         child = str(payload.get("child") or "").strip()
         content = payload.get("content")
         if not child or content is None:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                tool_call_id=self._resolve_subagent_tool_call_id(payload),
+                error="missing_child_or_content",
+            )
             return "delegate requires 'child' and 'content'"
 
         conversation = self.conversation_system
         core = getattr(conversation, "core", None)
         if core is None:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                target_agent=child,
+                tool_call_id=self._resolve_subagent_tool_call_id(payload),
+                error="core_unavailable",
+            )
             return "Core unavailable for delegate"
 
         parent = str(
@@ -1210,6 +1889,20 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         background = bool(payload.get("background", False))
         wait = bool(payload.get("wait", False))
         timeout = payload.get("timeout")
+        tool_call_id = self._resolve_subagent_tool_call_id(payload)
+
+        self._log_subagent_event(
+            "delegate.request",
+            status="started",
+            elapsed_ms=0.0,
+            target_agent=child,
+            parent_agent=parent,
+            tool_call_id=tool_call_id,
+            background=background,
+            wait=wait,
+            timeout=timeout,
+            channel=channel,
+        )
 
         # Record delegation event in both parent and child logs (best-effort)
         try:
@@ -1248,6 +1941,16 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 # Check if agent is already running
                 status = executor.get_status(child)
                 if status and status.get("state") in ("pending", "running"):
+                    self._log_subagent_event(
+                        "delegate.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                        target_agent=child,
+                        parent_agent=parent,
+                        tool_call_id=tool_call_id,
+                        background=True,
+                        error="already_running",
+                    )
                     return f"Agent '{child}' is already running a background task"
 
                 await executor.spawn_agent(
@@ -1263,12 +1966,52 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 if wait:
                     try:
                         result = await executor.wait_for(child, timeout=timeout)
+                        self._log_subagent_event(
+                            "delegate.summary",
+                            status="completed",
+                            elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                            target_agent=child,
+                            parent_agent=parent,
+                            tool_call_id=tool_call_id,
+                            background=True,
+                            wait=True,
+                        )
                         return f"Delegated to '{child}' (background, waited): {result}"
                     except asyncio.TimeoutError:
+                        self._log_subagent_event(
+                            "delegate.summary",
+                            status="timeout",
+                            elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                            target_agent=child,
+                            parent_agent=parent,
+                            tool_call_id=tool_call_id,
+                            background=True,
+                            timeout=timeout,
+                        )
                         return f"Delegated to '{child}' (background, timed out after {timeout}s)"
                 else:
+                    self._log_subagent_event(
+                        "delegate.summary",
+                        status="started",
+                        elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                        target_agent=child,
+                        parent_agent=parent,
+                        tool_call_id=tool_call_id,
+                        background=True,
+                        wait=False,
+                    )
                     return f"Delegated to '{child}' running in background"
             except Exception as e:
+                self._log_subagent_event(
+                    "delegate.summary",
+                    status="failed",
+                    elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                    target_agent=child,
+                    parent_agent=parent,
+                    tool_call_id=tool_call_id,
+                    background=True,
+                    error=str(e),
+                )
                 return f"Failed to delegate background task to '{child}': {e}"
         else:
             # Synchronous delegation via message passing
@@ -1280,8 +2023,27 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                     metadata=metadata,
                     channel=channel,
                 )
+                self._log_subagent_event(
+                    "delegate.summary",
+                    status="completed",
+                    elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                    target_agent=child,
+                    parent_agent=parent,
+                    tool_call_id=tool_call_id,
+                    background=False,
+                )
                 return f"Delegated to '{child}' from '{parent}'"
             except Exception as e:
+                self._log_subagent_event(
+                    "delegate.summary",
+                    status="failed",
+                    elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                    target_agent=child,
+                    parent_agent=parent,
+                    tool_call_id=tool_call_id,
+                    background=False,
+                    error=str(e),
+                )
                 return f"Failed to delegate to '{child}': {e}"
 
     def _workspace_search(self, params: str) -> str:
@@ -1463,6 +2225,361 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             return output
         except Exception as e:
             return f"Error displaying project: {str(e)}"
+
+    def _normalize_todo_items(self, raw_items: Any) -> List[Dict[str, str]]:
+        """Normalize todo payloads to OpenCode-compatible Todo[] shape."""
+        if not isinstance(raw_items, list):
+            return []
+
+        normalized: List[Dict[str, str]] = []
+        statuses = {"pending", "in_progress", "completed", "cancelled"}
+        priorities = {"high", "medium", "low"}
+        seen_ids = set()
+
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+
+            content_raw = item.get("content")
+            if isinstance(content_raw, str):
+                content = content_raw.strip()
+            elif content_raw is None:
+                content = ""
+            else:
+                content = str(content_raw).strip()
+            if not content:
+                continue
+
+            status_raw = item.get("status", "pending")
+            status = (
+                status_raw.strip().lower()
+                if isinstance(status_raw, str)
+                else str(status_raw).strip().lower()
+            )
+            if status not in statuses:
+                status = "pending"
+
+            priority_raw = item.get("priority", "medium")
+            priority = (
+                priority_raw.strip().lower()
+                if isinstance(priority_raw, str)
+                else str(priority_raw).strip().lower()
+            )
+            if priority not in priorities:
+                priority = "medium"
+
+            todo_id_raw = item.get("id")
+            if isinstance(todo_id_raw, str) and todo_id_raw.strip():
+                todo_id = todo_id_raw.strip()
+            else:
+                todo_id = f"todo_{base64.urlsafe_b64encode(os.urandom(6)).decode('ascii').rstrip('=')}"
+
+            if todo_id in seen_ids:
+                suffix = 2
+                candidate = f"{todo_id}_{suffix}"
+                while candidate in seen_ids:
+                    suffix += 1
+                    candidate = f"{todo_id}_{suffix}"
+                todo_id = candidate
+
+            seen_ids.add(todo_id)
+            normalized.append(
+                {
+                    "id": todo_id,
+                    "content": content,
+                    "status": status,
+                    "priority": priority,
+                }
+            )
+
+        return normalized
+
+    def _parse_todo_params(self, params: str) -> List[Dict[str, str]]:
+        """Parse todowrite payload from JSON object or JSON array."""
+        content = (params or "").strip()
+        if not content:
+            return []
+
+        payload = json.loads(content)
+        if isinstance(payload, dict):
+            maybe_items = payload.get("todos")
+            if isinstance(maybe_items, list):
+                return self._normalize_todo_items(maybe_items)
+            if {"content", "status", "priority", "id"} & set(payload.keys()):
+                return self._normalize_todo_items([payload])
+            raise ValueError("todowrite expects JSON array or object with 'todos'")
+
+        if isinstance(payload, list):
+            return self._normalize_todo_items(payload)
+
+        raise ValueError("todowrite expects JSON array or object with 'todos'")
+
+    def _normalize_question_options(self, raw_items: Any) -> List[Dict[str, str]]:
+        """Normalize question options to OpenCode-compatible shape."""
+        if not isinstance(raw_items, list):
+            return []
+
+        normalized: List[Dict[str, str]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+
+            label_raw = item.get("label")
+            description_raw = item.get("description")
+
+            label = (
+                label_raw.strip()
+                if isinstance(label_raw, str)
+                else str(label_raw).strip() if label_raw is not None else ""
+            )
+            description = (
+                description_raw.strip()
+                if isinstance(description_raw, str)
+                else str(description_raw).strip() if description_raw is not None else ""
+            )
+
+            if not label or not description:
+                continue
+
+            normalized.append(
+                {
+                    "label": label,
+                    "description": description,
+                }
+            )
+
+        return normalized
+
+    def _normalize_question_items(self, raw_items: Any) -> List[Dict[str, Any]]:
+        """Normalize question payload to OpenCode-compatible Question[] shape."""
+        if not isinstance(raw_items, list):
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+
+            question_raw = item.get("question")
+            header_raw = item.get("header")
+
+            question_text = (
+                question_raw.strip()
+                if isinstance(question_raw, str)
+                else str(question_raw).strip() if question_raw is not None else ""
+            )
+            header_text = (
+                header_raw.strip()
+                if isinstance(header_raw, str)
+                else str(header_raw).strip() if header_raw is not None else ""
+            )
+
+            options = self._normalize_question_options(item.get("options"))
+            if not question_text or not header_text or not options:
+                continue
+
+            question_payload: Dict[str, Any] = {
+                "question": question_text,
+                "header": header_text[:30],
+                "options": options,
+            }
+
+            multiple = item.get("multiple")
+            if isinstance(multiple, bool):
+                question_payload["multiple"] = multiple
+
+            custom = item.get("custom")
+            if isinstance(custom, bool):
+                question_payload["custom"] = custom
+
+            normalized.append(question_payload)
+
+        return normalized
+
+    def _parse_question_params(self, params: str) -> List[Dict[str, Any]]:
+        """Parse question payload from JSON object or JSON array."""
+        content = (params or "").strip()
+        if not content:
+            raise ValueError("question expects JSON array or object with 'questions'")
+
+        payload = json.loads(content)
+        if isinstance(payload, dict):
+            maybe_items = payload.get("questions")
+            if isinstance(maybe_items, list):
+                questions = self._normalize_question_items(maybe_items)
+                if questions:
+                    return questions
+                raise ValueError("question payload contains no valid questions")
+            if {"question", "header", "options"} <= set(payload.keys()):
+                questions = self._normalize_question_items([payload])
+                if questions:
+                    return questions
+                raise ValueError("question payload contains no valid questions")
+            raise ValueError("question expects JSON array or object with 'questions'")
+
+        if isinstance(payload, list):
+            questions = self._normalize_question_items(payload)
+            if questions:
+                return questions
+            raise ValueError("question payload contains no valid questions")
+
+        raise ValueError("question expects JSON array or object with 'questions'")
+
+    def _resolve_question_session_id(self) -> Optional[str]:
+        """Resolve active session ID for question operations."""
+        context = get_current_execution_context()
+        if context is not None:
+            session_id = context.session_id or context.conversation_id
+            if isinstance(session_id, str) and session_id:
+                return session_id
+
+        session_id, _session, _manager = self._resolve_todo_session()
+        if isinstance(session_id, str) and session_id:
+            return session_id
+
+        return None
+
+    async def _question(self, params: str) -> str:
+        """Ask structured user questions and wait for answers."""
+        try:
+            questions = self._parse_question_params(params)
+        except Exception as e:
+            return f"Error: Invalid question payload: {e}"
+
+        session_id = self._resolve_question_session_id()
+        if not session_id:
+            return "Error: Unable to resolve session for question"
+
+        try:
+            from penguin.security.question import QuestionStatus, get_question_manager
+
+            context = get_current_execution_context()
+            request_context: Dict[str, Any] = {}
+            if context is not None and isinstance(context.agent_id, str):
+                request_context["agent_id"] = context.agent_id
+            if context is not None and isinstance(context.directory, str):
+                request_context["directory"] = context.directory
+
+            manager = get_question_manager()
+            request = manager.create_request(
+                session_id=session_id,
+                questions=questions,
+                context=request_context,
+            )
+            resolved = await manager.wait_for_resolution(request.id)
+            if resolved is None:
+                return "Error: Question request was not resolved"
+            if resolved.status == QuestionStatus.REJECTED:
+                return "Error: The user rejected this question request"
+
+            answers = resolved.answers or []
+            formatted_pairs: List[str] = []
+            for index, question in enumerate(questions):
+                answer = answers[index] if index < len(answers) else []
+                value = ", ".join(answer) if answer else "Unanswered"
+                formatted_pairs.append(f'"{question["question"]}"="{value}"')
+
+            formatted = ", ".join(formatted_pairs)
+            return (
+                "User has answered your questions: "
+                f"{formatted}. "
+                "You can now continue with the user's answers in mind."
+            )
+        except Exception as e:
+            return f"Error: Failed to ask question: {e}"
+
+    def _resolve_todo_session(self) -> tuple[Optional[str], Any, Any]:
+        """Resolve the active session and manager for todo operations."""
+        context = get_current_execution_context()
+        context_session_id = None
+        if context is not None:
+            context_session_id = context.session_id or context.conversation_id
+
+        conversation = self.conversation_system
+        if conversation is None:
+            return None, None, None
+
+        core = getattr(conversation, "core", None)
+        if core is not None and context_session_id:
+            finder = getattr(core, "_find_session_store", None)
+            if callable(finder):
+                session, manager = finder(str(context_session_id))
+                if session is not None and manager is not None:
+                    return str(context_session_id), session, manager
+
+        manager = getattr(conversation, "session_manager", None)
+        if context_session_id and manager is not None:
+            loader = getattr(manager, "load_session", None)
+            if callable(loader):
+                session = loader(str(context_session_id))
+                if session is not None:
+                    return str(context_session_id), session, manager
+
+        getter = getattr(conversation, "get_current_session", None)
+        if callable(getter):
+            session = getter()
+            if session is not None and manager is not None:
+                resolved_id = str(
+                    context_session_id or getattr(session, "id", "") or ""
+                )
+                if resolved_id:
+                    return resolved_id, session, manager
+
+        return None, None, None
+
+    async def _todo_write(self, params: str) -> str:
+        """Persist session-scoped todos. Format: JSON array or {"todos": [...]}"""
+        try:
+            todos = self._parse_todo_params(params)
+        except Exception as e:
+            return f"Error: Invalid todowrite payload: {e}"
+
+        session_id, session, manager = self._resolve_todo_session()
+        if not session_id or session is None or manager is None:
+            return "Error: Unable to resolve session for todowrite"
+
+        metadata = getattr(session, "metadata", None)
+        if not isinstance(metadata, dict):
+            metadata = {}
+            session.metadata = metadata
+        metadata["_opencode_todo_v1"] = todos
+
+        mark_modified = getattr(manager, "mark_session_modified", None)
+        if callable(mark_modified):
+            mark_modified(session.id)
+        saver = getattr(manager, "save_session", None)
+        if callable(saver):
+            saver(session)
+
+        if self._ui_event_cb:
+            try:
+                event_payload: Dict[str, Any] = {
+                    "sessionID": session_id,
+                    "conversation_id": session_id,
+                    "todos": todos,
+                }
+                context = get_current_execution_context()
+                if context is not None and context.directory:
+                    event_payload["directory"] = context.directory
+                await self._ui_event_cb("todo.updated", event_payload)
+            except Exception as e:
+                logger.debug(f"UI event emit failed (todo.updated): {e}")
+
+        return json.dumps(todos, indent=2)
+
+    def _todo_read(self, params: str) -> str:
+        """Read session-scoped todos as JSON."""
+        _ = params
+        session_id, session, _manager = self._resolve_todo_session()
+        if not session_id or session is None:
+            return "Error: Unable to resolve session for todoread"
+
+        metadata = getattr(session, "metadata", None)
+        if not isinstance(metadata, dict):
+            return "[]"
+
+        todos = self._normalize_todo_items(metadata.get("_opencode_todo_v1"))
+        return json.dumps(todos, indent=2)
 
     def _task_create(self, params: str) -> str:
         """Create a new task. Format: name:description[:project_name]"""

@@ -264,6 +264,10 @@ Compare two files with contextual diff output.
 EXECUTION_TOOLS = """
 ## Execution
 
+**Agent mode awareness:**
+- In `plan` mode, mutating operations are policy-blocked. Prioritize read-only analysis and planning.
+- If a user asks for implementation in `plan` mode, provide a concrete plan and ask to switch to `build` mode.
+
 ### execute
 Run Python code in IPython environment.
 
@@ -437,6 +441,311 @@ Manually trigger workspace re-indexing for memory.
 
 
 # =============================================================================
+# TODO TRACKING TOOLS
+# =============================================================================
+
+TODO_TOOLS = """
+## Todo Tracking
+
+### todowrite
+Create or replace the session todo list.
+
+**When to use:**
+- Tasks with 3+ distinct implementation steps
+- User explicitly asks for a todo list
+- Multi-file or multi-phase work where progress tracking helps
+
+**Format:** `<todowrite>[{...}, {...}]</todowrite>` or `<todowrite>{"todos": [...]}</todowrite>`
+
+**Todo item schema:**
+- `id` (string) - Stable identifier
+- `content` (string) - Task description
+- `status` (pending|in_progress|completed|cancelled)
+- `priority` (high|medium|low)
+
+**Example:**
+```actionxml
+<todowrite>{"todos":[
+  {"id":"todo_1","content":"Add session.todo endpoint","status":"in_progress","priority":"high"},
+  {"id":"todo_2","content":"Emit todo.updated SSE events","status":"pending","priority":"medium"}
+]}</todowrite>
+```
+
+### todoread
+Read the current session todo list.
+
+**When to use:**
+- Resuming interrupted work
+- Verifying next incomplete step before continuing
+
+**Format:** `<todoread></todoread>`
+"""
+
+
+# =============================================================================
+# INTERACTIVE QUESTION TOOL
+# =============================================================================
+
+QUESTION_TOOLS = """
+## Interactive Questions
+
+### question
+Ask the user structured questions during execution and block until they reply.
+
+**When to use:**
+- Missing requirements that materially change implementation
+- Choosing between multiple safe implementation options
+- Confirming constraints (framework, API contract, migration strategy)
+
+**Format:** `<question>{"questions": [...]}</question>`
+
+**Question schema:**
+- `question` (string) - Complete question text
+- `header` (string) - Short tab label (max 30 chars)
+- `options` (array) - List of `{ "label", "description" }`
+- `multiple` (boolean, optional) - Allow selecting multiple options
+- `custom` (boolean, optional) - Allow a custom typed answer (default: true)
+
+**Example - Single choice:**
+```actionxml
+<question>{
+  "questions": [
+    {
+      "question": "Which authentication provider should I implement first?",
+      "header": "Auth Provider",
+      "options": [
+        {"label": "GitHub", "description": "Implement GitHub OAuth first"},
+        {"label": "Google", "description": "Implement Google OAuth first"}
+      ]
+    }
+  ]
+}</question>
+```
+
+**Example - Multiple questions:**
+```actionxml
+<question>{
+  "questions": [
+    {
+      "question": "Which database should be the default?",
+      "header": "Database",
+      "options": [
+        {"label": "Postgres", "description": "Use PostgreSQL"},
+        {"label": "SQLite", "description": "Use SQLite"}
+      ]
+    },
+    {
+      "question": "Which environments should get migrations now?",
+      "header": "Environments",
+      "multiple": true,
+      "options": [
+        {"label": "dev", "description": "Apply in development"},
+        {"label": "staging", "description": "Apply in staging"},
+        {"label": "prod", "description": "Apply in production"}
+      ]
+    }
+  ]
+}</question>
+```
+
+**Important:**
+- Keep labels concise and unambiguous
+- Do not include a generic "Other" option when custom input is enabled
+- The tool pauses execution until the user replies or rejects
+"""
+
+
+# =============================================================================
+# MULTI-AGENT / MESSAGING TOOLS
+# =============================================================================
+
+AGENT_TOOLS = """
+## Multi-Agent & Messaging
+
+### send_message
+Send a message to another agent, a group of agents, or the human operator.
+
+**When to use:**
+- Agent-to-agent coordination
+- Broadcasting progress updates
+- Asking the user for clarification from an agent workflow
+
+**Format:** `<send_message>{...}</send_message>`
+
+**Payload fields:**
+- `content` (required) - Message body
+- `target` (optional) - Single recipient agent id
+- `targets` (optional) - Multiple recipient agent ids
+- `recipient` (optional) - Alias for `target`
+- `message_type` (optional) - `message` (default), `status`, `action`, `event`
+- `channel` (optional) - Logical room identifier
+- `metadata` (optional) - Additional key/value data
+- `sender` (optional) - Override sender label
+
+**Examples:**
+```actionxml
+<send_message>{"target":"planner","content":"Implementation complete. Please review.","channel":"dev-room"}</send_message>
+```
+
+```actionxml
+<send_message>{"targets":["planner","qa"],"content":"Build passed and tests are green.","message_type":"status"}</send_message>
+```
+
+**Note:** Message routing is push-based. There is no dedicated inbox polling action tag.
+
+
+### spawn_sub_agent
+Create a child agent for isolated or shared-session work.
+
+**When to use:**
+- Split work into parallel streams
+- Isolate exploration/research from the main thread
+- Create specialized helpers with focused instructions
+
+**Format:** `<spawn_sub_agent>{...}</spawn_sub_agent>`
+
+**Payload fields:**
+- `id` (required) - Child agent id
+- `parent` (optional) - Parent agent id (defaults to current agent)
+- `persona`, `system_prompt` (optional)
+- `share_session` (optional, default: `false`)
+- `share_context_window` (optional, default: `false`)
+- `shared_context_window_max_tokens` (optional int)
+- `model_config_id`, `model_overrides`, `model_output_max_tokens` (optional)
+- `default_tools` (optional list; metadata only)
+- `initial_prompt` (optional)
+- `background` (optional, default: `false`)
+
+**Example (isolated child):**
+```actionxml
+<spawn_sub_agent>{"id":"researcher","share_session":false,"share_context_window":false,"initial_prompt":"Summarize docs in /docs"}</spawn_sub_agent>
+```
+
+**Example (background child):**
+```actionxml
+<spawn_sub_agent>{"id":"analyzer","background":true,"initial_prompt":"Audit Python files for security issues"}</spawn_sub_agent>
+```
+
+
+### stop_sub_agent
+Pause a sub-agent, cancelling a running background task when applicable.
+
+**Format:** `<stop_sub_agent>{"id":"researcher"}</stop_sub_agent>`
+
+
+### resume_sub_agent
+Resume a previously paused sub-agent.
+
+**Format:** `<resume_sub_agent>{"id":"researcher"}</resume_sub_agent>`
+
+
+### get_agent_status
+Query background sub-agent status for one agent or all running agents.
+
+**Format:** `<get_agent_status>{...}</get_agent_status>`
+
+**Payload fields:**
+- `id` (optional) - Agent ID to query
+- `agent_id` (optional alias for `id`)
+- `include_result` (optional, default: `false`) - Include completed result payload
+
+**Examples:**
+```actionxml
+<get_agent_status>{"id":"analyzer"}</get_agent_status>
+```
+
+```actionxml
+<get_agent_status>{"include_result":true}</get_agent_status>
+```
+
+
+### wait_for_agents
+Wait for one or more background sub-agents to complete.
+
+**Format:** `<wait_for_agents>{...}</wait_for_agents>`
+
+**Payload fields:**
+- `ids` (optional list) - Agent IDs to wait for (all if omitted)
+- `agent_ids` (optional alias for `ids`)
+- `timeout` (optional float seconds)
+
+**Example:**
+```actionxml
+<wait_for_agents>{"ids":["analyzer","researcher"],"timeout":60}</wait_for_agents>
+```
+
+
+### get_context_info
+Inspect context-window sharing details for an agent.
+
+**Format:** `<get_context_info>{...}</get_context_info>`
+
+**Payload fields:**
+- `id` (optional) - Agent ID (defaults to current/default)
+- `agent_id` (optional alias for `id`)
+- `include_stats` (optional, default: `false`) - Include token stats
+
+
+### sync_context
+Synchronize context from a parent agent to a child agent.
+
+**Format:** `<sync_context>{...}</sync_context>`
+
+**Payload fields:**
+- `parent` (required) - Parent/source agent
+- `child` (required) - Child/destination agent
+- `parent_agent_id` / `child_agent_id` (optional aliases)
+- `replace` (optional, default: `false`) - Replace existing child context
+
+
+### delegate
+Send a concrete task to an existing sub-agent.
+
+**When to use:**
+- Assign follow-up work to a named child
+- Run background delegated tasks with optional waiting
+
+**Format:** `<delegate>{...}</delegate>`
+
+**Payload fields:**
+- `child` (required) - Target agent id
+- `content` (required) - Task text
+- `parent` (optional) - Parent agent id
+- `channel` (optional) - Logical room/channel
+- `metadata` (optional) - Additional task metadata
+- `background` (optional, default: `false`)
+- `wait` (optional, default: `false`) - Only relevant when `background=true`
+- `timeout` (optional float seconds) - Only relevant when `wait=true`
+
+**Examples:**
+```actionxml
+<delegate>{"child":"researcher","content":"Audit README for missing setup steps.","channel":"dev-room"}</delegate>
+```
+
+```actionxml
+<delegate>{"child":"researcher","content":"Analyze test coverage gaps.","background":true,"wait":true,"timeout":45}</delegate>
+```
+
+
+### delegate_explore_task
+Spawn a lightweight exploration sub-agent that can list files, read files, and search,
+then return a structured summary.
+
+**Format:** `<delegate_explore_task>{...}</delegate_explore_task>`
+
+**Payload fields:**
+- `task` (required) - Exploration objective
+- `directory` (optional) - Starting path (default: current)
+- `max_iterations` (optional int) - Exploration rounds (capped)
+
+**Example:**
+```actionxml
+<delegate_explore_task>{"task":"Map this repo architecture and identify entry points.","directory":".","max_iterations":40}</delegate_explore_task>
+```
+"""
+
+
+# =============================================================================
 # BROWSER AUTOMATION TOOLS
 # =============================================================================
 
@@ -542,6 +851,10 @@ TOOL_GUIDE = "\n\n".join(
         EXECUTION_TOOLS,
         SEARCH_TOOLS,
         MEMORY_TOOLS,
+        TODO_TOOLS,
+        QUESTION_TOOLS,
+        AGENT_TOOLS,
+        BROWSER_TOOLS,
         COMPLETION_TOOLS,
     ]
 )

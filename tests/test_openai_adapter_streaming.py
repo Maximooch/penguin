@@ -16,16 +16,26 @@ class _DummyStreamEvent:
 
     type: str
     delta: str = ""
+    part: Any = None
 
 
 class _DummyResponseStream:
     """Async context manager + iterator that mimics OpenAI SDK response streams."""
 
-    def __init__(self, *, deltas: list[str], final_text: str) -> None:
-        self._events: list[_DummyStreamEvent] = [
-            _DummyStreamEvent(type="response.output_text.delta", delta=d)
-            for d in deltas
-        ]
+    def __init__(
+        self,
+        *,
+        deltas: list[str] | None = None,
+        final_text: str,
+        events: list[_DummyStreamEvent] | None = None,
+    ) -> None:
+        if events is not None:
+            self._events = list(events)
+        else:
+            self._events = [
+                _DummyStreamEvent(type="response.output_text.delta", delta=d)
+                for d in (deltas or [])
+            ]
         self._idx = 0
         self._final_text = final_text
 
@@ -65,6 +75,27 @@ class _DummyResponses:
         return _DummyResponseStream(deltas=["hel", "lo"], final_text="hello")
 
 
+class _DummyResponsesNoDelta(_DummyResponses):
+    def stream(self, **kwargs: Any) -> _DummyResponseStream:
+        self.last_stream_kwargs = dict(kwargs)
+        return _DummyResponseStream(deltas=[], final_text="final-only")
+
+
+class _DummyResponsesWithReasoning(_DummyResponses):
+    def stream(self, **kwargs: Any) -> _DummyResponseStream:
+        self.last_stream_kwargs = dict(kwargs)
+        return _DummyResponseStream(
+            events=[
+                _DummyStreamEvent(
+                    type="response.reasoning_summary_text.delta",
+                    delta="thinking...",
+                ),
+                _DummyStreamEvent(type="response.output_text.delta", delta="answer"),
+            ],
+            final_text="answer",
+        )
+
+
 class _DummyOpenAIClient:
     """Stub for the OpenAI SDK client on the adapter."""
 
@@ -75,8 +106,12 @@ class _DummyOpenAIClient:
 
 
 @pytest.mark.asyncio
-async def test_openai_adapter_streaming_ignores_stream_options() -> None:
+async def test_openai_adapter_streaming_ignores_stream_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Ensure Chat Completions `stream_options` is not forwarded to Responses API."""
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
 
     model_config = ModelConfig(
         model="gpt-5.2",
@@ -97,3 +132,113 @@ async def test_openai_adapter_streaming_ignores_stream_options() -> None:
     assert result == "hello"
     assert adapter.client.responses.last_stream_kwargs is not None
     assert "stream_options" not in adapter.client.responses.last_stream_kwargs
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_streaming_emits_callback_for_final_only_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+
+    model_config = ModelConfig(
+        model="gpt-5.2",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=True,
+    )
+    adapter = OpenAIAdapter(model_config)
+    adapter.client = _DummyOpenAIClient()  # type: ignore[assignment]
+    adapter.client.responses = _DummyResponsesNoDelta()
+
+    chunks: list[tuple[str, str]] = []
+
+    async def on_chunk(chunk: str, message_type: str) -> None:
+        chunks.append((chunk, message_type))
+
+    result = await adapter.get_response(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+        stream_callback=on_chunk,
+    )
+
+    assert result == "final-only"
+    assert chunks == [("final-only", "assistant")]
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_streaming_maps_reasoning_summary_to_reasoning_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=True,
+        reasoning_enabled=True,
+        reasoning_effort="medium",
+    )
+    adapter = OpenAIAdapter(model_config)
+    adapter.client = _DummyOpenAIClient()  # type: ignore[assignment]
+    adapter.client.responses = _DummyResponsesWithReasoning()
+
+    chunks: list[tuple[str, str]] = []
+
+    async def on_chunk(chunk: str, message_type: str) -> None:
+        chunks.append((chunk, message_type))
+
+    result = await adapter.get_response(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+        stream_callback=on_chunk,
+    )
+
+    assert result == "answer"
+    assert ("thinking...", "reasoning") in chunks
+    assert ("answer", "assistant") in chunks
+    assert adapter.client.responses.last_stream_kwargs is not None
+    reasoning = adapter.client.responses.last_stream_kwargs.get("reasoning")
+    assert isinstance(reasoning, dict)
+    assert reasoning.get("summary") == "concise"
+
+
+def test_openai_adapter_uses_oauth_access_token_when_api_key_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_OAUTH_ACCESS_TOKEN", "oauth-access-token")
+    monkeypatch.setenv("OPENAI_ACCOUNT_ID", "acct_test_123")
+
+    class _Client:
+        def __init__(
+            self,
+            *,
+            api_key: str,
+            base_url: str | None = None,
+            default_headers: dict[str, str] | None = None,
+        ) -> None:
+            self.api_key = api_key
+            self.base_url = base_url
+            self.default_headers = default_headers
+            self.responses = _DummyResponses()
+
+    monkeypatch.setattr("penguin.llm.adapters.openai.AsyncOpenAI", _Client)
+
+    model_config = ModelConfig(
+        model="gpt-5.2",
+        provider="openai",
+        client_preference="native",
+        api_key=None,
+        streaming_enabled=True,
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    assert adapter.client.api_key == "oauth-access-token"  # type: ignore[attr-defined]
+    assert adapter.client.default_headers == {  # type: ignore[attr-defined]
+        "OpenAI-Account": "acct_test_123"
+    }

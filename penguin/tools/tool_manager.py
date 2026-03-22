@@ -9,11 +9,13 @@ import json
 from pathlib import Path
 import time
 import re
+import threading
 from collections import defaultdict
 
 # from utils.log_error import log_error
 # from .core.support import create_folder, create_file, write_to_file, read_file, list_files, encode_image_to_base64, find_file
 from penguin.config import config, WORKSPACE_PATH
+from penguin.system.execution_context import get_current_execution_context_dict
 from penguin.utils.path_utils import get_allowed_roots, get_default_write_root
 from penguin.memory.summary_notes import SummaryNotes
 from penguin.utils import FileMap
@@ -46,10 +48,7 @@ _pydoll_import_error = None
 def _ensure_pydoll_imports():
     """Lazy import PyDoll tools only when needed."""
     global _pydoll_tools_imported, _pydoll_import_error
-    global \
-        pydoll_browser_manager, \
-        PyDollBrowserNavigationTool, \
-        PyDollBrowserInteractionTool
+    global pydoll_browser_manager, PyDollBrowserNavigationTool, PyDollBrowserInteractionTool
     global PyDollBrowserScreenshotTool, PyDollBrowserScrollTool
 
     if not _pydoll_tools_imported and _pydoll_import_error is None:
@@ -99,6 +98,7 @@ from penguin.tools.repository_tools import (
 _permission_enforcer_imported = False
 _PermissionEnforcer = None
 _WorkspaceBoundaryPolicy = None
+_AgentModePolicy = None
 _PermissionMode = None
 _PermissionResult = None
 _PermissionDeniedError = None
@@ -108,17 +108,15 @@ _check_tool_permission = None
 def _ensure_permission_imports():
     """Lazy import permission modules to avoid circular imports."""
     global _permission_enforcer_imported, _PermissionEnforcer, _WorkspaceBoundaryPolicy
-    global \
-        _PermissionMode, \
-        _PermissionResult, \
-        _PermissionDeniedError, \
-        _check_tool_permission
+    global _AgentModePolicy
+    global _PermissionMode, _PermissionResult, _PermissionDeniedError, _check_tool_permission
 
     if not _permission_enforcer_imported:
         try:
             from penguin.security import (
                 PermissionEnforcer,
                 WorkspaceBoundaryPolicy,
+                AgentModePolicy,
                 PermissionMode,
                 PermissionResult,
                 PermissionDeniedError,
@@ -127,6 +125,7 @@ def _ensure_permission_imports():
 
             _PermissionEnforcer = PermissionEnforcer
             _WorkspaceBoundaryPolicy = WorkspaceBoundaryPolicy
+            _AgentModePolicy = AgentModePolicy
             _PermissionMode = PermissionMode
             _PermissionResult = PermissionResult
             _PermissionDeniedError = PermissionDeniedError
@@ -246,6 +245,7 @@ class ToolManager:
 
             # PenguinCore reference for sub-agent tools
             self._core = None
+            self._code_execution_lock = threading.Lock()
 
             # Permission enforcer (lazy initialized)
             self._permission_enforcer = None
@@ -1565,6 +1565,12 @@ class ToolManager:
                             mode=mode,
                         )
                         self._permission_enforcer.add_policy(boundary_policy)
+
+                    # Add mode-aware plan/build policy (hard block in plan mode).
+                    if _AgentModePolicy is not None:
+                        self._permission_enforcer.add_policy(_AgentModePolicy())
+
+                    if _WorkspaceBoundaryPolicy is not None:
                         logger.info(
                             f"Permission enforcer initialized: mode={mode.value}, "
                             f"workspace={self.workspace_root}, project={self.project_root}"
@@ -1852,18 +1858,19 @@ class ToolManager:
         return tool_instance
 
     def _execute_file_operation(
-        self, operation_name: str, tool_input: dict
+        self, operation_name: str, tool_input: dict, *, file_root: Optional[str] = None
     ) -> Union[str, dict]:
         """Execute file operations with enhanced tools and workspace integration."""
+        effective_root = file_root or self._file_root
         if operation_name == "create_folder":
             from penguin.tools.core.support import create_folder
 
-            return create_folder(os.path.join(self._file_root, tool_input["path"]))
+            return create_folder(os.path.join(effective_root, tool_input["path"]))
         elif operation_name == "create_file":
             from penguin.tools.core.support import create_file
 
             return create_file(
-                os.path.join(self._file_root, tool_input["path"]),
+                os.path.join(effective_root, tool_input["path"]),
                 tool_input.get("content", ""),
             )
         elif operation_name == "write_to_file":
@@ -1873,7 +1880,7 @@ class ToolManager:
                 tool_input["path"],
                 tool_input["content"],
                 backup=tool_input.get("backup", True),
-                workspace_path=self._file_root,
+                workspace_path=effective_root,
             )
         elif operation_name == "read_file":
             from penguin.tools.core.support import enhanced_read_file
@@ -1882,7 +1889,7 @@ class ToolManager:
                 tool_input["path"],
                 show_line_numbers=tool_input.get("show_line_numbers", False),
                 max_lines=tool_input.get("max_lines"),
-                workspace_path=self._file_root,
+                workspace_path=effective_root,
             )
         elif operation_name == "list_files":
             from penguin.tools.core.support import list_files_filtered
@@ -1892,7 +1899,7 @@ class ToolManager:
                 ignore_patterns=tool_input.get("ignore_patterns"),
                 group_by_type=tool_input.get("group_by_type", False),
                 show_hidden=tool_input.get("show_hidden", False),
-                workspace_path=self._file_root,
+                workspace_path=effective_root,
             )
         elif operation_name == "find_file":
             from penguin.tools.core.support import find_files_enhanced
@@ -1902,7 +1909,7 @@ class ToolManager:
                 search_path=tool_input.get("search_path", "."),
                 include_hidden=tool_input.get("include_hidden", False),
                 file_type=tool_input.get("file_type"),
-                workspace_path=self._file_root,
+                workspace_path=effective_root,
             )
         else:
             raise ValueError(f"Unknown file operation: {operation_name}")
@@ -1954,10 +1961,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_analyze_project(self, tool_input: dict) -> str:
+    def _execute_analyze_project(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute project analysis with workspace integration."""
         from penguin.tools.core.support import analyze_project_structure
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -1976,7 +1987,7 @@ class ToolManager:
                 result_container["result"] = analyze_project_structure(
                     directory=tool_input.get("directory", "."),
                     include_external=tool_input.get("include_external", False),
-                    workspace_path=self._file_root,
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2000,10 +2011,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_apply_diff(self, tool_input: dict) -> str:
+    def _execute_apply_diff(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute diff application with workspace integration."""
         from penguin.tools.core.support import apply_diff_to_file
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -2023,7 +2038,7 @@ class ToolManager:
                     file_path=tool_input["file_path"],
                     diff_content=tool_input["diff_content"],
                     backup=tool_input.get("backup", True),
-                    workspace_path=self._file_root,
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2047,10 +2062,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_replace_lines(self, tool_input: dict) -> str:
+    def _execute_replace_lines(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute line replacement with workspace integration."""
         from penguin.tools.core.support import replace_lines
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -2067,11 +2086,12 @@ class ToolManager:
         def _runner():
             try:
                 result_container["result"] = replace_lines(
-                    tool_input["path"],
+                    self._resolve_path_in_root(tool_input["path"], effective_root),
                     int(tool_input["start_line"]),
                     int(tool_input["end_line"]),
                     tool_input.get("new_content", ""),
                     verify=tool_input.get("verify", True),
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2095,10 +2115,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_insert_lines(self, tool_input: dict) -> str:
+    def _execute_insert_lines(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute line insertion with workspace integration."""
         from penguin.tools.core.support import insert_lines
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -2115,9 +2139,10 @@ class ToolManager:
         def _runner():
             try:
                 result_container["result"] = insert_lines(
-                    tool_input["path"],
+                    self._resolve_path_in_root(tool_input["path"], effective_root),
                     int(tool_input["after_line"]),
                     tool_input.get("new_content", ""),
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2141,10 +2166,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_delete_lines(self, tool_input: dict) -> str:
+    def _execute_delete_lines(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute line deletion with workspace integration."""
         from penguin.tools.core.support import delete_lines
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -2161,9 +2190,10 @@ class ToolManager:
         def _runner():
             try:
                 result_container["result"] = delete_lines(
-                    tool_input["path"],
+                    self._resolve_path_in_root(tool_input["path"], effective_root),
                     int(tool_input["start_line"]),
                     int(tool_input["end_line"]),
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2187,10 +2217,14 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_edit_with_pattern(self, tool_input: dict) -> str:
+    def _execute_edit_with_pattern(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute pattern-based editing with workspace integration."""
         from penguin.tools.core.support import edit_file_with_pattern
         import threading, json
+
+        effective_root = file_root or self._file_root
 
         try:
             default_timeout = int(
@@ -2211,7 +2245,7 @@ class ToolManager:
                     search_pattern=tool_input["search_pattern"],
                     replacement=tool_input["replacement"],
                     backup=tool_input.get("backup", True),
-                    workspace_path=self._file_root,
+                    workspace_path=effective_root,
                 )
             except Exception as e:
                 result_container["error"] = str(e)
@@ -2235,9 +2269,13 @@ class ToolManager:
             )
         return result_container["result"]
 
-    def _execute_multiedit(self, tool_input: dict) -> str:
+    def _execute_multiedit(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
         """Execute multiedit facade with workspace integration."""
         from penguin.tools.multiedit import apply_multiedit
+
+        effective_root = file_root or self._file_root
 
         content = tool_input.get("content", "")
         do_apply = bool(tool_input.get("apply", False))
@@ -2277,7 +2315,7 @@ class ToolManager:
         except Exception:
             pass
         result = apply_multiedit(
-            content, dry_run=(not do_apply), workspace_root=self._file_root
+            content, dry_run=(not do_apply), workspace_root=effective_root
         )
         try:
             import json
@@ -2434,20 +2472,108 @@ class ToolManager:
             # Defer until first access
             self._lazy_initialized["file_map"] = False
 
+    def _merged_execution_context(
+        self, context: Optional[dict[str, Any]] = None
+    ) -> dict[str, Any]:
+        """Merge explicit context with request-scoped execution context."""
+        merged: dict[str, Any] = {}
+        current = get_current_execution_context_dict()
+        if isinstance(current, dict):
+            merged.update(current)
+        if isinstance(context, dict):
+            merged.update(context)
+        return merged
+
+    def _resolve_file_root(self, context: Optional[dict[str, Any]] = None) -> str:
+        """Resolve effective file root for a tool call without global mutation."""
+        merged = self._merged_execution_context(context)
+        candidate = merged.get("directory") or merged.get("project_root")
+        if isinstance(candidate, str) and candidate:
+            try:
+                resolved = Path(candidate).expanduser().resolve()
+                if resolved.exists() and resolved.is_dir():
+                    return str(resolved)
+            except Exception:
+                pass
+        return self._file_root
+
+    def _resolve_path_in_root(self, path: str, file_root: str) -> str:
+        """Resolve relative paths against the effective file root."""
+        try:
+            candidate = Path(path)
+            if candidate.is_absolute():
+                return str(candidate)
+            return str((Path(file_root) / candidate).resolve())
+        except Exception:
+            return path
+
+    def _normalize_tool_input_paths(
+        self, tool_input: dict[str, Any], file_root: str
+    ) -> dict[str, Any]:
+        """Normalize path-like tool inputs against request-scoped file root."""
+        normalized = dict(tool_input or {})
+        path_like_keys = {
+            "path",
+            "file_path",
+            "directory",
+            "search_path",
+            "file1",
+            "file2",
+        }
+        for key in path_like_keys:
+            value = normalized.get(key)
+            if isinstance(value, str) and value.strip():
+                normalized[key] = self._resolve_path_in_root(value, file_root)
+        return normalized
+
     def execute_tool(
         self, tool_name: str, tool_input: dict, context: dict = None
     ) -> Union[str, dict]:
         with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
+            effective_context = self._merged_execution_context(context)
+            file_root = self._resolve_file_root(effective_context)
+            effective_context.setdefault("directory", file_root)
+            effective_context.setdefault("project_root", file_root)
+            effective_context.setdefault("workspace_root", file_root)
+            tool_input = self._normalize_tool_input_paths(tool_input, file_root)
+
             # Check permission before executing
             if self._permission_enabled:
                 result, reason = self.check_tool_permission(
-                    tool_name, tool_input, context
+                    tool_name, tool_input, effective_context
                 )
                 if result is not None:
                     _ensure_permission_imports()
                     if result == _PermissionResult.DENY:
+                        agent_id = (
+                            effective_context.get("agent_id")
+                            if isinstance(effective_context, dict)
+                            else None
+                        )
+                        agent_mode = (
+                            effective_context.get("agent_mode")
+                            if isinstance(effective_context, dict)
+                            else None
+                        )
+                        session_id = (
+                            effective_context.get("session_id")
+                            if isinstance(effective_context, dict)
+                            else None
+                        )
+                        request_id = (
+                            effective_context.get("request_id")
+                            if isinstance(effective_context, dict)
+                            else None
+                        )
                         logger.warning(
-                            f"Permission denied for tool '{tool_name}': {reason}"
+                            "permission.denied tool=%s agent=%s mode=%s session=%s "
+                            "request=%s reason=%s",
+                            tool_name,
+                            agent_id,
+                            agent_mode,
+                            session_id,
+                            request_id,
+                            reason,
                         )
                         return json.dumps(
                             {
@@ -2458,19 +2584,31 @@ class ToolManager:
                         )
                     elif result == _PermissionResult.ASK:
                         # Phase 3: Approval flow
-                        logger.info(f"Tool '{tool_name}' requires approval: {reason}")
+                        logger.info(
+                            "permission.approval_required tool=%s agent=%s mode=%s "
+                            "session=%s reason=%s",
+                            tool_name,
+                            effective_context.get("agent_id"),
+                            effective_context.get("agent_mode"),
+                            effective_context.get("session_id"),
+                            reason,
+                        )
 
                         # Extract operation and resource for approval tracking
                         operation = (
-                            context.get("operation", f"tool.{tool_name}")
-                            if context
+                            effective_context.get("operation", f"tool.{tool_name}")
+                            if effective_context
                             else f"tool.{tool_name}"
                         )
                         resource = tool_input.get(
                             "path",
                             tool_input.get("file_path", tool_input.get("target", "")),
                         )
-                        session_id = context.get("session_id") if context else None
+                        session_id = (
+                            effective_context.get("session_id")
+                            if effective_context
+                            else None
+                        )
 
                         # Check for pre-approvals first
                         try:
@@ -2496,9 +2634,11 @@ class ToolManager:
                                     session_id=session_id,
                                     context={
                                         "tool_input": tool_input,
-                                        "agent_id": context.get("agent_id")
-                                        if context
-                                        else None,
+                                        "agent_id": (
+                                            effective_context.get("agent_id")
+                                            if effective_context
+                                            else None
+                                        ),
                                     },
                                 )
 
@@ -2551,22 +2691,22 @@ class ToolManager:
 
             tool_map = {
                 "create_folder": lambda: self._execute_file_operation(
-                    "create_folder", tool_input
+                    "create_folder", tool_input, file_root=file_root
                 ),
                 "create_file": lambda: self._execute_file_operation(
-                    "create_file", tool_input
+                    "create_file", tool_input, file_root=file_root
                 ),
                 "write_to_file": lambda: self._execute_file_operation(
-                    "write_to_file", tool_input
+                    "write_to_file", tool_input, file_root=file_root
                 ),
                 "read_file": lambda: self._execute_file_operation(
-                    "read_file", tool_input
+                    "read_file", tool_input, file_root=file_root
                 ),
                 "list_files": lambda: self._execute_file_operation(
-                    "list_files", tool_input
+                    "list_files", tool_input, file_root=file_root
                 ),
                 "find_file": lambda: self._execute_file_operation(
-                    "find_file", tool_input
+                    "find_file", tool_input, file_root=file_root
                 ),
                 "add_declarative_note": lambda: self.add_declarative_note(
                     tool_input["category"], tool_input["content"]
@@ -2585,14 +2725,18 @@ class ToolManager:
                         tool_input.get("categories"),
                     )
                 ),
-                "code_execution": lambda: self.execute_code(tool_input["code"]),
+                "code_execution": lambda: self.execute_code(
+                    tool_input["code"], cwd=file_root
+                ),
                 "get_file_map": lambda: self.get_file_map(
-                    tool_input.get("directory", "")
+                    tool_input.get("directory", ""), file_root=file_root
                 ),
                 "lint_python": lambda: lint_python(
                     tool_input["target"], tool_input["is_file"]
                 ),
-                "execute_command": lambda: self.execute_command(tool_input["command"]),
+                "execute_command": lambda: self.execute_command(
+                    tool_input["command"], cwd=file_root
+                ),
                 "add_summary_note": lambda: self.add_summary_note(
                     tool_input["category"], tool_input["content"]
                 ),
@@ -2649,6 +2793,7 @@ class ToolManager:
                     tool_input.get("directory"),
                     tool_input.get("analysis_type", "all"),
                     tool_input.get("include_external", False),
+                    file_root=file_root,
                 ),
                 "reindex_workspace": lambda: self._execute_async_tool(
                     self.reindex_workspace(
@@ -2658,14 +2803,26 @@ class ToolManager:
                     )
                 ),
                 "enhanced_diff": lambda: self._execute_enhanced_diff(tool_input),
-                "analyze_project": lambda: self._execute_analyze_project(tool_input),
-                "apply_diff": lambda: self._execute_apply_diff(tool_input),
-                "replace_lines": lambda: self._execute_replace_lines(tool_input),
-                "insert_lines": lambda: self._execute_insert_lines(tool_input),
-                "delete_lines": lambda: self._execute_delete_lines(tool_input),
-                "multiedit_apply": lambda: self._execute_multiedit(tool_input),
+                "analyze_project": lambda: self._execute_analyze_project(
+                    tool_input, file_root=file_root
+                ),
+                "apply_diff": lambda: self._execute_apply_diff(
+                    tool_input, file_root=file_root
+                ),
+                "replace_lines": lambda: self._execute_replace_lines(
+                    tool_input, file_root=file_root
+                ),
+                "insert_lines": lambda: self._execute_insert_lines(
+                    tool_input, file_root=file_root
+                ),
+                "delete_lines": lambda: self._execute_delete_lines(
+                    tool_input, file_root=file_root
+                ),
+                "multiedit_apply": lambda: self._execute_multiedit(
+                    tool_input, file_root=file_root
+                ),
                 "edit_with_pattern": lambda: self._execute_edit_with_pattern(
-                    tool_input
+                    tool_input, file_root=file_root
                 ),
                 # Repository management tools
                 "create_improvement_pr": lambda: create_improvement_pr(
@@ -2781,8 +2938,11 @@ class ToolManager:
     def add_declarative_note(self, category, content):
         return self.declarative_memory_tool.add_note(category, content)
 
-    def get_file_map(self, directory: str = "") -> str:
-        return self.file_map.get_formatted_file_map(directory)
+    def get_file_map(self, directory: str = "", file_root: Optional[str] = None) -> str:
+        effective_root = file_root or self._file_root
+        if effective_root == self._file_root:
+            return self.file_map.get_formatted_file_map(directory)
+        return FileMap(effective_root).get_formatted_file_map(directory)
 
     def perform_grep_search(self, query, k=5, case_sensitive=False, search_files=True):
         patterns = query.split("|")  # Allow multiple patterns separated by |
@@ -2811,8 +2971,10 @@ class ToolManager:
     def add_message_to_search(self, message):
         self.grep_search.add_message(message)
 
-    def execute_code(self, code: str) -> str:
+    def execute_code(self, code: str, cwd: Optional[str] = None) -> str:
         import threading, json
+
+        effective_cwd = cwd or self._file_root
 
         # Allow a separate timeout for code execution; fall back to general tool timeout
         try:
@@ -2829,7 +2991,15 @@ class ToolManager:
 
         def _runner():
             try:
-                result_container["result"] = self.notebook_executor.execute_code(code)
+                executor = self.notebook_executor
+                with self._code_execution_lock:
+                    previous = getattr(executor, "active_directory", None)
+                    executor.active_directory = effective_cwd
+                    try:
+                        result_container["result"] = executor.execute_code(code)
+                    finally:
+                        if previous:
+                            executor.active_directory = previous
             except Exception as e:
                 result_container["error"] = str(e)
             finally:
@@ -2856,7 +3026,7 @@ class ToolManager:
             )
         return result_container["result"] or ""
 
-    def execute_command(self, command: str) -> str:
+    def execute_command(self, command: str, cwd: Optional[str] = None) -> str:
         try:
             # Determine the OS
             import platform
@@ -2887,12 +3057,13 @@ class ToolManager:
 
             result = None
             try:
+                effective_cwd = cwd or self._file_root
                 result = subprocess.run(
                     command,
                     shell=shell,
                     capture_output=True,
                     text=True,
-                    cwd=self._file_root,
+                    cwd=effective_cwd,
                     env=env,  # Use environment with Rich suppression
                     timeout=default_timeout,
                 )
@@ -3153,6 +3324,7 @@ class ToolManager:
         directory: Optional[str] = None,
         analysis_type: str = "all",
         include_external: bool = False,
+        file_root: Optional[str] = None,
     ) -> str:
         """Analyze codebase structure and dependencies using AST analysis."""
         # Check if memory tools are enabled with safe config access
@@ -3185,7 +3357,8 @@ class ToolManager:
             from collections import defaultdict
 
             # Default to active file root if no directory is specified
-            target_dir = Path(directory or self._file_root)
+            effective_root = file_root or self._file_root
+            target_dir = Path(directory or effective_root)
 
             if not target_dir.exists():
                 return json.dumps(
@@ -3288,8 +3461,9 @@ class ToolManager:
                                     imports.append(import_name)
                                     all_imports[relative_path].append(import_name)
 
-                                    if include_external or not self._is_external_import(
-                                        node.module
+                                    if (
+                                        include_external
+                                        or not self._is_external_import(node.module)
                                     ):
                                         dependency_graph[relative_path].add(node.module)
 
@@ -3349,9 +3523,11 @@ class ToolManager:
                 "total_lines": complexity_metrics["total_lines"],
                 "functions": complexity_metrics["total_functions"],
                 "classes": complexity_metrics["total_classes"],
-                "imports": sum(len(imports) for imports in all_imports.values())
-                if all_imports
-                else 0,
+                "imports": (
+                    sum(len(imports) for imports in all_imports.values())
+                    if all_imports
+                    else 0
+                ),
             }
 
             return json.dumps(analysis_results, indent=2)
@@ -3441,12 +3617,14 @@ class ToolManager:
                 [f for f in all_functions if f["args"] > 5]
             ),
             "async_percentage": (
-                len([f for f in all_functions if f["is_async"]])
-                / len(all_functions)
-                * 100
-            )
-            if all_functions
-            else 0,
+                (
+                    len([f for f in all_functions if f["is_async"]])
+                    / len(all_functions)
+                    * 100
+                )
+                if all_functions
+                else 0
+            ),
         }
 
     async def reindex_workspace(
@@ -3582,9 +3760,11 @@ class ToolManager:
                 "file_types": file_types,
                 "statistics": stats,
                 "provider": type(memory_provider).__name__,
-                "provider_stats": await memory_provider.get_memory_stats()
-                if hasattr(memory_provider, "get_memory_stats")
-                else {},
+                "provider_stats": (
+                    await memory_provider.get_memory_stats()
+                    if hasattr(memory_provider, "get_memory_stats")
+                    else {}
+                ),
             }
 
             logger.info(
@@ -3734,9 +3914,9 @@ class ToolManager:
             metadata = {
                 "file_type": "generic",
                 "path": str(file_path),
-                "extension": file_path.suffix[1:]
-                if file_path.suffix
-                else "no_extension",
+                "extension": (
+                    file_path.suffix[1:] if file_path.suffix else "no_extension"
+                ),
                 "size_bytes": len(content.encode("utf-8")),
                 "indexed_at": datetime.now().isoformat(),
             }
@@ -3961,6 +4141,61 @@ class ToolManager:
         """
         self._core = core
 
+    def _resolve_subagent_tool_call_id(
+        self, tool_input: Optional[Dict[str, Any]]
+    ) -> str:
+        """Resolve best-effort tool call identifier for sub-agent logs."""
+        payload = tool_input or {}
+        explicit = payload.get("tool_call_id") or payload.get("call_id")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
+
+        context = get_current_execution_context_dict()
+        request_id = context.get("request_id")
+        if isinstance(request_id, str) and request_id:
+            return request_id
+        return "-"
+
+    def _log_subagent_event(
+        self,
+        event: str,
+        *,
+        status: str,
+        elapsed_ms: Optional[float] = None,
+        tool_input: Optional[Dict[str, Any]] = None,
+        target_agent: Optional[str] = None,
+        parent_agent: Optional[str] = None,
+        level: int = logging.INFO,
+        **fields: Any,
+    ) -> None:
+        """Emit sub-agent logs to both module and uvicorn loggers."""
+        context = get_current_execution_context_dict()
+        session_id = context.get("session_id") or "-"
+        agent_id = context.get("agent_id") or "default"
+        tool_call_id = self._resolve_subagent_tool_call_id(tool_input)
+
+        parts = [
+            f"subagent.{event}",
+            f"status={status}",
+            f"session={session_id}",
+            f"agent={agent_id}",
+            f"tool_call_id={tool_call_id}",
+            f"elapsed_ms={0.0 if elapsed_ms is None else round(float(elapsed_ms), 1)}",
+        ]
+        if target_agent:
+            parts.append(f"target_agent={target_agent}")
+        if parent_agent:
+            parts.append(f"parent_agent={parent_agent}")
+
+        for key, value in fields.items():
+            if value is None:
+                continue
+            parts.append(f"{key}={value}")
+
+        message = " ".join(parts)
+        logger.log(level, message)
+        logging.getLogger("uvicorn.error").log(level, message)
+
     async def _execute_send_message(self, tool_input: Dict[str, Any]) -> str:
         """Execute send_message tool via MessageBus.
 
@@ -4018,11 +4253,27 @@ class ToolManager:
         Returns:
             JSON string with result
         """
+        spawn_started_at = time.monotonic()
         agent_id = tool_input.get("id", "").strip()
         if not agent_id:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                tool_input=tool_input,
+                error="missing_id",
+            )
             return json.dumps({"error": "spawn_sub_agent requires 'id'"})
 
         if self._core is None:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=agent_id,
+                error="core_unavailable",
+            )
             return json.dumps(
                 {
                     "error": "Core unavailable for spawn_sub_agent. Call set_core() first."
@@ -4034,6 +4285,18 @@ class ToolManager:
         share_cw = bool(tool_input.get("share_context_window", False))
         shared_cw_max = tool_input.get("shared_context_window_max_tokens")
         background = bool(tool_input.get("background", False))
+        self._log_subagent_event(
+            "spawn.request",
+            status="started",
+            elapsed_ms=0.0,
+            tool_input=tool_input,
+            target_agent=agent_id,
+            parent_agent=parent_id,
+            source="tool",
+            share_session=share_session,
+            share_context_window=share_cw,
+            background=background,
+        )
 
         kwargs = {}
         for key in (
@@ -4064,15 +4327,65 @@ class ToolManager:
                 if hasattr(self._core, "conversation_manager"):
                     self._core.conversation_manager.create_sub_agent(
                         agent_id,
-                        parent_id=parent_id,
+                        parent_agent_id=parent_id,
                         share_session=share_session,
                         share_context_window=share_cw,
                         shared_context_window_max_tokens=shared_cw_max,
                     )
                 else:
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        source="tool",
+                        error="missing_core_create_sub_agent",
+                    )
                     return json.dumps({"error": "Core has no create_sub_agent method"})
         except Exception as e:
+            self._log_subagent_event(
+                "spawn.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=agent_id,
+                parent_agent=parent_id,
+                source="tool",
+                error=str(e),
+            )
             return json.dumps({"error": f"Failed to spawn sub-agent: {e}"})
+
+        self._log_subagent_event(
+            "spawn.created",
+            status="completed",
+            elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+            tool_input=tool_input,
+            target_agent=agent_id,
+            parent_agent=parent_id,
+            source="tool",
+            share_session=share_session,
+            share_context_window=share_cw,
+        )
+
+        session_info: Dict[str, Any] = {}
+        try:
+            publish = getattr(self._core, "publish_sub_agent_session_created", None)
+            if callable(publish):
+                info = await publish(
+                    agent_id,
+                    parent_agent_id=parent_id,
+                    share_session=share_session,
+                )
+                if isinstance(info, dict):
+                    session_info = dict(info)
+        except Exception:
+            logger.debug(
+                "Failed to emit session.created for tool-spawned sub-agent '%s'",
+                agent_id,
+                exc_info=True,
+            )
 
         # Handle initial_prompt if provided
         initial_prompt = tool_input.get("initial_prompt")
@@ -4099,7 +4412,20 @@ class ToolManager:
                             "parent": parent_id,
                             "share_session": share_session,
                             "share_context_window": share_cw,
+                            "session_id": session_info.get("id"),
+                            "directory": session_info.get("directory"),
+                            "agent_mode": session_info.get("agent_mode"),
                         },
+                    )
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="started",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        source="tool",
+                        background=True,
                     )
                     return json.dumps(
                         {
@@ -4110,20 +4436,53 @@ class ToolManager:
                             "share_context_window": share_cw,
                             "background": True,
                             "message": f"Agent '{agent_id}' spawned and running in background",
+                            "session_id": session_info.get("id"),
+                            "session_title": session_info.get("title"),
                         }
                     )
                 except Exception as e:
-                    logger.error(f"Failed to spawn background agent {agent_id}: {e}")
+                    self._log_subagent_event(
+                        "spawn.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=agent_id,
+                        parent_agent=parent_id,
+                        source="tool",
+                        background=True,
+                        error=str(e),
+                    )
                     return json.dumps(
                         {"error": f"Failed to spawn background agent: {e}"}
                     )
             else:
-                # Synchronous: send message and wait
+                # Synchronous: run the child prompt in the child session and block
                 try:
-                    if hasattr(self._core, "send_to_agent"):
+                    if hasattr(self._core, "run_agent_prompt_in_session"):
+                        await self._core.run_agent_prompt_in_session(
+                            agent_id,
+                            initial_prompt,
+                            session_id=session_info.get("id"),
+                            directory=session_info.get("directory"),
+                            agent_mode=session_info.get("agent_mode"),
+                        )
+                    elif hasattr(self._core, "send_to_agent"):
                         await self._core.send_to_agent(agent_id, initial_prompt)
                 except Exception as e:
                     logger.warning(f"Failed to send initial_prompt to {agent_id}: {e}")
+
+        self._log_subagent_event(
+            "spawn.summary",
+            status="completed",
+            elapsed_ms=(time.monotonic() - spawn_started_at) * 1000,
+            tool_input=tool_input,
+            target_agent=agent_id,
+            parent_agent=parent_id,
+            source="tool",
+            background=background,
+            share_session=share_session,
+            share_context_window=share_cw,
+        )
 
         return json.dumps(
             {
@@ -4133,6 +4492,8 @@ class ToolManager:
                 "share_session": share_session,
                 "share_context_window": share_cw,
                 "background": background,
+                "session_id": session_info.get("id"),
+                "session_title": session_info.get("title"),
             }
         )
 
@@ -4223,8 +4584,27 @@ class ToolManager:
         agent_id = tool_input.get("id", "").strip()
         include_result = bool(tool_input.get("include_result", False))
 
+        status_started_at = time.monotonic()
+        self._log_subagent_event(
+            "status.request",
+            status="started",
+            elapsed_ms=0.0,
+            tool_input=tool_input,
+            target_agent=agent_id or "all",
+            include_result=include_result,
+        )
+
         executor = get_executor()
         if executor is None:
+            self._log_subagent_event(
+                "status.summary",
+                status="completed",
+                elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=agent_id or "all",
+                include_result=include_result,
+                no_executor=True,
+            )
             return json.dumps(
                 {
                     "status": "ok",
@@ -4237,6 +4617,15 @@ class ToolManager:
             # Query specific agent
             status = executor.get_status(agent_id)
             if status is None:
+                self._log_subagent_event(
+                    "status.summary",
+                    status="failed",
+                    elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+                    tool_input=tool_input,
+                    target_agent=agent_id,
+                    include_result=include_result,
+                    error="agent_not_found",
+                )
                 return json.dumps(
                     {"error": f"Agent '{agent_id}' not found in executor"}
                 )
@@ -4244,6 +4633,15 @@ class ToolManager:
             if not include_result:
                 status = {k: v for k, v in status.items() if k != "result"}
 
+            self._log_subagent_event(
+                "status.summary",
+                status="completed",
+                elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=agent_id,
+                include_result=include_result,
+                state=status.get("state"),
+            )
             return json.dumps({"status": "ok", "agent": status})
         else:
             # Query all agents
@@ -4255,6 +4653,15 @@ class ToolManager:
                 }
 
             stats = executor.get_stats()
+            self._log_subagent_event(
+                "status.summary",
+                status="completed",
+                elapsed_ms=(time.monotonic() - status_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent="all",
+                include_result=include_result,
+                total_agents=len(all_status),
+            )
             return json.dumps(
                 {
                     "status": "ok",
@@ -4274,11 +4681,21 @@ class ToolManager:
         """
         from penguin.multi.executor import get_executor
 
+        uvicorn_logger = logging.getLogger("uvicorn.error")
+
         agent_ids = tool_input.get("ids")
         timeout = tool_input.get("timeout")
 
         executor = get_executor()
         if executor is None:
+            logger.info(
+                "subagent.wait.no_executor ids=%s timeout=%s", agent_ids, timeout
+            )
+            uvicorn_logger.info(
+                "subagent.wait.no_executor ids=%s timeout=%s",
+                agent_ids,
+                timeout,
+            )
             return json.dumps(
                 {
                     "status": "ok",
@@ -4287,35 +4704,164 @@ class ToolManager:
                 }
             )
 
-        try:
-            results = await executor.wait_for_all(agent_ids, timeout=timeout)
+        terminal_states = {
+            "completed",
+            "failed",
+            "cancelled",
+            "not_found",
+        }
+
+        if agent_ids is None:
+            ids_to_check = list(executor.get_all_status().keys())
+        else:
+            ids_to_check = [
+                str(agent_id).strip() for agent_id in agent_ids if str(agent_id).strip()
+            ]
+
+        if not ids_to_check:
             return json.dumps(
                 {
                     "status": "ok",
-                    "results": results,
-                    "completed": len(results),
+                    "results": {},
+                    "completed": 0,
+                    "message": "No matching agents to wait for",
                 }
             )
-        except asyncio.TimeoutError:
-            # Return partial results on timeout
-            partial = {}
-            ids_to_check = agent_ids or list(executor._tasks.keys())
-            for aid in ids_to_check:
-                status = executor.get_status(aid)
-                if status:
-                    partial[aid] = {
-                        "state": status.get("state"),
-                        "result": status.get("result")
-                        if status.get("state") == "completed"
-                        else None,
+
+        logger.info(
+            "subagent.wait.poll_start ids=%s timeout=%s",
+            ids_to_check,
+            timeout,
+        )
+        uvicorn_logger.info(
+            "subagent.wait.poll_start ids=%s timeout=%s",
+            ids_to_check,
+            timeout,
+        )
+
+        poll_interval_seconds = 0.05
+        start = time.monotonic()
+        poll_count = 0
+        next_progress_log_at = 0.0
+
+        while True:
+            poll_count += 1
+            status_by_agent: Dict[str, Dict[str, Any]] = {}
+            all_terminal = True
+            state_counts: Dict[str, int] = {}
+
+            for agent_id in ids_to_check:
+                status = executor.get_status(agent_id)
+                if not isinstance(status, dict):
+                    status = {
+                        "agent_id": agent_id,
+                        "state": "not_found",
+                        "result": None,
+                        "error": "Agent not found",
+                        "metadata": {},
                     }
-            return json.dumps(
-                {
-                    "status": "timeout",
-                    "results": partial,
-                    "message": f"Timeout after {timeout}s waiting for agents",
+
+                state = str(status.get("state") or "").lower()
+                state_counts[state] = state_counts.get(state, 0) + 1
+                if state not in terminal_states:
+                    all_terminal = False
+
+                status_by_agent[agent_id] = status
+
+            elapsed = time.monotonic() - start
+
+            if elapsed >= next_progress_log_at:
+                logger.info(
+                    "subagent.wait.poll_progress ids=%s elapsed=%.2fs states=%s",
+                    ids_to_check,
+                    elapsed,
+                    state_counts,
+                )
+                uvicorn_logger.info(
+                    "subagent.wait.poll_progress ids=%s elapsed=%.2fs states=%s",
+                    ids_to_check,
+                    elapsed,
+                    state_counts,
+                )
+                next_progress_log_at += 1.0
+
+            if all_terminal:
+                results = {
+                    aid: status_by_agent[aid].get("result") for aid in ids_to_check
                 }
-            )
+                logger.info(
+                    "subagent.wait.poll_complete ids=%s elapsed=%.2fs polls=%s states=%s",
+                    ids_to_check,
+                    elapsed,
+                    poll_count,
+                    state_counts,
+                )
+                uvicorn_logger.info(
+                    "subagent.wait.poll_complete ids=%s elapsed=%.2fs polls=%s states=%s",
+                    ids_to_check,
+                    elapsed,
+                    poll_count,
+                    state_counts,
+                )
+                return json.dumps(
+                    {
+                        "status": "ok",
+                        "results": results,
+                        "completed": len(ids_to_check),
+                        "elapsed_seconds": round(elapsed, 3),
+                        "poll_count": poll_count,
+                        "waited_agent_ids": ids_to_check,
+                        "agent_status": status_by_agent,
+                    }
+                )
+
+            if timeout is not None and elapsed >= float(timeout):
+                partial = {}
+                for aid in ids_to_check:
+                    status = status_by_agent.get(aid, {})
+                    state = str(status.get("state") or "unknown")
+                    partial[aid] = {
+                        "state": state,
+                        "result": (
+                            status.get("result") if state == "completed" else None
+                        ),
+                    }
+
+                logger.info(
+                    "subagent.wait.poll_timeout ids=%s elapsed=%.2fs timeout=%s polls=%s states=%s",
+                    ids_to_check,
+                    elapsed,
+                    timeout,
+                    poll_count,
+                    state_counts,
+                )
+                uvicorn_logger.info(
+                    "subagent.wait.poll_timeout ids=%s elapsed=%.2fs timeout=%s polls=%s states=%s",
+                    ids_to_check,
+                    elapsed,
+                    timeout,
+                    poll_count,
+                    state_counts,
+                )
+
+                return json.dumps(
+                    {
+                        "status": "timeout",
+                        "results": partial,
+                        "message": f"Timeout after {timeout}s waiting for agents",
+                        "elapsed_seconds": round(elapsed, 3),
+                        "poll_count": poll_count,
+                        "waited_agent_ids": ids_to_check,
+                        "agent_status": status_by_agent,
+                    }
+                )
+
+            sleep_seconds = poll_interval_seconds
+            if timeout is not None:
+                remaining = float(timeout) - elapsed
+                if remaining < sleep_seconds:
+                    sleep_seconds = max(remaining, 0.0)
+            await asyncio.sleep(sleep_seconds)
 
     async def _execute_get_context_info(self, tool_input: Dict[str, Any]) -> str:
         """Get context window sharing information for an agent.
@@ -4401,12 +4947,28 @@ class ToolManager:
         Returns:
             JSON string with result
         """
+        delegate_started_at = time.monotonic()
         child = tool_input.get("child", "").strip()
         content = tool_input.get("content")
         if not child or content is None:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                tool_input=tool_input,
+                error="missing_child_or_content",
+            )
             return json.dumps({"error": "delegate requires 'child' and 'content'"})
 
         if self._core is None:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=child,
+                error="core_unavailable",
+            )
             return json.dumps({"error": "Core unavailable"})
 
         parent = tool_input.get("parent", "default")
@@ -4415,6 +4977,19 @@ class ToolManager:
         background = bool(tool_input.get("background", False))
         wait = bool(tool_input.get("wait", False))
         timeout = tool_input.get("timeout")
+
+        self._log_subagent_event(
+            "delegate.request",
+            status="started",
+            elapsed_ms=0.0,
+            tool_input=tool_input,
+            target_agent=child,
+            parent_agent=parent,
+            background=background,
+            wait=wait,
+            timeout=timeout,
+            channel=channel,
+        )
 
         try:
             if background:
@@ -4433,6 +5008,16 @@ class ToolManager:
                 # Check if agent is already registered in executor
                 status = executor.get_status(child)
                 if status and status.get("state") in ("pending", "running"):
+                    self._log_subagent_event(
+                        "delegate.summary",
+                        status="failed",
+                        elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=child,
+                        parent_agent=parent,
+                        background=True,
+                        error="already_running",
+                    )
                     return json.dumps(
                         {
                             "error": f"Agent '{child}' is already running a background task"
@@ -4454,6 +5039,16 @@ class ToolManager:
                     # Wait for result
                     try:
                         result = await executor.wait_for(child, timeout=timeout)
+                        self._log_subagent_event(
+                            "delegate.summary",
+                            status="completed",
+                            elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                            tool_input=tool_input,
+                            target_agent=child,
+                            parent_agent=parent,
+                            background=True,
+                            wait=True,
+                        )
                         return json.dumps(
                             {
                                 "status": "ok",
@@ -4465,6 +5060,16 @@ class ToolManager:
                             }
                         )
                     except asyncio.TimeoutError:
+                        self._log_subagent_event(
+                            "delegate.summary",
+                            status="timeout",
+                            elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                            tool_input=tool_input,
+                            target_agent=child,
+                            parent_agent=parent,
+                            background=True,
+                            timeout=timeout,
+                        )
                         return json.dumps(
                             {
                                 "status": "timeout",
@@ -4475,6 +5080,16 @@ class ToolManager:
                             }
                         )
                 else:
+                    self._log_subagent_event(
+                        "delegate.summary",
+                        status="started",
+                        elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                        tool_input=tool_input,
+                        target_agent=child,
+                        parent_agent=parent,
+                        background=True,
+                        wait=False,
+                    )
                     return json.dumps(
                         {
                             "status": "ok",
@@ -4509,6 +5124,16 @@ class ToolManager:
                     )
                     await bus.send(msg)
 
+                self._log_subagent_event(
+                    "delegate.summary",
+                    status="completed",
+                    elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                    tool_input=tool_input,
+                    target_agent=child,
+                    parent_agent=parent,
+                    background=False,
+                )
+
                 return json.dumps(
                     {
                         "status": "ok",
@@ -4517,6 +5142,16 @@ class ToolManager:
                     }
                 )
         except Exception as e:
+            self._log_subagent_event(
+                "delegate.summary",
+                status="failed",
+                elapsed_ms=(time.monotonic() - delegate_started_at) * 1000,
+                tool_input=tool_input,
+                target_agent=child,
+                parent_agent=parent,
+                background=background,
+                error=str(e),
+            )
             return json.dumps({"error": f"Failed to delegate: {e}"})
 
     async def _execute_delegate_explore_task(self, tool_input: Dict[str, Any]) -> str:

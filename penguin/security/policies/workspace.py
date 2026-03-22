@@ -66,17 +66,17 @@ SENSITIVE_PATTERNS: Set[str] = {
 
 class WorkspaceBoundaryPolicy(PolicyEngine):
     """Policy that enforces workspace and project root boundaries.
-    
+
     This policy checks that file operations stay within allowed paths:
     1. Workspace root (PENGUIN_WORKSPACE or ~/penguin_workspace)
     2. Project root (PENGUIN_PROJECT_ROOT or detected git root)
     3. Additional allowed_paths from config
-    
+
     The policy respects the current PermissionMode:
     - READ_ONLY: Only read operations allowed
     - WORKSPACE: Read/write within boundaries, deny outside
     - FULL: All operations allowed (but still logs)
-    
+
     Example:
         policy = WorkspaceBoundaryPolicy(
             workspace_root="/home/user/penguin_workspace",
@@ -89,10 +89,10 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
         )
         # result == PermissionResult.ALLOW
     """
-    
+
     name = "workspace_boundary"
     priority = 100  # High priority - checked early
-    
+
     def __init__(
         self,
         workspace_root: Optional[str] = None,
@@ -105,7 +105,7 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
         config: Optional[Dict[str, Any]] = None,
     ):
         """Initialize the workspace boundary policy.
-        
+
         Args:
             workspace_root: Penguin's workspace directory (default: from env/config)
             project_root: Current project root (default: from env/config)
@@ -117,84 +117,93 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
             config: Additional configuration dictionary
         """
         super().__init__(config)
-        
+
         self._mode = mode
         self._follow_symlinks = follow_symlinks
-        
+
         # Resolve workspace root
         if workspace_root:
             self._workspace_root = Path(workspace_root).resolve()
         else:
             from penguin.config import WORKSPACE_PATH
+
             self._workspace_root = Path(WORKSPACE_PATH).resolve()
-        
+
         # Resolve project root
         if project_root:
             self._project_root = Path(project_root).resolve()
         else:
             # Try environment, then detect from cwd
-            env_root = os.environ.get("PENGUIN_PROJECT_ROOT") or os.environ.get("PENGUIN_CWD")
+            env_root = os.environ.get("PENGUIN_PROJECT_ROOT") or os.environ.get(
+                "PENGUIN_CWD"
+            )
             if env_root:
                 self._project_root = Path(env_root).resolve()
             else:
                 self._project_root = self._detect_project_root()
-        
+
         # Store allowed/denied patterns
         self._allowed_paths = set(allowed_paths or [])
         self._denied_paths = set(denied_paths or [])
         self._require_approval = set(require_approval or [])
-        
+
         # Add default denied patterns
         self._denied_paths.update(SENSITIVE_PATTERNS)
-        
+
         logger.info(
             f"WorkspaceBoundaryPolicy initialized: "
             f"workspace={self._workspace_root}, project={self._project_root}, mode={mode.value}"
         )
-    
+
     def _detect_project_root(self) -> Path:
         """Detect project root by looking for .git directory."""
         try:
             cwd = Path.cwd().resolve()
         except Exception:
             return Path.home()
-        
+
         path = cwd
         while path != path.parent:
             if (path / ".git").exists():
                 return path
             path = path.parent
-        
+
         # No git root found, use cwd
         return cwd
-    
+
     @property
     def mode(self) -> PermissionMode:
         return self._mode
-    
+
     @mode.setter
     def mode(self, value: PermissionMode) -> None:
-        logger.info(f"WorkspaceBoundaryPolicy mode changed from {self._mode.value} to {value.value}")
+        logger.info(
+            f"WorkspaceBoundaryPolicy mode changed from {self._mode.value} to {value.value}"
+        )
         self._mode = value
-    
+
     def set_project_root(self, path: str) -> None:
         """Update the project root at runtime."""
         self._project_root = Path(path).resolve()
-        logger.info(f"WorkspaceBoundaryPolicy project_root updated to {self._project_root}")
-    
+        logger.info(
+            f"WorkspaceBoundaryPolicy project_root updated to {self._project_root}"
+        )
+
     def set_workspace_root(self, path: str) -> None:
         """Update the workspace root at runtime."""
         self._workspace_root = Path(path).resolve()
-        logger.info(f"WorkspaceBoundaryPolicy workspace_root updated to {self._workspace_root}")
-    
+        logger.info(
+            f"WorkspaceBoundaryPolicy workspace_root updated to {self._workspace_root}"
+        )
+
     def add_allowed_path(self, pattern: str) -> None:
         """Add a path pattern to the allowlist."""
         self._allowed_paths.add(pattern)
-    
+
     def add_denied_path(self, pattern: str) -> None:
         """Add a path pattern to the denylist."""
         self._denied_paths.add(pattern)
-    
+
     def check_operation(
         self,
         operation: Operation,
@@ -202,21 +211,21 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
         context: Optional[Dict[str, Any]] = None,
     ) -> Tuple[PermissionResult, str]:
         """Check if a file operation is allowed within boundaries.
-        
+
         Args:
             operation: The operation being attempted
             resource: The file/directory path
             context: Additional context
-        
+
         Returns:
             Tuple of (PermissionResult, reason_string)
         """
         context = context or {}
-        
+
         # FULL mode allows everything (but we still log)
         if self._mode == PermissionMode.FULL:
             return PermissionResult.ALLOW, "FULL mode - all operations allowed"
-        
+
         # READ_ONLY mode denies all non-read operations
         if self._mode == PermissionMode.READ_ONLY:
             if not Operation.is_read_only(operation):
@@ -224,80 +233,108 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
                 if operation == Operation.PROCESS_EXECUTE:
                     filter_result = is_command_safe(resource)
                     if filter_result.allowed:
-                        return PermissionResult.ALLOW, f"READ_ONLY mode - safe command: {filter_result.reason}"
+                        return (
+                            PermissionResult.ALLOW,
+                            f"READ_ONLY mode - safe command: {filter_result.reason}",
+                        )
                     else:
-                        return PermissionResult.DENY, f"READ_ONLY mode - {filter_result.reason}"
-                return PermissionResult.DENY, f"READ_ONLY mode - {operation.value} not allowed"
-        
+                        return (
+                            PermissionResult.DENY,
+                            f"READ_ONLY mode - {filter_result.reason}",
+                        )
+                return (
+                    PermissionResult.DENY,
+                    f"READ_ONLY mode - {operation.value} not allowed",
+                )
+
         # For non-filesystem operations, defer to other policies
         if operation.category != "filesystem":
-            return PermissionResult.ALLOW, "Non-filesystem operation - deferred to other policies"
-        
+            return (
+                PermissionResult.ALLOW,
+                "Non-filesystem operation - deferred to other policies",
+            )
+
         # Normalize and resolve the path
         try:
             path = self._normalize_path(resource)
         except ValueError as e:
             return PermissionResult.DENY, str(e)
-        
+
+        workspace_root = self._workspace_root
+        project_root = self._project_root
+        workspace_override = context.get("workspace_root")
+        project_override = context.get("project_root") or context.get("directory")
+        try:
+            if isinstance(workspace_override, str) and workspace_override:
+                workspace_root = Path(workspace_override).expanduser().resolve()
+            if isinstance(project_override, str) and project_override:
+                project_root = Path(project_override).expanduser().resolve()
+        except Exception:
+            workspace_root = self._workspace_root
+            project_root = self._project_root
+
         # Check for system paths (always deny writes)
         if self._is_system_path(path) and not Operation.is_read_only(operation):
             return PermissionResult.DENY, f"System path '{path}' - writes not allowed"
-        
+
         # Check explicit denylist
         if self._matches_pattern(str(path), self._denied_paths):
             if Operation.is_read_only(operation):
                 return PermissionResult.ALLOW, "Sensitive path - read allowed"
             return PermissionResult.DENY, f"Path matches denied pattern"
-        
+
         # Check explicit allowlist
         if self._matches_pattern(str(path), self._allowed_paths):
             return PermissionResult.ALLOW, "Path matches allowed pattern"
-        
+
         # Check if within workspace or project boundaries
-        within_workspace = self._is_within_boundary(path, self._workspace_root)
-        within_project = self._is_within_boundary(path, self._project_root)
-        
+        within_workspace = self._is_within_boundary(path, workspace_root)
+        within_project = self._is_within_boundary(path, project_root)
+
         if not within_workspace and not within_project:
             if Operation.is_read_only(operation):
                 # Allow reads outside boundaries (useful for reading system files)
                 return PermissionResult.ALLOW, "Read outside boundaries allowed"
             return PermissionResult.DENY, (
                 f"Path '{path}' is outside allowed boundaries. "
-                f"Workspace: {self._workspace_root}, Project: {self._project_root}"
+                f"Workspace: {workspace_root}, Project: {project_root}"
             )
-        
+
         # Check if operation requires approval
         if operation.value in self._require_approval:
-            return PermissionResult.ASK, f"Operation '{operation.value}' requires approval"
-        
+            return (
+                PermissionResult.ASK,
+                f"Operation '{operation.value}' requires approval",
+            )
+
         # Delete operations always require approval in WORKSPACE mode
         if operation == Operation.FILESYSTEM_DELETE:
             return PermissionResult.ASK, "File deletion requires approval"
-        
+
         return PermissionResult.ALLOW, "Within allowed boundaries"
-    
+
     def _normalize_path(self, path_str: str) -> Path:
         """Normalize and validate a path.
-        
+
         Handles:
         - Expanding ~ to home directory
         - Resolving to absolute path
         - Detecting path traversal attempts
         - Optionally resolving symlinks
-        
+
         Raises:
             ValueError: If path is invalid or contains traversal attempts
         """
         try:
             path = Path(path_str).expanduser()
-            
+
             # Get the resolved path
             if self._follow_symlinks:
                 resolved = path.resolve()
             else:
                 # Use resolve() but check for symlink escapes after
                 resolved = path.resolve()
-                
+
                 # Check if any component is a symlink pointing outside boundaries
                 if path.exists():
                     for parent in path.parents:
@@ -307,12 +344,12 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
                                 raise ValueError(
                                     f"Symlink '{parent}' points outside allowed boundaries"
                                 )
-            
+
             return resolved
-            
+
         except (OSError, RuntimeError) as e:
             raise ValueError(f"Invalid path '{path_str}': {e}")
-    
+
     def _is_within_boundary(self, path: Path, boundary: Path) -> bool:
         """Check if path is within a boundary directory."""
         try:
@@ -320,14 +357,13 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
             return True
         except ValueError:
             return False
-    
+
     def _is_within_any_boundary(self, path: Path) -> bool:
         """Check if path is within workspace or project boundaries."""
-        return (
-            self._is_within_boundary(path, self._workspace_root) or
-            self._is_within_boundary(path, self._project_root)
-        )
-    
+        return self._is_within_boundary(
+            path, self._workspace_root
+        ) or self._is_within_boundary(path, self._project_root)
+
     def _is_system_path(self, path: Path) -> bool:
         """Check if path is a protected system path."""
         path_str = str(path)
@@ -335,11 +371,11 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
             if path_str.startswith(sys_path):
                 return True
         return False
-    
+
     def _matches_pattern(self, path_str: str, patterns: Set[str]) -> bool:
         """Check if path matches any glob pattern."""
         import fnmatch
-        
+
         for pattern in patterns:
             # Handle both full paths and basename matching
             if fnmatch.fnmatch(path_str, pattern):
@@ -347,7 +383,7 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
             if fnmatch.fnmatch(Path(path_str).name, pattern):
                 return True
         return False
-    
+
     def get_capabilities_summary(self) -> Dict[str, List[str]]:
         """Return a summary of what this policy allows/denies."""
         if self._mode == PermissionMode.FULL:
@@ -356,14 +392,14 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
                 "cannot": [],
                 "requires_approval": [],
             }
-        
+
         if self._mode == PermissionMode.READ_ONLY:
             return {
                 "can": ["Read files", "List directories"],
                 "cannot": ["Write files", "Delete files", "Create directories"],
                 "requires_approval": [],
             }
-        
+
         # WORKSPACE mode
         return {
             "can": [
@@ -377,9 +413,10 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
             ],
             "requires_approval": [
                 "File deletion",
-            ] + list(self._require_approval),
+            ]
+            + list(self._require_approval),
         }
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialize policy configuration for API/config."""
         return {
@@ -392,4 +429,3 @@ class WorkspaceBoundaryPolicy(PolicyEngine):
             "require_approval": list(self._require_approval),
             "follow_symlinks": self._follow_symlinks,
         }
-

@@ -1,0 +1,188 @@
+"""Tests for part event persistence callback wiring."""
+
+from __future__ import annotations
+
+import pytest
+
+from penguin.tui_adapter.part_events import PartEventAdapter
+
+
+class _EventBus:
+    def __init__(self):
+        self.events = []
+
+    async def emit(self, event_name, payload):
+        self.events.append((event_name, payload))
+
+
+def _opencode_events(bus: _EventBus, event_type: str):
+    return [
+        payload["properties"]
+        for event_name, payload in bus.events
+        if event_name == "opencode_event" and payload.get("type") == event_type
+    ]
+
+
+@pytest.mark.asyncio
+async def test_part_adapter_invokes_persist_callback_before_emit():
+    bus = _EventBus()
+    persisted = []
+
+    async def persist(event_type, properties):
+        persisted.append((event_type, properties["id"]))
+
+    adapter = PartEventAdapter(bus, persist_callback=persist)
+    adapter.set_session("session_test")
+    await adapter.on_user_message("hello")
+
+    assert persisted
+    assert persisted[0][0] == "message.updated"
+    assert bus.events
+    assert bus.events[0][0] == "opencode_event"
+
+
+@pytest.mark.asyncio
+async def test_tool_only_lifecycle_balances_session_status_and_completes_message():
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_tool")
+
+    part_id = await adapter.on_tool_start(
+        "bash",
+        {"command": "pwd"},
+        tool_call_id="call_1",
+    )
+    await adapter.on_tool_end(part_id, "ok")
+
+    status_events = _opencode_events(bus, "session.status")
+    assert [item["status"]["type"] for item in status_events] == ["busy", "idle"]
+
+    assistant_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("role") == "assistant"
+    ]
+    assert assistant_updates
+    assert assistant_updates[-1]["time"]["completed"] is not None
+
+
+@pytest.mark.asyncio
+async def test_adapter_abort_marks_running_tool_as_error_and_idles():
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_abort")
+
+    await adapter.on_tool_start(
+        "bash",
+        {"command": "sleep 30"},
+        tool_call_id="call_abort",
+    )
+
+    changed = await adapter.abort()
+    assert changed is True
+
+    status_events = _opencode_events(bus, "session.status")
+    assert [item["status"]["type"] for item in status_events] == ["busy", "idle"]
+
+    tool_updates = [
+        item.get("part", {})
+        for item in _opencode_events(bus, "message.part.updated")
+        if item.get("part", {}).get("type") == "tool"
+    ]
+    assert tool_updates
+    final_tool = tool_updates[-1]
+    assert final_tool["state"]["status"] == "error"
+    assert final_tool["state"]["error"] == "Tool execution was interrupted"
+    assert final_tool["state"]["metadata"]["aborted"] is True
+
+
+@pytest.mark.asyncio
+async def test_tool_events_attach_to_completed_stream_message_when_available():
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_stream")
+
+    message_id, part_id = await adapter.on_stream_start(agent_id="default")
+    await adapter.on_stream_chunk(message_id, part_id, "hello", "assistant")
+    await adapter.on_stream_end(message_id, part_id)
+
+    tool_part_id = await adapter.on_tool_start(
+        "bash",
+        {"command": "pwd"},
+        tool_call_id="call_2",
+        message_id=message_id,
+    )
+    await adapter.on_tool_end(tool_part_id, "ok")
+
+    tool_updates = _opencode_events(bus, "message.part.updated")
+    tool_parts = [
+        item.get("part", {})
+        for item in tool_updates
+        if item.get("part", {}).get("type") == "tool"
+    ]
+    assert tool_parts
+    assert tool_parts[0]["messageID"] == message_id
+
+
+@pytest.mark.asyncio
+async def test_update_assistant_usage_creates_missing_message_and_emits_update():
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_usage")
+
+    await adapter.update_assistant_usage(
+        "msg_usage_1",
+        tokens={
+            "input": 21,
+            "output": 8,
+            "reasoning": 3,
+            "cache": {"read": 2, "write": 1},
+        },
+        cost=0.00042,
+    )
+
+    assistant_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("role") == "assistant" and item.get("id") == "msg_usage_1"
+    ]
+    assert assistant_updates
+    latest = assistant_updates[-1]
+    assert latest["cost"] == pytest.approx(0.00042)
+    assert latest["tokens"]["input"] == 21
+    assert latest["tokens"]["output"] == 8
+    assert latest["tokens"]["reasoning"] == 3
+    assert latest["tokens"]["cache"]["read"] == 2
+    assert latest["tokens"]["cache"]["write"] == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_keeps_literal_action_tag_text_without_truncation():
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_literal")
+
+    message_id, part_id = await adapter.on_stream_start(agent_id="default")
+    await adapter.on_stream_chunk(
+        message_id,
+        part_id,
+        "Use `<spawn_sub_agent>` as inline text. ",
+        "assistant",
+    )
+    await adapter.on_stream_chunk(
+        message_id,
+        part_id,
+        "Response should continue after the literal tag.",
+        "assistant",
+    )
+    await adapter.on_stream_end(message_id, part_id)
+
+    text_parts = [
+        item.get("part", {})
+        for item in _opencode_events(bus, "message.part.updated")
+        if item.get("part", {}).get("type") == "text"
+    ]
+    assert text_parts
+    final_text = text_parts[-1].get("text", "")
+    assert "<spawn_sub_agent>" in final_text
+    assert "Response should continue after the literal tag." in final_text

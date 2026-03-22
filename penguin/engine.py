@@ -12,11 +12,25 @@ remains test‑friendly and avoids hidden globals.
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from penguin.constants import UI_ASYNC_SLEEP_SECONDS
 import re
 import time
+
 # Removed unused: import multiprocessing as mp
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union, AsyncGenerator, Tuple
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Union,
+    AsyncGenerator,
+    Tuple,
+)
 from penguin.utils.errors import LLMEmptyResponseError
 
 from penguin.system.conversation_manager import ConversationManager  # type: ignore
@@ -26,6 +40,7 @@ from penguin.llm.api_client import APIClient  # type: ignore
 from penguin.tools import ToolManager  # type: ignore
 from penguin.config import TASK_COMPLETION_PHRASE  # Add this import
 from penguin.constants import get_engine_max_iterations_default
+from penguin.system.execution_context import get_current_execution_context
 
 import logging
 
@@ -42,9 +57,11 @@ logger = logging.getLogger(__name__)
 # Settings & Stop‑conditions
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class ResourceSnapshot:
     """Represents resource usage at a point in time."""
+
     tokens_prompt: int = 0
     tokens_completion: int = 0
     wall_clock_sec: float = 0.0
@@ -58,6 +75,7 @@ class LoopConfig:
     This dataclass captures the differences between the two modes, allowing
     a single loop implementation to serve both entry points.
     """
+
     # Mode identifier for logging
     mode: str  # "response" or "task"
 
@@ -93,6 +111,7 @@ class LoopState:
     created on-demand with `if not hasattr(self, '_xxx')` patterns.
     Now all state is initialized upfront and reset per-run.
     """
+
     # Empty/trivial response tracking
     empty_response_count: int = 0
 
@@ -128,7 +147,9 @@ class LoopState:
             Tuple of (is_empty_or_trivial, should_break_after_3)
         """
         stripped_response = (response or "").strip()
-        is_empty_or_trivial = not stripped_response or len(stripped_response) < threshold
+        is_empty_or_trivial = (
+            not stripped_response or len(stripped_response) < threshold
+        )
 
         if is_empty_or_trivial:
             self.empty_response_count += 1
@@ -139,6 +160,7 @@ class LoopState:
 
         return is_empty_or_trivial, should_break
 
+
 @dataclass
 class EngineSettings:
     """Immutable configuration for an Engine instance."""
@@ -146,7 +168,9 @@ class EngineSettings:
     retry_attempts: int = 2
     backoff_seconds: float = 1.5
     streaming_default: bool = False
-    max_iterations_default: int = field(default_factory=get_engine_max_iterations_default)
+    max_iterations_default: int = field(
+        default_factory=get_engine_max_iterations_default
+    )
     token_budget_stop_enabled: bool = False
     wall_clock_stop_seconds: Optional[int] = None
 
@@ -197,6 +221,7 @@ class ExternalCallbackStop(StopCondition):
 # Engine core
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class EngineAgent:
     """Registered agent runtime with its own conversation manager and optional
@@ -212,6 +237,86 @@ class EngineAgent:
     api_client: Optional[APIClient] = None
     tool_manager: Optional[ToolManager] = None
     action_executor: Optional[ActionExecutor] = None
+
+
+@dataclass
+class EngineRunState:
+    """Per-request run state for concurrent Engine usage."""
+
+    current_agent_id: Optional[str] = None
+    current_iteration: int = 0
+    start_time: datetime = field(default_factory=datetime.utcnow)
+    loop_state: LoopState = field(default_factory=LoopState)
+
+
+_CURRENT_ENGINE_RUN_STATE: ContextVar[Optional[EngineRunState]] = ContextVar(
+    "penguin_engine_run_state",
+    default=None,
+)
+
+
+class _ScopedConversationManager:
+    """Agent-scoped ConversationManager view without mutating global pointers."""
+
+    def __init__(self, base_manager: ConversationManager, agent_id: str):
+        self._base_manager = base_manager
+        self._agent_id = agent_id
+        self.core = getattr(base_manager, "core", None)
+        conversation = None
+        if hasattr(base_manager, "get_agent_conversation"):
+            conversation = base_manager.get_agent_conversation(
+                agent_id, create_if_missing=True
+            )
+        if conversation is None:
+            conversation = getattr(base_manager, "conversation", None)
+        self._conversation = conversation
+
+    @property
+    def conversation(self) -> Any:
+        return self._conversation
+
+    def save(self) -> bool:
+        if self._conversation is not None and hasattr(self._conversation, "save"):
+            return bool(self._conversation.save())
+        if hasattr(self._base_manager, "save"):
+            return bool(self._base_manager.save())
+        return False
+
+    def add_action_result(
+        self,
+        action_type: str,
+        result: str,
+        status: str = "completed",
+    ) -> Any:
+        if self._conversation is not None and hasattr(
+            self._conversation, "add_action_result"
+        ):
+            return self._conversation.add_action_result(action_type, result, status)
+        return self._base_manager.add_action_result(action_type, result, status)
+
+    def get_current_session(self) -> Any:
+        session = getattr(self._conversation, "session", None)
+        if session is not None:
+            return session
+        if hasattr(self._base_manager, "get_current_session"):
+            return self._base_manager.get_current_session()
+        return None
+
+    def get_current_context_window(self) -> Any:
+        try:
+            windows = getattr(self._base_manager, "agent_context_windows", None)
+            if isinstance(windows, dict):
+                scoped = windows.get(self._agent_id)
+                if scoped is not None:
+                    return scoped
+        except Exception:
+            pass
+        if hasattr(self._base_manager, "get_current_context_window"):
+            return self._base_manager.get_current_context_window()
+        return getattr(self._base_manager, "context_window", None)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._base_manager, name)
 
 
 class Engine:
@@ -236,26 +341,91 @@ class Engine:
 
         # Multi-agent registry and defaults
         self.agents: Dict[str, EngineAgent] = {}
+        # Must be initialized before property-backed fields are assigned.
+        self._default_run_state = EngineRunState()
         self.default_agent_id: str = "default"
-        self.current_agent_id: Optional[str] = None
+        self.current_agent_id = None
         # Register a default agent backed by the provided ConversationManager
-        self.register_agent(agent_id=self.default_agent_id, conversation_manager=conversation_manager)
+        self.register_agent(
+            agent_id=self.default_agent_id, conversation_manager=conversation_manager
+        )
         # Back-compat: keep attribute pointing at default agent's manager
         self.conversation_manager = conversation_manager
 
         # Inject default conditions based on settings
-        if settings.token_budget_stop_enabled and not any(isinstance(s, TokenBudgetStop) for s in self.stop_conditions):
+        if settings.token_budget_stop_enabled and not any(
+            isinstance(s, TokenBudgetStop) for s in self.stop_conditions
+        ):
             self.stop_conditions.append(TokenBudgetStop())
-        if settings.wall_clock_stop_seconds and not any(isinstance(s, WallClockStop) for s in self.stop_conditions):
+        if settings.wall_clock_stop_seconds and not any(
+            isinstance(s, WallClockStop) for s in self.stop_conditions
+        ):
             self.stop_conditions.append(WallClockStop(settings.wall_clock_stop_seconds))
 
         # Light run‑time state
-        self.start_time: datetime = datetime.utcnow()
-        self.current_iteration: int = 0
         self._interrupted: bool = False
 
-        # Consolidated loop state (replaces scattered dynamic attributes)
-        self._loop_state = LoopState()
+    def _get_loop_state(self) -> LoopState:
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        if run_state is not None:
+            return run_state.loop_state
+        return self._default_run_state.loop_state
+
+    @property
+    def current_agent_id(self) -> Optional[str]:
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        if run_state is not None:
+            return run_state.current_agent_id
+        return self._default_run_state.current_agent_id
+
+    @current_agent_id.setter
+    def current_agent_id(self, value: Optional[str]) -> None:
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        if run_state is not None:
+            run_state.current_agent_id = value
+            return
+        self._default_run_state.current_agent_id = value
+
+    @property
+    def current_iteration(self) -> int:
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        if run_state is not None:
+            return run_state.current_iteration
+        return self._default_run_state.current_iteration
+
+    @current_iteration.setter
+    def current_iteration(self, value: int) -> None:
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        if run_state is not None:
+            run_state.current_iteration = value
+            return
+        self._default_run_state.current_iteration = value
+
+    @property
+    def start_time(self) -> datetime:
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        if run_state is not None:
+            return run_state.start_time
+        return self._default_run_state.start_time
+
+    @start_time.setter
+    def start_time(self, value: datetime) -> None:
+        run_state = _CURRENT_ENGINE_RUN_STATE.get()
+        if run_state is not None:
+            run_state.start_time = value
+            return
+        self._default_run_state.start_time = value
+
+    @contextmanager
+    def _run_state_scope(self, agent_id: Optional[str]) -> Any:
+        """Scope mutable run state to a single in-flight request."""
+        token: Token[Optional[EngineRunState]] = _CURRENT_ENGINE_RUN_STATE.set(
+            EngineRunState(current_agent_id=agent_id)
+        )
+        try:
+            yield
+        finally:
+            _CURRENT_ENGINE_RUN_STATE.reset(token)
 
     # ------------------------------------------------------------------
     # Agent registry API
@@ -300,9 +470,23 @@ class Engine:
         if self.current_agent_id == agent_id:
             self.current_agent_id = self.default_agent_id
 
-    def get_conversation_manager(self, agent_id: Optional[str] = None) -> Optional[ConversationManager]:
-        agent = self.get_agent(agent_id or self.current_agent_id)
-        return agent.conversation_manager if agent else None
+    def get_conversation_manager(self, agent_id: Optional[str] = None) -> Optional[Any]:
+        resolved_agent_id = agent_id or self.current_agent_id
+        agent = self.get_agent(resolved_agent_id)
+        if not agent:
+            return None
+        if resolved_agent_id:
+            try:
+                return _ScopedConversationManager(
+                    agent.conversation_manager,
+                    resolved_agent_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to build scoped conversation manager for agent '%s'",
+                    resolved_agent_id,
+                )
+        return agent.conversation_manager
 
     # ------------------------------------------------------------------
     # MessageBus integration
@@ -310,7 +494,9 @@ class Engine:
 
     def setup_message_bus(
         self,
-        ui_event_callback: Optional[Callable[[str, Dict[str, Any]], Awaitable[None]]] = None,
+        ui_event_callback: Optional[
+            Callable[[str, Dict[str, Any]], Awaitable[None]]
+        ] = None,
     ) -> None:
         """Register MessageBus handlers for inter-agent communication.
 
@@ -485,9 +671,7 @@ class Engine:
             logger.error(f"human_reply failed: {e}")
             return False
 
-    def _resolve_components(
-        self, agent_id: Optional[str] = None
-    ):
+    def _resolve_components(self, agent_id: Optional[str] = None):
         """Return (conversation_manager, api_client, tool_manager, action_executor)
         for the target agent, falling back to Engine shared instances.
         """
@@ -495,12 +679,14 @@ class Engine:
         if agent is None:
             # Fallback to defaults for safety
             cm = self.conversation_manager
-            # If the CM supports multi-agents, set the active one when provided
-            if agent_id and hasattr(cm, "set_current_agent"):
+            if agent_id:
                 try:
-                    cm.set_current_agent(agent_id)  # type: ignore[attr-defined]
+                    cm = _ScopedConversationManager(cm, agent_id)
                 except Exception:
-                    logger.exception(f"Failed to set current agent '{agent_id}' on conversation manager")
+                    logger.exception(
+                        "Failed to build scoped conversation manager for agent '%s'",
+                        agent_id,
+                    )
             return (
                 cm,
                 self.api_client,
@@ -508,18 +694,32 @@ class Engine:
                 self.action_executor,
             )
         cm = agent.conversation_manager
-        # If the CM supports multi-agents, set the active one explicitly
-        if agent_id and hasattr(cm, "set_current_agent"):
+        if agent_id:
             try:
-                cm.set_current_agent(agent_id)  # type: ignore[attr-defined]
+                cm = _ScopedConversationManager(cm, agent_id)
             except Exception:
-                logger.exception(f"Failed to set current agent '{agent_id}' on agent's conversation manager")
+                logger.exception(
+                    "Failed to build scoped conversation manager for agent '%s'",
+                    agent_id,
+                )
         return (
             cm,
             agent.api_client or self.api_client,
             agent.tool_manager or self.tool_manager,
             agent.action_executor or self.action_executor,
         )
+
+    def _extract_usage_from_api_client(self, api_client: Any) -> Dict[str, Any]:
+        """Read normalized usage metadata from the active API client handler."""
+        handler = getattr(api_client, "client_handler", None)
+        getter = getattr(handler, "get_last_usage", None)
+        if not callable(getter):
+            return {}
+        try:
+            usage = getter()
+        except Exception:
+            return {}
+        return usage if isinstance(usage, dict) else {}
 
     # ------------------------------------------------------------------
     # Iteration Loop Helpers
@@ -529,7 +729,7 @@ class Engine:
         self,
         last_response: str,
         iteration_results: List[Dict[str, Any]],
-        mode: str = "response"
+        mode: str = "response",
     ) -> Tuple[bool, Optional[str]]:
         """Check WALLET_GUARD conditions that should terminate the loop.
 
@@ -547,28 +747,39 @@ class Engine:
         """
         # Check for no-action completion (models that don't use CodeAct format)
         if not iteration_results and last_response:
-            has_action_tags = bool(re.search(r'<\w+>.*?</\w+>', last_response, re.DOTALL))
+            has_action_tags = bool(
+                re.search(r"<\w+>.*?</\w+>", last_response, re.DOTALL)
+            )
             if not has_action_tags:
-                logger.debug(f"[WALLET_GUARD] No actions in {mode} response, treating as complete (model may not support CodeAct)")
+                logger.debug(
+                    f"[WALLET_GUARD] No actions in {mode} response, treating as complete (model may not support CodeAct)"
+                )
                 return True, "implicit_completion" if mode == "task" else None
 
         # Check for confused model echoing tool results
         if last_response and "[Tool Result]" in last_response:
-            logger.warning(f"[WALLET_GUARD] Breaking {mode}: model is echoing tool results as text")
+            logger.warning(
+                f"[WALLET_GUARD] Breaking {mode}: model is echoing tool results as text"
+            )
             return True, "implicit_completion" if mode == "task" else None
 
         # Check for repeated/looping responses
-        if self._loop_state.check_repeated(last_response):
-            logger.warning(f"[WALLET_GUARD] Breaking {mode}: response repeated {self._loop_state.repeat_count} times")
+        loop_state = self._get_loop_state()
+        if loop_state.check_repeated(last_response):
+            logger.warning(
+                f"[WALLET_GUARD] Breaking {mode}: response repeated {loop_state.repeat_count} times"
+            )
             return True, "implicit_completion" if mode == "task" else None
 
         # Check for empty/trivial responses
         stripped_response = (last_response or "").strip()
-        is_empty_or_trivial, should_break = self._loop_state.check_trivial(last_response)
+        is_empty_or_trivial, should_break = loop_state.check_trivial(last_response)
 
         # DIAGNOSTIC: Log trivial responses
         if is_empty_or_trivial or len(last_response or "") < 20:
-            last_action = iteration_results[-1].get("action") if iteration_results else "none"
+            last_action = (
+                iteration_results[-1].get("action") if iteration_results else "none"
+            )
             logger.warning(
                 f"[WALLET_GUARD] Trivial response in {mode}: "
                 f"raw={repr(last_response)}, "
@@ -578,10 +789,14 @@ class Engine:
             )
 
         if is_empty_or_trivial:
-            logger.debug(f"Empty/trivial response #{self._loop_state.empty_response_count} ({mode}): '{stripped_response[:20] if stripped_response else '(empty)'}'")
+            logger.debug(
+                f"Empty/trivial response #{loop_state.empty_response_count} ({mode}): '{stripped_response[:20] if stripped_response else '(empty)'}'"
+            )
 
         if should_break:
-            logger.warning(f"[WALLET_GUARD] Breaking {mode}: {self._loop_state.empty_response_count} consecutive trivial responses")
+            logger.warning(
+                f"[WALLET_GUARD] Breaking {mode}: {loop_state.empty_response_count} consecutive trivial responses"
+            )
             return True, "implicit_completion" if mode == "task" else None
 
         return False, None
@@ -607,23 +822,30 @@ class Engine:
         """
         last_response = ""
         all_action_results = []
+        latest_usage: Dict[str, Any] = {}
         completion_status = config.default_completion_status
 
         # Reset loop state for this run
-        self._loop_state.reset()
+        self._get_loop_state().reset()
 
         # Publish task start event if enabled
         if config.enable_events and config.task_metadata:
-            await self._publish_task_event("STARTED", config.task_metadata, {
-                "task_prompt": config.task_metadata.get("prompt", ""),
-                "max_iterations": max_iterations,
-                "context": config.task_metadata.get("context"),
-            })
+            await self._publish_task_event(
+                "STARTED",
+                config.task_metadata,
+                {
+                    "task_prompt": config.task_metadata.get("prompt", ""),
+                    "max_iterations": max_iterations,
+                    "context": config.task_metadata.get("context"),
+                },
+            )
 
         try:
             while self.current_iteration < max_iterations:
                 self.current_iteration += 1
-                logger.debug(f"Engine iteration {self.current_iteration} ({config.mode})")
+                logger.debug(
+                    f"Engine iteration {self.current_iteration} ({config.mode})"
+                )
 
                 # Check for external stop conditions
                 if await self._check_stop():
@@ -640,6 +862,9 @@ class Engine:
 
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
+                usage_data = response_data.get("usage")
+                if isinstance(usage_data, dict) and usage_data:
+                    latest_usage = usage_data
 
                 logger.debug(
                     f"[LOOP DEBUG] {config.mode} iter {self.current_iteration}: "
@@ -647,8 +872,18 @@ class Engine:
                 )
 
                 # Finalize streaming message after each iteration (for UI panel boundaries)
-                if config.manage_streaming_state and hasattr(cm, 'core') and cm.core:
-                    cm.core.finalize_streaming_message()
+                if config.manage_streaming_state and hasattr(cm, "core") and cm.core:
+                    session = (
+                        cm.get_current_session()
+                        if hasattr(cm, "get_current_session")
+                        else None
+                    )
+                    session_id = getattr(session, "id", None)
+                    cm.core.finalize_streaming_message(
+                        agent_id=self.current_agent_id,
+                        session_id=session_id,
+                        conversation_id=session_id,
+                    )
                     await asyncio.sleep(UI_ASYNC_SLEEP_SECONDS)
 
                 # Save conversation state
@@ -665,19 +900,33 @@ class Engine:
                                 action_name = result_info.get("action", "UnknownAction")
                                 result_str = result_info.get("result", "")
                                 status = result_info.get("status", "completed")
-                                callback_type = "tool_result" if status == "completed" else "tool_error"
-                                await config.message_callback(result_str, callback_type, action_name=action_name)
+                                callback_type = (
+                                    "tool_result"
+                                    if status == "completed"
+                                    else "tool_error"
+                                )
+                                await config.message_callback(
+                                    result_str, callback_type, action_name=action_name
+                                )
                             else:
-                                await config.message_callback(str(result_info), "system_output")
+                                await config.message_callback(
+                                    str(result_info), "system_output"
+                                )
 
                 # Publish progress event if enabled
                 if config.enable_events and config.task_metadata:
-                    await self._publish_task_event("PROGRESSED", config.task_metadata, {
-                        "iteration": self.current_iteration,
-                        "max_iterations": max_iterations,
-                        "response": last_response,
-                        "progress": min(100, int(100 * self.current_iteration / max_iterations)),
-                    })
+                    await self._publish_task_event(
+                        "PROGRESSED",
+                        config.task_metadata,
+                        {
+                            "iteration": self.current_iteration,
+                            "max_iterations": max_iterations,
+                            "response": last_response,
+                            "progress": min(
+                                100, int(100 * self.current_iteration / max_iterations)
+                            ),
+                        },
+                    )
 
                 # Check for explicit termination signal
                 termination_detected, finish_status = self._check_termination_signal(
@@ -686,22 +935,34 @@ class Engine:
                 if termination_detected:
                     if config.mode == "task":
                         completion_status = "pending_review"
-                        logger.info(f"Task completion signal detected via '{config.termination_action}' (status: {finish_status})")
+                        logger.info(
+                            f"Task completion signal detected via '{config.termination_action}' (status: {finish_status})"
+                        )
 
                         if config.enable_events and config.task_metadata:
-                            await self._publish_task_event("COMPLETED", config.task_metadata, {
-                                "response": last_response,
-                                "iteration": self.current_iteration,
-                                "max_iterations": max_iterations,
-                                "finish_status": finish_status,
-                                "requires_review": True,
-                            })
+                            await self._publish_task_event(
+                                "COMPLETED",
+                                config.task_metadata,
+                                {
+                                    "response": last_response,
+                                    "iteration": self.current_iteration,
+                                    "max_iterations": max_iterations,
+                                    "finish_status": finish_status,
+                                    "requires_review": True,
+                                },
+                            )
                     else:
-                        logger.debug(f"Response completion: {config.termination_action} tool called")
+                        logger.debug(
+                            f"Response completion: {config.termination_action} tool called"
+                        )
                     break
 
                 # Debug: Check if termination signal mentioned but not parsed correctly
-                if last_response and config.termination_action in last_response.lower() and not termination_detected:
+                if (
+                    last_response
+                    and config.termination_action in last_response.lower()
+                    and not termination_detected
+                ):
                     logger.warning(
                         f"[LOOP DEBUG] Response contains '{config.termination_action}' text but wasn't parsed as action. "
                         f"Preview: {last_response[:100]}..."
@@ -717,7 +978,11 @@ class Engine:
 
             # If loop exhausted iterations
             if self.current_iteration >= max_iterations:
-                completion_status = "max_iterations" if config.mode == "response" else "iterations_exceeded"
+                completion_status = (
+                    "max_iterations"
+                    if config.mode == "response"
+                    else "iterations_exceeded"
+                )
 
         except LLMEmptyResponseError as e:
             logger.warning(f"LLM returned empty response during {config.mode}: {e}")
@@ -732,18 +997,23 @@ class Engine:
                 await config.message_callback(f"Error: {str(e)}", "error")
 
             if config.enable_events and config.task_metadata:
-                await self._publish_task_event("FAILED", config.task_metadata, {
-                    "error": str(e),
-                    "iteration": self.current_iteration,
-                    "max_iterations": max_iterations,
-                })
+                await self._publish_task_event(
+                    "FAILED",
+                    config.task_metadata,
+                    {
+                        "error": str(e),
+                        "iteration": self.current_iteration,
+                        "max_iterations": max_iterations,
+                    },
+                )
 
         return {
             "assistant_response": last_response,
             "iterations": self.current_iteration,
             "action_results": all_action_results,
+            "usage": latest_usage,
             "status": completion_status,
-            "execution_time": (datetime.utcnow() - self.start_time).total_seconds()
+            "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
         }
 
     def _check_termination_signal(
@@ -764,10 +1034,13 @@ class Engine:
             if isinstance(result, dict):
                 action_name = result.get("action", "")
                 # Also check for legacy "task_completed" action
-                if action_name == termination_action or (termination_action == "finish_task" and action_name == "task_completed"):
+                if action_name == termination_action or (
+                    termination_action == "finish_task"
+                    and action_name == "task_completed"
+                ):
                     # Extract status from machine-readable marker [FINISH_STATUS:xxx]
                     result_output = result.get("result", "")
-                    status_match = re.search(r'\[FINISH_STATUS:(\w+)\]', result_output)
+                    status_match = re.search(r"\[FINISH_STATUS:(\w+)\]", result_output)
                     finish_status = status_match.group(1) if status_match else "done"
                     return True, finish_status
         return False, ""
@@ -787,20 +1060,26 @@ class Engine:
         """
         try:
             from penguin.utils.events import EventBus, TaskEvent
+
             event_bus = EventBus.get_instance()
             event_value = getattr(TaskEvent, event_type, None)
             if event_value:
-                await event_bus.publish(event_value.value, {
-                    "task_id": task_metadata.get("id"),
-                    "task_name": task_metadata.get("name"),
-                    "context": task_metadata.get("context"),
-                    "message_type": "status",
-                    **extra_data,
-                })
+                await event_bus.publish(
+                    event_value.value,
+                    {
+                        "task_id": task_metadata.get("id"),
+                        "task_name": task_metadata.get("name"),
+                        "context": task_metadata.get("context"),
+                        "message_type": "status",
+                        **extra_data,
+                    },
+                )
         except (ImportError, AttributeError):
             logger.debug(f"EventBus not available for {event_type} event")
 
-    async def _save_conversation(self, cm: ConversationManager, async_save: bool = False) -> None:
+    async def _save_conversation(
+        self, cm: ConversationManager, async_save: bool = False
+    ) -> None:
         """Save conversation state, optionally using async executor.
 
         Args:
@@ -832,22 +1111,33 @@ class Engine:
         agent_role: Optional[str] = None,
     ):
         """Run a single reasoning cycle for the requested agent/role."""
-        selected, lite_output = await self._resolve_agent(agent_id=agent_id, agent_role=agent_role, prompt=prompt)
+        selected, lite_output = await self._resolve_agent(
+            agent_id=agent_id, agent_role=agent_role, prompt=prompt
+        )
         if lite_output is not None:
             return lite_output
         if selected is None:
-            return {"assistant_response": "", "action_results": [], "status": "no_agent"}
+            return {
+                "assistant_response": "",
+                "action_results": [],
+                "status": "no_agent",
+            }
 
-        self.current_agent_id = selected
-        cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
-        cm.conversation.prepare_conversation(prompt, image_paths=image_paths)
-        response_data = await self._llm_step(
-            tools_enabled=tools_enabled,
-            streaming=streaming,
-            stream_callback=stream_callback,
-            agent_id=self.current_agent_id,
+        token: Token[Optional[EngineRunState]] = _CURRENT_ENGINE_RUN_STATE.set(
+            EngineRunState(current_agent_id=selected)
         )
-        return response_data
+        try:
+            cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
+            cm.conversation.prepare_conversation(prompt, image_paths=image_paths)
+            response_data = await self._llm_step(
+                tools_enabled=tools_enabled,
+                streaming=streaming,
+                stream_callback=stream_callback,
+                agent_id=self.current_agent_id,
+            )
+            return response_data
+        finally:
+            _CURRENT_ENGINE_RUN_STATE.reset(token)
 
     async def stream(self, prompt: str, *, agent_id: Optional[str] = None):
         """Yield chunks as they arrive (if provider supports streaming)."""
@@ -885,12 +1175,15 @@ class Engine:
         Returns:
             Dictionary with final response and execution metadata
         """
-        max_iters = max_iterations if max_iterations is not None else self.settings.max_iterations_default
-        self.current_iteration = 0
-        self.start_time = datetime.utcnow()
-
+        max_iters = (
+            max_iterations
+            if max_iterations is not None
+            else self.settings.max_iterations_default
+        )
         # Prepare conversation with initial prompt for the selected agent
-        selected, lite_output = await self._resolve_agent(agent_id=agent_id, agent_role=agent_role, prompt=prompt)
+        selected, lite_output = await self._resolve_agent(
+            agent_id=agent_id, agent_role=agent_role, prompt=prompt
+        )
         if lite_output is not None:
             lite_output.setdefault("iterations", 0)
             lite_output.setdefault("execution_time", 0.0)
@@ -904,30 +1197,41 @@ class Engine:
                 "execution_time": 0.0,
             }
 
-        self.current_agent_id = selected
-        cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
-        cm.conversation.prepare_conversation(prompt, image_paths=image_paths)
-        
-        last_response = ""
-        all_action_results = []
-
-        # Reset loop state for this run
-        self._loop_state.reset()
-
+        token: Token[Optional[EngineRunState]] = _CURRENT_ENGINE_RUN_STATE.set(
+            EngineRunState(current_agent_id=selected)
+        )
+        all_action_results: List[Dict[str, Any]] = []
         try:
+            self.current_iteration = 0
+            self.start_time = datetime.utcnow()
+            cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
+            cm.conversation.prepare_conversation(prompt, image_paths=image_paths)
+
+            last_response = ""
+            latest_usage: Dict[str, Any] = {}
+
+            # Reset loop state for this run
+            self._get_loop_state().reset()
+
             while self.current_iteration < max_iters:
                 self.current_iteration += 1
-                logger.debug("Engine iteration %s (run_response)", self.current_iteration)
-                
+                logger.debug(
+                    "Engine iteration %s (run_response)", self.current_iteration
+                )
+
                 # Check for external stop conditions
                 if await self._check_stop():
                     break
-                
+
                 # NOTE: Pre-iteration finalize removed - post-iteration finalize (after _llm_step) handles cleanup
                 # The _llm_step finalize gets content for parsing, post-iteration finalize ensures UI boundaries
 
                 # Determine effective streaming flag
-                streaming_flag = streaming if streaming is not None else self.settings.streaming_default
+                streaming_flag = (
+                    streaming
+                    if streaming is not None
+                    else self.settings.streaming_default
+                )
 
                 # Execute LLM step with streaming support
                 response_data = await self._llm_step(
@@ -936,24 +1240,39 @@ class Engine:
                     stream_callback=stream_callback,
                     agent_id=self.current_agent_id,
                 )
-                
+
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
+                usage_data = response_data.get("usage")
+                if isinstance(usage_data, dict) and usage_data:
+                    latest_usage = usage_data
 
                 # Debug: Log response length and action count to help diagnose loops
-                logger.debug(f"[LOOP DEBUG] run_response iter {self.current_iteration}: response_len={len(last_response or '')}, actions={len(iteration_results)}")
+                logger.debug(
+                    f"[LOOP DEBUG] run_response iter {self.current_iteration}: response_len={len(last_response or '')}, actions={len(iteration_results)}"
+                )
 
                 # CRITICAL: Finalize streaming message after each iteration to force separate UI panels
-                if hasattr(cm, 'core') and cm.core:
+                if hasattr(cm, "core") and cm.core:
                     # Force finalize any active streaming to break message boundaries
-                    cm.core.finalize_streaming_message()
-                    
+                    session = (
+                        cm.get_current_session()
+                        if hasattr(cm, "get_current_session")
+                        else None
+                    )
+                    session_id = getattr(session, "id", None)
+                    cm.core.finalize_streaming_message(
+                        agent_id=self.current_agent_id,
+                        session_id=session_id,
+                        conversation_id=session_id,
+                    )
+
                     # Small delay to allow UI to process the message boundary
                     await asyncio.sleep(UI_ASYNC_SLEEP_SECONDS)
-                
+
                 # Save conversation state after each iteration (async to avoid blocking event loop)
                 await self._save_conversation(cm, async_save=True)
-                
+
                 # Collect all action results
                 if iteration_results:
                     all_action_results.extend(iteration_results)
@@ -969,35 +1288,48 @@ class Engine:
                     break
 
                 # Debug: Check if LLM mentioned finish_response but didn't format it correctly
-                if last_response and "finish_response" in last_response.lower() and not finish_response_called:
-                    logger.warning(f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}...")
+                if (
+                    last_response
+                    and "finish_response" in last_response.lower()
+                    and not finish_response_called
+                ):
+                    logger.warning(
+                        f"[LOOP DEBUG] Response contains 'finish_response' text but wasn't parsed as action. Response preview: {last_response[:100]}..."
+                    )
 
                 # WALLET_GUARD: Consolidated termination checks
-                should_break, _ = self._check_wallet_guard_termination(last_response, iteration_results, mode="response")
+                should_break, _ = self._check_wallet_guard_termination(
+                    last_response, iteration_results, mode="response"
+                )
                 if should_break:
                     break
 
             # Determine final status
-            final_status = "completed" if self.current_iteration < max_iters else "max_iterations"
+            final_status = (
+                "completed" if self.current_iteration < max_iters else "max_iterations"
+            )
 
             return {
                 "assistant_response": last_response,
                 "iterations": self.current_iteration,
                 "action_results": all_action_results,
+                "usage": latest_usage,
                 "status": final_status,
-                "execution_time": (datetime.utcnow() - self.start_time).total_seconds()
+                "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
             }
-            
+
         except Exception as e:
             logger.error(f"Error in run_response: {str(e)}")
             return {
                 "assistant_response": f"Error occurred: {str(e)}",
                 "iterations": self.current_iteration,
                 "action_results": all_action_results,
+                "usage": {},
                 "status": "error",
-                "execution_time": (datetime.utcnow() - self.start_time).total_seconds()
+                "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
             }
-
+        finally:
+            _CURRENT_ENGINE_RUN_STATE.reset(token)
 
     async def run_task(
         self,
@@ -1037,8 +1369,6 @@ class Engine:
             - action_results: Results of any actions executed
         """
         max_iters = max_iterations or self.settings.max_iterations_default
-        self.current_iteration = 0
-        self.start_time = datetime.utcnow()
         # Select agent and prepare its conversation
         selected, lite_output = await self._resolve_agent(
             agent_id=agent_id,
@@ -1052,14 +1382,19 @@ class Engine:
         if selected is None:
             selected = self.default_agent_id
 
-        self.current_agent_id = selected
+        token: Token[Optional[EngineRunState]] = _CURRENT_ENGINE_RUN_STATE.set(
+            EngineRunState(current_agent_id=selected)
+        )
+        self.current_iteration = 0
+        self.start_time = datetime.utcnow()
+
         cm, _api, _tm, _ae = self._resolve_components(self.current_agent_id)
         cm.conversation.prepare_conversation(task_prompt, image_paths=image_paths)
 
         telemetry = getattr(self, "telemetry", None)
         if telemetry is not None:
             await telemetry.record_task(self.current_agent_id, task_name)
-        
+
         # Prepare task metadata
         task_metadata = {
             "id": task_id or f"task_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}",
@@ -1068,39 +1403,46 @@ class Engine:
             "max_iterations": max_iters,
             "start_time": self.start_time.isoformat(),
         }
-        
+
         # Get standard and custom completion phrases
         standard_phrase = TASK_COMPLETION_PHRASE
         all_completion_phrases = [standard_phrase]
         if completion_phrases:
             all_completion_phrases.extend(completion_phrases)
-        
+
         # Store action results from all iterations
         all_action_results = []
 
         # Reset loop state for this run
-        self._loop_state.reset()
+        self._get_loop_state().reset()
 
         # Publish task start event if EventBus is available
         if enable_events:
             try:
                 from penguin.utils.events import EventBus, TaskEvent
+
                 event_bus = EventBus.get_instance()
-                await event_bus.publish(TaskEvent.STARTED.value, {
-                    "task_id": task_metadata["id"],
-                    "task_name": task_metadata["name"],
-                    "task_prompt": task_prompt,
-                    "max_iterations": max_iters,
-                    "context": task_context,
-                    "message_type": "status",
-                })
+                await event_bus.publish(
+                    TaskEvent.STARTED.value,
+                    {
+                        "task_id": task_metadata["id"],
+                        "task_name": task_metadata["name"],
+                        "task_prompt": task_prompt,
+                        "max_iterations": max_iters,
+                        "context": task_context,
+                        "message_type": "status",
+                    },
+                )
             except (ImportError, AttributeError):
                 # EventBus not available yet, continue with normal operation
-                logger.warning("EventBus not available, continuing without event publishing")
+                logger.warning(
+                    "EventBus not available, continuing without event publishing"
+                )
 
         last_response = ""
+        latest_usage: Dict[str, Any] = {}
         completion_status = "iterations_exceeded"  # Default status
-        
+
         try:
             # Main execution loop
             while self.current_iteration < max_iters:
@@ -1119,44 +1461,65 @@ class Engine:
                     stream_callback=message_callback if message_callback else None,
                     agent_id=self.current_agent_id,
                 )
-                
+
                 last_response = response_data.get("assistant_response", "")
                 iteration_results = response_data.get("action_results", [])
-                
+                usage_data = response_data.get("usage")
+                if isinstance(usage_data, dict) and usage_data:
+                    latest_usage = usage_data
+
                 # Collect action results
                 if iteration_results:
                     all_action_results.extend(iteration_results)
-                    
+
                     # Display action results via callback
                     if message_callback:
                         for tool_result_info in iteration_results:
                             if isinstance(tool_result_info, dict):
-                                action_name = tool_result_info.get("action", "UnknownAction")
+                                action_name = tool_result_info.get(
+                                    "action", "UnknownAction"
+                                )
                                 result_str = tool_result_info.get("result", "")
                                 status = tool_result_info.get("status", "completed")
 
-                                callback_message_type = "tool_result" if status == "completed" else "tool_error"
-                                await message_callback(result_str, callback_message_type, action_name=action_name)
+                                callback_message_type = (
+                                    "tool_result"
+                                    if status == "completed"
+                                    else "tool_error"
+                                )
+                                await message_callback(
+                                    result_str,
+                                    callback_message_type,
+                                    action_name=action_name,
+                                )
                             else:
-                                await message_callback(str(tool_result_info), "system_output")
+                                await message_callback(
+                                    str(tool_result_info), "system_output"
+                                )
 
                 # Publish progress event
                 if enable_events:
                     try:
                         from penguin.utils.events import EventBus, TaskEvent
+
                         event_bus = EventBus.get_instance()
-                        await event_bus.publish(TaskEvent.PROGRESSED.value, {
-                            "task_id": task_metadata["id"],
-                            "task_name": task_metadata["name"],
-                            "iteration": self.current_iteration,
-                            "max_iterations": max_iters,
-                            "response": last_response,
-                            "progress": min(100, int(100 * self.current_iteration / max_iters)),
-                            "message_type": "status",
-                        })
+                        await event_bus.publish(
+                            TaskEvent.PROGRESSED.value,
+                            {
+                                "task_id": task_metadata["id"],
+                                "task_name": task_metadata["name"],
+                                "iteration": self.current_iteration,
+                                "max_iterations": max_iters,
+                                "response": last_response,
+                                "progress": min(
+                                    100, int(100 * self.current_iteration / max_iters)
+                                ),
+                                "message_type": "status",
+                            },
+                        )
                     except (ImportError, AttributeError):
                         logger.debug("EventBus not available for progress event")
-                
+
                 # CRITICAL FIX: Persist conversation after each iteration using async save
                 cm, _, _, _ = self._resolve_components(self.current_agent_id)
                 await self._save_conversation(cm, async_save=True)
@@ -1172,7 +1535,9 @@ class Engine:
                             # Extract status from machine-readable marker [FINISH_STATUS:xxx]
                             # This avoids false positives from user summaries containing words like "blocked"
                             result_output = tool_result.get("result", "")
-                            status_match = re.search(r'\[FINISH_STATUS:(\w+)\]', result_output)
+                            status_match = re.search(
+                                r"\[FINISH_STATUS:(\w+)\]", result_output
+                            )
                             if status_match:
                                 finish_status = status_match.group(1)
                             break
@@ -1181,62 +1546,74 @@ class Engine:
                     # Task goes to PENDING_REVIEW, not COMPLETED
                     # Human must approve to mark COMPLETED
                     completion_status = "pending_review"
-                    logger.info(f"Task completion signal detected via 'finish_task' tool (status: {finish_status}). Marking for human review.")
-                    
+                    logger.info(
+                        f"Task completion signal detected via 'finish_task' tool (status: {finish_status}). Marking for human review."
+                    )
+
                     # Publish completion event (task is pending review, not fully completed)
                     if enable_events:
                         try:
                             from penguin.utils.events import EventBus, TaskEvent
+
                             event_bus = EventBus.get_instance()
-                            await event_bus.publish(TaskEvent.COMPLETED.value, {
-                                "task_id": task_metadata["id"],
-                                "task_name": task_metadata["name"],
-                                "response": last_response,
-                                "iteration": self.current_iteration,
-                                "max_iterations": max_iters,
-                                "context": task_context,
-                                "finish_status": finish_status,
-                                "requires_review": True,
-                                "message_type": "status",
-                            })
+                            await event_bus.publish(
+                                TaskEvent.COMPLETED.value,
+                                {
+                                    "task_id": task_metadata["id"],
+                                    "task_name": task_metadata["name"],
+                                    "response": last_response,
+                                    "iteration": self.current_iteration,
+                                    "max_iterations": max_iters,
+                                    "context": task_context,
+                                    "finish_status": finish_status,
+                                    "requires_review": True,
+                                    "message_type": "status",
+                                },
+                            )
                         except (ImportError, AttributeError):
                             logger.debug("EventBus not available for completion event")
                     break
 
                 # WALLET_GUARD: Consolidated termination checks
-                should_break, guard_status = self._check_wallet_guard_termination(last_response, iteration_results, mode="task")
+                should_break, guard_status = self._check_wallet_guard_termination(
+                    last_response, iteration_results, mode="task"
+                )
                 if should_break:
                     completion_status = guard_status or "implicit_completion"
                     break
-        
+
         except LLMEmptyResponseError as e:
             logger.warning(f"LLM returned empty response during task: {e}")
             completion_status = "llm_empty_response_error"
             if message_callback:
                 await message_callback(f"LLM Empty Response: {str(e)}", "error")
-            
+
         except Exception as e:
             # Handle any execution errors
             logger.error(f"Error executing task: {str(e)}")
             completion_status = "error"
-            
+
             # Call message callback if provided
             if message_callback:
                 await message_callback(f"Error executing task: {str(e)}", "error")
-            
+
             # Publish error event
             if enable_events:
                 try:
                     from penguin.utils.events import EventBus, TaskEvent
+
                     event_bus = EventBus.get_instance()
-                    await event_bus.publish(TaskEvent.FAILED.value, {
-                        "task_id": task_metadata["id"],
-                        "task_name": task_metadata["name"],
-                        "error": str(e),
-                        "iteration": self.current_iteration,
-                        "max_iterations": max_iters,
-                        "message_type": "status",
-                    })
+                    await event_bus.publish(
+                        TaskEvent.FAILED.value,
+                        {
+                            "task_id": task_metadata["id"],
+                            "task_name": task_metadata["name"],
+                            "error": str(e),
+                            "iteration": self.current_iteration,
+                            "max_iterations": max_iters,
+                            "message_type": "status",
+                        },
+                    )
                 except (ImportError, AttributeError):
                     logger.debug("EventBus not available for error event")
 
@@ -1246,17 +1623,19 @@ class Engine:
             "iterations": self.current_iteration,
             "status": completion_status,
             "action_results": all_action_results,
+            "usage": latest_usage,
             "task": task_metadata,
-            "execution_time": (datetime.utcnow() - self.start_time).total_seconds()
+            "execution_time": (datetime.utcnow() - self.start_time).total_seconds(),
         }
-        
+
         # Call completion callback if provided
         if on_completion:
             try:
                 await on_completion(result)
             except Exception as e:
                 logger.error(f"Error in completion callback: {str(e)}")
-        
+
+        _CURRENT_ENGINE_RUN_STATE.reset(token)
         return result
 
     async def _execute_lite_agent(
@@ -1302,22 +1681,45 @@ class Engine:
     # Child‑engine spawning (stub – process mode)
     # ------------------------------------------------------------------
 
-    async def spawn_child(self, *, purpose: str = "child", inherit_tools: bool = False, shared_conversation: bool = False) -> "Engine":
+    async def spawn_child(
+        self,
+        *,
+        purpose: str = "child",
+        inherit_tools: bool = False,
+        shared_conversation: bool = False,
+    ) -> "Engine":
         """Spawn a sub‑engine in a separate process.  Minimal stub for now."""
         logger.warning("spawn_child is a stub – running in‑process for now")
         base_cm = self.get_conversation_manager() or self.conversation_manager
-        cm = base_cm if shared_conversation else ConversationManager(
-            model_config=base_cm.model_config,
-            api_client=self.api_client,
-            workspace_path=base_cm.workspace_path,
-            system_prompt=base_cm.conversation.system_prompt,
+        cm = (
+            base_cm
+            if shared_conversation
+            else ConversationManager(
+                model_config=base_cm.model_config,
+                api_client=self.api_client,
+                workspace_path=base_cm.workspace_path,
+                system_prompt=base_cm.conversation.system_prompt,
+            )
         )
-        tm = self.tool_manager if inherit_tools else ToolManager(
-            config=self.tool_manager.config if hasattr(self.tool_manager, 'config') else {},
-            log_error_func=self.tool_manager.error_handler
+        tm = (
+            self.tool_manager
+            if inherit_tools
+            else ToolManager(
+                config=self.tool_manager.config
+                if hasattr(self.tool_manager, "config")
+                else {},
+                log_error_func=self.tool_manager.error_handler,
+            )
         )
         ae = ActionExecutor(tm, self.action_executor.task_manager, cm.conversation)
-        return Engine(self.settings, cm, self.api_client, tm, ae, stop_conditions=self.stop_conditions)
+        return Engine(
+            self.settings,
+            cm,
+            self.api_client,
+            tm,
+            ae,
+            stop_conditions=self.stop_conditions,
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -1333,7 +1735,11 @@ class Engine:
         try:
             model_cfg = getattr(self, "model_config", None)
             if model_cfg and getattr(model_cfg, "use_responses_api", False):
-                tools_payload = tool_manager.get_responses_tools() if hasattr(tool_manager, "get_responses_tools") else []
+                tools_payload = (
+                    tool_manager.get_responses_tools()
+                    if hasattr(tool_manager, "get_responses_tools")
+                    else []
+                )
                 if tools_payload:
                     extra_kwargs["tools"] = tools_payload
                     extra_kwargs["tool_choice"] = "auto"
@@ -1366,7 +1772,9 @@ class Engine:
         # Message stats
         try:
             diagnostics["message_count"] = len(messages)
-            diagnostics["total_chars"] = sum(len(str(m.get('content', ''))) for m in messages)
+            diagnostics["total_chars"] = sum(
+                len(str(m.get("content", ""))) for m in messages
+            )
             diagnostics["approx_tokens"] = diagnostics["total_chars"] // 4
         except Exception:
             diagnostics["message_stats_error"] = "Failed to compute message stats"
@@ -1377,8 +1785,12 @@ class Engine:
             if model_cfg:
                 diagnostics["model"] = getattr(model_cfg, "model", "unknown")
                 diagnostics["provider"] = getattr(model_cfg, "provider", "unknown")
-                diagnostics["max_context_window_tokens"] = getattr(model_cfg, "max_context_window_tokens", None)
-                diagnostics["max_output_tokens"] = getattr(model_cfg, "max_output_tokens", None)
+                diagnostics["max_context_window_tokens"] = getattr(
+                    model_cfg, "max_context_window_tokens", None
+                )
+                diagnostics["max_output_tokens"] = getattr(
+                    model_cfg, "max_output_tokens", None
+                )
         except Exception:
             diagnostics["model_config_error"] = "Failed to get model config"
 
@@ -1415,7 +1827,9 @@ class Engine:
         try:
             handler = getattr(api_client, "client_handler", None)
             if handler:
-                last_error = getattr(handler, "last_error", None) or getattr(handler, "_last_error", None)
+                last_error = getattr(handler, "last_error", None) or getattr(
+                    handler, "_last_error", None
+                )
                 if last_error:
                     diagnostics["handler_error"] = str(last_error)
         except Exception:
@@ -1452,7 +1866,9 @@ class Engine:
             ),
         }
 
-        diagnostics["user_message"] = user_messages.get(error_type, user_messages["unknown"])
+        diagnostics["user_message"] = user_messages.get(
+            error_type, user_messages["unknown"]
+        )
         diagnostics["summary"] = (
             f"Empty response from {diagnostics.get('model', 'unknown')} "
             f"(type={error_type}, msgs={diagnostics.get('message_count', '?')}, "
@@ -1494,7 +1910,10 @@ class Engine:
 
         # If empty, retry once with stream=False (some providers fail in streaming mode)
         if not assistant_response or not assistant_response.strip():
-            logger.warning("_llm_step got empty response (stream=%s). Retrying once without streaming.", streaming)
+            logger.warning(
+                "_llm_step got empty response (stream=%s). Retrying once without streaming.",
+                streaming,
+            )
             assistant_response = await api_client.get_response(messages, stream=False)
 
         # Still empty? Raise exception to prevent infinite loops
@@ -1530,7 +1949,11 @@ class Engine:
         try:
             handler = getattr(api_client, "client_handler", None)
             getter = getattr(handler, "get_and_clear_last_tool_call", None)
-            tool_info = await getter() if callable(getter) and asyncio.iscoroutinefunction(getter) else (getter() if callable(getter) else None)
+            tool_info = (
+                await getter()
+                if callable(getter) and asyncio.iscoroutinefunction(getter)
+                else (getter() if callable(getter) else None)
+            )
         except Exception:
             logger.exception("Failed to get tool_call info from handler")
             return None
@@ -1542,10 +1965,17 @@ class Engine:
             tool_name = str(tool_info.get("name") or "").strip()
             raw_args = tool_info.get("arguments") or "{}"
             import json as _json
+
             try:
-                tool_args = _json.loads(raw_args) if isinstance(raw_args, str) and raw_args.strip() else {}
+                tool_args = (
+                    _json.loads(raw_args)
+                    if isinstance(raw_args, str) and raw_args.strip()
+                    else {}
+                )
             except Exception:
-                logger.exception(f"Failed to parse tool arguments for '{tool_name}': {raw_args[:100]}")
+                logger.exception(
+                    f"Failed to parse tool arguments for '{tool_name}': {raw_args[:100]}"
+                )
                 tool_args = {}
 
             # Execute via ToolManager
@@ -1555,7 +1985,7 @@ class Engine:
             action_result = {
                 "action": tool_name,
                 "result": str(output if output is not None else ""),
-                "status": "completed"
+                "status": "completed",
             }
 
             # Persist result
@@ -1577,37 +2007,45 @@ class Engine:
             logger.debug(f"Responses tool_call execution failed: {_tool_exec_err}")
             return None
 
-    async def _emit_tool_event(self, cm: ConversationManager, action_result: Dict[str, Any]) -> None:
+    async def _emit_tool_event(
+        self, cm: ConversationManager, action_result: Dict[str, Any]
+    ) -> None:
         """Emit UI event for tool execution result.
 
         Args:
             cm: Conversation manager (to access core for event emission)
             action_result: Dict with 'action', 'result', 'status' keys
         """
-        if not hasattr(cm, 'core') or not cm.core:
+        if not hasattr(cm, "core") or not cm.core:
             return
 
         try:
             # Check config to see if tool results should be hidden
             from penguin.config import config
+
             hide_tool_results = False
             if isinstance(config, dict):
-                cli_config = config.get('cli', {})
-                display_config = cli_config.get('display', {})
-                hide_tool_results = display_config.get('hide_tool_results', False)
+                cli_config = config.get("cli", {})
+                display_config = cli_config.get("display", {})
+                hide_tool_results = display_config.get("hide_tool_results", False)
 
             if hide_tool_results:
                 return
 
             # Emit tool event for chronological timeline display
-            await cm.core.emit_ui_event("tool", {
-                "id": f"{action_result['action']}-{int(time.time() * 1000)}",
-                "phase": "end",
-                "action": action_result['action'],
-                "ts": int(time.time() * 1000),
-                "status": action_result.get('status', 'completed'),
-                "result": str(action_result['result'])[:200]  # Truncate for display
-            })
+            await cm.core.emit_ui_event(
+                "tool",
+                {
+                    "id": f"{action_result['action']}-{int(time.time() * 1000)}",
+                    "phase": "end",
+                    "action": action_result["action"],
+                    "ts": int(time.time() * 1000),
+                    "status": action_result.get("status", "completed"),
+                    "result": str(action_result["result"])[
+                        :200
+                    ],  # Truncate for display
+                },
+            )
             await asyncio.sleep(0.01)  # Yield control to allow UI to render
 
         except Exception as e:
@@ -1618,6 +2056,7 @@ class Engine:
         cm: ConversationManager,
         assistant_response: str,
         streaming: Optional[bool],
+        agent_id: Optional[str] = None,
     ) -> str:
         """Finalize streaming response and persist to conversation.
 
@@ -1632,21 +2071,29 @@ class Engine:
         if not streaming:
             # Non-streaming: check if message already added, add if not
             try:
-                session_messages = cm.conversation.session.messages if hasattr(cm.conversation, 'session') else []
+                session_messages = (
+                    cm.conversation.session.messages
+                    if hasattr(cm.conversation, "session")
+                    else []
+                )
                 last_msg = session_messages[-1] if session_messages else None
                 message_already_added = (
-                    last_msg and
-                    last_msg.role == "assistant" and
-                    last_msg.content == assistant_response
+                    last_msg
+                    and last_msg.role == "assistant"
+                    and last_msg.content == assistant_response
                 )
             except Exception:
-                logger.exception("Failed to check if message already added to conversation")
+                logger.exception(
+                    "Failed to check if message already added to conversation"
+                )
                 message_already_added = False
 
             if not message_already_added:
                 # add_assistant_message automatically strips action tags
                 cm.conversation.add_assistant_message(assistant_response)
-                logger.debug(f"Added assistant message to conversation ({len(assistant_response)} chars)")
+                logger.debug(
+                    f"Added assistant message to conversation ({len(assistant_response)} chars)"
+                )
 
             return assistant_response
 
@@ -1654,11 +2101,21 @@ class Engine:
         if not hasattr(cm, "core") or not cm.core:
             return assistant_response
 
+        finalized_content = ""
         try:
-            finalized = cm.core.finalize_streaming_message()
+            session = (
+                cm.get_current_session() if hasattr(cm, "get_current_session") else None
+            )
+            session_id = getattr(session, "id", None)
+            finalized = cm.core.finalize_streaming_message(
+                agent_id=agent_id or self.current_agent_id,
+                session_id=session_id,
+                conversation_id=session_id,
+            )
             if finalized and finalized.get("content"):
                 old_len = len(assistant_response) if assistant_response else 0
                 assistant_response = finalized["content"]
+                finalized_content = assistant_response
                 logger.debug(
                     f"[AUTO-CONTINUE FIX] Using finalized content for parsing. "
                     f"Length: {old_len} -> {len(assistant_response)}"
@@ -1671,6 +2128,32 @@ class Engine:
             logger.debug("Finalized streaming message with reasoning")
         except Exception as _fin_err:
             logger.warning("Failed to finalise streaming message: %s", _fin_err)
+
+        if assistant_response and not finalized_content:
+            try:
+                session_messages = (
+                    cm.conversation.session.messages
+                    if hasattr(cm.conversation, "session")
+                    else []
+                )
+                last_msg = session_messages[-1] if session_messages else None
+                message_already_added = (
+                    last_msg
+                    and last_msg.role == "assistant"
+                    and last_msg.content == assistant_response
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to inspect conversation for streaming fallback persistence"
+                )
+                message_already_added = False
+
+            if not message_already_added:
+                cm.conversation.add_assistant_message(assistant_response)
+                logger.debug(
+                    "Persisted non-chunk streaming response as assistant message (%s chars)",
+                    len(assistant_response),
+                )
 
         return assistant_response
 
@@ -1701,17 +2184,21 @@ class Engine:
             return action_results
 
         actions: List[CodeActAction] = parse_action(assistant_response)
-        logger.debug("[AUTO-CONTINUE FIX] Parsed %s actions from response", len(actions))
+        logger.debug(
+            "[AUTO-CONTINUE FIX] Parsed %s actions from response", len(actions)
+        )
 
         # Enforce one action per iteration for incremental execution
-        for act in (actions[:1] if actions else []):
+        for act in actions[:1] if actions else []:
             result = await action_executor.execute_action(act)
 
             # Format result (using standardized field names: action/result)
             action_result = {
-                "action": act.action_type.value if hasattr(act.action_type, 'value') else str(act.action_type),
+                "action": act.action_type.value
+                if hasattr(act.action_type, "value")
+                else str(act.action_type),
                 "result": str(result if result is not None else ""),
-                "status": "completed"
+                "status": "completed",
             }
             action_results.append(action_result)
 
@@ -1719,9 +2206,11 @@ class Engine:
             cm.add_action_result(
                 action_type=action_result["action"],
                 result=action_result["result"],
-                status=action_result["status"]
+                status=action_result["status"],
             )
-            logger.debug(f"Added action result to conversation: {action_result['action']}")
+            logger.debug(
+                f"Added action result to conversation: {action_result['action']}"
+            )
 
             # Emit UI event
             await self._emit_tool_event(cm, action_result)
@@ -1731,6 +2220,43 @@ class Engine:
             # Engine should not duplicate tool knowledge - see architecture.md
 
         return action_results
+
+    def _apply_agent_mode_notice(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Append a plan-mode system notice for the current request context."""
+        execution_context = get_current_execution_context()
+        if execution_context is None:
+            return messages
+
+        raw_mode = execution_context.agent_mode
+        mode = raw_mode.strip().lower() if isinstance(raw_mode, str) else None
+        if mode != "plan":
+            return messages
+
+        marker = "[PENGUIN_AGENT_MODE_PLAN]"
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") != "system":
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and marker in content:
+                return messages
+
+        notice = (
+            f"{marker} Plan mode is active for this session. You must stay read-only "
+            "and avoid mutating operations. Do not attempt file writes, destructive "
+            "shell commands, or process execution intended to modify state. "
+            "If implementation is required, provide a plan and request build mode."
+        )
+        logger.info(
+            "agent.mode.notice_applied mode=plan session=%s agent=%s",
+            execution_context.session_id,
+            execution_context.agent_id,
+        )
+        return [*messages, {"role": "system", "content": notice}]
 
     async def _llm_step(
         self,
@@ -1759,8 +2285,11 @@ class Engine:
             Dict with 'assistant_response' and 'action_results' keys
         """
         # Resolve components for target agent
-        cm, api_client, tool_manager, action_executor = self._resolve_components(agent_id or self.current_agent_id)
+        cm, api_client, tool_manager, action_executor = self._resolve_components(
+            agent_id or self.current_agent_id
+        )
         messages = cm.conversation.get_formatted_messages()
+        messages = self._apply_agent_mode_notice(messages)
 
         # Step 1: Prepare Responses API tools if enabled
         extra_kwargs = self._prepare_responses_tools(tool_manager)
@@ -1774,17 +2303,30 @@ class Engine:
         await self._handle_responses_tool_call(api_client, tool_manager, cm)
 
         # Step 4: Finalize streaming response and persist message
-        assistant_response = self._finalize_streaming_response(cm, assistant_response, streaming)
+        assistant_response = self._finalize_streaming_response(
+            cm,
+            assistant_response,
+            streaming,
+            agent_id=agent_id or self.current_agent_id,
+        )
 
         # Step 5: Execute CodeAct actions if enabled
         action_results = []
         if tools_enabled:
-            action_results = await self._execute_codeact_actions(cm, action_executor, assistant_response)
+            action_results = await self._execute_codeact_actions(
+                cm, action_executor, assistant_response
+            )
+
+        usage = self._extract_usage_from_api_client(api_client)
 
         # Note: cm.save() removed - caller (run_response/run_task) handles persistence
         # This avoids redundant saves per iteration
 
-        return {"assistant_response": assistant_response, "action_results": action_results}
+        return {
+            "assistant_response": assistant_response,
+            "action_results": action_results,
+            "usage": usage,
+        }
 
     async def _llm_stream(self, prompt: str, *, agent_id: Optional[str] = None):
         """Helper to stream chunks to caller."""
@@ -1793,7 +2335,9 @@ class Engine:
 
         async def run():
             # Prepare conversation
-            cm, api_client, _tm, _ae = self._resolve_components(agent_id or self.current_agent_id)
+            cm, api_client, _tm, _ae = self._resolve_components(
+                agent_id or self.current_agent_id
+            )
             cm.conversation.prepare_conversation(prompt)
 
             # Inner callback forwards chunks into queue
@@ -1802,6 +2346,7 @@ class Engine:
 
             # Call provider with streaming enabled
             messages = cm.conversation.get_formatted_messages()
+            messages = self._apply_agent_mode_notice(messages)
             full_response = await api_client.get_response(
                 messages,
                 stream=True,

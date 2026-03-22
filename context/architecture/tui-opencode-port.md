@@ -2,190 +2,294 @@
 
 ## Status
 
-Planned. This document defines the target architecture, SSE-first streaming model, and a minimal-change fork strategy to reuse OpenCode's TUI for Penguin.
+**Implementation In Progress (refactor-penguin-backend-tui branch)**
 
-## Goals
+- SSE compatibility and OpenCode event translation are operational.
+- Multi-session directory binding and request-scoped execution context are in place.
+- Stream-state routing now uses request scope (`session_id:agent_id`) in core streaming paths.
+- Engine initialization fallback bug was fixed (Engine now initializes in web mode, no silent legacy fallback).
+- Stream chunk/finalize now propagate explicit session hints, reducing cross-session finalize collisions.
+- Tool/stream session status lifecycle now balances `busy`/`idle` in the adapter path to prevent stuck-after-first-message flows.
+- Production-safe concurrent session behavior is still in hardening/audit, but latest two-session manual runs are now mostly stable.
 
-- Adopt the OpenTUI + SolidJS stack for Penguin's CLI/TUI.
-- Make SSE the eventual default streaming mechanism across clients.
-- Preserve OpenCode's UI patterns with minimal rewrites.
-- Align Penguin event emissions with OpenCode's message/part model.
-- Add explicit licensing and attribution for reused code.
+## Objective
 
-## Context
+Make concurrent OpenCode web sessions production-safe for same-agent (`default`)
+multi-turn usage across different repos, without queued/stuck UI states.
 
-Penguin currently exposes streaming over WebSockets via `/api/v1/chat/stream` and emits UI events through an EventBus. OpenCode's TUI consumes an SSE event stream and updates a local store via message/part events. To minimize UI rewrites, Penguin should expose an SSE stream compatible with OpenCode's event envelope and data model.
+## Latest Validation (2026-02-22)
 
-Relevant references:
+- Manual two-session runs (Cadence + Tuxford) on one `penguin-web` process now complete multi-turn chat in parallel with correct directory/session wiring.
+- Prior cross-session content bleed was reduced after explicit `session_id`/`conversation_id` propagation through streaming chunk + finalize paths.
+- Remaining gate is sustained stress confidence (longer parallel prompt runs) before declaring production-safe.
+- Phase C parity wiring landed for config/provider/auth endpoints and alias routes; Penguin-mode TUI bootstrap now fetches backend config/provider/auth payloads first (with fallback), and new route/service tests are in place.
+- Provider/config/auth backend was refactored toward Penguin-first services (`provider_catalog`, `provider_credentials`, `provider_auth`) with OpenCode-specific mapping isolated to compatibility adapters.
+- Session parity Track B3 and diff parity Track D2 are now wired in backend routes/services (`session.status/create/update/delete` and `session.diff`, including `/api/v1/*` aliases).
+- Phase C closeout updates landed for `config.get` and provider/model catalog consistency (provider-local model IDs + provider-qualified selectors + env-connected provider visibility).
+- OpenRouter-backed provider payloads now enrich `config.providers` and
+  `provider.list` with live catalog models when OpenRouter auth is present,
+  reducing model-picker mismatch vs CLI `/models` behavior.
+- Targeted regression pack is green: `41 passed` across session/provider parity,
+  concurrent session isolation, session directory binding, and SSE
+  status-scoping suites.
 
-- `architecture.md`
+## Operational Notes (Phase C)
+
+- `PENGUIN_PROVIDER_CREDENTIALS_STORE` overrides provider credential storage
+  path (default: `~/.config/penguin/providers/credentials.json`).
+- Credential writes are atomic and permissioned to `0600`.
+- `PENGUIN_PROVIDER_AUTH_STORE` remains a legacy compatibility override.
+- `PENGUIN_OPENAI_OAUTH_CLIENT_ID` overrides the OpenAI device OAuth client id.
+- Current OpenAI OAuth default is compatibility-oriented (OpenCode/Codex client
+  id). Endgame C3 hardening keeps this fallback only for compatibility and
+  tracks first-party Penguin client registration as the long-term target.
+
+## Root Cause Hypothesis
+
+Streaming lifecycle was historically scoped by `agent_id` (often `"default"`)
+instead of `session_id`, which caused concurrent sessions to collide in shared
+stream state.
+
+## Additional Audit Finding (Single-Session Stuck)
+
+Even with one session, UI can remain non-idle due to `session.status` lifecycle
+imbalance:
+
+- `PartEventAdapter.on_stream_start()` emits `session.status=busy`.
+- `on_stream_end()` emits `session.status=idle`.
+- Tool fallback path can trigger `on_stream_start()` from `on_tool_start()` when no
+  active message exists, but tool completion path does not guarantee a matching
+  stream-end/idle transition.
+- Result: prompt can stay in spinner/interrupt mode after first response.
+
+### Key Touchpoints for This Finding
+
+- `penguin/tui_adapter/part_events.py:209` (`_emit_session_status`)
+- `penguin/tui_adapter/part_events.py:269` (`on_stream_start`, busy)
+- `penguin/tui_adapter/part_events.py:330` (`on_stream_end`, idle)
+- `penguin/tui_adapter/part_events.py:352` (`on_tool_start` fallback stream start)
+- `penguin/core.py:3788` (`_on_tui_action`)
+- `penguin/core.py:3831` (`_on_tui_action_result`)
+- `penguin-tui/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx:69`
+
+---
+
+## Execution Plan
+
+### Phase 0: Freeze + Baseline Audit (no behavior changes)
+
+**Touchpoints**
+- `penguin/core.py:3021` (`_handle_stream_chunk`)
+- `penguin/core.py:3097` (`finalize_streaming_message`)
+- `penguin/llm/stream_handler.py:423` (`AgentStreamingStateManager`)
+
+**Work**
+- Add temporary debug logging (session, conversation, agent, stream_id, scope key)
+  at stream handle/finalize boundaries.
+- Capture one failing two-session run trace (2 turns each).
+
+**Exit criteria**
+- Show at least one collision where two sessions share same stream manager key
+  (`default`).
+
+### Phase 1: Introduce deterministic stream scope key
+
+**Touchpoints**
+- `penguin/core.py`
+  - `_handle_stream_chunk` (`3021`)
+  - `finalize_streaming_message` (`3097`)
+  - add helper: `_resolve_stream_scope_id(execution_context, agent_id) -> str`
+- `penguin/llm/stream_handler.py`
+  - `AgentStreamingStateManager.handle_chunk` (`472`)
+  - `AgentStreamingStateManager.finalize` (`499`)
+
+**Work**
+- Compute `scope_id = "{session_id or conversation_id}:{agent_id or default}"`.
+- Pass `scope_id` to stream manager methods (using existing `agent_id` slot or a
+  renamed param if refactored).
+- Ensure stream events include:
+  - logical `agent_id` (for UI labeling),
+  - internal `scope_id` only for state routing (not required in external payload).
+
+**Exit criteria**
+- Concurrent sessions no longer share a stream state bucket.
+
+### Phase 2: Remove ambiguous finalize paths
+
+**Touchpoints**
+- `penguin/engine.py`
+  - `_iteration_loop` (`790`, finalize call at `858`)
+  - `_finalize_streaming_response` (`2004`, finalize call at `2054`)
+
+**Work**
+- Ensure finalize calls always pass explicit scope inputs (agent/session) and run
+  exactly once per iteration.
+- Avoid double-finalize races between `_llm_step` and outer loop.
+
+**Progress (2026-02-19)**
+- Engine finalize paths now pass explicit `agent_id` + current session-derived scope hints.
+- Core finalize path now accepts explicit `session_id`/`conversation_id`/`stream_scope_id` and resolves deterministic scope keys.
+
+**Exit criteria**
+- Every streaming iteration produces exactly one finalization path with consistent
+  scope.
+
+### Phase 3: Conversation manager scoping hardening (default-agent path)
+
+**Touchpoints**
+- `penguin/engine.py`
+  - `get_conversation_manager` (`471`)
+  - `_resolve_components` (`672`)
+- `penguin/core.py`
+  - `process` (`2188`)
+
+**Work**
+- Ensure request path gets a scoped conversation handle even when `agent_id` is
+  omitted.
+- Remove reliance on shared mutable default conversation pointer in concurrent web
+  requests.
+
+**Exit criteria**
+- Two requests with no explicit `agent_id` do not share mutable
+  conversation/session pointers.
+
+### Phase 4: Event completion ordering guarantees
+
+**Touchpoints**
+- `penguin/core.py`
+  - `finalize_streaming_message` (`3097`) currently fire-and-forget emits via
+    `asyncio.create_task`
+  - `emit_ui_event` (`2894`)
+
+**Work**
+- For critical final stream completion events, use awaited emission in request path
+  (or explicit flush barrier) before returning HTTP response.
+- Keep non-critical events async if needed.
+
+**Exit criteria**
+- TUI never remains in `QUEUED` due to missing assistant completion event.
+
+**Progress (2026-02-19)**
+- Latest manual runs no longer reproduce the original first-message stuck behavior.
+- Continue auditing for rare queued states under heavier concurrent traffic.
+
+### Phase 5: TUI adapter consistency cleanup
+
+**Touchpoints**
+- `penguin/core.py`
+  - `_get_tui_adapter` (`3494`)
+  - `_on_tui_stream_chunk` (`3515`)
+  - `_on_tui_action` (`3788`)
+  - `_on_tui_action_result` (`3831`)
+- `penguin/tui_adapter/part_events.py`
+
+**Work**
+- Keep session-scoped adapters, ensure tool-part keys remain session namespaced.
+- Add adapter cleanup policy (on stream end/session idle) to prevent unbounded map
+  growth.
+- Ensure tool-only lifecycles cannot leave `session.status` in `busy`.
+
+**Exit criteria**
+- No cross-session adapter state bleed, no adapter map leak growth in long runs,
+  and no stuck-busy single-session path.
+
+### Phase 6: Documentation + formal audit artifact
+
+**Touchpoints**
+- `context/architecture/tui-opencode-implementation.md`
 - `docs/docs/api_reference/api_server.md`
-- `docs/docs/api_reference/core.md`
-- `reference/opencode/packages/opencode/src/cli/cmd/tui/*`
+- `docs/docs/usage/api_usage.md`
 
-## Target Architecture (Client/Server)
+**Work**
+- Add "Concurrency Isolation Audit" results with checklist pass/fail per subsystem.
+- Document final invariants:
+  - stream scope key,
+  - immutable session-directory binding,
+  - completion event ordering guarantees,
+  - busy/idle lifecycle guarantee for stream + tool paths.
 
-### Server
+**Exit criteria**
+- Audit section explicitly marks production-safe criteria and evidence.
 
-- FastAPI remains the core API server.
-- Add SSE as a first-class stream endpoint for UI and client consumption.
-- Emit message/part events aligned to OpenCode's schema.
-- Retain WebSocket endpoints during transition, then demote to legacy.
+---
 
-### Client
+## Test Matrix (in order of execution)
 
-- Create a new package `penguin-tui` by forking OpenCode's TUI.
-- Replace the OpenCode SDK client with a Penguin API client.
-- Keep SolidJS providers, store, and components intact where possible.
-- Use OpenTUI rendering and tree-sitter parser pipeline unchanged.
+1. **Unit: Stream scope isolation**
+   - New: `tests/llm/test_stream_scope_isolation.py`
+   - Cases:
+     - two scope IDs (`s1:default`, `s2:default`) interleaved chunks
+     - finalize one scope does not affect other
+     - each scope emits its own `is_final` sequence
 
-## SSE-First Event Model
+2. **Unit: Core stream routing**
+   - New: `tests/test_core_stream_scope.py`
+   - Cases:
+     - `_handle_stream_chunk` routes by session scope from `ExecutionContext`
+     - `finalize_streaming_message` finalizes correct scope
 
-### Event Envelope
+3. **API: Parallel multi-turn chat (critical)**
+   - Extend: `tests/api/test_concurrent_session_isolation.py`
+   - Cases:
+     - same `agent_id` omitted (`default`), two sessions, two turns each, parallel
+     - both sessions receive assistant completion (`time.completed`) each turn
+     - no cross-session message/part IDs
 
-All SSE events use the OpenCode-style envelope:
+4. **API: SSE filtering correctness**
+   - Extend: `tests/api/test_sse_and_status_scoping.py`
+   - Cases:
+     - mixed interleaved events from two sessions, subscriber receives only matching
+       session
+     - final completion event arrives for each posted message
 
-```json
-{
-  "type": "message.part.updated",
-  "properties": {
-    "part": { "id": "part_123", "messageID": "msg_123", "sessionID": "sess_123" },
-    "delta": "token chunk"
-  }
-}
-```
+5. **Regression: Binding + context propagation**
+   - Keep:
+     - `tests/api/test_session_directory_binding.py`
+     - `tests/test_execution_context.py`
 
-### Required Event Types
+6. **Smoke**
+   - Keep:
+     - `tests/test_multi_agent_smoke.py::test_core_process_routes_agent_context`
 
-- `server.connected`
-- `session.updated` (optional for UI session list)
-- `message.updated`
-- `message.removed`
-- `message.part.updated` (streaming deltas)
-- `message.part.removed`
-- `permission.updated` (optional for approvals)
-- `todo.updated` (optional)
-- `lsp.updated` (optional)
+7. **Manual E2E (required gate)**
+   - Two TUI windows, Cadence + Tuxford, same model, 5 back-to-back prompts each.
+   - Pass criteria:
+     - no lingering `QUEUED`,
+     - both panes receive every assistant response,
+     - no `409`s,
+     - no cross-repo tool effects.
 
-### Message and Part Types
+8. **Manual single-session regression gate**
+   - One TUI session, 5 back-to-back prompts with tool usage.
+   - Pass criteria:
+     - prompt returns to idle between turns,
+     - no permanent spinner/interrupt state,
+     - balanced `session.status` transitions (`busy` -> `idle`) each turn.
 
-Model parity with OpenCode should be preserved to minimize UI changes.
+---
 
-Message:
+## Magic Number Audit Snapshot
 
-```json
-{
-  "id": "msg_123",
-  "sessionID": "sess_123",
-  "role": "assistant",
-  "time": { "created": 1700000000, "completed": 1700000001 },
-  "modelID": "claude-3-5",
-  "providerID": "anthropic",
-  "mode": "chat",
-  "path": { "cwd": "/repo", "root": "/repo" },
-  "summary": false,
-  "tokens": { "input": 0, "output": 0, "reasoning": 0, "cache": { "read": 0, "write": 0 } },
-  "cost": 0
-}
-```
+No known one-message cap found. Relevant constants to revisit/configure:
 
-Part (key variants):
+- `max_iterations` default `100` (`penguin/web/routes.py`)
+- SSE queue size `1000` (`penguin/web/sse_events.py`)
+- SSE keepalive timeout `300.0s` (`penguin/web/sse_events.py`)
+- stream coalescing (`0.04s`, `12 chars`) (`penguin/llm/stream_handler.py`)
+- prompt interrupt threshold (`>=2` within `5000ms`) 
+  (`penguin-tui/.../prompt/index.tsx`)
 
-- `text` (streamed by `delta`)
-- `reasoning` (streamed by `delta` if enabled)
-- `tool` (pending, running, completed, error)
-- `step-start`, `step-finish`
-- `patch` (diff summary + file list)
+---
 
-## Streaming Lifecycle (SSE)
+## Success Criteria
 
-1. Assistant message created -> `message.updated` (empty content, pending)
-2. Part created -> `message.part.updated` without `delta`
-3. Streaming token chunks -> repeated `message.part.updated` with `delta`
-4. Part complete -> `message.part.updated` with full state (no delta)
-5. Message complete -> `message.updated` with `time.completed`
+- [x] SSE endpoint streams events without timeouts
+- [x] OpenCode TUI can connect and display streaming text
+- [x] Tool execution renders correctly with balanced busy/idle in current adapter path
+- [~] Session/agent filtering works (hardening landed; sustained stress validation pending)
+- [x] No regression to existing WS/REST endpoints
 
-This mirrors OpenCode's `Session.updatePart` behavior, keeping UI logic intact.
+---
 
-## SSE Endpoint Specification
-
-### GET `/api/v1/events/sse`
-
-- Content-Type: `text/event-stream`
-- Emits `server.connected` immediately.
-- Streams all EventBus events in OpenCode envelope format.
-- Supports optional filters via query params: `session_id`, `agent_id`, `type`.
-
-Example SSE data line:
-
-```
-data: {"type":"message.part.updated","properties":{"part":{...},"delta":"hello"}}
-
-```
-
-### Transition Plan
-
-- SSE becomes the default for the new `penguin-tui`.
-- WebSocket endpoints remain for existing clients.
-- Future default for all clients once SSE is proven stable.
-
-## TUI Control Endpoints
-
-These mirror OpenCode's TUI control API and reduce client-side complexity.
-
-- `POST /api/v1/tui/append-prompt` -> append text to prompt input
-- `POST /api/v1/tui/execute-command` -> dispatch UI command
-- `POST /api/v1/tui/show-toast` -> show toast notification
-
-Optional (remote TUI control queue):
-
-- `GET /api/v1/tui/control/next`
-- `POST /api/v1/tui/control/response`
-
-## `penguin-tui` Fork Strategy
-
-### Source
-
-Fork from:
-
-- `reference/opencode/packages/opencode/src/cli/cmd/tui`
-
-### Minimal Changes
-
-- Replace SDK client and endpoint definitions.
-- Keep providers, store, components, and themes.
-- Maintain `Message` and `Part` types as-is.
-- Replace OpenCode-specific routes with Penguin API endpoints.
-
-### Adapter Layer
-
-Use a thin adapter to map Penguin SSE payloads into OpenCode types when needed. Prefer server-side normalization so the TUI can remain unchanged.
-
-## Licensing and Attribution
-
-- OpenCode is MIT-licensed; reuse is allowed with attribution.
-- `penguin-tui` must include the MIT license text and copyright notice.
-- Any reused files should retain OpenCode copyright headers.
-
-## Risks and Mitigations
-
-- SSE backpressure: apply buffering and rate limits; coalesce deltas server-side.
-- Event ordering: enforce per-session ordering in the stream.
-- Data model drift: add compatibility tests to keep Penguin schema aligned.
-- Dual stream complexity: keep WS and SSE behavior identical during transition.
-
-## Implementation Phases
-
-1. Add SSE endpoint and event envelope in FastAPI.
-2. Emit OpenCode-compatible message/part events from core/engine.
-3. Fork OpenCode TUI into `penguin-tui` with a new Penguin client.
-4. Validate streaming behavior with text + reasoning only.
-5. Port tool rendering, diffs, and prompt UX.
-6. Extend dialogs, themes, session/agent lists for parity.
-
-## Verification
-
-- Stream sequencing tests for `message.part.updated` deltas.
-- End-to-end SSE test: prompt -> token stream -> final message.
-- Snapshot test for tool rendering and markdown/code display.
-- UI performance checks with long streams and large tool outputs.
+**Last Updated:** 2026-02-22
+**Branch:** refactor-penguin-backend-tui

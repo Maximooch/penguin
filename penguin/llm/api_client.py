@@ -11,9 +11,9 @@ import httpx
 import yaml  # type: ignore
 import tiktoken  # type: ignore
 
-# TODO: decouple litellm from api_client. # Been done for quite a while. 
+# TODO: decouple litellm from api_client. # Been done for quite a while.
 # TODO: greatly simplify api_client while maintaining full functionality
-# TODO: add streaming support # Done for quite a while. 
+# TODO: add streaming support # Done for quite a while.
 # TODO: add support for images, files, audio, and video
 # Lazy import litellm to avoid 1+ second import time overhead
 # from litellm import acompletion, completion, token_counter, cost_per_token, completion_cost
@@ -22,7 +22,7 @@ from PIL import Image  # type: ignore
 from .model_config import ModelConfig
 from penguin.constants import get_default_max_history_tokens
 from penguin.utils.callbacks import adapt_stream_callback
-from .adapters import get_adapter # Keep for native preference
+from .adapters import get_adapter  # Keep for native preference
 # Lazy import gateways to avoid import overhead
 # from .litellm_gateway import LiteLLMGateway
 # from .openrouter_gateway import OpenRouterGateway
@@ -31,9 +31,17 @@ from .adapters import get_adapter # Keep for native preference
 logger = logging.getLogger(__name__)
 
 
+def _log_error(message: str, *args: Any, exc_info: bool = False) -> None:
+    logger.error(message, *args, exc_info=exc_info)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.error(message, *args, exc_info=exc_info)
+
+
 # ==============================================================================
 # Connection Pool Management for Parallel LLM Calls
 # ==============================================================================
+
 
 class ConnectionPoolConfig:
     """Configuration for HTTP connection pools."""
@@ -95,7 +103,9 @@ class ConnectionPoolManager:
     _lock: asyncio.Lock = asyncio.Lock()
 
     @classmethod
-    def get_instance(cls, config: Optional[ConnectionPoolConfig] = None) -> "ConnectionPoolManager":
+    def get_instance(
+        cls, config: Optional[ConnectionPoolConfig] = None
+    ) -> "ConnectionPoolManager":
         """Get the singleton instance (sync accessor).
 
         Args:
@@ -109,7 +119,9 @@ class ConnectionPoolManager:
         return cls._instance
 
     @classmethod
-    async def get_instance_async(cls, config: Optional[ConnectionPoolConfig] = None) -> "ConnectionPoolManager":
+    async def get_instance_async(
+        cls, config: Optional[ConnectionPoolConfig] = None
+    ) -> "ConnectionPoolManager":
         """Get the singleton instance (async accessor with lock).
 
         Args:
@@ -184,7 +196,9 @@ class ConnectionPoolManager:
         try:
             yield client
         except httpx.PoolTimeout:
-            logger.warning(f"Connection pool timeout for {base_url}, request may be delayed")
+            logger.warning(
+                f"Connection pool timeout for {base_url}, request may be delayed"
+            )
             raise
 
     async def close_all(self) -> None:
@@ -211,7 +225,7 @@ class ConnectionPoolManager:
                 "limits": {
                     "max_keepalive": self._config.max_keepalive_connections,
                     "max_connections": self._config.max_connections,
-                }
+                },
             }
         return stats
 
@@ -227,6 +241,7 @@ def load_config() -> Dict[str, Any]:
     """
     try:
         from penguin.config import load_config as core_load_config
+
         data = core_load_config()
         return data if isinstance(data, dict) else {}
     except Exception as e:
@@ -259,57 +274,77 @@ class APIClient:
                                         the 'client_preference'.
         """
         self.model_config = model_config
+        self._canonicalize_native_model_id()
         self.system_prompt = None
         self.logger = logging.getLogger(__name__)
-        self.client_handler = None # Will be set based on preference
+        self.client_handler = None  # Will be set based on preference
 
-        self.logger.info(f"Initializing APIClient for model: {model_config.model}, "
-                         f"Provider: {model_config.provider}, "
-                         f"Preference: {model_config.client_preference}")
+        self.logger.info(
+            f"Initializing APIClient for model: {model_config.model}, "
+            f"Provider: {model_config.provider}, "
+            f"Preference: {model_config.client_preference}"
+        )
 
         # --- Instantiate the correct handler ---
-        if model_config.client_preference == 'litellm':
+        if model_config.client_preference == "litellm":
             try:
                 # Lazy import LiteLLMGateway to avoid import overhead
                 from .litellm_gateway import LiteLLMGateway
+
                 # LiteLLM gateway handles API keys/base internally based on model_config
                 self.client_handler = LiteLLMGateway(model_config)
                 self.logger.info(f"Using LiteLLMGateway for {model_config.model}")
             except Exception as e:
-                self.logger.error(f"Failed to initialize LiteLLMGateway: {e}", exc_info=True)
+                self.logger.error(
+                    f"Failed to initialize LiteLLMGateway: {e}", exc_info=True
+                )
                 raise ValueError(f"Could not initialize LiteLLMGateway: {e}") from e
 
-        elif model_config.client_preference == 'openrouter':
+        elif model_config.client_preference == "openrouter":
             try:
                 # Lazy import OpenRouterGateway to avoid import overhead
                 from .openrouter_gateway import OpenRouterGateway
+
                 # Initialize OpenRouter gateway with model_config
                 self.client_handler = OpenRouterGateway(model_config)
                 self.logger.info(f"Using OpenRouterGateway for {model_config.model}")
             except Exception as e:
-                self.logger.error(f"Failed to initialize OpenRouterGateway: {e}", exc_info=True)
+                self.logger.error(
+                    f"Failed to initialize OpenRouterGateway: {e}", exc_info=True
+                )
                 raise ValueError(f"Could not initialize OpenRouterGateway: {e}") from e
 
-        elif model_config.client_preference == 'native':
+        elif model_config.client_preference == "native":
             try:
                 # Get native adapter
                 # Note: Native adapters might expect simpler model names in model_config.model
                 self.client_handler = get_adapter(model_config.provider, model_config)
                 if not self.client_handler:
-                     raise ValueError(f"No native adapter found for provider: {model_config.provider}")
-                self.logger.info(f"Using native adapter for provider: {model_config.provider} "
-                                 f"(Model: {model_config.model})")
+                    raise ValueError(
+                        f"No native adapter found for provider: {model_config.provider}"
+                    )
+                self.logger.info(
+                    f"Using native adapter for provider: {model_config.provider} "
+                    f"(Model: {model_config.model})"
+                )
                 # Native adapter might need API key directly (handled by get_adapter?)
                 # self.api_key = model_config.api_key # Store if needed separately? get_adapter should handle it.
 
             except Exception as e:
-                self.logger.error(f"Failed to initialize native adapter for {model_config.provider}: {e}", exc_info=True)
+                self.logger.error(
+                    f"Failed to initialize native adapter for {model_config.provider}: {e}",
+                    exc_info=True,
+                )
                 raise ValueError(f"Could not initialize native adapter: {e}") from e
         else:
-            raise ValueError(f"Invalid client_preference: {model_config.client_preference}. Must be 'native', 'litellm', or 'openrouter'.")
+            raise ValueError(
+                f"Invalid client_preference: {model_config.client_preference}. Must be 'native', 'litellm', or 'openrouter'."
+            )
 
         # Common properties (potentially less relevant now?)
-        self.max_history_tokens = model_config.max_history_tokens or get_default_max_history_tokens()
+        self.max_history_tokens = (
+            model_config.max_history_tokens or get_default_max_history_tokens()
+        )
 
         # Clean up old logging/prints
         # print("\n=== API Client Initialization ===")
@@ -334,6 +369,27 @@ class APIClient:
         # else:
         #      pass # Not using assistants or not using OpenAI native
 
+    def _canonicalize_native_model_id(self) -> None:
+        """Normalize provider-prefixed native model IDs before adapter creation."""
+        if getattr(self.model_config, "client_preference", "native") != "native":
+            return
+
+        provider = str(getattr(self.model_config, "provider", "") or "").strip().lower()
+        if provider not in {"openai", "anthropic"}:
+            return
+
+        model_value = str(getattr(self.model_config, "model", "") or "").strip()
+        if "/" not in model_value:
+            return
+
+        prefix, remainder = model_value.split("/", 1)
+        if prefix.strip().lower() != provider:
+            return
+        if not remainder.strip():
+            return
+
+        self.model_config.model = remainder.strip()
+
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt."""
         self.system_prompt = prompt
@@ -346,13 +402,15 @@ class APIClient:
         # if self.model_config.use_assistants_api and hasattr(self.client_handler, 'assistant_manager'):
         #     self.client_handler.assistant_manager.update_system_prompt(prompt)
 
-    def _prepare_messages_with_system_prompt(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _prepare_messages_with_system_prompt(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """
         Inject the system prompt while preserving other system‑role
         messages (e.g. action results, iteration markers).
         """
         if not self.system_prompt:
-            return messages[:]          # nothing to do
+            return messages[:]  # nothing to do
 
         processed = []
         prompt_already_present = False
@@ -378,6 +436,66 @@ class APIClient:
 
         return processed
 
+    def _extract_diagnostic_id(self, message: str) -> Optional[str]:
+        marker = "diag_id="
+        start = message.find(marker)
+        if start < 0:
+            return None
+
+        raw = message[start + len(marker) :]
+        chars: List[str] = []
+        for char in raw:
+            if char.isalnum() or char in {"_", "-"}:
+                chars.append(char)
+                continue
+            break
+
+        value = "".join(chars).strip()
+        return value or None
+
+    def _classify_handler_exception(self, error: Exception) -> str:
+        if isinstance(
+            error, (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException)
+        ):
+            return "timeout"
+        if isinstance(error, httpx.HTTPError):
+            return "network"
+
+        detail = str(error).lower()
+        if "reauth required" in detail or "missing access token" in detail:
+            return "auth"
+        if "access token expired" in detail:
+            return "auth"
+        if "status=401" in detail or "status=403" in detail:
+            return "auth"
+        if "status=400" in detail or "status=404" in detail or "status=422" in detail:
+            return "upstream_request"
+        if "status=429" in detail:
+            return "rate_limit"
+        if "status=500" in detail or "status=502" in detail or "status=503" in detail:
+            return "upstream_unavailable"
+        if "request_timeout" in detail or "stream_timeout" in detail:
+            return "timeout"
+        return "runtime"
+
+    def _format_user_error_message(self, *, category: str, diag_id: str) -> str:
+        if category == "auth":
+            reason = "Provider authentication failed. Reconnect and retry"
+        elif category == "timeout":
+            reason = "LLM request timed out"
+        elif category == "network":
+            reason = "LLM network request failed"
+        elif category == "upstream_request":
+            reason = "LLM upstream rejected the request"
+        elif category == "rate_limit":
+            reason = "LLM upstream rate-limited this request"
+        elif category == "upstream_unavailable":
+            reason = "LLM upstream is unavailable"
+        else:
+            reason = "LLM request failed"
+
+        return f"Error: {reason}. Diagnostic ID: {diag_id}."
+
     async def get_response(
         self,
         messages: List[Dict[str, Any]],
@@ -385,7 +503,7 @@ class APIClient:
         temperature: Optional[float] = None,
         stream: Optional[bool] = None,
         stream_callback: Optional[Callable[[str, str], None]] = None,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> str:
         """
         Get a response from the configured AI model, using the chosen client handler.
@@ -408,91 +526,145 @@ class APIClient:
         if max_output_tokens is None and legacy_max_tokens is not None:
             max_output_tokens = legacy_max_tokens
 
-        use_streaming = stream if stream is not None else self.model_config.streaming_enabled
+        use_streaming = (
+            stream if stream is not None else self.model_config.streaming_enabled
+        )
         prepared_messages = self._prepare_messages_with_system_prompt(messages)
 
         # <<<--- ADD THIS LOGGING for PREPARED MESSAGES ---<<<
-        request_id_api = os.urandom(4).hex() # Simple ID for this layer
-        self.logger.info(f"[Request:{request_id_api}] APIClient calling handler {type(self.client_handler).__name__}.get_response")
+        request_id_api = os.urandom(4).hex()  # Simple ID for this layer
+        self.logger.info(
+            f"[Request:{request_id_api}] APIClient calling handler {type(self.client_handler).__name__}.get_response"
+        )
         try:
-             safe_msgs_for_log = []
-             for msg in prepared_messages:
-                  role = msg.get('role', 'unknown')
-                  content_log = "[omitted]"
-                  if isinstance(msg.get('content'), str):
-                       content_log = msg['content'][:100] + ("..." if len(msg['content']) > 100 else "")
-                  elif isinstance(msg.get('content'), list):
-                       content_log = f"[{len(msg['content'])} parts: " + ", ".join([p.get('type', 'unknown') for p in msg['content']]) + "]"
-                  safe_msgs_for_log.append({"role": role, "content": content_log})
-             self.logger.debug(f"[Request:{request_id_api}] Messages passed to handler (summary): {safe_msgs_for_log}")
+            safe_msgs_for_log = []
+            for msg in prepared_messages:
+                role = msg.get("role", "unknown")
+                content_log = "[omitted]"
+                if isinstance(msg.get("content"), str):
+                    content_log = msg["content"][:100] + (
+                        "..." if len(msg["content"]) > 100 else ""
+                    )
+                elif isinstance(msg.get("content"), list):
+                    content_log = (
+                        f"[{len(msg['content'])} parts: "
+                        + ", ".join([p.get("type", "unknown") for p in msg["content"]])
+                        + "]"
+                    )
+                safe_msgs_for_log.append({"role": role, "content": content_log})
+            self.logger.debug(
+                f"[Request:{request_id_api}] Messages passed to handler (summary): {safe_msgs_for_log}"
+            )
 
-             # <<<--- Add Token Count Logging ---<<<
-             try:
-                 final_token_count = self.count_tokens(prepared_messages)
-                 self.logger.info(f"[Request:{request_id_api}] Estimated token count for prepared messages: {final_token_count}")
-                 if final_token_count > (self.max_history_tokens * 0.95): # Warn if close to limit
-                      self.logger.warning(f"[Request:{request_id_api}] Prepared message token count ({final_token_count}) is close to limit ({self.max_history_tokens}).")
-             except Exception as count_err:
-                 self.logger.warning(f"[Request:{request_id_api}] Failed to count tokens for prepared messages: {count_err}")
-             # >>> --- End Token Count Logging --- >>>
+            # <<<--- Add Token Count Logging ---<<<
+            try:
+                final_token_count = self.count_tokens(prepared_messages)
+                self.logger.info(
+                    f"[Request:{request_id_api}] Estimated token count for prepared messages: {final_token_count}"
+                )
+                if final_token_count > (
+                    self.max_history_tokens * 0.95
+                ):  # Warn if close to limit
+                    self.logger.warning(
+                        f"[Request:{request_id_api}] Prepared message token count ({final_token_count}) is close to limit ({self.max_history_tokens})."
+                    )
+            except Exception as count_err:
+                self.logger.warning(
+                    f"[Request:{request_id_api}] Failed to count tokens for prepared messages: {count_err}"
+                )
+            # >>> --- End Token Count Logging --- >>>
 
         except Exception as log_err:
-             self.logger.warning(f"[Request:{request_id_api}] Error creating safe log/counting tokens for prepared_messages: {log_err}")
+            self.logger.warning(
+                f"[Request:{request_id_api}] Error creating safe log/counting tokens for prepared_messages: {log_err}"
+            )
         # >>>------------------------------------------- >>>
 
         try:
             # --- Ideal Flow (Enforce Interface - See Step 2) ---
-            if not hasattr(self.client_handler, 'get_response'):
-                 # This should ideally not happen if Step 2 is done.
-                 self.logger.error(f"CRITICAL: Client handler {type(self.client_handler).__name__} missing required 'get_response' method!")
-                 return f"[Error: Handler {type(self.client_handler).__name__} interface mismatch]"
+            if not hasattr(self.client_handler, "get_response"):
+                # This should ideally not happen if Step 2 is done.
+                self.logger.error(
+                    f"CRITICAL: Client handler {type(self.client_handler).__name__} missing required 'get_response' method!"
+                )
+                return f"[Error: Handler {type(self.client_handler).__name__} interface mismatch]"
 
             # Normalize callback to async (chunk, message_type) signature
-            effective_callback = adapt_stream_callback(stream_callback) if use_streaming else None
-            self.logger.debug(f"[APIClient:{request_id_api}] Calling {type(self.client_handler).__name__}.get_response. Streaming: {use_streaming}. Callback: {effective_callback is not None}")
+            effective_callback = (
+                adapt_stream_callback(stream_callback) if use_streaming else None
+            )
+            self.logger.debug(
+                f"[APIClient:{request_id_api}] Calling {type(self.client_handler).__name__}.get_response. Streaming: {use_streaming}. Callback: {effective_callback is not None}"
+            )
 
-            self.logger.info(f"[APIClient:{request_id_api}] PRE-CALL TO HANDLER: use_streaming={use_streaming}, effective_callback is {effective_callback}")
+            self.logger.info(
+                f"[APIClient:{request_id_api}] PRE-CALL TO HANDLER: use_streaming={use_streaming}, effective_callback is {effective_callback}"
+            )
 
             response_text = await self.client_handler.get_response(
                 messages=prepared_messages,
-                max_output_tokens=max_output_tokens or self.model_config.max_output_tokens,
-                temperature=temperature if temperature is not None else self.model_config.temperature,
+                max_output_tokens=max_output_tokens
+                or self.model_config.max_output_tokens,
+                temperature=temperature
+                if temperature is not None
+                else self.model_config.temperature,
                 stream=use_streaming,
-                stream_callback=effective_callback, # Pass the potentially wrapped async callback
-                **kwargs  # Pass through additional parameters like reasoning config
+                stream_callback=effective_callback,  # Pass the potentially wrapped async callback
+                **kwargs,  # Pass through additional parameters like reasoning config
             )
 
             # If streaming, the callback handled output. Return minimal response.
             # The response_text here is the final accumulated text from the gateway.
             if use_streaming:
-                logger.info(f"[APIClient:{request_id_api}] Stream finished. Returning accumulated text (length: {len(response_text or '')}).")
+                logger.info(
+                    f"[APIClient:{request_id_api}] Stream finished. Returning accumulated text (length: {len(response_text or '')})."
+                )
                 # In streaming mode, we rely on the callback for output.
                 # We return the final accumulated text, but core.py might ignore it.
-                return response_text or "" # Return accumulated string
+                return response_text or ""  # Return accumulated string
 
             # <<<--- ADD Check for Error/Placeholder Strings ---<<<
             if isinstance(response_text, str):
-                if response_text.startswith("[Error:") or response_text.startswith("[Model finished"):
-                     self.logger.warning(f"[Request:{request_id_api}] Handler returned non-content string: {response_text}")
-                     # Propagate this specific info instead of just empty?
-                     # Maybe core.py needs to check for these specific strings too.
-                     # For now, returning it might still trigger core's retry loop if core only checks for "" or None.
-                     # Let's return it as is for now, core needs adjustment later if this is the case.
+                if response_text.startswith("[Error:") or response_text.startswith(
+                    "[Model finished"
+                ):
+                    self.logger.warning(
+                        f"[Request:{request_id_api}] Handler returned non-content string: {response_text}"
+                    )
+                    # Propagate this specific info instead of just empty?
+                    # Maybe core.py needs to check for these specific strings too.
+                    # For now, returning it might still trigger core's retry loop if core only checks for "" or None.
+                    # Let's return it as is for now, core needs adjustment later if this is the case.
 
                 elif not response_text.strip() and not use_streaming:
-                     # Log if we get an empty string in non-streaming mode
-                     self.logger.warning(f"[Request:{request_id_api}] Handler returned empty string in non-streaming mode.")
+                    # Log if we get an empty string in non-streaming mode
+                    self.logger.warning(
+                        f"[Request:{request_id_api}] Handler returned empty string in non-streaming mode."
+                    )
             # >>>----------------------------------------------->>>
 
             return response_text
             # --- End Ideal Flow ---
 
         except Exception as e:
-            error_message = f"LLM API call failed via {type(self.client_handler).__name__}: {str(e)}"
-            self.logger.error(error_message, exc_info=True)
-            # Return the error message to the user interface
-            return f"Error: {error_message}"
+            handler_name = type(self.client_handler).__name__
+            upstream_diag_id = self._extract_diagnostic_id(str(e))
+            diag_id = upstream_diag_id or f"llm_{os.urandom(5).hex()}"
+            category = self._classify_handler_exception(e)
 
+            _log_error(
+                "[Request:%s] llm.handler.failure diag_id=%s category=%s "
+                "handler=%s provider=%s model=%s detail=%s",
+                request_id_api,
+                diag_id,
+                category,
+                handler_name,
+                getattr(self.model_config, "provider", "unknown"),
+                getattr(self.model_config, "model", "unknown"),
+                str(e),
+                exc_info=True,
+            )
+            return self._format_user_error_message(category=category, diag_id=diag_id)
 
     # --- Methods below might be simplified or removed if get_response handles all ---
 
@@ -518,7 +690,6 @@ class APIClient:
     #          else:
     #               return "[Error: Unexpected response type after handler call]", []
 
-
     # create_message might be replaced by get_response logic
     # async def create_message(
     #     self,
@@ -539,7 +710,6 @@ class APIClient:
     #     # This is problematic. Better to refactor callers to use get_response.
     #     return {"choices": [{"message": {"content": response_text}}]} # Simulate OpenAI structure
 
-
     # create_streaming_completion might be replaced by get_response logic
     # async def create_streaming_completion(
     #     self,
@@ -558,7 +728,6 @@ class APIClient:
     #          stream_callback=stream_callback
     #     )
 
-
     # Token counting delegated
     def count_tokens(self, content: Union[str, List, Dict]) -> int:
         """
@@ -572,38 +741,48 @@ class APIClient:
         """
         if not self.client_handler:
             self.logger.error("Cannot count tokens, client handler not initialized.")
-            return len(str(content)) // 4 # Very rough fallback
+            return len(str(content)) // 4  # Very rough fallback
 
         if not self.model_config.enable_token_counting:
-             self.logger.debug("Token counting disabled in ModelConfig.")
-             return 0
+            self.logger.debug("Token counting disabled in ModelConfig.")
+            return 0
 
-        if hasattr(self.client_handler, 'count_tokens'):
+        if hasattr(self.client_handler, "count_tokens"):
             try:
                 # Use the handler's count_tokens method
                 return self.client_handler.count_tokens(content)
             except Exception as e:
-                self.logger.warning(f"Token counting failed using {type(self.client_handler).__name__}: {e}")
+                self.logger.warning(
+                    f"Token counting failed using {type(self.client_handler).__name__}: {e}"
+                )
                 # Fallback to LiteLLM's generic counter if handler fails?
                 try:
-                     logger.info(f"Falling back to LiteLLM generic token counter for model {self.model_config.model}")
-                     # Ensure model name is suitable for LiteLLM counter
-                     model_for_counting = self.model_config.model
-                     if isinstance(content, str):
-                          return token_counter(model=model_for_counting, text=content)
-                     elif isinstance(content, list):
-                           # Assume OpenAI message format for LiteLLM counter
-                          return token_counter(model=model_for_counting, messages=content)
-                     else:
-                          return len(str(content)) // 4 # Rough fallback
+                    logger.info(
+                        f"Falling back to LiteLLM generic token counter for model {self.model_config.model}"
+                    )
+                    # Ensure model name is suitable for LiteLLM counter
+                    model_for_counting = self.model_config.model
+                    if isinstance(content, str):
+                        return token_counter(model=model_for_counting, text=content)
+                    elif isinstance(content, list):
+                        # Assume OpenAI message format for LiteLLM counter
+                        return token_counter(model=model_for_counting, messages=content)
+                    else:
+                        return len(str(content)) // 4  # Rough fallback
                 except Exception as litellm_e:
-                     self.logger.error(f"LiteLLM generic token counter also failed: {litellm_e}")
-                     return len(str(content)) // 4 # Final rough fallback
+                    self.logger.error(
+                        f"LiteLLM generic token counter also failed: {litellm_e}"
+                    )
+                    return len(str(content)) // 4  # Final rough fallback
         else:
-            self.logger.warning(f"Client handler {type(self.client_handler).__name__} does not implement count_tokens.")
+            self.logger.warning(
+                f"Client handler {type(self.client_handler).__name__} does not implement count_tokens."
+            )
             # Fallback to LiteLLM generic counter?
             try:
-                logger.info(f"Falling back to LiteLLM generic token counter for model {self.model_config.model}")
+                logger.info(
+                    f"Falling back to LiteLLM generic token counter for model {self.model_config.model}"
+                )
                 model_for_counting = self.model_config.model
                 if isinstance(content, str):
                     return token_counter(model=model_for_counting, text=content)
@@ -612,7 +791,9 @@ class APIClient:
                 else:
                     return len(str(content)) // 4
             except Exception as litellm_e:
-                self.logger.error(f"LiteLLM generic token counter also failed: {litellm_e}")
+                self.logger.error(
+                    f"LiteLLM generic token counter also failed: {litellm_e}"
+                )
                 return len(str(content)) // 4
 
     def _truncate_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -624,18 +805,21 @@ class APIClient:
         truncated_messages = []
         # Ensure system prompt is preserved if present (should be first)
         system_msg = None
-        processed_messages = messages[:] # Copy
+        processed_messages = messages[:]  # Copy
         if processed_messages and processed_messages[0].get("role") == "system":
-             system_msg = processed_messages.pop(0)
-             # Count system prompt tokens separately
-             system_tokens = self.count_tokens(system_msg['content']) if system_msg else 0
-             total_tokens += system_tokens
-
+            system_msg = processed_messages.pop(0)
+            # Count system prompt tokens separately
+            system_tokens = (
+                self.count_tokens(system_msg["content"]) if system_msg else 0
+            )
+            total_tokens += system_tokens
 
         # Iterate through remaining messages in reverse
         for message in reversed(processed_messages):
             # Count tokens for the current message
-            message_tokens = self.count_tokens(message) # Use the central count_tokens method
+            message_tokens = self.count_tokens(
+                message
+            )  # Use the central count_tokens method
 
             if total_tokens + message_tokens > self.max_history_tokens:
                 self.logger.warning(
@@ -645,7 +829,7 @@ class APIClient:
                 )
                 break
             total_tokens += message_tokens
-            truncated_messages.insert(0, message) # Add to the beginning
+            truncated_messages.insert(0, message)  # Add to the beginning
 
         # Re-add system prompt if it existed
         if system_msg:
@@ -653,8 +837,10 @@ class APIClient:
 
         num_truncated = len(messages) - len(truncated_messages)
         if num_truncated > 0:
-            self.logger.info(f"Truncated {num_truncated} messages from history. "
-                             f"Final token count (approx): {total_tokens}")
+            self.logger.info(
+                f"Truncated {num_truncated} messages from history. "
+                f"Final token count (approx): {total_tokens}"
+            )
 
         return truncated_messages
 
@@ -677,7 +863,6 @@ class APIClient:
         except Exception as e:
             self.logger.error(f"Error encoding image {image_path}: {str(e)}")
             return f"Error encoding image: {str(e)}"
-
 
     def reset(self):
         """Reset the client state (primarily the system prompt)."""

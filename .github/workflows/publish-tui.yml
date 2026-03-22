@@ -1,0 +1,195 @@
+name: 🐧 Build Penguin TUI Sidecar
+
+on:
+  push:
+    # Temporary branch trigger for pre-merge validation.
+    # Remove this branch-specific trigger once merged to main.
+    branches:
+      - "refactor-penguin-backend-tui"
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-tui-sidecar:
+    name: Build TUI sidecar (${{ matrix.label }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-arm64
+            runner: ubuntu-latest
+            build_os: linux
+            build_targets: opencode-linux-arm64
+            include_baseline: "1"
+            timeout_minutes: 45
+          - label: linux-x64
+            runner: ubuntu-latest
+            build_os: linux
+            build_targets: opencode-linux-x64
+            include_baseline: "1"
+            timeout_minutes: 45
+          - label: linux-x64-baseline
+            runner: ubuntu-latest
+            build_os: linux
+            build_targets: opencode-linux-x64-baseline
+            include_baseline: "1"
+            timeout_minutes: 45
+          - label: linux-arm64-musl
+            runner: ubuntu-latest
+            build_os: linux
+            build_targets: opencode-linux-arm64-musl
+            include_baseline: "1"
+            timeout_minutes: 45
+          - label: linux-x64-musl
+            runner: ubuntu-latest
+            build_os: linux
+            build_targets: opencode-linux-x64-musl
+            include_baseline: "1"
+            timeout_minutes: 45
+          - label: linux-x64-baseline-musl
+            runner: ubuntu-latest
+            build_os: linux
+            build_targets: opencode-linux-x64-baseline-musl
+            include_baseline: "1"
+            timeout_minutes: 45
+          - label: macos
+            runner: macos-latest
+            build_os: darwin
+            build_targets: opencode-darwin-arm64,opencode-darwin-x64,opencode-darwin-x64-baseline
+            include_baseline: "1"
+            timeout_minutes: 30
+          - label: windows
+            runner: windows-latest
+            build_os: win32
+            build_targets: opencode-windows-x64
+            include_baseline: "0"
+            timeout_minutes: 30
+    env:
+      HUSKY: "0"
+      OPENCODE_BUILD_OS: ${{ matrix.build_os }}
+      OPENCODE_BUILD_TARGETS: ${{ matrix.build_targets }}
+      OPENCODE_BUILD_INCLUDE_BASELINE: ${{ matrix.include_baseline }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.8"
+
+      - name: Install workspace dependencies
+        working-directory: penguin-tui
+        run: bun install --frozen-lockfile
+
+      - name: Resolve sidecar build version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="0.0.0-dev-${GITHUB_SHA::7}"
+          fi
+
+          echo "OPENCODE_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "OPENCODE_CHANNEL=latest" >> "$GITHUB_ENV"
+
+      - name: Build TUI binaries
+        working-directory: penguin-tui/packages/opencode
+        env:
+          OPENCODE_VERSION: ${{ env.OPENCODE_VERSION }}
+          OPENCODE_CHANNEL: ${{ env.OPENCODE_CHANNEL }}
+          OPENCODE_BUILD_OS: ${{ env.OPENCODE_BUILD_OS }}
+          OPENCODE_BUILD_TARGETS: ${{ env.OPENCODE_BUILD_TARGETS }}
+          OPENCODE_BUILD_INCLUDE_BASELINE: ${{ env.OPENCODE_BUILD_INCLUDE_BASELINE }}
+        run: bun run script/build.ts
+
+      - name: Package sidecar archives
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+          import zipfile
+
+          dist = Path("penguin-tui/packages/opencode/dist")
+          if not dist.exists():
+              raise SystemExit("missing dist directory")
+
+          for entry in sorted(dist.iterdir()):
+              if not entry.is_dir():
+                  continue
+
+              bin_dir = entry / "bin"
+              if not bin_dir.exists():
+                  continue
+
+              if "linux" in entry.name:
+                  archive_path = dist / f"{entry.name}.tar.gz"
+                  with tarfile.open(archive_path, "w:gz") as archive:
+                      for file_path in sorted(bin_dir.iterdir()):
+                          archive.add(file_path, arcname=file_path.name)
+              else:
+                  archive_path = dist / f"{entry.name}.zip"
+                  with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                      for file_path in sorted(bin_dir.iterdir()):
+                          archive.write(file_path, arcname=file_path.name)
+
+              print(f"packaged {archive_path}")
+          PY
+
+      - name: List packaged artifacts
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          dist = Path("penguin-tui/packages/opencode/dist")
+          archives = sorted(list(dist.glob("*.zip")) + list(dist.glob("*.tar.gz")))
+          if not archives:
+              raise SystemExit("no packaged TUI archives found")
+
+          for path in archives:
+              size_mib = path.stat().st_size / (1024 * 1024)
+              print(f"{path}  {size_mib:.2f} MiB")
+          PY
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: penguin-tui-sidecar-${{ env.OPENCODE_VERSION }}-${{ matrix.label }}
+          path: penguin-tui/packages/opencode/dist
+
+  publish-release-assets:
+    name: Publish TUI sidecar release assets
+    needs: build-tui-sidecar
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download built sidecar artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: penguin-tui-sidecar-*
+          path: dist
+          merge-multiple: true
+
+      - name: List release upload payload
+        shell: bash
+        run: ls -lah dist
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz
+          fail_on_unmatched_files: true

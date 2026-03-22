@@ -19,6 +19,7 @@ from penguin.system.state import MessageCategory
 # FIXTURES
 # =============================================================================
 
+
 @pytest.fixture
 def temp_workspace(tmp_path):
     """Create a temporary workspace directory."""
@@ -58,6 +59,7 @@ def cm_with_agents(cm):
 # SHARES_CONTEXT_WINDOW TESTS
 # =============================================================================
 
+
 class TestSharesContextWindow:
     """Test the shares_context_window method."""
 
@@ -71,7 +73,9 @@ class TestSharesContextWindow:
 
     def test_isolated_context_agents(self, cm_with_agents):
         """Test that agents with share_context_window=False have different CWMs."""
-        assert cm_with_agents.shares_context_window("default", "child-isolated") is False
+        assert (
+            cm_with_agents.shares_context_window("default", "child-isolated") is False
+        )
 
     def test_nonexistent_agent_returns_false(self, cm):
         """Test that nonexistent agents return False."""
@@ -82,12 +86,16 @@ class TestSharesContextWindow:
     def test_different_shared_agents(self, cm_with_agents):
         """Test sharing between two child agents."""
         # child-shared shares with default, child-isolated doesn't
-        assert cm_with_agents.shares_context_window("child-shared", "child-isolated") is False
+        assert (
+            cm_with_agents.shares_context_window("child-shared", "child-isolated")
+            is False
+        )
 
 
 # =============================================================================
 # GET_CONTEXT_SHARING_INFO TESTS
 # =============================================================================
+
 
 class TestGetContextSharingInfo:
     """Test the get_context_sharing_info method."""
@@ -138,9 +146,47 @@ class TestGetContextSharingInfo:
         assert info["has_context_window"] is False
 
 
+class TestSubAgentSessionLinkage:
+    """Test parent/child session metadata linkage for sub-agents."""
+
+    def test_isolated_sub_agent_session_tracks_parent_session(self, cm):
+        """Isolated sub-agent sessions should include parent linkage metadata."""
+        parent_session_id = cm.get_agent_conversation("default").session.id
+
+        cm.create_sub_agent(
+            "child-linked",
+            parent_agent_id="default",
+            share_session=False,
+            share_context_window=False,
+        )
+
+        child_session = cm.get_agent_conversation("child-linked").session
+        assert child_session.metadata.get("agent_id") == "child-linked"
+        assert child_session.metadata.get("parent_agent_id") == "default"
+        assert child_session.metadata.get("parentID") == parent_session_id
+
+    def test_shared_session_sub_agent_keeps_parent_session_metadata(self, cm):
+        """Shared-session sub-agents should not rewrite parent linkage metadata."""
+        parent_conversation = cm.get_agent_conversation("default")
+        parent_session_id = parent_conversation.session.id
+        parent_conversation.session.metadata.pop("parentID", None)
+
+        cm.create_sub_agent(
+            "child-shared-session",
+            parent_agent_id="default",
+            share_session=True,
+            share_context_window=True,
+        )
+
+        shared_session = cm.get_agent_conversation("child-shared-session").session
+        assert shared_session.id == parent_session_id
+        assert shared_session.metadata.get("parentID") is None
+
+
 # =============================================================================
 # GET_CONTEXT_WINDOW_STATS TESTS
 # =============================================================================
+
 
 class TestGetContextWindowStats:
     """Test the get_context_window_stats method."""
@@ -160,7 +206,10 @@ class TestGetContextWindowStats:
         shared_stats = cm_with_agents.get_context_window_stats("child-shared")
 
         # They share the same CWM, so max tokens should be the same
-        assert default_stats["max_context_window_tokens"] == shared_stats["max_context_window_tokens"]
+        assert (
+            default_stats["max_context_window_tokens"]
+            == shared_stats["max_context_window_tokens"]
+        )
 
     def test_isolated_agent_stats(self, cm_with_agents):
         """Test stats for isolated agent."""
@@ -178,6 +227,7 @@ class TestGetContextWindowStats:
 # =============================================================================
 # SYNC_CONTEXT_TO_CHILD TESTS
 # =============================================================================
+
 
 class TestSyncContextToChild:
     """Test the sync_context_to_child method."""
@@ -200,9 +250,7 @@ class TestSyncContextToChild:
 
         # Sync only CONTEXT messages
         result = cm_with_agents.sync_context_to_child(
-            "default",
-            "child-isolated",
-            categories=[MessageCategory.CONTEXT]
+            "default", "child-isolated", categories=[MessageCategory.CONTEXT]
         )
 
         assert result is True
@@ -225,6 +273,7 @@ class TestSyncContextToChild:
 # =============================================================================
 # GET_SHARED_CONTEXT_AGENTS TESTS
 # =============================================================================
+
 
 class TestGetSharedContextAgents:
     """Test the get_shared_context_agents method."""
@@ -256,9 +305,15 @@ class TestGetSharedContextAgents:
     def test_multiple_shared_agents(self, cm):
         """Test multiple agents sharing same CWM."""
         # Create multiple children that share with parent
-        cm.create_sub_agent("child1", parent_agent_id="default", share_context_window=True)
-        cm.create_sub_agent("child2", parent_agent_id="default", share_context_window=True)
-        cm.create_sub_agent("child3", parent_agent_id="default", share_context_window=True)
+        cm.create_sub_agent(
+            "child1", parent_agent_id="default", share_context_window=True
+        )
+        cm.create_sub_agent(
+            "child2", parent_agent_id="default", share_context_window=True
+        )
+        cm.create_sub_agent(
+            "child3", parent_agent_id="default", share_context_window=True
+        )
 
         shared = cm.get_shared_context_agents("default")
 
@@ -271,6 +326,7 @@ class TestGetSharedContextAgents:
 # =============================================================================
 # INTEGRATION TESTS
 # =============================================================================
+
 
 class TestContextSharingIntegration:
     """Integration tests for context sharing workflows."""
@@ -304,8 +360,12 @@ class TestContextSharingIntegration:
     def test_hierarchical_sharing(self, cm):
         """Test hierarchical context sharing: grandparent -> parent -> child."""
         # Create hierarchy
-        cm.create_sub_agent("parent", parent_agent_id="default", share_context_window=True)
-        cm.create_sub_agent("child", parent_agent_id="parent", share_context_window=True)
+        cm.create_sub_agent(
+            "parent", parent_agent_id="default", share_context_window=True
+        )
+        cm.create_sub_agent(
+            "child", parent_agent_id="parent", share_context_window=True
+        )
 
         # All three should share the same CWM
         assert cm.shares_context_window("default", "parent")
@@ -320,14 +380,16 @@ class TestContextSharingIntegration:
     def test_mixed_sharing_hierarchy(self, cm):
         """Test mixed sharing: some share, some don't."""
         # Parent shares with default
-        cm.create_sub_agent("parent", parent_agent_id="default", share_context_window=True)
+        cm.create_sub_agent(
+            "parent", parent_agent_id="default", share_context_window=True
+        )
         # Child doesn't share with parent (isolated) - need to also set share_session=False
         # because share_session=True forces share_context_window=True
         cm.create_sub_agent(
             "child",
             parent_agent_id="parent",
             share_session=False,
-            share_context_window=False
+            share_context_window=False,
         )
 
         # default and parent share

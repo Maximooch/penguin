@@ -21,7 +21,7 @@ from penguin.security.permission_engine import (
     PermissionDeniedError,
     PermissionCheck,
 )
-from penguin.security.policies import WorkspaceBoundaryPolicy
+from penguin.security.policies import WorkspaceBoundaryPolicy, AgentModePolicy
 from penguin.security.path_utils import (
     PathSecurityError,
     PathTraversalError,
@@ -63,6 +63,12 @@ from penguin.security.audit import (
     configure_audit_logger,
     configure_from_config,
 )
+from penguin.security.question import (
+    QuestionStatus,
+    QuestionRequest,
+    QuestionManager,
+    get_question_manager,
+)
 
 __all__ = [
     # Core permission types
@@ -75,6 +81,7 @@ __all__ = [
     "PermissionEnforcer",
     "PermissionDeniedError",
     "WorkspaceBoundaryPolicy",
+    "AgentModePolicy",
     # Path security
     "PathSecurityError",
     "PathTraversalError",
@@ -111,5 +118,9 @@ __all__ = [
     "get_audit_logger",
     "configure_audit_logger",
     "configure_from_config",
+    # Question flow
+    "QuestionStatus",
+    "QuestionRequest",
+    "QuestionManager",
+    "get_question_manager",
 ]
-

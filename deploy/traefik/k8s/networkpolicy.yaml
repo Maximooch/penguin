@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: penguin-netpol
+  namespace: penguin
+spec:
+  podSelector:
+    matchLabels:
+      app: penguin
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: traefik
+      ports:
+        - protocol: TCP
+          port: 8000
+  egress:
+    - to:
+      - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 443  # HTTPS to LLM providers
+        - protocol: TCP
+          port: 53   # DNS
+        - protocol: TCP
+          port: 6379  # Redis (optional)
+        - protocol: TCP
+          port: 5432  # PostgreSQL (optional)

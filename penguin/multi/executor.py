@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 class AgentState(Enum):
     """State of an agent in the executor."""
+
     PENDING = "pending"
     RUNNING = "running"
     PAUSED = "paused"
@@ -27,6 +28,7 @@ class AgentState(Enum):
 @dataclass
 class AgentTask:
     """Represents a background agent task."""
+
     agent_id: str
     prompt: str
     state: AgentState = AgentState.PENDING
@@ -150,9 +152,7 @@ class AgentExecutor:
         agent_ids = []
 
         for agent_id, prompt in agents:
-            aid = await self.spawn_agent(
-                agent_id, prompt, metadata.get(agent_id)
-            )
+            aid = await self.spawn_agent(agent_id, prompt, metadata.get(agent_id))
             agent_ids.append(aid)
 
         return agent_ids
@@ -169,11 +169,24 @@ class AgentExecutor:
                 logger.info(f"Agent '{agent_task.agent_id}' started execution")
 
                 # Execute via core.process
-                if hasattr(self._core, "process"):
-                    result = await self._core.process(
-                        input_data={"text": agent_task.prompt},
-                        agent_id=agent_task.agent_id,
+                run_scoped = getattr(self._core, "run_agent_prompt_in_session", None)
+                if callable(run_scoped) and asyncio.iscoroutinefunction(run_scoped):
+                    result = await run_scoped(
+                        agent_task.agent_id,
+                        agent_task.prompt,
+                        session_id=agent_task.metadata.get("session_id"),
+                        directory=agent_task.metadata.get("directory"),
+                        agent_mode=agent_task.metadata.get("agent_mode"),
                     )
+                elif hasattr(self._core, "process"):
+                    process_kwargs = {
+                        "input_data": {"text": agent_task.prompt},
+                        "agent_id": agent_task.agent_id,
+                    }
+                    session_id = agent_task.metadata.get("session_id")
+                    if isinstance(session_id, str) and session_id.strip():
+                        process_kwargs["conversation_id"] = session_id.strip()
+                    result = await self._core.process(**process_kwargs)
                 elif hasattr(self._core, "chat"):
                     result = await self._core.chat(agent_task.prompt)
                 else:
@@ -250,11 +263,7 @@ class AgentExecutor:
                 timeout=timeout,
             )
 
-        return {
-            aid: self._tasks[aid].result
-            for aid in agent_ids
-            if aid in self._tasks
-        }
+        return {aid: self._tasks[aid].result for aid in agent_ids if aid in self._tasks}
 
     def get_status(self, agent_id: str) -> Optional[Dict[str, Any]]:
         """Get status of a specific agent.
@@ -283,10 +292,7 @@ class AgentExecutor:
         Returns:
             Dict mapping agent_id to status dict
         """
-        return {
-            aid: self.get_status(aid)
-            for aid in self._tasks
-        }
+        return {aid: self.get_status(aid) for aid in self._tasks}
 
     async def cancel(self, agent_id: str) -> bool:
         """Cancel a running agent.
@@ -301,7 +307,11 @@ class AgentExecutor:
         if not agent_task or not agent_task.task:
             return False
 
-        if agent_task.state in (AgentState.COMPLETED, AgentState.FAILED, AgentState.CANCELLED):
+        if agent_task.state in (
+            AgentState.COMPLETED,
+            AgentState.FAILED,
+            AgentState.CANCELLED,
+        ):
             return False
 
         agent_task.task.cancel()
@@ -363,7 +373,11 @@ class AgentExecutor:
         """
         if agent_id in self._tasks:
             agent_task = self._tasks[agent_id]
-            if agent_task.state in (AgentState.COMPLETED, AgentState.FAILED, AgentState.CANCELLED):
+            if agent_task.state in (
+                AgentState.COMPLETED,
+                AgentState.FAILED,
+                AgentState.CANCELLED,
+            ):
                 del self._tasks[agent_id]
                 return True
         return False
