@@ -33,34 +33,86 @@ from penguin.tools import ToolManager  # noqa: E402
 # Re-export all classes from the inner penguin package
 try:
     from penguin.penguin import (
-        EngineSettings, ProjectManager, Project, Task, config,
-        __author__, __email__, __license__
+        EngineSettings,
+        ProjectManager,
+        Project,
+        Task,
+        config,
+        __author__,
+        __email__,
+        __license__,
     )
-    _inner_exports = ["EngineSettings", "ProjectManager", "Project", "Task", "config", "__author__", "__email__", "__license__"]
+
+    _inner_exports = [
+        "EngineSettings",
+        "ProjectManager",
+        "Project",
+        "Task",
+        "config",
+        "__author__",
+        "__email__",
+        "__license__",
+    ]
 except ImportError:
     _inner_exports = []
 
 # Re-export conditional classes from inner package
 try:
     from penguin.penguin import (
-        CheckpointManager, CheckpointConfig, CheckpointType, CheckpointMetadata,
+        CheckpointManager,
+        CheckpointConfig,
+        CheckpointType,
+        CheckpointMetadata,
         ModelConfig,
-        ConversationManager, Session, Message, MessageCategory,
-        PenguinClient, ChatOptions, TaskOptions, CheckpointInfo, ModelInfo, create_client
+        ConversationManager,
+        Session,
+        Message,
+        MessageCategory,
+        PenguinClient,
+        ChatOptions,
+        TaskOptions,
+        CheckpointInfo,
+        ModelInfo,
+        create_client,
     )
+
     _conditional_exports = [
-        "CheckpointManager", "CheckpointConfig", "CheckpointType", "CheckpointMetadata",
+        "CheckpointManager",
+        "CheckpointConfig",
+        "CheckpointType",
+        "CheckpointMetadata",
         "ModelConfig",
-        "ConversationManager", "Session", "Message", "MessageCategory", 
-        "PenguinClient", "ChatOptions", "TaskOptions", "CheckpointInfo", "ModelInfo", "create_client"
+        "ConversationManager",
+        "Session",
+        "Message",
+        "MessageCategory",
+        "PenguinClient",
+        "ChatOptions",
+        "TaskOptions",
+        "CheckpointInfo",
+        "ModelInfo",
+        "create_client",
     ]
 except ImportError:
     _conditional_exports = []
 
 # Re-export optional web/CLI classes from inner package
 try:
-    from penguin.penguin import create_app, PenguinAPI, PenguinWeb, PenguinCLI, get_cli_app
-    _web_exports = ["create_app", "PenguinAPI", "PenguinWeb", "PenguinCLI", "get_cli_app"]
+    from penguin.penguin import (
+        create_app,
+        PenguinAPI,
+        PenguinWeb,
+        PenguinCLI,
+        get_cli_app,
+    )
+
+    _web_exports = [
+        "create_app",
+        "PenguinAPI",
+        "PenguinWeb",
+        "PenguinCLI",
+        "get_cli_app",
+    ]
 except ImportError:
     _web_exports = []
 
@@ -73,11 +125,11 @@ except Exception:
     try:
         __version__ = version("penguin-ai")
     except PackageNotFoundError:  # Local dev mode without installed dist
-        __version__ = "0.4.0"
+        __version__ = "0.6.0"
 
 __all__ = [
     "Engine",
-    "PenguinAgent", 
+    "PenguinAgent",
     "PenguinAgentAsync",
     "PenguinCore",
     "ToolManager",

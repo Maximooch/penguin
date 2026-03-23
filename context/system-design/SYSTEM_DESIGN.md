@@ -1,4 +1,4 @@
-** 0.5.1  
+** 0.6.0  
 **Status:** Active  
 **Last Updated:** 2026-02-14
 
