@@ -66,6 +66,23 @@ def test_default_release_url_points_to_penguin_repo(
     )
 
 
+def test_sidecar_release_url_for_version_uses_tag_endpoint() -> None:
+    assert opencode_launcher._sidecar_release_url_for_version("0.5.1") == (
+        "https://api.github.com/repos/Maximooch/penguin/releases/tags/v0.5.1"
+    )
+
+
+def test_installed_penguin_version_falls_back_to_package_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _missing(_name: str) -> str:
+        raise opencode_launcher.importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(opencode_launcher.importlib.metadata, "version", _missing)
+
+    assert opencode_launcher._installed_penguin_version() == "0.5.1"
+
+
 def test_binary_supports_url_mode_from_help_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -223,6 +240,10 @@ def test_sidecar_bootstrap_downloads_verifies_and_caches(
 ) -> None:
     cache_root = tmp_path / "cache"
     monkeypatch.setenv("PENGUIN_TUI_CACHE_DIR", str(cache_root))
+    monkeypatch.delenv("PENGUIN_TUI_RELEASE_URL", raising=False)
+    monkeypatch.setattr(
+        opencode_launcher, "_installed_penguin_version", lambda: "0.5.1"
+    )
 
     asset_name = opencode_launcher._sidecar_platform_candidates()[0]
     binary_name = opencode_launcher._sidecar_binary_name()
@@ -241,8 +262,13 @@ def test_sidecar_bootstrap_downloads_verifies_and_caches(
     }
 
     calls: list[str] = []
+    release_calls: list[str] = []
 
-    monkeypatch.setattr(opencode_launcher, "_read_json_url", lambda url: release_doc)
+    def _read_release(url: str):
+        release_calls.append(url)
+        return release_doc
+
+    monkeypatch.setattr(opencode_launcher, "_read_json_url", _read_release)
 
     def _download(url: str, destination: Path, timeout_seconds: float = 120.0) -> None:
         del timeout_seconds
@@ -255,6 +281,9 @@ def test_sidecar_bootstrap_downloads_verifies_and_caches(
     assert first.exists()
     assert first.is_file()
     assert len(calls) == 1
+    assert release_calls == [
+        opencode_launcher._sidecar_release_url_for_version("0.5.1")
+    ]
 
     # Marker-based cache path should avoid release API/download on second call.
     monkeypatch.setattr(
@@ -273,6 +302,10 @@ def test_sidecar_bootstrap_rejects_checksum_mismatch(
 ) -> None:
     cache_root = tmp_path / "cache"
     monkeypatch.setenv("PENGUIN_TUI_CACHE_DIR", str(cache_root))
+    monkeypatch.delenv("PENGUIN_TUI_RELEASE_URL", raising=False)
+    monkeypatch.setattr(
+        opencode_launcher, "_installed_penguin_version", lambda: "0.5.1"
+    )
 
     asset_name = opencode_launcher._sidecar_platform_candidates()[0]
     binary_name = opencode_launcher._sidecar_binary_name()
@@ -301,6 +334,147 @@ def test_sidecar_bootstrap_rejects_checksum_mismatch(
         opencode_launcher._resolve_sidecar_binary()
 
     assert "checksum verification" in str(exc.value)
+
+
+def test_sidecar_cache_invalidates_when_installed_version_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "cache"
+    binary_path = (
+        cache_root
+        / "v0.5.1"
+        / "asset"
+        / "bin"
+        / opencode_launcher._sidecar_binary_name()
+    )
+    binary_path.parent.mkdir(parents=True, exist_ok=True)
+    binary_path.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    release_url = opencode_launcher._sidecar_release_url_for_version("0.5.1")
+    opencode_launcher._write_cached_sidecar_marker(
+        cache_root,
+        binary_path=binary_path,
+        release_tag="v0.5.1",
+        asset_name="asset",
+        release_url=release_url,
+        requested_version="0.5.1",
+    )
+
+    cached = opencode_launcher._read_cached_sidecar_marker(
+        cache_root,
+        release_url=opencode_launcher._sidecar_release_url_for_version("0.5.2"),
+        requested_version="0.5.2",
+    )
+
+    assert cached is None
+
+
+def test_sidecar_release_override_bypasses_installed_version_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("PENGUIN_TUI_CACHE_DIR", str(cache_root))
+    monkeypatch.setenv(
+        "PENGUIN_TUI_RELEASE_URL",
+        "https://example.invalid/releases/custom",
+    )
+
+    asset_name = opencode_launcher._sidecar_platform_candidates()[0]
+    binary_name = opencode_launcher._sidecar_binary_name()
+    archive_bytes = _build_archive_bytes(asset_name, binary_name)
+    digest = opencode_launcher.hashlib.sha256(archive_bytes).hexdigest()
+    release_doc = {
+        "tag_name": "v-custom",
+        "assets": [
+            {
+                "name": asset_name,
+                "browser_download_url": "https://example.invalid/opencode",
+                "digest": f"sha256:{digest}",
+            }
+        ],
+    }
+
+    def _unexpected_version() -> str:
+        raise AssertionError("installed version lookup should be skipped")
+
+    release_calls: list[str] = []
+
+    monkeypatch.setattr(
+        opencode_launcher,
+        "_installed_penguin_version",
+        _unexpected_version,
+    )
+    monkeypatch.setattr(
+        opencode_launcher,
+        "_read_json_url",
+        lambda url: release_calls.append(url) or release_doc,
+    )
+    monkeypatch.setattr(
+        opencode_launcher,
+        "_download_binary_asset",
+        lambda _url, destination, timeout_seconds=120.0: destination.write_bytes(
+            archive_bytes
+        ),
+    )
+
+    resolved = opencode_launcher._resolve_sidecar_binary()
+
+    assert resolved.exists()
+    assert release_calls == ["https://example.invalid/releases/custom"]
+
+
+def test_sidecar_bootstrap_errors_when_exact_version_release_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("PENGUIN_TUI_CACHE_DIR", str(cache_root))
+    monkeypatch.delenv("PENGUIN_TUI_RELEASE_URL", raising=False)
+    monkeypatch.setattr(
+        opencode_launcher, "_installed_penguin_version", lambda: "9.9.9"
+    )
+    monkeypatch.setattr(
+        opencode_launcher,
+        "_read_json_url",
+        lambda _url: (_ for _ in ()).throw(RuntimeError("missing release")),
+    )
+
+    with pytest.raises(RuntimeError) as exc:
+        opencode_launcher._resolve_sidecar_binary()
+
+    assert "v9.9.9" in str(exc.value)
+
+
+def test_sidecar_bootstrap_errors_when_exact_version_has_no_compatible_asset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "cache"
+    monkeypatch.setenv("PENGUIN_TUI_CACHE_DIR", str(cache_root))
+    monkeypatch.delenv("PENGUIN_TUI_RELEASE_URL", raising=False)
+    monkeypatch.setattr(
+        opencode_launcher, "_installed_penguin_version", lambda: "9.9.9"
+    )
+    monkeypatch.setattr(
+        opencode_launcher,
+        "_read_json_url",
+        lambda _url: {
+            "tag_name": "v9.9.9",
+            "assets": [
+                {
+                    "name": "opencode-unsupported.zip",
+                    "browser_download_url": "https://example.invalid/opencode",
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(RuntimeError) as exc:
+        opencode_launcher._resolve_sidecar_binary()
+
+    assert "v9.9.9" in str(exc.value)
 
 
 def test_main_autostarts_web_and_preserves_project_directory_env(

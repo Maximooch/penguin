@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import hashlib
+import importlib.metadata
 import json
 import os
 import platform
@@ -25,10 +26,11 @@ from urllib.error import URLError
 from urllib.parse import urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+from .._version import __version__ as PENGUIN_VERSION
+
 LOCAL_HOSTS = {"", "localhost", "127.0.0.1", "0.0.0.0", "::1"}
-DEFAULT_TUI_RELEASE_URL = (
-    "https://api.github.com/repos/Maximooch/penguin/releases/latest"
-)
+DEFAULT_TUI_RELEASE_API_ROOT = "https://api.github.com/repos/Maximooch/penguin/releases"
+DEFAULT_TUI_RELEASE_URL = f"{DEFAULT_TUI_RELEASE_API_ROOT}/latest"
 _URL_MODE_CAP_CACHE: dict[str, bool] = {}
 
 
@@ -272,6 +274,35 @@ def _sidecar_release_url() -> str:
     return raw or DEFAULT_TUI_RELEASE_URL
 
 
+def _sidecar_release_override_url() -> str | None:
+    raw = os.getenv("PENGUIN_TUI_RELEASE_URL", "").strip()
+    return raw or None
+
+
+def _normalize_version(value: str) -> str:
+    return value.strip().removeprefix("v")
+
+
+def _installed_penguin_version() -> str:
+    try:
+        resolved = importlib.metadata.version("penguin-ai")
+    except importlib.metadata.PackageNotFoundError:
+        resolved = PENGUIN_VERSION
+    normalized = _normalize_version(str(resolved))
+    if normalized:
+        return normalized
+    return _normalize_version(PENGUIN_VERSION)
+
+
+def _sidecar_release_url_for_version(version: str) -> str:
+    normalized = _normalize_version(version)
+    if not normalized:
+        raise RuntimeError(
+            "Unable to determine installed Penguin version for TUI sidecar lookup"
+        )
+    return f"{DEFAULT_TUI_RELEASE_API_ROOT}/tags/v{normalized}"
+
+
 def _sidecar_platform_candidates() -> list[str]:
     machine = platform.machine().strip().lower()
     if machine in {"amd64", "x86_64", "x64"}:
@@ -406,7 +437,12 @@ def _locate_extracted_binary(search_root: Path) -> Path | None:
     return None
 
 
-def _read_cached_sidecar_marker(cache_root: Path) -> Path | None:
+def _read_cached_sidecar_marker(
+    cache_root: Path,
+    *,
+    release_url: str,
+    requested_version: str | None,
+) -> Path | None:
     marker = cache_root / "current.json"
     if not marker.exists():
         return None
@@ -418,6 +454,15 @@ def _read_cached_sidecar_marker(cache_root: Path) -> Path | None:
 
     if not isinstance(data, dict):
         return None
+    marker_release_url = str(data.get("release_url", "")).strip()
+    if marker_release_url != release_url:
+        return None
+    marker_requested_version = data.get("requested_version")
+    if requested_version is not None:
+        if not isinstance(marker_requested_version, str):
+            return None
+        if _normalize_version(marker_requested_version) != requested_version:
+            return None
     raw_path = data.get("binary_path")
     if not isinstance(raw_path, str) or not raw_path.strip():
         return None
@@ -433,12 +478,16 @@ def _write_cached_sidecar_marker(
     binary_path: Path,
     release_tag: str,
     asset_name: str,
+    release_url: str,
+    requested_version: str | None,
 ) -> None:
     marker = cache_root / "current.json"
     payload = {
         "binary_path": str(binary_path),
         "release_tag": release_tag,
         "asset_name": asset_name,
+        "release_url": release_url,
+        "requested_version": requested_version,
     }
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -477,14 +526,50 @@ def _resolve_sidecar_binary() -> Path:
             f"Configured PENGUIN_TUI_BIN_PATH does not exist: {candidate}"
         )
 
+    override_release_url = _sidecar_release_override_url()
+    requested_version = None if override_release_url else _installed_penguin_version()
+    if requested_version is None and override_release_url is None:
+        raise RuntimeError(
+            "Unable to determine installed Penguin version for TUI sidecar lookup"
+        )
+    if override_release_url is not None:
+        release_url = override_release_url
+    else:
+        assert requested_version is not None
+        release_url = _sidecar_release_url_for_version(requested_version)
+
     cache_root = _sidecar_cache_root()
-    cached = _read_cached_sidecar_marker(cache_root)
+    cached = _read_cached_sidecar_marker(
+        cache_root,
+        release_url=release_url,
+        requested_version=requested_version,
+    )
     if cached is not None:
         return cached
 
-    release_url = _sidecar_release_url()
-    release = _read_json_url(release_url)
-    asset = _select_release_asset(release)
+    try:
+        release = _read_json_url(release_url)
+    except Exception as exc:
+        if requested_version is not None and override_release_url is None:
+            raise RuntimeError(
+                "No Penguin TUI sidecar release metadata found for installed Penguin "
+                f"version {requested_version}. Expected GitHub release tag "
+                f"v{requested_version}."
+            ) from exc
+        raise RuntimeError(
+            f"Unable to fetch Penguin TUI sidecar release metadata from {release_url}"
+        ) from exc
+
+    try:
+        asset = _select_release_asset(release)
+    except Exception as exc:
+        if requested_version is not None and override_release_url is None:
+            raise RuntimeError(
+                "Penguin TUI sidecar release "
+                f"v{requested_version} does not contain a compatible asset for "
+                f"{sys.platform}/{platform.machine()}."
+            ) from exc
+        raise
 
     asset_name = str(asset.get("name", "")).strip()
     asset_url = str(asset.get("browser_download_url", "")).strip()
@@ -500,6 +585,8 @@ def _resolve_sidecar_binary() -> Path:
             binary_path=binary_path,
             release_tag=release_tag,
             asset_name=asset_name,
+            release_url=release_url,
+            requested_version=requested_version,
         )
         return binary_path
 
@@ -533,6 +620,8 @@ def _resolve_sidecar_binary() -> Path:
         binary_path=binary_path,
         release_tag=release_tag,
         asset_name=asset_name,
+        release_url=release_url,
+        requested_version=requested_version,
     )
     return binary_path
 

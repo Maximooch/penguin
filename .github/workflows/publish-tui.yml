@@ -2,10 +2,6 @@ name: 🐧 Build Penguin TUI Sidecar
 
 on:
   push:
-    # Temporary branch trigger for pre-merge validation.
-    # Remove this branch-specific trigger once merged to main.
-    branches:
-      - "refactor-penguin-backend-tui"
     tags:
       - "v*"
   workflow_dispatch:
