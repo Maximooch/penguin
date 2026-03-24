@@ -442,8 +442,11 @@ class TestToolPermissionMapping:
     def test_write_tools_are_not_safe(self):
         from penguin.security.tool_permissions import is_safe_tool
 
+        assert is_safe_tool("write_file") is False
         assert is_safe_tool("write_to_file") is False
         assert is_safe_tool("execute_command") is False
+        assert is_safe_tool("patch_file") is False
+        assert is_safe_tool("patch_files") is False
         assert is_safe_tool("apply_diff") is False
 
     def test_extract_resource(self):
@@ -465,6 +468,9 @@ class TestToolPermissionMapping:
 
     def test_get_highest_risk_operation(self):
         from penguin.security.tool_permissions import get_highest_risk_operation
+
+        op = get_highest_risk_operation("patch_file")
+        assert op == Operation.FILESYSTEM_WRITE
 
         # apply_diff has read + write, should return write as higher risk
         op = get_highest_risk_operation("apply_diff")

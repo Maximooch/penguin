@@ -60,8 +60,10 @@ def test_tool_manager_get_responses_tools_curated():
             names.add(t["function"].get("name"))
 
     # A few representative curated tools
-    assert "write_to_file" in names
+    assert "write_file" in names
     assert "read_file" in names
+    assert "patch_file" in names
+    assert "patch_files" in names
     assert "execute_command" in names
 
     # Built-in web_search should be included as a non-function tool descriptor
@@ -231,7 +233,14 @@ def test_responses_tools_web_search_included():
 
     # Verify expected curated tools
     function_names = {t["function"]["name"] for t in function_tools}
-    expected_tools = {"read_file", "write_to_file", "execute_command", "code_execution"}
+    expected_tools = {
+        "read_file",
+        "write_file",
+        "patch_file",
+        "patch_files",
+        "execute_command",
+        "code_execution",
+    }
     assert expected_tools.issubset(function_names), (
         f"Missing expected tools. Got: {function_names}"
     )

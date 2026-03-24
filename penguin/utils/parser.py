@@ -13,6 +13,7 @@ import time
 from datetime import datetime
 from enum import Enum
 from html import unescape
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Awaitable
 import base64
 from penguin.local_task.manager import ProjectManager
@@ -143,6 +144,169 @@ class CodeActAction:
     def __init__(self, action_type, params):
         self.action_type = action_type
         self.params = params
+
+
+def _split_unescaped(
+    value: str,
+    separator: str = ":",
+    *,
+    maxsplit: int = -1,
+) -> List[str]:
+    """Split on unescaped separators while preserving regex backslashes."""
+    if not value:
+        return [""]
+
+    parts: List[str] = []
+    current: List[str] = []
+    splits = 0
+    escape_next = False
+
+    for char in value:
+        if escape_next:
+            if char in {separator, "\\"}:
+                current.append(char)
+            else:
+                current.append("\\")
+                current.append(char)
+            escape_next = False
+            continue
+
+        if char == "\\":
+            escape_next = True
+            continue
+
+        if char == separator and (maxsplit < 0 or splits < maxsplit):
+            parts.append("".join(current))
+            current = []
+            splits += 1
+            continue
+
+        current.append(char)
+
+    if escape_next:
+        current.append("\\")
+
+    parts.append("".join(current))
+    return parts
+
+
+def _find_unescaped_separator(
+    value: str,
+    separator: str = ":",
+    *,
+    reverse: bool = False,
+) -> int:
+    """Return the index of the next unescaped separator, or -1."""
+    if not value:
+        return -1
+
+    indices = range(len(value) - 1, -1, -1) if reverse else range(len(value))
+    for index in indices:
+        if value[index] != separator:
+            continue
+
+        backslash_count = 0
+        probe = index - 1
+        while probe >= 0 and value[probe] == "\\":
+            backslash_count += 1
+            probe -= 1
+
+        if backslash_count % 2 == 0:
+            return index
+
+    return -1
+
+
+def _decode_escaped_edit_field(value: str, separator: str = ":") -> str:
+    """Decode escaped separators/backslashes while preserving regex escapes."""
+    if not value:
+        return value
+
+    decoded: List[str] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "\\" and index + 1 < len(value):
+            next_char = value[index + 1]
+            if next_char in {separator, "\\"}:
+                decoded.append(next_char)
+                index += 2
+                continue
+        decoded.append(char)
+        index += 1
+    return "".join(decoded)
+
+
+def parse_edit_with_pattern_payload(params: Any) -> Dict[str, Any]:
+    """Parse regex edit payloads from JSON or escaped colon-delimited strings."""
+    if isinstance(params, dict):
+        payload = dict(params)
+        file_path = payload.get("file_path") or payload.get("path") or ""
+        search_pattern = payload.get("search_pattern") or payload.get("pattern")
+        replacement = payload.get("replacement")
+        if not isinstance(file_path, str) or not file_path.strip():
+            return {"error": "Need file_path for edit_with_pattern"}
+        if not isinstance(search_pattern, str):
+            return {"error": "Need search_pattern for edit_with_pattern"}
+        if not isinstance(replacement, str):
+            return {"error": "Need replacement for edit_with_pattern"}
+        backup = payload.get("backup", True)
+        return {
+            "file_path": file_path.strip(),
+            "search_pattern": search_pattern,
+            "replacement": replacement,
+            "backup": bool(backup),
+        }
+
+    if not isinstance(params, str) or not params.strip():
+        return {"error": "Need file_path:search_pattern:replacement format"}
+
+    text = params.strip()
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            return {"error": f"edit_with_pattern expects valid JSON payload: {exc}"}
+        return parse_edit_with_pattern_payload(parsed)
+
+    backup = True
+    body = text
+    backup_index = _find_unescaped_separator(text, reverse=True)
+    if backup_index >= 0:
+        maybe_flag = text[backup_index + 1 :].strip().lower()
+        if maybe_flag in {"true", "false"}:
+            body = text[:backup_index]
+            backup = maybe_flag == "true"
+
+    path_index = _find_unescaped_separator(body)
+    if path_index < 0:
+        return {"error": "Need file_path:search_pattern:replacement format"}
+
+    file_path = body[:path_index].strip()
+    if not file_path:
+        return {"error": "Need file_path:search_pattern:replacement format"}
+
+    remainder = body[path_index + 1 :]
+    pattern_index = _find_unescaped_separator(remainder)
+    if pattern_index < 0:
+        return {
+            "error": (
+                "Need file_path:search_pattern:replacement format. "
+                "Escape literal colons in search patterns as \\: or use JSON payloads."
+            )
+        }
+
+    search_pattern = _decode_escaped_edit_field(remainder[:pattern_index])
+    replacement = _decode_escaped_edit_field(remainder[pattern_index + 1 :])
+    if not search_pattern:
+        return {"error": "Need search_pattern for edit_with_pattern"}
+
+    return {
+        "file_path": file_path,
+        "search_pattern": search_pattern,
+        "replacement": replacement,
+        "backup": backup,
+    }
 
 
 def parse_action(content: str) -> List[CodeActAction]:
@@ -430,7 +594,7 @@ class ActionExecutor:
         if action.action_type == ActionType.APPLY_DIFF:
             first_sep = params.find(":")
             if first_sep > 0:
-                return [params[:first_sep].strip()]
+                return [self._normalize_lsp_path(params[:first_sep].strip())]
             return []
 
         if action.action_type in {
@@ -441,16 +605,116 @@ class ActionExecutor:
         }:
             first_sep = params.find(":")
             if first_sep > 0:
-                return [params[:first_sep].strip()]
+                return [self._normalize_lsp_path(params[:first_sep].strip())]
             return []
 
         if action.action_type == ActionType.EDIT_WITH_PATTERN:
             parts = params.split(":", 1)
             if parts and parts[0].strip():
-                return [parts[0].strip()]
+                return [self._normalize_lsp_path(parts[0].strip())]
             return []
 
         return []
+
+    def _lsp_base_directory(self) -> Optional[Path]:
+        """Resolve the best base directory for UI/LSP path normalization."""
+        context = get_current_execution_context()
+        candidates = []
+        if context is not None:
+            candidates.extend(
+                [context.directory, context.project_root, context.workspace_root]
+            )
+        candidates.append(getattr(self.tool_manager, "_file_root", None))
+
+        for candidate in candidates:
+            if not isinstance(candidate, str) or not candidate.strip():
+                continue
+            try:
+                resolved = Path(candidate).expanduser().resolve()
+            except Exception:
+                continue
+            if resolved.exists() and resolved.is_dir():
+                return resolved
+        return None
+
+    def _normalize_lsp_path(self, path_value: str) -> str:
+        """Normalize file paths for LSP/UI payloads."""
+        text = str(path_value or "").strip()
+        if not text:
+            return ""
+
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            return text.replace("\\", "/")
+
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            return text.replace("\\", "/")
+
+        base_directory = self._lsp_base_directory()
+        if base_directory is not None:
+            try:
+                return str(resolved.relative_to(base_directory)).replace("\\", "/")
+            except Exception:
+                pass
+        return str(resolved).replace("\\", "/")
+
+    def _parse_action_result_payload(self, result: Any) -> Dict[str, Any]:
+        """Parse structured tool output when available."""
+        if isinstance(result, dict):
+            return result
+        if not isinstance(result, str):
+            return {}
+
+        text = result.strip()
+        if not text.startswith("{"):
+            return {}
+
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _extract_result_changed_files(self, result: Any) -> List[str]:
+        """Prefer changed files returned by the tool over raw param parsing."""
+        payload = self._parse_action_result_payload(result)
+        if not payload:
+            return []
+
+        paths: List[str] = []
+
+        single_file = payload.get("file")
+        if isinstance(single_file, str) and single_file.strip():
+            paths.append(single_file.strip())
+
+        for key in ("files", "files_edited", "created"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                paths.extend(
+                    str(item).strip()
+                    for item in value
+                    if isinstance(item, str) and str(item).strip()
+                )
+
+        diagnostics_payload = payload.get("diagnostics")
+        if not paths and isinstance(diagnostics_payload, dict):
+            paths.extend(
+                str(raw_path).strip()
+                for raw_path in diagnostics_payload.keys()
+                if str(raw_path).strip()
+            )
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for path in paths:
+            normalized_path = self._normalize_lsp_path(path)
+            if not normalized_path or normalized_path in seen:
+                continue
+            seen.add(normalized_path)
+            deduped.append(normalized_path)
+        return deduped
 
     def _build_lsp_diagnostics(
         self, files: List[str], result: Any
@@ -541,9 +805,12 @@ class ActionExecutor:
         diagnostics_payload = payload.get("diagnostics") if payload else None
         if isinstance(diagnostics_payload, dict):
             normalized: Dict[str, List[Dict[str, Any]]] = {}
+            normalized_files = {
+                self._normalize_lsp_path(path) for path in files if path
+            }
             for raw_path, entries in diagnostics_payload.items():
-                path = str(raw_path)
-                if files and path and path not in files:
+                path = self._normalize_lsp_path(str(raw_path))
+                if normalized_files and path and path not in normalized_files:
                     continue
                 if not isinstance(entries, list):
                     continue
@@ -786,8 +1053,12 @@ class ActionExecutor:
                     logger.debug(f"UI event emit failed (action result): {e}")
 
             if self._ui_event_cb and self._is_lsp_refresh_action(action.action_type):
-                files = self._extract_changed_files(action)
+                files = self._extract_result_changed_files(result)
+                if not files:
+                    files = self._extract_changed_files(action)
                 diagnostics_map = self._build_lsp_diagnostics(files, result)
+                if not files and diagnostics_map:
+                    files = [path for path in diagnostics_map.keys() if path]
                 try:
                     await self._ui_event_cb(
                         "lsp.updated",
@@ -2330,12 +2601,16 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             label = (
                 label_raw.strip()
                 if isinstance(label_raw, str)
-                else str(label_raw).strip() if label_raw is not None else ""
+                else str(label_raw).strip()
+                if label_raw is not None
+                else ""
             )
             description = (
                 description_raw.strip()
                 if isinstance(description_raw, str)
-                else str(description_raw).strip() if description_raw is not None else ""
+                else str(description_raw).strip()
+                if description_raw is not None
+                else ""
             )
 
             if not label or not description:
@@ -2366,12 +2641,16 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             question_text = (
                 question_raw.strip()
                 if isinstance(question_raw, str)
-                else str(question_raw).strip() if question_raw is not None else ""
+                else str(question_raw).strip()
+                if question_raw is not None
+                else ""
             )
             header_text = (
                 header_raw.strip()
                 if isinstance(header_raw, str)
-                else str(header_raw).strip() if header_raw is not None else ""
+                else str(header_raw).strip()
+                if header_raw is not None
+                else ""
             )
 
             options = self._normalize_question_options(item.get("options"))
@@ -3202,7 +3481,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 content = content_part
 
         return self.tool_manager.execute_tool(
-            "write_to_file", {"path": path, "content": content, "backup": backup}
+            "write_file", {"path": path, "content": content, "backup": backup}
         )
 
     def _apply_diff(self, params: str) -> str:
@@ -3232,8 +3511,13 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 diff_content = diff_part
 
         return self.tool_manager.execute_tool(
-            "apply_diff",
-            {"file_path": file_path, "diff_content": diff_content, "backup": backup},
+            "patch_file",
+            {
+                "path": file_path,
+                "operation_type": "unified_diff",
+                "diff_content": diff_content,
+                "backup": backup,
+            },
         )
 
     def _multiedit(self, params: str) -> str:
@@ -3246,7 +3530,7 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             do_apply = m.group(1).lower() == "true"
             content = content[m.end() :]
         return self.tool_manager.execute_tool(
-            "multiedit_apply",
+            "patch_files",
             {
                 "content": content,
                 "apply": do_apply,
@@ -3254,42 +3538,23 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
         )
 
     def _edit_with_pattern(self, params: str) -> str:
-        """Edit file with pattern replacement. Format: file_path:search_pattern:replacement:backup
+        """Edit file with pattern replacement.
 
-        Note: Uses reverse split to handle colons in replacement text.
+        Supports JSON payloads and escaped colon-delimited strings.
         """
-        # Split from the right to handle optional backup flag first
-        parts = params.rsplit(":", 1)
-        backup = False
-        content_parts = parts[0]
-
-        # Check if last part is the backup flag (true/false)
-        if len(parts) == 2 and parts[1].strip().lower() in ("true", "false"):
-            backup = parts[1].strip().lower() == "true"
-        else:
-            # No backup flag, treat entire string as content
-            content_parts = params
-            backup = True  # Default to backup
-
-        # Now split the content part into file_path:search_pattern:replacement
-        # Split only on first 2 colons to preserve colons in replacement text
-        parts = content_parts.split(":", 2)
-        if len(parts) < 3:
-            return "Error: Need file_path:search_pattern:replacement format"
-
-        file_path = parts[0].strip()
-        search_pattern = parts[1]  # Don't strip - regex patterns may need whitespace
-        replacement = parts[
-            2
-        ]  # Don't strip - replacement may need whitespace (and may contain colons!)
+        parsed = parse_edit_with_pattern_payload(params)
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
 
         return self.tool_manager.execute_tool(
-            "edit_with_pattern",
+            "patch_file",
             {
-                "file_path": file_path,
-                "search_pattern": search_pattern,
-                "replacement": replacement,
-                "backup": backup,
+                "path": parsed["file_path"],
+                "operation_type": "regex_replace",
+                "search_pattern": parsed["search_pattern"],
+                "replacement": parsed["replacement"],
+                "backup": parsed["backup"],
             },
         )
 
@@ -3326,9 +3591,10 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
                 new_content = content_part
 
         return self.tool_manager.execute_tool(
-            "replace_lines",
+            "patch_file",
             {
                 "path": path,
+                "operation_type": "replace_lines",
                 "start_line": start_line,
                 "end_line": end_line,
                 "new_content": new_content,
@@ -3354,9 +3620,10 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             return "Error: after_line must be an integer"
 
         return self.tool_manager.execute_tool(
-            "insert_lines",
+            "patch_file",
             {
                 "path": path,
+                "operation_type": "insert_lines",
                 "after_line": after_line,
                 "new_content": new_content,
             },
@@ -3381,9 +3648,10 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             return "Error: start_line and end_line must be integers"
 
         return self.tool_manager.execute_tool(
-            "delete_lines",
+            "patch_file",
             {
                 "path": path,
+                "operation_type": "delete_lines",
                 "start_line": start_line,
                 "end_line": end_line,
             },

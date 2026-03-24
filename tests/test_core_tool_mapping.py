@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -234,6 +235,35 @@ def test_map_action_result_metadata_extracts_diff_for_edit_with_pattern() -> Non
     assert metadata["filePath"] == "src/main.py"
     assert metadata["diff"].startswith("--- a/src/main.py")
     assert "+DEBUG = True" in metadata["diff"]
+
+
+def test_map_action_result_metadata_captures_files_for_multiedit() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    metadata = core._map_action_result_metadata(
+        "multiedit",
+        json.dumps(
+            {
+                "success": True,
+                "files": ["src/a.py", "src/b.py"],
+                "files_edited": [
+                    "/tmp/workspace/src/a.py",
+                    "/tmp/workspace/src/b.py",
+                ],
+                "applied": True,
+            }
+        ),
+        existing=None,
+        tool_input={"filePath": "(multiple files)"},
+        status="completed",
+    )
+
+    assert metadata["files"] == [
+        "src/a.py",
+        "src/b.py",
+        "/tmp/workspace/src/a.py",
+        "/tmp/workspace/src/b.py",
+    ]
 
 
 def test_map_action_result_metadata_extracts_todos_for_todowrite() -> None:

@@ -2456,9 +2456,9 @@ class PenguinCore:
                 try:
                     current_session = self.conversation_manager.get_current_session()
                     if current_session:
-                        info["conversation_manager"][
-                            "current_session_id"
-                        ] = current_session.id
+                        info["conversation_manager"]["current_session_id"] = (
+                            current_session.id
+                        )
                         info["conversation_manager"]["total_messages"] = len(
                             current_session.messages
                         )
@@ -4595,6 +4595,35 @@ class PenguinCore:
             return parsed
         return {}
 
+    def _extract_result_file_paths(self, result: Any) -> list[str]:
+        payload = self._parse_action_payload(result)
+        if not payload:
+            return []
+
+        files: list[str] = []
+        single_file = payload.get("file")
+        if isinstance(single_file, str) and single_file.strip():
+            files.append(single_file.strip())
+
+        for key in ("files", "created", "files_edited"):
+            value = payload.get(key)
+            if not isinstance(value, list):
+                continue
+            files.extend(
+                str(item).strip()
+                for item in value
+                if isinstance(item, str) and item.strip()
+            )
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for path in files:
+            if path in seen:
+                continue
+            seen.add(path)
+            deduped.append(path)
+        return deduped
+
     def _humanize_subagent_name(self, value: Any) -> str:
         text = str(value or "subagent").strip() or "subagent"
         return text.replace("_", " ").replace("-", " ")
@@ -5063,6 +5092,7 @@ class PenguinCore:
             "enhanced_write",
             "insert_lines",
             "delete_lines",
+            "multiedit",
         }:
             file_path = self._extract_tool_file_path(tool_input)
             if file_path:
@@ -5070,6 +5100,11 @@ class PenguinCore:
             diff_text = self._extract_unified_diff_from_result(result)
             if diff_text:
                 metadata["diff"] = self._ensure_unified_diff(file_path, diff_text)
+            result_files = self._extract_result_file_paths(result)
+            if result_files:
+                metadata["files"] = result_files
+                if len(result_files) == 1:
+                    metadata.setdefault("filePath", result_files[0])
         if action_name == "spawn_sub_agent":
             payload = self._parse_action_payload(result)
             if (
