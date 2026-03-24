@@ -88,12 +88,17 @@ def generate_and_apply_diff(
     logging.getLogger(__name__).debug(
         f"Applying diff to {full_path} with encoding {encoding}"
     )
+    display_path = _diff_display_path(
+        str(full_path),
+        Path(full_path).resolve(),
+        workspace_path,
+    )
     diff = list(
         difflib.unified_diff(
             original_content.splitlines(keepends=True),
             new_content.splitlines(keepends=True),
-            fromfile=f"a/{full_path}",
-            tofile=f"b/{full_path}",
+            fromfile=f"a/{display_path}",
+            tofile=f"b/{display_path}",
             n=3,
         )
     )
@@ -753,6 +758,33 @@ def _build_single_file_patch(
     return "\n".join(patch) + "\n"
 
 
+def _format_single_file_patch_for_display(
+    file_path: str,
+    diff_content: str,
+    workspace_path: Optional[str] = None,
+) -> str:
+    """Normalize single-file patch text for user-facing output."""
+    normalized = _strip_diff_fences(diff_content)
+    try:
+        resolved_path = Path(file_path).resolve()
+    except Exception:
+        resolved_path = Path(file_path)
+    display_path = _diff_display_path(file_path, resolved_path, workspace_path)
+
+    lines = normalized.splitlines()
+    if len(lines) >= 2 and lines[0].startswith("--- ") and lines[1].startswith("+++"):
+        rebuilt = [f"--- a/{display_path}", f"+++ b/{display_path}"]
+        rebuilt.extend(lines[2:])
+        return "\n".join(rebuilt) + "\n"
+
+    if any(line.startswith("@@") for line in lines):
+        rebuilt = [f"--- a/{display_path}", f"+++ b/{display_path}"]
+        rebuilt.extend(lines)
+        return "\n".join(rebuilt) + "\n"
+
+    return _build_single_file_patch(display_path, normalized, None)
+
+
 def apply_diff_to_file(
     file_path,
     diff_content,
@@ -902,7 +934,13 @@ def apply_diff_to_file(
                 }
                 return json.dumps(result)
             else:
-                return f"Successfully applied diff to {target_path}"
+                rendered_patch = _format_single_file_patch_for_display(
+                    file_path,
+                    diff_content,
+                    workspace_path,
+                )
+                summary = f"Successfully applied diff to {target_path}"
+                return f"{summary}\n{rendered_patch}" if rendered_patch else summary
 
         except Exception as e:
             # Attempt to restore from backup
@@ -2299,7 +2337,15 @@ def insert_lines(
         with open(safe_path, "w", encoding="utf-8") as f:
             f.writelines(result_lines)
 
-        return f"Inserted {len(new_lines_list)} lines after line {after_line} in {safe_path} (backup: {backup_path})"
+        original_content = "".join(lines)
+        modified_content = "".join(result_lines)
+        diff = generate_diff_patch(
+            original_content,
+            modified_content,
+            _diff_display_path(path, safe_path, workspace_path),
+        )
+        summary = f"Inserted {len(new_lines_list)} lines after line {after_line} in {safe_path} (backup: {backup_path})"
+        return f"{summary}\n{diff}" if diff else summary
 
     except Exception as e:
         return f"Error in insert_lines: {str(e)}\n{traceback.format_exc()}"
@@ -2349,7 +2395,15 @@ def delete_lines(
         with open(safe_path, "w", encoding="utf-8") as f:
             f.writelines(result_lines)
 
-        return f"Deleted lines {start_line}-{end_line} ({deleted_count} lines) from {safe_path} (backup: {backup_path})"
+        original_content = "".join(lines)
+        modified_content = "".join(result_lines)
+        diff = generate_diff_patch(
+            original_content,
+            modified_content,
+            _diff_display_path(path, safe_path, workspace_path),
+        )
+        summary = f"Deleted lines {start_line}-{end_line} ({deleted_count} lines) from {safe_path} (backup: {backup_path})"
+        return f"{summary}\n{diff}" if diff else summary
 
     except Exception as e:
         return f"Error in delete_lines: {str(e)}\n{traceback.format_exc()}"

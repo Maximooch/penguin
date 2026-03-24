@@ -179,11 +179,11 @@
 
 ### Phase 8 - Output Consistency and Compatibility Audit
 
-- [ ] Normalize diff display paths so canonical tool output uses clean workspace-relative headers where possible
-- [ ] Standardize `patch_file` result rendering across operation types (`unified_diff`, `regex_replace`, line operations)
-- [ ] Audit deprecated/legacy payload shapes and confirm they either still work correctly or fail with explicit migration guidance
-- [ ] Decide whether legacy compatibility shims should remain indefinitely or move to a timed removal/deprecation policy
-- [ ] Add focused regression coverage for output-format consistency and deprecated-payload behavior
+- [x] Normalize diff display paths so canonical tool output uses clean workspace-relative headers where possible
+- [x] Standardize `patch_file` result rendering across operation types (`unified_diff`, `regex_replace`, line operations)
+- [x] Audit deprecated/legacy payload shapes and confirm they either still work correctly or fail with explicit migration guidance
+- [x] Decide whether legacy compatibility shims should remain indefinitely or move to a timed removal/deprecation policy
+- [x] Add focused regression coverage for output-format consistency and deprecated-payload behavior
 
 ## Suggested Execution Order
 
@@ -197,7 +197,7 @@
 - [x] 7. Collapse duplicate implementations
 - [x] 8. Generate prompt docs from schema metadata
 - [x] 9. Remove legacy public edit tools
-- [ ] 10. Polish output consistency and compatibility audit
+- [x] 10. Polish output consistency and compatibility audit
 
 ## Change Log
 
@@ -273,6 +273,15 @@
   - output-format consistency
   - deprecated-payload compatibility audit
   - explicit long-term compatibility policy for legacy shims
+- Phase 8 polish is complete.
+- Canonical diff-bearing outputs now use cleaner display headers for user-facing results instead of odd absolute-path diff prefixes.
+- `patch_file` output is now more consistent across `unified_diff`, `regex_replace`, and line-based operations because successful results all surface diff text when available.
+- Compatibility audit decision: keep centralized legacy edit shims for now, but only as parser/ToolManager migration aliases; revisit removal only after at least one stable release cycle with explicit migration notes.
+- External retesting in `context/tools-report copy.md` validated the Phase 8 polish:
+  - `patch_file` `unified_diff` now returns diff text instead of a bare success string
+  - `write_file` overwrite headers now render clean relative diff paths
+  - malformed payload failures, no-op semantics, and `patch_files` rollback all behaved credibly in interactive stress tests
+- Remaining rough edge from external validation: unified-diff failure messaging is still somewhat noisy/redundant, but correctness and rollback behavior now look trustworthy.
 
 ## Implementation Log
 
@@ -365,6 +374,10 @@
 - Added `raw_action_type` tracking on parsed actions so compatibility aliases remain observable without staying public-first-class.
 - Added explicit `enhanced_read -> read_file` ToolManager alias coverage to match the canonical four-tool public surface.
 - Updated parser and action-tag regression suites to assert legacy tag normalization instead of treating legacy edit tags as canonical public actions.
+- Added user-facing patch display normalization for single-file diff output so overwrite/unified-diff results no longer show awkward absolute-path diff headers.
+- Extended line-operation support output so `insert_lines` and `delete_lines` now emit inline diff text like the other canonical patch operations.
+- Added explicit canonical `patch_file` failure guidance when callers try to use unsupported legacy raw-string payloads directly.
+- Chose an explicit compatibility policy: legacy edit shims stay centralized and supported for now, but are no longer public-first-class and should only be considered for removal after a later release-cycle review.
 
 ## Verification Log
 
@@ -422,6 +435,14 @@
   - result: `58 passed`
 - `uv run pytest -q tests/test_prompt_actions.py tests/test_parser_and_tools.py tests/test_edit_contract_aliases.py tests/test_parser_edit_handlers.py tests/test_edit_lsp_reporting.py tests/test_core_tool_mapping.py tests/test_permission_engine.py tests/test_action_tag_parser.py tests/tools/test_edit_service.py tests/tools/test_multiedit_apply.py tests/tools/test_multiedit_atomic.py`
   - result: `131 passed`
+- `uv run pytest -q tests/tools/test_edit_service.py tests/test_parser_edit_handlers.py`
+  - result: `18 passed`
+- `uv run pytest -q tests/test_prompt_actions.py tests/test_parser_and_tools.py tests/test_edit_contract_aliases.py tests/test_parser_edit_handlers.py tests/test_edit_lsp_reporting.py tests/test_core_tool_mapping.py tests/test_permission_engine.py tests/test_action_tag_parser.py tests/tools/test_edit_service.py tests/tools/test_multiedit_apply.py tests/tools/test_multiedit_atomic.py`
+  - result: `134 passed`
+- External interactive validation captured in `context/tools-report copy.md`:
+  - canonical paths (`write_file`, `patch_file`, `patch_files`) still worked after cleanup
+  - output consistency improved for `unified_diff` tool results and overwrite diff headers
+  - malformed payload handling, bounds checks, no-op regex behavior, diff-failure logging, and `patch_files` rollback all behaved as expected in stress testing
 
 ## Notes For Ongoing Updates
 

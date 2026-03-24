@@ -261,6 +261,16 @@ def test_patch_file_handler_accepts_canonical_nested_json_payload() -> None:
     ]
 
 
+def test_patch_file_handler_rejects_legacy_string_payload_with_migration_guidance() -> (
+    None
+):
+    executor, _tool_manager = _build_executor()
+
+    result = executor._patch_file("src/main.py:some legacy content")
+
+    assert result.startswith("Error: patch_file requires JSON payloads.")
+
+
 def test_patch_files_handler_accepts_structured_operations_json() -> None:
     executor, tool_manager = _build_executor()
 

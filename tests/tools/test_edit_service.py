@@ -85,7 +85,67 @@ def test_edit_service_patch_file_supports_unified_diff(tmp_path: Path) -> None:
         assert result.error is None
         assert result.backup_paths == [str(target.with_suffix(target.suffix + ".bak"))]
         assert result.render_legacy_output().startswith("Successfully applied diff")
+        assert "--- a/pkg/mod.py" in result.render_legacy_output()
+        assert "+print('new')" in result.render_legacy_output()
         assert target.read_text(encoding="utf-8") == "print('new')\n"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_edit_service_write_file_overwrite_uses_normalized_diff_headers(
+    tmp_path: Path,
+) -> None:
+    workspace = (
+        Path.cwd() / ".tmp-track-a-tests" / f"{tmp_path.name}_write_diff_headers"
+    )
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        target = workspace / "legacy-retest.txt"
+        target.write_text("red\nblue\n", encoding="utf-8")
+
+        service = EditService(workspace_root=str(workspace))
+        result = service.write_file("legacy-retest.txt", "red-final\nblue-final\n")
+
+        assert result.ok is True
+        assert "--- a/legacy-retest.txt" in result.render_legacy_output()
+        assert "+++ b/legacy-retest.txt" in result.render_legacy_output()
+        assert "a//Users" not in result.render_legacy_output()
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_edit_service_insert_and_delete_lines_include_diff_output(
+    tmp_path: Path,
+) -> None:
+    workspace = Path.cwd() / ".tmp-track-a-tests" / f"{tmp_path.name}_line_diff_output"
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        target = workspace / "notes.txt"
+        target.write_text("alpha\nbeta\n", encoding="utf-8")
+
+        service = EditService(workspace_root=str(workspace))
+        insert_result = service.patch_file(
+            EditOperation(
+                type="insert_lines",
+                path="notes.txt",
+                payload={"after_line": 2, "new_content": "gamma"},
+            )
+        )
+        delete_result = service.patch_file(
+            EditOperation(
+                type="delete_lines",
+                path="notes.txt",
+                payload={"start_line": 1, "end_line": 1},
+            )
+        )
+
+        assert insert_result.ok is True
+        assert "--- a/notes.txt" in insert_result.render_legacy_output()
+        assert "+gamma" in insert_result.render_legacy_output()
+
+        assert delete_result.ok is True
+        assert "--- a/notes.txt" in delete_result.render_legacy_output()
+        assert "-alpha" in delete_result.render_legacy_output()
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 
