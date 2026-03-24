@@ -173,9 +173,17 @@
 
 ### Phase 7 - Legacy Public Surface Cleanup
 
-- [ ] Remove model-facing legacy edit tools once migration is stable
-- [ ] Remove or explicitly retain transitional aliases with a documented policy
-- [ ] Confirm the public edit API is reduced to the intended minimal surface
+- [x] Remove model-facing legacy edit tools once migration is stable
+- [x] Remove or explicitly retain transitional aliases with a documented policy
+- [x] Confirm the public edit API is reduced to the intended minimal surface
+
+### Phase 8 - Output Consistency and Compatibility Audit
+
+- [ ] Normalize diff display paths so canonical tool output uses clean workspace-relative headers where possible
+- [ ] Standardize `patch_file` result rendering across operation types (`unified_diff`, `regex_replace`, line operations)
+- [ ] Audit deprecated/legacy payload shapes and confirm they either still work correctly or fail with explicit migration guidance
+- [ ] Decide whether legacy compatibility shims should remain indefinitely or move to a timed removal/deprecation policy
+- [ ] Add focused regression coverage for output-format consistency and deprecated-payload behavior
 
 ## Suggested Execution Order
 
@@ -188,7 +196,8 @@
 - [x] 6. Move parser handlers to JSON-first payloads
 - [x] 7. Collapse duplicate implementations
 - [x] 8. Generate prompt docs from schema metadata
-- [ ] 9. Remove legacy public edit tools
+- [x] 9. Remove legacy public edit tools
+- [ ] 10. Polish output consistency and compatibility audit
 
 ## Change Log
 
@@ -256,6 +265,14 @@
 - Fixed `patch_file` validation for line-based operations so missing numeric fields now return explicit parameter errors instead of `NoneType` crashes.
 - Fixed `patch_files` permission/resource extraction so multi-file writes use request-scoped file targets instead of falling back to the tool name during permission checks.
 - Explicit design decision: `prompt_actions.py` is retained as the fast-tweak prompt-optimization layer, but no longer owns the canonical edit-tool contract.
+- Phase 7 legacy public-surface cleanup is complete.
+- Legacy edit ActionXML tags are now parser compatibility aliases that normalize immediately to canonical actions instead of remaining first-class public action types.
+- The model-facing edit surface is now reduced to the intended canonical set: `read_file`, `write_file`, `patch_file`, and `patch_files`.
+- Transitional aliases are explicitly retained only as compatibility shims in centralized alias maps and parser normalization, not as prompt-exposed public tools.
+- Added a follow-up Phase 8 bucket for post-refactor polish:
+  - output-format consistency
+  - deprecated-payload compatibility audit
+  - explicit long-term compatibility policy for legacy shims
 
 ## Implementation Log
 
@@ -344,6 +361,10 @@
   - clear `insert_lines` validation failures
   - structured `patch_files` execution with workspace-scoped permissions
   - legacy raw-content `patch_files` execution with workspace-scoped permissions
+- Added centralized parser-side legacy edit alias normalization so legacy tags now resolve to canonical action types at parse time.
+- Added `raw_action_type` tracking on parsed actions so compatibility aliases remain observable without staying public-first-class.
+- Added explicit `enhanced_read -> read_file` ToolManager alias coverage to match the canonical four-tool public surface.
+- Updated parser and action-tag regression suites to assert legacy tag normalization instead of treating legacy edit tags as canonical public actions.
 
 ## Verification Log
 
@@ -397,6 +418,10 @@
   - result: `30 passed`
 - `uv run pytest -q tests/test_prompt_actions.py tests/test_parser_and_tools.py tests/test_edit_contract_aliases.py tests/test_parser_edit_handlers.py tests/test_edit_lsp_reporting.py tests/test_core_tool_mapping.py tests/test_permission_engine.py tests/tools/test_edit_service.py tests/tools/test_multiedit_apply.py tests/tools/test_multiedit_atomic.py`
   - result: `125 passed`
+- `uv run pytest -q tests/test_parser_and_tools.py tests/test_edit_contract_aliases.py tests/test_action_tag_parser.py tests/test_parser_edit_handlers.py tests/test_edit_lsp_reporting.py tests/test_prompt_actions.py`
+  - result: `58 passed`
+- `uv run pytest -q tests/test_prompt_actions.py tests/test_parser_and_tools.py tests/test_edit_contract_aliases.py tests/test_parser_edit_handlers.py tests/test_edit_lsp_reporting.py tests/test_core_tool_mapping.py tests/test_permission_engine.py tests/test_action_tag_parser.py tests/tools/test_edit_service.py tests/tools/test_multiedit_apply.py tests/tools/test_multiedit_atomic.py`
+  - result: `131 passed`
 
 ## Notes For Ongoing Updates
 

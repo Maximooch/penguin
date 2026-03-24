@@ -144,10 +144,49 @@ class ActionType(Enum):
     CREATE_BUGFIX_PR = "create_bugfix_pr"
 
 
+CANONICAL_EDIT_ACTION_TYPES = {
+    ActionType.READ_FILE,
+    ActionType.WRITE_FILE,
+    ActionType.PATCH_FILE,
+    ActionType.PATCH_FILES,
+}
+
+
+LEGACY_EDIT_ACTION_ALIASES: Dict[str, ActionType] = {
+    ActionType.ENHANCED_READ.value: ActionType.READ_FILE,
+    ActionType.ENHANCED_WRITE.value: ActionType.WRITE_FILE,
+    ActionType.APPLY_DIFF.value: ActionType.PATCH_FILE,
+    ActionType.MULTIEDIT.value: ActionType.PATCH_FILES,
+    ActionType.EDIT_WITH_PATTERN.value: ActionType.PATCH_FILE,
+    ActionType.REPLACE_LINES.value: ActionType.PATCH_FILE,
+    ActionType.INSERT_LINES.value: ActionType.PATCH_FILE,
+    ActionType.DELETE_LINES.value: ActionType.PATCH_FILE,
+}
+
+
 class CodeActAction:
-    def __init__(self, action_type, params):
+    action_type: ActionType
+    params: Any
+    raw_action_type: str
+
+    def __init__(
+        self,
+        action_type: ActionType,
+        params: Any,
+        raw_action_type: Optional[str] = None,
+    ):
         self.action_type = action_type
         self.params = params
+        self.raw_action_type = raw_action_type or action_type.value
+
+
+def resolve_action_type(action_name: str) -> ActionType:
+    """Resolve a raw action tag name to its canonical action type."""
+    normalized = str(action_name or "").strip().lower()
+    aliased = LEGACY_EDIT_ACTION_ALIASES.get(normalized)
+    if aliased is not None:
+        return aliased
+    return ActionType[normalized.upper()]
 
 
 def _split_unescaped(
@@ -862,8 +901,12 @@ def parse_action(content: str) -> List[CodeActAction]:
 
             # Verify this is a valid action type
             try:
-                action_type_enum = ActionType[action_type.upper()]
-                action = CodeActAction(action_type_enum, params)
+                action_type_enum = resolve_action_type(action_type)
+                action = CodeActAction(
+                    action_type_enum,
+                    params,
+                    raw_action_type=action_type,
+                )
                 actions.append(action)
                 logger.debug(f"Found valid action: {action_type}")
             except KeyError:
@@ -1013,6 +1056,24 @@ class ActionExecutor:
             action.params, str
         ):
             return self._inject_tool_call_id(action.params, action_id)
+        if action.action_type == ActionType.PATCH_FILE:
+            legacy_patch_defaults = {
+                ActionType.APPLY_DIFF.value: "unified_diff",
+                ActionType.EDIT_WITH_PATTERN.value: "regex_replace",
+                ActionType.REPLACE_LINES.value: "replace_lines",
+                ActionType.INSERT_LINES.value: "insert_lines",
+                ActionType.DELETE_LINES.value: "delete_lines",
+            }
+            default_operation_type = legacy_patch_defaults.get(
+                getattr(action, "raw_action_type", action.action_type.value)
+            )
+            if default_operation_type:
+                parsed = parse_patch_file_payload(
+                    action.params,
+                    default_operation_type=default_operation_type,
+                )
+                if not parsed.get("error"):
+                    return parsed
         return action.params
 
     def _record_ui_action_metadata(

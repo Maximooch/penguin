@@ -12,7 +12,7 @@ def _dummy_log_error(exc: Exception, context: str = ""):
     pass
 
 
-def test_parse_action_detects_enhanced_write():
+def test_parse_action_normalizes_enhanced_write_to_write_file():
     content = """
     Here is the plan.
     <enhanced_write>path/to/file.txt:Hello:True</enhanced_write>
@@ -20,7 +20,8 @@ def test_parse_action_detects_enhanced_write():
 
     actions = parse_action(content)
     assert len(actions) == 1
-    assert actions[0].action_type == ActionType.ENHANCED_WRITE
+    assert actions[0].action_type == ActionType.WRITE_FILE
+    assert actions[0].raw_action_type == "enhanced_write"
     assert actions[0].params.startswith("path/to/file.txt:")
 
 
@@ -416,7 +417,7 @@ if __name__ == "__main__":
     tests = [
         (
             "Parse action detects enhanced_write",
-            test_parse_action_detects_enhanced_write,
+            test_parse_action_normalizes_enhanced_write_to_write_file,
         ),
         (
             "ToolManager get_responses_tools curated",

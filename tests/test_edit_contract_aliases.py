@@ -11,36 +11,49 @@ from penguin.tools.editing.registry import (
     get_edit_tool_schema_map,
 )
 from penguin.tools.tool_manager import ToolManager
-from penguin.utils.parser import ActionType, parse_action
+from penguin.utils.parser import (
+    ActionType,
+    LEGACY_EDIT_ACTION_ALIASES,
+    parse_action,
+)
 
 
-EDIT_ACTION_TYPES = (
+CANONICAL_EDIT_ACTION_TYPES = (
     ActionType.WRITE_FILE,
     ActionType.PATCH_FILE,
     ActionType.PATCH_FILES,
-    ActionType.ENHANCED_WRITE,
-    ActionType.APPLY_DIFF,
-    ActionType.MULTIEDIT,
-    ActionType.EDIT_WITH_PATTERN,
-    ActionType.REPLACE_LINES,
-    ActionType.INSERT_LINES,
-    ActionType.DELETE_LINES,
 )
-
-EDIT_ACTION_NAMES = {action_type.value for action_type in EDIT_ACTION_TYPES}
 
 
 def _dummy_log_error(exc: Exception, context: str = "") -> None:
     del exc, context
 
 
-@pytest.mark.parametrize("action_type", EDIT_ACTION_TYPES)
-def test_parse_action_detects_current_edit_action_tags(
+@pytest.mark.parametrize("action_type", CANONICAL_EDIT_ACTION_TYPES)
+def test_parse_action_detects_canonical_edit_action_tags(
     action_type: ActionType,
 ) -> None:
     actions = parse_action(f"<{action_type.value}>payload</{action_type.value}>")
 
     assert [action.action_type for action in actions] == [action_type]
+    assert [action.raw_action_type for action in actions] == [action_type.value]
+
+
+@pytest.mark.parametrize(
+    ("legacy_action_name", "canonical_action_type"),
+    sorted(
+        LEGACY_EDIT_ACTION_ALIASES.items(),
+        key=lambda item: item[0],
+    ),
+)
+def test_parse_action_normalizes_legacy_edit_alias_tags(
+    legacy_action_name: str,
+    canonical_action_type: ActionType,
+) -> None:
+    actions = parse_action(f"<{legacy_action_name}>payload</{legacy_action_name}>")
+
+    assert [action.action_type for action in actions] == [canonical_action_type]
+    assert [action.raw_action_type for action in actions] == [legacy_action_name]
 
 
 def test_tool_manager_schema_exposes_current_public_edit_tools() -> None:
@@ -90,6 +103,7 @@ def test_tool_manager_centralizes_legacy_edit_aliases() -> None:
     aliases = tool_manager.get_tool_aliases()
 
     assert aliases == {
+        "enhanced_read": "read_file",
         "write_to_file": "write_file",
         "enhanced_write": "write_file",
         "apply_diff": "patch_file",

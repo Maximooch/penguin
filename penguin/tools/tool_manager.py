@@ -276,6 +276,7 @@ class ToolManager:
             ).lower() not in ("1", "true", "yes")
 
             self._tool_aliases = {
+                "enhanced_read": "read_file",
                 "write_to_file": "write_file",
                 "enhanced_write": "write_file",
                 "apply_diff": "patch_file",
