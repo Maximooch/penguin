@@ -25,18 +25,20 @@ Design
   overhead.
 """
 
-from __future__ import annotations
-
 import os
 import threading
 import time
 from contextlib import contextmanager
-from typing import Dict, List
+from typing import Dict, List, Optional, Union, cast
 import logging
 
 logger = logging.getLogger(__name__)
 
-_TELEMETRY_ENABLED = os.getenv("PENGUIN_TELEMETRY", "on").lower() not in {"0", "false", "off"}
+_TELEMETRY_ENABLED = os.getenv("PENGUIN_TELEMETRY", "on").lower() not in {
+    "0",
+    "false",
+    "off",
+}
 
 
 class _SafeList(List[float]):
@@ -52,14 +54,14 @@ class _SafeList(List[float]):
 class Telemetry:
     """Singleton container for simple counters / timers."""
 
-    _instance: "Telemetry" | None = None
+    _instance: Optional["Telemetry"] = None
     _lock = threading.Lock()
 
     def __init__(self) -> None:  # noqa: D401
         if Telemetry._instance is not None:
             raise RuntimeError("Telemetry is a singleton; use Telemetry.get()")
 
-        self.metrics: Dict[str, float | list] = {
+        self.metrics: Dict[str, Union[float, List[float]]] = {
             "tokens_prompt": 0.0,
             "tokens_completion": 0.0,
             "llm_latency_sec": _SafeList(),  # type: ignore
@@ -86,19 +88,23 @@ class Telemetry:
     # ------------------------------------------------------------------
 
     def record_tokens(self, prompt: int, completion: int) -> None:
-        self.metrics["tokens_prompt"] += float(prompt)
-        self.metrics["tokens_completion"] += float(completion)
+        self.metrics["tokens_prompt"] = cast(
+            float, self.metrics["tokens_prompt"]
+        ) + float(prompt)
+        self.metrics["tokens_completion"] = cast(
+            float, self.metrics["tokens_completion"]
+        ) + float(completion)
 
     def record_latency(self, kind: str, duration: float) -> None:
         if kind == "llm":
-            self.metrics["llm_latency_sec"].append(duration)  # type: ignore[arg-type]
+            cast(List[float], self.metrics["llm_latency_sec"]).append(duration)
         elif kind == "tool":
-            self.metrics["tool_latency_sec"].append(duration)  # type: ignore[arg-type]
+            cast(List[float], self.metrics["tool_latency_sec"]).append(duration)
         else:
             logger.debug("Unknown latency kind %s", kind)
 
     def record_error(self) -> None:
-        self.metrics["errors"] += 1.0
+        self.metrics["errors"] = cast(float, self.metrics["errors"]) + 1.0
 
     # ------------------------------------------------------------------
     # Reporting helpers
@@ -106,11 +112,11 @@ class Telemetry:
 
     def snapshot(self) -> Dict[str, float]:
         """Return a shallow copy with computed averages."""
-        prompt = self.metrics["tokens_prompt"]  # type: ignore[assignment]
-        completion = self.metrics["tokens_completion"]  # type: ignore[assignment]
-        llm_lat = self.metrics["llm_latency_sec"]  # type: ignore[assignment]
-        tool_lat = self.metrics["tool_latency_sec"]  # type: ignore[assignment]
-        errors = self.metrics["errors"]  # type: ignore[assignment]
+        prompt = cast(float, self.metrics["tokens_prompt"])
+        completion = cast(float, self.metrics["tokens_completion"])
+        llm_lat = cast(List[float], self.metrics["llm_latency_sec"])
+        tool_lat = cast(List[float], self.metrics["tool_latency_sec"])
+        errors = cast(float, self.metrics["errors"])
 
         def _avg(lst: List[float]) -> float:
             return sum(lst) / len(lst) if lst else 0.0
@@ -128,7 +134,7 @@ class Telemetry:
 class _NullTelemetry(Telemetry):
     """No‑op variant when telemetry disabled."""
 
-    _null_instance: "_NullTelemetry" | None = None
+    _null_instance: Optional["_NullTelemetry"] = None
 
     def __init__(self):
         # Do **not** call super().__init__() because that sets real metrics.
@@ -159,6 +165,7 @@ class _NullTelemetry(Telemetry):
 # Convenience context‑manager for measuring latency
 # ----------------------------------------------------------------------
 
+
 @contextmanager
 def span(kind: str):
     """Context‑manager that records elapsed time on exit.
@@ -175,4 +182,4 @@ def span(kind: str):
         Telemetry.get().record_error()
         raise
     finally:
-        Telemetry.get().record_latency(kind, time.perf_counter() - start) 
+        Telemetry.get().record_latency(kind, time.perf_counter() - start)
