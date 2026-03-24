@@ -197,7 +197,14 @@ from penguin.utils.diagnostics import (
     disable_diagnostics,
 )
 from penguin.utils.log_error import log_error
-from penguin.utils.parser import ActionExecutor, parse_action
+from penguin.utils.parser import (
+    ActionExecutor,
+    parse_action,
+    parse_patch_file_payload,
+    parse_patch_files_payload,
+    parse_read_file_payload,
+    parse_write_file_payload,
+)
 from penguin.utils.profiling import (
     profile_startup_phase,
     profile_operation,
@@ -2456,9 +2463,9 @@ class PenguinCore:
                 try:
                     current_session = self.conversation_manager.get_current_session()
                     if current_session:
-                        info["conversation_manager"][
-                            "current_session_id"
-                        ] = current_session.id
+                        info["conversation_manager"]["current_session_id"] = (
+                            current_session.id
+                        )
                         info["conversation_manager"]["total_messages"] = len(
                             current_session.messages
                         )
@@ -4595,6 +4602,35 @@ class PenguinCore:
             return parsed
         return {}
 
+    def _extract_result_file_paths(self, result: Any) -> list[str]:
+        payload = self._parse_action_payload(result)
+        if not payload:
+            return []
+
+        files: list[str] = []
+        single_file = payload.get("file")
+        if isinstance(single_file, str) and single_file.strip():
+            files.append(single_file.strip())
+
+        for key in ("files", "created", "files_edited"):
+            value = payload.get(key)
+            if not isinstance(value, list):
+                continue
+            files.extend(
+                str(item).strip()
+                for item in value
+                if isinstance(item, str) and item.strip()
+            )
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for path in files:
+            if path in seen:
+                continue
+            seen.add(path)
+            deduped.append(path)
+        return deduped
+
     def _humanize_subagent_name(self, value: Any) -> str:
         text = str(value or "subagent").strip() or "subagent"
         return text.replace("_", " ").replace("-", " ")
@@ -4764,6 +4800,43 @@ class PenguinCore:
             metadata["diff"] = self._ensure_unified_diff(file_path, diff_content)
             return "edit", tool_input, metadata
 
+        if action_name == "patch_file":
+            parsed = parse_patch_file_payload(params)
+            error = parsed.get("error") if isinstance(parsed, dict) else None
+            if isinstance(error, str):
+                return "edit", {"filePath": ""}, metadata
+            tool_input = {"filePath": parsed.get("path", "")}
+            operation = parsed.get("operation") if isinstance(parsed, dict) else None
+            if isinstance(operation, dict):
+                operation_type = operation.get("type")
+                if operation_type == "unified_diff":
+                    diff_content = operation.get("diff_content") or ""
+                    metadata["diff"] = self._ensure_unified_diff(
+                        tool_input.get("filePath", ""),
+                        str(diff_content),
+                    )
+                elif operation_type == "replace_lines":
+                    if isinstance(operation.get("start_line"), int):
+                        tool_input["startLine"] = operation["start_line"]
+                    if isinstance(operation.get("end_line"), int):
+                        tool_input["endLine"] = operation["end_line"]
+                    if isinstance(operation.get("new_content"), str):
+                        tool_input["newContent"] = operation["new_content"]
+                elif operation_type == "insert_lines":
+                    if isinstance(operation.get("after_line"), int):
+                        tool_input["afterLine"] = operation["after_line"]
+                    if isinstance(operation.get("new_content"), str):
+                        tool_input["newContent"] = operation["new_content"]
+                elif operation_type == "delete_lines":
+                    if isinstance(operation.get("start_line"), int):
+                        tool_input["startLine"] = operation["start_line"]
+                    if isinstance(operation.get("end_line"), int):
+                        tool_input["endLine"] = operation["end_line"]
+                elif operation_type == "regex_replace":
+                    tool_input["pattern"] = operation.get("search_pattern")
+                    tool_input["replacement"] = operation.get("replacement")
+            return "edit", tool_input, metadata
+
         if action_name == "replace_lines":
             if isinstance(params, dict):
                 path = params.get("path") or params.get("file_path") or ""
@@ -4911,6 +4984,18 @@ class PenguinCore:
                     }
             return "write", tool_input, metadata
 
+        if action_name == "write_file":
+            parsed = parse_write_file_payload(params)
+            error = parsed.get("error") if isinstance(parsed, dict) else None
+            if isinstance(error, str):
+                return "write", {"filePath": ""}, metadata
+            tool_input = {
+                "filePath": parsed.get("path") or "",
+                "content": parsed.get("content") or "",
+                "backup": parsed.get("backup", True),
+            }
+            return "write", tool_input, metadata
+
         if action_name == "multiedit":
             apply_flag: Optional[bool] = None
             content = raw
@@ -4930,6 +5015,28 @@ class PenguinCore:
             }
             if apply_flag is not None:
                 tool_input["apply"] = apply_flag
+            return "edit", tool_input, metadata
+
+        if action_name == "patch_files":
+            parsed = parse_patch_files_payload(params)
+            error = parsed.get("error") if isinstance(parsed, dict) else None
+            if isinstance(error, str):
+                return "edit", {"filePath": "(multiple files)"}, metadata
+            tool_input = {"filePath": "(multiple files)"}
+            if isinstance(parsed.get("operations"), list):
+                files = []
+                for item in parsed["operations"]:
+                    if not isinstance(item, dict):
+                        continue
+                    path = item.get("path")
+                    if isinstance(path, str) and path.strip():
+                        files.append(path.strip())
+                if files:
+                    metadata["files"] = files
+            if isinstance(parsed.get("content"), str):
+                tool_input["content"] = parsed["content"]
+            if isinstance(parsed.get("apply"), bool):
+                tool_input["apply"] = parsed["apply"]
             return "edit", tool_input, metadata
 
         if action_name == "enhanced_diff":
@@ -4964,24 +5071,14 @@ class PenguinCore:
                 }
             return "grep", tool_input, metadata
 
-        if action_name == "enhanced_read":
-            if isinstance(params, dict):
-                tool_input = {
-                    "filePath": params.get("path") or params.get("filePath") or ""
-                }
-                if params.get("max_lines") is not None:
-                    tool_input["limit"] = params.get("max_lines")
-            else:
-                parts = raw.split(":")
-                path = parts[0].strip() if parts and parts[0].strip() else ""
-                limit = (
-                    int(parts[2].strip())
-                    if len(parts) > 2 and parts[2].strip().isdigit()
-                    else None
-                )
-                tool_input = {"filePath": path}
-                if limit is not None:
-                    tool_input["limit"] = limit
+        if action_name in {"enhanced_read", "read_file"}:
+            parsed = parse_read_file_payload(params)
+            error = parsed.get("error") if isinstance(parsed, dict) else None
+            if isinstance(error, str):
+                return "read", {"filePath": ""}, metadata
+            tool_input = {"filePath": parsed.get("path", "")}
+            if parsed.get("max_lines") is not None:
+                tool_input["limit"] = parsed.get("max_lines")
             return "read", tool_input, metadata
 
         if action_name == "list_files_filtered":
@@ -5039,9 +5136,12 @@ class PenguinCore:
             metadata.update(event_metadata)
         action_name = (action or "").strip().lower()
         if status == "error" and action_name in {
+            "patch_file",
+            "patch_files",
             "apply_diff",
             "replace_lines",
             "edit_with_pattern",
+            "write_file",
             "enhanced_write",
             "insert_lines",
             "delete_lines",
@@ -5058,11 +5158,15 @@ class PenguinCore:
             if todos:
                 metadata["todos"] = todos
         if status != "error" and action_name in {
+            "patch_file",
             "replace_lines",
             "edit_with_pattern",
+            "write_file",
             "enhanced_write",
             "insert_lines",
             "delete_lines",
+            "patch_files",
+            "multiedit",
         }:
             file_path = self._extract_tool_file_path(tool_input)
             if file_path:
@@ -5070,6 +5174,11 @@ class PenguinCore:
             diff_text = self._extract_unified_diff_from_result(result)
             if diff_text:
                 metadata["diff"] = self._ensure_unified_diff(file_path, diff_text)
+            result_files = self._extract_result_file_paths(result)
+            if result_files:
+                metadata["files"] = result_files
+                if len(result_files) == 1:
+                    metadata.setdefault("filePath", result_files[0])
         if action_name == "spawn_sub_agent":
             payload = self._parse_action_payload(result)
             if (

@@ -76,23 +76,23 @@ def test_parser_detection():
 
     # Test a sample of action types (not all to keep output manageable)
     sample_actions = [
-        ActionType.EXECUTE,
-        ActionType.SEARCH,
-        ActionType.MEMORY_SEARCH,
-        ActionType.TASK_CREATE,
-        ActionType.BROWSER_NAVIGATE,
-        ActionType.ENHANCED_READ,
-        ActionType.PROJECT_LIST,
-        ActionType.REPLACE_LINES,
-        ActionType.INSERT_LINES,
-        ActionType.DELETE_LINES,
+        (ActionType.EXECUTE, ActionType.EXECUTE),
+        (ActionType.SEARCH, ActionType.SEARCH),
+        (ActionType.MEMORY_SEARCH, ActionType.MEMORY_SEARCH),
+        (ActionType.TASK_CREATE, ActionType.TASK_CREATE),
+        (ActionType.BROWSER_NAVIGATE, ActionType.BROWSER_NAVIGATE),
+        (ActionType.ENHANCED_READ, ActionType.READ_FILE),
+        (ActionType.PROJECT_LIST, ActionType.PROJECT_LIST),
+        (ActionType.REPLACE_LINES, ActionType.PATCH_FILE),
+        (ActionType.INSERT_LINES, ActionType.PATCH_FILE),
+        (ActionType.DELETE_LINES, ActionType.PATCH_FILE),
     ]
 
-    for action in sample_actions:
+    for action, expected_action in sample_actions:
         tag = action.value
         # Create test content with this action
         content = f"I'll help you with that. <{tag}>some parameters</{tag}> Let me know if you need more help."
-        test_cases.append((content, action, True))
+        test_cases.append((content, expected_action, True))
 
     # Test invalid/non-existent actions
     invalid_tests = [

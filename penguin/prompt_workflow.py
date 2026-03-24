@@ -44,7 +44,7 @@ For each feature increment:
 
 #### 2.1 Implement
 - Write minimal code to satisfy ONE acceptance criterion
-- Use <apply_diff> or <multiedit> for changes
+- Use <patch_file> or <patch_files> for changes
 - Keep changes focused and atomic
 
 #### 2.2 Test
@@ -116,7 +116,7 @@ Focus on quality:
 4. Provide actionable feedback
 
 ### 4. File Management Best Practices
-- Always use <apply_diff> for edits (automatic backups)
+- Always use <patch_file> for single-file edits (automatic backups)
 - Check file existence before creating
 - Use enhanced tools for better error messages
 - Keep atomic changes for easy rollback
@@ -163,7 +163,7 @@ For each feature increment:
 
 ### 1. Implement
 Write minimal code to satisfy ONE acceptance criterion.
-- Use <apply_diff> or <multiedit> for changes
+- Use <patch_file> or <patch_files> for changes
 - Keep changes atomic and focused
 - Match existing code style
 - Commit with descriptive message (see Git Commits below)

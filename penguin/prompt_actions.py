@@ -1,212 +1,255 @@
+"""Prompt-facing tool guidance.
+
+Tool contracts and schemas should come from shared registry metadata.
+This module remains the fast-tweak prompt layer for usage advice, examples, and
+strategy notes.
 """
-Proposed Tools v2.0 - Comprehensive with Examples
-Target: ~3,000 tokens
-Clear descriptions + concrete usage examples for every tool
-"""
 
-# =============================================================================
-# FILE EDITING TOOLS
-# =============================================================================
+from __future__ import annotations
 
-FILE_EDITING_TOOLS = """
-## File Editing
+from dataclasses import dataclass, field
+from typing import Dict, List
 
-### apply_diff
-Edit a single file using unified diff format. Creates automatic backup.
-
-**When to use:** Making precise line-based changes to existing files.
-
-**Format:** `<apply_diff>path:diff_content[:true|false]</apply_diff>`
-
-**Example - Adding a function:**
-```actionxml
-<apply_diff>src/utils.py:--- a/src/utils.py
-+++ b/src/utils.py
-@@ -15,6 +15,10 @@
- def existing_func():
-     return 42
-
-+def new_helper():
-+    \"\"\"Helper function.\"\"\"
-+    return True
-+
- def another_func():
-     pass</apply_diff>
-```
-
-**Example - Modifying existing code:**
-```actionxml
-<apply_diff>config.py:--- a/config.py
-+++ b/config.py
-@@ -8,7 +8,7 @@
--DEBUG = True
-+DEBUG = False
- PORT = 8080</apply_diff>
-```
-
-**Important:**
-- Uses unified diff format with `@@ -start,count +start,count @@` headers
-- Include 2-3 lines of context around changes
-- `diff_content` may be multi-line and can be wrapped in ```diff fences
-- Parser splits on the first `:` for the path; a trailing `:true`/`:false` with no newline toggles backup
-- Automatic backup created (`.bak` file)
+from penguin.tools.editing.registry import (
+    get_edit_tool_aliases,
+    get_edit_tool_schema,
+    get_patch_files_item_schema,
+    get_patch_operation_types,
+)
 
 
-### multiedit
-Apply multiple file edits atomically—all succeed or none are applied.
-
-**When to use:** Coordinated changes across multiple files (e.g., renaming a function used in several places).
-
-**Example:**
-```actionxml
-<multiedit>
-apply=true
-src/models.py:
-@@ -25,7 +25,7 @@
--class UserManager:
-+class UserService:
-     def get_user(self, id):
-         pass
-
-src/api.py:
-@@ -10,7 +10,7 @@
--from models import UserManager
-+from models import UserService
-
--manager = UserManager()
-+service = UserService()
-</multiedit>
-```
-
-**Dry-run mode:** Omit `apply=true` to preview changes without applying.
+@dataclass(frozen=True)
+class ToolPromptExample:
+    title: str
+    body: str
 
 
-### edit_with_pattern
-Pattern-based find-and-replace using regex.
-
-**When to use:** Simple replacements where diff format is overkill.
-
-**Example:**
-```actionxml
-<edit_with_pattern>config.py:DEBUG = False:DEBUG = True:true</edit_with_pattern>
-```
-
-**Format:** `file_path:search_pattern:replacement:backup`
+@dataclass(frozen=True)
+class ToolPromptHint:
+    when_to_use: str
+    strategy_notes: List[str] = field(default_factory=list)
+    examples: List[ToolPromptExample] = field(default_factory=list)
+    migration_note: str = ""
 
 
-### replace_lines
-Replace specific lines in a file with new content. Much simpler than apply_diff.
-
-**When to use:** When you know exact line numbers to replace.
-
-**Format:** `<replace_lines>path:start_line:end_line:new_content[:true|false]</replace_lines>`
-
-**Example (multi-line replacement):**
-```actionxml
-<replace_lines>src/main.py:10:12:def new_function():
-    \"\"\"Docstring.\"\"\"
-    return calculate() * 2
-</replace_lines>
-```
-
-**Notes:**
-- `new_content` is inserted verbatim; include a trailing newline if you want to avoid concatenating the next line
-- Parser splits on the first 3 `:` characters; additional `:` are treated as content
-- A trailing `:true`/`:false` with no newline toggles verification
-
-**Parameters:**
-- `path` - File path
-- `start_line` - First line to replace (1-indexed)
-- `end_line` - Last line to replace (inclusive, 1-indexed)
-- `new_content` - Content to insert
-- `verify` - If True, confirms change with hash (default: true)
-
-**Returns:** Success message with backup location and verification hash
+def _format_code_items(items: List[str]) -> str:
+    return ", ".join(f"`{item}`" for item in items)
 
 
-### insert_lines
-Insert new lines after a specific line.
-
-**When to use:** Adding new code without replacing existing lines.
-
-**Format:** `<insert_lines>path:after_line:new_content</insert_lines>`
-
-**Example:**
-```actionxml
-<insert_lines>src/main.py:25:def new_helper():
-    pass</insert_lines>
-```
-
-**Parameters:**
-- `path` - File path
-- `after_line` - Line number to insert after (0 = at beginning)
-- `new_content` - Content to insert
+def _render_tool_examples(examples: List[ToolPromptExample]) -> str:
+    blocks: List[str] = []
+    for example in examples:
+        blocks.append(
+            "\n".join(
+                [
+                    f"**Example - {example.title}:**",
+                    "```actionxml",
+                    example.body,
+                    "```",
+                ]
+            )
+        )
+    return "\n\n".join(blocks)
 
 
-### delete_lines
-Delete a range of lines.
+def _render_schema_facts(tool_name: str) -> str:
+    schema = get_edit_tool_schema(tool_name)
+    input_schema = schema.get("input_schema", {})
+    properties = input_schema.get("properties", {})
+    required = list(input_schema.get("required", []))
+    aliases = get_edit_tool_aliases(tool_name)
 
-**When to use:** Removing code blocks by line number.
+    lines = ["**Contract:**"]
+    if required:
+        lines.append(f"- Required fields: {_format_code_items(required)}")
 
-**Format:** `<delete_lines>path:start_line:end_line</delete_lines>`
+    canonical_fields = [
+        key
+        for key in properties.keys()
+        if key not in {"file_path", "content"} or tool_name == "write_file"
+    ]
+    if tool_name == "read_file":
+        canonical_fields = ["path", "show_line_numbers", "max_lines"]
+    elif tool_name == "write_file":
+        canonical_fields = ["path", "content", "backup"]
+    elif tool_name == "patch_file":
+        canonical_fields = ["path", "operation", "backup"]
+    elif tool_name == "patch_files":
+        canonical_fields = ["operations", "apply", "backup"]
+    lines.append(f"- Canonical fields: {_format_code_items(canonical_fields)}")
 
-**Example:**
-```actionxml
-<delete_lines>src/main.py:40:50</delete_lines>
-```
+    if tool_name == "patch_file":
+        lines.append(
+            f"- Operation types: {_format_code_items(get_patch_operation_types())}"
+        )
+    if tool_name == "patch_files":
+        item_schema = get_patch_files_item_schema()
+        item_required = list(item_schema.get("required", []))
+        if item_required:
+            lines.append(
+                f"- Each `operations[]` item requires {_format_code_items(item_required)}"
+            )
 
-**Parameters:**
-- `path` - File path
-- `start_line` - First line to delete (1-indexed)
-- `end_line` - Last line to delete (inclusive, 1-indexed)
-"""
+    if aliases:
+        lines.append(f"- Legacy aliases: {_format_code_items(aliases)}")
+
+    return "\n".join(lines)
+
+
+def _render_tool_section(tool_name: str, hint: ToolPromptHint) -> str:
+    schema = get_edit_tool_schema(tool_name)
+    lines = [
+        f"### {tool_name}",
+        schema["description"],
+        "",
+        f"**When to use:** {hint.when_to_use}",
+        "",
+        f"**Preferred format:** `<{tool_name}>{{...}}</{tool_name}>`",
+    ]
+
+    example_block = _render_tool_examples(hint.examples)
+    if example_block:
+        lines.extend(["", example_block])
+
+    lines.extend(["", _render_schema_facts(tool_name)])
+
+    if hint.strategy_notes:
+        lines.append("")
+        lines.append("**Important:**")
+        lines.extend(f"- {note}" for note in hint.strategy_notes)
+
+    if hint.migration_note:
+        lines.extend(["", f"**Migration note:** {hint.migration_note}"])
+
+    return "\n".join(lines)
+
+
+READ_FILE_HINT = ToolPromptHint(
+    when_to_use="Reading source files, configs, or documentation.",
+    strategy_notes=[
+        "Use `show_line_numbers` when you plan to patch by line number.",
+        "Use `max_lines` when you only need the top of a large file.",
+    ],
+    examples=[
+        ToolPromptExample(
+            title="Read a file with line numbers",
+            body='<read_file>{"path":"src/main.py","show_line_numbers":true,"max_lines":50}</read_file>',
+        )
+    ],
+    migration_note="Legacy `enhanced_read` remains accepted temporarily, but `read_file` is the canonical name.",
+)
+
+
+EDIT_TOOL_HINTS: Dict[str, ToolPromptHint] = {
+    "write_file": ToolPromptHint(
+        when_to_use="Creating new files or replacing full file contents.",
+        strategy_notes=[
+            "Prefer this when replacing an entire file instead of editing fragments.",
+            "Use `backup=true` unless you have a specific reason not to.",
+        ],
+        examples=[
+            ToolPromptExample(
+                title="Write a file",
+                body="""<write_file>{
+  "path": "README.md",
+  "content": "# Project Name\n\nDescription here.\n",
+  "backup": true
+}</write_file>""",
+            )
+        ],
+        migration_note="Legacy `enhanced_write` and `write_to_file` payloads remain accepted temporarily, but JSON `write_file` is preferred.",
+    ),
+    "patch_file": ToolPromptHint(
+        when_to_use="Any single-file edit, including unified diffs, regex replacements, and line-based edits.",
+        strategy_notes=[
+            "Prefer the nested `operation` object over flat legacy fields.",
+            "Use `unified_diff` when you need precise context-aware edits.",
+            "Use `regex_replace` or line operations when that is clearer than a diff.",
+        ],
+        examples=[
+            ToolPromptExample(
+                title="Unified diff",
+                body="""<patch_file>{
+  "path": "src/utils.py",
+  "backup": true,
+  "operation": {
+    "type": "unified_diff",
+    "diff_content": "--- a/src/utils.py\n+++ b/src/utils.py\n@@ -15,6 +15,10 @@\n def existing_func():\n     return 42\n \n+def new_helper():\n+    \\\"\\\"\\\"Helper function.\\\"\\\"\\\"\n+    return True\n+\n def another_func():\n     pass\n"
+  }
+}</patch_file>""",
+            ),
+            ToolPromptExample(
+                title="Replace lines",
+                body="""<patch_file>{
+  "path": "src/main.py",
+  "operation": {
+    "type": "replace_lines",
+    "start_line": 10,
+    "end_line": 12,
+    "new_content": "def new_function():\n    return calculate() * 2\n",
+    "verify": true
+  },
+  "backup": true
+}</patch_file>""",
+            ),
+        ],
+        migration_note="Legacy `apply_diff`, `edit_with_pattern`, `replace_lines`, `insert_lines`, and `delete_lines` still work temporarily as compatibility aliases.",
+    ),
+    "patch_files": ToolPromptHint(
+        when_to_use="Coordinated changes across multiple files that should be applied together.",
+        strategy_notes=[
+            "Prefer the structured `operations` array over raw patch text.",
+            "Use `apply=false` for dry-run previews when you want to validate the plan first.",
+        ],
+        examples=[
+            ToolPromptExample(
+                title="Structured multi-file patch",
+                body="""<patch_files>{
+  "apply": true,
+  "backup": true,
+  "operations": [
+    {
+      "path": "src/models.py",
+      "operation": {
+        "type": "replace_lines",
+        "start_line": 25,
+        "end_line": 25,
+        "new_content": "class UserService:",
+        "verify": true
+      }
+    },
+    {
+      "path": "src/api.py",
+      "operation": {
+        "type": "regex_replace",
+        "search_pattern": "UserManager",
+        "replacement": "UserService"
+      }
+    }
+  ]
+}</patch_files>""",
+            )
+        ],
+        migration_note="Legacy `multiedit` / `multiedit_apply` raw patch content still works temporarily, but the structured `operations` array is now canonical.",
+    ),
+}
+
+
+def _build_file_editing_tools() -> str:
+    sections = ["## File Editing"]
+    for tool_name in ["write_file", "patch_file", "patch_files"]:
+        sections.append(_render_tool_section(tool_name, EDIT_TOOL_HINTS[tool_name]))
+    return "\n\n".join(sections)
+
+
+FILE_EDITING_TOOLS = _build_file_editing_tools()
 
 
 # =============================================================================
 # FILE OPERATIONS
 # =============================================================================
 
-FILE_OPERATION_TOOLS = """
-## File Operations
-
-### enhanced_read
-Read file contents with exact path resolution and optional line numbers.
-
-**When to use:** Reading source files, configs, or documentation.
-
-**Example:**
-```actionxml
-<enhanced_read>src/main.py:true:50</enhanced_read>
-```
-
-**Parameters:**
-- `path` - File to read
-- `show_line_numbers` (true/false) - Include line numbers
-- `max_lines` (optional) - Limit to first N lines
-
-
-### enhanced_write
-Write file with automatic backup and diff generation for existing files.
-
-**When to use:** Creating new files or overwriting existing ones.
-
-**Example:**
-```actionxml
-<enhanced_write>README.md:# Project Name
-
-Description here.
-
-## Usage
-...
-:true</enhanced_write>
-```
-
-**Parameters:**
-- `path` - Target file path
-- `content` - File contents
-- `backup` (true/false) - Create `.bak` file if exists (default: true)
-
-
+FILE_OPERATION_STATIC_TOOLS = """
 ### list_files_filtered
 List directory contents with clutter filtering (.git, __pycache__, etc. hidden).
 
@@ -257,6 +300,19 @@ Compare two files with contextual diff output.
 """
 
 
+def _build_file_operation_tools() -> str:
+    return "\n\n".join(
+        [
+            "## File Operations",
+            _render_tool_section("read_file", READ_FILE_HINT),
+            FILE_OPERATION_STATIC_TOOLS,
+        ]
+    )
+
+
+FILE_OPERATION_TOOLS = _build_file_operation_tools()
+
+
 # =============================================================================
 # EXECUTION TOOLS
 # =============================================================================
@@ -293,7 +349,7 @@ else:
 </execute>
 ```
 
-**Priority:** Prefer specialized tools (<apply_diff>, <enhanced_write>, etc.) first. Use <execute> when those don't work or for complex logic that requires Python.
+**Priority:** Prefer specialized tools (<patch_file>, <patch_files>, <write_file>, etc.) first. Use <execute> when those don't work or for complex logic that requires Python.
 
 
 ### execute_command
@@ -844,23 +900,20 @@ COMPLETION_TOOLS = """
 # ASSEMBLE FULL TOOL GUIDE
 # =============================================================================
 
-TOOL_GUIDE = "\n\n".join(
-    [
-        FILE_EDITING_TOOLS,
-        FILE_OPERATION_TOOLS,
-        EXECUTION_TOOLS,
-        SEARCH_TOOLS,
-        MEMORY_TOOLS,
-        TODO_TOOLS,
-        QUESTION_TOOLS,
-        AGENT_TOOLS,
-        BROWSER_TOOLS,
-        COMPLETION_TOOLS,
-    ]
-)
 
-
-# Export for prompt builder
 def get_tool_guide() -> str:
     """Get the complete tool documentation."""
-    return TOOL_GUIDE
+    return "\n\n".join(
+        [
+            _build_file_editing_tools(),
+            _build_file_operation_tools(),
+            EXECUTION_TOOLS,
+            SEARCH_TOOLS,
+            MEMORY_TOOLS,
+            TODO_TOOLS,
+            QUESTION_TOOLS,
+            AGENT_TOOLS,
+            BROWSER_TOOLS,
+            COMPLETION_TOOLS,
+        ]
+    )

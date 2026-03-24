@@ -39,6 +39,10 @@ from penguin.tools.browser_tools import (
     BrowserScreenshotTool,
 )
 from penguin.tools.core.task_tools import TaskTools
+from penguin.tools.editing.registry import (
+    get_edit_tool_public_names,
+    get_edit_tool_schemas,
+)
 
 # Lazy import for PyDoll to avoid breaking if pydoll-python is not installed
 _pydoll_tools_imported = False
@@ -48,7 +52,10 @@ _pydoll_import_error = None
 def _ensure_pydoll_imports():
     """Lazy import PyDoll tools only when needed."""
     global _pydoll_tools_imported, _pydoll_import_error
-    global pydoll_browser_manager, PyDollBrowserNavigationTool, PyDollBrowserInteractionTool
+    global \
+        pydoll_browser_manager, \
+        PyDollBrowserNavigationTool, \
+        PyDollBrowserInteractionTool
     global PyDollBrowserScreenshotTool, PyDollBrowserScrollTool
 
     if not _pydoll_tools_imported and _pydoll_import_error is None:
@@ -84,15 +91,26 @@ PyDollBrowserScrollTool = None
 # from penguin.llm.model_manager import ModelManager
 from penguin.memory.provider import MemoryProvider
 
-# Repository management tools
-from penguin.tools.repository_tools import (
-    create_improvement_pr,
-    create_feature_pr,
-    create_bugfix_pr,
-    get_repository_status,
-    commit_and_push_changes,
-    create_and_switch_branch,
-)
+# Repository management tools (optional dependency path)
+try:
+    from penguin.tools.repository_tools import (
+        create_improvement_pr,
+        create_feature_pr,
+        create_bugfix_pr,
+        get_repository_status,
+        commit_and_push_changes,
+        create_and_switch_branch,
+    )
+
+    _repository_tools_import_error = None
+except Exception as _repository_tools_exc:  # pragma: no cover - optional dependency
+    create_improvement_pr = None  # type: ignore[assignment]
+    create_feature_pr = None  # type: ignore[assignment]
+    create_bugfix_pr = None  # type: ignore[assignment]
+    get_repository_status = None  # type: ignore[assignment]
+    commit_and_push_changes = None  # type: ignore[assignment]
+    create_and_switch_branch = None  # type: ignore[assignment]
+    _repository_tools_import_error = _repository_tools_exc
 
 # Security/Permission imports (lazy to avoid circular imports at module load)
 _permission_enforcer_imported = False
@@ -109,7 +127,11 @@ def _ensure_permission_imports():
     """Lazy import permission modules to avoid circular imports."""
     global _permission_enforcer_imported, _PermissionEnforcer, _WorkspaceBoundaryPolicy
     global _AgentModePolicy
-    global _PermissionMode, _PermissionResult, _PermissionDeniedError, _check_tool_permission
+    global \
+        _PermissionMode, \
+        _PermissionResult, \
+        _PermissionDeniedError, \
+        _check_tool_permission
 
     if not _permission_enforcer_imported:
         try:
@@ -253,11 +275,24 @@ class ToolManager:
                 "PENGUIN_YOLO", ""
             ).lower() not in ("1", "true", "yes")
 
+            self._tool_aliases = {
+                "enhanced_read": "read_file",
+                "write_to_file": "write_file",
+                "enhanced_write": "write_file",
+                "apply_diff": "patch_file",
+                "edit_with_pattern": "patch_file",
+                "replace_lines": "patch_file",
+                "insert_lines": "patch_file",
+                "delete_lines": "patch_file",
+                "multiedit_apply": "patch_files",
+                "multiedit": "patch_files",
+            }
+
             # Tool registry - just map names to module paths, no actual loading
             self._tool_registry = {
                 "create_folder": "penguin.tools.core.support.create_folder",
                 "create_file": "penguin.tools.core.support.create_file",
-                "write_to_file": "penguin.tools.core.support.enhanced_write_to_file",
+                "write_file": "penguin.tools.core.support.enhanced_write_to_file",
                 "read_file": "penguin.tools.core.support.enhanced_read_file",
                 "list_files": "penguin.tools.core.support.list_files_filtered",
                 "find_file": "penguin.tools.core.support.find_files_enhanced",
@@ -265,11 +300,8 @@ class ToolManager:
                 # New enhanced tools
                 "enhanced_diff": "penguin.tools.core.support.enhanced_diff",
                 "analyze_project": "penguin.tools.core.support.analyze_project_structure",
-                "apply_diff": "penguin.tools.core.support.apply_diff_to_file",
-                "replace_lines": "penguin.tools.core.support.replace_lines",
-                "insert_lines": "penguin.tools.core.support.insert_lines",
-                "delete_lines": "penguin.tools.core.support.delete_lines",
-                "edit_with_pattern": "penguin.tools.core.support.edit_file_with_pattern",
+                "patch_file": "self._execute_patch_file",
+                "patch_files": "self._execute_patch_files",
                 "add_declarative_note": "self.declarative_memory_tool.add_note",
                 "grep_search": "self.grep_search.search",
                 "memory_search": "self.perform_memory_search",
@@ -325,7 +357,7 @@ class ToolManager:
 
     def _define_tool_schemas(self) -> List[Dict[str, Any]]:
         """Define tool schemas without any initialization - pure schema definitions."""
-        return [
+        schemas = [
             {
                 "name": "create_folder",
                 "description": "Create a new folder at the specified path. Use this when you need to create a new directory in the project structure.",
@@ -389,21 +421,48 @@ class ToolManager:
                 },
             },
             {
-                "name": "multiedit_apply",
-                "description": "Apply multiple diffs atomically. Accepts unified multi-file patch or per-file block format. Dry-run by default.",
+                "name": "patch_files",
+                "description": "Patch multiple files atomically. Prefer a structured JSON operations array; legacy raw patch content remains supported temporarily.",
+                "aliases": ["multiedit_apply", "multiedit"],
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "content": {
-                            "type": "string",
-                            "description": "Unified patch or multiedit block",
-                        },
                         "apply": {
                             "type": "boolean",
-                            "description": "Apply changes (default true)",
+                            "description": "Apply changes now (default: false for dry-run)",
+                        },
+                        "backup": {
+                            "type": "boolean",
+                            "description": "Default backup behavior for structured operations (default: true)",
+                        },
+                        "operations": {
+                            "type": "array",
+                            "description": "Canonical structured edit operations for multi-file patching",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "path": {
+                                        "type": "string",
+                                        "description": "Target file path",
+                                    },
+                                    "operation": {
+                                        "type": "object",
+                                        "description": "Canonical patch operation for this file",
+                                    },
+                                    "backup": {
+                                        "type": "boolean",
+                                        "description": "Optional per-operation backup override",
+                                    },
+                                },
+                                "required": ["path", "operation"],
+                            },
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "Legacy multiedit/unified patch content kept temporarily for migration",
                         },
                     },
-                    "required": ["content"],
+                    "required": [],
                 },
             },
             {
@@ -425,8 +484,9 @@ class ToolManager:
                 },
             },
             {
-                "name": "write_to_file",
-                "description": "Enhanced file writing with diff generation and backup options. Shows the exact path being written to and creates backups by default. If the file exists, shows what changed.",
+                "name": "write_file",
+                "description": "Write a file with optional backup support. Accepts full file content and uses the canonical edit contract.",
+                "aliases": ["write_to_file", "enhanced_write"],
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -873,51 +933,93 @@ class ToolManager:
                 },
             },
             {
-                "name": "apply_diff",
-                "description": "Apply a unified diff to a file to make actual edits. This EDITS the file, not just compares it.",
+                "name": "patch_file",
+                "description": "Patch a single file. Prefer the nested JSON operation object; flat legacy fields remain supported temporarily.",
+                "aliases": [
+                    "apply_diff",
+                    "edit_with_pattern",
+                    "replace_lines",
+                    "insert_lines",
+                    "delete_lines",
+                ],
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "file_path": {
+                        "path": {
                             "type": "string",
                             "description": "Path to the file to edit",
+                        },
+                        "operation": {
+                            "type": "object",
+                            "description": "Canonical nested patch operation object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "unified_diff",
+                                        "replace_lines",
+                                        "insert_lines",
+                                        "delete_lines",
+                                        "regex_replace",
+                                    ],
+                                },
+                                "diff_content": {"type": "string"},
+                                "search_pattern": {"type": "string"},
+                                "replacement": {"type": "string"},
+                                "start_line": {"type": "integer"},
+                                "end_line": {"type": "integer"},
+                                "after_line": {"type": "integer"},
+                                "new_content": {"type": "string"},
+                                "verify": {"type": "boolean"},
+                            },
+                            "required": ["type"],
+                        },
+                        "operation_type": {
+                            "type": "string",
+                            "description": "Legacy flat alias for operation.type during migration",
                         },
                         "diff_content": {
                             "type": "string",
-                            "description": "The unified diff content to apply",
-                        },
-                        "backup": {
-                            "type": "boolean",
-                            "description": "Create backup of original file (default: true)",
-                        },
-                    },
-                    "required": ["file_path", "diff_content"],
-                },
-            },
-            {
-                "name": "edit_with_pattern",
-                "description": "Edit a file by finding and replacing text patterns using regex. This EDITS the file directly.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "file_path": {
-                            "type": "string",
-                            "description": "Path to the file to edit",
+                            "description": "Legacy flat alias for unified diffs during migration",
                         },
                         "search_pattern": {
                             "type": "string",
-                            "description": "Regular expression pattern to search for",
+                            "description": "Legacy flat alias for regex replacements during migration",
                         },
                         "replacement": {
                             "type": "string",
-                            "description": "Text to replace matches with",
+                            "description": "Legacy flat alias for regex replacements during migration",
+                        },
+                        "start_line": {
+                            "type": "integer",
+                            "description": "Legacy flat alias for line-based operations during migration",
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "description": "Legacy flat alias for line-based operations during migration",
+                        },
+                        "after_line": {
+                            "type": "integer",
+                            "description": "Legacy flat alias for insert_lines during migration",
+                        },
+                        "new_content": {
+                            "type": "string",
+                            "description": "Legacy flat alias for line-based operations during migration",
+                        },
+                        "verify": {
+                            "type": "boolean",
+                            "description": "Legacy flat alias for replace_lines verification during migration",
                         },
                         "backup": {
                             "type": "boolean",
                             "description": "Create backup of original file (default: true)",
                         },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Legacy alias for `path` during migration",
+                        },
                     },
-                    "required": ["file_path", "search_pattern", "replacement"],
+                    "required": ["path", "operation"],
                 },
             },
             # Repository management tools
@@ -1364,6 +1466,27 @@ class ToolManager:
             },
         ]
 
+        edit_tool_names = set(get_edit_tool_public_names())
+        schemas = [
+            schema for schema in schemas if schema.get("name") not in edit_tool_names
+        ]
+
+        insert_after = next(
+            (
+                index
+                for index, schema in enumerate(schemas)
+                if schema.get("name") == "create_file"
+            ),
+            -1,
+        )
+        edit_schemas = get_edit_tool_schemas()
+        if insert_after >= 0:
+            schemas[insert_after + 1 : insert_after + 1] = edit_schemas
+        else:
+            schemas.extend(edit_schemas)
+
+        return schemas
+
     async def _background_initialize_async_components(self):
         """Background task to initialize async components and perform indexing."""
         try:
@@ -1777,6 +1900,19 @@ class ToolManager:
         """Get available tool schemas."""
         return self.tools
 
+    def get_tool_aliases(self) -> Dict[str, str]:
+        """Return centralized legacy-to-canonical tool aliases."""
+        return dict(self._tool_aliases)
+
+    def _canonical_tool_name(self, tool_name: str) -> str:
+        """Resolve a requested tool name to its canonical public name."""
+        current = str(tool_name or "").strip()
+        seen: set[str] = set()
+        while current in self._tool_aliases and current not in seen:
+            seen.add(current)
+            current = self._tool_aliases[current]
+        return current
+
     def get_responses_tools(
         self, allowed_names: Optional[List[str]] = None, include_web_search: bool = True
     ) -> List[Dict[str, Any]]:
@@ -1789,20 +1925,22 @@ class ToolManager:
         default_allowed = [
             "create_folder",
             "create_file",
-            "write_to_file",
+            "write_file",
             "read_file",
             "list_files",
             "find_file",
             "enhanced_diff",
             "analyze_project",
-            "apply_diff",
-            "edit_with_pattern",
-            "multiedit_apply",
+            "patch_file",
+            "patch_files",
             "code_execution",
             "execute_command",
             "grep_search",
         ]
-        allowed = set(allowed_names or default_allowed)
+        allowed = {
+            self._canonical_tool_name(name)
+            for name in (allowed_names or default_allowed)
+        }
         responses_tools: List[Dict[str, Any]] = []
         for t in self.tools:
             name = t.get("name")
@@ -1833,6 +1971,7 @@ class ToolManager:
 
     def get_tool(self, tool_name: str):
         """Get a tool instance on-demand with caching."""
+        tool_name = self._canonical_tool_name(tool_name)
         if tool_name in self._tool_instances:
             return self._tool_instances[tool_name]
 
@@ -1873,15 +2012,19 @@ class ToolManager:
                 os.path.join(effective_root, tool_input["path"]),
                 tool_input.get("content", ""),
             )
-        elif operation_name == "write_to_file":
-            from penguin.tools.core.support import enhanced_write_to_file
-
-            return enhanced_write_to_file(
-                tool_input["path"],
-                tool_input["content"],
-                backup=tool_input.get("backup", True),
-                workspace_path=effective_root,
+        elif operation_name in {"write_to_file", "write_file"}:
+            warnings = self._extract_internal_warnings(tool_input)
+            result = self._execute_canonical_edit(
+                "write_file",
+                lambda service: service.write_file(
+                    tool_input["path"],
+                    tool_input["content"],
+                    backup=tool_input.get("backup", True),
+                    warnings=warnings,
+                ),
+                file_root=effective_root,
             )
+            return result.render_legacy_output()
         elif operation_name == "read_file":
             from penguin.tools.core.support import enhanced_read_file
 
@@ -1913,6 +2056,381 @@ class ToolManager:
             )
         else:
             raise ValueError(f"Unknown file operation: {operation_name}")
+
+    def _execute_canonical_edit(
+        self,
+        operation_name: str,
+        executor: Callable[[Any], Any],
+        *,
+        file_root: Optional[str] = None,
+    ) -> Any:
+        """Run one canonical edit operation with shared timeout handling."""
+
+        from .editing.contracts import FileEditResult
+        from .editing.service import EditService
+        import threading
+
+        effective_root = file_root or self._file_root
+
+        try:
+            default_timeout = int(
+                os.environ.get(
+                    "PENGUIN_TOOL_TIMEOUT_EDIT",
+                    os.environ.get("PENGUIN_TOOL_TIMEOUT", "180"),
+                )
+            )
+        except Exception:
+            default_timeout = 180
+
+        result_container = {"done": False, "result": None, "error": None}
+
+        def _runner() -> None:
+            try:
+                service = EditService(workspace_root=effective_root)
+                result_container["result"] = executor(service)
+            except Exception as exc:  # pragma: no cover - defensive wrapper
+                result_container["error"] = str(exc)
+            finally:
+                result_container["done"] = True
+
+        thread = threading.Thread(target=_runner, daemon=True)
+        thread.start()
+        thread.join(timeout=default_timeout)
+
+        if not result_container["done"]:
+            payload = {
+                "error": "timeout",
+                "tool": operation_name,
+                "timeout_seconds": default_timeout,
+            }
+            return FileEditResult(
+                ok=False,
+                message=json.dumps(payload),
+                error="timeout",
+                data={"legacy_output": json.dumps(payload)},
+            )
+
+        if result_container["error"] is not None:
+            payload = {"error": result_container["error"], "tool": operation_name}
+            return FileEditResult(
+                ok=False,
+                message=str(result_container["error"]),
+                error=str(result_container["error"]),
+                data={"legacy_output": json.dumps(payload)},
+            )
+
+        result = result_container["result"]
+        if isinstance(result, FileEditResult):
+            return result
+
+        payload = {
+            "error": f"Canonical edit adapter returned invalid result for {operation_name}",
+            "tool": operation_name,
+        }
+        return FileEditResult(
+            ok=False,
+            message=payload["error"],
+            error=payload["error"],
+            data={"legacy_output": json.dumps(payload)},
+        )
+
+    def _build_patch_operation(self, tool_input: dict) -> Any:
+        """Build a canonical patch operation from canonical or legacy inputs."""
+
+        from .editing.contracts import EditOperation
+
+        warnings = self._extract_internal_warnings(tool_input)
+        operation_payload = tool_input.get("operation")
+        operation_data = (
+            dict(operation_payload) if isinstance(operation_payload, dict) else {}
+        )
+        operation_type = tool_input.get("operation_type") or operation_data.get("type")
+        path = (
+            tool_input.get("path")
+            or tool_input.get("file_path")
+            or operation_data.get("path")
+            or operation_data.get("file_path")
+            or ""
+        )
+        backup = tool_input.get("backup", operation_data.get("backup", True))
+
+        if not operation_data:
+            warnings.append(
+                "Flat patch_file payloads are deprecated; use {'path': ..., 'operation': {...}} instead."
+            )
+
+        if not operation_type:
+            if "diff_content" in tool_input or "diff_content" in operation_data:
+                operation_type = "unified_diff"
+            elif (
+                "search_pattern" in tool_input or "search_pattern" in operation_data
+            ) and ("replacement" in tool_input or "replacement" in operation_data):
+                operation_type = "regex_replace"
+            elif "after_line" in tool_input or "after_line" in operation_data:
+                operation_type = "insert_lines"
+            elif (
+                ("start_line" in tool_input or "start_line" in operation_data)
+                and ("end_line" in tool_input or "end_line" in operation_data)
+                and ("new_content" in tool_input or "new_content" in operation_data)
+            ):
+                operation_type = "replace_lines"
+            elif ("start_line" in tool_input or "start_line" in operation_data) and (
+                "end_line" in tool_input or "end_line" in operation_data
+            ):
+                operation_type = "delete_lines"
+
+        if operation_type == "unified_diff":
+            if not path:
+                raise ValueError("patch_file requires 'path' for unified diffs")
+            diff_content = (
+                tool_input.get("diff_content")
+                or operation_data.get("diff_content")
+                or operation_data.get("diff")
+            )
+            return EditOperation(
+                type="unified_diff",
+                path=str(path),
+                payload={
+                    "diff_content": self._coerce_required_string(
+                        diff_content,
+                        field_name="diff_content",
+                        operation_type="unified_diff",
+                    ),
+                },
+                backup=bool(backup),
+                warnings=self._unique_strings(warnings),
+            )
+
+        if operation_type == "regex_replace":
+            if not path:
+                raise ValueError("patch_file requires 'path' for regex replacements")
+            search_pattern = (
+                tool_input.get("search_pattern")
+                or operation_data.get("search_pattern")
+                or operation_data.get("pattern")
+            )
+            replacement = tool_input.get("replacement")
+            if replacement is None:
+                replacement = operation_data.get("replacement")
+            return EditOperation(
+                type="regex_replace",
+                path=str(path),
+                payload={
+                    "search_pattern": self._coerce_required_string(
+                        search_pattern,
+                        field_name="search_pattern",
+                        operation_type="regex_replace",
+                    ),
+                    "replacement": self._coerce_required_string(
+                        replacement,
+                        field_name="replacement",
+                        operation_type="regex_replace",
+                    ),
+                },
+                backup=bool(backup),
+                warnings=self._unique_strings(warnings),
+            )
+
+        if operation_type == "replace_lines":
+            if not path:
+                raise ValueError("patch_file requires 'path' for replace_lines")
+            return EditOperation(
+                type="replace_lines",
+                path=str(path),
+                payload={
+                    "start_line": self._coerce_required_int(
+                        tool_input.get("start_line", operation_data.get("start_line")),
+                        field_name="start_line",
+                        operation_type="replace_lines",
+                    ),
+                    "end_line": self._coerce_required_int(
+                        tool_input.get("end_line", operation_data.get("end_line")),
+                        field_name="end_line",
+                        operation_type="replace_lines",
+                    ),
+                    "new_content": tool_input.get(
+                        "new_content", operation_data.get("new_content", "")
+                    ),
+                    "verify": tool_input.get(
+                        "verify", operation_data.get("verify", True)
+                    ),
+                },
+                backup=True,
+                warnings=self._unique_strings(warnings),
+            )
+
+        if operation_type == "insert_lines":
+            if not path:
+                raise ValueError("patch_file requires 'path' for insert_lines")
+            return EditOperation(
+                type="insert_lines",
+                path=str(path),
+                payload={
+                    "after_line": self._coerce_required_int(
+                        tool_input.get("after_line", operation_data.get("after_line")),
+                        field_name="after_line",
+                        operation_type="insert_lines",
+                    ),
+                    "new_content": tool_input.get(
+                        "new_content", operation_data.get("new_content", "")
+                    ),
+                },
+                backup=True,
+                warnings=self._unique_strings(warnings),
+            )
+
+        if operation_type == "delete_lines":
+            if not path:
+                raise ValueError("patch_file requires 'path' for delete_lines")
+            return EditOperation(
+                type="delete_lines",
+                path=str(path),
+                payload={
+                    "start_line": self._coerce_required_int(
+                        tool_input.get("start_line", operation_data.get("start_line")),
+                        field_name="start_line",
+                        operation_type="delete_lines",
+                    ),
+                    "end_line": self._coerce_required_int(
+                        tool_input.get("end_line", operation_data.get("end_line")),
+                        field_name="end_line",
+                        operation_type="delete_lines",
+                    ),
+                },
+                backup=True,
+                warnings=self._unique_strings(warnings),
+            )
+
+        raise ValueError("patch_file requires a supported patch operation type")
+
+    def _extract_internal_warnings(self, tool_input: dict) -> List[str]:
+        """Extract internal migration warnings from tool input."""
+        warnings = tool_input.get("_warnings")
+        if not isinstance(warnings, list):
+            return []
+        return [str(item).strip() for item in warnings if str(item).strip()]
+
+    def _coerce_required_int(
+        self, value: Any, *, field_name: str, operation_type: str
+    ) -> int:
+        """Validate and coerce required integer fields for patch operations."""
+        if value is None:
+            raise ValueError(
+                f"patch_file {operation_type} requires integer '{field_name}'"
+            )
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"patch_file {operation_type} requires integer '{field_name}'"
+            ) from exc
+
+    def _coerce_required_string(
+        self, value: Any, *, field_name: str, operation_type: str
+    ) -> str:
+        """Validate and coerce required string fields for patch operations."""
+        if not isinstance(value, str):
+            raise ValueError(
+                f"patch_file {operation_type} requires string '{field_name}'"
+            )
+        return value
+
+    def _build_patch_operations(
+        self, tool_input: dict
+    ) -> tuple[List[Any], List[str], bool, bool]:
+        """Build canonical multi-file patch operations and migration warnings."""
+
+        top_level_warnings = self._extract_internal_warnings(tool_input)
+        apply = bool(tool_input.get("apply", False))
+        backup = bool(tool_input.get("backup", True))
+        operations_payload = tool_input.get("operations")
+
+        if isinstance(operations_payload, list):
+            operations: List[Any] = []
+            for item in operations_payload:
+                if not isinstance(item, dict):
+                    continue
+                operation_input = dict(item)
+                operation_payload = operation_input.get("operation")
+                if not isinstance(operation_payload, dict):
+                    operation_input = {
+                        "path": operation_input.get("path")
+                        or operation_input.get("file_path")
+                        or "",
+                        "operation": {
+                            key: value
+                            for key, value in operation_input.items()
+                            if key not in {"path", "file_path", "backup", "_warnings"}
+                        },
+                        "backup": operation_input.get("backup", backup),
+                        "_warnings": [
+                            "Flat patch_files operation items are deprecated; use nested operation objects."
+                        ],
+                    }
+                else:
+                    operation_input = dict(operation_input)
+                    operation_input.setdefault("backup", backup)
+                operations.append(self._build_patch_operation(operation_input))
+            return operations, self._unique_strings(top_level_warnings), apply, backup
+
+        content = tool_input.get("content")
+        if isinstance(content, str) and content:
+            top_level_warnings.append(
+                "Raw patch_files content payloads are deprecated; use a structured operations array instead."
+            )
+            return [], self._unique_strings(top_level_warnings), apply, backup
+
+        return [], self._unique_strings(top_level_warnings), apply, backup
+
+    def _unique_strings(self, values: List[str]) -> List[str]:
+        """Return unique strings in insertion order."""
+        result: List[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+        return result
+
+    def _execute_patch_file(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
+        """Execute the canonical single-file patch tool."""
+        try:
+            operation = self._build_patch_operation(tool_input)
+        except Exception as exc:
+            return json.dumps({"error": str(exc), "tool": "patch_file"})
+        result = self._execute_canonical_edit(
+            "patch_file",
+            lambda service: service.patch_file(operation),
+            file_root=file_root,
+        )
+        return result.render_legacy_output()
+
+    def _execute_patch_files(
+        self, tool_input: dict, *, file_root: Optional[str] = None
+    ) -> str:
+        """Execute the canonical multi-file patch tool."""
+        try:
+            operations, warnings, apply, backup = self._build_patch_operations(
+                tool_input
+            )
+        except Exception as exc:
+            return json.dumps({"error": str(exc), "tool": "patch_files"})
+        result = self._execute_canonical_edit(
+            "patch_files",
+            lambda service: service.patch_files(
+                str(tool_input.get("content", "")),
+                apply=apply,
+                operations=operations,
+                backup=backup,
+                warnings=warnings,
+            ),
+            file_root=file_root,
+        )
+        return result.render_legacy_output()
 
     def _execute_enhanced_diff(self, tool_input: dict) -> str:
         """Execute enhanced diff with workspace integration."""
@@ -2014,271 +2532,127 @@ class ToolManager:
     def _execute_apply_diff(
         self, tool_input: dict, *, file_root: Optional[str] = None
     ) -> str:
-        """Execute diff application with workspace integration."""
-        from penguin.tools.core.support import apply_diff_to_file
-        import threading, json
-
-        effective_root = file_root or self._file_root
-
-        try:
-            default_timeout = int(
-                os.environ.get(
-                    "PENGUIN_TOOL_TIMEOUT_EDIT",
-                    os.environ.get("PENGUIN_TOOL_TIMEOUT", "180"),
-                )
-            )
-        except Exception:
-            default_timeout = 180
-
-        result_container = {"done": False, "result": None, "error": None}
-
-        def _runner():
-            try:
-                result_container["result"] = apply_diff_to_file(
-                    file_path=tool_input["file_path"],
-                    diff_content=tool_input["diff_content"],
-                    backup=tool_input.get("backup", True),
-                    workspace_path=effective_root,
-                )
-            except Exception as e:
-                result_container["error"] = str(e)
-            finally:
-                result_container["done"] = True
-
-        t = threading.Thread(target=_runner, daemon=True)
-        t.start()
-        t.join(timeout=default_timeout)
-        if not result_container["done"]:
-            return json.dumps(
-                {
-                    "error": "timeout",
-                    "tool": "apply_diff",
-                    "timeout_seconds": default_timeout,
-                }
-            )
-        if result_container["error"] is not None:
-            return json.dumps(
-                {"error": result_container["error"], "tool": "apply_diff"}
-            )
-        return result_container["result"]
+        """Legacy diff wrapper routed through canonical patch_file."""
+        return self._execute_patch_file(
+            {
+                "path": tool_input.get("path") or tool_input.get("file_path") or "",
+                "operation": {
+                    "type": "unified_diff",
+                    "diff_content": tool_input.get("diff_content")
+                    or tool_input.get("diff")
+                    or "",
+                },
+                "backup": tool_input.get("backup", True),
+                "_warnings": self._unique_strings(
+                    [
+                        *self._extract_internal_warnings(tool_input),
+                        "Deprecated patch_file payload: legacy apply_diff wrapper is deprecated; use patch_file instead.",
+                    ]
+                ),
+            },
+            file_root=file_root,
+        )
 
     def _execute_replace_lines(
         self, tool_input: dict, *, file_root: Optional[str] = None
     ) -> str:
-        """Execute line replacement with workspace integration."""
-        from penguin.tools.core.support import replace_lines
-        import threading, json
-
-        effective_root = file_root or self._file_root
-
-        try:
-            default_timeout = int(
-                os.environ.get(
-                    "PENGUIN_TOOL_TIMEOUT_EDIT",
-                    os.environ.get("PENGUIN_TOOL_TIMEOUT", "180"),
-                )
-            )
-        except Exception:
-            default_timeout = 180
-
-        result_container = {"done": False, "result": None, "error": None}
-
-        def _runner():
-            try:
-                result_container["result"] = replace_lines(
-                    self._resolve_path_in_root(tool_input["path"], effective_root),
-                    int(tool_input["start_line"]),
-                    int(tool_input["end_line"]),
-                    tool_input.get("new_content", ""),
-                    verify=tool_input.get("verify", True),
-                    workspace_path=effective_root,
-                )
-            except Exception as e:
-                result_container["error"] = str(e)
-            finally:
-                result_container["done"] = True
-
-        t = threading.Thread(target=_runner, daemon=True)
-        t.start()
-        t.join(timeout=default_timeout)
-        if not result_container["done"]:
-            return json.dumps(
-                {
-                    "error": "timeout",
-                    "tool": "replace_lines",
-                    "timeout_seconds": default_timeout,
-                }
-            )
-        if result_container["error"] is not None:
-            return json.dumps(
-                {"error": result_container["error"], "tool": "replace_lines"}
-            )
-        return result_container["result"]
+        """Legacy replace_lines wrapper routed through canonical patch_file."""
+        return self._execute_patch_file(
+            {
+                "path": tool_input.get("path") or tool_input.get("file_path") or "",
+                "operation": {
+                    "type": "replace_lines",
+                    "start_line": tool_input.get("start_line"),
+                    "end_line": tool_input.get("end_line"),
+                    "new_content": tool_input.get("new_content", ""),
+                    "verify": tool_input.get("verify", True),
+                },
+                "backup": tool_input.get("backup", True),
+                "_warnings": self._unique_strings(
+                    [
+                        *self._extract_internal_warnings(tool_input),
+                        "Deprecated patch_file payload: legacy replace_lines wrapper is deprecated; use patch_file instead.",
+                    ]
+                ),
+            },
+            file_root=file_root,
+        )
 
     def _execute_insert_lines(
         self, tool_input: dict, *, file_root: Optional[str] = None
     ) -> str:
-        """Execute line insertion with workspace integration."""
-        from penguin.tools.core.support import insert_lines
-        import threading, json
-
-        effective_root = file_root or self._file_root
-
-        try:
-            default_timeout = int(
-                os.environ.get(
-                    "PENGUIN_TOOL_TIMEOUT_EDIT",
-                    os.environ.get("PENGUIN_TOOL_TIMEOUT", "180"),
-                )
-            )
-        except Exception:
-            default_timeout = 180
-
-        result_container = {"done": False, "result": None, "error": None}
-
-        def _runner():
-            try:
-                result_container["result"] = insert_lines(
-                    self._resolve_path_in_root(tool_input["path"], effective_root),
-                    int(tool_input["after_line"]),
-                    tool_input.get("new_content", ""),
-                    workspace_path=effective_root,
-                )
-            except Exception as e:
-                result_container["error"] = str(e)
-            finally:
-                result_container["done"] = True
-
-        t = threading.Thread(target=_runner, daemon=True)
-        t.start()
-        t.join(timeout=default_timeout)
-        if not result_container["done"]:
-            return json.dumps(
-                {
-                    "error": "timeout",
-                    "tool": "insert_lines",
-                    "timeout_seconds": default_timeout,
-                }
-            )
-        if result_container["error"] is not None:
-            return json.dumps(
-                {"error": result_container["error"], "tool": "insert_lines"}
-            )
-        return result_container["result"]
+        """Legacy insert_lines wrapper routed through canonical patch_file."""
+        return self._execute_patch_file(
+            {
+                "path": tool_input.get("path") or tool_input.get("file_path") or "",
+                "operation": {
+                    "type": "insert_lines",
+                    "after_line": tool_input.get("after_line"),
+                    "new_content": tool_input.get("new_content", ""),
+                },
+                "backup": tool_input.get("backup", True),
+                "_warnings": self._unique_strings(
+                    [
+                        *self._extract_internal_warnings(tool_input),
+                        "Deprecated patch_file payload: legacy insert_lines wrapper is deprecated; use patch_file instead.",
+                    ]
+                ),
+            },
+            file_root=file_root,
+        )
 
     def _execute_delete_lines(
         self, tool_input: dict, *, file_root: Optional[str] = None
     ) -> str:
-        """Execute line deletion with workspace integration."""
-        from penguin.tools.core.support import delete_lines
-        import threading, json
-
-        effective_root = file_root or self._file_root
-
-        try:
-            default_timeout = int(
-                os.environ.get(
-                    "PENGUIN_TOOL_TIMEOUT_EDIT",
-                    os.environ.get("PENGUIN_TOOL_TIMEOUT", "180"),
-                )
-            )
-        except Exception:
-            default_timeout = 180
-
-        result_container = {"done": False, "result": None, "error": None}
-
-        def _runner():
-            try:
-                result_container["result"] = delete_lines(
-                    self._resolve_path_in_root(tool_input["path"], effective_root),
-                    int(tool_input["start_line"]),
-                    int(tool_input["end_line"]),
-                    workspace_path=effective_root,
-                )
-            except Exception as e:
-                result_container["error"] = str(e)
-            finally:
-                result_container["done"] = True
-
-        t = threading.Thread(target=_runner, daemon=True)
-        t.start()
-        t.join(timeout=default_timeout)
-        if not result_container["done"]:
-            return json.dumps(
-                {
-                    "error": "timeout",
-                    "tool": "delete_lines",
-                    "timeout_seconds": default_timeout,
-                }
-            )
-        if result_container["error"] is not None:
-            return json.dumps(
-                {"error": result_container["error"], "tool": "delete_lines"}
-            )
-        return result_container["result"]
+        """Legacy delete_lines wrapper routed through canonical patch_file."""
+        return self._execute_patch_file(
+            {
+                "path": tool_input.get("path") or tool_input.get("file_path") or "",
+                "operation": {
+                    "type": "delete_lines",
+                    "start_line": tool_input.get("start_line"),
+                    "end_line": tool_input.get("end_line"),
+                },
+                "backup": tool_input.get("backup", True),
+                "_warnings": self._unique_strings(
+                    [
+                        *self._extract_internal_warnings(tool_input),
+                        "Deprecated patch_file payload: legacy delete_lines wrapper is deprecated; use patch_file instead.",
+                    ]
+                ),
+            },
+            file_root=file_root,
+        )
 
     def _execute_edit_with_pattern(
         self, tool_input: dict, *, file_root: Optional[str] = None
     ) -> str:
-        """Execute pattern-based editing with workspace integration."""
-        from penguin.tools.core.support import edit_file_with_pattern
-        import threading, json
-
-        effective_root = file_root or self._file_root
-
-        try:
-            default_timeout = int(
-                os.environ.get(
-                    "PENGUIN_TOOL_TIMEOUT_EDIT",
-                    os.environ.get("PENGUIN_TOOL_TIMEOUT", "180"),
-                )
-            )
-        except Exception:
-            default_timeout = 180
-
-        result_container = {"done": False, "result": None, "error": None}
-
-        def _runner():
-            try:
-                result_container["result"] = edit_file_with_pattern(
-                    file_path=tool_input["file_path"],
-                    search_pattern=tool_input["search_pattern"],
-                    replacement=tool_input["replacement"],
-                    backup=tool_input.get("backup", True),
-                    workspace_path=effective_root,
-                )
-            except Exception as e:
-                result_container["error"] = str(e)
-            finally:
-                result_container["done"] = True
-
-        t = threading.Thread(target=_runner, daemon=True)
-        t.start()
-        t.join(timeout=default_timeout)
-        if not result_container["done"]:
-            return json.dumps(
-                {
-                    "error": "timeout",
-                    "tool": "edit_with_pattern",
-                    "timeout_seconds": default_timeout,
-                }
-            )
-        if result_container["error"] is not None:
-            return json.dumps(
-                {"error": result_container["error"], "tool": "edit_with_pattern"}
-            )
-        return result_container["result"]
+        """Legacy regex wrapper routed through canonical patch_file."""
+        return self._execute_patch_file(
+            {
+                "path": tool_input.get("path") or tool_input.get("file_path") or "",
+                "operation": {
+                    "type": "regex_replace",
+                    "search_pattern": tool_input.get("search_pattern")
+                    or tool_input.get("pattern")
+                    or "",
+                    "replacement": tool_input.get("replacement", ""),
+                },
+                "backup": tool_input.get("backup", True),
+                "_warnings": self._unique_strings(
+                    [
+                        *self._extract_internal_warnings(tool_input),
+                        "Deprecated patch_file payload: legacy edit_with_pattern wrapper is deprecated; use patch_file instead.",
+                    ]
+                ),
+            },
+            file_root=file_root,
+        )
 
     def _execute_multiedit(
         self, tool_input: dict, *, file_root: Optional[str] = None
     ) -> str:
-        """Execute multiedit facade with workspace integration."""
-        from penguin.tools.multiedit import apply_multiedit
-
-        effective_root = file_root or self._file_root
-
-        content = tool_input.get("content", "")
-        do_apply = bool(tool_input.get("apply", False))
+        """Legacy multiedit wrapper routed through canonical patch_files."""
         # Map config toggles → environment for lower layers
         try:
             patches_cfg = None
@@ -2314,25 +2688,21 @@ class ToolManager:
                     os.environ["PENGUIN_PATCH_COMMIT_MSG"] = str(commit_message)
         except Exception:
             pass
-        result = apply_multiedit(
-            content, dry_run=(not do_apply), workspace_root=effective_root
-        )
-        try:
-            import json
 
-            return json.dumps(
-                {
-                    "success": result.success,
-                    "files_edited": result.files_edited,
-                    "files_failed": result.files_failed,
-                    "error_messages": result.error_messages,
-                    "backup_paths": result.backup_paths,
-                    "rollback_performed": result.rollback_performed,
-                    "applied": do_apply,
-                }
-            )
-        except Exception:
-            return f"success={result.success}, edited={len(result.files_edited)}, failed={len(result.files_failed)}"
+        return self._execute_patch_files(
+            {
+                "content": tool_input.get("content", ""),
+                "apply": bool(tool_input.get("apply", False)),
+                "backup": tool_input.get("backup", True),
+                "_warnings": self._unique_strings(
+                    [
+                        *self._extract_internal_warnings(tool_input),
+                        "Deprecated patch_files payload: legacy multiedit wrapper is deprecated; use patch_files instead.",
+                    ]
+                ),
+            },
+            file_root=file_root,
+        )
 
     def set_project_root(self, project_root: Union[str, Path]) -> str:
         """Point the "project" root at a new directory (e.g., workspace project)."""
@@ -2511,7 +2881,32 @@ class ToolManager:
         self, tool_input: dict[str, Any], file_root: str
     ) -> dict[str, Any]:
         """Normalize path-like tool inputs against request-scoped file root."""
-        normalized = dict(tool_input or {})
+
+        def _normalize_value(value: Any) -> Any:
+            if isinstance(value, dict):
+                updated = dict(value)
+                for nested_key in (
+                    "path",
+                    "file_path",
+                    "directory",
+                    "search_path",
+                    "file1",
+                    "file2",
+                ):
+                    nested_value = updated.get(nested_key)
+                    if isinstance(nested_value, str) and nested_value.strip():
+                        updated[nested_key] = self._resolve_path_in_root(
+                            nested_value, file_root
+                        )
+                for nested_key, nested_value in list(updated.items()):
+                    if isinstance(nested_value, (dict, list)):
+                        updated[nested_key] = _normalize_value(nested_value)
+                return updated
+            if isinstance(value, list):
+                return [_normalize_value(item) for item in value]
+            return value
+
+        normalized = _normalize_value(tool_input or {})
         path_like_keys = {
             "path",
             "file_path",
@@ -2530,6 +2925,8 @@ class ToolManager:
         self, tool_name: str, tool_input: dict, context: dict = None
     ) -> Union[str, dict]:
         with profile_operation(f"ToolManager.execute_tool.{tool_name}"):
+            requested_tool_name = tool_name
+            tool_name = self._canonical_tool_name(tool_name)
             effective_context = self._merged_execution_context(context)
             file_root = self._resolve_file_root(effective_context)
             effective_context.setdefault("directory", file_root)
@@ -2696,8 +3093,8 @@ class ToolManager:
                 "create_file": lambda: self._execute_file_operation(
                     "create_file", tool_input, file_root=file_root
                 ),
-                "write_to_file": lambda: self._execute_file_operation(
-                    "write_to_file", tool_input, file_root=file_root
+                "write_file": lambda: self._execute_file_operation(
+                    "write_file", tool_input, file_root=file_root
                 ),
                 "read_file": lambda: self._execute_file_operation(
                     "read_file", tool_input, file_root=file_root
@@ -2806,22 +3203,10 @@ class ToolManager:
                 "analyze_project": lambda: self._execute_analyze_project(
                     tool_input, file_root=file_root
                 ),
-                "apply_diff": lambda: self._execute_apply_diff(
+                "patch_file": lambda: self._execute_patch_file(
                     tool_input, file_root=file_root
                 ),
-                "replace_lines": lambda: self._execute_replace_lines(
-                    tool_input, file_root=file_root
-                ),
-                "insert_lines": lambda: self._execute_insert_lines(
-                    tool_input, file_root=file_root
-                ),
-                "delete_lines": lambda: self._execute_delete_lines(
-                    tool_input, file_root=file_root
-                ),
-                "multiedit_apply": lambda: self._execute_multiedit(
-                    tool_input, file_root=file_root
-                ),
-                "edit_with_pattern": lambda: self._execute_edit_with_pattern(
+                "patch_files": lambda: self._execute_patch_files(
                     tool_input, file_root=file_root
                 ),
                 # Repository management tools
@@ -2904,7 +3289,12 @@ class ToolManager:
                 ),
             }
 
-            logging.info(f"Executing tool: {tool_name} with input: {tool_input}")
+            logging.info(
+                "Executing tool: %s (canonical=%s) with input: %s",
+                requested_tool_name,
+                tool_name,
+                tool_input,
+            )
             if tool_name not in tool_map:
                 error_message = f"Unknown tool: {tool_name}"
                 logging.error(error_message)
@@ -3461,9 +3851,8 @@ class ToolManager:
                                     imports.append(import_name)
                                     all_imports[relative_path].append(import_name)
 
-                                    if (
-                                        include_external
-                                        or not self._is_external_import(node.module)
+                                    if include_external or not self._is_external_import(
+                                        node.module
                                     ):
                                         dependency_graph[relative_path].add(node.module)
 

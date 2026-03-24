@@ -13,6 +13,7 @@ import time
 from datetime import datetime
 from enum import Enum
 from html import unescape
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, Awaitable
 import base64
 from penguin.local_task.manager import ProjectManager
@@ -50,10 +51,14 @@ class ActionType(Enum):
     FIND_FILES_ENHANCED = "find_files_enhanced"
     ENHANCED_DIFF = "enhanced_diff"
     ANALYZE_PROJECT = "analyze_project"
+    READ_FILE = "read_file"
     ENHANCED_READ = "enhanced_read"
     ENHANCED_WRITE = "enhanced_write"
+    WRITE_FILE = "write_file"
     APPLY_DIFF = "apply_diff"
+    PATCH_FILE = "patch_file"
     MULTIEDIT = "multiedit"
+    PATCH_FILES = "patch_files"
     EDIT_WITH_PATTERN = "edit_with_pattern"
     REPLACE_LINES = "replace_lines"
     INSERT_LINES = "insert_lines"
@@ -139,10 +144,721 @@ class ActionType(Enum):
     CREATE_BUGFIX_PR = "create_bugfix_pr"
 
 
+CANONICAL_EDIT_ACTION_TYPES = {
+    ActionType.READ_FILE,
+    ActionType.WRITE_FILE,
+    ActionType.PATCH_FILE,
+    ActionType.PATCH_FILES,
+}
+
+
+LEGACY_EDIT_ACTION_ALIASES: Dict[str, ActionType] = {
+    ActionType.ENHANCED_READ.value: ActionType.READ_FILE,
+    ActionType.ENHANCED_WRITE.value: ActionType.WRITE_FILE,
+    ActionType.APPLY_DIFF.value: ActionType.PATCH_FILE,
+    ActionType.MULTIEDIT.value: ActionType.PATCH_FILES,
+    ActionType.EDIT_WITH_PATTERN.value: ActionType.PATCH_FILE,
+    ActionType.REPLACE_LINES.value: ActionType.PATCH_FILE,
+    ActionType.INSERT_LINES.value: ActionType.PATCH_FILE,
+    ActionType.DELETE_LINES.value: ActionType.PATCH_FILE,
+}
+
+
 class CodeActAction:
-    def __init__(self, action_type, params):
+    action_type: ActionType
+    params: Any
+    raw_action_type: str
+
+    def __init__(
+        self,
+        action_type: ActionType,
+        params: Any,
+        raw_action_type: Optional[str] = None,
+    ):
         self.action_type = action_type
         self.params = params
+        self.raw_action_type = raw_action_type or action_type.value
+
+
+def resolve_action_type(action_name: str) -> ActionType:
+    """Resolve a raw action tag name to its canonical action type."""
+    normalized = str(action_name or "").strip().lower()
+    aliased = LEGACY_EDIT_ACTION_ALIASES.get(normalized)
+    if aliased is not None:
+        return aliased
+    return ActionType[normalized.upper()]
+
+
+def _split_unescaped(
+    value: str,
+    separator: str = ":",
+    *,
+    maxsplit: int = -1,
+) -> List[str]:
+    """Split on unescaped separators while preserving regex backslashes."""
+    if not value:
+        return [""]
+
+    parts: List[str] = []
+    current: List[str] = []
+    splits = 0
+    escape_next = False
+
+    for char in value:
+        if escape_next:
+            if char in {separator, "\\"}:
+                current.append(char)
+            else:
+                current.append("\\")
+                current.append(char)
+            escape_next = False
+            continue
+
+        if char == "\\":
+            escape_next = True
+            continue
+
+        if char == separator and (maxsplit < 0 or splits < maxsplit):
+            parts.append("".join(current))
+            current = []
+            splits += 1
+            continue
+
+        current.append(char)
+
+    if escape_next:
+        current.append("\\")
+
+    parts.append("".join(current))
+    return parts
+
+
+def _find_unescaped_separator(
+    value: str,
+    separator: str = ":",
+    *,
+    reverse: bool = False,
+) -> int:
+    """Return the index of the next unescaped separator, or -1."""
+    if not value:
+        return -1
+
+    indices = range(len(value) - 1, -1, -1) if reverse else range(len(value))
+    for index in indices:
+        if value[index] != separator:
+            continue
+
+        backslash_count = 0
+        probe = index - 1
+        while probe >= 0 and value[probe] == "\\":
+            backslash_count += 1
+            probe -= 1
+
+        if backslash_count % 2 == 0:
+            return index
+
+    return -1
+
+
+def _decode_escaped_edit_field(value: str, separator: str = ":") -> str:
+    """Decode escaped separators/backslashes while preserving regex escapes."""
+    if not value:
+        return value
+
+    decoded: List[str] = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "\\" and index + 1 < len(value):
+            next_char = value[index + 1]
+            if next_char in {separator, "\\"}:
+                decoded.append(next_char)
+                index += 2
+                continue
+        decoded.append(char)
+        index += 1
+    return "".join(decoded)
+
+
+def parse_edit_with_pattern_payload(params: Any) -> Dict[str, Any]:
+    """Parse regex edit payloads from JSON or escaped colon-delimited strings."""
+    if isinstance(params, dict):
+        payload = dict(params)
+        file_path = payload.get("file_path") or payload.get("path") or ""
+        search_pattern = payload.get("search_pattern") or payload.get("pattern")
+        replacement = payload.get("replacement")
+        if not isinstance(file_path, str) or not file_path.strip():
+            return {"error": "Need file_path for edit_with_pattern"}
+        if not isinstance(search_pattern, str):
+            return {"error": "Need search_pattern for edit_with_pattern"}
+        if not isinstance(replacement, str):
+            return {"error": "Need replacement for edit_with_pattern"}
+        backup = payload.get("backup", True)
+        return {
+            "file_path": file_path.strip(),
+            "search_pattern": search_pattern,
+            "replacement": replacement,
+            "backup": bool(backup),
+        }
+
+    if not isinstance(params, str) or not params.strip():
+        return {"error": "Need file_path:search_pattern:replacement format"}
+
+    text = params.strip()
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError as exc:
+            return {"error": f"edit_with_pattern expects valid JSON payload: {exc}"}
+        return parse_edit_with_pattern_payload(parsed)
+
+    backup = True
+    body = text
+    backup_index = _find_unescaped_separator(text, reverse=True)
+    if backup_index >= 0:
+        maybe_flag = text[backup_index + 1 :].strip().lower()
+        if maybe_flag in {"true", "false"}:
+            body = text[:backup_index]
+            backup = maybe_flag == "true"
+
+    path_index = _find_unescaped_separator(body)
+    if path_index < 0:
+        return {"error": "Need file_path:search_pattern:replacement format"}
+
+    file_path = body[:path_index].strip()
+    if not file_path:
+        return {"error": "Need file_path:search_pattern:replacement format"}
+
+    remainder = body[path_index + 1 :]
+    pattern_index = _find_unescaped_separator(remainder)
+    if pattern_index < 0:
+        return {
+            "error": (
+                "Need file_path:search_pattern:replacement format. "
+                "Escape literal colons in search patterns as \\: or use JSON payloads."
+            )
+        }
+
+    search_pattern = _decode_escaped_edit_field(remainder[:pattern_index])
+    replacement = _decode_escaped_edit_field(remainder[pattern_index + 1 :])
+    if not search_pattern:
+        return {"error": "Need search_pattern for edit_with_pattern"}
+
+    return {
+        "file_path": file_path,
+        "search_pattern": search_pattern,
+        "replacement": replacement,
+        "backup": backup,
+    }
+
+
+def _parse_json_payload(params: Any) -> Optional[Dict[str, Any]]:
+    """Parse JSON object payloads from dicts or JSON strings."""
+    if isinstance(params, dict):
+        return dict(params)
+    if not isinstance(params, str):
+        return None
+    text = params.strip()
+    if not text.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _deprecated_payload_warning(tool_name: str, detail: str) -> str:
+    """Build a consistent warning string for migration payloads."""
+    return f"Deprecated {tool_name} payload: {detail}"
+
+
+def _legacy_bool_suffix_payload(
+    params: str,
+    *,
+    label: str,
+) -> Dict[str, Any]:
+    """Parse `path:content[:true|false]` legacy payloads."""
+    first_sep = params.find(":")
+    if first_sep == -1:
+        return {"error": f"Need {label} format"}
+
+    path = params[:first_sep].strip()
+    remainder = params[first_sep + 1 :]
+    if not path or not remainder:
+        return {"error": f"Need {label} format"}
+
+    backup = True
+    content = remainder
+    if ":" in remainder:
+        content_part, flag = remainder.rsplit(":", 1)
+        flag_stripped = flag.strip().lower()
+        if flag_stripped in {"true", "false"} and "\n" not in flag and "\r" not in flag:
+            backup = flag_stripped == "true"
+            content = content_part
+
+    return {"path": path, "content": content, "backup": backup}
+
+
+def parse_write_file_payload(params: Any) -> Dict[str, Any]:
+    """Parse canonical or legacy write-file payloads."""
+    payload = _parse_json_payload(params)
+    warnings: List[str] = []
+    if payload is not None:
+        path = payload.get("path") or payload.get("file_path") or ""
+        content = payload.get("content")
+        if not isinstance(path, str) or not path.strip():
+            return {"error": "write_file requires 'path'"}
+        if not isinstance(content, str):
+            return {"error": "write_file requires 'content'"}
+        if "file_path" in payload and "path" not in payload:
+            warnings.append(
+                _deprecated_payload_warning(
+                    "write_file",
+                    "use 'path' instead of legacy 'file_path'",
+                )
+            )
+        return {
+            "path": path.strip(),
+            "content": content,
+            "backup": bool(payload.get("backup", True)),
+            "warnings": warnings,
+        }
+
+    if not isinstance(params, str) or not params.strip():
+        return {
+            "error": "write_file requires JSON payload or legacy path:content format"
+        }
+
+    parsed = _legacy_bool_suffix_payload(params, label="path:content[:backup]")
+    error = parsed.get("error")
+    if isinstance(error, str):
+        return {"error": error}
+    parsed["warnings"] = [
+        _deprecated_payload_warning(
+            "write_file",
+            "use JSON object payloads instead of colon-delimited strings",
+        )
+    ]
+    return parsed
+
+
+def parse_read_file_payload(params: Any) -> Dict[str, Any]:
+    """Parse canonical or legacy read-file payloads."""
+    payload = _parse_json_payload(params)
+    warnings: List[str] = []
+    if payload is not None:
+        path = payload.get("path") or payload.get("file_path") or ""
+        if not isinstance(path, str) or not path.strip():
+            return {"error": "read_file requires 'path'"}
+        if "file_path" in payload and "path" not in payload:
+            warnings.append(
+                _deprecated_payload_warning(
+                    "read_file",
+                    "use 'path' instead of legacy 'file_path'",
+                )
+            )
+        max_lines = payload.get("max_lines")
+        if max_lines is not None:
+            try:
+                max_lines = int(max_lines)
+            except Exception:
+                return {"error": "read_file max_lines must be an integer"}
+        return {
+            "path": path.strip(),
+            "show_line_numbers": bool(payload.get("show_line_numbers", False)),
+            "max_lines": max_lines,
+            "warnings": warnings,
+        }
+
+    if not isinstance(params, str) or not params.strip():
+        return {
+            "error": "read_file requires JSON payload or legacy path[:show_line_numbers[:max_lines]] format"
+        }
+
+    parts = params.split(":")
+    if not parts or not parts[0].strip():
+        return {"error": "File path is required"}
+    path = parts[0].strip()
+    show_line_numbers = parts[1].strip().lower() == "true" if len(parts) > 1 else False
+    max_lines = None
+    if len(parts) > 2 and parts[2].strip():
+        if not parts[2].strip().isdigit():
+            return {"error": "read_file max_lines must be an integer"}
+        max_lines = int(parts[2].strip())
+
+    return {
+        "path": path,
+        "show_line_numbers": show_line_numbers,
+        "max_lines": max_lines,
+        "warnings": [
+            _deprecated_payload_warning(
+                "read_file",
+                "use JSON object payloads instead of colon-delimited strings",
+            )
+        ],
+    }
+
+
+def _infer_patch_operation_type(payload: Dict[str, Any]) -> Optional[str]:
+    """Infer a patch operation type from flat payload keys."""
+    if "diff_content" in payload or "diff" in payload:
+        return "unified_diff"
+    if (
+        "search_pattern" in payload or "pattern" in payload
+    ) and "replacement" in payload:
+        return "regex_replace"
+    if "after_line" in payload:
+        return "insert_lines"
+    if {"start_line", "end_line", "new_content"}.issubset(payload):
+        return "replace_lines"
+    if {"start_line", "end_line"}.issubset(payload):
+        return "delete_lines"
+    return None
+
+
+def _build_patch_operation_payload(
+    operation_type: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Normalize flat patch payload fields into a canonical operation object."""
+    if operation_type == "unified_diff":
+        return {
+            "type": "unified_diff",
+            "diff_content": payload.get("diff_content") or payload.get("diff") or "",
+        }
+    if operation_type == "regex_replace":
+        return {
+            "type": "regex_replace",
+            "search_pattern": payload.get("search_pattern")
+            or payload.get("pattern")
+            or "",
+            "replacement": payload.get("replacement") or "",
+        }
+    if operation_type == "replace_lines":
+        return {
+            "type": "replace_lines",
+            "start_line": payload.get("start_line"),
+            "end_line": payload.get("end_line"),
+            "new_content": payload.get("new_content", ""),
+            "verify": payload.get("verify", True),
+        }
+    if operation_type == "insert_lines":
+        return {
+            "type": "insert_lines",
+            "after_line": payload.get("after_line"),
+            "new_content": payload.get("new_content", ""),
+        }
+    if operation_type == "delete_lines":
+        return {
+            "type": "delete_lines",
+            "start_line": payload.get("start_line"),
+            "end_line": payload.get("end_line"),
+        }
+    return {"type": operation_type}
+
+
+def parse_patch_file_payload(
+    params: Any,
+    *,
+    default_operation_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Parse canonical or legacy patch-file payloads into nested JSON shape."""
+    payload = _parse_json_payload(params)
+    warnings: List[str] = []
+    if payload is not None:
+        operation_payload = payload.get("operation")
+        path = payload.get("path") or payload.get("file_path") or ""
+        backup = payload.get("backup", True)
+
+        if isinstance(operation_payload, dict):
+            operation = dict(operation_payload)
+            operation_type = operation.get("type") or payload.get("operation_type")
+            if not operation_type:
+                operation_type = _infer_patch_operation_type(operation)
+            if not operation_type:
+                return {"error": "patch_file requires operation.type"}
+            operation["type"] = operation_type
+            path = path or operation.get("path") or operation.get("file_path") or ""
+            operation.pop("path", None)
+            operation.pop("file_path", None)
+            if "file_path" in payload and "path" not in payload:
+                warnings.append(
+                    _deprecated_payload_warning(
+                        "patch_file",
+                        "use top-level 'path' instead of legacy 'file_path'",
+                    )
+                )
+            if not isinstance(path, str) or not path.strip():
+                return {"error": "patch_file requires 'path'"}
+            return {
+                "path": path.strip(),
+                "operation": operation,
+                "backup": bool(backup),
+                "warnings": warnings,
+            }
+
+        operation_type = (
+            payload.get("operation_type")
+            or payload.get("type")
+            or default_operation_type
+            or _infer_patch_operation_type(payload)
+        )
+        if not operation_type:
+            return {
+                "error": "patch_file requires an operation object or operation_type"
+            }
+        if not isinstance(path, str) or not path.strip():
+            return {"error": "patch_file requires 'path'"}
+        warnings.append(
+            _deprecated_payload_warning(
+                "patch_file",
+                "flat JSON payloads are deprecated; use a nested operation object",
+            )
+        )
+        if "file_path" in payload and "path" not in payload:
+            warnings.append(
+                _deprecated_payload_warning(
+                    "patch_file",
+                    "use 'path' instead of legacy 'file_path'",
+                )
+            )
+        return {
+            "path": path.strip(),
+            "operation": _build_patch_operation_payload(operation_type, payload),
+            "backup": bool(backup),
+            "warnings": warnings,
+        }
+
+    if default_operation_type is None:
+        return {
+            "error": (
+                "patch_file requires JSON payloads. Use {'path': ..., 'operation': {...}} "
+                "or a legacy action tag during migration."
+            )
+        }
+
+    if not isinstance(params, str) or not params.strip():
+        return {"error": "patch_file legacy payload is empty"}
+
+    if default_operation_type == "unified_diff":
+        parsed = _legacy_bool_suffix_payload(
+            params, label="file_path:diff_content[:backup]"
+        )
+        error = parsed.get("error")
+        if isinstance(error, str):
+            return {"error": error}
+        warnings.append(
+            _deprecated_payload_warning(
+                "patch_file",
+                "legacy diff strings are deprecated; use JSON payloads",
+            )
+        )
+        return {
+            "path": parsed["path"],
+            "operation": {
+                "type": "unified_diff",
+                "diff_content": parsed["content"],
+            },
+            "backup": parsed["backup"],
+            "warnings": warnings,
+        }
+
+    if default_operation_type == "regex_replace":
+        parsed = parse_edit_with_pattern_payload(params)
+        error = parsed.get("error")
+        if isinstance(error, str):
+            return {"error": error}
+        warnings.append(
+            _deprecated_payload_warning(
+                "patch_file",
+                "legacy edit_with_pattern strings are deprecated; use JSON payloads",
+            )
+        )
+        return {
+            "path": parsed["file_path"],
+            "operation": {
+                "type": "regex_replace",
+                "search_pattern": parsed["search_pattern"],
+                "replacement": parsed["replacement"],
+            },
+            "backup": parsed["backup"],
+            "warnings": warnings,
+        }
+
+    if default_operation_type == "replace_lines":
+        parts = str(params).split(":", 3)
+        if len(parts) < 4:
+            return {"error": "Need path:start_line:end_line:new_content format"}
+        path = parts[0].strip()
+        if not path:
+            return {"error": "Need path for replace_lines"}
+        try:
+            start_line = int(parts[1].strip())
+            end_line = int(parts[2].strip())
+        except ValueError:
+            return {"error": "start_line and end_line must be integers"}
+        verify = True
+        new_content = parts[3]
+        if ":" in new_content:
+            content_part, flag = new_content.rsplit(":", 1)
+            flag_stripped = flag.strip().lower()
+            if (
+                flag_stripped in {"true", "false"}
+                and "\n" not in flag
+                and "\r" not in flag
+            ):
+                verify = flag_stripped == "true"
+                new_content = content_part
+        warnings.append(
+            _deprecated_payload_warning(
+                "patch_file",
+                "legacy replace_lines strings are deprecated; use JSON payloads",
+            )
+        )
+        return {
+            "path": path,
+            "operation": {
+                "type": "replace_lines",
+                "start_line": start_line,
+                "end_line": end_line,
+                "new_content": new_content,
+                "verify": verify,
+            },
+            "backup": True,
+            "warnings": warnings,
+        }
+
+    if default_operation_type == "insert_lines":
+        parts = str(params).split(":", 2)
+        if len(parts) < 3:
+            return {"error": "Need path:after_line:new_content format"}
+        path = parts[0].strip()
+        if not path:
+            return {"error": "Need path for insert_lines"}
+        try:
+            after_line = int(parts[1].strip())
+        except ValueError:
+            return {"error": "after_line must be an integer"}
+        warnings.append(
+            _deprecated_payload_warning(
+                "patch_file",
+                "legacy insert_lines strings are deprecated; use JSON payloads",
+            )
+        )
+        return {
+            "path": path,
+            "operation": {
+                "type": "insert_lines",
+                "after_line": after_line,
+                "new_content": parts[2],
+            },
+            "backup": True,
+            "warnings": warnings,
+        }
+
+    if default_operation_type == "delete_lines":
+        parts = str(params).split(":", 2)
+        if len(parts) < 3:
+            return {"error": "Need path:start_line:end_line format"}
+        path = parts[0].strip()
+        if not path:
+            return {"error": "Need path for delete_lines"}
+        try:
+            start_line = int(parts[1].strip())
+            end_line = int(parts[2].strip())
+        except ValueError:
+            return {"error": "start_line and end_line must be integers"}
+        warnings.append(
+            _deprecated_payload_warning(
+                "patch_file",
+                "legacy delete_lines strings are deprecated; use JSON payloads",
+            )
+        )
+        return {
+            "path": path,
+            "operation": {
+                "type": "delete_lines",
+                "start_line": start_line,
+                "end_line": end_line,
+            },
+            "backup": True,
+            "warnings": warnings,
+        }
+
+    return {
+        "error": f"Unsupported patch_file legacy operation type: {default_operation_type}"
+    }
+
+
+def parse_patch_files_payload(params: Any) -> Dict[str, Any]:
+    """Parse canonical or legacy patch-files payloads."""
+    payload = _parse_json_payload(params)
+    warnings: List[str] = []
+    if payload is not None:
+        apply = bool(payload.get("apply", False))
+        backup = bool(payload.get("backup", True))
+        operations_payload = payload.get("operations")
+        if isinstance(operations_payload, list):
+            operations: List[Dict[str, Any]] = []
+            for item in operations_payload:
+                parsed = parse_patch_file_payload(item)
+                error = parsed.get("error")
+                if isinstance(error, str):
+                    return {"error": error}
+                operations.append(
+                    {
+                        "path": parsed["path"],
+                        "operation": parsed["operation"],
+                        "backup": parsed["backup"],
+                        "_warnings": parsed.get("warnings", []),
+                    }
+                )
+            return {
+                "operations": operations,
+                "apply": apply,
+                "backup": backup,
+                "warnings": warnings,
+            }
+
+        content = payload.get("content")
+        if isinstance(content, str):
+            warnings.append(
+                _deprecated_payload_warning(
+                    "patch_files",
+                    "raw content payloads are deprecated; use a structured operations array",
+                )
+            )
+            return {
+                "content": content,
+                "apply": apply,
+                "backup": backup,
+                "warnings": warnings,
+            }
+
+        return {"error": "patch_files requires 'operations' or legacy 'content'"}
+
+    if not isinstance(params, str) or not params.strip():
+        return {"error": "patch_files requires JSON payloads or legacy patch content"}
+
+    content = params
+    do_apply = False
+    match = re.match(r"^apply\s*[:=]\s*(true|false)\s*\n", content, flags=re.IGNORECASE)
+    if match:
+        do_apply = match.group(1).lower() == "true"
+        content = content[match.end() :]
+    warnings.append(
+        _deprecated_payload_warning(
+            "patch_files",
+            "raw patch text is deprecated; use a structured operations array",
+        )
+    )
+    return {
+        "content": content,
+        "apply": do_apply,
+        "backup": True,
+        "warnings": warnings,
+    }
 
 
 def parse_action(content: str) -> List[CodeActAction]:
@@ -185,8 +901,12 @@ def parse_action(content: str) -> List[CodeActAction]:
 
             # Verify this is a valid action type
             try:
-                action_type_enum = ActionType[action_type.upper()]
-                action = CodeActAction(action_type_enum, params)
+                action_type_enum = resolve_action_type(action_type)
+                action = CodeActAction(
+                    action_type_enum,
+                    params,
+                    raw_action_type=action_type,
+                )
                 actions.append(action)
                 logger.debug(f"Found valid action: {action_type}")
             except KeyError:
@@ -336,6 +1056,24 @@ class ActionExecutor:
             action.params, str
         ):
             return self._inject_tool_call_id(action.params, action_id)
+        if action.action_type == ActionType.PATCH_FILE:
+            legacy_patch_defaults = {
+                ActionType.APPLY_DIFF.value: "unified_diff",
+                ActionType.EDIT_WITH_PATTERN.value: "regex_replace",
+                ActionType.REPLACE_LINES.value: "replace_lines",
+                ActionType.INSERT_LINES.value: "insert_lines",
+                ActionType.DELETE_LINES.value: "delete_lines",
+            }
+            default_operation_type = legacy_patch_defaults.get(
+                getattr(action, "raw_action_type", action.action_type.value)
+            )
+            if default_operation_type:
+                parsed = parse_patch_file_payload(
+                    action.params,
+                    default_operation_type=default_operation_type,
+                )
+                if not parsed.get("error"):
+                    return parsed
         return action.params
 
     def _record_ui_action_metadata(
@@ -416,12 +1154,15 @@ class ActionExecutor:
         """Return True if action can modify files and should refresh LSP state."""
         return action_type in {
             ActionType.APPLY_DIFF,
+            ActionType.PATCH_FILE,
             ActionType.MULTIEDIT,
+            ActionType.PATCH_FILES,
             ActionType.EDIT_WITH_PATTERN,
             ActionType.REPLACE_LINES,
             ActionType.INSERT_LINES,
             ActionType.DELETE_LINES,
             ActionType.ENHANCED_WRITE,
+            ActionType.WRITE_FILE,
         }
 
     def _extract_changed_files(self, action: CodeActAction) -> List[str]:
@@ -430,27 +1171,160 @@ class ActionExecutor:
         if action.action_type == ActionType.APPLY_DIFF:
             first_sep = params.find(":")
             if first_sep > 0:
-                return [params[:first_sep].strip()]
+                return [self._normalize_lsp_path(params[:first_sep].strip())]
+            return []
+
+        if action.action_type in {ActionType.ENHANCED_WRITE, ActionType.WRITE_FILE}:
+            payload = _parse_json_payload(action.params)
+            if isinstance(payload, dict):
+                path = payload.get("path") or payload.get("file_path")
+                if isinstance(path, str) and path.strip():
+                    return [self._normalize_lsp_path(path.strip())]
+            first_sep = params.find(":")
+            if first_sep > 0:
+                return [self._normalize_lsp_path(params[:first_sep].strip())]
+            return []
+
+        if action.action_type == ActionType.PATCH_FILE:
+            payload = _parse_json_payload(action.params)
+            if isinstance(payload, dict):
+                path = payload.get("path") or payload.get("file_path")
+                if isinstance(path, str) and path.strip():
+                    return [self._normalize_lsp_path(path.strip())]
             return []
 
         if action.action_type in {
             ActionType.REPLACE_LINES,
             ActionType.INSERT_LINES,
             ActionType.DELETE_LINES,
-            ActionType.ENHANCED_WRITE,
         }:
             first_sep = params.find(":")
             if first_sep > 0:
-                return [params[:first_sep].strip()]
+                return [self._normalize_lsp_path(params[:first_sep].strip())]
+            return []
+
+        if action.action_type == ActionType.PATCH_FILES:
+            payload = _parse_json_payload(action.params)
+            if isinstance(payload, dict):
+                operations = payload.get("operations")
+                if isinstance(operations, list):
+                    files = []
+                    for item in operations:
+                        if not isinstance(item, dict):
+                            continue
+                        path = item.get("path") or item.get("file_path")
+                        if isinstance(path, str) and path.strip():
+                            files.append(self._normalize_lsp_path(path.strip()))
+                    return files
             return []
 
         if action.action_type == ActionType.EDIT_WITH_PATTERN:
             parts = params.split(":", 1)
             if parts and parts[0].strip():
-                return [parts[0].strip()]
+                return [self._normalize_lsp_path(parts[0].strip())]
             return []
 
         return []
+
+    def _lsp_base_directory(self) -> Optional[Path]:
+        """Resolve the best base directory for UI/LSP path normalization."""
+        context = get_current_execution_context()
+        candidates = []
+        if context is not None:
+            candidates.extend(
+                [context.directory, context.project_root, context.workspace_root]
+            )
+        candidates.append(getattr(self.tool_manager, "_file_root", None))
+
+        for candidate in candidates:
+            if not isinstance(candidate, str) or not candidate.strip():
+                continue
+            try:
+                resolved = Path(candidate).expanduser().resolve()
+            except Exception:
+                continue
+            if resolved.exists() and resolved.is_dir():
+                return resolved
+        return None
+
+    def _normalize_lsp_path(self, path_value: str) -> str:
+        """Normalize file paths for LSP/UI payloads."""
+        text = str(path_value or "").strip()
+        if not text:
+            return ""
+
+        candidate = Path(text).expanduser()
+        if not candidate.is_absolute():
+            return text.replace("\\", "/")
+
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            return text.replace("\\", "/")
+
+        base_directory = self._lsp_base_directory()
+        if base_directory is not None:
+            try:
+                return str(resolved.relative_to(base_directory)).replace("\\", "/")
+            except Exception:
+                pass
+        return str(resolved).replace("\\", "/")
+
+    def _parse_action_result_payload(self, result: Any) -> Dict[str, Any]:
+        """Parse structured tool output when available."""
+        if isinstance(result, dict):
+            return result
+        if not isinstance(result, str):
+            return {}
+
+        text = result.strip()
+        if not text.startswith("{"):
+            return {}
+
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _extract_result_changed_files(self, result: Any) -> List[str]:
+        """Prefer changed files returned by the tool over raw param parsing."""
+        payload = self._parse_action_result_payload(result)
+        if not payload:
+            return []
+
+        paths: List[str] = []
+
+        single_file = payload.get("file")
+        if isinstance(single_file, str) and single_file.strip():
+            paths.append(single_file.strip())
+
+        for key in ("files", "files_edited", "created"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                paths.extend(
+                    str(item).strip()
+                    for item in value
+                    if isinstance(item, str) and str(item).strip()
+                )
+
+        diagnostics_payload = payload.get("diagnostics")
+        if not paths and isinstance(diagnostics_payload, dict):
+            paths.extend(
+                str(raw_path).strip()
+                for raw_path in diagnostics_payload.keys()
+                if str(raw_path).strip()
+            )
+
+        deduped: List[str] = []
+        seen: set[str] = set()
+        for path in paths:
+            normalized_path = self._normalize_lsp_path(path)
+            if not normalized_path or normalized_path in seen:
+                continue
+            seen.add(normalized_path)
+            deduped.append(normalized_path)
+        return deduped
 
     def _build_lsp_diagnostics(
         self, files: List[str], result: Any
@@ -541,9 +1415,12 @@ class ActionExecutor:
         diagnostics_payload = payload.get("diagnostics") if payload else None
         if isinstance(diagnostics_payload, dict):
             normalized: Dict[str, List[Dict[str, Any]]] = {}
+            normalized_files = {
+                self._normalize_lsp_path(path) for path in files if path
+            }
             for raw_path, entries in diagnostics_payload.items():
-                path = str(raw_path)
-                if files and path and path not in files:
+                path = self._normalize_lsp_path(str(raw_path))
+                if normalized_files and path and path not in normalized_files:
                     continue
                 if not isinstance(entries, list):
                     continue
@@ -724,9 +1601,13 @@ class ActionExecutor:
             ActionType.FIND_FILES_ENHANCED: self._find_files_enhanced,
             ActionType.ENHANCED_DIFF: self._enhanced_diff,
             ActionType.ANALYZE_PROJECT: self._analyze_project,
+            ActionType.READ_FILE: self._read_file,
             ActionType.ENHANCED_READ: self._enhanced_read,
+            ActionType.WRITE_FILE: self._write_file,
             ActionType.ENHANCED_WRITE: self._enhanced_write,
+            ActionType.PATCH_FILE: self._patch_file,
             ActionType.APPLY_DIFF: self._apply_diff,
+            ActionType.PATCH_FILES: self._patch_files,
             ActionType.EDIT_WITH_PATTERN: self._edit_with_pattern,
             ActionType.REPLACE_LINES: self._replace_lines,
             ActionType.INSERT_LINES: self._insert_lines,
@@ -786,8 +1667,12 @@ class ActionExecutor:
                     logger.debug(f"UI event emit failed (action result): {e}")
 
             if self._ui_event_cb and self._is_lsp_refresh_action(action.action_type):
-                files = self._extract_changed_files(action)
+                files = self._extract_result_changed_files(result)
+                if not files:
+                    files = self._extract_changed_files(action)
                 diagnostics_map = self._build_lsp_diagnostics(files, result)
+                if not files and diagnostics_map:
+                    files = [path for path in diagnostics_map.keys() if path]
                 try:
                     await self._ui_event_cb(
                         "lsp.updated",
@@ -2330,12 +3215,16 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             label = (
                 label_raw.strip()
                 if isinstance(label_raw, str)
-                else str(label_raw).strip() if label_raw is not None else ""
+                else str(label_raw).strip()
+                if label_raw is not None
+                else ""
             )
             description = (
                 description_raw.strip()
                 if isinstance(description_raw, str)
-                else str(description_raw).strip() if description_raw is not None else ""
+                else str(description_raw).strip()
+                if description_raw is not None
+                else ""
             )
 
             if not label or not description:
@@ -2366,12 +3255,16 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             question_text = (
                 question_raw.strip()
                 if isinstance(question_raw, str)
-                else str(question_raw).strip() if question_raw is not None else ""
+                else str(question_raw).strip()
+                if question_raw is not None
+                else ""
             )
             header_text = (
                 header_raw.strip()
                 if isinstance(header_raw, str)
-                else str(header_raw).strip() if header_raw is not None else ""
+                else str(header_raw).strip()
+                if header_raw is not None
+                else ""
             )
 
             options = self._normalize_question_options(item.get("options"))
@@ -3140,252 +4033,173 @@ When done exploring, provide your final summary WITHOUT any tool calls."""
             {"directory": directory, "include_external": include_external},
         )
 
-    def _enhanced_read(self, params: str) -> str:
-        """Enhanced file reading. Format: path:show_line_numbers:max_lines"""
-        parts = params.split(":")
-        if not parts or not parts[0].strip():
-            return "Error: File path is required"
-
-        path = parts[0].strip()
-        show_line_numbers = (
-            parts[1].strip().lower() == "true" if len(parts) > 1 else False
-        )
-        max_lines = (
-            int(parts[2].strip())
-            if len(parts) > 2 and parts[2].strip().isdigit()
-            else None
-        )
+    def _read_file(self, params: Any) -> str:
+        """Handle canonical read_file requests with JSON-first parsing."""
+        parsed = parse_read_file_payload(params)
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
 
         return self.tool_manager.execute_tool(
             "read_file",
             {
-                "path": path,
-                "show_line_numbers": show_line_numbers,
-                "max_lines": max_lines,
+                "path": parsed["path"],
+                "show_line_numbers": parsed["show_line_numbers"],
+                "max_lines": parsed["max_lines"],
             },
         )
 
-    def _enhanced_write(self, params: str) -> str:
-        """Enhanced file writing. Format: path:content:backup
+    def _enhanced_read(self, params: Any) -> str:
+        """Legacy enhanced_read alias routed through read_file."""
+        return self._read_file(params)
 
-        Parsing strategy: Find path from start (first colon), then check if
-        the content ends with :true or :false for the backup flag. This handles
-        content that contains colons (e.g., CSS, URLs).
-        """
-        first_sep = params.find(":")
-        if first_sep == -1:
-            return "Error: Need path and content (format: path:content[:backup])"
-
-        path = params[:first_sep].strip()
-        remainder = params[first_sep + 1 :]
-
-        if not path or not remainder:
-            return "Error: Need path and content"
-
-        # Default backup to True
-        backup = True
-        content = remainder
-
-        # Check if remainder ends with :true or :false (backup flag)
-        # Only consider it a flag if it's at the very end with no newlines
-        if ":" in remainder:
-            content_part, flag = remainder.rsplit(":", 1)
-            flag_stripped = flag.strip().lower()
-            # Only treat as backup flag if it's exactly "true" or "false"
-            # and doesn't contain newlines (to avoid matching content that ends with :something)
-            if (
-                flag_stripped in {"true", "false"}
-                and "\n" not in flag
-                and "\r" not in flag
-            ):
-                backup = flag_stripped == "true"
-                content = content_part
+    def _write_file(self, params: Any) -> str:
+        """Handle canonical write_file requests with JSON-first parsing."""
+        parsed = parse_write_file_payload(params)
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
 
         return self.tool_manager.execute_tool(
-            "write_to_file", {"path": path, "content": content, "backup": backup}
-        )
-
-    def _apply_diff(self, params: str) -> str:
-        """Apply a diff to edit a file. Format: file_path:diff_content:backup"""
-        first_sep = params.find(":")
-        if first_sep == -1:
-            return "Error: Need file path and diff content"
-
-        file_path = params[:first_sep].strip()
-        remainder = params[first_sep + 1 :]
-        if not file_path or not remainder:
-            return "Error: Need file path and diff content"
-
-        backup = True
-        diff_content = remainder
-
-        # Optional backup flag can be appended as :true or :false with no newline.
-        if ":" in remainder:
-            diff_part, flag = remainder.rsplit(":", 1)
-            flag_stripped = flag.strip().lower()
-            if (
-                flag_stripped in {"true", "false"}
-                and "\n" not in flag
-                and "\r" not in flag
-            ):
-                backup = flag_stripped == "true"
-                diff_content = diff_part
-
-        return self.tool_manager.execute_tool(
-            "apply_diff",
-            {"file_path": file_path, "diff_content": diff_content, "backup": backup},
-        )
-
-    def _multiedit(self, params: str) -> str:
-        """Apply multi-file edits atomically. Content is the multiedit block or unified patch. Default dry-run."""
-        content = params
-        # Optional header directive: apply=true on the first line
-        do_apply = False
-        m = re.match(r"^apply\s*[:=]\s*(true|false)\s*\n", content, flags=re.IGNORECASE)
-        if m:
-            do_apply = m.group(1).lower() == "true"
-            content = content[m.end() :]
-        return self.tool_manager.execute_tool(
-            "multiedit_apply",
+            "write_file",
             {
-                "content": content,
-                "apply": do_apply,
+                "path": parsed["path"],
+                "content": parsed["content"],
+                "backup": parsed["backup"],
+                "_warnings": parsed.get("warnings", []),
             },
         )
 
-    def _edit_with_pattern(self, params: str) -> str:
-        """Edit file with pattern replacement. Format: file_path:search_pattern:replacement:backup
+    def _enhanced_write(self, params: Any) -> str:
+        """Legacy enhanced_write alias routed through write_file."""
+        return self._write_file(params)
 
-        Note: Uses reverse split to handle colons in replacement text.
-        """
-        # Split from the right to handle optional backup flag first
-        parts = params.rsplit(":", 1)
-        backup = False
-        content_parts = parts[0]
-
-        # Check if last part is the backup flag (true/false)
-        if len(parts) == 2 and parts[1].strip().lower() in ("true", "false"):
-            backup = parts[1].strip().lower() == "true"
-        else:
-            # No backup flag, treat entire string as content
-            content_parts = params
-            backup = True  # Default to backup
-
-        # Now split the content part into file_path:search_pattern:replacement
-        # Split only on first 2 colons to preserve colons in replacement text
-        parts = content_parts.split(":", 2)
-        if len(parts) < 3:
-            return "Error: Need file_path:search_pattern:replacement format"
-
-        file_path = parts[0].strip()
-        search_pattern = parts[1]  # Don't strip - regex patterns may need whitespace
-        replacement = parts[
-            2
-        ]  # Don't strip - replacement may need whitespace (and may contain colons!)
+    def _patch_file(self, params: Any) -> str:
+        """Handle canonical patch_file requests with nested JSON payloads."""
+        parsed = parse_patch_file_payload(params)
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
 
         return self.tool_manager.execute_tool(
-            "edit_with_pattern",
+            "patch_file",
             {
-                "file_path": file_path,
-                "search_pattern": search_pattern,
-                "replacement": replacement,
-                "backup": backup,
+                "path": parsed["path"],
+                "operation": parsed["operation"],
+                "backup": parsed["backup"],
+                "_warnings": parsed.get("warnings", []),
+            },
+        )
+
+    def _apply_diff(self, params: Any) -> str:
+        """Legacy apply_diff alias routed through patch_file."""
+        parsed = parse_patch_file_payload(params, default_operation_type="unified_diff")
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
+
+        return self.tool_manager.execute_tool(
+            "patch_file",
+            {
+                "path": parsed["path"],
+                "operation": parsed["operation"],
+                "backup": parsed["backup"],
+                "_warnings": parsed.get("warnings", []),
+            },
+        )
+
+    def _patch_files(self, params: Any) -> str:
+        """Handle canonical patch_files requests with JSON-first parsing."""
+        parsed = parse_patch_files_payload(params)
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
+
+        tool_input: Dict[str, Any] = {
+            "apply": parsed.get("apply", False),
+            "backup": parsed.get("backup", True),
+            "_warnings": parsed.get("warnings", []),
+        }
+        if isinstance(parsed.get("operations"), list):
+            tool_input["operations"] = parsed["operations"]
+        elif isinstance(parsed.get("content"), str):
+            tool_input["content"] = parsed["content"]
+
+        return self.tool_manager.execute_tool("patch_files", tool_input)
+
+    def _multiedit(self, params: Any) -> str:
+        """Legacy multiedit alias routed through patch_files."""
+        return self._patch_files(params)
+
+    def _edit_with_pattern(self, params: Any) -> str:
+        """Legacy edit_with_pattern alias routed through patch_file."""
+        parsed = parse_patch_file_payload(
+            params, default_operation_type="regex_replace"
+        )
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
+
+        return self.tool_manager.execute_tool(
+            "patch_file",
+            {
+                "path": parsed["path"],
+                "operation": parsed["operation"],
+                "backup": parsed["backup"],
+                "_warnings": parsed.get("warnings", []),
             },
         )
 
     def _replace_lines(self, params: str) -> str:
-        """Replace specific lines. Format: path:start_line:end_line:new_content[:verify]"""
-        parts = params.split(":", 3)
-        if len(parts) < 4:
-            return "Error: Need path:start_line:end_line:new_content format"
-
-        path = parts[0].strip()
-        start_str = parts[1].strip()
-        end_str = parts[2].strip()
-        remainder = parts[3]
-        if not path:
-            return "Error: Need path for replace_lines"
-
-        try:
-            start_line = int(start_str)
-            end_line = int(end_str)
-        except ValueError:
-            return "Error: start_line and end_line must be integers"
-
-        verify = True
-        new_content = remainder
-        if ":" in remainder:
-            content_part, flag = remainder.rsplit(":", 1)
-            flag_stripped = flag.strip().lower()
-            if (
-                flag_stripped in {"true", "false"}
-                and "\n" not in flag
-                and "\r" not in flag
-            ):
-                verify = flag_stripped == "true"
-                new_content = content_part
+        """Legacy replace_lines alias routed through patch_file."""
+        parsed = parse_patch_file_payload(
+            params, default_operation_type="replace_lines"
+        )
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
 
         return self.tool_manager.execute_tool(
-            "replace_lines",
+            "patch_file",
             {
-                "path": path,
-                "start_line": start_line,
-                "end_line": end_line,
-                "new_content": new_content,
-                "verify": verify,
+                "path": parsed["path"],
+                "operation": parsed["operation"],
+                "backup": parsed["backup"],
+                "_warnings": parsed.get("warnings", []),
             },
         )
 
     def _insert_lines(self, params: str) -> str:
-        """Insert lines after a specific line. Format: path:after_line:new_content"""
-        parts = params.split(":", 2)
-        if len(parts) < 3:
-            return "Error: Need path:after_line:new_content format"
-
-        path = parts[0].strip()
-        after_str = parts[1].strip()
-        new_content = parts[2]
-        if not path:
-            return "Error: Need path for insert_lines"
-
-        try:
-            after_line = int(after_str)
-        except ValueError:
-            return "Error: after_line must be an integer"
+        """Legacy insert_lines alias routed through patch_file."""
+        parsed = parse_patch_file_payload(params, default_operation_type="insert_lines")
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
 
         return self.tool_manager.execute_tool(
-            "insert_lines",
+            "patch_file",
             {
-                "path": path,
-                "after_line": after_line,
-                "new_content": new_content,
+                "path": parsed["path"],
+                "operation": parsed["operation"],
+                "backup": parsed["backup"],
+                "_warnings": parsed.get("warnings", []),
             },
         )
 
     def _delete_lines(self, params: str) -> str:
-        """Delete a range of lines. Format: path:start_line:end_line"""
-        parts = params.split(":", 2)
-        if len(parts) < 3:
-            return "Error: Need path:start_line:end_line format"
-
-        path = parts[0].strip()
-        start_str = parts[1].strip()
-        end_str = parts[2].strip()
-        if not path:
-            return "Error: Need path for delete_lines"
-
-        try:
-            start_line = int(start_str)
-            end_line = int(end_str)
-        except ValueError:
-            return "Error: start_line and end_line must be integers"
+        """Legacy delete_lines alias routed through patch_file."""
+        parsed = parse_patch_file_payload(params, default_operation_type="delete_lines")
+        error = parsed.get("error")
+        if isinstance(error, str) and error.strip():
+            return f"Error: {error.strip()}"
 
         return self.tool_manager.execute_tool(
-            "delete_lines",
+            "patch_file",
             {
-                "path": path,
-                "start_line": start_line,
-                "end_line": end_line,
+                "path": parsed["path"],
+                "operation": parsed["operation"],
+                "backup": parsed["backup"],
+                "_warnings": parsed.get("warnings", []),
             },
         )
 

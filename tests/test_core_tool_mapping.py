@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -234,6 +235,95 @@ def test_map_action_result_metadata_extracts_diff_for_edit_with_pattern() -> Non
     assert metadata["filePath"] == "src/main.py"
     assert metadata["diff"].startswith("--- a/src/main.py")
     assert "+DEBUG = True" in metadata["diff"]
+
+
+def test_map_action_result_metadata_captures_files_for_multiedit() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    metadata = core._map_action_result_metadata(
+        "multiedit",
+        json.dumps(
+            {
+                "success": True,
+                "files": ["src/a.py", "src/b.py"],
+                "files_edited": [
+                    "/tmp/workspace/src/a.py",
+                    "/tmp/workspace/src/b.py",
+                ],
+                "applied": True,
+            }
+        ),
+        existing=None,
+        tool_input={"filePath": "(multiple files)"},
+        status="completed",
+    )
+
+    assert metadata["files"] == [
+        "src/a.py",
+        "src/b.py",
+        "/tmp/workspace/src/a.py",
+        "/tmp/workspace/src/b.py",
+    ]
+
+
+def test_map_action_to_tool_supports_canonical_patch_file_payload() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "patch_file",
+        {
+            "path": "src/main.py",
+            "operation": {
+                "type": "replace_lines",
+                "start_line": 2,
+                "end_line": 2,
+                "new_content": "print('hi')",
+                "verify": True,
+            },
+        },
+    )
+
+    assert mapped_tool == "edit"
+    assert tool_input == {
+        "filePath": "src/main.py",
+        "startLine": 2,
+        "endLine": 2,
+        "newContent": "print('hi')",
+    }
+    assert metadata == {}
+
+
+def test_map_action_to_tool_supports_canonical_patch_files_payload() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    mapped_tool, tool_input, metadata = core._map_action_to_tool(
+        "patch_files",
+        {
+            "apply": True,
+            "operations": [
+                {
+                    "path": "src/a.py",
+                    "operation": {
+                        "type": "delete_lines",
+                        "start_line": 1,
+                        "end_line": 1,
+                    },
+                },
+                {
+                    "path": "src/b.py",
+                    "operation": {
+                        "type": "insert_lines",
+                        "after_line": 1,
+                        "new_content": "x",
+                    },
+                },
+            ],
+        },
+    )
+
+    assert mapped_tool == "edit"
+    assert tool_input == {"filePath": "(multiple files)", "apply": True}
+    assert metadata["files"] == ["src/a.py", "src/b.py"]
 
 
 def test_map_action_result_metadata_extracts_todos_for_todowrite() -> None:
