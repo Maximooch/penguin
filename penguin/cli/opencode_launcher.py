@@ -752,8 +752,8 @@ def _build_opencode_command(
             return cmd, None
 
     raise RuntimeError(
-        "Penguin TUI runtime is not available. Install TUI support with "
-        "'pip install \"penguin-ai[tui]\"'. For development, set "
+        "Penguin TUI runtime is not available. Install or upgrade with "
+        "'pip install -U penguin-ai'. For development, set "
         "PENGUIN_OPENCODE_DIR to your local 'penguin-tui/packages/opencode' "
         "path, or use --use-global-opencode with an installed 'opencode' binary. "
         f"Sidecar bootstrap error: {sidecar_error}"
@@ -771,10 +771,12 @@ def _ensure_web_runtime_available() -> None:
     try:
         import fastapi  # noqa: F401
         import uvicorn  # noqa: F401
+        import websockets  # noqa: F401
     except Exception as exc:
         raise RuntimeError(
             "Penguin web autostart requires web dependencies. "
-            "Install with 'pip install \"penguin-ai[tui]\"' (or [web]) and retry."
+            "Install or upgrade with 'pip install -U penguin-ai' and retry. "
+            "Legacy compatibility aliases '[tui]' and '[web]' still work too."
         ) from exc
 
 

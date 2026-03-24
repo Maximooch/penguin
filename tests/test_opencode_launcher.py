@@ -80,7 +80,7 @@ def test_installed_penguin_version_falls_back_to_package_version(
 
     monkeypatch.setattr(opencode_launcher.importlib.metadata, "version", _missing)
 
-    assert opencode_launcher._installed_penguin_version() == "0.6.1"
+    assert opencode_launcher._installed_penguin_version() == "0.6.2"
 
 
 def test_binary_supports_url_mode_from_help_output(
@@ -230,7 +230,7 @@ def test_build_command_error_surfaces_sidecar_bootstrap_detail(
         )
 
     message = str(exc.value)
-    assert "penguin-ai[tui]" in message
+    assert "pip install -U penguin-ai" in message
     assert "network unavailable" in message
 
 

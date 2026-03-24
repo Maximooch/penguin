@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-ai"
-version = "0.6.1"
+version = "0.6.2"
 description = "Penguin: A modular, extensible AI coding agent and software engineer with its own execution environment."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.9,<3.13"
 authors = [
   { name="Maximus Putnam", email="MaximusPutnam@gmail.com" },
 ]
@@ -33,7 +33,7 @@ classifiers = [
     "Topic :: Software Development :: Code Generators",
 ]
 
-# Core dependencies + CLI tools (included by default for great UX)
+# Core runtime dependencies included by default so `penguin` works out of the box
 dependencies = [
     # Core Dependencies
     "tenacity>=8.0.1",
@@ -43,6 +43,10 @@ dependencies = [
     "httpx>=0.24.0",
     "requests>=2.26.0",
     "typing_extensions>=4.0.0",
+    "fastapi>=0.68.0,<1.0",
+    "uvicorn>=0.15.0",
+    "websockets>=10.0",
+    "python-multipart>=0.0.7",
     
     # LLM and API
     "litellm>=1.0.0",
@@ -54,7 +58,6 @@ dependencies = [
     "rich>=10.0.0",
     "typer>=0.4.0",
     "questionary>=1.10.0",
-    "textual",
     
     # Core Processing
     "IPython",
@@ -74,22 +77,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Web interface and API server
-web = [
-    "fastapi>=0.68.0,<1.0",
-    "uvicorn>=0.15.0",
-    "websockets>=10.0",
-    "jinja2>=3.0.0",
-    "python-multipart>=0.0.7",
-]
+# Compatibility aliases: web/TUI runtime deps now ship in the base install
+web = []
+tui = []
 
-# Penguin TUI runtime (includes local web server dependencies)
-tui = [
-    "fastapi>=0.68.0,<1.0",
-    "uvicorn>=0.15.0",
-    "websockets>=10.0",
-    "jinja2>=3.0.0",
-    "python-multipart>=0.0.7",
+# Legacy Textual prototype/experimental UI support
+legacy_tui = [
+    "textual",
 ]
 
 # MCP client/server (install when using MCP features)
@@ -152,6 +146,7 @@ dev = [
     "black>=21.0.0",
     "isort>=5.0.0",
     "ruff>=0.1.0",
+    "textual",
     "build",
     "twine>=5.0.0",
     "wheel>=0.40.0",
@@ -169,7 +164,23 @@ test = [
 
 # Full installation (everything)
 all = [
-    "penguin-ai[tui,web,memory_lance,memory_faiss,memory_chroma,llm_transformers,llm_ollama,browser,pydoll]"
+    "pyjwt[crypto]>=2.8.0",
+    "requests-oauthlib>=1.3.1",
+    "lancedb>=0.5.4",
+    "pyarrow>=15.0.0",
+    "faiss-cpu>=1.7.4",
+    "sentence-transformers>=2.3.0",
+    "chromadb>=0.4.22",
+    "transformers>=4.38.0",
+    "torch>=2.0.0",
+    "accelerate>=0.25.0",
+    "bitsandbytes>=0.43.0; sys_platform != 'darwin'",
+    "ollama>=0.1.7",
+    "temporalio>=1.5.0",
+    "pydoll-python>=2.0.0; python_version>='3.10'",
+    "browser_use>=0.1.0; python_version>='3.11'",
+    "playwright>=1.40.0",
+    "textual",
 ]
 
 [project.urls]

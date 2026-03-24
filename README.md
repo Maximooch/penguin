@@ -37,7 +37,7 @@ state, workspace-aware tools, and multiple interfaces on top of the same core.
 
 ```bash
 # Recommended install
-pip install "penguin-ai[tui]"
+pip install penguin-ai
 
 # Set a model provider key (OpenRouter is the easiest starting point)
 export OPENROUTER_API_KEY="your_api_key"
@@ -94,14 +94,17 @@ with PenguinAgent() as agent:
 ### Recommended
 
 ```bash
-# Core CLI install
+# Default install: CLI + web runtime + OpenCode TUI launcher support
 pip install penguin-ai
 
-# Web/API runtime
+# Compatibility alias for older install commands
 pip install penguin-ai[web]
 
-# TUI launcher + local web dependencies
+# Compatibility alias for older install commands
 pip install "penguin-ai[tui]"
+
+# Legacy Textual prototype / experimental UI support
+pip install "penguin-ai[legacy_tui]"
 
 # Full feature set
 pip install penguin-ai[all]
@@ -119,8 +122,9 @@ pip install -e .[dev,test]
 
 | Extra | Description |
 |---|---|
-| `[tui]` | Penguin TUI launcher runtime + local web dependencies |
-| `[web]` | FastAPI server + WebSocket support |
+| `[tui]` | Compatibility alias; default install already includes TUI launcher runtime |
+| `[web]` | Compatibility alias; default install already includes web runtime |
+| `[legacy_tui]` | Legacy Textual prototype / experimental UI support |
 | `[memory_faiss]` | FAISS vector search + embeddings |
 | `[memory_lance]` | LanceDB vector database |
 | `[memory_chroma]` | ChromaDB integration |
@@ -182,7 +186,7 @@ Read more:
 
 ## Version Highlights
 
-### v0.6.1
+### v0.6.2
 
 - Canonical file editing now centers on `read_file`, `write_file`, `patch_file`, and `patch_files`.
 - JSON-first edit payloads, generated prompt docs, and centralized compatibility aliases keep parser, tools, and UI metadata aligned.
