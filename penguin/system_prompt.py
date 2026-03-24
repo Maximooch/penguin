@@ -1,4 +1,3 @@
-
 """
 Proposed System Prompt v2.0 - Consolidated with Examples
 Target: ~2,500 tokens
@@ -184,7 +183,7 @@ MODE_GUIDANCE = """**Task Types:**
 SAFETY_RULES = """**Safety:**
 
 - Check file existence before writing: `Path(file).exists()`
-- Use `apply_diff` or `multiedit` for edits (auto-backup)
+- Use `patch_file` or `patch_files` for edits (auto-backup)
 - Never blind overwrite without verification
 - Respect permission boundaries
 
@@ -199,9 +198,11 @@ SAFETY_RULES = """**Safety:**
 # PROMPT BUILDER (Simple)
 # =============================================================================
 
+
 @dataclass
 class PromptComponents:
     """Container for prompt components"""
+
     base_prompt: str
     karpathy_guidelines: str = ""
     ralph_mindset: str = ""
@@ -213,19 +214,19 @@ class PromptComponents:
 
 class PromptBuilder:
     """Builds prompts by composing modular components."""
-    
+
     def __init__(self):
         self.components = None
-    
+
     def load_components(self, **kwargs) -> None:
         """Load all prompt components"""
         self.components = PromptComponents(**kwargs)
-    
+
     def build(self, mode: str = "direct") -> str:
         """Build system prompt."""
         if not self.components:
             raise ValueError("Components not loaded.")
-        
+
         sections = [
             self.components.base_prompt,
             self.components.karpathy_guidelines,
@@ -235,16 +236,18 @@ class PromptBuilder:
             self.components.safety_rules,
             self.components.tool_guide,
         ]
-        
+
         return "\n\n".join(filter(None, sections))
 
 
 # Global instance
 _builder = PromptBuilder()
 
+
 def get_builder() -> PromptBuilder:
     """Get the global prompt builder instance"""
     return _builder
+
 
 def build_system_prompt(mode: str = "direct", tool_guide: str = "") -> str:
     """Build complete system prompt."""
@@ -266,6 +269,7 @@ SYSTEM_PROMPT_CORE = build_system_prompt()
 # =============================================================================
 # FULL SYSTEM PROMPT (Assembled)
 # =============================================================================
+
 
 def get_system_prompt(mode: str = "direct") -> str:
     """Get the complete system prompt with all components."""

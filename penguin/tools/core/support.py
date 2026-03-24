@@ -78,7 +78,13 @@ def create_file(path: str, content: str = "") -> str:
         return f"Error creating file: {str(e)}\nStack trace: {traceback.format_exc()}"
 
 
-def generate_and_apply_diff(original_content, new_content, full_path, encoding):
+def generate_and_apply_diff(
+    original_content,
+    new_content,
+    full_path,
+    encoding,
+    workspace_path=None,
+):
     logging.getLogger(__name__).debug(
         f"Applying diff to {full_path} with encoding {encoding}"
     )
@@ -102,7 +108,9 @@ def generate_and_apply_diff(original_content, new_content, full_path, encoding):
             if root_env in ("project", "workspace")
             else get_default_write_root()
         )
-        safe_full = enforce_allowed_path(Path(full_path), root_pref=root_pref)
+        safe_full = enforce_allowed_path(
+            Path(full_path), root_pref=root_pref, cwd_override=workspace_path
+        )
         with open(safe_full, "w", encoding=encoding) as f:
             f.write(new_content)
         return f"Changes applied to {safe_full}:\n" + "".join(diff)
@@ -1963,13 +1971,26 @@ def enhanced_write_to_file(path, content, backup=True, workspace_path=None):
     Enhanced file writing with clear path feedback and optional backup.
     """
     try:
+        from penguin.utils.path_utils import (
+            enforce_allowed_path,
+            get_default_write_root,
+        )
+
         # Handle workspace-relative paths
         if workspace_path and not os.path.isabs(path):
-            target_path = Path(workspace_path) / path
+            requested_path = Path(workspace_path) / path
         else:
-            target_path = Path(path)
+            requested_path = Path(path)
 
-        target_path = target_path.resolve()
+        root_env = os.environ.get("PENGUIN_WRITE_ROOT", "").lower()
+        root_pref = (
+            root_env
+            if root_env in ("project", "workspace")
+            else get_default_write_root()
+        )
+        target_path = enforce_allowed_path(
+            requested_path, root_pref=root_pref, cwd_override=workspace_path
+        )
 
         # Log for debugging (not shown to user)
         logging.getLogger(__name__).debug(f"Writing to file: {target_path}")
@@ -1993,7 +2014,11 @@ def enhanced_write_to_file(path, content, backup=True, workspace_path=None):
                     try:
                         original_content = target_path.read_text(encoding=encoding)
                         result = generate_and_apply_diff(
-                            original_content, content, str(target_path), encoding
+                            original_content,
+                            content,
+                            str(target_path),
+                            encoding,
+                            workspace_path=workspace_path,
                         )
                         logging.getLogger(__name__).debug(
                             f"File updated: {target_path}"

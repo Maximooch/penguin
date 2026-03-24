@@ -24,6 +24,7 @@ class EditOperation:
     path: str = ""
     payload: Dict[str, Any] = field(default_factory=dict)
     backup: bool = True
+    warnings: List[str] = field(default_factory=list)
 
 
 @dataclass

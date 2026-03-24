@@ -121,3 +121,79 @@ def test_edit_service_patch_files_returns_structured_result(tmp_path: Path) -> N
         assert str(second.resolve()) in legacy_payload["files_edited"]
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_edit_service_patch_files_supports_structured_operations_array(
+    tmp_path: Path,
+) -> None:
+    workspace = (
+        Path.cwd() / ".tmp-track-a-tests" / f"{tmp_path.name}_structured_multifile"
+    )
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        first = workspace / "src" / "a.py"
+        second = workspace / "src" / "b.py"
+        first.parent.mkdir(parents=True, exist_ok=True)
+        first.write_text("print('old a')\n", encoding="utf-8")
+        second.write_text("line1\nline2\nline3\n", encoding="utf-8")
+
+        service = EditService(workspace_root=str(workspace))
+        result = service.patch_files(
+            apply=True,
+            operations=[
+                EditOperation(
+                    type="unified_diff",
+                    path="src/a.py",
+                    payload={
+                        "diff_content": generate_diff_patch(
+                            "print('old a')\n",
+                            "print('new a')\n",
+                            "src/a.py",
+                        )
+                    },
+                ),
+                EditOperation(
+                    type="replace_lines",
+                    path="src/b.py",
+                    payload={
+                        "start_line": 2,
+                        "end_line": 2,
+                        "new_content": "line2_updated",
+                        "verify": False,
+                    },
+                ),
+            ],
+        )
+
+        assert result.ok is True
+        assert result.files == ["src/a.py", "src/b.py"]
+        assert result.warnings == []
+        assert first.read_text(encoding="utf-8") == "print('new a')\n"
+        assert second.read_text(encoding="utf-8") == "line1\nline2_updated\nline3\n"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_edit_service_patch_files_legacy_content_emits_warning(tmp_path: Path) -> None:
+    workspace = Path.cwd() / ".tmp-track-a-tests" / f"{tmp_path.name}_legacy_warning"
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+        target = workspace / "a.txt"
+        target.write_text("old\n", encoding="utf-8")
+
+        service = EditService(workspace_root=str(workspace))
+        patch = generate_diff_patch("old\n", "new\n", "a.txt")
+        result = service.patch_files(
+            f"a.txt:\n{patch}\n",
+            apply=False,
+            warnings=["Deprecated patch_files payload: raw patch text is deprecated"],
+        )
+
+        assert result.ok is True
+        assert any("deprecated" in warning.lower() for warning in result.warnings)
+        legacy_payload = json.loads(result.render_legacy_output())
+        assert any(
+            "deprecated" in warning.lower() for warning in legacy_payload["warnings"]
+        )
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)

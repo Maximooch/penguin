@@ -237,7 +237,7 @@ _RE_TOML = re.compile(r"^\[.*\]\s*$", re.M)
 _RE_TOML_ASSIGN = re.compile(r"^\w+\s*=\s*", re.M)
 _RE_DIFF = re.compile(r"^(\+\+\+|---|@@) ", re.M)
 _RE_ACTIONXML = re.compile(
-    r"<(/)?(execute|execute_command|apply_diff|replace_lines|insert_lines|delete_lines|multiedit|edit_with_pattern|enhanced_\w+|tool|action)[^>]*>"
+    r"<(/)?(execute|execute_command|read_file|write_file|patch_file|patch_files|apply_diff|replace_lines|insert_lines|delete_lines|multiedit|edit_with_pattern|enhanced_\w+|tool|action)[^>]*>"
 )
 
 

@@ -8,6 +8,8 @@ This module provides the bridge between ToolManager and PermissionEnforcer.
 from __future__ import annotations
 
 import logging
+import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from penguin.security.permission_engine import Operation, PermissionResult
@@ -122,6 +124,91 @@ def extract_resource_from_input(
     return None
 
 
+def _resolve_resource_path(resource: str, context: Optional[Dict[str, Any]]) -> str:
+    """Resolve relative resource paths against request-scoped directory hints."""
+    text = str(resource or "").strip()
+    if not text:
+        return text
+
+    candidate = Path(text).expanduser()
+    if candidate.is_absolute():
+        return str(candidate)
+
+    ctx = context or {}
+    for key in ("directory", "project_root", "workspace_root"):
+        base = ctx.get(key)
+        if isinstance(base, str) and base.strip():
+            try:
+                return str((Path(base).expanduser().resolve() / candidate).resolve())
+            except Exception:
+                continue
+    return text
+
+
+def _extract_patch_files_content_paths(content: str) -> List[str]:
+    """Extract candidate file paths from legacy patch_files content payloads."""
+    text = str(content or "")
+    if not text.strip():
+        return []
+
+    paths: List[str] = []
+
+    for match in re.finditer(r"^\+\+\+\s+(?:b/)?(.+)$", text, re.MULTILINE):
+        value = match.group(1).strip()
+        if value and value != "/dev/null":
+            paths.append(value)
+
+    if paths:
+        return paths
+
+    sections = re.split(r"(?:^|\n)(?![+\-@ ])([a-zA-Z0-9_./-]+):\n", text)
+    for index in range(1, len(sections), 2):
+        value = sections[index].strip()
+        if value:
+            paths.append(value)
+    return paths
+
+
+def extract_resources_from_input(
+    tool_name: str,
+    tool_input: Dict[str, Any],
+    context: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Extract all primary resources from tool input, normalized for permission checks."""
+    resources: List[str] = []
+
+    if tool_name == "patch_files":
+        operations = tool_input.get("operations")
+        if isinstance(operations, list):
+            for item in operations:
+                if not isinstance(item, dict):
+                    continue
+                path_value = item.get("path") or item.get("file_path")
+                if isinstance(path_value, str) and path_value.strip():
+                    resources.append(_resolve_resource_path(path_value, context))
+
+        content = tool_input.get("content")
+        if isinstance(content, str) and content.strip():
+            resources.extend(
+                _resolve_resource_path(path_value, context)
+                for path_value in _extract_patch_files_content_paths(content)
+            )
+
+    single = extract_resource_from_input(tool_name, tool_input)
+    if single:
+        resources.append(_resolve_resource_path(single, context))
+
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for resource in resources:
+        text = str(resource or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return deduped
+
+
 def is_safe_tool(tool_name: str) -> bool:
     """Check if a tool is considered safe (read-only or low-risk).
 
@@ -215,7 +302,8 @@ def check_tool_permission(
         logger.debug(f"Tool '{tool_name}' not in permission map, allowing by default")
         return PermissionResult.ALLOW, "Unknown tool - allowed by default"
 
-    resource = extract_resource_from_input(tool_name, tool_input)
+    resources = extract_resources_from_input(tool_name, tool_input, context)
+    resource = resources[0] if resources else None
     ctx = dict(context or {})
     ctx["tool_name"] = tool_name
 
@@ -234,23 +322,25 @@ def check_tool_permission(
 
     # Check each required operation against global policy
     results = []
-    for operation in operations:
-        result = enforcer.check(operation, resource or tool_name, ctx)
-        results.append((result, operation))
+    target_resources = resources or [tool_name]
+    for resource_candidate in target_resources:
+        for operation in operations:
+            result = enforcer.check(operation, resource_candidate, ctx)
+            results.append((result, operation, resource_candidate))
 
-        # Short-circuit on DENY
-        if result == PermissionResult.DENY:
-            return (
-                result,
-                f"Operation '{operation.value}' denied for '{resource or tool_name}'",
-            )
+            # Short-circuit on DENY
+            if result == PermissionResult.DENY:
+                return (
+                    result,
+                    f"Operation '{operation.value}' denied for '{resource_candidate}'",
+                )
 
     # If any ASK, return ASK
-    for result, operation in results:
+    for result, operation, resource_candidate in results:
         if result == PermissionResult.ASK:
             return (
                 result,
-                f"Operation '{operation.value}' requires approval for '{resource or tool_name}'",
+                f"Operation '{operation.value}' requires approval for '{resource_candidate}'",
             )
 
     # Check if agent policy said ASK

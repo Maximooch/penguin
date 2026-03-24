@@ -24,6 +24,15 @@ def test_parse_action_detects_enhanced_write():
     assert actions[0].params.startswith("path/to/file.txt:")
 
 
+def test_parse_action_detects_read_file() -> None:
+    content = '<read_file>{"path":"src/main.py","max_lines":50}</read_file>'
+
+    actions = parse_action(content)
+
+    assert len(actions) == 1
+    assert actions[0].action_type == ActionType.READ_FILE
+
+
 def test_parse_action_detects_question():
     content = """
     I need your input.

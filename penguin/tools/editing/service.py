@@ -3,20 +3,21 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from ..core.support import (
     apply_diff_to_file,
+    delete_lines,
     edit_file_with_pattern,
     enhanced_write_to_file,
     insert_lines,
     replace_lines,
-    delete_lines,
 )
-from ..multiedit import MultiEditResult, apply_multiedit
 
 from .contracts import EditOperation, FileEditResult
+from .legacy_multifile import MultiEditResult, apply_multiedit
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,11 @@ class EditService:
         )
 
     def write_file(
-        self, path: str, content: str, backup: bool = True
+        self,
+        path: str,
+        content: str,
+        backup: bool = True,
+        warnings: Optional[List[str]] = None,
     ) -> FileEditResult:
         """Write a file using the canonical result contract."""
 
@@ -47,6 +52,7 @@ class EditService:
             path=path,
             payload={"content": content},
             backup=backup,
+            warnings=list(warnings or []),
         )
         return self.execute(operation)
 
@@ -57,13 +63,25 @@ class EditService:
             raise ValueError(f"Unsupported patch_file operation type: {operation.type}")
         return self.execute(operation)
 
-    def patch_files(self, content: str, apply: bool = False) -> FileEditResult:
+    def patch_files(
+        self,
+        content: str = "",
+        apply: bool = False,
+        operations: Optional[List[EditOperation]] = None,
+        backup: bool = True,
+        warnings: Optional[List[str]] = None,
+    ) -> FileEditResult:
         """Apply a multi-file edit operation."""
 
         operation = EditOperation(
             type="multifile_patch",
-            payload={"content": content, "apply": apply},
-            backup=True,
+            payload={
+                "content": content,
+                "apply": apply,
+                "operations": operations or [],
+            },
+            backup=backup,
+            warnings=list(warnings or []),
         )
         return self.execute(operation)
 
@@ -87,136 +105,96 @@ class EditService:
         raise ValueError(f"Unsupported edit operation type: {operation.type}")
 
     def _execute_write(self, operation: EditOperation) -> FileEditResult:
-        resolved_path = self._resolve_target_path(operation.path)
-        existed_before = resolved_path.exists()
-        raw_output = enhanced_write_to_file(
-            operation.path,
-            operation.payload.get("content", ""),
-            backup=operation.backup,
-            workspace_path=self.workspace_root,
-        )
-        return self._normalize_single_file_result(
-            requested_path=operation.path,
-            resolved_path=resolved_path,
-            raw_output=raw_output,
-            backup_paths=self._expected_backup_paths(
-                resolved_path,
-                existed_before,
-                operation.backup,
-                strategy="suffix",
+        return self._execute_single_file_operation(
+            operation,
+            executor=lambda op, _resolved_path: enhanced_write_to_file(
+                op.path,
+                op.payload.get("content", ""),
+                backup=op.backup,
+                workspace_path=self.workspace_root,
             ),
+            backup_enabled=operation.backup,
+            backup_strategy="suffix",
         )
 
     def _execute_unified_diff(self, operation: EditOperation) -> FileEditResult:
-        resolved_path = self._resolve_target_path(operation.path)
-        existed_before = resolved_path.exists()
-        raw_output = apply_diff_to_file(
-            file_path=operation.path,
-            diff_content=operation.payload.get("diff_content", ""),
-            backup=operation.backup,
-            workspace_path=self.workspace_root,
-            return_json=False,
-        )
-        return self._normalize_single_file_result(
-            requested_path=operation.path,
-            resolved_path=resolved_path,
-            raw_output=raw_output,
-            backup_paths=self._expected_backup_paths(
-                resolved_path,
-                existed_before,
-                operation.backup,
-                strategy="suffix",
+        return self._execute_single_file_operation(
+            operation,
+            executor=lambda op, _resolved_path: apply_diff_to_file(
+                file_path=op.path,
+                diff_content=op.payload.get("diff_content", ""),
+                backup=op.backup,
+                workspace_path=self.workspace_root,
+                return_json=False,
             ),
+            backup_enabled=operation.backup,
+            backup_strategy="suffix",
         )
 
     def _execute_replace_lines(self, operation: EditOperation) -> FileEditResult:
-        resolved_path = self._resolve_target_path(operation.path)
-        existed_before = resolved_path.exists()
-        raw_output = replace_lines(
-            path=str(resolved_path),
-            start_line=int(operation.payload["start_line"]),
-            end_line=int(operation.payload["end_line"]),
-            new_content=operation.payload.get("new_content", ""),
-            verify=bool(operation.payload.get("verify", True)),
-            workspace_path=self.workspace_root,
-        )
-        return self._normalize_single_file_result(
-            requested_path=operation.path,
-            resolved_path=resolved_path,
-            raw_output=raw_output,
-            backup_paths=self._expected_backup_paths(
-                resolved_path,
-                existed_before,
-                True,
-                strategy="append",
+        return self._execute_single_file_operation(
+            operation,
+            executor=lambda op, resolved_path: replace_lines(
+                path=str(resolved_path),
+                start_line=int(op.payload["start_line"]),
+                end_line=int(op.payload["end_line"]),
+                new_content=op.payload.get("new_content", ""),
+                verify=bool(op.payload.get("verify", True)),
+                workspace_path=self.workspace_root,
             ),
+            backup_enabled=True,
+            backup_strategy="append",
         )
 
     def _execute_insert_lines(self, operation: EditOperation) -> FileEditResult:
-        resolved_path = self._resolve_target_path(operation.path)
-        existed_before = resolved_path.exists()
-        raw_output = insert_lines(
-            path=str(resolved_path),
-            after_line=int(operation.payload["after_line"]),
-            new_content=operation.payload.get("new_content", ""),
-            workspace_path=self.workspace_root,
-        )
-        return self._normalize_single_file_result(
-            requested_path=operation.path,
-            resolved_path=resolved_path,
-            raw_output=raw_output,
-            backup_paths=self._expected_backup_paths(
-                resolved_path,
-                existed_before,
-                True,
-                strategy="append",
+        return self._execute_single_file_operation(
+            operation,
+            executor=lambda op, resolved_path: insert_lines(
+                path=str(resolved_path),
+                after_line=int(op.payload["after_line"]),
+                new_content=op.payload.get("new_content", ""),
+                workspace_path=self.workspace_root,
             ),
+            backup_enabled=True,
+            backup_strategy="append",
         )
 
     def _execute_delete_lines(self, operation: EditOperation) -> FileEditResult:
-        resolved_path = self._resolve_target_path(operation.path)
-        existed_before = resolved_path.exists()
-        raw_output = delete_lines(
-            path=str(resolved_path),
-            start_line=int(operation.payload["start_line"]),
-            end_line=int(operation.payload["end_line"]),
-            workspace_path=self.workspace_root,
-        )
-        return self._normalize_single_file_result(
-            requested_path=operation.path,
-            resolved_path=resolved_path,
-            raw_output=raw_output,
-            backup_paths=self._expected_backup_paths(
-                resolved_path,
-                existed_before,
-                True,
-                strategy="append",
+        return self._execute_single_file_operation(
+            operation,
+            executor=lambda op, resolved_path: delete_lines(
+                path=str(resolved_path),
+                start_line=int(op.payload["start_line"]),
+                end_line=int(op.payload["end_line"]),
+                workspace_path=self.workspace_root,
             ),
+            backup_enabled=True,
+            backup_strategy="append",
         )
 
     def _execute_regex_replace(self, operation: EditOperation) -> FileEditResult:
-        resolved_path = self._resolve_target_path(operation.path)
-        existed_before = resolved_path.exists()
-        raw_output = edit_file_with_pattern(
-            file_path=operation.path,
-            search_pattern=operation.payload.get("search_pattern", ""),
-            replacement=operation.payload.get("replacement", ""),
-            backup=operation.backup,
-            workspace_path=self.workspace_root,
-        )
-        return self._normalize_single_file_result(
-            requested_path=operation.path,
-            resolved_path=resolved_path,
-            raw_output=raw_output,
-            backup_paths=self._expected_backup_paths(
-                resolved_path,
-                existed_before,
-                operation.backup,
-                strategy="suffix",
+        return self._execute_single_file_operation(
+            operation,
+            executor=lambda op, _resolved_path: edit_file_with_pattern(
+                file_path=op.path,
+                search_pattern=op.payload.get("search_pattern", ""),
+                replacement=op.payload.get("replacement", ""),
+                backup=op.backup,
+                workspace_path=self.workspace_root,
             ),
+            backup_enabled=operation.backup,
+            backup_strategy="suffix",
         )
 
     def _execute_multifile_patch(self, operation: EditOperation) -> FileEditResult:
+        operations_payload = operation.payload.get("operations")
+        if isinstance(operations_payload, list) and operations_payload:
+            return self._execute_structured_multifile_patch(
+                operations_payload,
+                apply=bool(operation.payload.get("apply", False)),
+                warnings=operation.warnings,
+            )
+
         content = str(operation.payload.get("content", ""))
         do_apply = bool(operation.payload.get("apply", False))
         workspace_root = self.workspace_root or os.getcwd()
@@ -225,7 +203,216 @@ class EditService:
             dry_run=(not do_apply),
             workspace_root=workspace_root,
         )
-        return self._normalize_multiedit_result(result, apply=do_apply)
+        return self._normalize_multiedit_result(
+            result,
+            apply=do_apply,
+            warnings=operation.warnings,
+        )
+
+    def _execute_single_file_operation(
+        self,
+        operation: EditOperation,
+        *,
+        executor: Callable[[EditOperation, Path], Any],
+        backup_enabled: bool,
+        backup_strategy: str,
+    ) -> FileEditResult:
+        """Execute one file operation and normalize the result in one place."""
+        resolved_path = self._resolve_target_path(operation.path)
+        existed_before = resolved_path.exists()
+        raw_output = executor(operation, resolved_path)
+        return self._normalize_single_file_result(
+            requested_path=operation.path,
+            resolved_path=resolved_path,
+            raw_output=raw_output,
+            warnings=operation.warnings,
+            backup_paths=self._expected_backup_paths(
+                resolved_path,
+                existed_before,
+                backup_enabled,
+                strategy=backup_strategy,
+            ),
+            existed_before=existed_before,
+        )
+
+    def _execute_structured_multifile_patch(
+        self,
+        operations: List[Any],
+        *,
+        apply: bool,
+        warnings: Optional[List[str]] = None,
+    ) -> FileEditResult:
+        base_warnings = list(warnings or [])
+        edit_operations = [op for op in operations if isinstance(op, EditOperation)]
+        normalized_files = self._normalize_paths(
+            [operation.path for operation in edit_operations if operation.path]
+        )
+
+        if not edit_operations:
+            message = "No valid operations provided for patch_files"
+            return FileEditResult(
+                ok=False,
+                files=[],
+                message=message,
+                warnings=base_warnings,
+                error=message,
+                data={
+                    "applied": apply,
+                    "rollback_performed": False,
+                    "legacy_output": json.dumps(
+                        {
+                            "success": False,
+                            "files": [],
+                            "files_edited": [],
+                            "files_failed": [],
+                            "error_messages": {"operations": message},
+                            "backup_paths": {},
+                            "rollback_performed": False,
+                            "applied": apply,
+                            "warnings": base_warnings,
+                        }
+                    ),
+                },
+            )
+
+        if not apply:
+            operation_warnings: List[str] = []
+            for operation in edit_operations:
+                operation_warnings.extend(operation.warnings)
+            dry_run_warnings = [*base_warnings, *operation_warnings, "dry-run"]
+            message = (
+                f"Prepared structured multi-file patch affecting {len(normalized_files)} "
+                "file(s)"
+            )
+            return FileEditResult(
+                ok=True,
+                files=normalized_files,
+                message=message,
+                warnings=dry_run_warnings,
+                data={
+                    "applied": False,
+                    "rollback_performed": False,
+                    "legacy_output": json.dumps(
+                        {
+                            "success": True,
+                            "files": normalized_files,
+                            "files_edited": normalized_files,
+                            "files_failed": [],
+                            "error_messages": {},
+                            "backup_paths": {},
+                            "rollback_performed": False,
+                            "applied": False,
+                            "warnings": dry_run_warnings,
+                        }
+                    ),
+                },
+            )
+
+        applied_records: List[Dict[str, Any]] = []
+        files: List[str] = []
+        backup_paths: List[str] = []
+        diagnostics: Dict[str, List[Dict[str, Any]]] = {}
+        aggregated_warnings = list(base_warnings)
+
+        for operation in edit_operations:
+            resolved_path = self._resolve_target_path(operation.path)
+            existed_before = resolved_path.exists()
+            result = self.execute(operation)
+            aggregated_warnings.extend(result.warnings)
+
+            if not result.ok:
+                rollback_performed = self._rollback_structured_multifile(
+                    applied_records
+                )
+                failed_files = self._normalize_paths([operation.path])
+                error_message = (
+                    result.error or result.message or "Structured patch failed"
+                )
+                legacy_payload = {
+                    "success": False,
+                    "files": list(files),
+                    "files_edited": list(files),
+                    "files_failed": failed_files,
+                    "error_messages": {
+                        failed_files[0]
+                        if failed_files
+                        else "patch_files": error_message
+                    },
+                    "backup_paths": {
+                        record["file"]: record["backup_path"]
+                        for record in applied_records
+                        if record.get("backup_path")
+                    },
+                    "rollback_performed": rollback_performed,
+                    "applied": True,
+                    "warnings": aggregated_warnings,
+                }
+                return FileEditResult(
+                    ok=False,
+                    files=list(files),
+                    message=error_message,
+                    diagnostics=diagnostics,
+                    backup_paths=list(backup_paths),
+                    warnings=self._unique_strings(aggregated_warnings),
+                    error=error_message,
+                    data={
+                        "applied": True,
+                        "rollback_performed": rollback_performed,
+                        "legacy_output": json.dumps(legacy_payload),
+                    },
+                )
+
+            for file_path in result.files:
+                if file_path not in files:
+                    files.append(file_path)
+            for backup_path in result.backup_paths:
+                if backup_path not in backup_paths:
+                    backup_paths.append(backup_path)
+            diagnostics.update(result.diagnostics)
+            applied_records.append(
+                {
+                    "file": result.files[0]
+                    if result.files
+                    else self._display_path(operation.path, resolved_path),
+                    "resolved_path": resolved_path,
+                    "existed_before": existed_before,
+                    "backup_path": result.backup_paths[0]
+                    if result.backup_paths
+                    else None,
+                }
+            )
+
+        success_message = (
+            f"Applied structured multi-file patch affecting {len(files)} file(s)"
+        )
+        legacy_payload = {
+            "success": True,
+            "files": list(files),
+            "files_edited": list(files),
+            "files_failed": [],
+            "error_messages": {},
+            "backup_paths": {
+                record["file"]: record["backup_path"]
+                for record in applied_records
+                if record.get("backup_path")
+            },
+            "rollback_performed": False,
+            "applied": True,
+            "warnings": self._unique_strings(aggregated_warnings),
+        }
+        return FileEditResult(
+            ok=True,
+            files=list(files),
+            message=success_message,
+            diagnostics=diagnostics,
+            backup_paths=list(backup_paths),
+            warnings=self._unique_strings(aggregated_warnings),
+            data={
+                "applied": True,
+                "rollback_performed": False,
+                "legacy_output": json.dumps(legacy_payload),
+            },
+        )
 
     def _normalize_single_file_result(
         self,
@@ -233,7 +420,9 @@ class EditService:
         requested_path: str,
         resolved_path: Path,
         raw_output: Any,
+        warnings: List[str],
         backup_paths: List[str],
+        existed_before: bool,
     ) -> FileEditResult:
         message = raw_output if isinstance(raw_output, str) else str(raw_output)
         payload = self._parse_payload(raw_output)
@@ -253,9 +442,13 @@ class EditService:
             message=message,
             diagnostics=diagnostics,
             backup_paths=backup_paths,
-            warnings=[],
+            warnings=list(warnings),
             error=(None if ok else error),
-            data={"legacy_output": message},
+            data={
+                "legacy_output": message,
+                "resolved_files": [str(resolved_path)],
+                "existed_before": existed_before,
+            },
         )
 
     def _normalize_multiedit_result(
@@ -263,11 +456,14 @@ class EditService:
         result: MultiEditResult,
         *,
         apply: bool,
+        warnings: Optional[List[str]] = None,
     ) -> FileEditResult:
         normalized_files = self._normalize_paths(result.files_edited)
         normalized_failed = self._normalize_paths(result.files_failed)
         backup_paths = [str(path) for path in result.backup_paths.values()]
-        warnings = [] if apply else ["dry-run"]
+        result_warnings = list(warnings or [])
+        if not apply:
+            result_warnings.append("dry-run")
         error = self._first_error_message(result.error_messages)
 
         if result.success:
@@ -287,6 +483,7 @@ class EditService:
             "backup_paths": dict(result.backup_paths),
             "rollback_performed": result.rollback_performed,
             "applied": apply,
+            "warnings": self._unique_strings(result_warnings),
         }
 
         return FileEditResult(
@@ -295,7 +492,7 @@ class EditService:
             message=message,
             diagnostics={},
             backup_paths=backup_paths,
-            warnings=warnings,
+            warnings=self._unique_strings(result_warnings),
             error=(None if result.success else error),
             data={
                 "applied": apply,
@@ -305,6 +502,46 @@ class EditService:
                 "legacy_output": json.dumps(legacy_payload),
             },
         )
+
+    def _rollback_structured_multifile(
+        self, applied_records: List[Dict[str, Any]]
+    ) -> bool:
+        """Rollback structured multi-file edits using backups or file deletion."""
+        success = True
+        for record in reversed(applied_records):
+            resolved_path = record.get("resolved_path")
+            if not isinstance(resolved_path, Path):
+                success = False
+                continue
+            existed_before = bool(record.get("existed_before"))
+            backup_path = record.get("backup_path")
+            try:
+                if existed_before:
+                    if isinstance(backup_path, str) and Path(backup_path).exists():
+                        shutil.copy2(backup_path, resolved_path)
+                    else:
+                        success = False
+                else:
+                    if resolved_path.exists():
+                        resolved_path.unlink()
+            except Exception:
+                logger.exception(
+                    "Failed to rollback structured edit for %s", resolved_path
+                )
+                success = False
+        return success
+
+    def _unique_strings(self, values: Iterable[str]) -> List[str]:
+        """Return deduplicated non-empty strings in insertion order."""
+        items: List[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            items.append(text)
+        return items
 
     def _resolve_target_path(self, requested_path: str) -> Path:
         path_obj = Path(requested_path).expanduser()
