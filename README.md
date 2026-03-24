@@ -182,13 +182,12 @@ Read more:
 
 ## Version Highlights
 
-### v0.6.0
+### v0.6.1
 
-- OpenCode-compatible Penguin TUI flow backed by Penguin web/core.
-- Sidecar launcher/bootstrap path for `penguin-ai[tui]` installs.
-- Stronger session/history/tool replay parity.
-- Better concurrent session isolation across repos and sessions.
-- Subagent task cards plus child-session routing in the TUI.
+- Canonical file editing now centers on `read_file`, `write_file`, `patch_file`, and `patch_files`.
+- JSON-first edit payloads, generated prompt docs, and centralized compatibility aliases keep parser, tools, and UI metadata aligned.
+- File edit validation, multifile permissions/rollback, overwrite behavior, and diff output consistency are materially more reliable.
+- OpenCode-compatible Penguin TUI flow remains backed by Penguin web/core.
 
 ## Documentation
 
