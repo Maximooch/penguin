@@ -25,7 +25,7 @@ class ModelConfig:
 
     model: str
     provider: str
-    client_preference: Literal["native", "litellm", "openrouter"] = "native"
+    client_preference: Literal["native", "litellm", "openrouter"] = "openrouter"
     api_base: Optional[str] = None
     api_key: Optional[str] = None
     api_version: Optional[str] = None
@@ -267,8 +267,9 @@ class ModelConfig:
 
     @classmethod
     def from_env(cls):
-        provider = os.getenv("PENGUIN_PROVIDER", "anthropic")
-        client_pref = os.getenv("PENGUIN_CLIENT_PREFERENCE", "native")
+        client_pref = os.getenv("PENGUIN_CLIENT_PREFERENCE", "openrouter")
+        default_provider = "openrouter" if client_pref == "openrouter" else "anthropic"
+        provider = os.getenv("PENGUIN_PROVIDER", default_provider)
 
         default_model = "anthropic/claude-3-5-sonnet-20240620"
         if client_pref == "litellm":
@@ -383,7 +384,10 @@ class ModelConfig:
 
         # Determine client preference
         if client_preference is None:
-            client_preference = model_specific.get("client_preference", provider)
+            client_preference = model_specific.get(
+                "client_preference",
+                "openrouter" if provider == "openrouter" else "native",
+            )
 
         # Build ModelConfig with model-specific settings
         return cls(

@@ -1,22 +1,32 @@
+from __future__ import annotations
+
 # penguin/llm/litellm_gateway.py
 
 import asyncio
 import base64
+import importlib
 import io
 import logging
 import os
 import traceback
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple, Union
 
-import litellm  # type: ignore
 from PIL import Image  # type: ignore
 
+from .litellm_support import _format_feature_message
 from .model_config import ModelConfig
 
 logger = logging.getLogger(__name__)
 
-# Configure LiteLLM logging level if desired
-litellm.set_verbose = True # Uncomment for debugging LiteLLM calls
+
+def _load_litellm() -> Any:
+    """Load LiteLLM lazily so the module stays importable without the extra."""
+    try:
+        return importlib.import_module("litellm")
+    except ModuleNotFoundError as exc:
+        if exc.name == "litellm":
+            raise RuntimeError(_format_feature_message("LiteLLM gateway")) from exc
+        raise
 
 
 class LiteLLMGateway:
@@ -42,6 +52,8 @@ class LiteLLMGateway:
         if not model_config or not model_config.model:
             raise ValueError("Valid ModelConfig with a model identifier is required.")
         self.model_config = model_config
+        self._litellm = _load_litellm()
+        self._litellm.set_verbose = False
         logger.info(f"LiteLLMGateway initialized for model: {self.model_config.model}")
 
     async def get_response(
@@ -112,7 +124,7 @@ class LiteLLMGateway:
                 logger.info(f"[Request:{request_id}] Initiating NON-STREAMING call via LiteLLM: {litellm_params.get('model', 'Unknown Model')}")
                 raw_response_obj = None
                 try:
-                    raw_response_obj = await litellm.acompletion(**litellm_params)
+                    raw_response_obj = await self._litellm.acompletion(**litellm_params)
                     logger.info(f"[Request:{request_id}] Raw response object received from litellm.acompletion.")
                     logger.debug(f"[Request:{request_id}] Raw Response Type: {type(raw_response_obj)}")
                     if hasattr(raw_response_obj, '__dict__'):
@@ -129,16 +141,16 @@ class LiteLLMGateway:
             logger.info(f"[Request:{request_id}] LiteLLMGateway.get_response finished. Response length: {len(full_response)}")
             return full_response
 
-        except litellm.exceptions.AuthenticationError as e:
+        except self._litellm.exceptions.AuthenticationError as e:
             logger.error(f"LiteLLM Authentication Error: {e}")
             return f"Error: Authentication failed. Check API key for {self.model_config.provider}."
-        except litellm.exceptions.RateLimitError as e:
+        except self._litellm.exceptions.RateLimitError as e:
             logger.error(f"LiteLLM Rate Limit Error: {e}")
             return "Error: Rate limit exceeded. Please try again later."
-        except litellm.exceptions.APIConnectionError as e:
+        except self._litellm.exceptions.APIConnectionError as e:
             logger.error(f"LiteLLM API Connection Error: {e}")
             return f"Error: Could not connect to the API endpoint ({self.model_config.api_base or 'default'})."
-        except litellm.exceptions.BadRequestError as e:
+        except self._litellm.exceptions.BadRequestError as e:
              logger.error(f"[Request:{request_id}] LiteLLM Bad Request Error: {e}")
              details = getattr(e, 'message', str(e))
              status_code = getattr(e, 'status_code', 'N/A')
@@ -302,7 +314,7 @@ class LiteLLMGateway:
             logger.error(traceback.format_exc())
             return {"type": "text", "text": f"[Image processing error: {e}]"}
 
-    def _process_response(self, response_obj: Optional[litellm.ModelResponse], request_id: str) -> str:
+    def _process_response(self, response_obj: Optional[Any], request_id: str) -> str:
         """Extracts the response content from LiteLLM's ModelResponse object."""
         if response_obj is None:
             logger.warning(f"[Request:{request_id}] _process_response received None object.")
@@ -346,7 +358,7 @@ class LiteLLMGateway:
         accumulated_response = []
         logger.debug(f"[Request:{request_id}] Entering _handle_streaming.")
         try:
-            response_stream = await litellm.acompletion(**litellm_params, stream=True)
+            response_stream = await self._litellm.acompletion(**litellm_params, stream=True)
             logger.debug(f"[Request:{request_id}] Received streaming iterator.")
             async for chunk in response_stream:
                 delta_content = None
@@ -393,12 +405,12 @@ class LiteLLMGateway:
         try:
             if isinstance(content, str):
                 # Count tokens for a single string
-                return litellm.token_counter(model=self.model_config.model, text=content)
+                return self._litellm.token_counter(model=self.model_config.model, text=content)
             elif isinstance(content, list):
                  # Count tokens for a list of messages
                  # Note: Ensure messages are formatted correctly if needed by token_counter
                  # For simplicity, we assume OpenAI format is okay here.
-                 return litellm.token_counter(model=self.model_config.model, messages=content)
+                 return self._litellm.token_counter(model=self.model_config.model, messages=content)
             else:
                  logger.warning(f"Unsupported content type for token counting: {type(content)}")
                  return 0

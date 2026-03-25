@@ -1,13 +1,6 @@
 import time
 
-# Import necessary modules from litellm
-import litellm
-from litellm import (
-    add_message,
-    create_thread,
-    get_assistants,
-    run_thread,
-)
+from .litellm_support import load_litellm_module
 
 from .model_config import ModelConfig
 
@@ -17,6 +10,7 @@ class OpenAIAssistantManager:
         self.assistant_id = None
         self.thread_id = None
         self.model_config = model_config
+        self._litellm = load_litellm_module("OpenAI Assistants via LiteLLM")
         self._initialize_assistant()
 
     def _initialize_assistant(self):
@@ -42,7 +36,9 @@ class OpenAIAssistantManager:
 
             # Fallback to existing logic if no configured ID
             try:
-                assistants_page = get_assistants(custom_llm_provider="openai")
+                assistants_page = self._litellm.get_assistants(
+                    custom_llm_provider="openai"
+                )
                 assistants = assistants_page.data
                 print(f"Found existing assistants: {assistants}")
 
@@ -75,7 +71,7 @@ class OpenAIAssistantManager:
         timestamp = int(time.time())
         assistant_name = f"Penguin-{timestamp}-Assistant"
         print(f"Creating new assistant: {assistant_name}")
-        assistant = litellm.create_assistants(
+        assistant = self._litellm.create_assistants(
             model=self.model_config.model,
             name=assistant_name,
             instructions="You are a helpful AI assistant.",  # Basic default instruction
@@ -87,14 +83,14 @@ class OpenAIAssistantManager:
 
     def create_thread(self):
         """Create a new thread with the required provider"""
-        thread = create_thread(custom_llm_provider="openai")
+        thread = self._litellm.create_thread(custom_llm_provider="openai")
         self.thread_id = thread.id
 
     def add_message_to_thread(self, content: str):
         """Add a message to the thread"""
         if not self.thread_id:
             self.create_thread()
-        add_message(
+        self._litellm.add_message(
             thread_id=self.thread_id,
             role="user",
             content=content,
@@ -103,7 +99,7 @@ class OpenAIAssistantManager:
 
     def run_assistant(self):
         """Run the assistant on the current thread"""
-        run = run_thread(
+        run = self._litellm.run_thread(
             thread_id=self.thread_id,
             assistant_id=self.assistant_id,
             instructions=self.current_instructions
@@ -116,7 +112,7 @@ class OpenAIAssistantManager:
     def get_response(self):
         """Get the latest response from the thread"""
         try:
-            messages = litellm.get_messages(
+            messages = self._litellm.get_messages(
                 thread_id=self.thread_id, custom_llm_provider="openai"
             )
 
@@ -151,7 +147,7 @@ class OpenAIAssistantManager:
             while run.status in ["queued", "in_progress"]:
                 print(f"Run status: {run.status}. Waiting...")
                 time.sleep(1)
-                run = litellm.get_run(
+                run = self._litellm.get_run(
                     thread_id=self.thread_id,
                     run_id=run.id,
                     custom_llm_provider="openai",

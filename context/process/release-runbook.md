@@ -6,7 +6,7 @@ Ship a coordinated Penguin + Penguin TUI sidecar release after the OpenCode TUI
 backend parity merge, with strong pre-release validation and a real clean-install
 smoke test for `pip install "penguin-ai[tui]"`.
 
-This runbook assumes the target release is `v0.6.2`. Replace the version string if
+This runbook assumes the target release is `v0.6.2.1`. Replace the version string if
  needed.
 
 ## Preconditions
@@ -134,16 +134,22 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 
-pip install "/path/to/penguin_ai-0.6.2-py3-none-any.whl"
+pip install "/path/to/penguin_ai-0.6.2.1-py3-none-any.whl"
 ```
 
 If you specifically want to verify the legacy compatibility alias still works, use:
 
 ```bash
-pip install "/path/to/penguin_ai-0.6.2-py3-none-any.whl[tui]"
+pip install "/path/to/penguin_ai-0.6.2.1-py3-none-any.whl[tui]"
 ```
 
 The base wheel should now be enough for the default `penguin` launcher path.
+
+If you specifically need the optional LiteLLM path during validation, install it explicitly:
+
+```bash
+pip install "penguin-ai[llm_litellm]"
+```
 
 ### 5d. Validate installed path behavior
 
@@ -204,7 +210,7 @@ cd ~/tmp/penguin-release-test
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-pip install "/absolute/path/to/dist/penguin_ai-0.6.2-py3-none-any.whl"
+pip install "/absolute/path/to/dist/penguin_ai-0.6.2.1-py3-none-any.whl"
 
 python - <<'PY'
 from penguin.cli import opencode_launcher
@@ -237,15 +243,15 @@ grep -n "__version__" penguin/_version.py
 
 ```bash
 git add pyproject.toml penguin/_version.py
-git commit -m "chore: bump version to v0.6.2"
+git commit -m "chore: bump version to v0.6.2.1"
 git push origin main
 ```
 
 ## 9. Create and Push the Release Tag
 
 ```bash
-git tag -a v0.6.2 -m "Release v0.6.2"
-git push origin v0.6.2
+git tag -a v0.6.2.1 -m "Release v0.6.2.1"
+git push origin v0.6.2.1
 ```
 
 This should trigger:
@@ -262,16 +268,16 @@ gh run watch
 Verify:
 - Python package publishes successfully
 - TUI sidecar assets publish successfully
-- release assets are attached to the same `v0.6.2` GitHub release
+- release assets are attached to the same `v0.6.2.1` GitHub release
 
 ## 11. Post-Tag Verification
 
 ### GitHub release assets
 
 ```bash
-gh release view v0.6.2
-gh release download v0.6.2 --dir /tmp/penguin-release-assets --pattern "*.zip"
-gh release download v0.6.2 --dir /tmp/penguin-release-assets --pattern "*.tar.gz"
+gh release view v0.6.2.1
+gh release download v0.6.2.1 --dir /tmp/penguin-release-assets --pattern "*.zip"
+gh release download v0.6.2.1 --dir /tmp/penguin-release-assets --pattern "*.tar.gz"
 ls -lah /tmp/penguin-release-assets
 ```
 
@@ -297,7 +303,7 @@ python -m pip index versions penguin-ai | head -40
 
 ### Exact-version lookup fails
 
-- confirm the GitHub release tag exists: `v0.6.2`
+- confirm the GitHub release tag exists: `v0.6.2.1`
 - confirm sidecar assets were attached to that exact release
 - inspect `~/.cache/penguin/tui/current.json`
 
@@ -314,5 +320,5 @@ The release is good when all of the following are true:
 - workflow dry runs on `main` pass
 - Codespaces clean-install test passes
 - local macOS clean-venv test passes
-- `v0.6.2` tag publishes both Python package and matching sidecar assets
+- `v0.6.2.1` tag publishes both Python package and matching sidecar assets
 - the installed launcher pulls a version-matched sidecar by default

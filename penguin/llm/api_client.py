@@ -23,6 +23,7 @@ from .model_config import ModelConfig
 from penguin.constants import get_default_max_history_tokens
 from penguin.utils.callbacks import adapt_stream_callback
 from .adapters import get_adapter  # Keep for native preference
+from .litellm_support import load_litellm_gateway_class, load_litellm_module
 # Lazy import gateways to avoid import overhead
 # from .litellm_gateway import LiteLLMGateway
 # from .openrouter_gateway import OpenRouterGateway
@@ -288,12 +289,15 @@ class APIClient:
         # --- Instantiate the correct handler ---
         if model_config.client_preference == "litellm":
             try:
-                # Lazy import LiteLLMGateway to avoid import overhead
-                from .litellm_gateway import LiteLLMGateway
-
+                LiteLLMGateway = load_litellm_gateway_class(
+                    "client_preference='litellm'"
+                )
                 # LiteLLM gateway handles API keys/base internally based on model_config
                 self.client_handler = LiteLLMGateway(model_config)
                 self.logger.info(f"Using LiteLLMGateway for {model_config.model}")
+            except RuntimeError as e:
+                self.logger.error("LiteLLM support unavailable: %s", e)
+                raise RuntimeError(str(e)) from e
             except Exception as e:
                 self.logger.error(
                     f"Failed to initialize LiteLLMGateway: {e}", exc_info=True
@@ -760,6 +764,9 @@ class APIClient:
                     logger.info(
                         f"Falling back to LiteLLM generic token counter for model {self.model_config.model}"
                     )
+                    token_counter = load_litellm_module(
+                        "LiteLLM token counting fallback"
+                    ).token_counter
                     # Ensure model name is suitable for LiteLLM counter
                     model_for_counting = self.model_config.model
                     if isinstance(content, str):
@@ -783,6 +790,9 @@ class APIClient:
                 logger.info(
                     f"Falling back to LiteLLM generic token counter for model {self.model_config.model}"
                 )
+                token_counter = load_litellm_module(
+                    "LiteLLM token counting fallback"
+                ).token_counter
                 model_for_counting = self.model_config.model
                 if isinstance(content, str):
                     return token_counter(model=model_for_counting, text=content)

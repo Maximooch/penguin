@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "penguin-ai"
-version = "0.6.2"
+version = "0.6.2.1"
 description = "Penguin: A modular, extensible AI coding agent and software engineer with its own execution environment."
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
@@ -42,6 +42,7 @@ dependencies = [
     "pyyaml>=5.4.0",
     "httpx>=0.24.0",
     "requests>=2.26.0",
+    "tiktoken",
     "typing_extensions>=4.0.0",
     "fastapi>=0.68.0,<1.0",
     "uvicorn>=0.15.0",
@@ -49,7 +50,6 @@ dependencies = [
     "python-multipart>=0.0.7",
     
     # LLM and API
-    "litellm>=1.0.0",
     "anthropic>=0.3.0",
     "openai>=1.12.0",
     "ollama",
@@ -100,7 +100,7 @@ minimal = [
     "python-dotenv>=0.19.0",
     "pyyaml>=5.4.0",
     "httpx>=0.24.0",
-    "litellm>=1.0.0",
+    "tiktoken",
     "anthropic>=0.3.0",
     "openai>=1.12.0",
 ]
@@ -115,6 +115,8 @@ memory_faiss = [
 memory_chroma = ["chromadb>=0.4.22"]
 
 # LLM Providers  
+llm_litellm = ["litellm>=1.0.0"]
+
 llm_transformers = [
     "transformers>=4.38.0", 
     "torch>=2.0.0", 

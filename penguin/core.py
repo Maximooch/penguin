@@ -196,6 +196,7 @@ from penguin.utils.diagnostics import (
     enable_diagnostics,
     disable_diagnostics,
 )
+from penguin.llm.litellm_support import load_litellm_module
 from penguin.utils.log_error import log_error
 from penguin.utils.parser import (
     ActionExecutor,
@@ -421,7 +422,7 @@ class PenguinCore:
                             getattr(config.model_config, "use_assistants_api", False)
                         ),
                         client_preference=getattr(
-                            config.model_config, "client_preference", "native"
+                            config.model_config, "client_preference", "openrouter"
                         ),
                         streaming_enabled=bool(
                             getattr(config.model_config, "streaming_enabled", True)
@@ -832,20 +833,19 @@ class PenguinCore:
         self._last_model_load_error: Optional[str] = None
 
     def _ensure_litellm_configured(self):
-        """Configure LiteLLM on first use to avoid import time overhead."""
+        """Configure LiteLLM on first use when the optional extra is installed."""
         if not self._litellm_configured:
             try:
-                from litellm import _logging  # type: ignore
-
+                litellm = load_litellm_module("LiteLLM optional runtime")
+                _logging = litellm._logging
                 _logging._disable_debugging()
-                # Also set these to be safe
-                import litellm  # type: ignore
-
                 litellm.set_verbose = False
                 litellm.drop_params = False
                 self._litellm_configured = True
             except Exception as e:
-                logger.warning(f"Failed to disable LiteLLM debugging: {e}")
+                logger.debug(
+                    "LiteLLM optional runtime unavailable or not configured: %s", e
+                )
                 self._litellm_configured = True  # Don't try again
 
         # Streaming primitives are initialized in __init__ now
@@ -3450,7 +3450,7 @@ class PenguinCore:
             model_conf = self.config.model_configs.get(model_id)
             if model_conf:
                 provider = model_conf.get("provider")
-                client_pref = model_conf.get("client_preference", "native")
+                client_pref = model_conf.get("client_preference", "openrouter")
                 return provider, client_pref
 
         # Infer from fully-qualified model ID
@@ -3473,7 +3473,7 @@ class PenguinCore:
             return provider_part, "native"
 
         client_pref = (
-            self.model_config.client_preference if self.model_config else "native"
+            self.model_config.client_preference if self.model_config else "openrouter"
         )
         provider = "openrouter" if client_pref == "openrouter" else provider_part
         return provider, client_pref
@@ -3501,7 +3501,7 @@ class PenguinCore:
                 "id": model_id,
                 "name": conf.get("model", model_id),
                 "provider": conf.get("provider", "unknown"),
-                "client_preference": conf.get("client_preference", "native"),
+                "client_preference": conf.get("client_preference", "openrouter"),
                 "vision_enabled": conf.get("vision_enabled", False),
                 "max_output_tokens": conf.get(
                     "max_output_tokens", conf.get("max_tokens")

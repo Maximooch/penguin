@@ -27,6 +27,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
+from .litellm_support import load_litellm_gateway_class
+
 if TYPE_CHECKING:
     from .model_config import ModelConfig
 
@@ -291,7 +293,9 @@ class LLMClient:
                 )
                 
             elif preference == "litellm":
-                from .litellm_gateway import LiteLLMGateway
+                LiteLLMGateway = load_litellm_gateway_class(
+                    "client_preference='litellm'"
+                )
                 
                 # LiteLLM gateway needs different handling
                 # For now, create with Link headers passed through

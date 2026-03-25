@@ -466,7 +466,7 @@ async def run_setup_wizard() -> Dict[str, Any]:
         "model": {
             "default": model,
             "provider": "openrouter" if will_use_openrouter else provider_from_model,
-            "client_preference": "openrouter" if will_use_openrouter else "litellm",
+            "client_preference": "openrouter" if will_use_openrouter else "native",
             "streaming_enabled": True,
             "temperature": 0.7,
             "context_window": context_window_auto,
@@ -951,9 +951,9 @@ def test_provider_routing() -> None:
         ("cohere/command-r-plus", "openrouter", "openrouter", "openrouter", True),
         ("perplexity/llama-3.1-sonar-large-128k-online", "openrouter", "openrouter", "openrouter", True),
         ("x-ai/grok-beta", "openrouter", "openrouter", "openrouter", True),
-        ("ollama/llama3", "ollama", "ollama", "litellm", False),  # Not in OpenRouter
-        ("claude-3-sonnet", "anthropic", "anthropic", "litellm", False),  # No slash, direct provider
-        ("some-unknown/model", "some-unknown", "some-unknown", "litellm", False),  # Not in OpenRouter
+        ("ollama/llama3", "ollama", "ollama", "native", False),  # Not in OpenRouter
+        ("claude-3-sonnet", "anthropic", "anthropic", "native", False),  # No slash, direct provider
+        ("some-unknown/model", "some-unknown", "some-unknown", "native", False),  # Not in OpenRouter
     ]
     
     console.print("[bold cyan]🧪 Testing Provider Routing Logic[/bold cyan]\n")
@@ -983,7 +983,7 @@ def test_provider_routing() -> None:
             
         # Generate config values
         config_provider = "openrouter" if will_use_openrouter else provider_from_model
-        client_preference = "openrouter" if will_use_openrouter else "litellm"
+        client_preference = "openrouter" if will_use_openrouter else "native"
         
         # Check results
         status_actual = "✓" if actual_provider == expected_actual else "❌"

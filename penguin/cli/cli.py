@@ -523,7 +523,7 @@ async def _initialize_core_components_globally(
         model=model_override or model_dict.get("default", DEFAULT_MODEL),
         provider=model_dict.get("provider", DEFAULT_PROVIDER),
         api_base=api_base,  # Use the api_base we determined above
-        client_preference=model_dict.get("client_preference", "native"),
+        client_preference=model_dict.get("client_preference", "openrouter"),
         streaming_enabled=streaming_enabled,
         vision_enabled=model_dict.get("vision_enabled", False),
         max_output_tokens=model_dict.get("max_output_tokens", model_dict.get("max_tokens", 8000)),
@@ -4028,12 +4028,12 @@ Welcome to Penguin!
 
         print(f"[DEBUG] Streaming mode {'enabled' if enabled else 'disabled'}")
 
-    def switch_client_preference(self, preference: str = "litellm") -> None:
+    def switch_client_preference(self, preference: str = "openrouter") -> None:
         """
         Try switching the client preference for testing different backends
 
         Args:
-            preference: "native", "litellm", or "openrouter"
+            preference: "openrouter", "native", or "litellm" (optional extra)
         """
         if hasattr(self.core, "model_config") and self.core.model_config is not None:
             old_preference = self.core.model_config.client_preference

@@ -860,7 +860,7 @@ except Exception:
 
 # Default model configuration (safe defaults for CI/non-interactive)
 DEFAULT_MODEL = os.getenv("PENGUIN_DEFAULT_MODEL", _MODEL.get("default")) or "openai/gpt-5"
-DEFAULT_PROVIDER = os.getenv("PENGUIN_DEFAULT_PROVIDER", _MODEL.get("provider", "openai"))
+DEFAULT_PROVIDER = os.getenv("PENGUIN_DEFAULT_PROVIDER", _MODEL.get("provider", "openrouter"))
 DEFAULT_API_BASE = os.getenv("PENGUIN_DEFAULT_API_BASE", _API.get("base_url"))
 USE_ASSISTANTS_API = _MODEL.get("use_assistants_api", True)
 
@@ -871,7 +871,7 @@ GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", config.get("project", {}).get
 ASSISTANT_CONFIG = {
     "provider": _MODEL.get("provider", "openai"),
     "enabled": _MODEL.get("use_assistants_api", False),
-    "custom_llm_provider": "openai",  # Required by litellm
+    "custom_llm_provider": "openai",  # Used by assistant compatibility flows
     "model_name_override": None,  # Optional override for assistant model name
 }
 
@@ -1454,8 +1454,8 @@ class Config:
         default_model_settings = config_data.get("model", {})
         # ENV VARS TAKE PRECEDENCE over config.yml for container deployments
         default_model_id = os.getenv("PENGUIN_DEFAULT_MODEL") or default_model_settings.get("default") or "anthropic/claude-3-5-sonnet-20240620"
-        default_provider = os.getenv("PENGUIN_DEFAULT_PROVIDER") or default_model_settings.get("provider") or "anthropic"
-        default_client_pref = os.getenv("PENGUIN_CLIENT_PREFERENCE") or default_model_settings.get("client_preference") or "litellm"
+        default_provider = os.getenv("PENGUIN_DEFAULT_PROVIDER") or default_model_settings.get("provider") or "openrouter"
+        default_client_pref = os.getenv("PENGUIN_CLIENT_PREFERENCE") or default_model_settings.get("client_preference") or "openrouter"
 
         model_configs_section = config_data.get("model_configs")
         if not isinstance(model_configs_section, dict):

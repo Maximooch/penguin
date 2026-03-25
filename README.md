@@ -68,7 +68,7 @@ Other entrypoints:
 - Session durability: checkpoints, rollback, branching, transcript replay, and long-running
   task continuity.
 - Project and task orchestration backed by SQLite, including todo tracking and Run Mode.
-- Native and gateway model support across OpenAI, Anthropic, OpenRouter, and LiteLLM-compatible providers.
+- Native and gateway model support across OpenAI, Anthropic, and OpenRouter by default, with LiteLLM available as an optional extra.
 
 ## Interfaces
 
@@ -125,6 +125,7 @@ pip install -e .[dev,test]
 | `[tui]` | Compatibility alias; default install already includes TUI launcher runtime |
 | `[web]` | Compatibility alias; default install already includes web runtime |
 | `[legacy_tui]` | Legacy Textual prototype / experimental UI support |
+| `[llm_litellm]` | Optional LiteLLM support for legacy/custom gateway workflows |
 | `[memory_faiss]` | FAISS vector search + embeddings |
 | `[memory_lance]` | LanceDB vector database |
 | `[memory_chroma]` | ChromaDB integration |
@@ -186,7 +187,7 @@ Read more:
 
 ## Version Highlights
 
-### v0.6.2
+### v0.6.2.1
 
 - Canonical file editing now centers on `read_file`, `write_file`, `patch_file`, and `patch_files`.
 - JSON-first edit payloads, generated prompt docs, and centralized compatibility aliases keep parser, tools, and UI metadata aligned.

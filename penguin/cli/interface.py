@@ -2330,14 +2330,14 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
         """
         current_model_name_from_core = None
         current_provider_from_core = None # This might be tricky with OpenRouter, as OR is the provider
-        client_preference = "litellm" # Default
+        client_preference = "openrouter" # Default
 
         if hasattr(self.core, 'model_config') and self.core.model_config is not None:
             current_model_name_from_core = getattr(self.core.model_config, 'model', None)
             # For OpenRouter, self.core.model_config.provider might be 'openrouter'
             # but the actual underlying model provider is part of the model ID (e.g., openai/gpt-4o)
             current_provider_from_core = getattr(self.core.model_config, 'provider', None)
-            client_preference = getattr(self.core.model_config, 'client_preference', 'litellm')
+            client_preference = getattr(self.core.model_config, 'client_preference', 'openrouter')
 
         if client_preference == 'openrouter':
             try:
@@ -2399,7 +2399,7 @@ Penguin works in two modes: **chat mode** (conversational back-and-forth) and **
                         "id": model_key,
                         "name": conf.get("model", model_key),
                         "provider": conf.get("provider", "unknown"),
-                        "client_preference": conf.get("client_preference", "litellm"),
+                        "client_preference": conf.get("client_preference", "openrouter"),
                         "vision_enabled": conf.get("vision_enabled", False),
                         "max_output_tokens": conf.get("max_output_tokens", conf.get("max_tokens")),  # Accept both keys
                         "temperature": conf.get("temperature"),
