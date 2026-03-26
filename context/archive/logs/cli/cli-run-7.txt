@@ -1,0 +1,559 @@
+[1] You:
+  Make a list of projects markdown file for projects that you can do. Across different languages & stacks. Also ranging in difficulty.
+  ✓ using execute — ✅ Created PROJECT_IDEAS.md with 39 project ideas across all 
+
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  ooooooooo.                                                 o8o
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  `888   `Y88.                                               `"'
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888   .d88'  .ooooo.  ooo. .oo.    .oooooooo oooo  oooo  oooo  ooo. .oo.
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888ooo88P'  d88' `88b `888P"Y88b  888' `88b  `888  `888  `888  `888P"Y88b
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888         888ooo888  888   888  888   888   888   888   888   888   888
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888         888    .o  888   888  `88bod8P'   888   888   888   888   888
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                                     d"     YD
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                                     "Y88888P'
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+
+
+ v0.1.0 • Software Engineer Agent
+ 📁 Workspace: penguin-cli • Type /help for commands
+
+ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │  1:🏠 Dashboard  │   2:💬 Chat *  │   3:🤖 Agents                                                                                         Ctrl+P: Switch │
+ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ Status                                                                                                                                                   │
+ │                                                                                                                                                          │
+ │ ● Connected                                                                                                                                              │
+ │                                                                                                                                                          │
+ │ No active progress                                                                                                                                       │
+ │                                                                                                                                                          │
+ │ No active tool                                                                                                                                           │
+ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ Penguin:
+   I'll create a comprehensive project ideas list with various difficulty levels and technology stacks.                                                     ▊
+
+
+
+   ╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  # <execute>                                                                                                                                          │
+   │  from pathlib import Path                                                                                                                             │
+   │                                                                                                                                                       │
+   │  content = """# Project Ideas Catalog                                                                                                                 │
+   │                                                                                                                                                       │
+   │  A curated list of software projects across different languages, stacks, and difficulty levels.                                                       │
+   │                                                                                                                                                       │
+   │  ---                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ## 🟢 Beginner Projects                                                                                                                              │
+   │                                                                                                                                                       │
+   │  ### 1. CLI Todo Manager                                                                                                                              │
+   │  **Languages:** Python, JavaScript/Node, Rust, Go                                                                                                     │
+   │  **Key Skills:** File I/O, data structures, command-line parsing                                                                                      │
+   │  **Features:**                                                                                                                                        │
+   │  - Add, list, complete, delete tasks                                                                                                                  │
+   │  - Persistent storage (JSON/SQLite)                                                                                                                   │
+   │  - Filter by status, priority                                                                                                                         │
+   │  - Colorized terminal output                                                                                                                          │
+   │                                                                                                                                                       │
+   │  ### 2. Weather Dashboard                                                                                                                             │
+   │  **Stack:** HTML/CSS/JS + Weather API                                                                                                                 │
+   │  **Key Skills:** API consumption, DOM manipulation, async/await                                                                                       │
+   │  **Features:**                                                                                                                                        │
+   │  - Current weather display                                                                                                                            │
+   │  - 5-day forecast                                                                                                                                     │
+   │  - Location search                                                                                                                                    │
+   │  - Temperature unit toggle                                                                                                                            │
+   │                                                                                                                                                       │
+   │  ### 3. Markdown to HTML Converter                                                                                                                    │
+   │  **Languages:** Python, JavaScript, Ruby                                                                                                              │
+   │  **Key Skills:** Parsing, regex, file processing                                                                                                      │
+   │  **Features:**                                                                                                                                        │
+   │  - Support basic markdown syntax                                                                                                                      │
+   │  - Syntax highlighting for code blocks                                                                                                                │
+   │  - Custom CSS themes                                                                                                                                  │
+   │  - CLI interface                                                                                                                                      │
+   │                                                                                                                                                       │
+   │  ### 4. Expense Tracker                                                                                                                               │
+   │  **Stack:** Python + SQLite / Node + JSON                                                                                                             │
+   │  **Key Skills:** CRUD operations, data persistence, basic calculations                                                                                │
+   │  **Features:**                                                                                                                                        │
+   │  - Record income/expenses                                                                                                                             │
+   │  - Category management                                                                                                                                │
+   │  - Monthly summaries                                                                                                                                  │
+   │  - Export to CSV                                                                                                                                      │
+   │                                                                                                                                                       │
+   │  ### 5. Portfolio Website Generator                                                                                                                   │
+   │  **Stack:** Static Site Generator (Hugo, Jekyll, 11ty)                                                                                                │
+   │  **Key Skills:** HTML/CSS, templating, build tools                                                                                                    │
+   │  **Features:**                                                                                                                                        │
+   │  - Project showcase                                                                                                                                   │
+   │  - Blog functionality                                                                                                                                 │
+   │  - Responsive design                                                                                                                                  │
+   │  - Deploy to GitHub Pages                                                                                                                             │
+   │                                                                                                                                                       │
+   │  ---                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ## 🟡 Intermediate Projects                                                                                                                          │
+   │                                                                                                                                                       │
+   │  ### 6. REST API with Authentication                                                                                                                  │
+   │  **Stack:** FastAPI/Flask (Python) or Express (Node) + PostgreSQL                                                                                     │
+   │  **Key Skills:** JWT auth, database design, API design, middleware                                                                                    │
+   │  **Features:**                                                                                                                                        │
+   │  - User registration/login                                                                                                                            │
+   │  - Protected routes                                                                                                                                   │
+   │  - Role-based access control (RBAC)                                                                                                                   │
+   │  - Rate limiting                                                                                                                                      │
+   │  - Input validation                                                                                                                                   │
+   │                                                                                                                                                       │
+   │  ### 7. Real-time Chat Application                                                                                                                    │
+   │  **Stack:** WebSockets (Socket.io) + React/Vue + Node.js + MongoDB                                                                                    │
+   │  **Key Skills:** WebSockets, real-time events, state management                                                                                       │
+   │  **Features:**                                                                                                                                        │
+   │  - Multiple chat rooms                                                                                                                                │
+   │  - Private messaging                                                                                                                                  │
+   │  - Online user list                                                                                                                                   │
+   │  - Message history                                                                                                                                    │
+   │  - File sharing                                                                                                                                       │
+   │                                                                                                                                                       │
+   │  ### 8. E-commerce Product Catalog                                                                                                                    │
+   │  **Stack:** Next.js + PostgreSQL + Stripe API                                                                                                         │
+   │  **Key Skills:** Server-side rendering, payment integration, cart logic                                                                               │
+   │  **Features:**                                                                                                                                        │
+   │  - Product listings with filters                                                                                                                      │
+   │  - Shopping cart                                                                                                                                      │
+   │  - Checkout flow                                                                                                                                      │
+   │  - Order history                                                                                                                                      │
+   │  - Admin dashboard                                                                                                                                    │
+   │                                                                                                                                                       │
+   │  ### 9. CLI System Monitor                                                                                                                            │
+   │  **Languages:** Rust, Go, Python                                                                                                                      │
+   │  **Key Skills:** System APIs, TUI libraries, concurrent data collection                                                                               │
+   │  **Features:**                                                                                                                                        │
+   │  - CPU/Memory/Disk usage                                                                                                                              │
+   │  - Process list with sorting                                                                                                                          │
+   │  - Network activity                                                                                                                                   │
+   │  - Interactive TUI (blessed/tui-rs)                                                                                                                   │
+   │                                                                                                                                                       │
+   │  ### 10. Automated Web Scraper                                                                                                                        │
+   │  **Stack:** Python (BeautifulSoup/Scrapy) + Celery + Redis                                                                                            │
+   │  **Key Skills:** Web scraping, task queues, data extraction                                                                                           │
+   │  **Features:**                                                                                                                                        │
+   │  - Configurable scraping rules                                                                                                                        │
+   │  - Scheduled runs                                                                                                                                     │
+   │  - Data export (CSV/JSON/DB)                                                                                                                          │
+   │  - Duplicate detection                                                                                                                                │
+   │  - Respect robots.txt                                                                                                                                 │
+   │                                                                                                                                                       │
+   │  ### 11. Blog Platform with CMS                                                                                                                       │
+   │  **Stack:** Django/Rails + PostgreSQL + Redis                                                                                                         │
+   │  **Key Skills:** MVC architecture, templating, caching, SEO                                                                                           │
+   │  **Features:**                                                                                                                                        │
+   │  - Rich text editor                                                                                                                                   │
+   │  - Draft/publish workflow                                                                                                                             │
+   │  - Comments system                                                                                                                                    │
+   │  - Tag/category management                                                                                                                            │
+   │  - RSS feed                                                                                                                                           │
+   │                                                                                                                                                       │
+   │  ### 12. URL Shortener Service                                                                                                                        │
+   │  **Stack:** Go/Rust + Redis + PostgreSQL                                                                                                              │
+   │  **Key Skills:** Hash generation, caching, analytics                                                                                                  │
+   │  **Features:**                                                                                                                                        │
+   │  - Short URL generation                                                                                                                               │
+   │  - Custom aliases                                                                                                                                     │
+   │  - Click analytics                                                                                                                                    │
+   │  - QR code generation                                                                                                                                 │
+   │  - API for integration                                                                                                                                │
+   │                                                                                                                                                       │
+   │  ---                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ## 🔴 Advanced Projects                                                                                                                              │
+   │                                                                                                                                                       │
+   │  ### 13. Distributed Task Queue System                                                                                                                │
+   │  **Stack:** Go/Rust + Redis/RabbitMQ + PostgreSQL                                                                                                     │
+   │  **Key Skills:** Distributed systems, message queues, worker pools                                                                                    │
+   │  **Features:**                                                                                                                                        │
+   │  - Task scheduling (cron-like)                                                                                                                        │
+   │  - Priority queues                                                                                                                                    │
+   │  - Dead letter queues                                                                                                                                 │
+   │  - Horizontal scaling                                                                                                                                 │
+   │  - Web dashboard for monitoring                                                                                                                       │
+   │  - Retry logic with exponential backoff                                                                                                               │
+   │                                                                                                                                                       │
+   │  ### 14. Container Orchestration Dashboard                                                                                                            │
+   │  **Stack:** React/Vue + Go/Python + Docker API + Kubernetes API                                                                                       │
+   │  **Key Skills:** Container management, API integration, real-time updates                                                                             │
+   │  **Features:**                                                                                                                                        │
+   │  - Container lifecycle management                                                                                                                     │
+   │  - Resource monitoring                                                                                                                                │
+   │  - Log streaming                                                                                                                                      │
+   │  - Image management                                                                                                                                   │
+   │  - Multi-host support                                                                                                                                 │
+   │                                                                                                                                                       │
+   │  ### 15. Code Collaboration Platform                                                                                                                  │
+   │  **Stack:** Next.js + WebRTC + Yjs (CRDT) + PostgreSQL                                                                                                │
+   │  **Key Skills:** Real-time collaboration, CRDTs, WebRTC                                                                                               │
+   │  **Features:**                                                                                                                                        │
+   │  - Real-time code editing                                                                                                                             │
+   │  - Video/audio calls                                                                                                                                  │
+   │  - Code execution sandbox                                                                                                                             │
+   │  - Git integration                                                                                                                                    │
+   │  - Project management                                                                                                                                 │
+   │                                                                                                                                                       │
+   │  ### 16. GraphQL API Gateway                                                                                                                          │
+   │  **Stack:** Node.js/Go + GraphQL + Microservices                                                                                                      │
+   │  **Key Skills:** GraphQL schema design, service orchestration, caching                                                                                │
+   │  **Features:**                                                                                                                                        │
+   │  - Schema stitching from multiple services                                                                                                            │
+   │  - Resolver optimization (DataLoader)                                                                                                                 │
+   │  - Subscription support                                                                                                                               │
+   │  - Rate limiting per user                                                                                                                             │
+   │  - Query complexity analysis                                                                                                                          │
+   │                                                                                                                                                       │
+   │  ### 17. Machine Learning Pipeline                                                                                                                    │
+   │  **Stack:** Python + FastAPI + Celery + PostgreSQL + S3                                                                                               │
+   │  **Key Skills:** ML model deployment, data pipelines, model versioning                                                                                │
+   │  **Features:**                                                                                                                                        │
+   │  - Model training queue                                                                                                                               │
+   │  - Dataset management                                                                                                                                 │
+   │  - Model versioning                                                                                                                                   │
+   │  - A/B testing framework                                                                                                                              │
+   │  - Prediction API                                                                                                                                     │
+   │  - Monitoring dashboards                                                                                                                              │
+   │                                                                                                                                                       │
+   │  ### 18. Database Migration Tool                                                                                                                      │
+   │  **Languages:** Rust, Go                                                                                                                              │
+   │  **Key Skills:** Database introspection, SQL generation, data integrity                                                                               │
+   │  **Features:**                                                                                                                                        │
+   │  - Schema diffing                                                                                                                                     │
+   │  - Migration generation                                                                                                                               │
+   │  - Rollback support                                                                                                                                   │
+   │  - Multiple DB support (Postgres, MySQL, SQLite)                                                                                                      │
+   │  - Data validation                                                                                                                                    │
+   │  - Zero-downtime migrations                                                                                                                           │
+   │                                                                                                                                                       │
+   │  ### 19. Distributed File Storage                                                                                                                     │
+   │  **Stack:** Go/Rust + S3-compatible backend                                                                                                           │
+   │  **Key Skills:** Distributed systems, replication, consistency                                                                                        │
+   │  **Features:**                                                                                                                                        │
+   │  - Chunked file upload                                                                                                                                │
+   │  - Deduplication                                                                                                                                      │
+   │  - Replication across nodes                                                                                                                           │
+   │  - Encryption at rest                                                                                                                                 │
+   │  - Access control                                                                                                                                     │
+   │  - CDN integration                                                                                                                                    │
+   │                                                                                                                                                       │
+   │  ### 20. Real-time Analytics Platform                                                                                                                 │
+   │  **Stack:** Kafka + Flink/Spark + Clickhouse + React                                                                                                  │
+   │  **Key Skills:** Stream processing, time-series DB, data visualization                                                                                │
+   │  **Features:**                                                                                                                                        │
+   │  - Event ingestion at scale                                                                                                                           │
+   │  - Real-time aggregations                                                                                                                             │
+   │  - Custom dashboards                                                                                                                                  │
+   │  - Alerting rules                                                                                                                                     │
+   │  - Historical data queries                                                                                                                            │
+   │                                                                                                                                                       │
+   │  ---                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ## 🎯 Specialized Projects                                                                                                                           │
+   │                                                                                                                                                       │
+   │  ### 21. Static Site Generator                                                                                                                        │
+   │  **Language:** Rust, Go                                                                                                                               │
+   │  **Key Skills:** Parsing, templating, build optimization                                                                                              │
+   │  **Features:**                                                                                                                                        │
+   │  - Markdown/MDX support                                                                                                                               │
+   │  - Hot reload dev server                                                                                                                              │
+   │  - Plugin system                                                                                                                                      │
+   │  - Image optimization                                                                                                                                 │
+   │  - Incremental builds                                                                                                                                 │
+   │                                                                                                                                                       │
+   │  ### 22. Package Manager                                                                                                                              │
+   │  **Language:** Rust, Go                                                                                                                               │
+   │  **Key Skills:** Dependency resolution, versioning, cryptography                                                                                      │
+   │  **Features:**                                                                                                                                        │
+   │  - Dependency graph resolution                                                                                                                        │
+   │  - Lock files                                                                                                                                         │
+   │  - Package signing                                                                                                                                    │
+   │  - Private registry support                                                                                                                           │
+   │  - Workspaces                                                                                                                                         │
+   │                                                                                                                                                       │
+   │  ### 23. Terminal-based IDE                                                                                                                           │
+   │  **Language:** Rust, Go                                                                                                                               │
+   │  **Key Skills:** TUI, LSP integration, text rendering                                                                                                 │
+   │  **Features:**                                                                                                                                        │
+   │  - Syntax highlighting                                                                                                                                │
+   │  - LSP client                                                                                                                                         │
+   │  - Git integration                                                                                                                                    │
+   │  - Plugin system                                                                                                                                      │
+   │  - Split panes                                                                                                                                        │
+   │                                                                                                                                                       │
+   │  ### 24. WebAssembly Runtime                                                                                                                          │
+   │  **Language:** Rust, C++                                                                                                                              │
+   │  **Key Skills:** Low-level programming, interpreters, memory management                                                                               │
+   │  **Features:**                                                                                                                                        │
+   │  - WASM bytecode interpreter                                                                                                                          │
+   │  - Memory sandboxing                                                                                                                                  │
+   │  - Host function calling                                                                                                                              │
+   │  - Module caching                                                                                                                                     │
+   │                                                                                                                                                       │
+   │  ### 25. P2P File Sharing                                                                                                                             │
+   │  **Language:** Go, Rust                                                                                                                               │
+   │  **Key Skills:** Networking, cryptography, distributed hash tables                                                                                    │
+   │  **Features:**                                                                                                                                        │
+   │  - DHT-based peer discovery                                                                                                                           │
+   │  - Encrypted transfers                                                                                                                                │
+   │  - Resume capability                                                                                                                                  │
+   │  - NAT traversal                                                                                                                                      │
+   │  - Web UI                                                                                                                                             │
+   │                                                                                                                                                       │
+   │  ---                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ## 🎮 Fun & Creative Projects                                                                                                                        │
+   │                                                                                                                                                       │
+   │  ### 26. Discord/Slack Bot                                                                                                                            │
+   │  **Stack:** Python/Node.js + Bot Framework                                                                                                            │
+   │  **Key Skills:** Event handling, API integration, natural language                                                                                    │
+   │  **Features:**                                                                                                                                        │
+   │  - Custom commands                                                                                                                                    │
+   │  - Moderation tools                                                                                                                                   │
+   │  - Game integration                                                                                                                                   │
+   │  - Database for user data                                                                                                                             │
+   │  - Scheduled tasks                                                                                                                                    │
+   │                                                                                                                                                       │
+   │  ### 27. Music Visualizer                                                                                                                             │
+   │  **Stack:** Web Audio API + Canvas/WebGL                                                                                                              │
+   │  **Key Skills:** Audio processing, graphics, math                                                                                                     │
+   │  **Features:**                                                                                                                                        │
+   │  - Real-time frequency analysis                                                                                                                       │
+   │  - Multiple visualization modes                                                                                                                       │
+   │  - Microphone input                                                                                                                                   │
+   │  - Recording capability                                                                                                                               │
+   │                                                                                                                                                       │
+   │  ### 28. Procedural Art Generator                                                                                                                     │
+   │  **Language:** Python (Pillow/Cairo), JavaScript (Canvas)                                                                                             │
+   │  **Key Skills:** Generative algorithms, graphics, randomization                                                                                       │
+   │  **Features:**                                                                                                                                        │
+   │  - Multiple art styles                                                                                                                                │
+   │  - Parameter tuning                                                                                                                                   │
+   │  - High-res export                                                                                                                                    │
+   │  - Animation support                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ### 29. Retro Game Emulator                                                                                                                          │
+   │  **Language:** Rust, C++                                                                                                                              │
+   │  **Key Skills:** Low-level programming, CPU emulation, graphics                                                                                       │
+   │  **Features:**                                                                                                                                        │
+   │  - CPU emulation                                                                                                                                      │
+   │  - Graphics rendering                                                                                                                                 │
+   │  - Save states                                                                                                                                        │
+   │  - Controller support                                                                                                                                 │
+   │  - Debugger                                                                                                                                           │
+   │                                                                                                                                                       │
+   │  ### 30. Live Streaming Platform (MVP)                                                                                                                │
+   │  **Stack:** WebRTC + HLS + CDN + React                                                                                                                │
+   │  **Key Skills:** Video streaming, real-time chat, CDN                                                                                                 │
+   │  **Features:**                                                                                                                                        │
+   │  - Stream publishing                                                                                                                                  │
+   │  - Adaptive bitrate                                                                                                                                   │
+   │  - Chat integration                                                                                                                                   │
+   │  - VOD playback                                                                                                                                       │
+   │  - Analytics                                                                                                                                          │
+   │                                                                                                                                                       │
+   │  ---                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ## 📊 Data & Analytics Projects                                                                                                                      │
+   │                                                                                                                                                       │
+   │  ### 31. ETL Pipeline Framework                                                                                                                       │
+   │  **Stack:** Python/Airflow + Pandas + PostgreSQL                                                                                                      │
+   │  **Key Skills:** Data transformation, scheduling, error handling                                                                                      │
+   │  **Features:**                                                                                                                                        │
+   │  - Modular transformations                                                                                                                            │
+   │  - DAG visualization                                                                                                                                  │
+   │  - Data validation                                                                                                                                    │
+   │  - Retry logic                                                                                                                                        │
+   │  - Monitoring                                                                                                                                         │
+   │                                                                                                                                                       │
+   │  ### 32. Log Aggregation System                                                                                                                       │
+   │  **Stack:** Go + Elasticsearch + Kibana                                                                                                               │
+   │  **Key Skills:** Log parsing, indexing, visualization                                                                                                 │
+   │  **Features:**                                                                                                                                        │
+   │  - Multi-source ingestion                                                                                                                             │
+   │  - Full-text search                                                                                                                                   │
+   │  - Custom dashboards                                                                                                                                  │
+   │  - Alerting                                                                                                                                           │
+   │  - Retention policies                                                                                                                                 │
+   │                                                                                                                                                       │
+   │  ### 33. API Testing Framework                                                                                                                        │
+   │  **Language:** Python, JavaScript                                                                                                                     │
+   │  **Key Skills:** HTTP clients, assertions, reporting                                                                                                  │
+   │  **Features:**                                                                                                                                        │
+   │  - Request chaining                                                                                                                                   │
+   │  - Environment variables                                                                                                                              │
+   │  - Mock servers                                                                                                                                       │
+   │  - Load testing                                                                                                                                       │
+   │  - CI/CD integration                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ---                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ## 🔐 Security Projects                                                                                                                              │
+   │                                                                                                                                                       │
+   │  ### 34. Password Manager                                                                                                                             │
+   │  **Language:** Rust, Go                                                                                                                               │
+   │  **Key Skills:** Encryption, secure storage, CLI/GUI                                                                                                  │
+   │  **Features:**                                                                                                                                        │
+   │  - AES-256 encryption                                                                                                                                 │
+   │  - Master password                                                                                                                                    │
+   │  - Password generation                                                                                                                                │
+   │  - Browser extension                                                                                                                                  │
+   │  - Sync (optional)                                                                                                                                    │
+   │                                                                                                                                                       │
+   │  ### 35. JWT Authentication Library                                                                                                                   │
+   │  **Language:** Choose your language                                                                                                                   │
+   │  **Key Skills:** Cryptography, standards compliance, API design                                                                                       │
+   │  **Features:**                                                                                                                                        │
+   │  - Token generation/validation                                                                                                                        │
+   │  - Refresh token flow                                                                                                                                 │
+   │  - Multiple algorithms                                                                                                                                │
+   │  - Custom claims                                                                                                                                      │
+   │  - Revocation support                                                                                                                                 │
+   │                                                                                                                                                       │
+   │  ### 36. Security Scanner                                                                                                                             │
+   │  **Language:** Python, Go                                                                                                                             │
+   │  **Key Skills:** Vulnerability detection, networking, reporting                                                                                       │
+   │  **Features:**                                                                                                                                        │
+   │  - Port scanning                                                                                                                                      │
+   │  - Dependency checking                                                                                                                                │
+   │  - Configuration auditing                                                                                                                             │
+   │  - Report generation                                                                                                                                  │
+   │  - CI integration                                                                                                                                     │
+   │                                                                                                                                                       │
+   │  ---                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ## 🚀 DevOps & Infrastructure Projects                                                                                                               │
+   │                                                                                                                                                       │
+   │  ### 37. Infrastructure as Code Tool                                                                                                                  │
+   │  **Language:** Go, Python                                                                                                                             │
+   │  **Key Skills:** Cloud APIs, state management, graph theory                                                                                           │
+   │  **Features:**                                                                                                                                        │
+   │  - Declarative configuration                                                                                                                          │
+   │  - State tracking                                                                                                                                     │
+   │  - Dependency resolution                                                                                                                              │
+   │  - Provider plugins                                                                                                                                   │
+   │  - Plan/apply workflow                                                                                                                                │
+   │                                                                                                                                                       │
+   │  ### 38. CI/CD Pipeline Runner                                                                                                                        │
+   │  **Language:** Go, Rust                                                                                                                               │
+   │  **Key Skills:** Container execution, caching, parallelization                                                                                        │
+   │  **Features:**                                                                                                                                        │
+   │  - YAML config                                                                                                                                        │
+   │  - Docker execution                                                                                                                                   │
+   │  - Artifact caching                                                                                                                                   │
+   │  - Matrix builds                                                                                                                                      │
+   │  - Webhook triggers                                                                                                                                   │
+   │                                                                                                                                                       │
+   │  ### 39. Service Mesh Proxy                                                                                                                           │
+   │  **Language:** Rust, Go                                                                                                                               │
+   │  **Key Skills:** Networking, load balancing, observability                                                                                            │
+   │  **Features:**                                                                                                                                        │
+   │  - Traffic routing                                                                                                                                    │
+   │  - Circuit breaking                                                                                                                                   │
+   │  - Metrics collection                                                                                                                                 │
+   │  - Distributed tracing                                                                                                                                │
+   │  - mTLS                                                                                                                                               │
+   │                                                                                                                                                       │
+   │  ---                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ## 💡 Tips for Choosing Projects                                                                                                                     │
+   │                                                                                                                                                       │
+   │  1. **Start Simple:** Pick a beginner project in a new language to learn basics                                                                       │
+   │  2. **Build What You Need:** Solve your own problems for motivation                                                                                   │
+   │  3. **Incremental Complexity:** Start with MVP, add features gradually                                                                                │
+   │  4. **Learn by Doing:** Don't just follow tutorials - build from scratch                                                                              │
+   │  5. **Version Control:** Use Git from day one                                                                                                         │
+   │  6. **Document:** Write README as you build                                                                                                           │
+   │  7. **Test:** Write tests for critical functionality                                                                                                  │
+   │  8. **Deploy:** Ship it! Use free tiers (Vercel, Heroku, Railway)                                                                                     │
+   │                                                                                                                                                       │
+   │  ---                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  ## 📚 Learning Resources                                                                                                                             │
+   │                                                                                                                                                       │
+   │  - **Documentation First:** Official docs are your best friend                                                                                        │
+   │  - **Project-Based Learning:** Learn by building, not just reading                                                                                    │
+   │  - **Code Review:** Get feedback from communities (Reddit, Discord)                                                                                   │
+   │  - **Open Source:** Contribute to similar projects to learn patterns                                                                                  │
+   │  - **Blogs/Videos:** Follow practitioners, not just educators                                                                                         │
+   │                                                                                                                                                       │
+   │  ---                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  **Remember:** The best project is the one you'll actually finish. Start small, ship often, iterate always.                                           │
+   │  """                                                                                                                                                  │
+   │                                                                                                                                                       │
+   │  file_path = Path('PROJECT_IDEAS.md')                                                                                                                 │
+   │  file_path.write_text(content, encoding='utf-8')                                                                                                      │
+   │  print(f"✅ Created {file_path} with 39 project ideas across all difficulty levels")                                                                   │
+   │  print(f"📄 File size: {len(content)} characters")                                                                                                    │
+   │  # </execute>                                                                                                                                         │
+   ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+  ✓ using execute — ✅ Created PROJECT_IDEAS.md with 39 project ideas across all 
+  ✓ using execute — ✅ Created PROJECT_IDEAS.md with 39 project ideas across all 
+
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  ooooooooo.                                                 o8o
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  `888   `Y88.                                               `"'
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888   .d88'  .ooooo.  ooo. .oo.    .oooooooo oooo  oooo  oooo  ooo. .oo.
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888ooo88P'  d88' `88b `888P"Y88b  888' `88b  `888  `888  `888  `888P"Y88b
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888         888ooo888  888   888  888   888   888   888   888   888   888
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888         888    .o  888   888  `88bod8P'   888   888   888   888   888
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                                     d"     YD
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                                     "Y88888P'
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+
+
+ v0.1.0 • Software Engineer Agent
+ 📁 Workspace: penguin-cli • Type /help for commands
+
+ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │  1:🏠 Dashboard  │   2:💬 Chat *  │   3:🤖 Agents                                                                                         Ctrl+P: Switch │
+ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ Status                                                                                                                                                   │
+ │                                                                                                                                                          │
+ │ ● Connected                                                                                                                                              │
+ │                                                                                                                                                          │
+ │ No active progress                                                                                                                                       │
+ │                                                                                                                                                          │
+ │ No active tool                                                                                                                                           │
+ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+   ✓ execute (0.00s)
+     ✅ Created PROJECT_IDEAS.md with 39 project ideas across all difficulty levels
+     📄 File size: 11345 characters
+
+ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                                                          │
+ │ Type your message...                                                                                                                                     │
+ │                                                                                                                                                          │
+ │ Enter: New line • Esc: Send message                                                                                                                      │
+ │                                                                                                                                                          │
+ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+ Enter: Send • Ctrl+P: Dashboard • Ctrl+O: Sessions • Ctrl+S: Settings • Ctrl+C: Exit
+
+(penguin) (base) maximusputnam@Mac penguin-cli % 

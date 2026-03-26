@@ -1,0 +1,785 @@
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  Let me check the CLI interface to see how user input is currently handled:                                                                                                                      │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+   <execute>
+
+   interface_file = Path("penguin_repo/penguin/cli/interface.py")
+   if interface_file.exists():
+       content = interface_file.read_text(encoding='utf-8')
+
+
+       # Look for input handling
+       lines = content.split('\n')
+       for i, line in enumerate(lines[:100]):  # First 100 lines
+           if 'input' in line.lower() or 'prompt' in line.lower():
+               print(f"Line {i+1}: {line.strip()}")
+
+   </execute>
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  Now let me look at how the interactive chat loop works:                                                                                                                                         │
+   │                                                                                                                                                                                                  │
+   │  <enhanced_read>penguin_repo/penguin/cli/interface.py:true:200</enhanced_read>                                                                                                                   │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  Now let me check how the chat input loop works:                                                                                                                                                 │
+   │                                                                                                                                                                                                  │
+   │  <search>prompt_toolkit|input\(|get_input</search>                                                                                                                                               │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  Let me look for the actual chat loop implementation:                                                                                                                                            │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+   <execute>
+
+
+   Search for the chat loop in cli.py
+
+   cli_file = Path("penguin_repo/penguin/cli/cli.py")
+   content = cli_file.read_text(encoding='utf-8')
+
+
+
+   Find the chat command
+
+   lines = content.split('\n')
+   for i, line in enumerate(lines):
+       if 'def chat' in line or 'async def chat' in line:
+           # Print surrounding context
+           start = max(0, i - 5)
+           end = min(len(lines), i + 100)
+           print(f"\nFound chat function at line {i+1}:")
+           print("="*80)
+           for j in range(start, end):
+               print(f"{j+1:4d}: {lines[j]}")
+           print("="*80)
+           break
+
+   </execute>
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  Now let me find where user input is actually collected:                                                                                                                                         │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+   <execute>
+
+
+   Search for prompt_session or input collection
+
+   for i, line in enumerate(lines):
+       if 'PromptSession' in line or 'prompt(' in line or '.prompt(' in line:
+           # Print surrounding context
+           start = max(0, i - 3)
+           end = min(len(lines), i + 10)
+           print(f"\nFound at line {i+1}:")
+           for j in range(start, end):
+               print(f"{j+1:4d}: {lines[j]}")
+           print("-"*40)
+
+   </execute>
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   Found at line 3182:
+   3179:         await _initialize_core_components_globally(workspace_override=workspace)
+   3180:         if not _core or not _interface or not _ui:
+   3181:             console.print("[red]Core components not initialized[/red]")
+   3182:             raise typer.Exit(code=1)
+   3183:
+   3184:         # Create and run the CLI
+   3185:         cli = PenguinCLI(_core, _interface, _ui)
+   3186:         await cli.chat_loop()
+   3187:
+   3188:     asyncio.run(_run())
+   3189:
+   3190:
+   3191: # --- Main Entry Point ---
+   3192: if __name__ == "__main__":
+   3193:     app()
+     • ---------------------------------------
+
+
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  Now let me find the actual chat_loop method:                                                                                                                                                    │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+   <execute>
+
+
+   Find chat_loop method in PenguinCLI class
+
+   for i, line in enumerate(lines):
+       if 'def chat_loop' in line or 'async def chat_loop' in line:
+           # Print the method
+           start = i
+           end = min(len(lines), i + 200)
+           print(f"\nFound chat_loop at line {i+1}:")
+           print("="*80)
+           for j in range(start, end):
+               line_text = lines[j]
+               print(f"{j+1:4d}: {line_text}")
+               # Stop at next method definition
+               if j > start and (line_text.strip().startswith('def ') or line_text.strip().startswith('async def ')):
+                   break
+           print("="*80)
+           break
+
+   </execute>
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  Perfect! Now I can see the structure. Let me search for where the actual user input is collected (the prompt_toolkit session):                                                                  │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+   <execute>
+
+
+   Search backwards from chat_loop to find PromptSession initialization
+
+   for i in range(2490, 1900, -1):
+       line = lines[i]
+       if 'PromptSession' in line or 'session' in line.lower() and 'prompt' in line.lower():
+           # Print surrounding context
+           start = max(0, i - 10)
+           end = min(len(lines), i + 20)
+           print(f"\nFound at line {i+1}:")
+           for j in range(start, end):
+               print(f"{j+1:4d}: {lines[j]}")
+           print("-"*40)
+           if 'PromptSession(' in line:
+               break
+
+   </execute>
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  Interesting! It looks like the prompt_toolkit integration was removed ("Legacy prompt toolkit removed"). Let me check line 2545 where user_input is set to see what's actually being used now:  │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+   <execute>
+
+
+   Look at the actual input collection in chat_loop (around line 2545)
+
+   start = 2540
+   end = 2570
+   print("User input collection section:")
+   print("="*80)
+   for i in range(start, end):
+       print(f"{i+1:4d}: {lines[i]}")
+   print("="*80)
+
+   </execute>
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  I see - `user_input = ""` is a placeholder! The actual input collection was removed. Let me check if there's a TUI or alternative interface:                                                    │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+   <execute>
+
+
+   Check the TUI file
+
+   tui_file = Path("penguin_repo/penguin/cli/tui.py")
+   if tui_file.exists():
+       content = tui_file.read_text(encoding='utf-8')
+       print(f"TUI file size: {len(content)} characters")
+
+
+       # Look for input handling
+       if '@' in content:
+           print("\n'@' symbol found in TUI")
+           lines_tui = content.split('\n')
+           for i, line in enumerate(lines_tui):
+               if '@' in line and ('file' in line.lower() or 'picker' in line.lower() or 'input' in line.lower()):
+                   print(f"Line {i+1}: {line.strip()}")
+
+   </execute>
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │                                                                                                                                                                                                  │
+   │  Now I have a comprehensive understanding. Let me create the file picker plan:                                                                                                                   │
+   │                                                                                                                                                                                                  │
+   │  <enhanced_write>context/FILE_PICKER_FEATURE_PLAN.md:# @ File Picker Feature Implementation Plan                                                                                                 │
+   │                                                                                                                                                                                                  │
+   │  ## Overview                                                                                                                                                                                     │
+   │                                                                                                                                                                                                  │
+   │  Implement an intuitive `@` file picker feature for Penguin CLI that allows users to easily reference files in their prompts, similar to modern AI assistants like Claude Code and Cursor.       │
+   │                                                                                                                                                                                                  │
+   │  ## Current State Analysis                                                                                                                                                                       │
+   │                                                                                                                                                                                                  │
+   │  ### Existing Components                                                                                                                                                                         │
+   │  1. **Context Management System** (`penguin/system/context_loader.py`)                                                                                                                           │
+   │     - Already has `SimpleContextLoader` for loading context files                                                                                                                                │
+   │     - Uses `context_config.yml` for persistent file configuration                                                                                                                                │
+   │     - Supports core files that are always loaded                                                                                                                                                 │
+   │                                                                                                                                                                                                  │
+   │  2. **CLI Commands** (`penguin/cli/cli.py`)                                                                                                                                                      │
+   │     - `penguin context list` - Lists configured context files                                                                                                                                    │
+   │     - `penguin context add <path>` - Adds files to persistent config                                                                                                                             │
+   │     - `penguin context remove <path>` - Removes files from config                                                                                                                                │
+   │     - `penguin context load <path>` - One-time load into session                                                                                                                                 │
+   │                                                                                                                                                                                                  │
+   │  3. **Input System**                                                                                                                                                                             │
+   │     - Currently using placeholder input (`user_input = ""`)                                                                                                                                      │
+   │     - Legacy prompt_toolkit integration removed                                                                                                                                                  │
+   │     - TUI implementation exists but needs investigation                                                                                                                                          │
+   │                                                                                                                                                                                                  │
+   │  ### Gaps Identified                                                                                                                                                                             │
+   │  1. **No interactive file picker** during conversation                                                                                                                                           │
+   │  2. **No @ syntax support** for file references                                                                                                                                                  │
+   │  3. **No autocomplete/fuzzy search** for files                                                                                                                                                   │
+   │  4. **No visual file browser** in CLI                                                                                                                                                            │
+   │                                                                                                                                                                                                  │
+   │  ## Feature Requirements                                                                                                                                                                         │
+   │                                                                                                                                                                                                  │
+   │  ### User Experience Goals                                                                                                                                                                       │
+   │  1. **Intuitive Syntax**: Type `@` to trigger file picker                                                                                                                                        │
+   │  2. **Fast Navigation**: Fuzzy search and autocomplete                                                                                                                                           │
+   │  3. **Visual Feedback**: Show file paths, sizes, and types                                                                                                                                       │
+   │  4. **Multiple Selection**: Support selecting multiple files                                                                                                                                     │
+   │  5. **Workspace Awareness**: Default to workspace root, allow navigation                                                                                                                         │
+   │                                                                                                                                                                                                  │
+   │  ### Technical Requirements                                                                                                                                                                      │
+   │  1. Integrate with existing context management system                                                                                                                                            │
+   │  2. Support glob patterns (e.g., `@src/**/*.py`)                                                                                                                                                 │
+   │  3. Handle both absolute and relative paths                                                                                                                                                      │
+   │  4. Respect `.gitignore` patterns                                                                                                                                                                │
+   │  5. Provide file previews when possible                                                                                                                                                          │
+   │                                                                                                                                                                                                  │
+   │  ## Implementation Strategy                                                                                                                                                                      │
+   │                                                                                                                                                                                                  │
+   │  ### Phase 1: Input System Restoration (Foundation)                                                                                                                                              │
+   │                                                                                                                                                                                                  │
+   │  **Objective**: Restore functional input collection with basic @ detection                                                                                                                       │
+   │                                                                                                                                                                                                  │
+   │  **Tasks**:                                                                                                                                                                                      │
+   │  1. **Restore prompt_toolkit integration**                                                                                                                                                       │
+   │     - Re-implement `_create_prompt_session()` in `PenguinCLI`                                                                                                                                    │
+   │     - Add key bindings for @ trigger                                                                                                                                                             │
+   │     - Support multi-line input (Alt+Enter)                                                                                                                                                       │
+   │                                                                                                                                                                                                  │
+   │  2. **Basic @ detection**                                                                                                                                                                        │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+      def detect_file_references(text: str) -> List[str]:
+          """Extract @file references from user input"""
+          pattern = r'@([^\s]+)'
+          return re.findall(pattern, text)
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  3. **Simple file resolution**                                                                                                                                                                   │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+      def resolve_file_reference(ref: str) -> Optional[Path]:
+          """Resolve @file reference to actual path"""
+          # Try workspace-relative first
+          # Then absolute paths
+          # Support glob patterns
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  **Deliverables**:                                                                                                                                                                               │
+   │  - Working input collection in chat loop                                                                                                                                                         │
+   │  - @ syntax detection (non-interactive)                                                                                                                                                          │
+   │  - Basic file resolution and loading                                                                                                                                                             │
+   │                                                                                                                                                                                                  │
+   │  **Testing**:                                                                                                                                                                                    │
+   │  - User types `@README.md` → File loaded into context                                                                                                                                            │
+   │  - User types `@src/*.py` → All Python files loaded                                                                                                                                              │
+   │  - Invalid references show clear error messages                                                                                                                                                  │
+   │                                                                                                                                                                                                  │
+   │  ### Phase 2: Interactive File Picker (Core Feature)                                                                                                                                             │
+   │                                                                                                                                                                                                  │
+   │  **Objective**: Implement visual, interactive file picker UI                                                                                                                                     │
+   │                                                                                                                                                                                                  │
+   │  **Tasks**:                                                                                                                                                                                      │
+   │  1. **File Browser Component**                                                                                                                                                                   │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+      class FilePicker:
+          def __init__(self, workspace_path: Path):
+              self.workspace = workspace_path
+              self.current_dir = workspace_path
+
+
+          async def show_picker(self) -> List[Path]:
+              """Display interactive file picker, return selected files"""
+              # Use questionary for consistency with model selector
+              # Or build custom prompt_toolkit widget
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  2. **Integration with chat loop**                                                                                                                                                               │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+      # In chat_loop, when @ is detected:
+      if '@' in user_input and user_input.strip().endswith('@'):
+          # Trigger file picker
+          selected_files = await self.file_picker.show_picker()
+          # Update user_input with selected paths
+          user_input = user_input.replace('@', ' '.join(str(f) for f in selected_files))
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  3. **UI Features**:                                                                                                                                                                             │
+   │     - Tree view of directory structure                                                                                                                                                           │
+   │     - Fuzzy search/filter (type to narrow down)                                                                                                                                                  │
+   │     - Multi-select with space bar                                                                                                                                                                │
+   │     - Preview pane (show first few lines)                                                                                                                                                        │
+   │     - File metadata (size, last modified, type)                                                                                                                                                  │
+   │                                                                                                                                                                                                  │
+   │  **Deliverables**:                                                                                                                                                                               │
+   │  - Interactive file picker widget                                                                                                                                                                │
+   │  - Integration with chat input flow                                                                                                                                                              │
+   │  - Visual feedback and navigation                                                                                                                                                                │
+   │                                                                                                                                                                                                  │
+   │  **Testing**:                                                                                                                                                                                    │
+   │  - User types `@` → Picker appears                                                                                                                                                               │
+   │  - User can navigate directories                                                                                                                                                                 │
+   │  - User can select multiple files                                                                                                                                                                │
+   │  - Selected files are loaded into context                                                                                                                                                        │
+   │                                                                                                                                                                                                  │
+   │  ### Phase 3: Advanced Features (Polish)                                                                                                                                                         │
+   │                                                                                                                                                                                                  │
+   │  **Objective**: Add power-user features and optimizations                                                                                                                                        │
+   │                                                                                                                                                                                                  │
+   │  **Tasks**:                                                                                                                                                                                      │
+   │  1. **Smart Filtering**                                                                                                                                                                          │
+   │     - Respect `.gitignore` patterns automatically                                                                                                                                                │
+   │     - Filter by file type (dropdown: "All", "Python", "JavaScript", etc.)                                                                                                                        │
+   │     - Size limits (warn on large files)                                                                                                                                                          │
+   │                                                                                                                                                                                                  │
+   │  2. **Recent Files**                                                                                                                                                                             │
+   │     - Track recently used files                                                                                                                                                                  │
+   │     - Quick access via `@recent` or similar                                                                                                                                                      │
+   │                                                                                                                                                                                                  │
+   │  3. **Glob Pattern Support**                                                                                                                                                                     │
+   │     - Allow typing glob patterns directly: `@src/**/*.py`                                                                                                                                        │
+   │     - Show preview of matched files before confirming                                                                                                                                            │
+   │                                                                                                                                                                                                  │
+   │  4. **File Preview**                                                                                                                                                                             │
+   │     - Syntax-highlighted preview (first 20 lines)                                                                                                                                                │
+   │     - Show file stats (lines, size, language)                                                                                                                                                    │
+   │                                                                                                                                                                                                  │
+   │  5. **Context Management Integration**                                                                                                                                                           │
+   │     - Option to add selected files to persistent context                                                                                                                                         │
+   │     - Show which files are already in context (highlight)                                                                                                                                        │
+   │                                                                                                                                                                                                  │
+   │  **Deliverables**:                                                                                                                                                                               │
+   │  - Smart filtering and exclusions                                                                                                                                                                │
+   │  - Recent files quick access                                                                                                                                                                     │
+   │  - Glob pattern expansion                                                                                                                                                                        │
+   │  - File preview capability                                                                                                                                                                       │
+   │                                                                                                                                                                                                  │
+   │  **Testing**:                                                                                                                                                                                    │
+   │  - `.gitignore` patterns are respected                                                                                                                                                           │
+   │  - Recent files are accessible                                                                                                                                                                   │
+   │  - Glob patterns work correctly                                                                                                                                                                  │
+   │  - Previews render properly                                                                                                                                                                      │
+   │                                                                                                                                                                                                  │
+   │  ## Technical Design                                                                                                                                                                             │
+   │                                                                                                                                                                                                  │
+   │  ### Component Architecture                                                                                                                                                                      │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+   ┌─────────────────────────────────────────────────────────┐
+   │                    PenguinCLI (cli.py)                  │
+   │  ┌───────────────────────────────────────────────────┐  │
+   │  │           chat_loop() - Main Loop                 │  │
+   │  │  1. Collect user input (prompt_toolkit)           │  │
+   │  │  2. Detect @ trigger                              │  │
+   │  │  3. Launch FilePicker if needed                   │  │
+   │  │  4. Resolve file references                       │  │
+   │  │  5. Load files into context                       │  │
+   │  │  6. Process message normally                      │  │
+   │  └───────────────────────────────────────────────────┘  │
+   └─────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │              FilePicker (new component)                 │
+   │  ┌───────────────────────────────────────────────────┐  │
+   │  │  • Directory tree navigation                      │  │
+   │  │  • Fuzzy search/filter                            │  │
+   │  │  • Multi-select interface                         │  │
+   │  │  • File preview                                   │  │
+   │  │  • Glob pattern expansion                         │  │
+   │  └───────────────────────────────────────────────────┘  │
+   └─────────────────────────────────────────────────────────┘
+                               │
+                               ▼
+   ┌─────────────────────────────────────────────────────────┐
+   │         SimpleContextLoader (context_loader.py)         │
+   │  • Load files into context                              │
+   │  • Manage persistent context config                     │
+   │  • Handle file reading and validation                   │
+   └─────────────────────────────────────────────────────────┘
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  ### Data Flow                                                                                                                                                                                   │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+   User Input: "Explain this code @"
+            │
+            ▼
+       Detect @ trigger
+            │
+            ▼
+     Launch FilePicker
+            │
+            ├─> User navigates tree
+            ├─> User searches/filters
+            ├─> User selects files
+            │
+            ▼
+     Return selected paths
+            │
+            ▼
+     Resolve to absolute paths
+            │
+            ▼
+     Load files via ContextLoader
+            │
+            ▼
+     Update user_input with file refs
+            │
+            ▼
+     Process message normally
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  ### File Reference Syntax                                                                                                                                                                       │
+   │                                                                                                                                                                                                  │
+   │  Support multiple syntaxes for flexibility:                                                                                                                                                      │
+   │                                                                                                                                                                                                  │
+   │  1. **Interactive Picker**: `@` (bare) → Opens picker                                                                                                                                            │
+   │  2. **Direct Reference**: `@path/to/file.py` → Loads specific file                                                                                                                               │
+   │  3. **Glob Pattern**: `@src/**/*.py` → Loads all matching files                                                                                                                                  │
+   │  4. **Recent Files**: `@recent` → Shows recent files picker                                                                                                                                      │
+   │  5. **All Context**: `@context` → Shows current context files                                                                                                                                    │
+   │                                                                                                                                                                                                  │
+   │  ### Implementation Details                                                                                                                                                                      │
+   │                                                                                                                                                                                                  │
+   │  #### 1. Prompt Toolkit Integration                                                                                                                                                              │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+   from prompt_toolkit import PromptSession
+   from prompt_toolkit.key_binding import KeyBindings
+   from prompt_toolkit.keys import Keys
+
+
+   def _create_prompt_session(self):
+       """Create prompt session with @ file picker support"""
+       kb = KeyBindings()
+
+
+       @kb.add('@')
+       def _(event):
+           """Trigger file picker on @ key"""
+           # Insert @ character first
+           event.current_buffer.insert_text('@')
+
+
+           # Check if we should auto-trigger picker
+           text = event.current_buffer.text
+           if text.strip().endswith('@'):
+               # Schedule picker launch
+               event.app.create_background_task(
+                   self._launch_file_picker(event.current_buffer)
+               )
+
+
+       return PromptSession(
+           multiline=True,
+           key_bindings=kb,
+           prompt_continuation='... '
+       )
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  #### 2. File Picker Widget                                                                                                                                                                      │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+   import questionary
+   from pathlib import Path
+   from typing import List
+
+
+   class FilePicker:
+       def __init__(self, workspace_path: Path):
+           self.workspace = workspace_path
+           self.gitignore_patterns = self._load_gitignore()
+
+
+       async def show_picker(self, start_dir: Optional[Path] = None) -> List[Path]:
+           """Show interactive file picker"""
+           current_dir = start_dir or self.workspace
+
+
+           while True:
+               # Get files in current directory
+               choices = self._build_choices(current_dir)
+
+
+               # Show picker
+               selected = await questionary.checkbox(
+                   f"Select files (in {current_dir.relative_to(self.workspace)}):",
+                   choices=choices
+               ).ask_async()
+
+
+               if selected is None:  # User cancelled
+                   return []
+
+
+               # Handle directory navigation
+               if '..' in selected:
+                   current_dir = current_dir.parent
+                   continue
+
+
+               # Convert selections to paths
+               return [current_dir / s for s in selected if s != '..']
+
+
+       def _build_choices(self, directory: Path) -> List[dict]:
+           """Build questionary choices from directory contents"""
+           choices = []
+
+
+           # Add parent directory option
+           if directory != self.workspace:
+               choices.append({
+                   'name': '📁 .. (parent directory)',
+                   'value': '..'
+               })
+
+
+           # Add subdirectories
+           for item in sorted(directory.iterdir()):
+               if item.is_dir() and not self._is_ignored(item):
+                   choices.append({
+                       'name': f'📁 {item.name}/',
+                       'value': item.name
+                   })
+
+
+           # Add files
+           for item in sorted(directory.iterdir()):
+               if item.is_file() and not self._is_ignored(item):
+                   icon = self._get_file_icon(item)
+                   size = self._format_size(item.stat().st_size)
+                   choices.append({
+                       'name': f'{icon} {item.name} ({size})',
+                       'value': item.name
+                   })
+
+
+           return choices
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  #### 3. File Resolution and Loading                                                                                                                                                             │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+   async def _process_file_references(self, user_input: str) -> str:
+       """Process @ file references in user input"""
+       # Extract all @ references
+       refs = re.findall(r'@([^\s]+)', user_input)
+
+
+       loaded_files = []
+       for ref in refs:
+           if ref == '':  # Bare @ - launch picker
+               files = await self.file_picker.show_picker()
+               loaded_files.extend(files)
+           elif '*' in ref:  # Glob pattern
+               files = self._expand_glob(ref)
+               loaded_files.extend(files)
+           else:  # Direct reference
+               file_path = self._resolve_path(ref)
+               if file_path:
+                   loaded_files.append(file_path)
+
+
+       # Load files into context
+       for file_path in loaded_files:
+           await self._load_file_into_context(file_path)
+
+
+       # Update user input with resolved paths
+       updated_input = user_input
+       for ref in refs:
+           # Replace @ref with actual loaded files summary
+           updated_input = updated_input.replace(
+               f'@{ref}',
+               f'[Loaded: {", ".join(f.name for f in loaded_files)}]'
+           )
+
+
+       return updated_input
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │                                                                                                                                                                                                  │
+   │  ## Dependencies                                                                                                                                                                                 │
+   │                                                                                                                                                                                                  │
+   │  ### Required Libraries                                                                                                                                                                          │
+   │  - `prompt_toolkit` >= 3.0.36 (for input handling)                                                                                                                                               │
+   │  - `questionary` >= 1.10.0 (for file picker UI, already used for model selector)                                                                                                                 │
+   │  - `pathspec` (for .gitignore pattern matching)                                                                                                                                                  │
+   │                                                                                                                                                                                                  │
+   │  ### Optional Enhancements                                                                                                                                                                       │
+   │  - `pygments` (for syntax-highlighted previews)                                                                                                                                                  │
+   │  - `watchdog` (for live file system updates)                                                                                                                                                     │
+   │                                                                                                                                                                                                  │
+   │  ## Configuration                                                                                                                                                                                │
+   │                                                                                                                                                                                                  │
+   │  Add to `config.yml`:                                                                                                                                                                            │
+   │                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+   file_picker:
+     # Enable/disable file picker feature
+     enabled: true
+
+
+     # Trigger character (default: @)
+     trigger: "@"
+
+
+     # Auto-trigger on bare @ (vs requiring Enter)
+     auto_trigger: true
+
+
+     # Show file previews
+     show_previews: true
+
+
+     # Preview lines
+     preview_lines: 20
+
+
+     # Respect .gitignore
+     respect_gitignore: true
+
+
+     # Additional ignore patterns (glob)
+     ignore_patterns:
+     • "*.pyc"
+     • "__pycache__"
+     • "node_modules"
+     • ".git"
+
+
+     # Max file size for preview (bytes)
+     max_preview_size: 1048576  # 1MB
+
+
+     # Recent files to track
+     recent_files_count: 10
+
+ ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                                                                                                                  │
+ │ Waiting for response...                                                                                                                                                                                          │
+ │                                                                                                                                                                                                                  │
+ │ Enter: New line • Esc: Send message                                                                                                                                                                              │
+ │                                                                                                                                                                                                                  │
+ ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+ Waiting for response... • Ctrl+C to exit
+(base) maximusputnam@Mac penguin-cli % 

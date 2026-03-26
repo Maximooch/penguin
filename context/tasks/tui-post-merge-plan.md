@@ -24,7 +24,7 @@ Stabilize the pip-installed Penguin TUI path after the OpenCode parity branch la
       merge as an interim path.
 - [ ] Call out in the PR description that stable pip installs still use `latest`
       release lookup until version-aware lookup lands.
-- [ ] Keep `I2.e` in `context/architecture/tui-opencode-implementation.md` updated so
+- [ ] Keep `I2.e` in `context/tasks/tui-opencode-implementation.md` updated so
       post-merge packaging work is visible.
 - [ ] Confirm the current `publish-tui` temporary branch trigger is intentionally left
       in place only until merge.

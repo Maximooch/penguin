@@ -182,8 +182,8 @@ agent kernel with userland surfaces for sessions, tools, orchestration, and obse
 Read more:
 
 - `architecture.md`
-- `context/architecture/Penguin_SCAR_80_20_Roadmap.md`
-- `context/architecture/tui-opencode-implementation.md`
+- `context/tasks/Penguin_SCAR_80_20_Roadmap.md`
+- `context/tasks/tui-opencode-implementation.md`
 
 ## Version Highlights
 
@@ -199,7 +199,7 @@ Read more:
 - [Official Documentation](https://penguin-rho.vercel.app)
 - [Release Notes](https://github.com/Maximooch/penguin/releases)
 - `architecture.md`
-- `context/architecture/Penguin_SCAR_80_20_Roadmap.md`
+- `context/tasks/Penguin_SCAR_80_20_Roadmap.md`
 
 ## Contributing
 

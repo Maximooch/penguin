@@ -25,7 +25,7 @@
 - Tool schema + dispatch surface lives in `penguin/tools/tool_manager.py`.
 - Concrete edit behavior lives in `penguin/tools/core/support.py` and `penguin/tools/multiedit.py`.
 - TUI/OpenCode metadata is another contract surface in `penguin/core.py`.
-- Legacy note: `penguin/cli/tui.py` is not the long-term TUI implementation target; the real OpenCode-style TUI lives in `penguin-tui/`, and backend/TUI parity work should be guided by `context/architecture/tui-opencode-implementation.md`, `penguin/web/app.py`, `penguin/web/services/`, and `penguin/core.py`.
+- Legacy note: `penguin/cli/tui.py` is not the long-term TUI implementation target; the real OpenCode-style TUI lives in `penguin-tui/`, and backend/TUI parity work should be guided by `context/tasks/tui-opencode-implementation.md`, `penguin/web/app.py`, `penguin/web/services/`, and `penguin/core.py`.
 - Current naming drift:
   - `enhanced_write` vs `write_to_file`
   - `multiedit` vs `multiedit_apply`

@@ -303,7 +303,7 @@ Goal: tool events render and persist in history.
 - Backend payloads should populate `metadata.sessionId` as soon as the child session exists, plus a small synthetic/rolling `summary` so the upstream TUI `Task` renderer can show the clickable block card without custom Penguin UI.
 - Background child execution should run under the child session/conversation scope so child tool cards and transcript entries stay in the child session after navigation.
 
-For the exact mapping, see `context/architecture/tui-opencode-tool-bridge.md`.
+For the exact mapping, see `context/rationale/tui-opencode-tool-bridge.md`.
 
 ### Phase 4: Permissions + questions
 Goal: approvals and user questions behave like OpenCode.

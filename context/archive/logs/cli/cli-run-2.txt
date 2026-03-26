@@ -1,0 +1,1377 @@
+
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  ooooooooo.                                                 o8o
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  `888   `Y88.                                               `"'
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888   .d88'  .ooooo.  ooo. .oo.    .oooooooo oooo  oooo  oooo  ooo. .oo.
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888ooo88P'  d88' `88b `888P"Y88b  888' `88b  `888  `888  `888  `888P"Y88b
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888         888ooo888  888   888  888   888   888   888   888   888   888
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄   888         888    .o  888   888  `88bod8P'   888   888   888   888   888
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄  o888o        `Y8bod8P' o888o o888o `8oooooo.   `V88V"V8P' o888o o888o o888o
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                                     d"     YD
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄                                     "Y88888P'
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+ ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+
+
+ v0.1.0 • Software Engineer Agent
+ 📁 Workspace: penguin-cli • Type /help for commands
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │  1:🏠 Dashboard  │   2:💬 Chat *  │   3:🤖 Agents                                                                                                                                                                           Ctrl+P: Switch │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ [1] You:
+   Howdy!
+
+ [2] Penguin:
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │ 🧠 Internal Reasoning                                                                                                                                                                                                                    │
+   │ The user has greeted me with "Howdy!" This is a casual, friendly greeting. I should respond warmly and briefly introduce myself, being ready to help with whatever they need.                                                            │
+   │                                                                                                                                                                                                                                          │
+   │ I should be personable, direct, and set the tone for a productive interaction. Since this is just a greeting, I shouldn't overload them with information - just a friendly acknowledgment and readiness to assist.                       │
+   │                                                                                                                                                                                                                                          │
+   │ I need to remember:                                                                                                                                                                                                                      │
+   │ - Be direct and succinct                                                                                                                                                                                                                 │
+   │ - Inject personality/humor when appropriate                                                                                                                                                                                              │
+   │ - No meta-commentary or planning externalization                                                                                                                                                                                         │
+   │ - Just respond naturally                                                                                                                                                                                                                 │
+   │                                                                                                                                                                                                                                          │
+   │ This is not a task requiring tool calls, just a simple greeting response.                                                                                                                                                                │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+   Howdy! 🐧
+
+
+   Ready to crack some code and ship something great. What are we building today?
+
+
+     • stretches flippers*
+
+
+   Whether it's debugging a gnarly issue, architecting a new feature, analyzing a codebase, or just strategizing on your next move - I'm here to make it happen. What's on your mind?
+
+ [3] You:
+   to test go to the penguin dir, then check out context/penguin_cli_refactor_plan.md and draft a plan for the file picker feature
+
+ [4] Penguin:
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │ 🧠 Internal Reasoning                                                                                                                                                                                                                    │
+   │ The user wants me to:                                                                                                                                                                                                                    │
+   │ 1. Navigate to the penguin directory                                                                                                                                                                                                     │
+   │ 2. Read the context/penguin_cli_refactor_plan.md file                                                                                                                                                                                    │
+   │ 3. Draft a plan for the file picker feature                                                                                                                                                                                              │
+   │                                                                                                                                                                                                                                          │
+   │ This is an exploration task - I need to gather information first before responding. Let me:                                                                                                                                              │
+   │ 1. Check current directory                                                                                                                                                                                                               │
+   │ 2. Navigate to penguin dir if not there                                                                                                                                                                                                  │
+   │ 3. Read the refactor plan document                                                                                                                                                                                                       │
+   │ 4. Understand what the file picker feature needs                                                                                                                                                                                         │
+   │ 5. THEN draft a plan                                                                                                                                                                                                                     │
+   │                                                                                                                                                                                                                                          │
+   │ I should execute tools silently and respond ONCE with my findings and the plan.                                                                                                                                                          │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+   <execute>
+   import os
+   from pathlib import Path
+
+
+
+   Check current directory
+
+   current_dir = Path.cwd()
+   print(f"Current directory: {current_dir}")
+
+
+
+   List contents to see structure
+
+   print("\nDirectory contents:")
+   for item in sorted(current_dir.iterdir()):
+       print(f"  {item.name}")
+   </execute>
+
+
+   <execute>
+
+   Navigate to penguin directory if it exists
+
+   penguin_path = Path.cwd() / "penguin"
+   if penguin_path.exists():
+       os.chdir(penguin_path)
+       print(f"Changed to: {penguin_path}")
+   else:
+       # Maybe we're already in penguin or it's elsewhere
+       print(f"Penguin directory not found at {penguin_path}")
+       print(f"Current location: {Path.cwd()}")
+   </execute>
+
+
+   <enhanced_read>context/penguin_cli_refactor_plan.md:true</enhanced_read>
+
+
+   <list_files_filtered>src/penguin/tui:true:false</list_files_filtered>
+
+
+   <enhanced_read>src/penguin/tui/app.py:true:100</enhanced_read>
+
+
+   <search>file.*picker|FilePicker|file.*select</search>
+
+
+   <list_files_filtered>.:true:false</list_files_filtered>
+
+
+   <list_files_filtered>context:true:false</list_files_filtered>
+
+
+   <enhanced_read>context/penguin_cli_refactor_plan.md:true</enhanced_read>
+
+
+   <list_files_filtered>src:true:false</list_files_filtered>
+
+
+   <list_files_filtered>src/penguin:true:false</list_files_filtered>
+
+
+   <enhanced_read>src/penguin/cli/tui.py:true:150</enhanced_read>
+
+
+   <search>DirectoryTree|Tree|file.*browser</search>
+
+
+   <execute>
+
+   Let's check the penguin directory structure
+
+   penguin_dir = Path("/Users/maximusputnam/penguin_workspace/penguin")
+   print(f"Checking penguin directory: {penguin_dir}")
+   print(f"Exists: {penguin_dir.exists()}")
+
+
+   if penguin_dir.exists():
+       print("\nContents:")
+       for item in sorted(penguin_dir.iterdir())[:20]:
+           print(f"  {item.name}")
+   </execute>
+
+
+   <list_files_filtered>penguin:true:false</list_files_filtered>
+
+
+   <list_files_filtered>penguin/context:true:false</list_files_filtered>
+
+
+   <enhanced_read>penguin/context/penguin_cli_refactor_plan.md:true</enhanced_read>
+   1284:
+   1285: Next: Start implementing tool execution display, markdown rendering, and progress indicators.
+   1286:
+   1287: ---
+   1288:
+   1289: ## References
+   1290:
+   1291: - [Gemini CLI Analysis](./gemini_cli_analysis.md)
+   1292: - [Original useChat Implementation](../penguin-cli/src/hooks/useChat.ts)
+   1293: - [Gemini Source Code](https://github.com/google/generative-ai-cli)
+   1294:
+   1295: ---
+   1296:
+   1297: Document Status: Living document, updated as features progress
+   1298: Last Updated: 2025-10-26 (Multi-Agent UI complete, awaiting backend auto-response)
+
+
+   Perfect! Now I have the full context. Let me draft a comprehensive plan for the file picker feature.
+
+
+   <enhanced_write>penguin/context/FILE_PICKER_PLAN.md:# File Picker Feature Implementation Plan
+
+
+     • *Date:** 2025-01-XX
+     • *Status:** 🎯 PLANNING
+     • *Priority:** HIGH (User-requested, high-value UX)
+     • *Estimated Time:** 4-6 hours
+
+
+     • --
+
+
+
+   Executive Summary
+
+
+
+   Implement an interactive file picker modal in the Penguin CLI to enable users to browse and select files/directories for attachment to messages. This feature addresses the gap between manual path typing ( @src/main.py ) and
+   drag-and-drop, providing a discoverable, keyboard-driven file selection experience.
+
+
+     • *Key Benefits:**
+     • Discoverability: Users can explore project structure without memorizing paths
+     • Accuracy: Eliminates typos in file paths
+     • Efficiency: Multi-select support for batch operations
+     • Consistency: Matches patterns from Gemini CLI and modern TUIs
+
+
+     • --
+
+
+
+   Current State Analysis
+
+
+
+   Existing File Attachment Methods
+   1. @file syntax - Manual path typing
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │     > @src/main.py explain this function                                                                                                                                                                                                 │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+     • ✅ Fast for known paths
+     • ❌ Requires memorization
+     • ❌ Prone to typos
+
+
+   2. Drag-and-drop - Terminal file drop
+     • ✅ Intuitive for single files
+     • ❌ Not discoverable
+     • ❌ Platform-dependent
+
+
+   Gap: No Interactive Browser
+     • No way to explore project files visually
+     • No directory tree navigation
+     • No multi-file selection
+
+
+     • --
+
+
+
+   Target UX Flow
+
+
+
+   Trigger Methods
+
+
+     • *1. Keyboard Shortcut (Primary)**
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  # User presses Ctrl+F (or Ctrl+O) in input prompt                                                                                                                                                                                       │
+   │  [File Picker Modal Opens]                                                                                                                                                                                                               │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+     • *2. Slash Command (Secondary)**
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  > /files                                                                                                                                                                                                                                │
+   │  [File Picker Modal Opens]                                                                                                                                                                                                               │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+     • *3. @ Autocomplete (Future)**
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  > @<Tab>                                                                                                                                                                                                                                │
+   │  [File Picker Modal Opens with current directory]                                                                                                                                                                                        │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   Modal Interaction
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  ┌─ File Picker ─────────────────────────────────────────────┐                                                                                                                                                                           │
+   │  │ Path: ~/Code/penguin/src                        [↑][↓][→] │                                                                                                                                                                           │
+   │  ├───────────────────────────────────────────────────────────┤                                                                                                                                                                           │
+   │  │ 📁 core/                                                  │                                                                                                                                                                           │
+   │  │ 📁 ui/                                                    │                                                                                                                                                                           │
+   │  │ 📄 index.tsx                                    [Selected]│                                                                                                                                                                           │
+   │  │ 📄 types.ts                                               │                                                                                                                                                                           │
+   │  │ 📁 api/                                                   │                                                                                                                                                                           │
+   │  │ 📄 package.json                                           │                                                                                                                                                                           │
+   │  │                                                           │                                                                                                                                                                           │
+   │  │ [Space] Select  [Enter] Confirm  [Esc] Cancel            │                                                                                                                                                                            │
+   │  │ [↑↓] Navigate  [→] Open Dir  [←] Parent Dir              │                                                                                                                                                                            │
+   │  │ Selected: 1 file (index.tsx)                             │                                                                                                                                                                            │
+   │  └───────────────────────────────────────────────────────────┘                                                                                                                                                                           │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   Selection Modes
+
+
+     • *Single Select (Default)**
+     • Navigate with arrow keys
+     • Press Enter to confirm
+     • Selected file appears in input as  @src/index.tsx 
+
+
+     • *Multi Select**
+     • Space to toggle selection
+     • Enter to confirm all
+     • Selected files appear as  @src/index.tsx @src/types.ts 
+
+
+     • *Directory Select**
+     • Right arrow to expand directory
+     • Left arrow to collapse/go up
+     • Selecting a directory attaches all files within (with confirmation)
+
+
+     • --
+
+
+
+   Technical Architecture
+
+
+
+   Component Structure
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  src/ui/components/                                                                                                                                                                                                                      │
+   │  ├── FilePicker/                                                                                                                                                                                                                         │
+   │  │   ├── FilePicker.tsx              # Main modal component                                                                                                                                                                              │
+   │  │   ├── FileTree.tsx                # Tree view renderer                                                                                                                                                                                │
+   │  │   ├── FileItem.tsx                # Individual file/dir item                                                                                                                                                                          │
+   │  │   ├── FilePreview.tsx             # Optional: file preview pane                                                                                                                                                                       │
+   │  │   └── types.ts                    # FilePicker types                                                                                                                                                                                  │
+   │  │                                                                                                                                                                                                                                       │
+   │  └── InputPrompt.tsx                 # Updated to trigger FilePicker                                                                                                                                                                     │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   Data Flow
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  User Input (Ctrl+F)                                                                                                                                                                                                                     │
+   │      ↓                                                                                                                                                                                                                                   │
+   │  InputPrompt detects shortcut                                                                                                                                                                                                            │
+   │      ↓                                                                                                                                                                                                                                   │
+   │  Opens FilePicker modal                                                                                                                                                                                                                  │
+   │      ↓                                                                                                                                                                                                                                   │
+   │  FilePicker fetches directory listing (via API or local FS)                                                                                                                                                                              │
+   │      ↓                                                                                                                                                                                                                                   │
+   │  User navigates tree, selects files                                                                                                                                                                                                      │
+   │      ↓                                                                                                                                                                                                                                   │
+   │  FilePicker returns selected paths                                                                                                                                                                                                       │
+   │      ↓                                                                                                                                                                                                                                   │
+   │  InputPrompt inserts @path1 @path2 into input                                                                                                                                                                                            │
+   │      ↓                                                                                                                                                                                                                                   │
+   │  User continues typing or sends message                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   State Management
+
+
+     • *New Hook:  useFilePicker **
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  interface FilePickerState {                                                                                                                                                                                                             │
+   │    isOpen: boolean;                                                                                                                                                                                                                      │
+   │    currentPath: string;                                                                                                                                                                                                                  │
+   │    files: FileEntry[];                                                                                                                                                                                                                   │
+   │    selectedFiles: Set<string>;                                                                                                                                                                                                           │
+   │    expandedDirs: Set<string>;                                                                                                                                                                                                            │
+   │  }                                                                                                                                                                                                                                       │
+   │                                                                                                                                                                                                                                          │
+   │  export function useFilePicker() {                                                                                                                                                                                                       │
+   │    const [state, setState] = useState<FilePickerState>({                                                                                                                                                                                 │
+   │      isOpen: false,                                                                                                                                                                                                                      │
+   │      currentPath: process.cwd(),                                                                                                                                                                                                         │
+   │      files: [],                                                                                                                                                                                                                          │
+   │      selectedFiles: new Set(),                                                                                                                                                                                                           │
+   │      expandedDirs: new Set(),                                                                                                                                                                                                            │
+   │    });                                                                                                                                                                                                                                   │
+   │                                                                                                                                                                                                                                          │
+   │    const open = (initialPath?: string) => { /* ... */ };                                                                                                                                                                                 │
+   │    const close = () => { /* ... */ };                                                                                                                                                                                                    │
+   │    const navigate = (path: string) => { /* ... */ };                                                                                                                                                                                     │
+   │    const toggleSelect = (path: string) => { /* ... */ };                                                                                                                                                                                 │
+   │    const confirmSelection = () => { /* ... */ };                                                                                                                                                                                         │
+   │                                                                                                                                                                                                                                          │
+   │    return { state, open, close, navigate, toggleSelect, confirmSelection };                                                                                                                                                              │
+   │  }                                                                                                                                                                                                                                       │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+     • *Integration with InputPrompt:**
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  // InputPrompt.tsx                                                                                                                                                                                                                      │
+   │  const { state: pickerState, open: openPicker, confirmSelection } = useFilePicker();                                                                                                                                                     │
+   │                                                                                                                                                                                                                                          │
+   │  useInput((input, key) => {                                                                                                                                                                                                              │
+   │    if (key.ctrl && input === 'f') {                                                                                                                                                                                                      │
+   │      openPicker(workspacePath); // Open file picker                                                                                                                                                                                      │
+   │      return;                                                                                                                                                                                                                             │
+   │    }                                                                                                                                                                                                                                     │
+   │    // ... existing input handling                                                                                                                                                                                                        │
+   │  });                                                                                                                                                                                                                                     │
+   │                                                                                                                                                                                                                                          │
+   │  // When picker confirms selection                                                                                                                                                                                                       │
+   │  const handlePickerConfirm = (selectedPaths: string[]) => {                                                                                                                                                                              │
+   │    const fileRefs = selectedPaths.map(p => `@${p}`).join(' ');                                                                                                                                                                           │
+   │    setInputValue(prev => `${prev}${fileRefs} `);                                                                                                                                                                                         │
+   │  };                                                                                                                                                                                                                                      │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+     • --
+
+
+
+   Implementation Steps
+
+
+
+   Phase 1: Core FilePicker Component (2-3 hours)
+
+
+   Step 1.1: Create FilePicker Modal
+     • *File:**  src/ui/components/FilePicker/FilePicker.tsx 
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  import React, { useState, useEffect } from 'react';                                                                                                                                                                                     │
+   │  import { Box, Text, useInput } from 'ink';                                                                                                                                                                                              │
+   │  import { FileTree } from './FileTree';                                                                                                                                                                                                  │
+   │  import { useFilePicker } from '../../hooks/useFilePicker';                                                                                                                                                                              │
+   │                                                                                                                                                                                                                                          │
+   │  interface FilePickerProps {                                                                                                                                                                                                             │
+   │    isOpen: boolean;                                                                                                                                                                                                                      │
+   │    initialPath: string;                                                                                                                                                                                                                  │
+   │    onConfirm: (selectedPaths: string[]) => void;                                                                                                                                                                                         │
+   │    onCancel: () => void;                                                                                                                                                                                                                 │
+   │    multiSelect?: boolean;                                                                                                                                                                                                                │
+   │  }                                                                                                                                                                                                                                       │
+   │                                                                                                                                                                                                                                          │
+   │  export function FilePicker({                                                                                                                                                                                                            │
+   │    isOpen,                                                                                                                                                                                                                               │
+   │    initialPath,                                                                                                                                                                                                                          │
+   │    onConfirm,                                                                                                                                                                                                                            │
+   │    onCancel,                                                                                                                                                                                                                             │
+   │    multiSelect = false,                                                                                                                                                                                                                  │
+   │  }: FilePickerProps) {                                                                                                                                                                                                                   │
+   │    const { state, navigate, toggleSelect, confirmSelection } = useFilePicker();                                                                                                                                                          │
+   │                                                                                                                                                                                                                                          │
+   │    useEffect(() => {                                                                                                                                                                                                                     │
+   │      if (isOpen) {                                                                                                                                                                                                                       │
+   │        navigate(initialPath);                                                                                                                                                                                                            │
+   │      }                                                                                                                                                                                                                                   │
+   │    }, [isOpen, initialPath]);                                                                                                                                                                                                            │
+   │                                                                                                                                                                                                                                          │
+   │    useInput((input, key) => {                                                                                                                                                                                                            │
+   │      if (!isOpen) return;                                                                                                                                                                                                                │
+   │                                                                                                                                                                                                                                          │
+   │      if (key.escape) {                                                                                                                                                                                                                   │
+   │        onCancel();                                                                                                                                                                                                                       │
+   │      } else if (key.return) {                                                                                                                                                                                                            │
+   │        const selected = Array.from(state.selectedFiles);                                                                                                                                                                                 │
+   │        onConfirm(selected);                                                                                                                                                                                                              │
+   │      } else if (input === ' ' && multiSelect) {                                                                                                                                                                                          │
+   │        toggleSelect(state.currentPath);                                                                                                                                                                                                  │
+   │      } else if (key.upArrow) {                                                                                                                                                                                                           │
+   │        // Navigate up in file list                                                                                                                                                                                                       │
+   │      } else if (key.downArrow) {                                                                                                                                                                                                         │
+   │        // Navigate down in file list                                                                                                                                                                                                     │
+   │      } else if (key.rightArrow) {                                                                                                                                                                                                        │
+   │        // Expand directory or enter                                                                                                                                                                                                      │
+   │      } else if (key.leftArrow) {                                                                                                                                                                                                         │
+   │        // Collapse directory or go to parent                                                                                                                                                                                             │
+   │      }                                                                                                                                                                                                                                   │
+   │    });                                                                                                                                                                                                                                   │
+   │                                                                                                                                                                                                                                          │
+   │    if (!isOpen) return null;                                                                                                                                                                                                             │
+   │                                                                                                                                                                                                                                          │
+   │    return (                                                                                                                                                                                                                              │
+   │      <Box flexDirection="column" borderStyle="round" borderColor="cyan">                                                                                                                                                                 │
+   │        <Box>                                                                                                                                                                                                                             │
+   │          <Text bold>File Picker - {state.currentPath}</Text>                                                                                                                                                                             │
+   │        </Box>                                                                                                                                                                                                                            │
+   │        <FileTree                                                                                                                                                                                                                         │
+   │          files={state.files}                                                                                                                                                                                                             │
+   │          selectedFiles={state.selectedFiles}                                                                                                                                                                                             │
+   │          expandedDirs={state.expandedDirs}                                                                                                                                                                                               │
+   │        />                                                                                                                                                                                                                                │
+   │        <Box marginTop={1}>                                                                                                                                                                                                               │
+   │          <Text dimColor>                                                                                                                                                                                                                 │
+   │            [↑↓] Navigate  [→] Open  [←] Back  [Space] Select  [Enter] Confirm  [Esc] Cancel                                                                                                                                              │
+   │          </Text>                                                                                                                                                                                                                         │
+   │        </Box>                                                                                                                                                                                                                            │
+   │        {state.selectedFiles.size > 0 && (                                                                                                                                                                                                │
+   │          <Box>                                                                                                                                                                                                                           │
+   │            <Text color="green">                                                                                                                                                                                                          │
+   │              Selected: {state.selectedFiles.size} file(s)                                                                                                                                                                                │
+   │            </Text>                                                                                                                                                                                                                       │
+   │          </Box>                                                                                                                                                                                                                          │
+   │        )}                                                                                                                                                                                                                                │
+   │      </Box>                                                                                                                                                                                                                              │
+   │    );                                                                                                                                                                                                                                    │
+   │  }                                                                                                                                                                                                                                       │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   Step 1.2: Create FileTree Component
+     • *File:**  src/ui/components/FilePicker/FileTree.tsx 
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  import React from 'react';                                                                                                                                                                                                              │
+   │  import { Box } from 'ink';                                                                                                                                                                                                              │
+   │  import { FileItem } from './FileItem';                                                                                                                                                                                                  │
+   │  import type { FileEntry } from './types';                                                                                                                                                                                               │
+   │                                                                                                                                                                                                                                          │
+   │  interface FileTreeProps {                                                                                                                                                                                                               │
+   │    files: FileEntry[];                                                                                                                                                                                                                   │
+   │    selectedFiles: Set<string>;                                                                                                                                                                                                           │
+   │    expandedDirs: Set<string>;                                                                                                                                                                                                            │
+   │    currentIndex?: number;                                                                                                                                                                                                                │
+   │  }                                                                                                                                                                                                                                       │
+   │                                                                                                                                                                                                                                          │
+   │  export function FileTree({ files, selectedFiles, expandedDirs, currentIndex = 0 }: FileTreeProps) {                                                                                                                                     │
+   │    return (                                                                                                                                                                                                                              │
+   │      <Box flexDirection="column">                                                                                                                                                                                                        │
+   │        {files.map((file, index) => (                                                                                                                                                                                                     │
+   │          <FileItem                                                                                                                                                                                                                       │
+   │            key={file.path}                                                                                                                                                                                                               │
+   │            file={file}                                                                                                                                                                                                                   │
+   │            isSelected={selectedFiles.has(file.path)}                                                                                                                                                                                     │
+   │            isExpanded={expandedDirs.has(file.path)}                                                                                                                                                                                      │
+   │            isFocused={index === currentIndex}                                                                                                                                                                                            │
+   │            depth={0}                                                                                                                                                                                                                     │
+   │          />                                                                                                                                                                                                                              │
+   │        ))}                                                                                                                                                                                                                               │
+   │      </Box>                                                                                                                                                                                                                              │
+   │    );                                                                                                                                                                                                                                    │
+   │  }                                                                                                                                                                                                                                       │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   Step 1.3: Create FileItem Component
+     • *File:**  src/ui/components/FilePicker/FileItem.tsx 
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  import React from 'react';                                                                                                                                                                                                              │
+   │  import { Box, Text } from 'ink';                                                                                                                                                                                                        │
+   │  import type { FileEntry } from './types';                                                                                                                                                                                               │
+   │                                                                                                                                                                                                                                          │
+   │  interface FileItemProps {                                                                                                                                                                                                               │
+   │    file: FileEntry;                                                                                                                                                                                                                      │
+   │    isSelected: boolean;                                                                                                                                                                                                                  │
+   │    isExpanded: boolean;                                                                                                                                                                                                                  │
+   │    isFocused: boolean;                                                                                                                                                                                                                   │
+   │    depth: number;                                                                                                                                                                                                                        │
+   │  }                                                                                                                                                                                                                                       │
+   │                                                                                                                                                                                                                                          │
+   │  export function FileItem({ file, isSelected, isExpanded, isFocused, depth }: FileItemProps) {                                                                                                                                           │
+   │    const icon = file.type === 'directory'                                                                                                                                                                                                │
+   │      ? (isExpanded ? '📂' : '📁')                                                                                                                                                                                                        │
+   │      : '📄';                                                                                                                                                                                                                             │
+   │                                                                                                                                                                                                                                          │
+   │    const prefix = '  '.repeat(depth);                                                                                                                                                                                                    │
+   │    const selectionMarker = isSelected ? '[✓]' : '[ ]';                                                                                                                                                                                   │
+   │    const focusColor = isFocused ? 'cyan' : undefined;                                                                                                                                                                                    │
+   │                                                                                                                                                                                                                                          │
+   │    return (                                                                                                                                                                                                                              │
+   │      <Box>                                                                                                                                                                                                                               │
+   │        <Text color={focusColor}>                                                                                                                                                                                                         │
+   │          {prefix}{selectionMarker} {icon} {file.name}                                                                                                                                                                                    │
+   │        </Text>                                                                                                                                                                                                                           │
+   │      </Box>                                                                                                                                                                                                                              │
+   │    );                                                                                                                                                                                                                                    │
+   │  }                                                                                                                                                                                                                                       │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   Step 1.4: Define Types
+     • *File:**  src/ui/components/FilePicker/types.ts 
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  export interface FileEntry {                                                                                                                                                                                                            │
+   │    name: string;                                                                                                                                                                                                                         │
+   │    path: string;                                                                                                                                                                                                                         │
+   │    type: 'file' | 'directory';                                                                                                                                                                                                           │
+   │    size?: number;                                                                                                                                                                                                                        │
+   │    modified?: Date;                                                                                                                                                                                                                      │
+   │    children?: FileEntry[]; // For expanded directories                                                                                                                                                                                   │
+   │  }                                                                                                                                                                                                                                       │
+   │                                                                                                                                                                                                                                          │
+   │  export interface FilePickerConfig {                                                                                                                                                                                                     │
+   │    multiSelect: boolean;                                                                                                                                                                                                                 │
+   │    showHidden: boolean;                                                                                                                                                                                                                  │
+   │    fileFilter?: (file: FileEntry) => boolean;                                                                                                                                                                                            │
+   │    maxDepth?: number;                                                                                                                                                                                                                    │
+   │  }                                                                                                                                                                                                                                       │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+     • --
+
+
+   Phase 2: Hook & State Management (1-2 hours)
+
+
+   Step 2.1: Create useFilePicker Hook
+     • *File:**  src/ui/hooks/useFilePicker.ts 
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  import { useState, useCallback } from 'react';                                                                                                                                                                                          │
+   │  import type { FileEntry } from '../components/FilePicker/types';                                                                                                                                                                        │
+   │  import fs from 'fs/promises';                                                                                                                                                                                                           │
+   │  import path from 'path';                                                                                                                                                                                                                │
+   │                                                                                                                                                                                                                                          │
+   │  export function useFilePicker() {                                                                                                                                                                                                       │
+   │    const [isOpen, setIsOpen] = useState(false);                                                                                                                                                                                          │
+   │    const [currentPath, setCurrentPath] = useState(process.cwd());                                                                                                                                                                        │
+   │    const [files, setFiles] = useState<FileEntry[]>([]);                                                                                                                                                                                  │
+   │    const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());                                                                                                                                                           │
+   │    const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());                                                                                                                                                             │
+   │    const [currentIndex, setCurrentIndex] = useState(0);                                                                                                                                                                                  │
+   │                                                                                                                                                                                                                                          │
+   │    const loadDirectory = useCallback(async (dirPath: string) => {                                                                                                                                                                        │
+   │      try {                                                                                                                                                                                                                               │
+   │        const entries = await fs.readdir(dirPath, { withFileTypes: true });                                                                                                                                                               │
+   │        const fileEntries: FileEntry[] = await Promise.all(                                                                                                                                                                               │
+   │          entries                                                                                                                                                                                                                         │
+   │            .filter(entry => !entry.name.startsWith('.')) // Hide hidden files                                                                                                                                                            │
+   │            .map(async (entry) => {                                                                                                                                                                                                       │
+   │              const fullPath = path.join(dirPath, entry.name);                                                                                                                                                                            │
+   │              const stats = await fs.stat(fullPath);                                                                                                                                                                                      │
+   │              return {                                                                                                                                                                                                                    │
+   │                name: entry.name,                                                                                                                                                                                                         │
+   │                path: fullPath,                                                                                                                                                                                                           │
+   │                type: entry.isDirectory() ? 'directory' : 'file',                                                                                                                                                                         │
+   │                size: stats.size,                                                                                                                                                                                                         │
+   │                modified: stats.mtime,                                                                                                                                                                                                    │
+   │              };                                                                                                                                                                                                                          │
+   │            })                                                                                                                                                                                                                            │
+   │        );                                                                                                                                                                                                                                │
+   │                                                                                                                                                                                                                                          │
+   │        // Sort: directories first, then files                                                                                                                                                                                            │
+   │        fileEntries.sort((a, b) => {                                                                                                                                                                                                      │
+   │          if (a.type !== b.type) {                                                                                                                                                                                                        │
+   │            return a.type === 'directory' ? -1 : 1;                                                                                                                                                                                       │
+   │          }                                                                                                                                                                                                                               │
+   │          return a.name.localeCompare(b.name);                                                                                                                                                                                            │
+   │        });                                                                                                                                                                                                                               │
+   │                                                                                                                                                                                                                                          │
+   │        setFiles(fileEntries);                                                                                                                                                                                                            │
+   │        setCurrentIndex(0);                                                                                                                                                                                                               │
+   │      } catch (error) {                                                                                                                                                                                                                   │
+   │        console.error('Failed to load directory:', error);                                                                                                                                                                                │
+   │        setFiles([]);                                                                                                                                                                                                                     │
+   │      }                                                                                                                                                                                                                                   │
+   │    }, []);                                                                                                                                                                                                                               │
+   │                                                                                                                                                                                                                                          │
+   │    const open = useCallback((initialPath?: string) => {                                                                                                                                                                                  │
+   │      const startPath = initialPath || process.cwd();                                                                                                                                                                                     │
+   │      setCurrentPath(startPath);                                                                                                                                                                                                          │
+   │      setIsOpen(true);                                                                                                                                                                                                                    │
+   │      loadDirectory(startPath);                                                                                                                                                                                                           │
+   │    }, [loadDirectory]);                                                                                                                                                                                                                  │
+   │                                                                                                                                                                                                                                          │
+   │    const close = useCallback(() => {                                                                                                                                                                                                     │
+   │      setIsOpen(false);                                                                                                                                                                                                                   │
+   │      setSelectedFiles(new Set());                                                                                                                                                                                                        │
+   │      setExpandedDirs(new Set());                                                                                                                                                                                                         │
+   │    }, []);                                                                                                                                                                                                                               │
+   │                                                                                                                                                                                                                                          │
+   │    const navigate = useCallback((newPath: string) => {                                                                                                                                                                                   │
+   │      setCurrentPath(newPath);                                                                                                                                                                                                            │
+   │      loadDirectory(newPath);                                                                                                                                                                                                             │
+   │    }, [loadDirectory]);                                                                                                                                                                                                                  │
+   │                                                                                                                                                                                                                                          │
+   │    const toggleSelect = useCallback((filePath: string) => {                                                                                                                                                                              │
+   │      setSelectedFiles(prev => {                                                                                                                                                                                                          │
+   │        const next = new Set(prev);                                                                                                                                                                                                       │
+   │        if (next.has(filePath)) {                                                                                                                                                                                                         │
+   │          next.delete(filePath);                                                                                                                                                                                                          │
+   │        } else {                                                                                                                                                                                                                          │
+   │          next.add(filePath);                                                                                                                                                                                                             │
+   │        }                                                                                                                                                                                                                                 │
+   │        return next;                                                                                                                                                                                                                      │
+   │      });                                                                                                                                                                                                                                 │
+   │    }, []);                                                                                                                                                                                                                               │
+   │                                                                                                                                                                                                                                          │
+   │    const navigateUp = useCallback(() => {                                                                                                                                                                                                │
+   │      setCurrentIndex(prev => Math.max(0, prev - 1));                                                                                                                                                                                     │
+   │    }, []);                                                                                                                                                                                                                               │
+   │                                                                                                                                                                                                                                          │
+   │    const navigateDown = useCallback(() => {                                                                                                                                                                                              │
+   │      setCurrentIndex(prev => Math.min(files.length - 1, prev + 1));                                                                                                                                                                      │
+   │    }, [files.length]);                                                                                                                                                                                                                   │
+   │                                                                                                                                                                                                                                          │
+   │    const expandDirectory = useCallback((dirPath: string) => {                                                                                                                                                                            │
+   │      setExpandedDirs(prev => {                                                                                                                                                                                                           │
+   │        const next = new Set(prev);                                                                                                                                                                                                       │
+   │        next.add(dirPath);                                                                                                                                                                                                                │
+   │        return next;                                                                                                                                                                                                                      │
+   │      });                                                                                                                                                                                                                                 │
+   │    }, []);                                                                                                                                                                                                                               │
+   │                                                                                                                                                                                                                                          │
+   │    const collapseDirectory = useCallback((dirPath: string) => {                                                                                                                                                                          │
+   │      setExpandedDirs(prev => {                                                                                                                                                                                                           │
+   │        const next = new Set(prev);                                                                                                                                                                                                       │
+   │        next.delete(dirPath);                                                                                                                                                                                                             │
+   │        return next;                                                                                                                                                                                                                      │
+   │      });                                                                                                                                                                                                                                 │
+   │    }, []);                                                                                                                                                                                                                               │
+   │                                                                                                                                                                                                                                          │
+   │    const goToParent = useCallback(() => {                                                                                                                                                                                                │
+   │      const parent = path.dirname(currentPath);                                                                                                                                                                                           │
+   │      if (parent !== currentPath) {                                                                                                                                                                                                       │
+   │        navigate(parent);                                                                                                                                                                                                                 │
+   │      }                                                                                                                                                                                                                                   │
+   │    }, [currentPath, navigate]);                                                                                                                                                                                                          │
+   │                                                                                                                                                                                                                                          │
+   │    return {                                                                                                                                                                                                                              │
+   │      state: {                                                                                                                                                                                                                            │
+   │        isOpen,                                                                                                                                                                                                                           │
+   │        currentPath,                                                                                                                                                                                                                      │
+   │        files,                                                                                                                                                                                                                            │
+   │        selectedFiles,                                                                                                                                                                                                                    │
+   │        expandedDirs,                                                                                                                                                                                                                     │
+   │        currentIndex,                                                                                                                                                                                                                     │
+   │      },                                                                                                                                                                                                                                  │
+   │      open,                                                                                                                                                                                                                               │
+   │      close,                                                                                                                                                                                                                              │
+   │      navigate,                                                                                                                                                                                                                           │
+   │      toggleSelect,                                                                                                                                                                                                                       │
+   │      navigateUp,                                                                                                                                                                                                                         │
+   │      navigateDown,                                                                                                                                                                                                                       │
+   │      expandDirectory,                                                                                                                                                                                                                    │
+   │      collapseDirectory,                                                                                                                                                                                                                  │
+   │      goToParent,                                                                                                                                                                                                                         │
+   │    };                                                                                                                                                                                                                                    │
+   │  }                                                                                                                                                                                                                                       │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+     • --
+
+
+   Phase 3: Integration with InputPrompt (1 hour)
+
+
+   Step 3.1: Update InputPrompt Component
+     • *File:**  src/ui/components/InputPrompt.tsx 
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  import React, { useState } from 'react';                                                                                                                                                                                                │
+   │  import { Box, Text, useInput } from 'ink';                                                                                                                                                                                              │
+   │  import { FilePicker } from './FilePicker/FilePicker';                                                                                                                                                                                   │
+   │  import { useFilePicker } from '../hooks/useFilePicker';                                                                                                                                                                                 │
+   │                                                                                                                                                                                                                                          │
+   │  export function InputPrompt({ onSubmit }: { onSubmit: (text: string) => void }) {                                                                                                                                                       │
+   │    const [inputValue, setInputValue] = useState('');                                                                                                                                                                                     │
+   │    const filePicker = useFilePicker();                                                                                                                                                                                                   │
+   │                                                                                                                                                                                                                                          │
+   │    useInput((input, key) => {                                                                                                                                                                                                            │
+   │      // Open file picker with Ctrl+F                                                                                                                                                                                                     │
+   │      if (key.ctrl && input === 'f') {                                                                                                                                                                                                    │
+   │        filePicker.open();                                                                                                                                                                                                                │
+   │        return;                                                                                                                                                                                                                           │
+   │      }                                                                                                                                                                                                                                   │
+   │                                                                                                                                                                                                                                          │
+   │      // Don't handle input if file picker is open                                                                                                                                                                                        │
+   │      if (filePicker.state.isOpen) return;                                                                                                                                                                                                │
+   │                                                                                                                                                                                                                                          │
+   │      // Existing input handling...                                                                                                                                                                                                       │
+   │      if (key.return) {                                                                                                                                                                                                                   │
+   │        onSubmit(inputValue);                                                                                                                                                                                                             │
+   │        setInputValue('');                                                                                                                                                                                                                │
+   │      } else if (key.backspace || key.delete) {                                                                                                                                                                                           │
+   │        setInputValue(prev => prev.slice(0, -1));                                                                                                                                                                                         │
+   │      } else if (!key.ctrl && !key.meta && input) {                                                                                                                                                                                       │
+   │        setInputValue(prev => prev + input);                                                                                                                                                                                              │
+   │      }                                                                                                                                                                                                                                   │
+   │    });                                                                                                                                                                                                                                   │
+   │                                                                                                                                                                                                                                          │
+   │    const handleFilePickerConfirm = (selectedPaths: string[]) => {                                                                                                                                                                        │
+   │      const fileRefs = selectedPaths.map(p => `@${p}`).join(' ');                                                                                                                                                                         │
+   │      setInputValue(prev => `${prev}${fileRefs} `);                                                                                                                                                                                       │
+   │      filePicker.close();                                                                                                                                                                                                                 │
+   │    };                                                                                                                                                                                                                                    │
+   │                                                                                                                                                                                                                                          │
+   │    return (                                                                                                                                                                                                                              │
+   │      <>                                                                                                                                                                                                                                  │
+   │        <Box flexDirection="column">                                                                                                                                                                                                      │
+   │          <Text>                                                                                                                                                                                                                          │
+   │            > {inputValue}                                                                                                                                                                                                                │
+   │          </Text>                                                                                                                                                                                                                         │
+   │          <Text dimColor>                                                                                                                                                                                                                 │
+   │            [Ctrl+F] File Picker  [Enter] Send  [Esc] Cancel                                                                                                                                                                              │
+   │          </Text>                                                                                                                                                                                                                         │
+   │        </Box>                                                                                                                                                                                                                            │
+   │                                                                                                                                                                                                                                          │
+   │        <FilePicker                                                                                                                                                                                                                       │
+   │          isOpen={filePicker.state.isOpen}                                                                                                                                                                                                │
+   │          initialPath={process.cwd()}                                                                                                                                                                                                     │
+   │          onConfirm={handleFilePickerConfirm}                                                                                                                                                                                             │
+   │          onCancel={filePicker.close}                                                                                                                                                                                                     │
+   │          multiSelect={true}                                                                                                                                                                                                              │
+   │        />                                                                                                                                                                                                                                │
+   │      </>                                                                                                                                                                                                                                 │
+   │    );                                                                                                                                                                                                                                    │
+   │  }                                                                                                                                                                                                                                       │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+     • --
+
+
+   Phase 4: Advanced Features (Optional, 1-2 hours)
+
+
+   Feature 4.1: File Preview Pane
+   Show file contents in right pane for text files:
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  ┌─ File Picker ──────────┬─ Preview ──────────┐                                                                                                                                                                                         │
+   │  │ 📄 index.tsx [Selected]│ import React from  │                                                                                                                                                                                         │
+   │  │ 📄 types.ts            │ 'react';           │                                                                                                                                                                                         │
+   │  │ 📁 components/         │                    │                                                                                                                                                                                         │
+   │  │                        │ export function... │                                                                                                                                                                                         │
+   │  └────────────────────────┴────────────────────┘                                                                                                                                                                                         │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   Feature 4.2: Search/Filter
+   Add text input to filter files by name:
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  Search: [main___________]                                                                                                                                                                                                               │
+   │    📄 main.tsx                                                                                                                                                                                                                           │
+   │    📄 main.test.tsx                                                                                                                                                                                                                      │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   Feature 4.3: Fuzzy Path Matching
+   Auto-complete file paths as user types:
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  > @src/ma<Tab>                                                                                                                                                                                                                          │
+   │    → @src/main.tsx                                                                                                                                                                                                                       │
+   │    → @src/main.test.tsx                                                                                                                                                                                                                  │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   Feature 4.4: Recent Files
+   Show recently accessed files at top of list:
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  📌 Recent:                                                                                                                                                                                                                              │
+   │    📄 src/index.tsx (2 min ago)                                                                                                                                                                                                          │
+   │    📄 src/types.ts (5 min ago)                                                                                                                                                                                                           │
+   │                                                                                                                                                                                                                                          │
+   │  📁 All Files:                                                                                                                                                                                                                           │
+   │    ...                                                                                                                                                                                                                                   │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+     • --
+
+
+
+   API Integration (If Backend Support Needed)
+
+
+
+   REST Endpoints (Optional)
+   If file listing should come from backend instead of local FS:
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  GET /api/v1/files/list?path=/src                                                                                                                                                                                                        │
+   │  Response:                                                                                                                                                                                                                               │
+   │  {                                                                                                                                                                                                                                       │
+   │    "path": "/src",                                                                                                                                                                                                                       │
+   │    "files": [                                                                                                                                                                                                                            │
+   │      { "name": "index.tsx", "type": "file", "size": 1234 },                                                                                                                                                                              │
+   │      { "name": "components", "type": "directory" }                                                                                                                                                                                       │
+   │    ]                                                                                                                                                                                                                                     │
+   │  }                                                                                                                                                                                                                                       │
+   │                                                                                                                                                                                                                                          │
+   │  POST /api/v1/files/attach                                                                                                                                                                                                               │
+   │  Body: { "conversation_id": "123", "paths": ["src/index.tsx"] }                                                                                                                                                                          │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+     • --
+
+
+
+   Testing Strategy
+
+
+
+   Unit Tests
+     • *File:**  tests/unit/useFilePicker.test.ts 
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  import { describe, it, expect } from 'vitest';                                                                                                                                                                                          │
+   │  import { renderHook, act } from '@testing-library/react-hooks';                                                                                                                                                                         │
+   │  import { useFilePicker } from '../../src/ui/hooks/useFilePicker';                                                                                                                                                                       │
+   │                                                                                                                                                                                                                                          │
+   │  describe('useFilePicker', () => {                                                                                                                                                                                                       │
+   │    it('opens and closes', () => {                                                                                                                                                                                                        │
+   │      const { result } = renderHook(() => useFilePicker());                                                                                                                                                                               │
+   │                                                                                                                                                                                                                                          │
+   │      expect(result.current.state.isOpen).toBe(false);                                                                                                                                                                                    │
+   │                                                                                                                                                                                                                                          │
+   │      act(() => {                                                                                                                                                                                                                         │
+   │        result.current.open('/test/path');                                                                                                                                                                                                │
+   │      });                                                                                                                                                                                                                                 │
+   │                                                                                                                                                                                                                                          │
+   │      expect(result.current.state.isOpen).toBe(true);                                                                                                                                                                                     │
+   │      expect(result.current.state.currentPath).toBe('/test/path');                                                                                                                                                                        │
+   │                                                                                                                                                                                                                                          │
+   │      act(() => {                                                                                                                                                                                                                         │
+   │        result.current.close();                                                                                                                                                                                                           │
+   │      });                                                                                                                                                                                                                                 │
+   │                                                                                                                                                                                                                                          │
+   │      expect(result.current.state.isOpen).toBe(false);                                                                                                                                                                                    │
+   │    });                                                                                                                                                                                                                                   │
+   │                                                                                                                                                                                                                                          │
+   │    it('toggles file selection', () => {                                                                                                                                                                                                  │
+   │      const { result } = renderHook(() => useFilePicker());                                                                                                                                                                               │
+   │                                                                                                                                                                                                                                          │
+   │      act(() => {                                                                                                                                                                                                                         │
+   │        result.current.toggleSelect('/test/file.txt');                                                                                                                                                                                    │
+   │      });                                                                                                                                                                                                                                 │
+   │                                                                                                                                                                                                                                          │
+   │      expect(result.current.state.selectedFiles.has('/test/file.txt')).toBe(true);                                                                                                                                                        │
+   │                                                                                                                                                                                                                                          │
+   │      act(() => {                                                                                                                                                                                                                         │
+   │        result.current.toggleSelect('/test/file.txt');                                                                                                                                                                                    │
+   │      });                                                                                                                                                                                                                                 │
+   │                                                                                                                                                                                                                                          │
+   │      expect(result.current.state.selectedFiles.has('/test/file.txt')).toBe(false);                                                                                                                                                       │
+   │    });                                                                                                                                                                                                                                   │
+   │  });                                                                                                                                                                                                                                     │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   Integration Tests
+     • *File:**  tests/integration/file-picker.test.tsx 
+
+
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  import { describe, it, expect, vi } from 'vitest';                                                                                                                                                                                      │
+   │  import { render } from 'ink-testing-library';                                                                                                                                                                                           │
+   │  import { FilePicker } from '../../src/ui/components/FilePicker/FilePicker';                                                                                                                                                             │
+   │                                                                                                                                                                                                                                          │
+   │  describe('FilePicker integration', () => {                                                                                                                                                                                              │
+   │    it('renders file list', async () => {                                                                                                                                                                                                 │
+   │      const onConfirm = vi.fn();                                                                                                                                                                                                          │
+   │      const onCancel = vi.fn();                                                                                                                                                                                                           │
+   │                                                                                                                                                                                                                                          │
+   │      const { lastFrame } = render(                                                                                                                                                                                                       │
+   │        <FilePicker                                                                                                                                                                                                                       │
+   │          isOpen={true}                                                                                                                                                                                                                   │
+   │          initialPath="/test"                                                                                                                                                                                                             │
+   │          onConfirm={onConfirm}                                                                                                                                                                                                           │
+   │          onCancel={onCancel}                                                                                                                                                                                                             │
+   │        />                                                                                                                                                                                                                                │
+   │      );                                                                                                                                                                                                                                  │
+   │                                                                                                                                                                                                                                          │
+   │      expect(lastFrame()).toContain('File Picker');                                                                                                                                                                                       │
+   │    });                                                                                                                                                                                                                                   │
+   │  });                                                                                                                                                                                                                                     │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+     • --
+
+
+
+   Migration Checklist
+
+
+
+   Phase 1: Core Component ✅
+     • [ ] Create  FilePicker/  directory structure
+     • [ ] Implement  FilePicker.tsx  modal
+     • [ ] Implement  FileTree.tsx  renderer
+     • [ ] Implement  FileItem.tsx  with icons
+     • [ ] Define types in  types.ts 
+
+
+   Phase 2: State Management ✅
+     • [ ] Create  useFilePicker  hook
+     • [ ] Implement directory loading logic
+     • [ ] Implement file selection logic
+     • [ ] Implement navigation (up/down/expand/collapse)
+     • [ ] Add keyboard shortcuts
+
+
+   Phase 3: Integration ✅
+     • [ ] Update  InputPrompt  to trigger file picker
+     • [ ] Add Ctrl+F keyboard shortcut
+     • [ ] Implement file path insertion ( @path )
+     • [ ] Add  /files  slash command
+
+
+   Phase 4: Testing ✅
+     • [ ] Write unit tests for  useFilePicker 
+     • [ ] Write integration tests for  FilePicker 
+     • [ ] Test keyboard navigation
+     • [ ] Test multi-select
+     • [ ] Test directory expansion
+
+
+   Phase 5: Polish (Optional)
+     • [ ] Add file preview pane
+     • [ ] Add search/filter functionality
+     • [ ] Add fuzzy path matching
+     • [ ] Add recent files section
+     • [ ] Add file size/date display
+
+
+     • --
+
+
+
+   Success Criteria
+
+
+
+   ✅ Functional Requirements:
+     • [ ] User can open file picker with Ctrl+F
+     • [ ] User can navigate files with arrow keys
+     • [ ] User can select files with Space
+     • [ ] User can confirm selection with Enter
+     • [ ] Selected files appear as  @path  in input
+     • [ ] User can cancel with Esc
+
+
+   ✅ UX Requirements:
+     • [ ] Modal is visually distinct and clear
+     • [ ] Keyboard shortcuts are intuitive
+     • [ ] File tree is easy to navigate
+     • [ ] Selection state is obvious
+     • [ ] Performance is smooth (no lag)
+
+
+   ✅ Technical Requirements:
+     • [ ] Code follows existing architecture patterns
+     • [ ] Components are testable
+     • [ ] No breaking changes to existing features
+     • [ ] TypeScript types are complete
+     • [ ] Tests pass
+
+
+     • --
+
+
+
+   Risk Mitigation
+
+
+
+   Potential Issues
+
+
+   1. Performance with large directories
+     • Risk: Slow rendering for 1000+ files
+     • Mitigation: Implement virtual scrolling (react-window)
+     • Mitigation: Limit initial depth, lazy-load subdirectories
+
+
+   2. Keyboard input conflicts
+     • Risk: File picker shortcuts conflict with Ink's useInput
+     • Mitigation: Use conditional input handling (check  isOpen  flag)
+     • Mitigation: Document all shortcuts clearly
+
+
+   3. Cross-platform path handling
+     • Risk: Windows backslashes vs Unix forward slashes
+     • Mitigation: Use Node's  path  module for all path operations
+     • Mitigation: Test on Windows, macOS, Linux
+
+
+   4. File system permissions
+     • Risk: Cannot read certain directories
+     • Mitigation: Graceful error handling with user-friendly messages
+     • Mitigation: Skip inaccessible directories, show warning
+
+
+     • --
+
+
+
+   Timeline Estimate
+
+
+
+
+   ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+   │┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐│
+   ││ Phase               Tasks               Time                Status                                                                                                                                                                     ││
+   │└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘│
+   │ 1. Core Component   FilePicker,         2-3h                📋 TODO                                                                                                                                                                      │
+   │                     FileTree, FileItem                                                                                                                                                                                                   │
+   │ 2. State            useFilePicker       1-2h                📋 TODO                                                                                                                                                                      │
+   │ Management          hook, navigation                                                                                                                                                                                                     │
+   │ 3. Integration      InputPrompt         1h                  📋 TODO                                                                                                                                                                      │
+   │                     updates, shortcuts                                                                                                                                                                                                   │
+   │ 4. Testing          Unit + integration  1h                  📋 TODO                                                                                                                                                                      │
+   │                      tests                                                                                                                                                                                                               │
+   │ 5. Polish           Preview, search,    1-2h                📋 TODO                                                                                                                                                                      │
+   │ (Optional)          fuzzy match                                                                                                                                                                                                          │
+   │ **Total**           **4-6h**                                                                                                                                                                                                             │
+   └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+     • --
+
+
+
+   Next Steps
+
+
+
+   1. Get approval on UX design and keyboard shortcuts
+   2. Create feature branch:  feature/file-picker 
+   3. Start with Phase 1: Build core FilePicker component
+   4. Iterate incrementally: Test each phase before moving on
+   5. Document shortcuts: Update help text and README
+
+
+     • --
+
+
+
+   References
+
+
+
+     • [Gemini CLI File Picker](https://github.com/google/generative-ai-cli)
+     • [Ink Components](https://github.com/vadimdemedes/ink)
+     • [Node.js fs/promises API](https://nodejs.org/api/fs.html)
+     • [React Hooks Best Practices](https://react.dev/reference/react/hooks)
+
+
+     • --
+
+
+     • *Document Status:** Planning complete, ready for implementation
+     • *Last Updated:** 2025-01-XX
+   :true</enhanced_write>
+
+
+     • --
+
+
+
+   File Picker Feature Plan - Complete! 🎯
+
+
+
+   I've drafted a comprehensive implementation plan for the file picker feature. Here's what's included:
+
+
+   Key Features:
+   1. Interactive file browser modal - Navigate directories with arrow keys
+   2. Multi-select support - Space to select, Enter to confirm
+   3. Smart file insertion - Auto-formats as  @path  references
+   4. Keyboard-driven UX - Ctrl+F to open, full keyboard navigation
+   5. Directory tree - Expandable folders, visual hierarchy
+
+
+   Architecture Highlights:
+     • New Components:  FilePicker ,  FileTree ,  FileItem 
+     • New Hook:  useFilePicker  for state management
+     • Integration: Seamless with existing  InputPrompt 
+     • Testing: Unit + integration test strategy included
+
+
+   Implementation Timeline:
+     • Phase 1-3 (Core): 4-5 hours
+     • Phase 4-5 (Polish): Optional 1-2 hours
+     • Total: 4-6 hours for full feature
+
+
+   UX Flow Example:
+
+   ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+   │  User types message → Presses Ctrl+F → File picker opens                                                                                                                                                                                 │
+   │    → Navigate with arrows → Select with Space → Confirm with Enter                                                                                                                                                                       │
+   │    → Files appear as "@src/main.py @src/types.ts" in input                                                                                                                                                                               │
+   │    → User continues typing or sends message                                                                                                                                                                                              │
+   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+   The plan follows the same Gemini-inspired architecture patterns from the refactor, includes risk mitigation strategies, and provides a clear migration checklist.
+
+
+     • *Ready to implement?** The plan is detailed enough to start coding immediately, with all component structures, types, and integration points defined. (18.8 KB)
+
+   ✓ execute (0.00s)
+     Current directory: /Users/maximusputnam/penguin_workspace
+
+     Directory contents:
+       .DS_Store
+       .git
+       .penguin_index.json
+       .pytest_cache
+       2502.12115v1.pdf
+       BUG_FIX_SUMMARY.md
+       Hello-Testing.js
+       Hel...
+     ... (2741 chars total)
+   ✓ execute (0.00s)
+     Changed to: /Users/maximusputnam/penguin_workspace/penguin
+   ✓ enhanced_read (0.00s)
+     Error: File does not exist: /Users/maximusputnam/penguin_workspace/context/penguin_cli_refactor_plan.md
+   ✓ list_files_filtered (0.00s)
+     Error: Directory does not exist: /Users/maximusputnam/penguin_workspace/src/penguin/tui
+   ✓ enhanced_read (0.00s)
+     Error: File does not exist: /Users/maximusputnam/penguin_workspace/src/penguin/tui/app.py
+   ✓ search (0.00s)
+     {'result': 'No results found or empty directory.'}
+   ✓ list_files_filtered (0.00s)
+     Files in: /Users/maximusputnam/penguin_workspace
+
+
+     DIRECTORIES:
+       adder_project/
+       agents/
+       backend/
+       calculator/
+       checkpoints/
+       context/
+       conversations/
+       email_validator_project/
+       errors_log/
+     ...
+     ... (4051 chars total)
+   ✓ list_files_filtered (0.00s)
+     No files found in: /Users/maximusputnam/penguin_workspace/context
+   ✓ enhanced_read (0.00s)
+     Error: File does not exist: /Users/maximusputnam/penguin_workspace/context/penguin_cli_refactor_plan.md
+   ✓ list_files_filtered (0.00s)
+     Files in: /Users/maximusputnam/penguin_workspace/src
+
+
+     .PY:
+       main.py (192 bytes)
+   ✓ list_files_filtered (0.00s)
+     Error: Directory does not exist: /Users/maximusputnam/penguin_workspace/src/penguin
+   ✓ enhanced_read (0.00s)
+     Error: File does not exist: /Users/maximusputnam/penguin_workspace/src/penguin/cli/tui.py
+   ✓ search (0.00s)
+     {'result': 'No results found or empty directory.'}
+   ✓ execute (0.00s)
+     Checking penguin directory: /Users/maximusputnam/penguin_workspace/penguin
+     Exists: True
+
+     Contents:
+       .DS_Store
+       .cursorrules
+       .dockerignore
+       .git
+       .github
+       .gitignore
+       AGENTS.md
+       Dockerfile
+       M...
+     ... (327 chars total)
+   ✓ list_files_filtered (0.00s)
+     Files in: /Users/maximusputnam/penguin_workspace/penguin
+
+
+     DIRECTORIES:
+       agent/
+       context/
+       dashboard/
+       deploy/
+       docker/
+       docs/
+       errors_log/
+       misc/
+       penguin/
+       penguin-cli/
+       penguin-web/
+       sc...
+     ... (760 chars total)
+   ✓ list_files_filtered (0.00s)
+     Files in: /Users/maximusputnam/penguin_workspace/penguin/context
+
+
+     .MD:
+       agent_as_tools.md (1370 bytes)
+       api_update_1.md (5461 bytes)
+       claude_code_parity.md (8700 bytes)
+       Claude_Code_Parity_Checkl...
+     ... (1653 chars total)
+   ✓ enhanced_read (0.00s)
+        1: # Penguin CLI Refactoring Plan (Gemini-Inspired)
+        2: 
+        3: **Date:** 2025-10-19 (Refactoring) | 2025-10-26 (Feature Updates)
+        4: **Status:** ✅ REFACTORING COMPLETE | 🟡 PHASE 3 FEATURES IN ...
+     ... (46930 chars total)
+   ✓ enhanced_write (0.00s)
+     New file created: /Users/maximusputnam/penguin_workspace/penguin/context/FILE_PICKER_PLAN.md
+
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │                                                                                                                                                                                                                                            │
+ │ Type your message...                                                                                                                                                                                                                       │
+ │                                                                                                                                                                                                                                            │
+ │ Enter: New line • Esc: Send message                                                                                                                                                                                                        │
+ │                                                                                                                                                                                                                                            │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+
+ Enter: Send • Ctrl+P: Dashboard • Ctrl+O: Sessions • Ctrl+S: Settings • Ctrl+C: Exit
+
