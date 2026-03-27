@@ -223,7 +223,7 @@ Read more:
 
 ## Version Highlights
 
-### v0.6.2.1
+### v0.6.2.2
 
 - Canonical file editing now centers on `read_file`, `write_file`, `patch_file`, and `patch_files`.
 - JSON-first edit payloads, generated prompt docs, and centralized compatibility aliases keep parser, tools, and UI metadata aligned.

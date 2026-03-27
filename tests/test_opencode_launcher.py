@@ -80,7 +80,7 @@ def test_installed_penguin_version_falls_back_to_package_version(
 
     monkeypatch.setattr(opencode_launcher.importlib.metadata, "version", _missing)
 
-    assert opencode_launcher._installed_penguin_version() == "0.6.2.1"
+    assert opencode_launcher._installed_penguin_version() == "0.6.2.2"
 
 
 def test_binary_supports_url_mode_from_help_output(
