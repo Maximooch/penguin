@@ -36,15 +36,23 @@ state, workspace-aware tools, and multiple interfaces on top of the same core.
 ## Quick Start
 
 ```bash
-# Recommended install
+# Recommended: use uv for less environment/package-management hassle,
+# faster installs/syncs, and support for this repo's safer dependency workflow.
+uv tool install penguin-ai
+
+# Alternative: plain pip still works
 pip install penguin-ai
 
 # Set a model provider key (OpenRouter is the easiest starting point)
 export OPENROUTER_API_KEY="your_api_key"
 
-# Launch Penguin TUI
+# Launch Penguin
 penguin
 ```
+
+`uv` is the recommended path for most users: it is generally faster than `pip`, keeps
+Python environment management simpler, and supports this repo's `exclude-newer` safety rail
+for dependency resolution in development workflows.
 
 Other entrypoints:
 
@@ -115,8 +123,36 @@ pip install penguin-ai[all]
 ```bash
 git clone https://github.com/Maximooch/penguin.git
 cd penguin/penguin
+
+# Safe default: respects `[tool.uv] exclude-newer = "7 days"`
+uv sync
+
+# Editable dev/test install via pip still works if you prefer it
 pip install -e .[dev,test]
 ```
+
+### Safer `uv` Installs
+
+This repo configures `uv` to ignore package releases newer than 7 days by default:
+
+```toml
+[tool.uv]
+exclude-newer = "7 days"
+```
+
+That gives the ecosystem a little time to detect and yank malicious releases before you
+pull them in. It's a useful guardrail, not a complete supply-chain strategy.
+
+Convenience shortcuts:
+
+```bash
+make sync-safe    # use the default 7-day delay
+make lock-safe    # refresh lockfile with the 7-day delay
+make lock-latest  # intentionally override and resolve newest compatible releases
+make sync-latest  # resolve + sync using newest compatible releases
+```
+
+Under the hood, the `latest` targets override the project default with `--exclude-newer 2999-12-31T23:59:59Z`.
 
 ### Extras
 

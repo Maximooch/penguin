@@ -237,6 +237,17 @@ penguin = ["config.yml", "requirements.txt", "*.yml", "*.yaml", "*.css", "cli/*.
 ]
 
 
+# UV resolver safety rail: ignore package releases newer than 7 days by default.
+# This reduces exposure to freshly published malicious packages, but it is only a
+# partial supply-chain defense. It does not replace pinning, lockfiles, or review.
+#
+# Command-line flags override this setting. If you intentionally need the newest
+# compatible releases, use e.g.:
+#   uv sync --exclude-newer 2999-12-31T23:59:59Z
+[tool.uv]
+exclude-newer = "7 days"
+
+
 # Development tools configuration
 [tool.black]
 line-length = 88
