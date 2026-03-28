@@ -339,6 +339,9 @@ def _merge_openrouter_catalog_models(
     provider_models: dict[str, dict[str, dict[str, Any]]],
     auth_records: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, dict[str, Any]]]:
+    if not provider_connected("openrouter", auth_records):
+        return provider_models
+
     openrouter_record = auth_records.get("openrouter")
     record_key = ""
     if (

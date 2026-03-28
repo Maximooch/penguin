@@ -303,6 +303,46 @@ def _resolve_agent_mode(
     return "build"
 
 
+def _active_model_uses_provider(core: PenguinCore, provider_id: str) -> bool:
+    """Return whether the active runtime client depends on a provider credential."""
+    pid = provider_id.strip().lower()
+    if not pid:
+        return False
+
+    model_config = getattr(core, "model_config", None)
+    active_provider = str(getattr(model_config, "provider", "") or "").strip().lower()
+    client_preference = (
+        str(getattr(model_config, "client_preference", "") or "").strip().lower()
+    )
+
+    if pid == "openrouter":
+        return active_provider == "openrouter" or client_preference == "openrouter"
+
+    return active_provider == pid and client_preference != "openrouter"
+
+
+def _refresh_active_runtime_client_for_provider(
+    core: PenguinCore,
+    provider_id: str,
+) -> None:
+    """Rebuild the active API client when credentials for its provider change."""
+    if not _active_model_uses_provider(core, provider_id):
+        return
+
+    refresh = getattr(core, "refresh_api_client", None)
+    if not callable(refresh):
+        return
+
+    try:
+        refresh()
+    except Exception:
+        logger.exception(
+            "Failed to refresh runtime API client after credential update for %s",
+            provider_id,
+        )
+        raise
+
+
 async def _persist_session_agent_mode(
     core: PenguinCore,
     session_id: Optional[str],
@@ -2627,6 +2667,7 @@ async def opencode_auth_set(
         record = get_provider_auth_records().get(providerID.strip().lower())
         if isinstance(record, dict):
             apply_auth_to_runtime(core, providerID, record)
+            _refresh_active_runtime_client_for_provider(core, providerID)
         return True
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -2693,6 +2734,7 @@ async def opencode_provider_oauth_callback(
             if isinstance(record, dict):
                 try:
                     apply_auth_to_runtime(core, providerID, record)
+                    _refresh_active_runtime_client_for_provider(core, providerID)
                 except Exception:
                     logger.exception(
                         "provider.oauth.callback runtime credential apply failure"

@@ -71,7 +71,11 @@ class _Core:
                 },
             }
         )
-        self.model_config = SimpleNamespace(provider="openrouter", api_key=None)
+        self.model_config = SimpleNamespace(
+            provider="openrouter",
+            client_preference="openrouter",
+            api_key=None,
+        )
         self.conversation_manager = SimpleNamespace(current_agent_id="default")
         self._current_model = {
             "provider": "openrouter",
@@ -82,6 +86,7 @@ class _Core:
         }
         self._load_model_success = True
         self.loaded_model: str | None = None
+        self.refresh_api_client_calls = 0
 
     def get_current_model(self) -> dict[str, Any]:
         return dict(self._current_model)
@@ -95,10 +100,17 @@ class _Core:
         model = model_id.split("/", 1)[1] if "/" in model_id else model_id
         self._current_model["provider"] = provider
         self._current_model["model"] = model
+        self.model_config.provider = provider
+        self.model_config.client_preference = (
+            "native" if provider in {"openai", "anthropic"} else "openrouter"
+        )
         return True
 
     def set_active_agent(self, agent_id: str) -> None:
         self.conversation_manager.current_agent_id = agent_id
+
+    def refresh_api_client(self) -> None:
+        self.refresh_api_client_calls += 1
 
 
 @pytest.mark.asyncio
@@ -377,7 +389,7 @@ async def test_openrouter_catalog_expands_provider_payloads(
 
     saved = await opencode_auth_set(
         providerID="openrouter",
-        auth={"type": "api", "key": "sk-or-catalog"},
+        auth={"type": "api", "key": "sk-or-v1-catalog-fixture"},
         core=typed_core,
     )
     assert saved is True
@@ -617,17 +629,18 @@ async def test_auth_set_and_remove_round_trip(
     try:
         saved = await opencode_auth_set(
             providerID="openrouter",
-            auth={"type": "api", "key": "sk-or-test"},
+            auth={"type": "api", "key": "sk-or-v1-fixture"},
             core=typed_core,
         )
         assert saved is True
-        assert os.environ.get("OPENROUTER_API_KEY") == "sk-or-test"
+        assert os.environ.get("OPENROUTER_API_KEY") == "sk-or-v1-fixture"
+        assert core.refresh_api_client_calls == 1
 
         providers = await opencode_provider_list(core=typed_core)
         assert "openrouter" in providers["connected"]
 
         records = get_provider_auth_records()
-        assert records["openrouter"]["key"] == "sk-or-test"
+        assert records["openrouter"]["key"] == "sk-or-v1-fixture"
 
         removed = await opencode_auth_remove(providerID="openrouter")
         assert removed is True
@@ -734,6 +747,49 @@ async def test_oauth_callback_applies_runtime_credentials(
     assert runtime_core is typed_core
     assert runtime_provider == "openai"
     assert runtime_record["accountId"] == "acct_test_runtime"
+
+
+@pytest.mark.asyncio
+async def test_oauth_callback_refreshes_active_openai_client(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core = _Core(tmp_path)
+    core.model_config.provider = "openai"
+    core.model_config.client_preference = "native"
+    core._current_model = {
+        "provider": "openai",
+        "model": "gpt-5.4",
+        "client_preference": "native",
+    }
+    typed_core = cast(Any, core)
+
+    async def _callback(provider_id: str, method: int, code: str | None = None) -> bool:
+        assert (provider_id, method, code) == ("openai", 0, "browser-code")
+        return True
+
+    def _records() -> dict[str, dict[str, Any]]:
+        return {
+            "openai": {
+                "type": "oauth",
+                "access": "oauth-access",
+                "refresh": "oauth-refresh",
+                "expires": 9_999_999_999_000,
+                "accountId": "acct_test_runtime",
+            }
+        }
+
+    monkeypatch.setattr(routes_module, "provider_oauth_callback", _callback)
+    monkeypatch.setattr(routes_module, "get_provider_auth_records", _records)
+
+    completed = await opencode_provider_oauth_callback(
+        providerID="openai",
+        request=ProviderOAuthCallbackRequest(method=0, code="browser-code"),
+        core=typed_core,
+    )
+
+    assert completed is True
+    assert core.refresh_api_client_calls == 1
 
 
 @pytest.mark.asyncio

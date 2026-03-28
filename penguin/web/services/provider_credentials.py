@@ -18,6 +18,16 @@ _LEGACY_STORE_ENV = "PENGUIN_PROVIDER_AUTH_STORE"
 _DEFAULT_OAUTH_REFRESH_WINDOW_MS = 5 * 60 * 1000
 
 _CREDENTIALS_LOCK = RLock()
+_PLACEHOLDER_API_KEYS = {
+    "sk-test",
+    "sk-or-test",
+    "sk-or-catalog",
+    "your_api_key",
+    "changeme",
+    "dummy",
+    "placeholder",
+    "test",
+}
 
 
 def _default_store_path() -> Path:
@@ -266,6 +276,15 @@ def _provider_env_candidates(provider_id: str) -> list[str]:
     return []
 
 
+def _is_placeholder_api_key(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().lower()
+    if not normalized:
+        return False
+    return normalized in _PLACEHOLDER_API_KEYS
+
+
 def provider_connected(
     provider_id: str,
     records: dict[str, dict[str, Any]] | None = None,
@@ -280,13 +299,56 @@ def provider_connected(
     if isinstance(record, dict):
         auth_type = record.get("type")
         if auth_type == "api" and isinstance(record.get("key"), str):
-            return bool(record["key"].strip())
+            return bool(record["key"].strip()) and not _is_placeholder_api_key(
+                record["key"]
+            )
         if auth_type == "oauth" and isinstance(record.get("refresh"), str):
             return bool(record["refresh"].strip())
         if auth_type == "wellknown" and isinstance(record.get("token"), str):
             return bool(record["token"].strip())
 
-    return any(os.getenv(env_name) for env_name in _provider_env_candidates(pid))
+    return any(
+        value and not _is_placeholder_api_key(value)
+        for env_name in _provider_env_candidates(pid)
+        for value in [os.getenv(env_name)]
+    )
+
+
+def apply_credentials_to_environment(
+    provider_id: str,
+    credential_record: dict[str, Any],
+) -> None:
+    """Apply provider credentials to process environment variables only."""
+    pid = provider_id.strip().lower()
+    auth_type = (
+        credential_record.get("type") if isinstance(credential_record, dict) else None
+    )
+
+    if auth_type == "api":
+        key = credential_record.get("key")
+        if not isinstance(key, str) or not key:
+            return
+        if _is_placeholder_api_key(key):
+            logger.warning("Ignoring placeholder API credential for provider '%s'", pid)
+            return
+
+        if pid == "openrouter":
+            os.environ["OPENROUTER_API_KEY"] = key
+            return
+        if pid == "openai":
+            os.environ["OPENAI_API_KEY"] = key
+            return
+
+        os.environ[f"{pid.upper()}_API_KEY"] = key
+        return
+
+    if auth_type == "oauth" and pid == "openai":
+        access = credential_record.get("access")
+        account_id = credential_record.get("accountId")
+        if isinstance(access, str) and access:
+            os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] = access
+        if isinstance(account_id, str) and account_id:
+            os.environ["OPENAI_ACCOUNT_ID"] = account_id
 
 
 def apply_credentials_to_runtime(
@@ -300,17 +362,17 @@ def apply_credentials_to_runtime(
         credential_record.get("type") if isinstance(credential_record, dict) else None
     )
 
+    apply_credentials_to_environment(pid, credential_record)
+
     if auth_type == "api":
         key = credential_record.get("key")
         if not isinstance(key, str) or not key:
             return
-
-        if pid == "openrouter":
-            os.environ["OPENROUTER_API_KEY"] = key
-        elif pid == "openai":
-            os.environ["OPENAI_API_KEY"] = key
-        else:
-            os.environ[f"{pid.upper()}_API_KEY"] = key
+        if _is_placeholder_api_key(key):
+            logger.warning(
+                "Ignoring placeholder runtime API credential for provider '%s'", pid
+            )
+            return
 
         model_config = getattr(core, "model_config", None)
         if getattr(model_config, "provider", None) == pid:
@@ -319,11 +381,6 @@ def apply_credentials_to_runtime(
 
     if auth_type == "oauth" and pid == "openai":
         access = credential_record.get("access")
-        account_id = credential_record.get("accountId")
-        if isinstance(access, str) and access:
-            os.environ["OPENAI_OAUTH_ACCESS_TOKEN"] = access
-        if isinstance(account_id, str) and account_id:
-            os.environ["OPENAI_ACCOUNT_ID"] = account_id
 
         model_config = getattr(core, "model_config", None)
         if (

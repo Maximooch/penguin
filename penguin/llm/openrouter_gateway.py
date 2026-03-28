@@ -36,6 +36,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+_PLACEHOLDER_OPENROUTER_KEYS = {"sk-test", "sk-or-test", "sk-or-catalog"}
+
 
 class OpenRouterGateway:
     """
@@ -87,11 +89,15 @@ class OpenRouterGateway:
         self._last_usage: Dict[str, Any] = {}
 
         # --- Determine Base URL (before API key check) ---
-        # Priority: explicit param > model_config > env var > default OpenRouter
+        # Priority: explicit param > model_config > OpenRouter env override >
+        # default OpenRouter. Do not inherit OPENAI_BASE_URL here: that can
+        # point at native OpenAI/Codex or Link endpoints and break OpenRouter
+        # authentication/header semantics.
         self.base_url = (
             base_url
             or model_config.api_base
-            or os.getenv("OPENAI_BASE_URL")
+            or os.getenv("OPENROUTER_BASE_URL")
+            or os.getenv("PENGUIN_OPENROUTER_BASE_URL")
             or "https://openrouter.ai/api/v1"
         )
 
@@ -107,6 +113,14 @@ class OpenRouterGateway:
 
         # --- API Key Handling ---
         api_key = model_config.api_key or os.getenv("OPENROUTER_API_KEY")
+        if (
+            isinstance(api_key, str)
+            and api_key.strip().lower() in _PLACEHOLDER_OPENROUTER_KEYS
+        ):
+            self.logger.warning(
+                "Ignoring placeholder OpenRouter API key from runtime configuration"
+            )
+            api_key = None
         if not api_key and not is_link_proxy:
             # Only require API key for direct OpenRouter access
             self.logger.error(
@@ -1720,6 +1734,12 @@ class OpenRouterGateway:
         if not isinstance(self._last_usage, dict):
             return {}
         return dict(self._last_usage)
+
+    def has_pending_tool_call(self) -> bool:
+        """Return whether a Responses/tool-call interrupt is waiting to execute."""
+        return isinstance(self._last_tool_call, dict) and bool(
+            self._last_tool_call.get("name")
+        )
 
     def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
         """Return last detected tool_call (name, arguments) and clear accumulators."""

@@ -22,6 +22,7 @@ from penguin.utils.log_error import log_error
 from penguin.constants import get_engine_max_iterations_default
 from penguin.web.services.system_status import start_vcs_watcher, stop_vcs_watcher
 from penguin.web.services.provider_credentials import (
+    apply_credentials_to_environment,
     apply_credentials_to_runtime,
     get_provider_credentials,
 )
@@ -45,12 +46,14 @@ def get_or_create_core() -> PenguinCore:
 def _create_core() -> PenguinCore:
     """Create a new PenguinCore instance with proper configuration."""
     try:
+        # Ensure .env files and persisted provider credentials are loaded before
+        # Config/model resolution so API keys are available to ModelConfig.
+        _ensure_env_loaded()
+        _prime_provider_credentials_environment()
+
         # Create a proper Config object
         config_obj = Config.load_config()
         model_config = config_obj.model_config
-
-        # Ensure .env files are loaded before API client needs API keys
-        _ensure_env_loaded()
 
         # Initialize components using live Config-derived model_config
         api_client = APIClient(model_config=model_config)
@@ -73,6 +76,30 @@ def _create_core() -> PenguinCore:
     except Exception as e:
         logger.error(f"Failed to initialize PenguinCore: {str(e)}")
         raise
+
+
+def _prime_provider_credentials_environment() -> None:
+    """Load persisted provider credentials into env before core creation."""
+    try:
+        records = get_provider_credentials()
+    except Exception:
+        logger.debug("Failed to read persisted provider credentials", exc_info=True)
+        return
+
+    if not isinstance(records, dict) or not records:
+        return
+
+    for provider_id, record in records.items():
+        if not isinstance(provider_id, str) or not isinstance(record, dict):
+            continue
+        try:
+            apply_credentials_to_environment(provider_id, record)
+        except Exception:
+            logger.debug(
+                "Failed to prime persisted provider credentials for %s",
+                provider_id,
+                exc_info=True,
+            )
 
 
 def _rehydrate_provider_credentials(core: PenguinCore) -> None:

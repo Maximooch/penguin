@@ -93,10 +93,195 @@ class OpenAIAdapter(BaseAdapter):
             base_url=model_config.api_base or None,
             default_headers=default_headers or None,
         )
+        self._reset_tool_call_state()
 
     @property
     def provider(self) -> str:
         return "openai"
+
+    def _reset_tool_call_state(self) -> None:
+        self._tool_call_acc: Dict[str, Any] = {
+            "item_id": None,
+            "call_id": None,
+            "name": None,
+            "arguments": "",
+        }
+        self._last_tool_call: Optional[Dict[str, Any]] = None
+
+    def has_pending_tool_call(self) -> bool:
+        """Return whether a structured Responses tool call is waiting to run."""
+        return isinstance(self._last_tool_call, dict) and bool(
+            self._last_tool_call.get("name")
+        )
+
+    def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
+        """Return the latest structured tool call and clear adapter state."""
+        tool_call = (
+            self._last_tool_call if isinstance(self._last_tool_call, dict) else None
+        )
+        self._reset_tool_call_state()
+        return dict(tool_call) if isinstance(tool_call, dict) else None
+
+    def _to_dict(self, value: Any) -> Dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if hasattr(value, "model_dump"):
+            try:
+                dumped = value.model_dump()
+                if isinstance(dumped, dict):
+                    return dumped
+            except Exception:
+                pass
+        if hasattr(value, "dict"):
+            try:
+                dumped = value.dict()
+                if isinstance(dumped, dict):
+                    return dumped
+            except Exception:
+                pass
+        try:
+            dumped = vars(value)
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+        return {}
+
+    def _snapshot_tool_call(
+        self,
+        *,
+        item_id: Any = None,
+        call_id: Any = None,
+        name: Any = None,
+        arguments: Any = None,
+    ) -> Optional[Dict[str, Any]]:
+        resolved_name = str(name or self._tool_call_acc.get("name") or "").strip()
+        if not resolved_name:
+            return None
+
+        resolved_arguments = arguments
+        if not isinstance(resolved_arguments, str):
+            resolved_arguments = self._tool_call_acc.get("arguments", "")
+        if not isinstance(resolved_arguments, str):
+            resolved_arguments = ""
+
+        resolved_item_id = item_id or self._tool_call_acc.get("item_id")
+        resolved_call_id = call_id or self._tool_call_acc.get("call_id")
+        return {
+            "item_id": str(resolved_item_id).strip() if resolved_item_id else None,
+            "call_id": str(resolved_call_id).strip() if resolved_call_id else None,
+            "name": resolved_name,
+            "arguments": resolved_arguments,
+        }
+
+    def _accumulate_function_call_item(
+        self,
+        item: Any,
+        *,
+        overwrite_arguments: bool,
+    ) -> Optional[Dict[str, Any]]:
+        item_payload = self._to_dict(item)
+        if item_payload.get("type") != "function_call":
+            return None
+
+        item_id = item_payload.get("id")
+        call_id = item_payload.get("call_id")
+        name = item_payload.get("name")
+        arguments = item_payload.get("arguments")
+
+        if isinstance(item_id, str) and item_id.strip():
+            self._tool_call_acc["item_id"] = item_id.strip()
+        if isinstance(call_id, str) and call_id.strip():
+            self._tool_call_acc["call_id"] = call_id.strip()
+        if isinstance(name, str) and name.strip():
+            self._tool_call_acc["name"] = name.strip()
+
+        if isinstance(arguments, str):
+            if overwrite_arguments:
+                self._tool_call_acc["arguments"] = arguments
+            elif arguments and not self._tool_call_acc.get("arguments"):
+                self._tool_call_acc["arguments"] = arguments
+
+        return self._snapshot_tool_call(
+            item_id=item_id,
+            call_id=call_id,
+            name=name,
+            arguments=arguments if overwrite_arguments else None,
+        )
+
+    def _capture_responses_tool_event(self, event: Any) -> Optional[Dict[str, Any]]:
+        payload = self._to_dict(event)
+        etype = payload.get("type") or getattr(event, "type", None)
+
+        if etype == "response.output_item.added":
+            self._accumulate_function_call_item(
+                payload.get("item") or getattr(event, "item", None),
+                overwrite_arguments=False,
+            )
+            return None
+
+        if etype == "response.function_call_arguments.delta":
+            item_id = payload.get("item_id") or getattr(event, "item_id", None)
+            delta = payload.get("delta") or getattr(event, "delta", None)
+            current_item_id = self._tool_call_acc.get("item_id")
+            if (
+                isinstance(item_id, str)
+                and item_id
+                and isinstance(current_item_id, str)
+                and current_item_id
+                and item_id != current_item_id
+            ):
+                return None
+            if isinstance(item_id, str) and item_id and not current_item_id:
+                self._tool_call_acc["item_id"] = item_id
+            if isinstance(delta, str) and delta:
+                self._tool_call_acc["arguments"] += delta
+            return None
+
+        if etype == "response.output_item.done":
+            tool_call = self._accumulate_function_call_item(
+                payload.get("item") or getattr(event, "item", None),
+                overwrite_arguments=True,
+            )
+            if tool_call:
+                self._last_tool_call = tool_call
+            return tool_call
+
+        if etype == "response.completed":
+            tool_call = self._extract_function_call_from_response_object(
+                payload.get("response") or getattr(event, "response", None)
+            )
+            if tool_call:
+                self._last_tool_call = tool_call
+            return tool_call
+
+        return None
+
+    def _extract_function_call_from_response_object(
+        self,
+        resp: Any,
+    ) -> Optional[Dict[str, Any]]:
+        output = None
+        if isinstance(resp, dict):
+            output = resp.get("output")
+        else:
+            output = getattr(resp, "output", None)
+
+        if not isinstance(output, list):
+            return None
+
+        for item in output:
+            tool_call = self._accumulate_function_call_item(
+                item,
+                overwrite_arguments=True,
+            )
+            if tool_call:
+                return tool_call
+
+        return None
+
+    def _interrupt_on_tool_call(self) -> bool:
+        return bool(getattr(self.model_config, "interrupt_on_tool_call", False))
 
     async def create_completion(
         self,
@@ -122,6 +307,8 @@ class OpenAIAdapter(BaseAdapter):
         legacy_max_tokens = kwargs.pop("max_tokens", None)
         if max_output_tokens is None and legacy_max_tokens is not None:
             max_output_tokens = legacy_max_tokens
+
+        self._reset_tool_call_state()
 
         processed_messages = await self._process_messages_for_vision(messages)
 
@@ -221,6 +408,9 @@ class OpenAIAdapter(BaseAdapter):
 
         # Non-streaming
         resp = await self.client.responses.create(**request_params)
+        tool_call = self._extract_function_call_from_response_object(resp)
+        if tool_call:
+            self._last_tool_call = tool_call
 
         output_text = getattr(resp, "output_text", None)
         if isinstance(output_text, str):
@@ -759,6 +949,10 @@ class OpenAIAdapter(BaseAdapter):
                         if not isinstance(data, dict):
                             continue
 
+                        tool_call = self._capture_responses_tool_event(data)
+                        if tool_call and self._interrupt_on_tool_call():
+                            return completed_text or "".join(accumulated_content)
+
                         etype = data.get("type")
                         if etype == "response.output_text.delta":
                             delta = data.get("delta", "")
@@ -1148,6 +1342,10 @@ class OpenAIAdapter(BaseAdapter):
             # Async streaming context
             async with self.client.responses.stream(**request_params) as stream:  # type: ignore[attr-defined]
                 async for event in stream:
+                    tool_call = self._capture_responses_tool_event(event)
+                    if tool_call and self._interrupt_on_tool_call():
+                        return "".join(accumulated_content)
+
                     etype = getattr(event, "type", None)
                     if etype == "response.output_text.delta":
                         delta = getattr(event, "delta", "")
@@ -1168,6 +1366,11 @@ class OpenAIAdapter(BaseAdapter):
                                 "reasoning",
                             )
                 final = await stream.get_final_response()
+                tool_call = self._extract_function_call_from_response_object(final)
+                if tool_call:
+                    self._last_tool_call = tool_call
+                    if self._interrupt_on_tool_call():
+                        return "".join(accumulated_content)
                 # Prefer SDK's convenience property if present
                 final_text = getattr(final, "output_text", None)
                 if isinstance(final_text, str) and final_text:
@@ -1224,6 +1427,10 @@ class OpenAIAdapter(BaseAdapter):
                     break
                 try:
                     data = json.loads(data_str)
+                    tool_call = self._capture_responses_tool_event(data)
+                    if tool_call and self._interrupt_on_tool_call():
+                        return completed_text or "".join(accumulated_content)
+
                     etype = data.get("type")
                     if etype == "response.output_text.delta":
                         delta = data.get("delta", "")

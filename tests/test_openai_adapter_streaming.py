@@ -17,6 +17,8 @@ class _DummyStreamEvent:
     type: str
     delta: str = ""
     part: Any = None
+    item: Any = None
+    item_id: str = ""
 
 
 class _DummyResponseStream:
@@ -93,6 +95,42 @@ class _DummyResponsesWithReasoning(_DummyResponses):
                 _DummyStreamEvent(type="response.output_text.delta", delta="answer"),
             ],
             final_text="answer",
+        )
+
+
+class _DummyResponsesWithToolCall(_DummyResponses):
+    def stream(self, **kwargs: Any) -> _DummyResponseStream:
+        self.last_stream_kwargs = dict(kwargs)
+        return _DummyResponseStream(
+            events=[
+                _DummyStreamEvent(
+                    type="response.output_item.added",
+                    item={
+                        "type": "function_call",
+                        "id": "item_1",
+                        "call_id": "call_1",
+                        "name": "read_file",
+                        "arguments": "",
+                    },
+                ),
+                _DummyStreamEvent(
+                    type="response.function_call_arguments.delta",
+                    item_id="item_1",
+                    delta='{"path":"README.md"}',
+                ),
+                _DummyStreamEvent(
+                    type="response.output_item.done",
+                    item={
+                        "type": "function_call",
+                        "id": "item_1",
+                        "call_id": "call_1",
+                        "name": "read_file",
+                        "arguments": '{"path":"README.md"}',
+                        "status": "completed",
+                    },
+                ),
+            ],
+            final_text="",
         )
 
 
@@ -242,3 +280,44 @@ def test_openai_adapter_uses_oauth_access_token_when_api_key_missing(
     assert adapter.client.default_headers == {  # type: ignore[attr-defined]
         "OpenAI-Account": "acct_test_123"
     }
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_streaming_captures_function_calls_without_leaking_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENAI_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_ACCOUNT_ID", raising=False)
+
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+        streaming_enabled=True,
+        interrupt_on_tool_call=True,
+    )
+    adapter = OpenAIAdapter(model_config)
+    adapter.client = _DummyOpenAIClient()  # type: ignore[assignment]
+    adapter.client.responses = _DummyResponsesWithToolCall()
+
+    chunks: list[tuple[str, str]] = []
+
+    async def on_chunk(chunk: str, message_type: str) -> None:
+        chunks.append((chunk, message_type))
+
+    result = await adapter.get_response(
+        [{"role": "user", "content": "hi"}],
+        stream=True,
+        stream_callback=on_chunk,
+    )
+
+    assert result == ""
+    assert chunks == []
+    assert adapter.get_and_clear_last_tool_call() == {
+        "item_id": "item_1",
+        "call_id": "call_1",
+        "name": "read_file",
+        "arguments": '{"path":"README.md"}',
+    }
+    assert adapter.get_and_clear_last_tool_call() is None

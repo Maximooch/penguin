@@ -1734,13 +1734,23 @@ class Engine:
         extra_kwargs = {}
         try:
             model_cfg = getattr(self, "model_config", None)
-            if model_cfg and getattr(model_cfg, "use_responses_api", False):
+            uses_openai_native_responses = bool(
+                model_cfg
+                and getattr(model_cfg, "provider", "") == "openai"
+                and getattr(model_cfg, "client_preference", "") == "native"
+            )
+            if model_cfg and (
+                getattr(model_cfg, "use_responses_api", False)
+                or uses_openai_native_responses
+            ):
                 tools_payload = (
                     tool_manager.get_responses_tools()
                     if hasattr(tool_manager, "get_responses_tools")
                     else []
                 )
                 if tools_payload:
+                    if uses_openai_native_responses:
+                        setattr(model_cfg, "interrupt_on_tool_call", True)
                     extra_kwargs["tools"] = tools_payload
                     extra_kwargs["tool_choice"] = "auto"
         except Exception as _tools_err:
@@ -1877,6 +1887,17 @@ class Engine:
 
         return diagnostics
 
+    def _handler_has_pending_tool_call(self, api_client: APIClient) -> bool:
+        """Return whether the active handler captured a tool call to execute."""
+        try:
+            handler = getattr(api_client, "client_handler", None)
+            checker = getattr(handler, "has_pending_tool_call", None)
+            if callable(checker):
+                return bool(checker())
+        except Exception:
+            logger.debug("Failed to check handler for pending tool call", exc_info=True)
+        return False
+
     async def _call_llm_with_retry(
         self,
         api_client: APIClient,
@@ -1910,6 +1931,11 @@ class Engine:
 
         # If empty, retry once with stream=False (some providers fail in streaming mode)
         if not assistant_response or not assistant_response.strip():
+            if self._handler_has_pending_tool_call(api_client):
+                logger.info(
+                    "_llm_step received empty text because handler captured a tool call; skipping empty-response retry."
+                )
+                return assistant_response or ""
             logger.warning(
                 "_llm_step got empty response (stream=%s). Retrying once without streaming.",
                 streaming,
@@ -1918,6 +1944,11 @@ class Engine:
 
         # Still empty? Raise exception to prevent infinite loops
         if not assistant_response or not assistant_response.strip():
+            if self._handler_has_pending_tool_call(api_client):
+                logger.info(
+                    "_llm_step still has no assistant text after retry because a tool call is pending; returning control to tool execution."
+                )
+                return assistant_response or ""
             # Build detailed diagnostics
             diagnostics = self._build_empty_response_diagnostics(
                 api_client, messages, assistant_response

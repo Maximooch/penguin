@@ -114,3 +114,31 @@ def test_oauth_record_refresh_window_helpers() -> None:
         )
         is True
     )
+
+
+def test_placeholder_api_record_is_not_treated_as_connected(monkeypatch) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    assert (
+        provider_credentials.provider_connected(
+            "openrouter",
+            {"openrouter": {"type": "api", "key": "sk-test"}},
+        )
+        is False
+    )
+
+
+def test_placeholder_api_record_does_not_override_runtime_key(monkeypatch) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    core = SimpleNamespace(
+        model_config=SimpleNamespace(provider="openrouter", api_key="sk-real-runtime")
+    )
+
+    provider_credentials.apply_credentials_to_runtime(
+        core,
+        "openrouter",
+        {"type": "api", "key": "sk-test"},
+    )
+
+    assert core.model_config.api_key == "sk-real-runtime"
+    assert os.getenv("OPENROUTER_API_KEY") is None
