@@ -616,6 +616,7 @@ The engine's `run_response` and `run_task` methods use explicit termination sign
 
 **run_response (Conversational Mode):**
 - Terminates ONLY when `finish_response` tool is called
+- `finish_response` is a pure terminator; final answer content must be normal assistant text, not tool parameters or summaries
 - Max iterations (default 5000) as safety limit
 - NO implicit termination on empty action results
 

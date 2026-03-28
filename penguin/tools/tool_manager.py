@@ -374,15 +374,10 @@ class ToolManager:
             },
             {
                 "name": "finish_response",
-                "description": "Signal that your response is complete. Call when you've answered the user and have no more actions to take. This stops the response loop.",
+                "description": "Signal that your response is complete. Call when you've answered the user and have no more actions to take. This stops the response loop. Do not pass summary text here; provide the final answer in normal assistant content before calling this tool.",
                 "input_schema": {
                     "type": "object",
-                    "properties": {
-                        "summary": {
-                            "type": "string",
-                            "description": "Optional brief summary of your response.",
-                        }
-                    },
+                    "properties": {},
                     "required": [],
                 },
             },
@@ -3247,9 +3242,7 @@ class ToolManager:
                     tool_input["branch_name"],
                 ),
                 # Response/Task completion signals
-                "finish_response": lambda: self.task_tools.finish_response(
-                    tool_input.get("summary")
-                ),
+                "finish_response": lambda: self.task_tools.finish_response(),
                 "finish_task": lambda: self.task_tools.finish_task(
                     json.dumps(tool_input) if tool_input else None
                 ),

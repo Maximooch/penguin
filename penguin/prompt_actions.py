@@ -885,6 +885,8 @@ COMPLETION_TOOLS = """
 **Tool call syntax:** `<finish_response></finish_response>`  
 **Parameters:** None
 
+**Important:** Put the final answer in normal assistant content before calling `finish_response`. Do not pass summary text here; summaries belong on `finish_task`.
+
 ### finish_task  
 **Purpose:** Mark a formal task as complete.  
 **When to use:** Finished implementing a feature or resolving a task.  

@@ -8,19 +8,18 @@ class TaskTools:
     def finish_response(self, summary: Optional[str] = None) -> str:
         """
         Signal that the conversational response is complete.
-        
+
         Called by the LLM when it has finished responding to the user
         and has no more actions to take. This stops the run_response loop.
-        
+
         Args:
-            summary: Optional brief summary of the response.
-            
+            summary: Deprecated legacy input. Ignored for backward compatibility.
+
         Returns:
             A confirmation message.
         """
         # This tool is a signal for Engine.run_response to stop.
-        if summary:
-            return f"Response complete. Summary: {summary}"
+        # Ignore legacy summary input so it cannot overshadow the final response.
         return "Response complete."
 
     def finish_task(self, params: Optional[str] = None) -> str:
