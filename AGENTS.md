@@ -13,6 +13,9 @@ Commands
 - Full repo tests (legacy/misc): python run_all_tests.py ; python misc/run_all_memory_tests.py
 - Build wheel/sdist: python -m build
 - Publish (manual): twine upload dist/*
+- Dev web server: PORT=8080 uv run penguin-web
+- Dev web server with reload: PORT=8080 DEBUG=true uv run penguin-web
+- TUI against dev web server: uv run penguin --url http://127.0.0.1:8080 --no-web-autostart
 
 Style and Conventions
 - Follow .cursorrules at repo root. Key points: PEP 8, explicit > implicit, single responsibility, comprehensive type annotations, Google-style docstrings, robust exception handling, logging.
