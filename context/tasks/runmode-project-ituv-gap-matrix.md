@@ -1,0 +1,386 @@
+# RunMode + Project Management + Blueprint/ITUV Gap Matrix
+
+## Purpose
+
+This document captures the current state of the `RunMode`, project management, blueprint, and ITUV plumbing. It focuses on what is actually implemented, what is only modeled, what is broken or ambiguous, and the minimum plan required to make the system function reliably.
+
+## Technical Overview
+
+### System Components
+
+- `penguin/project/manager.py`
+  - Primary control plane for projects and tasks.
+  - Handles project/task CRUD, status transitions, dependency checks, DAG construction, DAG frontier selection, and blueprint sync.
+- `penguin/project/models.py`
+  - Defines `Task`, `Project`, `Blueprint`, `BlueprintItem`, `TaskStatus`, and `TaskPhase`.
+  - Contains most of the schema needed for ITUV, but schema is not the same as enforcement.
+- `penguin/project/blueprint_parser.py`
+  - Parses blueprint files from Markdown, YAML, or JSON.
+  - Supports frontmatter, tasks, dependencies, acceptance criteria, recipe references, validation blocks, and usage recipes.
+- `penguin/run_mode.py`
+  - Executes a task autonomously.
+  - Supports single-task and continuous mode.
+  - Can optionally use DAG selection when a `project_id` is present.
+- `penguin/project/workflow_orchestrator.py`
+  - The current orchestration layer tying task selection, execution, validation, and completion together.
+- `penguin/project/validation_manager.py`
+  - Current validation gate.
+  - Today it is basically a pytest runner with permissive fallback behavior.
+- `penguin/project/task_executor.py`
+  - Bridges project tasks into `RunMode` execution.
+
+### Current Functional Flow
+
+#### Blueprint Path
+
+1. Blueprint file is parsed into a `Blueprint` plus `BlueprintItem`s.
+2. `ProjectManager.sync_blueprint()` creates or updates project tasks.
+3. Blueprint dependency IDs are resolved into task IDs.
+4. DAG cache is invalidated.
+5. Continuous mode can later pull the next ready task using DAG selection.
+
+#### Task Execution Path
+
+1. `WorkflowOrchestrator.run_next_task()` asks `ProjectManager` for the next task.
+2. Task is marked `RUNNING`.
+3. `ProjectTaskExecutor.execute_task()` invokes `RunMode.start()`.
+4. `RunMode` executes the task via the core engine.
+5. Validation may run afterward.
+6. Task is eventually marked `COMPLETED`, `FAILED`, or left in an unexpected state.
+
+### What ITUV Means in This Codebase Today
+
+The codebase defines ITUV phases:
+
+- `PENDING`
+- `IMPLEMENT`
+- `TEST`
+- `USE`
+- `VERIFY`
+- `DONE`
+- `BLOCKED`
+
+However, the execution system does not yet enforce a real phase machine. The phases are present in models and blueprint metadata, but the main execution path still behaves more like:
+
+- execute task once
+- maybe run pytest
+- maybe mark completed
+
+That is not a true Implement → Test → Use → Verify pipeline.
+
+## Gap Matrix
+
+| Area | Current State | Evidence | Risk | Minimum Fix |
+| --- | --- | --- | --- | --- |
+| Task model for ITUV | Implemented in schema | `TaskPhase`, `Task.phase`, `recipe`, `acceptance_criteria`, routing metadata | Low | Keep, use as source of truth |
+| Blueprint parsing | Mostly implemented | Markdown/YAML/JSON parsing, frontmatter, tasks, dependencies, recipes, validation | Low | Add tests and stricter validation |
+| Blueprint → task sync | Implemented | `sync_blueprint()` creates/updates tasks and resolves dependencies | Low | Add tests for update/idempotency/dependency errors |
+| DAG scheduling | Implemented for project-scoped execution | `build_dag()`, `get_ready_tasks()`, `get_next_task_dag()` | Medium | Make this the default for project tasks |
+| Legacy task selection | Implemented but weaker | `get_next_task()` sorts only by priority/created_at | Medium | Restrict to fallback-only behavior |
+| Single-task RunMode resolution | Partially implemented, ambiguous fallback | Falls back from `task_id` to global title match | High | Remove global ambiguity; require scoped lookup |
+| Continuous mode project awareness | Partially implemented | DAG is only used if `project_id` exists | Medium | Ensure project-scoped tasks always carry project_id |
+| ITUV phase advancement | Mostly missing | No true phase state machine in orchestrator | High | Add explicit phase transitions and gates |
+| TEST gate | Weakly implemented | Validation is mostly pytest execution | High | Bind phase-specific tests and fail closed |
+| USE gate | Missing as an enforced gate | Recipe is parsed/stored but not executed by orchestrator | High | Add usage recipe execution plumbing |
+| VERIFY gate | Weak and permissive | “pytest missing” and “no tests found” can validate | High | Make verify depend on explicit evidence |
+| Completion integrity | Broken | `RunMode` can complete a task before validation; orchestrator may skip validation | Critical | Centralize completion in orchestrator only |
+| Dependency cycle validation at create time | Incomplete | `_validate_dependencies()` has TODO for cycle detection | Medium | Add cycle detection on create/update |
+| Dream workflow | Stale/broken surface | Constructor mismatches with current class signatures | Medium | Mark deprecated or refactor to compile |
+| No-task behavior in continuous mode | Functional but risky | Falls back to `determine_next_step` synthetic task | Medium | Guard with project context and operator intent |
+
+## Critical Findings
+
+### 1. Completion Can Bypass Validation
+
+This is the biggest integrity bug.
+
+Current behavior:
+
+- `RunMode.start()` can mark a task `COMPLETED` after successful execution.
+- `WorkflowOrchestrator.run_next_task()` reloads the task.
+- If the task is already `COMPLETED`, validation is skipped.
+
+Result:
+
+- A task may be considered done without going through TEST/USE/VERIFY.
+
+That defeats the point of ITUV.
+
+### 2. ITUV Exists in Metadata, Not in Control Flow
+
+The code stores:
+
+- phase
+- phase timeboxes
+- recipe
+- acceptance criteria
+
+But it does not operate on them as hard gates. That means the project system can claim ITUV support while still behaving like a one-shot executor.
+
+### 3. Validation Fails Open
+
+Current validation behavior is too forgiving:
+
+- if changed test files exist, run them
+- otherwise run full pytest
+- if pytest is missing, validation passes
+- if no tests are found, validation passes
+
+That is acceptable for a toy MVP, not for a trustworthy project management workflow.
+
+### 4. Task Resolution Is Ambiguous
+
+When `task_id` lookup fails, `RunMode` falls back to a global title match across all tasks. That can select the wrong task when different projects use similar titles like “Add auth tests” or “Refactor logging”.
+
+### 5. Continuous Mode Still Has Drift Risk
+
+When no task is found, continuous mode synthesizes `determine_next_step`. That may be useful in exploratory workflows, but it is dangerous for project execution because it allows the system to escape the explicit work graph.
+
+## Plan To Fix Missing Plumbing
+
+This is the minimum viable plumbing plan. No gold plating. Just enough to make the system functional and trustworthy.
+
+### Phase 1: Restore Completion Integrity
+
+#### Goal
+
+Ensure no task becomes `COMPLETED` unless it has passed orchestration gates.
+
+#### Changes
+
+- Remove direct task completion from `RunMode.start()`.
+- Make `RunMode` return execution outcome only.
+- Reserve final status transitions for `WorkflowOrchestrator`.
+- If execution succeeds, task should remain `RUNNING` or move to phase-specific review state.
+
+#### Acceptance Criteria
+
+- A successful `RunMode` execution does not directly mark a project task `COMPLETED`.
+- `WorkflowOrchestrator` always decides terminal state.
+- Validation is never skipped solely because executor pre-completed the task.
+
+### Phase 2: Add Real ITUV Phase Progression
+
+#### Goal
+
+Make task phases part of control flow, not decoration.
+
+#### Changes
+
+Add explicit phase transitions:
+
+1. `IMPLEMENT`
+   - Execute coding work.
+   - Capture changed files, tool usage, and execution record.
+2. `TEST`
+   - Run targeted tests first.
+   - Fall back to broader suite only when needed.
+3. `USE`
+   - If a task has a `recipe`, execute or validate that recipe.
+   - Record outputs and pass/fail state.
+4. `VERIFY`
+   - Evaluate acceptance criteria against test/use evidence.
+5. `DONE`
+   - Only reached after gates pass.
+
+#### Acceptance Criteria
+
+- `Task.phase` changes during execution.
+- Failed tests keep task out of `DONE`.
+- Missing required usage recipe evidence blocks completion when a recipe is defined.
+- Acceptance criteria are evaluated before completion.
+
+### Phase 3: Harden Validation
+
+#### Goal
+
+Stop passing tasks without evidence.
+
+#### Changes
+
+- Change `ValidationManager` to fail closed by default.
+- Treat `pytest` missing as failure unless task explicitly opts out.
+- Treat “no tests found” as failure unless task explicitly indicates no tests are required.
+- Add structured validation result fields:
+  - `tests_run`
+  - `tests_passed`
+  - `usage_checks_run`
+  - `acceptance_checks`
+  - `evidence`
+
+#### Acceptance Criteria
+
+- Validation returns machine-usable evidence, not just a summary string.
+- Tasks without tests or other verification paths do not silently pass.
+
+### Phase 4: Wire the USE Gate to Blueprint Recipes
+
+#### Goal
+
+Make blueprint recipes actually matter.
+
+#### Changes
+
+- Create a lightweight recipe runner that supports a narrow, safe recipe vocabulary.
+- Start with support for:
+  - shell command checks
+  - HTTP checks
+  - Python snippets only if already trusted/contained
+- Map `Task.recipe` to a named blueprint recipe.
+- Store recipe execution results in task execution history or validation evidence.
+
+#### Acceptance Criteria
+
+- A task with `recipe` references a known recipe.
+- USE step produces pass/fail evidence.
+- Missing recipe reference fails validation.
+
+### Phase 5: Fix Task Resolution and Scheduling Ambiguity
+
+#### Goal
+
+Make project execution deterministic.
+
+#### Changes
+
+- In `RunMode.start()`, stop using global title fallback for project tasks.
+- Require `task_id` for project-managed execution.
+- In continuous mode, when `project_id` is provided, prefer DAG selection only.
+- Limit synthetic `determine_next_step` behavior to explicit exploratory sessions.
+
+#### Acceptance Criteria
+
+- Project tasks are resolved by ID, not by ambiguous title.
+- Continuous project execution stays inside the project graph.
+
+### Phase 6: Enforce Dependency Integrity Earlier
+
+#### Goal
+
+Catch broken plans before execution.
+
+#### Changes
+
+- Add cycle detection in dependency validation during task create/update.
+- Reject invalid dependency graphs before persisting broken tasks.
+- Add tests for self-dependency, two-node cycle, and longer cycles.
+
+#### Acceptance Criteria
+
+- Invalid dependency graphs are rejected at creation/sync time.
+- DAG build is no longer the first place cycles are discovered.
+
+### Phase 7: Clean Up Stale Workflow Surfaces
+
+#### Goal
+
+Reduce misleading or broken entry points.
+
+#### Changes
+
+- Either refactor `dream_workflow.py` to current signatures or mark it deprecated.
+- Audit any callers that still assume outdated constructor contracts.
+- Keep one obvious orchestration path.
+
+#### Acceptance Criteria
+
+- No dead workflow entry points with broken constructor calls.
+- Docs point to the real orchestration path.
+
+## Suggested Execution Order
+
+1. Fix completion bypass.
+2. Make validation fail closed.
+3. Add explicit ITUV phase transitions.
+4. Wire recipe execution for USE.
+5. Fix task resolution and continuous mode drift.
+6. Add cycle detection on dependency validation.
+7. Remove or repair stale workflow code.
+
+That order is important. If the completion logic is still wrong, everything else is theater.
+
+## Functional Definition Of “Good Enough”
+
+The system should be considered functionally usable when all of the following are true:
+
+- Blueprint tasks can be imported into a project.
+- Dependencies are valid and DAG scheduling selects only ready tasks.
+- RunMode executes only the intended task.
+- A task cannot reach `COMPLETED`/`DONE` without passing TEST, USE when applicable, and VERIFY.
+- Acceptance criteria are checked using explicit evidence.
+- Validation failures are visible and block completion.
+- Continuous mode stays inside project scope unless deliberately placed in exploration mode.
+
+## Future Considerations
+
+These are not required for basic functionality, but they are natural next steps.
+
+### Better Evidence Models
+
+- Structured acceptance-criteria evaluators.
+- Artifact capture for screenshots, API responses, logs, or command output.
+- Rich execution records linked to each ITUV phase.
+
+### Smarter Scheduling
+
+- Make DAG selection phase-aware.
+- Support parallel execution for `parallelizable` tasks.
+- Use effort/value/risk as real scheduling inputs, not just stored metadata.
+
+### Agent Routing
+
+- Route by `agent_role` and `skills` to specialized sub-agents.
+- Enforce tool restrictions using `required_tools`.
+- Add reviewer/QA passes before final completion.
+
+### Blueprint Quality Tooling
+
+- Lint blueprint files before sync.
+- Detect missing acceptance criteria or recipes.
+- Detect orphan dependencies and duplicate blueprint IDs.
+
+### Human Governance
+
+- Approval checkpoints for risky tasks.
+- PR gating tied to VERIFY evidence.
+- Explicit reopen flow for failed or partially validated tasks.
+
+## Potential User Stories
+
+### Blueprint Author
+
+- As a blueprint author, I want to define tasks, dependencies, acceptance criteria, and usage recipes in one document so that project execution can be driven from a single source of truth.
+
+### Project Operator
+
+- As a project operator, I want continuous mode to work only on ready tasks in a specific project so that autonomous execution does not drift into unrelated work.
+
+### QA Owner
+
+- As a QA owner, I want tasks to fail closed when tests, recipes, or acceptance evidence are missing so that “completed” actually means something.
+
+### Implementer
+
+- As an implementer, I want tasks to progress through Implement, Test, Use, and Verify phases with visible state transitions so that failures are diagnosable and work can be resumed cleanly.
+
+### Reviewer
+
+- As a reviewer, I want each completed task to include structured evidence from tests and usage checks so that I can approve outcomes instead of guessing.
+
+### Maintainer
+
+- As a maintainer, I want stale workflow entry points removed or repaired so that the codebase has one reliable execution path instead of several conflicting ones.
+
+## Recommended First Ticket Set
+
+1. Prevent `RunMode` from directly completing project tasks.
+2. Refactor `WorkflowOrchestrator` into an explicit ITUV phase runner.
+3. Harden `ValidationManager` to fail closed.
+4. Implement minimal recipe execution for USE.
+5. Remove ambiguous title fallback for project task resolution.
+6. Add cycle detection during dependency validation.
+7. Deprecate or repair `dream_workflow.py`.
+
+## Final Note
+
+The codebase is closer to “promising scaffolding” than “finished workflow engine”. The good news is that the missing pieces are mostly plumbing and control-flow enforcement, not a full architectural rewrite. The bad news is that until those gates are real, the system can lie about task completion.

@@ -76,6 +76,8 @@ class Message:
     - Images (via OpenAI format {"type": "image_url", "image_url": {...}})
     - Audio (via adapter-specific format)
     - File attachments (via adapter-specific format)
+    - Video (via adapter-specific format)
+    - Other structured content as needed
     """
     role: str
     content: Any

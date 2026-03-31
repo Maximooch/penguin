@@ -252,7 +252,7 @@ class ContextWindowManager:
         # Default allocation percentages (can be made configurable)
         allocations = {
             MessageCategory.SYSTEM: 0.10,     # 10% - highest priority (only system prompt)
-            MessageCategory.CONTEXT: 0.30,    # 35% - high priority
+            MessageCategory.CONTEXT: 0.30,    # 30% - high priority
             MessageCategory.DIALOG: 0.40,     # 40% - medium priority
             MessageCategory.SYSTEM_OUTPUT: 0.20  # 20% - lowest priority (renamed from ACTIONS)
         }
