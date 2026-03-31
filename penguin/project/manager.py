@@ -271,14 +271,16 @@ class ProjectManager:
             scope = f"project '{project_id}'" if project_id else "independent tasks"
             raise ValidationError(f"Task '{title}' already exists in {scope}", field="title")
         
-        # Validate dependencies exist and don't create cycles
-        if dependencies:
-            self._validate_dependencies(dependencies, project_id)
-        
-        # Create task
+        # Create task identity early so dependency validation can reason
+        # about the prospective graph, not just existing rows.
         now = datetime.utcnow().isoformat()
         task_id = self._generate_id(title)
+
+        # Validate dependencies exist and don't create cycles
+        if dependencies:
+            self._validate_dependencies(dependencies, project_id, task_id=task_id)
         
+        # Create task
         task = Task(
             id=task_id,
             title=title.strip(),
@@ -635,8 +637,13 @@ class ProjectManager:
         content = f"{text}_{timestamp}_{uuid.uuid4().hex[:8]}"
         return hashlib.sha256(content.encode()).hexdigest()[:16]
     
-    def _validate_dependencies(self, dependencies: List[str], project_id: Optional[str]) -> None:
-        """Validate task dependencies exist and don't create cycles."""
+    def _validate_dependencies(
+        self,
+        dependencies: List[str],
+        project_id: Optional[str],
+        task_id: Optional[str] = None,
+    ) -> None:
+        """Validate task dependencies exist and reject cycles immediately."""
         for dep_id in dependencies:
             dep_task = self.storage.get_task(dep_id)
             if not dep_task:
@@ -645,12 +652,57 @@ class ProjectManager:
             # Ensure dependency is in same project (or both are independent)
             if dep_task.project_id != project_id:
                 raise DependencyError(
-                    f"Dependency task must be in the same project", dep_id
+                    "Dependency task must be in the same project", dep_id
                 )
+
+            if task_id and dep_id == task_id:
+                raise DependencyError(
+                    f"Dependency cycle detected for task {task_id}: self-dependency", dep_id
+                )
+
+        if task_id:
+            self._validate_project_dependency_graph(
+                project_id=project_id,
+                dependency_overrides={task_id: dependencies},
+            )
         
-        # TODO: Implement cycle detection algorithm
-        # For now, we'll skip cycle detection but this should be added
-        logger.debug(f"Validated {len(dependencies)} dependencies")
+        logger.debug("Validated %s dependencies for task %s", len(dependencies), task_id)
+
+    def _validate_project_dependency_graph(
+        self,
+        project_id: Optional[str],
+        dependency_overrides: Optional[Dict[str, List[str]]] = None,
+    ) -> None:
+        """Validate a project dependency graph, including prospective overrides."""
+        dependency_overrides = dependency_overrides or {}
+
+        if project_id is None:
+            tasks = [task for task in self.list_tasks() if task.project_id is None]
+        else:
+            tasks = self.list_tasks(project_id)
+
+        dag = nx.DiGraph()
+        task_map = {task.id: task for task in tasks}
+
+        for override_task_id in dependency_overrides:
+            dag.add_node(override_task_id)
+
+        for task in tasks:
+            dag.add_node(task.id)
+
+        for task in tasks:
+            effective_dependencies = dependency_overrides.get(task.id, task.dependencies)
+            for dep_id in effective_dependencies:
+                dag.add_edge(dep_id, task.id)
+
+        for override_task_id, dependencies in dependency_overrides.items():
+            if override_task_id not in task_map:
+                for dep_id in dependencies:
+                    dag.add_edge(dep_id, override_task_id)
+
+        if not nx.is_directed_acyclic_graph(dag):
+            cycles = list(nx.simple_cycles(dag))
+            raise DependencyError(f"Dependency cycle detected: {cycles[:3]}")
     
     def _is_task_blocked(self, task: Task) -> bool:
         """Check if a task is blocked by incomplete dependencies."""
@@ -993,6 +1045,7 @@ class ProjectManager:
                 skipped.append(item.id)
         
         # Second pass: resolve dependencies
+        dependency_updates: Dict[str, List[str]] = {}
         for item in blueprint.items:
             task_id = id_mapping.get(item.id)
             if not task_id:
@@ -1010,7 +1063,19 @@ class ProjectManager:
                     resolved_deps.append(dep_task_id)
                 else:
                     logger.warning(f"Dependency {dep_blueprint_id} not found for task {item.id}")
-            
+
+            dependency_updates[task.id] = resolved_deps
+
+        self._validate_project_dependency_graph(
+            project_id=project_id,
+            dependency_overrides=dependency_updates,
+        )
+
+        for task_id, resolved_deps in dependency_updates.items():
+            task = self.storage.get_task(task_id)
+            if not task:
+                continue
+
             if resolved_deps != task.dependencies:
                 task.dependencies = resolved_deps
                 task.updated_at = datetime.utcnow().isoformat()
