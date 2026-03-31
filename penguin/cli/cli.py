@@ -2965,18 +2965,19 @@ def task_complete(task_id: str = typer.Argument(..., help="Task ID to complete")
                 console.print(f"[red]Error: Task with ID '{task_id}' not found[/red]")
                 raise typer.Exit(code=1)
 
-            # Use update_task_status method for status changes
-            success = _core.project_manager.update_task_status(
-                task_id, TaskStatus.COMPLETED
-            )
-            if not success:
-                console.print("[red]Failed to complete task[/red]")
+            if task.status == TaskStatus.COMPLETED:
+                updated_task = task
+            elif task.status == TaskStatus.PENDING_REVIEW:
+                task.approve("cli", notes="Approved via CLI")
+                _core.project_manager.storage.update_task(task)
+                updated_task = await _core.project_manager.get_task_async(task_id)
+            else:
+                console.print(
+                    "[red]Task must be in pending_review before it can be approved[/red]"
+                )
                 raise typer.Exit(code=1)
 
-            # Get updated task
-            updated_task = await _core.project_manager.get_task_async(task_id)
-
-            console.print(f"[green]✓ Task '{task.title}' completed[/green]")
+            console.print(f"[green]✓ Task '{task.title}' approved[/green]")
             console.print(f"  Status: {updated_task.status.value}")
 
         except Exception as e:

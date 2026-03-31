@@ -4192,23 +4192,31 @@ async def start_task(task_id: str, core: PenguinCore = Depends(get_core)):
 
 @router.post("/api/v1/tasks/{task_id}/complete")
 async def complete_task(task_id: str, core: PenguinCore = Depends(get_core)):
-    """Complete a task (set status to completed)."""
+    """Approve a review-ready task into completed status."""
     try:
         from penguin.project.models import TaskStatus
 
-        success = core.project_manager.update_task_status(
-            task_id, TaskStatus.COMPLETED, "Completed via API"
-        )
-        if not success:
+        task = await core.project_manager.get_task_async(task_id)
+        if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        # Get the updated task
-        task = await core.project_manager.get_task_async(task_id)
+        if task.status == TaskStatus.COMPLETED:
+            approved_task = task
+        elif task.status == TaskStatus.PENDING_REVIEW:
+            task.approve("api", notes="Approved via API")
+            core.project_manager.storage.update_task(task)
+            approved_task = await core.project_manager.get_task_async(task_id)
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="Task must be pending_review before it can be approved",
+            )
+
         return {
-            "id": task.id,
-            "title": task.title,
-            "status": task.status.value,
-            "message": "Task completed successfully",
+            "id": approved_task.id,
+            "title": approved_task.title,
+            "status": approved_task.status.value,
+            "message": "Task approved successfully",
         }
     except HTTPException:
         raise
@@ -4260,14 +4268,15 @@ async def execute_task_from_project(
         )
 
         # Update task status based on result
-        final_status = (
-            TaskStatus.COMPLETED
-            if result.get("status") == "completed"
-            else TaskStatus.FAILED
-        )
-        core.project_manager.update_task_status(
-            task_id, final_status, f"Engine execution result: {result.get('status')}"
-        )
+        if result.get("status") == "completed":
+            task.mark_pending_review("Engine execution completed", reviewer="engine")
+            core.project_manager.storage.update_task(task)
+            final_task_status = task.status.value
+        else:
+            core.project_manager.update_task_status(
+                task_id, TaskStatus.FAILED, f"Engine execution result: {result.get('status')}"
+            )
+            final_task_status = TaskStatus.FAILED.value
 
         return {
             "task_id": task_id,
@@ -4276,7 +4285,7 @@ async def execute_task_from_project(
             "iterations": result.get("iterations", 0),
             "execution_time": result.get("execution_time", 0),
             "action_results": result.get("action_results", []),
-            "final_task_status": final_status.value,
+            "final_task_status": final_task_status,
         }
 
     except HTTPException:
