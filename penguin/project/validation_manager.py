@@ -1,13 +1,13 @@
 """Validation Manager for Penguin.
 
-For the MVP, this module implements a simple validation step: running pytest.
+For the MVP, this module implements a validation step centered on pytest.
 """
 
-import logging
-import subprocess
 import asyncio
+import logging
 from pathlib import Path
-from typing import Any, Dict, Union, List
+from typing import Any, Dict, List, Union
+
 from penguin.project.models import Task
 
 logger = logging.getLogger(__name__)
@@ -15,10 +15,10 @@ logger = logging.getLogger(__name__)
 
 class ValidationManager:
     """Manages validation of task deliverables by running tests."""
-    
+
     def __init__(self, workspace_path: Union[str, Path]):
         """Initialize ValidationManager.
-        
+
         Args:
             workspace_path: Path to the workspace root where tests will be run.
         """
@@ -26,19 +26,9 @@ class ValidationManager:
         logger.info("ValidationManager initialized.")
 
     async def validate_task_completion(self, task: Task, changed_files: List[str]) -> Dict[str, Any]:
-        """
-        Validate task completion by running pytest, targeting changed files.
-        
-        Args:
-            task: The Task object that was executed.
-            changed_files: A list of files modified by the agent.
-            
-        Returns:
-            A dictionary with validation results.
-        """
-        logger.info(f"Performing validation for task: {task.title}")
+        """Validate task completion by running pytest, targeting changed files."""
+        logger.info("Performing validation for task: %s", task.title)
 
-        # Determine which test files to run
         test_files_to_run = [
             file for file in changed_files
             if file.startswith("tests/") or file.startswith("test_") or file.endswith("_test.py")
@@ -46,10 +36,24 @@ class ValidationManager:
 
         if test_files_to_run:
             command = ["pytest"] + test_files_to_run
-            logger.info(f"Found {len(test_files_to_run)} changed test files. Running targeted tests.")
+            logger.info(
+                "Found %s changed test files. Running targeted tests.",
+                len(test_files_to_run),
+            )
         else:
             command = ["pytest"]
             logger.info("No test files were modified. Running full test suite as a fallback.")
+
+        evidence: Dict[str, Any] = {
+            "command": command,
+            "changed_files": changed_files,
+            "test_files_to_run": test_files_to_run,
+            "targeted": bool(test_files_to_run),
+            "pytest_available": True,
+            "pytest_exit_code": None,
+            "stdout": "",
+            "stderr": "",
+        }
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -58,53 +62,70 @@ class ValidationManager:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
 
-            # Pytest exit codes:
-            # 0: All tests were collected and passed
-            # 1: Tests were collected and run but some failed
-            # 2: Test execution was interrupted by the user
-            # 3: Internal error occurred
-            # 4: pytest command line usage error
-            # 5: No tests were collected
-            
-            # For our purpose, 0 (all passed) and 5 (no tests found) are success.
-            is_success = process.returncode in [0, 5]
-            
-            summary = "Tests passed." if process.returncode == 0 else "No tests found to run."
-            if not is_success:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+            stdout_text = stdout.decode()
+            stderr_text = stderr.decode()
+
+            evidence["pytest_exit_code"] = process.returncode
+            evidence["stdout"] = stdout_text
+            evidence["stderr"] = stderr_text
+
+            if process.returncode == 0:
+                validated = True
+                summary = "Tests passed."
+            elif process.returncode == 5:
+                validated = False
+                summary = "No tests found to run."
+            else:
+                validated = False
                 summary = "Tests failed."
 
-            details = f"pytest exit code: {process.returncode}\n\nSTDOUT:\n{stdout.decode()}\n\nSTDERR:\n{stderr.decode()}"
+            details = (
+                f"pytest exit code: {process.returncode}\n\n"
+                f"STDOUT:\n{stdout_text}\n\nSTDERR:\n{stderr_text}"
+            )
 
-            logger.info(f"Validation for '{task.title}' completed. Success: {is_success}.")
-            
+            logger.info(
+                "Validation for '%s' completed. Success: %s.",
+                task.title,
+                validated,
+            )
+
             return {
-                "validated": is_success,
+                "validated": validated,
                 "summary": summary,
-                "details": details
+                "details": details,
+                "evidence": evidence,
             }
 
         except FileNotFoundError:
-            # This occurs if pytest is not installed.
-            logger.warning("`pytest` command not found. Skipping validation.")
+            logger.warning("`pytest` command not found. Failing validation closed.")
+            evidence["pytest_available"] = False
             return {
-                "validated": True, # Treat as success if pytest isn't available
-                "summary": "Validation skipped: pytest not found.",
-                "details": "Pytest is not installed in the environment."
+                "validated": False,
+                "summary": "Validation failed: pytest not found.",
+                "details": "Pytest is not installed in the environment.",
+                "evidence": evidence,
             }
         except asyncio.TimeoutError:
-            logger.error(f"Validation for '{task.title}' timed out.")
+            logger.error("Validation for '%s' timed out.", task.title)
             return {
                 "validated": False,
                 "summary": "Tests timed out.",
-                "details": "The test suite took longer than 5 minutes to run."
+                "details": "The test suite took longer than 5 minutes to run.",
+                "evidence": evidence,
             }
-        except Exception as e:
-            logger.error(f"An unexpected error occurred during validation for '{task.title}': {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(
+                "An unexpected error occurred during validation for '%s': %s",
+                task.title,
+                exc,
+                exc_info=True,
+            )
             return {
                 "validated": False,
                 "summary": "An unexpected error occurred during validation.",
-                "details": str(e)
-            } 
+                "details": str(exc),
+                "evidence": evidence,
+            }
