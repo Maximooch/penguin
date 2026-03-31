@@ -25,6 +25,31 @@ class ValidationManager:
         self.workspace_path = Path(workspace_path)
         logger.info("ValidationManager initialized.")
 
+    def _build_acceptance_criteria_results(
+        self,
+        task: Task,
+        tests_passed: bool,
+        tests_run: bool,
+    ) -> List[Dict[str, Any]]:
+        """Build a minimal evidence map for acceptance criteria."""
+        criteria = list(getattr(task, "acceptance_criteria", []) or [])
+
+        if not criteria:
+            return []
+
+        if tests_passed and tests_run:
+            status = "covered_by_test_evidence"
+        else:
+            status = "unchecked"
+
+        return [
+            {
+                "criterion": criterion,
+                "status": status,
+            }
+            for criterion in criteria
+        ]
+
     async def validate_task_completion(self, task: Task, changed_files: List[str]) -> Dict[str, Any]:
         """Validate task completion by running pytest, targeting changed files."""
         logger.info("Performing validation for task: %s", task.title)
@@ -53,6 +78,8 @@ class ValidationManager:
             "pytest_exit_code": None,
             "stdout": "",
             "stderr": "",
+            "tests_run": False,
+            "tests_passed": False,
         }
 
         try:
@@ -74,12 +101,28 @@ class ValidationManager:
             if process.returncode == 0:
                 validated = True
                 summary = "Tests passed."
+                evidence["tests_run"] = True
+                evidence["tests_passed"] = True
             elif process.returncode == 5:
                 validated = False
                 summary = "No tests found to run."
             else:
                 validated = False
                 summary = "Tests failed."
+                evidence["tests_run"] = True
+
+            acceptance_criteria_results = self._build_acceptance_criteria_results(
+                task=task,
+                tests_passed=evidence["tests_passed"],
+                tests_run=evidence["tests_run"],
+            )
+            acceptance_criteria_gate_passed = all(
+                item["status"] == "covered_by_test_evidence"
+                for item in acceptance_criteria_results
+            )
+
+            if not acceptance_criteria_results:
+                acceptance_criteria_gate_passed = True
 
             details = (
                 f"pytest exit code: {process.returncode}\n\n"
@@ -97,24 +140,43 @@ class ValidationManager:
                 "summary": summary,
                 "details": details,
                 "evidence": evidence,
+                "review_required": bool(getattr(task, "acceptance_criteria", [])),
+                "acceptance_criteria_results": acceptance_criteria_results,
+                "acceptance_criteria_gate_passed": acceptance_criteria_gate_passed,
             }
 
         except FileNotFoundError:
             logger.warning("`pytest` command not found. Failing validation closed.")
             evidence["pytest_available"] = False
+            acceptance_criteria_results = self._build_acceptance_criteria_results(
+                task=task,
+                tests_passed=False,
+                tests_run=False,
+            )
             return {
                 "validated": False,
                 "summary": "Validation failed: pytest not found.",
                 "details": "Pytest is not installed in the environment.",
                 "evidence": evidence,
+                "review_required": bool(getattr(task, "acceptance_criteria", [])),
+                "acceptance_criteria_results": acceptance_criteria_results,
+                "acceptance_criteria_gate_passed": False if acceptance_criteria_results else True,
             }
         except asyncio.TimeoutError:
             logger.error("Validation for '%s' timed out.", task.title)
+            acceptance_criteria_results = self._build_acceptance_criteria_results(
+                task=task,
+                tests_passed=False,
+                tests_run=False,
+            )
             return {
                 "validated": False,
                 "summary": "Tests timed out.",
                 "details": "The test suite took longer than 5 minutes to run.",
                 "evidence": evidence,
+                "review_required": bool(getattr(task, "acceptance_criteria", [])),
+                "acceptance_criteria_results": acceptance_criteria_results,
+                "acceptance_criteria_gate_passed": False if acceptance_criteria_results else True,
             }
         except Exception as exc:
             logger.error(
@@ -123,9 +185,17 @@ class ValidationManager:
                 exc,
                 exc_info=True,
             )
+            acceptance_criteria_results = self._build_acceptance_criteria_results(
+                task=task,
+                tests_passed=False,
+                tests_run=False,
+            )
             return {
                 "validated": False,
                 "summary": "An unexpected error occurred during validation.",
                 "details": str(exc),
                 "evidence": evidence,
+                "review_required": bool(getattr(task, "acceptance_criteria", [])),
+                "acceptance_criteria_results": acceptance_criteria_results,
+                "acceptance_criteria_gate_passed": False if acceptance_criteria_results else True,
             }

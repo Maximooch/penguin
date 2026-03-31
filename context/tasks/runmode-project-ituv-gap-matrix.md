@@ -400,6 +400,82 @@ That order is important. If the completion logic is still wrong, everything else
 The system should be considered functionally usable when all of the following are true:
 
 - Blueprint tasks can be imported into a project.
+- Dependencies are valid and DAG scheduling selects only ready tasks.
+- RunMode executes only the intended task.
+- A task cannot reach `COMPLETED` or `DONE` without passing TEST, USE when applicable, and VERIFY.
+- Acceptance criteria are checked using explicit evidence.
+- Validation failures are visible and block completion.
+- Continuous mode stays inside project scope unless deliberately placed in exploration mode.
+
+## Minimal Functional Pass vs Production Hardening
+
+This plan is intentionally being executed in two layers:
+
+1. **Minimal functional pass**
+   - make the ITUV path real
+   - remove bypasses
+   - persist the right state
+   - fail closed
+   - prove the core path with focused tests
+
+2. **Production hardening pass**
+   - enforce legal transitions more strictly
+   - harden concurrency and atomicity
+   - improve migrations and repair paths
+   - attach richer evidence to acceptance criteria
+   - improve observability, retries, and recovery
+   - repair stale broad tests and docs drift
+
+That sequencing is deliberate. The current priority is to make the execution path honest before making it exhaustive.
+
+### What “More Production Ready” Means By Phase
+
+#### Phase 1: Completion Ownership
+
+Minimal pass:
+- `RunMode` cannot mark project tasks complete.
+- The orchestrator owns terminal status decisions.
+
+Production hardening:
+- reject any unauthorized direct transition to `COMPLETED`
+- audit all completion call sites
+- require explicit reopen and audit semantics
+- add stronger invalid-transition tests
+
+#### Phase 2: ITUV State Persistence and Transitions
+
+Minimal pass:
+- persist `phase`
+- expose a manager-level phase API
+- move orchestrator through explicit ITUV phases
+
+Production hardening:
+- validate legal phase transitions
+- record or expose phase transition history more explicitly
+- add migration tests for old task rows
+- handle interruption, restart, and resume semantics cleanly
+- prevent invalid `status × phase` combinations from being persisted
+
+#### Phase 3: Validation and Acceptance Evidence
+
+Minimal pass:
+- fail closed on missing `pytest`
+- fail closed on no tests collected
+- return structured evidence
+- surface acceptance criteria and mark whether they are covered or unchecked
+
+Production hardening:
+- classify validation failures by type
+- link individual acceptance criteria to concrete evidence artifacts
+- support richer evaluator types than “tests passed”
+- preserve validation artifacts durably
+- distinguish “tests passed” from “criterion proved”
+
+### Strategic Rule
+
+Do not confuse “minimal” with “sloppy.”
+
+Minimal means one canonical path, explicit invariants, focused tests, and no fake-success behavior. Hardening comes after that spine exists.
 
 ### Future Fixes / Junk Backlog
 
