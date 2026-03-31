@@ -371,6 +371,14 @@ class ProjectManager:
         if not task:
             raise TaskNotFoundError(f"Task '{task_id}' not found", task_id)
         
+        if new_status in {TaskStatus.PENDING_REVIEW, TaskStatus.COMPLETED} and task.phase != TaskPhase.DONE:
+            raise StateTransitionError(
+                f"Invalid status/phase combination: cannot set status {new_status.value} while phase is {task.phase.value}",
+                task.status.value,
+                new_status.value,
+                task_id,
+            )
+
         # Attempt transition
         if not task.transition_to(new_status, reason, user_id):
             raise StateTransitionError(
@@ -425,6 +433,14 @@ class ProjectManager:
         task = self.storage.get_task(task_id)
         if not task:
             raise TaskNotFoundError(f"Task '{task_id}' not found", task_id)
+
+        if new_phase == TaskPhase.DONE and task.status not in {TaskStatus.PENDING_REVIEW, TaskStatus.COMPLETED}:
+            raise StateTransitionError(
+                f"Invalid status/phase combination: cannot set phase {new_phase.value} while status is {task.status.value}",
+                task.phase.value,
+                new_phase.value,
+                task_id,
+            )
 
         old_phase = task.phase
         task.set_phase(new_phase, reason)

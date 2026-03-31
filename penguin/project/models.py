@@ -466,13 +466,17 @@ class Task:
         # Update task status based on result
         if result == ExecutionResult.SUCCESS:
             if self.status == TaskStatus.RUNNING:
-                self.transition_to(TaskStatus.COMPLETED, reason="Execution successful")
+                self.phase = TaskPhase.DONE
+                self.phase_started_at = datetime.utcnow().isoformat()
+                self.transition_to(TaskStatus.PENDING_REVIEW, reason="Execution successful; pending review")
         elif result == ExecutionResult.FAILURE:
             if self.status == TaskStatus.RUNNING:
                 self.transition_to(TaskStatus.FAILED, reason="Execution failed")
     
     def mark_pending_review(self, notes: str, reviewer: Optional[str] = None) -> None:
         """Mark task as pending human review."""
+        self.phase = TaskPhase.DONE
+        self.phase_started_at = datetime.utcnow().isoformat()
         self.transition_to(TaskStatus.PENDING_REVIEW, reason="Pending review")
         self.review_notes = notes
         if reviewer:
@@ -481,6 +485,9 @@ class Task:
     
     def approve(self, reviewer: str, notes: Optional[str] = None) -> None:
         """Approve task completion."""
+        if self.phase != TaskPhase.DONE:
+            self.phase = TaskPhase.DONE
+            self.phase_started_at = datetime.utcnow().isoformat()
         self.transition_to(TaskStatus.COMPLETED, reason="Approved by reviewer", user_id=reviewer)
         self.reviewed_by = reviewer
         self.reviewed_at = datetime.utcnow().isoformat()
