@@ -140,6 +140,101 @@ When no task is found, continuous mode synthesizes `determine_next_step`. That m
 
 This is the minimum viable plumbing plan. No gold plating. Just enough to make the system functional and trustworthy.
 
+### Phase 0: Define the State Machine Contract
+
+#### Goal
+
+Define the canonical relationship between task `status`, task `phase`, review state, and synthetic task persistence before patching execution flow.
+
+#### Why This Comes First
+
+Right now the codebase effectively has two state machines pretending to be one:
+
+- `status`: lifecycle and review progression
+- `phase`: ITUV execution progression
+
+If the allowed combinations are not defined first, the implementation work in later phases will just move bugs around. That is how you end up with nonsense states like `status=COMPLETED` while `phase=IMPLEMENT`.
+
+#### Changes
+
+- Define allowed `status` × `phase` combinations.
+- Define terminal states and review semantics.
+- Define when automatic verification may promote `PENDING_REVIEW` to `COMPLETED`.
+- Define the persistence contract for synthetic tasks created during continuous mode.
+- Define invalid states and how the system should reject or repair them.
+
+#### Required Invariants
+
+- `status=COMPLETED` implies `phase=DONE`.
+- `phase=DONE` implies `status in {PENDING_REVIEW, COMPLETED}`.
+- `status=RUNNING` implies `phase in {IMPLEMENT, TEST, USE, VERIFY}`.
+- `status=FAILED` implies `phase != DONE`.
+- project-managed execution must resolve tasks by ID, not ambiguous title lookup.
+- synthetic tasks must persist provenance, reason, generator, and project linkage.
+
+#### Acceptance Criteria
+
+- The plan defines one canonical state machine contract for tasks.
+- Later phases reference this contract instead of inventing their own rules.
+- Invalid status/phase combinations are listed explicitly.
+- Synthetic task persistence requirements are defined explicitly.
+
+#### Deliverables
+
+Phase 0 should produce the following concrete artifacts:
+
+- A written contract defining the canonical meanings of `TaskStatus` and `TaskPhase`.
+- A status/phase transition table.
+- An invalid-state table listing forbidden `status × phase` combinations.
+- A short review-semantics section defining:
+  - when `PENDING_REVIEW` is entered
+  - when `PENDING_REVIEW -> COMPLETED` is allowed
+  - when a task is reopened back into active execution
+- A synthetic-task contract defining:
+  - required fields
+  - persistence format and location
+  - linkage to project/task graph
+  - execution eligibility rules
+- A migration/repair note for pre-existing invalid tasks.
+- A list of enforcement points in code, at minimum covering:
+  - `penguin/project/models.py`
+  - `penguin/project/manager.py`
+  - `penguin/run_mode.py`
+  - `penguin/project/workflow_orchestrator.py`
+  - storage-layer validation if needed
+- A compact invariant list that later tests and `penguin_tla.md` can reuse.
+
+#### Definition Checklist
+
+Before Phase 0 is considered complete, the plan must explicitly answer these questions:
+
+- What does each `TaskStatus` mean operationally?
+- What does each `TaskPhase` mean operationally?
+- Which status/phase combinations are allowed?
+- Which combinations are invalid?
+- Which transitions are legal?
+- Who or what is allowed to trigger each transition?
+- What are the terminal states?
+- What is the exact difference between `DONE + PENDING_REVIEW` and `DONE + COMPLETED`?
+- Under what conditions can automatic verification promote a task to `COMPLETED`?
+- How are synthetic tasks persisted and linked back to project scope?
+- How are already-invalid tasks detected and repaired?
+
+#### Acceptance Artifact
+
+Phase 0 should end with a canonical contract in `context/architecture/ituv-task-state-machine-contract.md`.
+
+This gap-matrix document should keep:
+
+- the problem statement
+- the technical overview
+- the phased plan
+- the Phase 0 checklist and deliverables
+- a short summary of the most important invariants
+- future fixes and out-of-scope backlog
+
+This gap-matrix document should not become a second copy of the full state-machine contract tables. If the contract is duplicated across planning docs, it will drift.
+
 ### Phase 1: Restore Completion Integrity
 
 #### Goal
@@ -248,17 +343,18 @@ Make project execution deterministic.
 - In continuous mode, when `project_id` is provided, prefer DAG selection only.
 - Limit synthetic `determine_next_step` behavior to explicit exploratory sessions.
 
-#### Acceptance Criteria
+## Suggested Execution Order
 
-- Project tasks are resolved by ID, not by ambiguous title.
-- Continuous project execution stays inside the project graph.
+1. Define the state machine contract.
+2. Fix completion bypass.
+3. Make validation fail closed.
+4. Add explicit ITUV phase transitions.
+5. Wire recipe execution for USE.
+6. Fix task resolution and continuous mode drift.
+7. Add cycle detection on dependency validation.
+8. Remove or repair stale workflow code.
 
-### Phase 6: Enforce Dependency Integrity Earlier
-
-#### Goal
-
-Catch broken plans before execution.
-
+That order is important. If the state machine contract and completion logic are still wrong, everything else is theater.
 #### Changes
 
 - Add cycle detection in dependency validation during task create/update.
@@ -304,16 +400,43 @@ That order is important. If the completion logic is still wrong, everything else
 The system should be considered functionally usable when all of the following are true:
 
 - Blueprint tasks can be imported into a project.
+
+### Future Fixes / Junk Backlog
+
+These items are not required to make the minimum plumbing functional, but they should stay on the radar because they are likely sources of future breakage or trust erosion.
+
+- Task claim atomicity in project execution.
+  - Task selection and task claim appear to be separate operations.
+  - In a real multi-agent or concurrent executor path, that risks double-claiming the same task.
+- Documentation drift in `README.md` and `architecture.md`.
+  - The docs present orchestration maturity more confidently than the current code justifies.
+  - Fix this after the plumbing is real, not before.
+- Stale orchestration surfaces beyond the current plan scope.
+  - `dream_workflow.py` is an obvious example, but likely not the only one.
+  - Any alternate entry point with outdated constructor assumptions should be audited.
+- Parser and blueprint test coverage.
+  - Parser bugs are silent plan corruption bugs.
+  - Blueprint import, update, and dependency resolution need stronger regression coverage.
+- Continuous-mode synthetic task sprawl.
+  - Persisting synthetic tasks is necessary, but not sufficient.
+  - They will need pruning, deduplication, and operator review rules.
+- Status/phase migration for pre-existing tasks.
+  - Once stricter invariants are enforced, some existing stored tasks may already be invalid.
+  - A migration or repair pass will probably be required.
+- Potential sync/async misuse in orchestration paths.
+  - Some current call sites deserve audit for incorrect async assumptions.
+  - That class of bug is easy to miss and annoying to debug.
 - Dependencies are valid and DAG scheduling selects only ready tasks.
-- RunMode executes only the intended task.
-- A task cannot reach `COMPLETED`/`DONE` without passing TEST, USE when applicable, and VERIFY.
-- Acceptance criteria are checked using explicit evidence.
-- Validation failures are visible and block completion.
-- Continuous mode stays inside project scope unless deliberately placed in exploration mode.
+## Recommended First Ticket Set
 
-## Future Considerations
-
-These are not required for basic functionality, but they are natural next steps.
+1. Define and document the canonical task state machine contract.
+2. Prevent `RunMode` from directly completing project tasks.
+3. Refactor `WorkflowOrchestrator` into an explicit ITUV phase runner.
+4. Harden `ValidationManager` to fail closed.
+5. Implement minimal recipe execution for USE.
+6. Remove ambiguous title fallback for project task resolution.
+7. Add cycle detection during dependency validation.
+8. Deprecate or repair `dream_workflow.py`.
 
 ### Better Evidence Models
 
