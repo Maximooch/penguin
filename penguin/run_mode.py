@@ -261,27 +261,63 @@ class RunMode:
             task = None
             project_manager = self.core.project_manager
             task_id = context.get("task_id") if context else None
+            project_id = context.get("project_id") if context else None
 
             if task_id:
                 task = await project_manager.get_task_async(task_id)
+                if not task:
+                    error_msg = (
+                        f"Task ID '{task_id}' could not be resolved. "
+                        "Refusing ambiguous title fallback."
+                    )
+                    await self._emit_event(
+                        {
+                            "type": "error",
+                            "source": "runmode_task_setup",
+                            "message": error_msg,
+                        }
+                    )
+                    return {
+                        "status": "error",
+                        "message": error_msg,
+                        "completion_type": "error",
+                    }
 
-            if not task:
-                logger.warning(
-                    f"RunMode could not get task by ID '{task_id}'. "
-                    f"Falling back to global search by title: '{name}'"
-                )
-                # This is the legacy behavior and can be ambiguous across projects
-                # Note: get_task_by_title is also ambiguous and may not be scoped.
-                # A better fallback would be ideal in the future.
-                all_tasks = await project_manager.list_tasks_async()
-                for t in all_tasks:
-                    if t.title.lower() == name.lower():
-                        task = t
-                        break
+            elif not description:
+                candidate_tasks = await project_manager.list_tasks_async(project_id=project_id)
+                matching_tasks = [
+                    t for t in candidate_tasks
+                    if t.title.lower() == name.lower()
+                ]
+
+                if len(matching_tasks) == 1:
+                    task = matching_tasks[0]
+                elif len(matching_tasks) > 1:
+                    scope = f"project '{project_id}'" if project_id else "global scope"
+                    error_msg = (
+                        f"Task title '{name}' is ambiguous in {scope}. "
+                        "Provide task_id explicitly."
+                    )
+                    await self._emit_event(
+                        {
+                            "type": "error",
+                            "source": "runmode_task_setup",
+                            "message": error_msg,
+                        }
+                    )
+                    return {
+                        "status": "error",
+                        "message": error_msg,
+                        "completion_type": "error",
+                    }
 
             # If task still not found and no description given, it's an error
             if not task and not description:
-                error_msg = f"Task '{name}' could not be resolved to a specific record and no fallback description was provided."
+                scope = f"project '{project_id}'" if project_id else "available tasks"
+                error_msg = (
+                    f"Task '{name}' could not be resolved in {scope} and no fallback "
+                    "description was provided."
+                )
                 await self._emit_event(
                     {
                         "type": "error",
@@ -341,6 +377,11 @@ class RunMode:
                     "data": {"task_name": name}
                 })
             
+            if isinstance(task_result, dict):
+                task_result.setdefault("task_name", name)
+                if task:
+                    task_result.setdefault("task_id", task.id)
+                    task_result.setdefault("project_id", getattr(task, "project_id", project_id))
             return task_result
 
         except KeyboardInterrupt:
