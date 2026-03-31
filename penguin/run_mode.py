@@ -526,6 +526,21 @@ class RunMode:
                     use_dag=use_dag,
                 )
                 if not task_data:
+                    if project_id:
+                        logger.debug(
+                            "No project-scoped tasks available; refusing synthetic drift task"
+                        )
+                        await self._emit_event({
+                            "type": "status",
+                            "status_type": "continuous_mode_idle",
+                            "data": {
+                                "reason": "no_project_tasks_available",
+                                "project_id": project_id,
+                            }
+                        })
+                        self._shutdown_requested = True
+                        break
+
                     logger.debug("No tasks available, determining next step")
                     # Create general task to determine next steps
                     task_data = {
