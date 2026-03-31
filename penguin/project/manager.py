@@ -449,6 +449,61 @@ class ProjectManager:
             None, self.update_task_phase, task_id, new_phase, reason
         )
     
+    def resolve_task_recipe(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve a task's declared usage recipe from its blueprint source."""
+        task = self.storage.get_task(task_id)
+        if not task:
+            raise TaskNotFoundError(f"Task '{task_id}' not found", task_id)
+
+        if not task.recipe:
+            return None
+
+        if not task.blueprint_source:
+            raise ValidationError(
+                f"Task '{task.id}' declares recipe '{task.recipe}' but has no blueprint source",
+                field="blueprint_source",
+                value=task.recipe,
+            )
+
+        blueprint_path = Path(task.blueprint_source)
+        if not blueprint_path.is_absolute():
+            blueprint_path = self.workspace_path / blueprint_path
+
+        if not blueprint_path.exists():
+            raise ValidationError(
+                f"Blueprint source not found for task '{task.id}': {blueprint_path}",
+                field="blueprint_source",
+                value=str(blueprint_path),
+            )
+
+        from .blueprint_parser import BlueprintParseError, BlueprintParser
+
+        parser = BlueprintParser(base_path=blueprint_path.parent)
+        try:
+            blueprint = parser.parse_file(blueprint_path)
+        except BlueprintParseError as exc:
+            raise ValidationError(
+                f"Failed to parse blueprint source for task '{task.id}': {exc}",
+                field="blueprint_source",
+                value=str(blueprint_path),
+            ) from exc
+
+        for recipe in blueprint.recipes:
+            if recipe.get("name") == task.recipe:
+                return recipe
+
+        raise ValidationError(
+            f"Recipe '{task.recipe}' not found for task '{task.id}'",
+            field="recipe",
+            value=task.recipe,
+        )
+
+    async def resolve_task_recipe_async(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Async version of resolve_task_recipe."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.resolve_task_recipe, task_id
+        )
+    
     def list_tasks(
         self,
         project_id: Optional[str] = None,

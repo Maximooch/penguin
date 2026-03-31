@@ -12,6 +12,7 @@ from .manager import ProjectManager
 from .task_executor import ProjectTaskExecutor
 from .validation_manager import ValidationManager
 from .git_manager import GitManager
+from .exceptions import ValidationError
 from .models import TaskPhase, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,58 @@ class WorkflowOrchestrator:
         """Print a debug message if debugging is enabled."""
         if self._debug_enabled:
             print(f"[WorkflowOrchestrator DEBUG] {message}")
+
+    async def _execute_use_recipe(self, recipe: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a minimal usage recipe, currently supporting shell steps only."""
+        recipe_name = recipe.get("name", "unnamed")
+        steps = recipe.get("steps", [])
+        if not steps:
+            raise ValidationError(
+                f"Recipe '{recipe_name}' has no executable steps",
+                field="recipe",
+                value=recipe_name,
+            )
+
+        results = []
+        for index, step in enumerate(steps, start=1):
+            if "shell" not in step:
+                step_type = next(iter(step.keys()), "unknown")
+                raise ValidationError(
+                    f"Unsupported recipe step type '{step_type}'",
+                    field="recipe_step",
+                    value=step_type,
+                )
+
+            command = step["shell"]
+            process = await asyncio.create_subprocess_shell(
+                command,
+                cwd=str(self.project_manager.workspace_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+            step_result = {
+                "index": index,
+                "type": "shell",
+                "command": command,
+                "returncode": process.returncode,
+                "stdout": stdout.decode(),
+                "stderr": stderr.decode(),
+            }
+            results.append(step_result)
+
+            if process.returncode != 0:
+                return {
+                    "success": False,
+                    "recipe": recipe_name,
+                    "steps": results,
+                }
+
+        return {
+            "success": True,
+            "recipe": recipe_name,
+            "steps": results,
+        }
 
     async def run_next_task(self, project_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
@@ -139,6 +192,48 @@ class WorkflowOrchestrator:
                         "status": "validation_failed",
                         "validation_result": validation_result
                     }
+
+                if getattr(updated_task, "recipe", None):
+                    await self.project_manager.update_task_phase_async(
+                        task.id,
+                        TaskPhase.USE,
+                        "Validation passed; running usage recipe.",
+                    )
+                    try:
+                        resolved_recipe = await self.project_manager.resolve_task_recipe_async(task.id)
+                        use_result = await self._execute_use_recipe(resolved_recipe)
+                        workflow_result["use"] = use_result
+                    except Exception as exc:
+                        success = self.project_manager.update_task_status(
+                            task.id,
+                            TaskStatus.FAILED,
+                            f"Usage recipe failed: {exc}",
+                        )
+                        if not success:
+                            logger.error(f"Failed to update task status to FAILED for task {task.id}")
+                        return {
+                            "task_id": task.id,
+                            "task_title": task.title,
+                            "status": "use_failed",
+                            "final_status": TaskStatus.FAILED.value,
+                            "error": str(exc),
+                        }
+
+                    if not use_result.get("success"):
+                        success = self.project_manager.update_task_status(
+                            task.id,
+                            TaskStatus.FAILED,
+                            "Usage recipe failed.",
+                        )
+                        if not success:
+                            logger.error(f"Failed to update task status to FAILED for task {task.id}")
+                        return {
+                            "task_id": task.id,
+                            "task_title": task.title,
+                            "status": "use_failed",
+                            "final_status": TaskStatus.FAILED.value,
+                            "use_result": use_result,
+                        }
 
                 await self.project_manager.update_task_phase_async(
                     task.id,
