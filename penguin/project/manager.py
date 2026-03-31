@@ -413,6 +413,42 @@ class ProjectManager:
             None, self.update_task_status, task_id, new_status, reason, user_id
         )
     
+    def update_task_phase(
+        self,
+        task_id: str,
+        new_phase: TaskPhase,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Update a task's ITUV phase and persist the change."""
+        task = self.storage.get_task(task_id)
+        if not task:
+            raise TaskNotFoundError(f"Task '{task_id}' not found", task_id)
+
+        old_phase = task.phase
+        task.set_phase(new_phase, reason)
+        self.storage.update_task(task)
+
+        self._publish_event("task_phase_changed", {
+            "task_id": task.id,
+            "old_phase": old_phase.value,
+            "new_phase": new_phase.value,
+            "reason": reason,
+        })
+
+        logger.info("Task %s phase changed to %s", task_id, new_phase.value)
+        return True
+
+    async def update_task_phase_async(
+        self,
+        task_id: str,
+        new_phase: TaskPhase,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Async version of update_task_phase."""
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.update_task_phase, task_id, new_phase, reason
+        )
+    
     def list_tasks(
         self,
         project_id: Optional[str] = None,

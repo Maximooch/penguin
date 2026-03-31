@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 from contextlib import contextmanager
 
-from .models import Project, Task, TaskStatus, ExecutionRecord, StateTransition
+from .models import Project, Task, TaskPhase, TaskStatus, ExecutionRecord, StateTransition
 from .exceptions import StorageError, ProjectNotFoundError, TaskNotFoundError
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,8 @@ class ProjectStorage:
                     title TEXT NOT NULL,
                     description TEXT,
                     status TEXT NOT NULL,
+                    phase TEXT DEFAULT 'pending',
+                    phase_started_at TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     priority INTEGER DEFAULT 0,
@@ -88,6 +90,8 @@ class ProjectStorage:
                     FOREIGN KEY (parent_task_id) REFERENCES tasks (id) ON DELETE CASCADE
                 )
             """)
+            self._ensure_column(conn, "tasks", "phase", "TEXT DEFAULT 'pending'")
+            self._ensure_column(conn, "tasks", "phase_started_at", "TEXT")
             
             # Execution records table
             conn.execute("""
@@ -149,6 +153,15 @@ class ProjectStorage:
             if conn:
                 conn.close()
     
+    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+        """Ensure a table column exists for lightweight schema evolution."""
+        existing = {
+            row["name"]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
     # Project operations
     
     def create_project(self, project: Project) -> None:
@@ -249,14 +262,16 @@ class ProjectStorage:
             # Insert task
             conn.execute("""
                 INSERT INTO tasks (
-                    id, title, description, status, created_at, updated_at,
-                    priority, project_id, parent_task_id, tags, dependencies,
-                    due_date, progress, metadata, review_notes, reviewed_by,
-                    reviewed_at, budget_tokens, budget_minutes, allowed_tools,
-                    acceptance_criteria, definition_of_done
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, title, description, status, phase, phase_started_at,
+                    created_at, updated_at, priority, project_id, parent_task_id,
+                    tags, dependencies, due_date, progress, metadata,
+                    review_notes, reviewed_by, reviewed_at, budget_tokens,
+                    budget_minutes, allowed_tools, acceptance_criteria,
+                    definition_of_done
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 task.id, task.title, task.description, task.status.value,
+                task.phase.value, task.phase_started_at,
                 task.created_at, task.updated_at, task.priority,
                 task.project_id, task.parent_task_id,
                 json.dumps(task.tags) if task.tags else None,
@@ -340,16 +355,18 @@ class ProjectStorage:
             # Update task
             conn.execute("""
                 UPDATE tasks SET
-                    title = ?, description = ?, status = ?, updated_at = ?,
-                    priority = ?, parent_task_id = ?, tags = ?, dependencies = ?,
-                    due_date = ?, progress = ?, metadata = ?, review_notes = ?,
+                    title = ?, description = ?, status = ?, phase = ?,
+                    phase_started_at = ?, updated_at = ?, priority = ?,
+                    parent_task_id = ?, tags = ?, dependencies = ?, due_date = ?,
+                    progress = ?, metadata = ?, review_notes = ?,
                     reviewed_by = ?, reviewed_at = ?, budget_tokens = ?,
                     budget_minutes = ?, allowed_tools = ?, acceptance_criteria = ?,
                     definition_of_done = ?
                 WHERE id = ?
             """, (
-                task.title, task.description, task.status.value, task.updated_at,
-                task.priority, task.parent_task_id,
+                task.title, task.description, task.status.value, task.phase.value,
+                task.phase_started_at, task.updated_at, task.priority,
+                task.parent_task_id,
                 json.dumps(task.tags) if task.tags else None,
                 json.dumps(task.dependencies) if task.dependencies else None,
                 task.due_date, task.progress,
@@ -493,6 +510,8 @@ class ProjectStorage:
             title=row["title"],
             description=row["description"] or "",
             status=TaskStatus(row["status"]),
+            phase=TaskPhase(row["phase"]) if row["phase"] else TaskPhase.PENDING,
+            phase_started_at=row["phase_started_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             priority=row["priority"],

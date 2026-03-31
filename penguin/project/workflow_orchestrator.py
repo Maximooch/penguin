@@ -12,7 +12,7 @@ from .manager import ProjectManager
 from .task_executor import ProjectTaskExecutor
 from .validation_manager import ValidationManager
 from .git_manager import GitManager
-from .models import TaskStatus
+from .models import TaskPhase, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -77,14 +77,19 @@ class WorkflowOrchestrator:
         workflow_result = {"task_id": task.id, "task_title": task.title}
 
         try:
-            # 1. Mark the task as RUNNING
+            # 1. Mark the task as RUNNING and enter IMPLEMENT
             success = self.project_manager.update_task_status(
                 task.id, TaskStatus.RUNNING
             )
             if not success:
                 raise Exception(f"Failed to update task status to RUNNING")
+            await self.project_manager.update_task_phase_async(
+                task.id,
+                TaskPhase.IMPLEMENT,
+                "Task claimed by orchestrator; starting implementation.",
+            )
             logger.info(f"Task '{task.title}' marked as RUNNING")
-            self._debug("Task status set to RUNNING")
+            self._debug("Task status set to RUNNING and phase set to IMPLEMENT")
 
             # 2. Execute the task
             self._debug("Executing task via ProjectTaskExecutor")
@@ -113,13 +118,14 @@ class WorkflowOrchestrator:
 
             # 4. Only proceed with validation if task is still RUNNING
             if updated_task.status == TaskStatus.RUNNING:
-                # Validate the result
-                await self.project_manager.update_task_status_async(
-                    task.id, TaskStatus.PENDING_REVIEW, "Execution complete, running validation."
+                await self.project_manager.update_task_phase_async(
+                    task.id,
+                    TaskPhase.TEST,
+                    "Implementation finished; running validation checks.",
                 )
                 validation_result = await self.validation_manager.validate_task_completion(task, changed_files)
                 workflow_result["validation"] = validation_result
-                
+
                 if not validation_result.get("validated"):
                     # Validation failed - mark as failed
                     success = self.project_manager.update_task_status(
@@ -134,21 +140,39 @@ class WorkflowOrchestrator:
                         "validation_result": validation_result
                     }
 
+                await self.project_manager.update_task_phase_async(
+                    task.id,
+                    TaskPhase.VERIFY,
+                    "Validation passed; verifying completion artifacts.",
+                )
+
                 # 6. Create PR for validated task
                 self._debug("Creating pull-request for validated task")
                 pr_result = await self.git_manager.create_pr_for_task(task, validation_result)
                 self._debug(f"PR creation result: {pr_result}")
 
-                # 7. Finalize task as COMPLETED
+                await self.project_manager.update_task_phase_async(
+                    task.id,
+                    TaskPhase.DONE,
+                    "Validation succeeded; task is ready for review.",
+                )
+
+                # 7. Move the task into review-owned state.
                 success = self.project_manager.update_task_status(
-                    task.id, TaskStatus.COMPLETED
+                    task.id,
+                    TaskStatus.PENDING_REVIEW,
+                    "Validation passed; awaiting review or trusted automatic completion.",
                 )
                 if not success:
-                    raise Exception(f"Failed to update task status to COMPLETED")
-                logger.info(f"Task '{task.title}' marked as COMPLETED. PR: {pr_result.get('pr_url')}")
+                    raise Exception(f"Failed to update task status to PENDING_REVIEW")
+                logger.info(
+                    "Task '%s' marked as PENDING_REVIEW after validation. PR: %s",
+                    task.title,
+                    pr_result.get('pr_url'),
+                )
 
                 workflow_result['pr_result'] = pr_result
-                workflow_result['final_status'] = 'COMPLETED'
+                workflow_result['final_status'] = TaskStatus.PENDING_REVIEW.value
                 return workflow_result
             else:
                 # Task is in an unexpected state
