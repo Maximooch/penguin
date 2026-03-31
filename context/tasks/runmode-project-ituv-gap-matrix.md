@@ -343,6 +343,48 @@ Make project execution deterministic.
 - In continuous mode, when `project_id` is provided, prefer DAG selection only.
 - Limit synthetic `determine_next_step` behavior to explicit exploratory sessions.
 
+### Phase 8: Typed Dependency Policy Semantics
+
+#### Goal
+
+Stop treating every dependency edge as if it means the same thing.
+
+#### Problem
+
+The current system stores dependencies as plain task IDs. That is enough for a weak scheduler and not enough for a strong one.
+
+Without explicit edge policy, the scheduler can only guess:
+
+- whether downstream work must wait for `COMPLETED`
+- whether `PENDING_REVIEW` is enough
+- whether a specific artifact should unlock work
+- whether trusted auto-verification changes readiness
+
+That guesswork should not live in ad hoc `if dep.status == ...` checks.
+
+#### Changes
+
+- Introduce explicit dependency policy semantics with conservative defaults.
+- Support a backward-compatible shorthand where plain dependency IDs mean `completion_required`.
+- Add typed edge support for:
+  - `completion_required`
+  - `review_ready_ok`
+  - `artifact_ready`
+- Keep `trusted_auto_verify` as a completion-promotion policy, not a dependency-edge type.
+- Centralize dependency readiness evaluation in one scheduler helper.
+- Add focused tests proving that:
+  - `completion_required` does not unlock on `PENDING_REVIEW`
+  - `review_ready_ok` does unlock on `PENDING_REVIEW`
+  - existing blueprints preserve old meaning by default
+
+#### Acceptance Criteria
+
+- The contract explicitly defines dependency policy types and default semantics.
+- Existing dependency syntax remains backward-compatible and conservative.
+- Scheduler readiness logic is policy-driven rather than hard-coded to one global meaning.
+- Review gating is preserved by default.
+- Policy exceptions are explicit in blueprint/task data, not inferred.
+
 ## Suggested Execution Order
 
 1. Define the state machine contract.
@@ -352,7 +394,8 @@ Make project execution deterministic.
 5. Wire recipe execution for USE.
 6. Fix task resolution and continuous mode drift.
 7. Add cycle detection on dependency validation.
-8. Remove or repair stale workflow code.
+8. Add typed dependency policy semantics.
+9. Remove or repair stale workflow code.
 
 That order is important. If the state machine contract and completion logic are still wrong, everything else is theater.
 #### Changes
