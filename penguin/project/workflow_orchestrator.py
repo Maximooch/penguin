@@ -95,23 +95,14 @@ class WorkflowOrchestrator:
             
             changed_files = exec_result.get("changed_files", [])
 
-            # 3. Check if task is already completed (RunMode may have completed it)
-            # Reload task to get current status
+            # 3. Reload task and validate the post-execution state.
+            # RunMode no longer owns terminal project-task transitions.
             updated_task = self.project_manager.get_task(task.id)
             self._debug(f"Reloaded task after execution: {updated_task!r}")
             if not updated_task:
                 raise Exception(f"Task {task.id} not found after execution")
-                
-            if updated_task.status == TaskStatus.COMPLETED:
-                logger.info(f"Task '{task.title}' already marked as COMPLETED by executor")
-                # Skip validation and PR creation for now - task is already done
-                return {
-                    "task_id": task.id,
-                    "task_title": task.title,
-                    "status": TaskStatus.COMPLETED.name,
-                    "message": "Task already completed by executor"
-                }
-            elif updated_task.status in [TaskStatus.FAILED, TaskStatus.CANCELLED]:
+
+            if updated_task.status in [TaskStatus.FAILED, TaskStatus.CANCELLED]:
                 logger.warning(f"Task '{task.title}' ended with status {updated_task.status.value}")
                 return {
                     "task_id": task.id,

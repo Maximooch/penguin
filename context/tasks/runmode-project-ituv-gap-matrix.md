@@ -426,6 +426,13 @@ These items are not required to make the minimum plumbing functional, but they s
 - Potential sync/async misuse in orchestration paths.
   - Some current call sites deserve audit for incorrect async assumptions.
   - That class of bug is easy to miss and annoying to debug.
+- TUI worktree module-resolution instability.
+  - `uv run penguin` in the feature worktree currently fails with a Bun/OpenCode module-resolution error for `@opencode-ai/util/error`.
+  - This appears to be a frontend/sidecar workspace issue, not the current backend ITUV refactor target.
+  - Track it as a future fix unless backend testing becomes blocked on it.
+- Stale workflow pytest coverage.
+  - Some workflow tests currently patch GitManager internals that no longer exist, so they fail before exercising the current orchestration path.
+  - This is test debt and should be repaired, but it is not a blocker for the current Phase 1 backend refactor.
 - Dependencies are valid and DAG scheduling selects only ready tasks.
 ## Recommended First Ticket Set
 

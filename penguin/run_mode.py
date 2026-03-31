@@ -317,21 +317,17 @@ class RunMode:
             task_context = context or {}
             task_result = await self._execute_task(name, description, task_context)
             
-            # If task completed successfully, check if it should be marked as complete
+            # If task execution completed successfully, emit completion events.
+            # Project-managed terminal state transitions belong to the orchestrator,
+            # not RunMode. RunMode reports execution outcome only.
             if task_result.get("status") == "completed":
-                # Handle task completion based on type
-                if task_result.get("completion_type") != "user_specified" and task:
-                    try:
-                        from penguin.project.models import TaskStatus
-                        success = self.core.project_manager.update_task_status(
-                            task.id, 
-                            TaskStatus.COMPLETED
-                        )
-                        if not success:
-                            logger.warning(f"Failed to mark task '{name}' as complete in project manager")
-                    except Exception as e:
-                        logger.error(f"Error marking task '{name}' as complete: {e}")
-                
+                if task:
+                    logger.info(
+                        "RunMode completed execution for project task '%s' without "
+                        "changing terminal project status",
+                        name,
+                    )
+
                 # Emit completion event
                 await self._emit_event({
                     "type": "message",
