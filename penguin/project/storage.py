@@ -88,6 +88,7 @@ class ProjectStorage:
                     definition_of_done TEXT,
                     blueprint_id TEXT,
                     blueprint_source TEXT,
+                    dependency_specs TEXT,
                     recipe TEXT,
                     FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE,
                     FOREIGN KEY (parent_task_id) REFERENCES tasks (id) ON DELETE CASCADE
@@ -97,6 +98,7 @@ class ProjectStorage:
             self._ensure_column(conn, "tasks", "phase_started_at", "TEXT")
             self._ensure_column(conn, "tasks", "blueprint_id", "TEXT")
             self._ensure_column(conn, "tasks", "blueprint_source", "TEXT")
+            self._ensure_column(conn, "tasks", "dependency_specs", "TEXT")
             self._ensure_column(conn, "tasks", "recipe", "TEXT")
             # Execution records table
             conn.execute("""
@@ -266,8 +268,8 @@ class ProjectStorage:
                     tags, dependencies, due_date, progress, metadata,
                     review_notes, reviewed_by, reviewed_at, budget_tokens,
                     budget_minutes, allowed_tools, acceptance_criteria,
-                    definition_of_done, blueprint_id, blueprint_source, recipe
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    definition_of_done, blueprint_id, blueprint_source, dependency_specs, recipe
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 task.id, task.title, task.description, task.status.value,
                 task.phase.value, task.phase_started_at,
@@ -281,7 +283,9 @@ class ProjectStorage:
                 task.budget_tokens, task.budget_minutes,
                 json.dumps(task.allowed_tools) if task.allowed_tools else None,
                 json.dumps(task.acceptance_criteria) if task.acceptance_criteria else None,
-                task.definition_of_done, task.blueprint_id, task.blueprint_source, task.recipe
+                task.definition_of_done, task.blueprint_id, task.blueprint_source,
+                json.dumps([spec.to_dict() for spec in task.dependency_specs]) if task.dependency_specs else None,
+                task.recipe
             ))
 
             for record in task.execution_history:
@@ -354,7 +358,7 @@ class ProjectStorage:
                     reviewed_by = ?, reviewed_at = ?, budget_tokens = ?,
                     budget_minutes = ?, allowed_tools = ?, acceptance_criteria = ?,
                     definition_of_done = ?, blueprint_id = ?, blueprint_source = ?,
-                    recipe = ?
+                    dependency_specs = ?, recipe = ?
                 WHERE id = ?
             """, (
                 task.title, task.description, task.status.value, task.phase.value,
@@ -369,6 +373,7 @@ class ProjectStorage:
                 json.dumps(task.allowed_tools) if task.allowed_tools else None,
                 json.dumps(task.acceptance_criteria) if task.acceptance_criteria else None,
                 task.definition_of_done, task.blueprint_id, task.blueprint_source,
+                json.dumps([spec.to_dict() for spec in task.dependency_specs]) if task.dependency_specs else None,
                 task.recipe,
                 task.id
             ))
@@ -519,6 +524,7 @@ class ProjectStorage:
             definition_of_done=row["definition_of_done"],
             blueprint_id=row["blueprint_id"],
             blueprint_source=row["blueprint_source"],
+            dependency_specs=json.loads(row["dependency_specs"]) if row["dependency_specs"] else [],
             recipe=row["recipe"],
         )
 

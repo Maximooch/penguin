@@ -18,11 +18,13 @@ import networkx as nx
 from .models import (
     Blueprint,
     BlueprintItem,
+    DependencyPolicy,
     ExecutionRecord,
     ExecutionResult,
     Project,
     StateTransition,
     Task,
+    TaskDependency,
     TaskPhase,
     TaskStatus,
 )
@@ -293,6 +295,13 @@ class ProjectManager:
             parent_task_id=parent_task_id,
             tags=tags or [],
             dependencies=dependencies or [],
+            dependency_specs=[
+                TaskDependency(
+                    task_id=dep_id,
+                    policy=DependencyPolicy.COMPLETION_REQUIRED,
+                )
+                for dep_id in (dependencies or [])
+            ],
             due_date=due_date,
             metadata=metadata,
             budget_tokens=budget_tokens,
@@ -1062,6 +1071,7 @@ class ProjectManager:
         
         # Second pass: resolve dependencies
         dependency_updates: Dict[str, List[str]] = {}
+        dependency_spec_updates: Dict[str, List[TaskDependency]] = {}
         for item in blueprint.items:
             task_id = id_mapping.get(item.id)
             if not task_id:
@@ -1073,14 +1083,29 @@ class ProjectManager:
             
             # Resolve dependency IDs
             resolved_deps = []
-            for dep_blueprint_id in item.depends_on:
-                dep_task_id = id_mapping.get(dep_blueprint_id)
+            resolved_specs: List[TaskDependency] = []
+            source_specs = item.dependency_specs or [
+                TaskDependency(task_id=dep_blueprint_id)
+                for dep_blueprint_id in item.depends_on
+            ]
+            for dep_spec in source_specs:
+                dep_task_id = id_mapping.get(dep_spec.task_id)
                 if dep_task_id:
                     resolved_deps.append(dep_task_id)
+                    resolved_specs.append(
+                        TaskDependency(
+                            task_id=dep_task_id,
+                            policy=dep_spec.policy,
+                            artifact_key=dep_spec.artifact_key,
+                        )
+                    )
                 else:
-                    logger.warning(f"Dependency {dep_blueprint_id} not found for task {item.id}")
+                    logger.warning(
+                        f"Dependency {dep_spec.task_id} not found for task {item.id}"
+                    )
 
             dependency_updates[task.id] = resolved_deps
+            dependency_spec_updates[task.id] = resolved_specs
 
         self._validate_project_dependency_graph(
             project_id=project_id,
@@ -1092,8 +1117,13 @@ class ProjectManager:
             if not task:
                 continue
 
-            if resolved_deps != task.dependencies:
+            resolved_specs = dependency_spec_updates.get(task_id, [])
+            if (
+                resolved_deps != task.dependencies
+                or resolved_specs != task.dependency_specs
+            ):
                 task.dependencies = resolved_deps
+                task.dependency_specs = resolved_specs
                 task.updated_at = datetime.utcnow().isoformat()
                 self.storage.update_task(task)
         
@@ -1139,6 +1169,7 @@ class ProjectManager:
             parent_task_id=None,  # Will be set if parent_id is resolved
             tags=item.labels,
             dependencies=[],  # Will be resolved in second pass
+            dependency_specs=[],
             due_date=item.due_date,
             acceptance_criteria=item.acceptance_criteria,
             blueprint_id=item.id,

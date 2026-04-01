@@ -54,6 +54,72 @@ class TaskStatus(Enum):
         }
 
 
+class DependencyPolicy(Enum):
+    """Dependency readiness policy for a task edge."""
+
+    COMPLETION_REQUIRED = "completion_required"
+    REVIEW_READY_OK = "review_ready_ok"
+    ARTIFACT_READY = "artifact_ready"
+
+
+@dataclass
+class TaskDependency:
+    """Typed dependency edge with explicit readiness semantics."""
+
+    task_id: str
+    policy: DependencyPolicy = DependencyPolicy.COMPLETION_REQUIRED
+    artifact_key: Optional[str] = None
+
+    def __post_init__(self):
+        """Normalize dependency policy values."""
+        if isinstance(self.policy, str):
+            self.policy = DependencyPolicy(self.policy)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "task_id": self.task_id,
+            "policy": self.policy.value,
+            "artifact_key": self.artifact_key,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TaskDependency":
+        """Create TaskDependency from dictionary."""
+        return cls(
+            task_id=data["task_id"],
+            policy=data.get("policy", DependencyPolicy.COMPLETION_REQUIRED.value),
+            artifact_key=data.get("artifact_key"),
+        )
+
+
+def _normalize_dependency_fields(
+    task_ids: List[str],
+    dependency_specs: List[Union[TaskDependency, Dict[str, Any], str]],
+) -> tuple[List[str], List[TaskDependency]]:
+    """Normalize plain dependency IDs and typed dependency specs."""
+    normalized_specs: List[TaskDependency] = []
+
+    if dependency_specs:
+        for spec in dependency_specs:
+            if isinstance(spec, TaskDependency):
+                normalized_specs.append(spec)
+            elif isinstance(spec, dict):
+                normalized_specs.append(TaskDependency.from_dict(spec))
+            elif isinstance(spec, str):
+                normalized_specs.append(TaskDependency(task_id=spec))
+            else:
+                raise TypeError(f"Unsupported dependency spec type: {type(spec)!r}")
+        normalized_ids = [spec.task_id for spec in normalized_specs]
+        return normalized_ids, normalized_specs
+
+    normalized_specs = [
+        TaskDependency(task_id=task_id)
+        for task_id in task_ids
+    ]
+    return list(task_ids), normalized_specs
+
+
 class ExecutionResult(Enum):
     """Execution result enumeration."""
     SUCCESS = "success"
@@ -177,6 +243,7 @@ class BlueprintItem:
     
     # Dependencies (DAG edges)
     depends_on: List[str] = field(default_factory=list)
+    dependency_specs: List[TaskDependency] = field(default_factory=list)
     
     # Usage recipe reference (feeds USE gate)
     recipe: Optional[str] = None
@@ -207,14 +274,28 @@ class BlueprintItem:
     # Source tracking
     source_file: Optional[str] = None
     source_line: Optional[int] = None
+
+    def __post_init__(self):
+        """Normalize dependency data after initialization."""
+        self.depends_on, self.dependency_specs = _normalize_dependency_fields(
+            self.depends_on,
+            self.dependency_specs,
+        )
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
-        return to_dict(self)
+        data = to_dict(self)
+        data["dependency_specs"] = [spec.to_dict() for spec in self.dependency_specs]
+        return data
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BlueprintItem":
         """Create BlueprintItem from dictionary."""
+        if "dependency_specs" in data:
+            data["dependency_specs"] = [
+                TaskDependency.from_dict(spec)
+                for spec in data["dependency_specs"]
+            ]
         return from_dict(cls, data)
     
     def priority_score(self) -> int:
@@ -321,6 +402,7 @@ class Task:
     parent_task_id: Optional[str] = None  # For hierarchical tasks
     tags: List[str] = field(default_factory=list)
     dependencies: List[str] = field(default_factory=list)  # Task IDs that must complete first
+    dependency_specs: List[TaskDependency] = field(default_factory=list)
     due_date: Optional[str] = None
     progress: int = 0  # 0-100 percentage
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -379,6 +461,10 @@ class Task:
             self.status = TaskStatus(self.status)
         if isinstance(self.phase, str):
             self.phase = TaskPhase(self.phase)
+        self.dependencies, self.dependency_specs = _normalize_dependency_fields(
+            self.dependencies,
+            self.dependency_specs,
+        )
     
     def can_transition_to(self, new_status: TaskStatus) -> bool:
         """Check if transition to new status is valid."""
@@ -551,6 +637,7 @@ class Task:
         data = to_dict(self)
         data['status'] = self.status.value
         data['phase'] = self.phase.value
+        data['dependency_specs'] = [spec.to_dict() for spec in self.dependency_specs]
         data['execution_history'] = [r.to_dict() for r in self.execution_history]
         data['transition_history'] = [t.to_dict() for t in self.transition_history]
         return data
@@ -565,6 +652,12 @@ class Task:
         # Handle phase conversion
         if 'phase' in data:
             data['phase'] = TaskPhase(data['phase'])
+
+        # Handle dependency specs
+        if 'dependency_specs' in data:
+            data['dependency_specs'] = [
+                TaskDependency.from_dict(spec) for spec in data['dependency_specs']
+            ]
         
         # Handle execution history
         if 'execution_history' in data:

@@ -273,6 +273,7 @@ class BlueprintParser:
             description=data.get("description", ""),
             acceptance_criteria=data.get("acceptance_criteria", []),
             depends_on=data.get("depends_on", data.get("dependencies", [])),
+            dependency_specs=data.get("dependency_specs", []),
             recipe=data.get("recipe"),
             estimate=data.get("estimate"),
             priority=data.get("priority", "medium"),
