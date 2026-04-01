@@ -414,6 +414,16 @@ This contract should be enforced at the following layers:
 
 It should not become a second copy of the full contract tables.
 
+## Related Contracts
+
+This state-machine contract works alongside:
+
+- `context/architecture/artifact-evidence-contract.md`
+  - canonical rules for artifact declaration, validation, and `artifact_ready` dependency semantics
+
+Use this file for lifecycle legality and review/completion semantics.
+Use the artifact evidence contract for evidence-bearing dependency unlock rules.
+
 ## Relationship to Future Formalization
 
 This document is intended to feed later work such as:

@@ -587,6 +587,19 @@ These items are not required to make the minimum plumbing functional, but they s
 - Structured acceptance-criteria evaluators.
 - Artifact capture for screenshots, API responses, logs, or command output.
 - Rich execution records linked to each ITUV phase.
+- Formal artifact evidence contracts for `artifact_ready` dependency edges.
+
+### Next Recommended Ordering
+
+1. Add Hypothesis/property-based invariant testing for status/phase and dependency-policy semantics.
+2. Define and implement the artifact evidence contract for `artifact_ready`.
+3. Add human-friendly blueprint syntax for typed dependency policies after semantics are stable.
+
+This order is deliberate:
+
+- invariants first, so semantics are stress-tested before expanding capability
+- artifact evidence second, so `artifact_ready` stops being a stub and becomes a real contract
+- blueprint UX third, so authoring syntax does not ossify around unstable semantics
 
 ### Smarter Scheduling
 
