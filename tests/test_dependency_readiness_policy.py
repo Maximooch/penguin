@@ -2,7 +2,13 @@ from datetime import datetime
 from pathlib import Path
 
 from penguin.project.manager import ProjectManager
-from penguin.project.models import Task, TaskPhase, TaskStatus
+from penguin.project.models import (
+    DependencyPolicy,
+    Task,
+    TaskDependency,
+    TaskPhase,
+    TaskStatus,
+)
 
 
 def make_task(task_id: str, title: str, **overrides) -> Task:
@@ -84,3 +90,73 @@ def test_get_ready_tasks_requires_completed_dependencies_not_pending_review(tmp_
 
     assert "task-ready" in ready_ids
     assert "task-blocked" not in ready_ids
+
+def test_review_ready_ok_dependency_unblocks_task(tmp_path: Path):
+    manager = ProjectManager(tmp_path)
+    project = manager.create_project("Deps", "Review-ready policy")
+
+    dep = make_task(
+        "dep-review",
+        "Dependency Review",
+        project_id=project.id,
+        status=TaskStatus.PENDING_REVIEW,
+        phase=TaskPhase.DONE,
+    )
+    task = make_task(
+        "task-review-ok",
+        "Review OK",
+        project_id=project.id,
+        dependencies=["dep-review"],
+        dependency_specs=[
+            TaskDependency(
+                task_id="dep-review",
+                policy=DependencyPolicy.REVIEW_READY_OK,
+            )
+        ],
+    )
+
+    manager.storage.create_task(dep)
+    manager.storage.create_task(task)
+
+    loaded = manager.get_task(task.id)
+    assert loaded is not None
+    assert manager._is_task_blocked(loaded) is False
+
+    ready_ids = {ready_task.id for ready_task in manager.get_ready_tasks(project.id)}
+    assert "task-review-ok" in ready_ids
+
+
+def test_artifact_ready_dependency_fails_closed_without_artifact_support(tmp_path: Path):
+    manager = ProjectManager(tmp_path)
+    project = manager.create_project("Deps", "Artifact-ready policy")
+
+    dep = make_task(
+        "dep-artifact",
+        "Dependency Artifact",
+        project_id=project.id,
+        status=TaskStatus.COMPLETED,
+        phase=TaskPhase.DONE,
+    )
+    task = make_task(
+        "task-artifact",
+        "Artifact gated",
+        project_id=project.id,
+        dependencies=["dep-artifact"],
+        dependency_specs=[
+            TaskDependency(
+                task_id="dep-artifact",
+                policy=DependencyPolicy.ARTIFACT_READY,
+                artifact_key="client_bundle",
+            )
+        ],
+    )
+
+    manager.storage.create_task(dep)
+    manager.storage.create_task(task)
+
+    loaded = manager.get_task(task.id)
+    assert loaded is not None
+    assert manager._is_task_blocked(loaded) is True
+
+    ready_ids = {ready_task.id for ready_task in manager.get_ready_tasks(project.id)}
+    assert "task-artifact" not in ready_ids

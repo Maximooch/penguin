@@ -729,16 +729,47 @@ class ProjectManager:
             cycles = list(nx.simple_cycles(dag))
             raise DependencyError(f"Dependency cycle detected: {cycles[:3]}")
     
+    def _is_dependency_satisfied(
+        self,
+        dependency: TaskDependency,
+        dependency_task: Optional[Task],
+    ) -> bool:
+        """Evaluate whether a dependency edge is satisfied."""
+        if not dependency_task:
+            return False
+
+        if dependency.policy == DependencyPolicy.COMPLETION_REQUIRED:
+            return dependency_task.status == TaskStatus.COMPLETED
+
+        if dependency.policy == DependencyPolicy.REVIEW_READY_OK:
+            return (
+                dependency_task.phase == TaskPhase.DONE
+                and dependency_task.status
+                in {TaskStatus.PENDING_REVIEW, TaskStatus.COMPLETED}
+            )
+
+        if dependency.policy == DependencyPolicy.ARTIFACT_READY:
+            # Phase 8 schema supports artifact-aware edges, but artifact evidence
+            # semantics are not implemented yet. Fail closed until they are.
+            return False
+
+        return False
+
     def _is_task_blocked(self, task: Task) -> bool:
         """Check if a task is blocked by incomplete dependencies."""
         if not task.dependencies:
             return False
-        
-        for dep_id in task.dependencies:
-            dep_task = self.storage.get_task(dep_id)
-            if not dep_task or dep_task.status != TaskStatus.COMPLETED:
+
+        dependency_specs = task.dependency_specs or [
+            TaskDependency(task_id=dep_id)
+            for dep_id in task.dependencies
+        ]
+
+        for dependency in dependency_specs:
+            dep_task = self.storage.get_task(dependency.task_id)
+            if not self._is_dependency_satisfied(dependency, dep_task):
                 return True
-        
+
         return False
     
     def _publish_event(self, event_type: str, data: Dict[str, Any]) -> None:
@@ -827,15 +858,19 @@ class ProjectManager:
         for task in tasks:
             if task.status != TaskStatus.ACTIVE:
                 continue
-            
-            # Check all dependencies are completed
+
+            dependency_specs = task.dependency_specs or [
+                TaskDependency(task_id=dep_id)
+                for dep_id in task.dependencies
+            ]
+
             all_deps_done = True
-            for dep_id in task.dependencies:
-                dep_task = task_map.get(dep_id)
-                if not dep_task or dep_task.status != TaskStatus.COMPLETED:
+            for dependency in dependency_specs:
+                dep_task = task_map.get(dependency.task_id)
+                if not self._is_dependency_satisfied(dependency, dep_task):
                     all_deps_done = False
                     break
-            
+
             if all_deps_done:
                 ready.append(task)
         
