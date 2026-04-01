@@ -75,6 +75,7 @@ node_modules/
 
 # pytest
 .pytest_cache/
+.hypothesis/
  
 # .venv
 .venv/
