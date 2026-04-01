@@ -398,6 +398,24 @@ That guesswork should not live in ad hoc `if dep.status == ...` checks.
 9. Remove or repair stale workflow code.
 
 That order is important. If the state machine contract and completion logic are still wrong, everything else is theater.
+
+## Related Rationale
+
+For dependency-library/tooling choices related to this plan, see:
+
+- `context/rationale/dependency-library-evaluation.md`
+
+That note captures the current adopt/defer/reject stance for:
+
+- `networkx`
+- `pydantic`
+- `hypothesis`
+- `transitions`
+- TLA+/bridge tooling
+- migration/runtime type-checking candidates
+
+Use it to avoid re-litigating library choices from scratch while Phase 8 dependency-policy work is still settling.
+
 #### Changes
 
 - Add cycle detection in dependency validation during task create/update.
