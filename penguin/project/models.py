@@ -93,6 +93,44 @@ class TaskDependency:
         )
 
 
+@dataclass
+class ArtifactEvidence:
+    """Machine-checkable artifact evidence produced by a task."""
+
+    key: str
+    kind: str
+    path: Optional[str] = None
+    producer_task_id: Optional[str] = None
+    created_at: Optional[str] = None
+    valid: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "key": self.key,
+            "kind": self.kind,
+            "path": self.path,
+            "producer_task_id": self.producer_task_id,
+            "created_at": self.created_at,
+            "valid": self.valid,
+            "metadata": self.metadata,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ArtifactEvidence":
+        """Create ArtifactEvidence from dictionary."""
+        return cls(
+            key=data["key"],
+            kind=data["kind"],
+            path=data.get("path"),
+            producer_task_id=data.get("producer_task_id"),
+            created_at=data.get("created_at"),
+            valid=data.get("valid", False),
+            metadata=data.get("metadata", {}),
+        )
+
+
 def _normalize_dependency_fields(
     task_ids: List[str],
     dependency_specs: List[Union[TaskDependency, Dict[str, Any], str]],
@@ -118,6 +156,21 @@ def _normalize_dependency_fields(
         for task_id in task_ids
     ]
     return list(task_ids), normalized_specs
+
+
+def _normalize_artifact_evidence(
+    artifact_evidence: List[Union[ArtifactEvidence, Dict[str, Any]]],
+) -> List[ArtifactEvidence]:
+    """Normalize artifact evidence values."""
+    normalized: List[ArtifactEvidence] = []
+    for artifact in artifact_evidence:
+        if isinstance(artifact, ArtifactEvidence):
+            normalized.append(artifact)
+        elif isinstance(artifact, dict):
+            normalized.append(ArtifactEvidence.from_dict(artifact))
+        else:
+            raise TypeError(f"Unsupported artifact evidence type: {type(artifact)!r}")
+    return normalized
 
 
 class ExecutionResult(Enum):
@@ -406,6 +459,7 @@ class Task:
     due_date: Optional[str] = None
     progress: int = 0  # 0-100 percentage
     metadata: Dict[str, Any] = field(default_factory=dict)
+    artifact_evidence: List[ArtifactEvidence] = field(default_factory=list)
     
     # Review and approval
     review_notes: Optional[str] = None
@@ -465,6 +519,7 @@ class Task:
             self.dependencies,
             self.dependency_specs,
         )
+        self.artifact_evidence = _normalize_artifact_evidence(self.artifact_evidence)
     
     def can_transition_to(self, new_status: TaskStatus) -> bool:
         """Check if transition to new status is valid."""
@@ -638,6 +693,7 @@ class Task:
         data['status'] = self.status.value
         data['phase'] = self.phase.value
         data['dependency_specs'] = [spec.to_dict() for spec in self.dependency_specs]
+        data['artifact_evidence'] = [artifact.to_dict() for artifact in self.artifact_evidence]
         data['execution_history'] = [r.to_dict() for r in self.execution_history]
         data['transition_history'] = [t.to_dict() for t in self.transition_history]
         return data
@@ -657,6 +713,11 @@ class Task:
         if 'dependency_specs' in data:
             data['dependency_specs'] = [
                 TaskDependency.from_dict(spec) for spec in data['dependency_specs']
+            ]
+        if 'artifact_evidence' in data:
+            data['artifact_evidence'] = [
+                ArtifactEvidence.from_dict(artifact)
+                for artifact in data['artifact_evidence']
             ]
         
         # Handle execution history

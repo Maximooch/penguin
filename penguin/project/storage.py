@@ -78,6 +78,7 @@ class ProjectStorage:
                     due_date TEXT,
                     progress INTEGER DEFAULT 0,
                     metadata TEXT,  -- JSON object
+                    artifact_evidence TEXT,  -- JSON array
                     review_notes TEXT,
                     reviewed_by TEXT,
                     reviewed_at TEXT,
@@ -96,6 +97,7 @@ class ProjectStorage:
             """)
             self._ensure_column(conn, "tasks", "phase", "TEXT DEFAULT 'pending'")
             self._ensure_column(conn, "tasks", "phase_started_at", "TEXT")
+            self._ensure_column(conn, "tasks", "artifact_evidence", "TEXT")
             self._ensure_column(conn, "tasks", "blueprint_id", "TEXT")
             self._ensure_column(conn, "tasks", "blueprint_source", "TEXT")
             self._ensure_column(conn, "tasks", "dependency_specs", "TEXT")
@@ -265,11 +267,11 @@ class ProjectStorage:
                 INSERT INTO tasks (
                     id, title, description, status, phase, phase_started_at,
                     created_at, updated_at, priority, project_id, parent_task_id,
-                    tags, dependencies, due_date, progress, metadata,
+                    tags, dependencies, due_date, progress, metadata, artifact_evidence,
                     review_notes, reviewed_by, reviewed_at, budget_tokens,
                     budget_minutes, allowed_tools, acceptance_criteria,
                     definition_of_done, blueprint_id, blueprint_source, dependency_specs, recipe
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 task.id, task.title, task.description, task.status.value,
                 task.phase.value, task.phase_started_at,
@@ -279,6 +281,7 @@ class ProjectStorage:
                 json.dumps(task.dependencies) if task.dependencies else None,
                 task.due_date, task.progress,
                 json.dumps(task.metadata) if task.metadata else None,
+                json.dumps([artifact.to_dict() for artifact in task.artifact_evidence]) if task.artifact_evidence else None,
                 task.review_notes, task.reviewed_by, task.reviewed_at,
                 task.budget_tokens, task.budget_minutes,
                 json.dumps(task.allowed_tools) if task.allowed_tools else None,
@@ -354,7 +357,7 @@ class ProjectStorage:
                     title = ?, description = ?, status = ?, phase = ?,
                     phase_started_at = ?, updated_at = ?, priority = ?,
                     parent_task_id = ?, tags = ?, dependencies = ?, due_date = ?,
-                    progress = ?, metadata = ?, review_notes = ?,
+                    progress = ?, metadata = ?, artifact_evidence = ?, review_notes = ?,
                     reviewed_by = ?, reviewed_at = ?, budget_tokens = ?,
                     budget_minutes = ?, allowed_tools = ?, acceptance_criteria = ?,
                     definition_of_done = ?, blueprint_id = ?, blueprint_source = ?,
@@ -368,6 +371,7 @@ class ProjectStorage:
                 json.dumps(task.dependencies) if task.dependencies else None,
                 task.due_date, task.progress,
                 json.dumps(task.metadata) if task.metadata else None,
+                json.dumps([artifact.to_dict() for artifact in task.artifact_evidence]) if task.artifact_evidence else None,
                 task.review_notes, task.reviewed_by, task.reviewed_at,
                 task.budget_tokens, task.budget_minutes,
                 json.dumps(task.allowed_tools) if task.allowed_tools else None,
@@ -514,6 +518,7 @@ class ProjectStorage:
             due_date=row["due_date"],
             progress=row["progress"],
             metadata=json.loads(row["metadata"]) if row["metadata"] else {},
+            artifact_evidence=json.loads(row["artifact_evidence"]) if row["artifact_evidence"] else [],
             review_notes=row["review_notes"],
             reviewed_by=row["reviewed_by"],
             reviewed_at=row["reviewed_at"],

@@ -749,8 +749,16 @@ class ProjectManager:
             )
 
         if dependency.policy == DependencyPolicy.ARTIFACT_READY:
-            # Phase 8 schema supports artifact-aware edges, but artifact evidence
-            # semantics are not implemented yet. Fail closed until they are.
+            if not dependency.artifact_key:
+                return False
+
+            for artifact in dependency_task.artifact_evidence:
+                if (
+                    artifact.key == dependency.artifact_key
+                    and artifact.valid
+                    and artifact.producer_task_id == dependency.task_id
+                ):
+                    return True
             return False
 
         return False
