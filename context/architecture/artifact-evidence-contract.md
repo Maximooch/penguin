@@ -22,6 +22,15 @@ This document does **not** define the full task lifecycle. That remains in:
 
 - `context/architecture/ituv-task-state-machine-contract.md`
 
+## Related Documents
+
+- `context/architecture/ituv-task-state-machine-contract.md`
+  - lifecycle legality, review semantics, and `status × phase` invariants
+- `context/architecture/blueprint-typed-dependency-syntax-contract.md`
+  - canonical Blueprint authoring syntax for typed dependency policies
+- `context/architecture/runmode-project-ituv-system-map.md`
+  - visual map of how artifact evidence fits into scheduling, ITUV, and project execution
+
 ## Core Rules
 
 ### Rule 1: Artifact Evidence Must Be Explicit

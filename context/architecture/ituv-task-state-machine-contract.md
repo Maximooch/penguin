@@ -420,9 +420,15 @@ This state-machine contract works alongside:
 
 - `context/architecture/artifact-evidence-contract.md`
   - canonical rules for artifact declaration, validation, and `artifact_ready` dependency semantics
+- `context/architecture/blueprint-typed-dependency-syntax-contract.md`
+  - canonical authoring and normalization rules for typed dependency syntax in Blueprints
+- `context/architecture/runmode-project-ituv-system-map.md`
+  - visual map of component boundaries, execution flow, evidence flow, and scheduler interactions
 
 Use this file for lifecycle legality and review/completion semantics.
 Use the artifact evidence contract for evidence-bearing dependency unlock rules.
+Use the typed dependency syntax contract for authoring/parser truth.
+Use the system map for architecture orientation.
 
 ## Relationship to Future Formalization
 
