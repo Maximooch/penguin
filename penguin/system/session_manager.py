@@ -241,19 +241,59 @@ class SessionManager:
         logger.debug(f"Created new session: {session.id}")
         return session
     
+    def peek_session(self, session_id: str) -> Optional[Session]:
+        """Return an isolated session copy without activating global state.
+
+        This is intended for request-scoped/session-scoped reads where callers
+        must avoid mutating ``current_session`` or sharing the cached in-memory
+        Session instance across concurrent requests.
+        """
+        if session_id in self.sessions:
+            session, _ = self.sessions[session_id]
+            try:
+                return Session.from_dict(session.to_dict())
+            except Exception:
+                logger.debug(
+                    "Failed to clone cached session %s; falling back to file load",
+                    session_id,
+                    exc_info=True,
+                )
+
+        primary_path = self.base_path / f"{session_id}.{self.format}"
+        backup_path = self.base_path / f"{session_id}.{self.format}.bak"
+
+        try:
+            session = self._load_from_file(primary_path)
+            if session and session.validate():
+                return session
+        except Exception:
+            logger.debug(
+                "peek_session primary load failed for %s",
+                session_id,
+                exc_info=True,
+            )
+
+        try:
+            if backup_path.exists():
+                session = self._load_from_file(backup_path)
+                if session and session.validate():
+                    return session
+        except Exception:
+            logger.debug("peek_session backup load failed for %s", session_id, exc_info=True)
+
+
     def load_session(self, session_id: str) -> Optional[Session]:
         """
         Load a session by ID with error recovery.
-        
+
         Args:
             session_id: ID of the session to load
-            
+
         Returns:
             Session object if found, None if not found or unrecoverable
         """
         # Check if already loaded
-        if session_id in self.sessions:
-            # Move to end of OrderedDict to mark as most recently used
+        if session_id in self.sessions:            # Move to end of OrderedDict to mark as most recently used
             session, is_modified = self.sessions.pop(session_id)
             self.sessions[session_id] = (session, is_modified)
             self.current_session = session

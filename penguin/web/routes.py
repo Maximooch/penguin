@@ -131,6 +131,7 @@ _FIND_FILE_SKIP_DIR_NAMES = {
 }
 _FIND_FILE_INDEX_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 _FIND_FILE_INDEX_CACHE_LOCK = Lock()
+_REQUEST_GATE_MAP_LOCK = Lock()
 
 
 def _remember_last_scoped_directory(
@@ -250,6 +251,30 @@ def _bind_session_directory(
 
     return None
 
+
+def _get_session_request_gate(
+    core: PenguinCore,
+    session_id: Optional[str],
+) -> Optional[asyncio.Lock]:
+    """Return a per-session request gate for REST chat requests."""
+    normalized_session_id = (
+        session_id.strip()
+        if isinstance(session_id, str) and session_id.strip()
+        else None
+    )
+    if not normalized_session_id:
+        return None
+
+    with _REQUEST_GATE_MAP_LOCK:
+        request_gates = getattr(core, "_opencode_request_gates", None)
+        if not isinstance(request_gates, dict):
+            request_gates = {}
+            setattr(core, "_opencode_request_gates", request_gates)
+        request_gate = request_gates.get(normalized_session_id)
+        if not isinstance(request_gate, asyncio.Lock):
+            request_gate = asyncio.Lock()
+            request_gates[normalized_session_id] = request_gate
+    return request_gate
 
 def _build_execution_context(
     core: PenguinCore,
@@ -3331,12 +3356,8 @@ async def handle_chat_message(
 
         # Process the message with all available options
         with execution_context_scope(execution_context):
-            request_gate = getattr(core, "_opencode_request_gate", None)
-            if not isinstance(request_gate, asyncio.Lock):
-                request_gate = asyncio.Lock()
-                setattr(core, "_opencode_request_gate", request_gate)
-
-            async with request_gate:
+            request_gate = _get_session_request_gate(core, effective_session_id)
+            if request_gate is None:
                 process_result = await core.process(
                     input_data=input_data,
                     context=request.context,
@@ -3346,6 +3367,13 @@ async def handle_chat_message(
                     context_files=context_files,
                     streaming=effective_streaming,
                     stream_callback=stream_cb,
+                )
+            else:
+                async with request_gate:
+                    process_result = await core.process(
+                        input_data=input_data,
+                        context=request.context,
+                        conversation_id=effective_session_id,
                 )
 
         # Build response

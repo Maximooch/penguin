@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
+import copy
 from penguin.constants import UI_ASYNC_SLEEP_SECONDS
 import re
 import time
@@ -254,22 +255,97 @@ _CURRENT_ENGINE_RUN_STATE: ContextVar[Optional[EngineRunState]] = ContextVar(
     default=None,
 )
 
-
 class _ScopedConversationManager:
     """Agent-scoped ConversationManager view without mutating global pointers."""
 
-    def __init__(self, base_manager: ConversationManager, agent_id: str):
+    def __init__(
+        self,
+        base_manager: ConversationManager,
+        agent_id: str,
+        *,
+        conversation_id: Optional[str] = None,
+    ):
         self._base_manager = base_manager
         self._agent_id = agent_id
         self.core = getattr(base_manager, "core", None)
-        conversation = None
+        base_conversation = None
         if hasattr(base_manager, "get_agent_conversation"):
-            conversation = base_manager.get_agent_conversation(
+            base_conversation = base_manager.get_agent_conversation(
                 agent_id, create_if_missing=True
             )
-        if conversation is None:
-            conversation = getattr(base_manager, "conversation", None)
-        self._conversation = conversation
+        if base_conversation is None:
+            base_conversation = getattr(base_manager, "conversation", None)
+        self._conversation = base_conversation
+        self._session_manager = self._resolve_session_manager(base_manager, agent_id)
+        self._context_window = self._build_context_window(base_manager)
+
+        if base_conversation is not None and conversation_id:
+            self._conversation = self._clone_conversation_with_session(
+                base_conversation,
+                conversation_id,
+            )
+
+    def _resolve_session_manager(
+        self,
+        base_manager: ConversationManager,
+        agent_id: str,
+    ) -> Any:
+        managers = getattr(base_manager, "agent_session_managers", None)
+        if isinstance(managers, dict) and agent_id in managers:
+            return managers[agent_id]
+        return getattr(base_manager, "session_manager", None)
+
+    def _build_context_window(self, base_manager: ConversationManager) -> Any:
+        try:
+            windows = getattr(base_manager, "agent_context_windows", None)
+            if isinstance(windows, dict):
+                scoped = windows.get(self._agent_id)
+                if scoped is not None:
+                    return copy.deepcopy(scoped)
+        except Exception:
+            logger.debug(
+                "Failed to clone context window for agent '%s'",
+                self._agent_id,
+                exc_info=True,
+            )
+
+        context_window = getattr(base_manager, "context_window", None)
+        if context_window is None:
+            return None
+        return copy.deepcopy(context_window)
+
+    def _clone_conversation_with_session(
+        self,
+        conversation: Any,
+        conversation_id: str,
+    ) -> Any:
+        cloned_conversation = copy.deepcopy(conversation)
+        if self._session_manager is not None:
+            cloned_conversation.session_manager = self._session_manager
+        if self._context_window is not None:
+            cloned_conversation.context_window = self._context_window
+
+        session = None
+        peek_session = getattr(self._session_manager, "peek_session", None)
+        if callable(peek_session):
+            session = peek_session(conversation_id)
+        if session is None:
+            from penguin.system.state import Session
+
+            session = Session(id=conversation_id)
+
+        try:
+            session.metadata.setdefault("agent_id", self._agent_id)
+        except Exception:
+            pass
+
+        cloned_conversation.session = session
+        cloned_conversation._modified = False
+        cloned_conversation.system_prompt_sent = any(
+            getattr(msg, "category", None) == MessageCategory.SYSTEM
+            for msg in session.messages
+        )
+        return cloned_conversation
 
     @property
     def conversation(self) -> Any:
@@ -303,6 +379,8 @@ class _ScopedConversationManager:
         return None
 
     def get_current_context_window(self) -> Any:
+        if self._context_window is not None:
+            return self._context_window
         try:
             windows = getattr(self._base_manager, "agent_context_windows", None)
             if isinstance(windows, dict):
@@ -417,6 +495,7 @@ class Engine:
         self._default_run_state.start_time = value
 
     @contextmanager
+    @contextmanager
     def _run_state_scope(self, agent_id: Optional[str]) -> Any:
         """Scope mutable run state to a single in-flight request."""
         token: Token[Optional[EngineRunState]] = _CURRENT_ENGINE_RUN_STATE.set(
@@ -476,10 +555,16 @@ class Engine:
         if not agent:
             return None
         if resolved_agent_id:
+            execution_context = get_current_execution_context()
             try:
                 return _ScopedConversationManager(
                     agent.conversation_manager,
                     resolved_agent_id,
+                    conversation_id=getattr(
+                        execution_context,
+                        "conversation_id",
+                        None,
+                    ),
                 )
             except Exception:
                 logger.exception(
@@ -680,8 +765,13 @@ class Engine:
             # Fallback to defaults for safety
             cm = self.conversation_manager
             if agent_id:
+                execution_context = get_current_execution_context()
                 try:
-                    cm = _ScopedConversationManager(cm, agent_id)
+                    cm = _ScopedConversationManager(
+                        cm,
+                        agent_id,
+                        conversation_id=getattr(execution_context, "conversation_id", None),
+                    )
                 except Exception:
                     logger.exception(
                         "Failed to build scoped conversation manager for agent '%s'",
@@ -695,8 +785,13 @@ class Engine:
             )
         cm = agent.conversation_manager
         if agent_id:
+            execution_context = get_current_execution_context()
             try:
-                cm = _ScopedConversationManager(cm, agent_id)
+                cm = _ScopedConversationManager(
+                    cm,
+                    agent_id,
+                    conversation_id=getattr(execution_context, "conversation_id", None),
+                )
             except Exception:
                 logger.exception(
                     "Failed to build scoped conversation manager for agent '%s'",
