@@ -9,6 +9,7 @@ Supports the Blueprint template format defined in context/blueprint.template.md.
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -23,10 +24,183 @@ logger = logging.getLogger(__name__)
 class BlueprintParseError(Exception):
     """Raised when Blueprint parsing fails."""
     
-    def __init__(self, message: str, source: Optional[str] = None, line: Optional[int] = None):
+    def __init__(
+        self,
+        message: str,
+        source: Optional[str] = None,
+        line: Optional[int] = None,
+        code: Optional[str] = None,
+        suggestion: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ):
         self.source = source
         self.line = line
+        self.code = code
+        self.suggestion = suggestion
+        self.task_id = task_id
         super().__init__(f"{message}" + (f" (at {source}:{line})" if source and line else ""))
+
+
+@dataclass
+class BlueprintDiagnostic:
+    """Structured lint/diagnostic finding for a Blueprint."""
+
+    code: str
+    severity: str
+    message: str
+    source: Optional[str] = None
+    line: Optional[int] = None
+    task_id: Optional[str] = None
+    suggestion: Optional[str] = None
+
+
+@dataclass
+class BlueprintDiagnosticsReport:
+    """Structured diagnostics report for a Blueprint."""
+
+    diagnostics: List[BlueprintDiagnostic] = field(default_factory=list)
+
+    @property
+    def has_errors(self) -> bool:
+        """Return True when the report contains at least one error."""
+        return any(diagnostic.severity == "error" for diagnostic in self.diagnostics)
+
+    @property
+    def has_warnings(self) -> bool:
+        """Return True when the report contains at least one warning."""
+        return any(diagnostic.severity == "warning" for diagnostic in self.diagnostics)
+
+
+class BlueprintLinter:
+    """Post-parse linter for Blueprint structural and authoring diagnostics."""
+
+    def lint(
+        self,
+        blueprint: Blueprint,
+        source: Optional[str] = None,
+    ) -> BlueprintDiagnosticsReport:
+        """Lint a parsed Blueprint and return structured diagnostics."""
+        diagnostics: List[BlueprintDiagnostic] = []
+        tasks_by_id: Dict[str, List[BlueprintItem]] = {}
+
+        for item in blueprint.items:
+            tasks_by_id.setdefault(item.id, []).append(item)
+
+        # Errors: duplicate task IDs
+        for task_id, items in tasks_by_id.items():
+            if len(items) > 1:
+                for item in items[1:]:
+                    diagnostics.append(
+                        BlueprintDiagnostic(
+                            code="BP-LINT-001",
+                            severity="error",
+                            message=f"Duplicate task id {task_id}",
+                            source=item.source_file or source,
+                            line=item.source_line,
+                            task_id=task_id,
+                            suggestion="Use unique task identifiers within a Blueprint.",
+                        )
+                    )
+
+        task_ids = set(tasks_by_id.keys())
+
+        # Errors/warnings: per-task checks
+        for item in blueprint.items:
+            for dep_id in item.depends_on:
+                if dep_id not in task_ids:
+                    diagnostics.append(
+                        BlueprintDiagnostic(
+                            code="BP-LINT-002",
+                            severity="error",
+                            message=f"Task {item.id} depends on missing task {dep_id}",
+                            source=item.source_file or source,
+                            line=item.source_line,
+                            task_id=item.id,
+                            suggestion=f"Add task {dep_id} to the Blueprint or remove it from Depends.",
+                        )
+                    )
+
+            if not item.acceptance_criteria:
+                diagnostics.append(
+                    BlueprintDiagnostic(
+                        code="BP-LINT-101",
+                        severity="warning",
+                        message=f"Task {item.id} has no acceptance criteria",
+                        source=item.source_file or source,
+                        line=item.source_line,
+                        task_id=item.id,
+                        suggestion="Add at least one Acceptance bullet so VERIFY has something concrete to check.",
+                    )
+                )
+
+            if item.estimate is None:
+                diagnostics.append(
+                    BlueprintDiagnostic(
+                        code="BP-LINT-103",
+                        severity="warning",
+                        message=f"Task {item.id} is missing an estimate",
+                        source=item.source_file or source,
+                        line=item.source_line,
+                        task_id=item.id,
+                        suggestion="Add estimate metadata to improve scheduling quality.",
+                    )
+                )
+
+            if any(spec.policy == DependencyPolicy.COMPLETION_REQUIRED for spec in item.dependency_specs):
+                diagnostics.append(
+                    BlueprintDiagnostic(
+                        code="BP-LINT-102",
+                        severity="warning",
+                        message=f"Task {item.id} has redundant explicit completion_required dependency specs",
+                        source=item.source_file or source,
+                        line=item.source_line,
+                        task_id=item.id,
+                        suggestion="Remove explicit completion_required specs unless you need them for clarity.",
+                    )
+                )
+
+        # Errors: cycle detection
+        graph = {
+            item.id: [dep_id for dep_id in item.depends_on if dep_id in task_ids]
+            for item in blueprint.items
+        }
+        visited = set()
+        visiting = set()
+        cycle_path: List[str] = []
+
+        def visit(node: str, stack: List[str]) -> bool:
+            nonlocal cycle_path
+
+            if node in visiting:
+                start = stack.index(node)
+                cycle_path = stack[start:] + [node]
+                return True
+            if node in visited:
+                return False
+
+            visiting.add(node)
+            for dep in graph.get(node, []):
+                if visit(dep, stack + [dep]):
+                    return True
+            visiting.remove(node)
+            visited.add(node)
+            return False
+
+        for task_id in graph:
+            if visit(task_id, [task_id]):
+                diagnostics.append(
+                    BlueprintDiagnostic(
+                        code="BP-LINT-003",
+                        severity="error",
+                        message=f"Dependency cycle detected: {' -> '.join(cycle_path)}",
+                        source=source,
+                        task_id=task_id,
+                        suggestion="Break the cycle so the scheduler can compute a valid frontier.",
+                    )
+                )
+                break
+
+        return BlueprintDiagnosticsReport(diagnostics=diagnostics)
 
 
 class BlueprintParser:
@@ -189,6 +363,14 @@ class BlueprintParser:
             raise BlueprintParseError(f"Invalid JSON: {e}", source)
         
         return self._build_blueprint_from_dict(data, source)
+
+    def lint_blueprint(
+        self,
+        blueprint: Blueprint,
+        source: Optional[str] = None,
+    ) -> BlueprintDiagnosticsReport:
+        """Run post-parse lint checks against a Blueprint."""
+        return BlueprintLinter().lint(blueprint, source=source)
     
     def _build_blueprint_from_frontmatter(
         self, fm: Dict[str, Any], source: Optional[str]
@@ -373,6 +555,8 @@ class BlueprintParser:
                     "Dependency spec requires task_id",
                     source,
                     current_dependency_spec_line,
+                    code="BP-PARSE-007",
+                    suggestion="Add task_id under Dependency Specs.",
                 )
 
             if not policy:
@@ -380,6 +564,9 @@ class BlueprintParser:
                     f"Dependency spec for {task_id} requires policy",
                     source,
                     current_dependency_spec_line,
+                    code="BP-PARSE-007",
+                    suggestion=f"Add policy under Dependency Specs for task_id <{task_id}>.",
+                    task_id=task_id,
                 )
 
             valid_policies = {dependency_policy.value for dependency_policy in DependencyPolicy}
@@ -388,6 +575,9 @@ class BlueprintParser:
                     f"Unknown dependency policy '{policy}'",
                     source,
                     current_dependency_spec_line,
+                    code="BP-PARSE-003",
+                    suggestion="Use one of: completion_required, review_ready_ok, artifact_ready.",
+                    task_id=task_id,
                 )
 
             if policy == DependencyPolicy.ARTIFACT_READY.value and not artifact_key:
@@ -395,6 +585,9 @@ class BlueprintParser:
                     f"artifact_ready dependency for {task_id} requires artifact_key",
                     source,
                     current_dependency_spec_line,
+                    code="BP-PARSE-004",
+                    suggestion=f"Add artifact_key under Dependency Specs for task_id <{task_id}>.",
+                    task_id=task_id,
                 )
 
             if task_id not in current_item.depends_on:
@@ -402,6 +595,9 @@ class BlueprintParser:
                     f"Dependency spec task_id {task_id} must also appear in Depends",
                     source,
                     current_dependency_spec_line,
+                    code="BP-PARSE-005",
+                    suggestion=f"Add <{task_id}> under Depends for this task.",
+                    task_id=task_id,
                 )
 
             for existing in current_item.dependency_specs:
@@ -416,6 +612,9 @@ class BlueprintParser:
                         f"conflicting dependency spec for task_id {task_id}",
                         source,
                         current_dependency_spec_line,
+                        code="BP-PARSE-006",
+                        suggestion=f"Keep only one dependency spec for task_id <{task_id}>.",
+                        task_id=task_id,
                     )
                 current_dependency_spec = None
                 current_dependency_spec_line = None
