@@ -418,6 +418,51 @@ class RunMode:
         """Clean up run mode state."""
         self._interrupted = False
         self.current_task_name = None
+
+    async def _persist_clarification_request(
+        self,
+        context: Optional[Dict[str, Any]],
+        prompt: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Persist a clarification request to task metadata when possible."""
+        if not context:
+            return None
+
+        project_manager = getattr(self.core, "project_manager", None)
+        if not project_manager:
+            return None
+
+        task_id = context.get("task_id") or context.get("id")
+        if not task_id or task_id == "user_specified":
+            return None
+
+        task = await project_manager.get_task_async(task_id)
+        if not task:
+            return None
+
+        clarification = {
+            "task_id": task.id,
+            "task_status": task.status.value if hasattr(task.status, "value") else str(task.status),
+            "task_phase": task.phase.value if hasattr(task.phase, "value") else str(task.phase),
+            "prompt": prompt,
+            "status": "open",
+            "requested_at": datetime.utcnow().isoformat(),
+        }
+
+        metadata = dict(task.metadata or {})
+        clarification_requests = list(metadata.get("clarification_requests", []))
+        clarification_requests.append(clarification)
+        metadata["clarification_requests"] = clarification_requests
+
+        task.metadata = metadata
+        task.updated_at = datetime.utcnow().isoformat()
+
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            project_manager.storage.update_task,
+            task,
+        )
+        return clarification
         logger.debug("Cleaning up run mode state")
         
         # If not in continuous mode, emit end event
@@ -1007,6 +1052,30 @@ class RunMode:
             # Determine completion type
             completion_type = self._determine_completion_type(name, context, result)
             
+            if completion_type == "clarification_needed":
+                prompt = result.get("assistant_response", "")
+                clarification = await self._persist_clarification_request(context, prompt)
+
+                await self._emit_event({
+                    "type": "status",
+                    "status_type": "clarification_needed",
+                    "data": {
+                        "task_name": name,
+                        "task_id": (context or {}).get("task_id") or (context or {}).get("id"),
+                        "prompt": prompt,
+                        "clarification": clarification,
+                    },
+                })
+
+                return {
+                    "status": "waiting_input",
+                    "message": prompt,
+                    "completion_type": completion_type,
+                    "metadata": context.get("metadata", {}) if context else {},
+                    "iterations": result.get("iterations", 0),
+                    "execution_time": result.get("execution_time", 0),
+                }
+
             # Create standardized return format
             return {
                 "status": result.get("status", "unknown"),
