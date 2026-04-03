@@ -463,6 +463,88 @@ class RunMode:
             task,
         )
         return clarification
+
+
+    async def resume_with_clarification(
+        self,
+        task_id: str,
+        answer: str,
+        answered_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Resume a task by answering its latest open clarification request."""
+        project_manager = getattr(self.core, "project_manager", None)
+        if not project_manager:
+            return {
+                "status": "error",
+                "message": "Project manager not available",
+                "completion_type": "error",
+            }
+
+        task = await project_manager.get_task_async(task_id)
+        if not task:
+            return {
+                "status": "error",
+                "message": f"Task '{task_id}' not found",
+                "completion_type": "error",
+            }
+
+        metadata = dict(task.metadata or {})
+        clarification_requests = list(metadata.get("clarification_requests", []))
+        open_index = None
+        for idx in range(len(clarification_requests) - 1, -1, -1):
+            if clarification_requests[idx].get("status") == "open":
+                open_index = idx
+                break
+
+        if open_index is None:
+            return {
+                "status": "error",
+                "message": f"No open clarification request for task '{task_id}'",
+                "completion_type": "error",
+            }
+
+        clarification = dict(clarification_requests[open_index])
+        clarification["answer"] = answer
+        clarification["answered_by"] = answered_by
+        clarification["answered_at"] = datetime.utcnow().isoformat()
+        clarification["status"] = "answered"
+        clarification_requests[open_index] = clarification
+        metadata["clarification_requests"] = clarification_requests
+
+        task.metadata = metadata
+        task.updated_at = datetime.utcnow().isoformat()
+
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            project_manager.storage.update_task,
+            task,
+        )
+
+        await self._emit_event({
+            "type": "status",
+            "status_type": "clarification_answered",
+            "data": {
+                "task_id": task.id,
+                "prompt": clarification.get("prompt"),
+                "answer": answer,
+                "answered_by": answered_by,
+            },
+        })
+
+        resumed_context = {
+            "task_id": task.id,
+            "project_id": getattr(task, "project_id", None),
+            "metadata": metadata,
+            "clarification_answer": answer,
+            "clarification_prompt": clarification.get("prompt"),
+            "clarification_answered_by": answered_by,
+        }
+
+        return await self._execute_task(
+            task.title,
+            task.description,
+            resumed_context,
+        )
         logger.debug("Cleaning up run mode state")
         
         # If not in continuous mode, emit end event
