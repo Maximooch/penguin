@@ -22,6 +22,8 @@ This is a system map, not a full contract. Use it to orient yourself quickly bef
   - artifact declaration and validation rules for `artifact_ready`
 - `context/architecture/blueprint-typed-dependency-syntax-contract.md`
   - authoring and normalization rules for typed dependency syntax
+- `context/architecture/clarification-handling-contract.md`
+  - contract for waiting, escalation, and resumption when execution needs clarification
 - `context/tasks/runmode-project-ituv-gap-matrix.md`
   - phased implementation plan and remaining backlog
 

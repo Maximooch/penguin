@@ -38,6 +38,8 @@ This contract does **not** define artifact validation semantics in full. That re
   - artifact validation rules for `artifact_ready`
 - `context/architecture/runmode-project-ituv-system-map.md`
   - visual map of how Blueprint syntax flows into scheduling and ITUV execution
+- `context/tasks/blueprint-typed-dependency-implementation-plan.md`
+  - recommended rollout plan, parser/testing order, and alternatives for human-friendly typed dependency authoring
 
 ## Core Principle
 

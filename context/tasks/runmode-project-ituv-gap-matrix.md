@@ -405,6 +405,10 @@ For dependency-library/tooling choices related to this plan, see:
 
 - `context/rationale/dependency-library-evaluation.md`
 
+For the recommended rollout plan and alternatives for human-friendly typed dependency Blueprint authoring, see:
+
+- `context/tasks/blueprint-typed-dependency-implementation-plan.md`
+
 That note captures the current adopt/defer/reject stance for:
 
 - `networkx`

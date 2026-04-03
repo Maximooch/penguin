@@ -424,11 +424,14 @@ This state-machine contract works alongside:
   - canonical authoring and normalization rules for typed dependency syntax in Blueprints
 - `context/architecture/runmode-project-ituv-system-map.md`
   - visual map of component boundaries, execution flow, evidence flow, and scheduler interactions
+- `context/architecture/clarification-handling-contract.md`
+  - rules for waiting, resumption, escalation, and truthful execution behavior when clarification is required
 
 Use this file for lifecycle legality and review/completion semantics.
 Use the artifact evidence contract for evidence-bearing dependency unlock rules.
 Use the typed dependency syntax contract for authoring/parser truth.
 Use the system map for architecture orientation.
+Use the clarification contract for human-in-the-loop execution behavior.
 
 ## Relationship to Future Formalization
 
