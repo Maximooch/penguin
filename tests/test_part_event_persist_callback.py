@@ -186,3 +186,18 @@ async def test_stream_keeps_literal_action_tag_text_without_truncation():
     final_text = text_parts[-1].get("text", "")
     assert "<spawn_sub_agent>" in final_text
     assert "Response should continue after the literal tag." in final_text
+
+
+def test_part_adapter_ids_include_session_scope() -> None:
+    bus = _EventBus()
+    adapter_a = PartEventAdapter(bus)
+    adapter_a.set_session("session-a")
+    adapter_b = PartEventAdapter(bus)
+    adapter_b.set_session("session-b")
+
+    id_a = adapter_a._next_id("msg")
+    id_b = adapter_b._next_id("msg")
+
+    assert id_a != id_b
+    assert "session_a" in id_a
+    assert "session_b" in id_b

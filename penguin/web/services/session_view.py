@@ -1027,40 +1027,14 @@ def get_session_messages(
             continue
         legacy_rows.append(_legacy_message_to_with_parts(core, session, message))
 
-    if not rows:
-        rows = legacy_rows
-    elif legacy_rows:
-        transcript_by_id: dict[str, dict[str, Any]] = {}
-        for row in rows:
-            info = row.get("info") if isinstance(row, dict) else None
-            message_id = info.get("id") if isinstance(info, dict) else None
-            if isinstance(message_id, str):
-                transcript_by_id[message_id] = row
+    if rows:
+        if limit is not None and limit > 0:
+            return rows[-limit:]
+        return rows
 
-        merged_rows: list[dict[str, Any]] = []
-        merged_ids: set[str] = set()
-        for legacy_row in legacy_rows:
-            info = legacy_row.get("info") if isinstance(legacy_row, dict) else None
-            message_id = info.get("id") if isinstance(info, dict) else None
-            if isinstance(message_id, str) and message_id in transcript_by_id:
-                merged_rows.append(transcript_by_id[message_id])
-                merged_ids.add(message_id)
-                continue
-            merged_rows.append(legacy_row)
-            if isinstance(message_id, str):
-                merged_ids.add(message_id)
-
-        for row in rows:
-            info = row.get("info") if isinstance(row, dict) else None
-            message_id = info.get("id") if isinstance(info, dict) else None
-            if isinstance(message_id, str) and message_id in merged_ids:
-                continue
-            merged_rows.append(row)
-            if isinstance(message_id, str):
-                merged_ids.add(message_id)
-
-        rows = merged_rows
+    rows = legacy_rows
 
     if limit is not None and limit > 0:
         return rows[-limit:]
     return rows
+

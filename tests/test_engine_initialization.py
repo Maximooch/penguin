@@ -101,6 +101,77 @@ def test_finalize_streaming_response_uses_finalized_content_without_duplicate_sa
     conversation.add_assistant_message.assert_not_called()
 
 
+
+@pytest.mark.asyncio
+async def test_call_llm_with_retry_skips_non_stream_retry_after_streamed_chunks() -> None:
+    engine = Engine(
+        EngineSettings(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+
+    streamed: list[tuple[str, str]] = []
+
+    async def _fake_get_response(messages, stream=None, stream_callback=None, **kwargs):
+        del messages, kwargs
+        if stream:
+            assert stream_callback is not None
+            await stream_callback("hello", "assistant")
+            return ""
+        raise AssertionError("non-stream retry should not happen after streamed assistant chunks")
+
+    api_client = SimpleNamespace(
+        get_response=AsyncMock(side_effect=_fake_get_response),
+        client_handler=SimpleNamespace(),
+    )
+
+    async def _collector(chunk: str, message_type: str = "assistant") -> None:
+        streamed.append((chunk, message_type))
+
+    result = await engine._call_llm_with_retry(
+        cast(Any, api_client),
+        [{"role": "user", "content": "hi"}],
+        streaming=True,
+        stream_callback=_collector,
+        extra_kwargs={},
+    )
+
+    assert result == ""
+    assert streamed == [("hello", "assistant")]
+    assert api_client.get_response.await_count == 1
+
+
+def test_scoped_conversation_manager_clones_default_agent_session() -> None:
+    base_session = SimpleNamespace(id="session-a", messages=[])
+    conversation = SimpleNamespace(
+        session=base_session,
+        save=MagicMock(return_value=True),
+        add_action_result=MagicMock(),
+    )
+    base_manager = SimpleNamespace(
+        core=None,
+        get_agent_conversation=MagicMock(return_value=conversation),
+        save=MagicMock(return_value=True),
+        get_current_session=MagicMock(return_value=base_session),
+        agent_context_windows={},
+    )
+
+    engine = Engine(
+        EngineSettings(),
+        cast(Any, base_manager),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+
+    scoped = engine.get_conversation_manager("default")
+    assert scoped is not None
+    assert scoped.conversation is not conversation
+    assert scoped.get_current_session() is not base_session
+    assert scoped.get_current_session().id == "session-a"
+
 @pytest.mark.asyncio
 async def test_llm_step_returns_usage_from_active_api_client() -> None:
     conversation = SimpleNamespace(

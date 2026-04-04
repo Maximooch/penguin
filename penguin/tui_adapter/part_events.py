@@ -160,7 +160,11 @@ class PartEventAdapter:
             self._last_id_ts = ts
             self._last_id_inc = 0
         stamp = str(ts).rjust(13, "0")
-        return f"{prefix}_{stamp}_{self._last_id_inc:02d}"
+        session_fragment = (
+            re.sub(r"[^a-zA-Z0-9]+", "_", self._session_id or "unknown").strip("_")
+            or "unknown"
+        )
+        return f"{prefix}_{session_fragment}_{stamp}_{self._last_id_inc:02d}"
 
     def _strip_action_tags_keep_whitespace(self, text: str) -> str:
         if not text:

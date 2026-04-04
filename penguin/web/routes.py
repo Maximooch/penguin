@@ -206,6 +206,16 @@ def _ensure_session_directory_map(core: PenguinCore) -> dict[str, str]:
     return session_dirs
 
 
+def _get_session_request_gate(core: PenguinCore, session_id: Optional[str]) -> asyncio.Lock:
+    """Return a REST request gate scoped to one session."""
+    gate_key = session_id or "__default__"
+    request_gates = getattr(core, "_opencode_request_gates", None)
+    if not isinstance(request_gates, dict):
+        request_gates = {}
+        setattr(core, "_opencode_request_gates", request_gates)
+    return request_gates.setdefault(gate_key, asyncio.Lock())
+
+
 def _bind_session_directory(
     core: PenguinCore,
     session_id: Optional[str],
@@ -444,6 +454,20 @@ def _request_log_info(message: str, *args: Any) -> None:
     uvicorn_logger = logging.getLogger("uvicorn.error")
     if uvicorn_logger is not logger:
         uvicorn_logger.info(message, *args)
+
+
+def _request_log_debug(message: str, *args: Any) -> None:
+    """Log verbose request-level traces via app and uvicorn logger."""
+    logger.info(message, *args)
+    uvicorn_logger = logging.getLogger("uvicorn.error")
+    if uvicorn_logger is not logger:
+        uvicorn_logger.info(message, *args)
+
+
+def _preview_text(value: Any, limit: int = 120) -> str:
+    text = value if isinstance(value, str) else str(value)
+    text = text.replace("\n", "\\n")
+    return text[:limit] + ("..." if len(text) > limit else "")
 
 
 async def _refresh_session_title_if_default(
@@ -3171,6 +3195,18 @@ async def handle_chat_message(
             agent_mode=resolved_agent_mode,
             directory=bound_directory or request.directory,
         )
+        _request_log_debug(
+            "chat.trace.start request=%s session=%s agent=%s mode=%s dir=%s model=%s streaming=%s client_msg=%s prompt=%r",
+            execution_context.request_id or "unknown",
+            request_session_id or "unknown",
+            request.agent_id or "default",
+            resolved_agent_mode,
+            bound_directory or request.directory,
+            request.model or "",
+            bool(request.streaming),
+            request.client_message_id or "",
+            _preview_text(request.text),
+        )
 
         requested_model = (
             request.model.strip() if isinstance(request.model, str) else ""
@@ -3331,11 +3367,18 @@ async def handle_chat_message(
 
         # Process the message with all available options
         with execution_context_scope(execution_context):
-            request_gate = getattr(core, "_opencode_request_gate", None)
-            if not isinstance(request_gate, asyncio.Lock):
-                request_gate = asyncio.Lock()
-                setattr(core, "_opencode_request_gate", request_gate)
-
+            request_gate = _get_session_request_gate(core, request_session_id)
+            _request_log_debug(
+                "chat.trace.before_process request=%s session=%s gate=%s cm=%s tracked=%s ctx=%s",
+                execution_context.request_id or "unknown",
+                request_session_id or "unknown",
+                hex(id(request_gate)),
+                hex(id(getattr(core, "conversation_manager", None)))
+                if getattr(core, "conversation_manager", None) is not None
+                else "none",
+                bool(request_tracked),
+                execution_context.as_dict(),
+            )
             async with request_gate:
                 process_result = await core.process(
                     input_data=input_data,
@@ -3347,6 +3390,14 @@ async def handle_chat_message(
                     streaming=effective_streaming,
                     stream_callback=stream_cb,
                 )
+            _request_log_debug(
+                "chat.trace.after_process request=%s session=%s response_len=%s actions=%s preview=%r",
+                execution_context.request_id or "unknown",
+                request_session_id or "unknown",
+                len(process_result.get("assistant_response", "") or ""),
+                len(process_result.get("action_results", []) or []),
+                _preview_text(process_result.get("assistant_response", "")),
+            )
 
         # Build response
         if request_session_id:
@@ -3362,9 +3413,21 @@ async def handle_chat_message(
         }
         if request.include_reasoning:
             resp["reasoning"] = "".join(reasoning_buf)
+        _request_log_debug(
+            "chat.trace.response request=%s session=%s response_len=%s aborted=%s preview=%r",
+            execution_context.request_id or "unknown",
+            request_session_id or "unknown",
+            len(resp.get("response", "") or ""),
+            bool(resp.get("aborted")),
+            _preview_text(resp.get("response", "")),
+        )
         return resp
     except asyncio.CancelledError:
-        logger.info("Chat request cancelled for session %s", request_session_id)
+        _request_log_info(
+            "chat.trace.cancelled request=%s session=%s",
+            execution_context.request_id if "execution_context" in locals() else "unknown",
+            request_session_id or "unknown",
+        )
         return {"response": "", "action_results": [], "aborted": True}
     except HTTPException:
         raise
@@ -3782,7 +3845,11 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
 
                 # Finalize streaming message (adds to conversation with reasoning)
                 if hasattr(core, "finalize_streaming_message"):
-                    core.finalize_streaming_message()
+                    core.finalize_streaming_message(
+                        agent_id=agent_id,
+                        session_id=effective_session_id,
+                        conversation_id=effective_session_id,
+                    )
                     logger.debug("Finalized streaming message with reasoning")
 
                 # Signal sender task to finish *after* core.process is done

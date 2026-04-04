@@ -109,6 +109,11 @@ async def test_parallel_chat_requests_keep_execution_context_isolated(
     repo_b.mkdir()
 
     captured_contexts: list[tuple[str | None, str | None]] = []
+    entered_sessions: list[str] = []
+    both_started = asyncio.Event()
+    release_process = asyncio.Event()
+    active_calls = 0
+    max_active_calls = 0
 
     class _Core:
         def __init__(self) -> None:
@@ -121,11 +126,21 @@ async def test_parallel_chat_requests_keep_execution_context_isolated(
 
         async def process(self, **kwargs):  # type: ignore[no-untyped-def]
             del kwargs
+            nonlocal active_calls, max_active_calls
             current = get_current_execution_context()
             session_id = current.session_id if current else None
             directory = current.directory if current else None
             captured_contexts.append((session_id, directory))
-            await asyncio.sleep(0.02)
+            if isinstance(session_id, str):
+                entered_sessions.append(session_id)
+            active_calls += 1
+            max_active_calls = max(max_active_calls, active_calls)
+            if len(entered_sessions) >= 2:
+                both_started.set()
+            try:
+                await release_process.wait()
+            finally:
+                active_calls -= 1
             return {
                 "assistant_response": f"session={session_id}|dir={directory}",
                 "action_results": [],
@@ -143,10 +158,14 @@ async def test_parallel_chat_requests_keep_execution_context_isolated(
         )
         return await handle_chat_message(request, core=cast(Any, core))
 
-    response_a, response_b = await asyncio.gather(
-        _send("chat_session_a", repo_a),
-        _send("chat_session_b", repo_b),
-    )
+    task_a = asyncio.create_task(_send("chat_session_a", repo_a))
+    task_b = asyncio.create_task(_send("chat_session_b", repo_b))
+    try:
+        await asyncio.wait_for(both_started.wait(), timeout=0.2)
+        assert max_active_calls == 2
+    finally:
+        release_process.set()
+    response_a, response_b = await asyncio.gather(task_a, task_b)
 
     assert str(repo_a.resolve()) in response_a["response"]
     assert str(repo_b.resolve()) in response_b["response"]
@@ -625,7 +644,9 @@ async def test_rest_chat_queued_request_returns_aborted_when_cancelled(
             )
             self._opencode_session_directories: dict[str, str] = {}
             self._opencode_process_tasks: dict[str, set[asyncio.Task[Any]]] = {}
-            self._opencode_request_gate = asyncio.Lock()
+            self._opencode_request_gates = {
+                "session_queued_cancel": asyncio.Lock()
+            }
 
         async def process(self, **kwargs):  # type: ignore[no-untyped-def]
             del kwargs
@@ -633,7 +654,7 @@ async def test_rest_chat_queued_request_returns_aborted_when_cancelled(
             return {"assistant_response": "ok", "action_results": []}
 
     core = _Core()
-    await core._opencode_request_gate.acquire()
+    await core._opencode_request_gates["session_queued_cancel"].acquire()
 
     request = MessageRequest(
         text="queued cancel",
@@ -662,7 +683,7 @@ async def test_rest_chat_queued_request_returns_aborted_when_cancelled(
     tracked_after = core._opencode_process_tasks.get("session_queued_cancel")
     assert not tracked_after or request_task not in tracked_after
 
-    core._opencode_request_gate.release()
+    core._opencode_request_gates["session_queued_cancel"].release()
 
 
 @pytest.mark.asyncio

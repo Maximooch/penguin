@@ -1,7 +1,8 @@
 import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2"
 import { createSimpleContext } from "./helper"
 import { createGlobalEmitter } from "@solid-primitives/event-bus"
-import { batch, onCleanup, onMount } from "solid-js"
+import { batch, createEffect, onCleanup, onMount } from "solid-js"
+import { useRoute } from "./route"
 
 export type EventSource = {
   on: (handler: (event: Event) => void) => () => void
@@ -25,7 +26,8 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       fetch: props.fetch,
     })
     const penguin = !!props.penguin
-    const sessionID = props.sessionID
+    const route = useRoute()
+    const sessionID = () => (route.data.type === "session" ? route.data.sessionID : props.sessionID)
 
     const emitter = createGlobalEmitter<{
       [key in Event["type"]]: Extract<Event, { type: key }>
@@ -34,6 +36,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
     let queue: Event[] = []
     let timer: Timer | undefined
     let last = 0
+    let streamAbort: AbortController | undefined
 
     const flush = () => {
       if (queue.length === 0) return
@@ -96,9 +99,15 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
 
     const streamPenguin = async () => {
       const base = new URL("/api/v1/events/sse", props.url)
+      const activeSessionID = sessionID()
+      if (activeSessionID) base.searchParams.set("session_id", activeSessionID)
       if (props.directory) base.searchParams.set("directory", props.directory)
+
+      streamAbort = new AbortController()
+      const currentStreamAbort = streamAbort
+
       const reader = await (props.fetch ?? fetch)(base, {
-        signal: abort.signal,
+        signal: currentStreamAbort.signal,
         headers: {
           Accept: "text/event-stream",
         },
@@ -112,8 +121,18 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       const state = { buffer: "" }
 
       while (true) {
+        if (abort.signal.aborted || currentStreamAbort.signal.aborted) break
+
         const chunk = await reader.read()
         if (chunk.done) break
+
+        if (sessionID() !== activeSessionID) {
+          try {
+            await reader.cancel()
+          } catch {}
+          break
+        }
+
         state.buffer += decoder.decode(chunk.value, { stream: true })
         const parts = state.buffer.split("\n\n")
         state.buffer = parts.pop() ?? ""
@@ -124,6 +143,12 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
         }
       }
     }
+
+    createEffect(() => {
+      if (!penguin) return
+      sessionID()
+      streamAbort?.abort()
+    })
 
     onMount(async () => {
       // If an event source is provided, use it instead of SSE
@@ -172,6 +197,7 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
 
     onCleanup(() => {
       abort.abort()
+      streamAbort?.abort()
       if (timer) clearTimeout(timer)
     })
 
@@ -181,7 +207,9 @@ export const { use: useSDK, provider: SDKProvider } = createSimpleContext({
       url: props.url,
       directory: props.directory,
       penguin,
-      sessionID,
+      get sessionID() {
+        return sessionID()
+      },
     }
   },
 })

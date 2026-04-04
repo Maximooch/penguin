@@ -333,20 +333,37 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         const sid = eventSessionID(event)
         const dir = normalizeDirectory(eventDirectory(event))
         const baseDir = appDirectory()
-        if (sid) {
-          const sidDir = sessionDirectory(sid)
-          if (sidDir && baseDir && sidDir !== baseDir) return
-          if (!sidDir && dir && baseDir && dir !== baseDir) return
-        }
-        if (!sid) {
-          if (dir && baseDir && dir !== baseDir) return
-          if (
-            !dir &&
-            (event.type === "lsp.updated" ||
-              event.type === "lsp.client.diagnostics" ||
-              event.type === "vcs.branch.updated")
-          ) {
-            return
+        const activeSessionID = route.data.type === "session" ? route.data.sessionID : undefined
+        if (activeSessionID) {
+          if (sid && sid !== activeSessionID) return
+          const activeDir = sessionDirectory(activeSessionID) ?? baseDir
+          if (!sid) {
+            if (dir && activeDir && dir !== activeDir) return
+            if (
+              !dir &&
+              (event.type === "lsp.updated" ||
+                event.type === "lsp.client.diagnostics" ||
+                event.type === "vcs.branch.updated")
+            ) {
+              return
+            }
+          }
+        } else {
+          if (sid) {
+            const sidDir = sessionDirectory(sid)
+            if (sidDir && baseDir && sidDir !== baseDir) return
+            if (!sidDir && dir && baseDir && dir !== baseDir) return
+          }
+          if (!sid) {
+            if (dir && baseDir && dir !== baseDir) return
+            if (
+              !dir &&
+              (event.type === "lsp.updated" ||
+                event.type === "lsp.client.diagnostics" ||
+                event.type === "vcs.branch.updated")
+            ) {
+              return
+            }
           }
         }
       }
