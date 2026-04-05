@@ -668,3 +668,58 @@ This order is deliberate:
 ## Final Note
 
 The codebase is closer to “promising scaffolding” than “finished workflow engine”. The good news is that the missing pieces are mostly plumbing and control-flow enforcement, not a full architectural rewrite. The bad news is that until those gates are real, the system can lie about task completion.
+
+## Next Options Worth Discussing
+
+These are the most sensible follow-on options after the current clarification handling, Blueprint diagnostics, and typed dependency work.
+
+### 1. Waiting-Time vs Execution-Time Accounting
+
+**What:** don't charge clarification wait against execution timebox.
+
+**Why:** otherwise agents learn to guess instead of ask.
+
+**Effort:** small — add timestamps and accounting logic.
+
+**When:** soon, but not urgent unless timebox enforcement is live.
+
+### 2. Blocker Escalation After Timeout
+
+**What:** auto-escalate unanswered clarification to blocked state.
+
+**Why:** open clarifications that sit forever poison the scheduler.
+
+**Effort:** medium — needs a threshold policy and state transition.
+
+**When:** after waiting-time accounting exists.
+
+### 3. Deeper Hypothesis / Stateful Coverage
+
+**What:** generated transition sequences, mixed dependency graphs, clarification state invariants.
+
+**Why:** highest confidence multiplier.
+
+**Effort:** medium.
+
+**When:** anytime — especially good before the next major feature push.
+
+### 4. Wire Clarification into CLI/API Surface
+
+**What:** expose `resume_with_clarification` through CLI commands or web API.
+
+**Why:** the capability exists internally but isn't user-accessible yet.
+
+**Effort:** small-medium depending on surface.
+
+**When:** when you want humans to actually use clarification flow.
+
+### 5. Cross-Link Clarification Contract with Implementation
+
+**What:** update `clarification-handling-contract.md` to reference the real code paths.
+
+**Why:** doc cluster stays honest.
+
+**Effort:** tiny.
+
+**When:** now, as a quick cleanup.
+

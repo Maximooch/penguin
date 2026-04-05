@@ -42,6 +42,37 @@ This contract does **not** define artifact validation semantics. That remains in
 - `context/architecture/blueprint-typed-dependency-syntax-contract.md`
   - authoring rules for typed dependency syntax that may trigger clarification in ambiguous authoring cases
 
+## Current Implementation Status
+
+The current minimal implementation lives primarily in:
+
+- `penguin/run_mode.py`
+  - `_execute_task(...)` converts clarification-needed outcomes into `waiting_input`
+  - `_persist_clarification_request(...)` stores clarification records in task metadata
+  - `resume_with_clarification(...)` records answers, closes the latest open clarification, emits a resume event, and re-enters task execution with clarification context injected
+- `tests/test_runmode_clarification_handling.py`
+  - focused tests for waiting-input behavior, persistence, answer handling, and resume semantics
+
+Current persistence shape:
+
+- clarification records live in `Task.metadata["clarification_requests"]`
+- clarification answers are recorded on the same clarification record with:
+  - `answer`
+  - `answered_by`
+  - `answered_at`
+  - `status = "answered"`
+
+Current emitted runtime status events:
+
+- `clarification_needed`
+- `clarification_answered`
+
+Current limitations of the implemented slice:
+
+- waiting time is not yet separated from active execution time for timebox accounting
+- unanswered clarification is not yet escalated automatically into an explicit blocked state
+- CLI/API surfaces for human answer submission are not yet wired
+
 ## Core Principle
 
 Clarification is not failure.
