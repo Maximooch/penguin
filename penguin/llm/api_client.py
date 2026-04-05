@@ -535,10 +535,23 @@ class APIClient:
         )
         prepared_messages = self._prepare_messages_with_system_prompt(messages)
 
-        # <<<--- ADD THIS LOGGING for PREPARED MESSAGES ---<<<
-        request_id_api = os.urandom(4).hex()  # Simple ID for this layer
+        try:
+            from penguin.system.execution_context import get_current_execution_context
+
+            execution_context = get_current_execution_context()
+            request_id_ctx = execution_context.request_id if execution_context else None
+            session_id_ctx = (
+                execution_context.session_id or execution_context.conversation_id
+                if execution_context
+                else None
+            )
+        except Exception:
+            request_id_ctx = None
+            session_id_ctx = None
+
+        request_id_api = request_id_ctx or os.urandom(4).hex()
         self.logger.info(
-            f"[Request:{request_id_api}] APIClient calling handler {type(self.client_handler).__name__}.get_response"
+            f"[Request:{request_id_api}] APIClient calling handler {type(self.client_handler).__name__}.get_response session={session_id_ctx} model={getattr(self.model_config, 'model', None)} stream={use_streaming}"
         )
         try:
             safe_msgs_for_log = []

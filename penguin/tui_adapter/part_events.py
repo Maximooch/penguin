@@ -48,6 +48,7 @@ class Message:
     time_completed: Optional[float] = None
     model_id: Optional[str] = None
     provider_id: Optional[str] = None
+    variant: Optional[str] = None
     agent_id: str = "default"
     parent_id: str = "root"
     path: Dict[str, str] = field(default_factory=dict)
@@ -160,7 +161,11 @@ class PartEventAdapter:
             self._last_id_ts = ts
             self._last_id_inc = 0
         stamp = str(ts).rjust(13, "0")
-        return f"{prefix}_{stamp}_{self._last_id_inc:02d}"
+        session_fragment = (
+            re.sub(r"[^a-zA-Z0-9]+", "_", self._session_id or "unknown").strip("_")
+            or "unknown"
+        )
+        return f"{prefix}_{session_fragment}_{stamp}_{self._last_id_inc:02d}"
 
     def _strip_action_tags_keep_whitespace(self, text: str) -> str:
         if not text:
@@ -308,6 +313,7 @@ class PartEventAdapter:
         agent_id: str = "default",
         model_id: Optional[str] = None,
         provider_id: Optional[str] = None,
+        variant: Optional[str] = None,
     ) -> Tuple[str, str]:
         """Called when streaming starts - creates Message and initial TextPart.
 
@@ -327,6 +333,7 @@ class PartEventAdapter:
             time_created=time.time(),
             model_id=model_id,
             provider_id=provider_id,
+            variant=variant,
             agent_id=agent_id,
             parent_id="root",
             path=self._path(),
@@ -690,6 +697,7 @@ class PartEventAdapter:
                 "parentID": msg.parent_id,
                 "modelID": msg.model_id,
                 "providerID": msg.provider_id,
+                "variant": msg.variant,
                 "mode": msg.mode,
                 "agent": msg.agent_id,
                 "path": msg.path or self._path(),
