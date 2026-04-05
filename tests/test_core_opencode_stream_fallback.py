@@ -52,13 +52,20 @@ async def test_on_tui_stream_chunk_synthesizes_final_content_when_no_delta() -> 
     deltas = [item.get("properties", {}).get("delta") for item in emitted]
     assert "fallback assistant text" in deltas
 
-def test_finalize_streaming_message_loads_target_session_before_persisting() -> None:
+
+def test_finalize_streaming_message_persists_to_target_session_store() -> None:
     core = PenguinCore.__new__(PenguinCore)
 
     finalized_message = SimpleNamespace(
+        id="msg_finalized_1",
         role="assistant",
         content="scoped response",
         metadata={},
+        timestamp="2026-04-04T00:00:00",
+        tokens=0,
+        agent_id="default",
+        recipient_id=None,
+        message_type="message",
         was_empty=False,
         to_dict=lambda: {"content": "scoped response"},
     )
@@ -71,15 +78,30 @@ def test_finalize_streaming_message_loads_target_session_before_persisting() -> 
     add_calls: list[dict[str, object]] = []
     save_calls: list[str] = []
 
+    target_session = SimpleNamespace(
+        id="target-session",
+        messages=[],
+        metadata={},
+        add_message=lambda msg: target_session.messages.append(msg),
+    )
+
+    session_manager = SimpleNamespace(
+        sessions={"target-session": (target_session, False)},
+        session_index={"target-session": {}},
+        save_session=lambda session: save_calls.append(session.id) or True,
+    )
+
     conversation = SimpleNamespace(
         session=SimpleNamespace(id="wrong-session"),
         load=lambda session_id: load_calls.append(session_id) or True,
         add_message=lambda **kwargs: add_calls.append(kwargs),
-        save=lambda: save_calls.append("saved") or True,
+        save=lambda: save_calls.append("shared-save") or True,
     )
     core.conversation_manager = SimpleNamespace(
         current_agent_id="default",
         get_agent_conversation=lambda agent_id: conversation,
+        session_manager=session_manager,
+        agent_session_managers={"default": session_manager},
     )
     core._runmode_stream_callback = None
     core._filter_internal_markers_from_event = lambda data: data
@@ -92,6 +114,8 @@ def test_finalize_streaming_message_loads_target_session_before_persisting() -> 
     )
 
     assert result == {"content": "scoped response"}
-    assert load_calls == ["target-session"]
-    assert add_calls and add_calls[0]["content"] == "scoped response"
-    assert save_calls == ["saved"]
+    assert load_calls == []
+    assert add_calls == []
+    assert save_calls == ["target-session"]
+    assert len(target_session.messages) == 1
+    assert target_session.messages[0].content == "scoped response"

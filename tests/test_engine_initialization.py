@@ -101,9 +101,10 @@ def test_finalize_streaming_response_uses_finalized_content_without_duplicate_sa
     conversation.add_assistant_message.assert_not_called()
 
 
-
 @pytest.mark.asyncio
-async def test_call_llm_with_retry_skips_non_stream_retry_after_streamed_chunks() -> None:
+async def test_call_llm_with_retry_skips_non_stream_retry_after_streamed_chunks() -> (
+    None
+):
     engine = Engine(
         EngineSettings(),
         MagicMock(),
@@ -120,7 +121,9 @@ async def test_call_llm_with_retry_skips_non_stream_retry_after_streamed_chunks(
             assert stream_callback is not None
             await stream_callback("hello", "assistant")
             return ""
-        raise AssertionError("non-stream retry should not happen after streamed assistant chunks")
+        raise AssertionError(
+            "non-stream retry should not happen after streamed assistant chunks"
+        )
 
     api_client = SimpleNamespace(
         get_response=AsyncMock(side_effect=_fake_get_response),
@@ -172,6 +175,75 @@ def test_scoped_conversation_manager_clones_default_agent_session() -> None:
     assert scoped.get_current_session() is not base_session
     assert scoped.get_current_session().id == "session-a"
 
+
+def test_scoped_conversation_manager_is_reused_within_run_state() -> None:
+    base_session = SimpleNamespace(id="session-a", messages=[])
+    conversation = SimpleNamespace(
+        session=base_session,
+        save=MagicMock(return_value=True),
+        add_action_result=MagicMock(),
+    )
+    base_manager = SimpleNamespace(
+        core=None,
+        get_agent_conversation=MagicMock(return_value=conversation),
+        save=MagicMock(return_value=True),
+        get_current_session=MagicMock(return_value=base_session),
+        agent_context_windows={},
+    )
+
+    engine = Engine(
+        EngineSettings(),
+        cast(Any, base_manager),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+
+    with engine._run_state_scope("default"):
+        first = engine.get_conversation_manager("default")
+        second = engine.get_conversation_manager("default")
+
+    assert first is not None
+    assert second is not None
+    assert first is second
+
+
+def test_preloaded_scoped_conversation_manager_is_adopted_within_run_state() -> None:
+    base_session = SimpleNamespace(id="session-a", messages=[])
+    conversation = SimpleNamespace(
+        session=base_session,
+        save=MagicMock(return_value=True),
+        add_action_result=MagicMock(),
+    )
+    base_manager = SimpleNamespace(
+        core=None,
+        get_agent_conversation=MagicMock(return_value=conversation),
+        save=MagicMock(return_value=True),
+        get_current_session=MagicMock(return_value=base_session),
+        agent_context_windows={},
+    )
+
+    engine = Engine(
+        EngineSettings(),
+        cast(Any, base_manager),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+
+    preloaded = engine.get_conversation_manager("default")
+    assert preloaded is not None
+
+    with execution_context_scope(
+        ExecutionContext(session_id="session-a", request_id="req-1")
+    ):
+        engine.prime_scoped_conversation_manager("default", preloaded)
+        with engine._run_state_scope("default"):
+            adopted = engine.get_conversation_manager("default")
+
+    assert adopted is preloaded
+
+
 @pytest.mark.asyncio
 async def test_llm_step_returns_usage_from_active_api_client() -> None:
     conversation = SimpleNamespace(
@@ -221,6 +293,109 @@ async def test_llm_step_returns_usage_from_active_api_client() -> None:
         "total_tokens": 17,
         "cost": 0.0003,
     }
+
+
+@pytest.mark.asyncio
+async def test_run_response_uses_request_scoped_api_client_override() -> None:
+    session = SimpleNamespace(id="session-a", messages=[])
+    conversation = SimpleNamespace(
+        session=session,
+        get_formatted_messages=MagicMock(
+            return_value=[{"role": "user", "content": "hi"}]
+        ),
+        prepare_conversation=MagicMock(),
+        add_assistant_message=MagicMock(),
+        save=MagicMock(return_value=True),
+    )
+    conversation_manager = SimpleNamespace(
+        core=None,
+        conversation=conversation,
+        get_agent_conversation=lambda *args, **kwargs: conversation,
+        save=MagicMock(return_value=True),
+        get_current_session=MagicMock(return_value=session),
+        agent_context_windows={},
+    )
+
+    default_api = SimpleNamespace(
+        get_response=AsyncMock(return_value="default"),
+        client_handler=SimpleNamespace(get_last_usage=MagicMock(return_value={})),
+    )
+    override_api = SimpleNamespace(
+        get_response=AsyncMock(return_value="override"),
+        client_handler=SimpleNamespace(get_last_usage=MagicMock(return_value={})),
+    )
+
+    engine = Engine(
+        EngineSettings(),
+        cast(Any, conversation_manager),
+        cast(Any, default_api),
+        MagicMock(),
+        MagicMock(),
+    )
+
+    result = await engine.run_response(
+        "hi",
+        streaming=False,
+        max_iterations=1,
+        api_client_override=cast(Any, override_api),
+    )
+
+    assert result["assistant_response"] == "override"
+    assert default_api.get_response.await_count == 0
+    assert override_api.get_response.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_response_repairs_malformed_partial_tool_output() -> None:
+    session = SimpleNamespace(id="session-a", messages=[])
+    conversation = SimpleNamespace(
+        session=session,
+        prepare_conversation=MagicMock(),
+        add_message=MagicMock(),
+        save=MagicMock(return_value=True),
+    )
+    conversation_manager = SimpleNamespace(
+        core=None,
+        conversation=conversation,
+        get_agent_conversation=lambda *args, **kwargs: conversation,
+        save=MagicMock(return_value=True),
+        get_current_session=MagicMock(return_value=session),
+        agent_context_windows={},
+    )
+
+    engine = Engine(
+        EngineSettings(),
+        cast(Any, conversation_manager),
+        MagicMock(),
+        MagicMock(),
+        MagicMock(),
+    )
+    engine._llm_step = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            {
+                "assistant_response": '-contract.md","show_line_numbers":true}</read_file>\n\n',
+                "action_results": [],
+                "usage": {},
+            },
+            {
+                "assistant_response": "Recovered answer",
+                "action_results": [
+                    {"action": "finish_response", "result": "", "status": "completed"}
+                ],
+                "usage": {},
+            },
+        ]
+    )
+    engine._save_conversation = AsyncMock()  # type: ignore[method-assign]
+
+    result = await engine.run_response("continue", streaming=False)
+
+    assert result["assistant_response"] == "Recovered answer"
+    assert result["iterations"] == 2
+    conversation.add_message.assert_called()
+    assert conversation.add_message.call_args.kwargs["metadata"]["type"] == (
+        "malformed_action_output"
+    )
 
 
 @pytest.mark.asyncio

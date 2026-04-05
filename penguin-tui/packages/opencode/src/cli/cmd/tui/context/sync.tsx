@@ -51,6 +51,9 @@ type PenguinSession = Session & {
   agent_mode?: string
   agent_id?: string
   parent_agent_id?: string
+  providerID?: string
+  modelID?: string
+  variant?: string
 }
 
 const parseUsage = (raw: unknown): SessionUsage | undefined => {
@@ -98,7 +101,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         [sessionID: string]: QuestionRequest[]
       }
       config: Config
-      session: Session[]
+      session: PenguinSession[]
       session_status: {
         [sessionID: string]: SessionStatus
       }
@@ -894,6 +897,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           if (sessionMode) {
             payload.agent_mode = sessionMode
           }
+          const providerID = typeof item.providerID === "string" ? item.providerID : undefined
+          if (providerID) payload.providerID = providerID
+          const modelID = typeof item.modelID === "string" ? item.modelID : undefined
+          if (modelID) payload.modelID = modelID
+          const variant = typeof item.variant === "string" ? item.variant : undefined
+          if (variant) payload.variant = variant
           const agentID = typeof item.agent_id === "string" ? item.agent_id : undefined
           if (agentID) payload.agent_id = agentID
           const parentAgentID = typeof item.parent_agent_id === "string" ? item.parent_agent_id : undefined

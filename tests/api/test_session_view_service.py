@@ -12,11 +12,14 @@ import pytest
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.web.services.session_summary import summarize_session_title
 from penguin.web.services.session_view import (
+    MODEL_ID_KEY,
+    PROVIDER_ID_KEY,
     REVERT_KEY,
     SUMMARY_KEY,
     TODO_KEY,
     TRANSCRIPT_KEY,
     USAGE_KEY,
+    VARIANT_KEY,
     create_session_info,
     get_session_diff,
     get_session_info,
@@ -121,7 +124,7 @@ def test_list_session_infos_sorted_and_filtered():
     assert [item["id"] for item in filtered] == ["session_a"]
 
 
-def test_list_session_infos_directory_filter_matches_same_git_project(
+def test_list_session_infos_directory_filter_matches_exact_directory_only(
     tmp_path: Path,
 ):
     project_root = tmp_path / "project"
@@ -164,7 +167,7 @@ def test_list_session_infos_directory_filter_matches_same_git_project(
 
     result = list_session_infos(core, directory=str(alpha_dir))
 
-    assert {item["id"] for item in result} == {"session_alpha", "session_beta"}
+    assert [item["id"] for item in result] == ["session_alpha"]
 
 
 def test_list_session_infos_directory_filter_falls_back_to_exact_directory(
@@ -416,7 +419,7 @@ def test_get_session_messages_legacy_assistant_uses_session_agent_fallback():
     assert messages[0]["info"]["agent"] == "child-fallback"
 
 
-def test_get_session_messages_merges_transcript_with_legacy_rows():
+def test_get_session_messages_prefers_transcript_over_legacy_rows():
     now = datetime.now().isoformat()
     session = _session("session_merge", "Merged Session", now)
     session.messages.append(
@@ -478,9 +481,8 @@ def test_get_session_messages_merges_transcript_with_legacy_rows():
     messages = get_session_messages(core, session.id)
 
     assert messages is not None
-    assert [item["info"]["id"] for item in messages] == ["msg_user", "msg_assistant"]
-    assert messages[0]["parts"][0]["text"] == "hello"
-    assert messages[1]["parts"][0]["text"] == "assistant from transcript"
+    assert [item["info"]["id"] for item in messages] == ["msg_assistant"]
+    assert messages[0]["parts"][0]["text"] == "assistant from transcript"
 
 
 def test_session_todo_round_trip():
@@ -765,12 +767,18 @@ def test_create_update_remove_session_info_round_trip():
                 "action": "allow",
             }
         ],
+        provider_id="openrouter",
+        model_id="z-ai/glm-5-turbo",
+        variant="high",
     )
 
     session_id = created["id"]
     assert created["title"] == "Created Session"
     assert created["directory"] == "/tmp/workspace/project"
     assert created["parentID"] == "parent_1"
+    assert created["providerID"] == "openrouter"
+    assert created["modelID"] == "z-ai/glm-5-turbo"
+    assert created["variant"] == "high"
     assert isinstance(created["time"]["created"], int)
 
     updated = update_session_info(
@@ -778,13 +786,60 @@ def test_create_update_remove_session_info_round_trip():
         session_id,
         title="Renamed Session",
         archived=123456789,
+        provider_id="openrouter",
+        model_id="qwen/qwen3.5-plus-02-15",
+        variant="max",
     )
     assert updated is not None
     assert updated["title"] == "Renamed Session"
     assert updated["time"]["archived"] == 123456789
+    assert updated["providerID"] == "openrouter"
+    assert updated["modelID"] == "qwen/qwen3.5-plus-02-15"
+    assert updated["variant"] == "max"
 
     assert remove_session_info(core, session_id) is True
     assert get_session_info(core, session_id) is None
+
+
+def test_legacy_message_projection_prefers_session_model_metadata() -> None:
+    session = _session("session_model_meta", "Model Metadata", "2026-02-03T00:00:00")
+    session.metadata[PROVIDER_ID_KEY] = "openrouter"
+    session.metadata[MODEL_ID_KEY] = "z-ai/glm-5-turbo"
+    session.metadata[VARIANT_KEY] = "high"
+    session.messages.append(
+        Message(
+            id="msg_user_model_meta",
+            role="user",
+            content="hello",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:00:00",
+        )
+    )
+    session.messages.append(
+        Message(
+            id="msg_assistant_model_meta",
+            role="assistant",
+            content="hi",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:01:00",
+        )
+    )
+    core = _core([session])
+    core.model_config = SimpleNamespace(
+        model="global-model", provider="global-provider"
+    )
+
+    messages = get_session_messages(core, session.id)
+
+    assert messages is not None
+    user = messages[0]["info"]
+    assistant = messages[1]["info"]
+    assert user["model"]["providerID"] == "openrouter"
+    assert user["model"]["modelID"] == "z-ai/glm-5-turbo"
+    assert user["variant"] == "high"
+    assert assistant["providerID"] == "openrouter"
+    assert assistant["modelID"] == "z-ai/glm-5-turbo"
+    assert assistant["variant"] == "high"
 
 
 def test_list_session_statuses_prefers_busy_signals():

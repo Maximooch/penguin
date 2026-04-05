@@ -149,6 +149,42 @@ def _get_last_scoped_directory(core: PenguinCore) -> Optional[str]:
     return normalize_directory(getattr(core, "_opencode_last_scoped_directory", None))
 
 
+def _directories_match(left: Optional[str], right: Optional[str]) -> bool:
+    """Return whether two directory values resolve to the same location."""
+    left_normalized = normalize_directory(left)
+    right_normalized = normalize_directory(right)
+    if not left_normalized or not right_normalized:
+        return False
+    if left_normalized == right_normalized:
+        return True
+    try:
+        return Path(left_normalized).samefile(right_normalized)
+    except Exception:
+        return False
+
+
+def _get_bound_session_directory(
+    core: PenguinCore, session_id: Optional[str]
+) -> Optional[str]:
+    """Return the authoritative directory for a known session, if any."""
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+
+    normalized_session_id = session_id.strip()
+    session_dirs = _ensure_session_directory_map(core)
+    mapped = normalize_directory(session_dirs.get(normalized_session_id))
+    if mapped:
+        return mapped
+
+    info = get_session_info(core, normalized_session_id)
+    info_directory = (
+        normalize_directory(info.get("directory")) if isinstance(info, dict) else None
+    )
+    if info_directory:
+        session_dirs[normalized_session_id] = info_directory
+    return info_directory
+
+
 def _resolve_scoped_directory_for_find(
     core: PenguinCore,
     *,
@@ -157,10 +193,7 @@ def _resolve_scoped_directory_for_find(
     conversation_id: Optional[str],
 ) -> Optional[str]:
     """Resolve find scope using explicit, session, remembered, and runtime roots."""
-    explicit = _remember_last_scoped_directory(core, directory)
-    if explicit:
-        return explicit
-
+    explicit = normalize_directory(directory)
     effective_session = (
         session_id.strip()
         if isinstance(session_id, str) and session_id.strip()
@@ -170,15 +203,73 @@ def _resolve_scoped_directory_for_find(
             else None
         )
     )
+
     if effective_session:
-        session_dirs = _ensure_session_directory_map(core)
-        mapped = normalize_directory(session_dirs.get(effective_session))
+        mapped = _get_bound_session_directory(core, effective_session)
         if mapped:
+            if explicit and not _directories_match(mapped, explicit):
+                _request_log_info(
+                    "find.scope.conflict session=%s explicit=%s mapped=%s conversation=%s",
+                    effective_session,
+                    explicit,
+                    mapped,
+                    conversation_id or "",
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Session '{effective_session}' is bound to '{mapped}' and "
+                        f"cannot be searched via '{explicit}'"
+                    ),
+                )
             _remember_last_scoped_directory(core, mapped)
+            _request_log_debug(
+                "find.scope.resolve session=%s conversation=%s source=session_binding explicit=%s resolved=%s",
+                effective_session,
+                conversation_id or "",
+                explicit,
+                mapped,
+            )
             return mapped
+
+        if explicit:
+            resolved = _bind_session_directory(core, effective_session, explicit)
+            _request_log_debug(
+                "find.scope.resolve session=%s conversation=%s source=explicit_bind explicit=%s resolved=%s",
+                effective_session,
+                conversation_id or "",
+                explicit,
+                resolved,
+            )
+            return resolved
+
+        _request_log_debug(
+            "find.scope.resolve session=%s conversation=%s source=missing_binding explicit=%s resolved=%s",
+            effective_session,
+            conversation_id or "",
+            explicit,
+            None,
+        )
+        return None
+
+    explicit = _remember_last_scoped_directory(core, directory)
+    if explicit:
+        _request_log_debug(
+            "find.scope.resolve session=%s conversation=%s source=explicit resolved=%s",
+            session_id or "",
+            conversation_id or "",
+            explicit,
+        )
+        return explicit
 
     remembered = _get_last_scoped_directory(core)
     if remembered:
+        _request_log_debug(
+            "find.scope.resolve session=%s conversation=%s source=remembered resolved=%s",
+            session_id or "",
+            conversation_id or "",
+            remembered,
+        )
         return remembered
 
     runtime = getattr(core, "runtime_config", None)
@@ -189,11 +280,23 @@ def _resolve_scoped_directory_for_find(
     )
     if runtime_fallback:
         _remember_last_scoped_directory(core, runtime_fallback)
+        _request_log_debug(
+            "find.scope.resolve session=%s conversation=%s source=runtime resolved=%s",
+            session_id or "",
+            conversation_id or "",
+            runtime_fallback,
+        )
         return runtime_fallback
 
     workspace_fallback = normalize_directory(WORKSPACE_PATH)
     if workspace_fallback:
         _remember_last_scoped_directory(core, workspace_fallback)
+        _request_log_debug(
+            "find.scope.resolve session=%s conversation=%s source=workspace resolved=%s",
+            session_id or "",
+            conversation_id or "",
+            workspace_fallback,
+        )
     return workspace_fallback
 
 
@@ -206,7 +309,9 @@ def _ensure_session_directory_map(core: PenguinCore) -> dict[str, str]:
     return session_dirs
 
 
-def _get_session_request_gate(core: PenguinCore, session_id: Optional[str]) -> asyncio.Lock:
+def _get_session_request_gate(
+    core: PenguinCore, session_id: Optional[str]
+) -> asyncio.Lock:
     """Return a REST request gate scoped to one session."""
     gate_key = session_id or "__default__"
     request_gates = getattr(core, "_opencode_request_gates", None)
@@ -229,7 +334,14 @@ def _bind_session_directory(
         )
 
     if not session_id:
-        return _remember_last_scoped_directory(core, directory)
+        resolved = _remember_last_scoped_directory(core, directory)
+        _request_log_debug(
+            "session.directory.bind session=%s source=no_session requested=%s resolved=%s",
+            "",
+            directory,
+            resolved,
+        )
+        return resolved
 
     session_dirs = _ensure_session_directory_map(core)
     existing = normalize_directory(session_dirs.get(session_id))
@@ -240,9 +352,22 @@ def _bind_session_directory(
             try:
                 if Path(existing).samefile(requested):
                     _remember_last_scoped_directory(core, existing)
+                    _request_log_debug(
+                        "session.directory.bind session=%s source=reuse_samefile requested=%s existing=%s resolved=%s",
+                        session_id,
+                        requested,
+                        existing,
+                        existing,
+                    )
                     return existing
             except Exception:
                 pass
+            _request_log_info(
+                "session.directory.bind_conflict session=%s requested=%s existing=%s",
+                session_id,
+                requested,
+                existing,
+            )
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -251,13 +376,33 @@ def _bind_session_directory(
                 ),
             )
         _remember_last_scoped_directory(core, existing)
+        _request_log_debug(
+            "session.directory.bind session=%s source=existing requested=%s existing=%s resolved=%s",
+            session_id,
+            requested,
+            existing,
+            existing,
+        )
         return existing
 
     if requested:
         session_dirs[session_id] = requested
         _remember_last_scoped_directory(core, requested)
+        _request_log_info(
+            "session.directory.bind session=%s source=new requested=%s resolved=%s total=%s",
+            session_id,
+            requested,
+            requested,
+            len(session_dirs),
+        )
         return requested
 
+    _request_log_debug(
+        "session.directory.bind session=%s source=empty requested=%s resolved=%s",
+        session_id,
+        requested,
+        None,
+    )
     return None
 
 
@@ -372,6 +517,43 @@ async def _persist_session_agent_mode(
         return
 
     updated = update_session_info(core, session_id, agent_mode=normalized_mode)
+    if isinstance(updated, dict):
+        await _emit_session_updated_event(core, updated)
+
+
+async def _persist_session_model_selection(
+    core: PenguinCore,
+    session_id: Optional[str],
+    *,
+    provider_id: Optional[str],
+    model_id: Optional[str],
+    variant: Optional[str],
+) -> None:
+    if not isinstance(session_id, str) or not session_id:
+        return
+    normalized_provider = provider_id.strip() if isinstance(provider_id, str) else ""
+    normalized_model = model_id.strip() if isinstance(model_id, str) else ""
+    normalized_variant = variant.strip() if isinstance(variant, str) else ""
+    if not normalized_provider or not normalized_model:
+        return
+
+    existing = get_session_info(core, session_id)
+    if not isinstance(existing, dict):
+        return
+    if (
+        existing.get("providerID") == normalized_provider
+        and existing.get("modelID") == normalized_model
+        and (existing.get("variant") or "") == normalized_variant
+    ):
+        return
+
+    updated = update_session_info(
+        core,
+        session_id,
+        provider_id=normalized_provider,
+        model_id=normalized_model,
+        variant=normalized_variant or None,
+    )
     if isinstance(updated, dict):
         await _emit_session_updated_event(core, updated)
 
@@ -641,8 +823,10 @@ _INLINE_FILE_REFERENCE_PATTERN = re.compile(
 def _apply_reasoning_variant_override(
     core: PenguinCore,
     variant: Optional[str],
+    *,
+    model_config: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
-    model_config = getattr(core, "model_config", None)
+    model_config = model_config or getattr(core, "model_config", None)
     if model_config is None:
         return None
 
@@ -713,11 +897,13 @@ def _apply_reasoning_variant_override(
 def _restore_reasoning_variant_override(
     core: PenguinCore,
     snapshot: Optional[Dict[str, Any]],
+    *,
+    model_config: Optional[Any] = None,
 ) -> None:
     if not isinstance(snapshot, dict):
         return
 
-    model_config = getattr(core, "model_config", None)
+    model_config = model_config or getattr(core, "model_config", None)
     if model_config is None:
         return
 
@@ -732,6 +918,77 @@ def _restore_reasoning_variant_override(
             delattr(model_config, "supports_reasoning")
         except Exception:
             pass
+
+
+async def _resolve_request_runtime_for_model(
+    core: Any,
+    requested_model: Optional[str],
+) -> tuple[Optional[Any], Optional[Any]]:
+    """Resolve request-scoped model runtime with backwards-compatible fallback."""
+    requested = requested_model.strip() if isinstance(requested_model, str) else ""
+    resolver = getattr(core, "resolve_request_runtime", None)
+    if callable(resolver):
+        return await resolver(requested or None)
+
+    if not requested:
+        return getattr(core, "model_config", None), None
+
+    current_model = (
+        core.get_current_model() if hasattr(core, "get_current_model") else None
+    )
+    current_raw = ""
+    current_provider = ""
+    if isinstance(current_model, dict):
+        raw_model = current_model.get("model")
+        raw_provider = current_model.get("provider")
+        if isinstance(raw_model, str):
+            current_raw = raw_model.strip()
+        if isinstance(raw_provider, str):
+            current_provider = raw_provider.strip()
+    current_qualified = (
+        f"{current_provider}/{current_raw}" if current_provider and current_raw else ""
+    )
+
+    if requested in {current_raw, current_qualified}:
+        return getattr(core, "model_config", None), None
+
+    candidates: list[str] = [requested]
+    if "/" in requested:
+        _, remainder = requested.split("/", 1)
+        if remainder and remainder not in candidates:
+            candidates.append(remainder)
+
+    model_configs = getattr(getattr(core, "config", None), "model_configs", {})
+    if isinstance(model_configs, dict) and len(candidates) == 2:
+        full = candidates[0]
+        short = candidates[1]
+        if short in model_configs and full not in model_configs:
+            candidates = [short, full]
+
+    loader = getattr(core, "load_model", None)
+    if not callable(loader):
+        raise ValueError(f"Failed to resolve model runtime '{requested}'")
+
+    last_reason: Optional[str] = None
+    for candidate in candidates:
+        loaded = await loader(candidate)
+        if loaded:
+            return getattr(core, "model_config", None), None
+        reason = getattr(core, "_last_model_load_error", None)
+        if isinstance(reason, str) and reason.strip():
+            last_reason = reason.strip()
+        _request_log_info(
+            "chat.model.load_failed session=%s requested=%s candidate=%s reason=%s",
+            "unknown",
+            requested,
+            candidate,
+            last_reason or "unknown",
+        )
+
+    detail = f"Failed to load model '{requested}'"
+    if last_reason:
+        detail = f"{detail}: {last_reason}"
+    raise ValueError(detail)
 
 
 def _resolve_context_file_path(
@@ -2523,6 +2780,16 @@ async def opencode_find_files(
     conversation_id: Optional[str] = Query(None),
 ) -> List[str]:
     """OpenCode-compatible file/directory search endpoint."""
+    _request_log_debug(
+        "find.request session=%s conversation=%s query=%r directory=%s dirs=%s type=%s limit=%s",
+        session_id or "",
+        conversation_id or "",
+        query,
+        directory,
+        dirs,
+        entry_type,
+        limit,
+    )
     type_value = entry_type.strip().lower() if isinstance(entry_type, str) else None
     if type_value not in {None, "file", "directory"}:
         raise HTTPException(
@@ -2549,11 +2816,30 @@ async def opencode_find_files(
 
     files, directories = _get_find_file_index(resolved_directory)
     kind = type_value or ("file" if not dirs_enabled else "all")
+    _request_log_debug(
+        "find.index session=%s query=%r resolved=%s files=%s dirs=%s kind=%s",
+        session_id or conversation_id or "",
+        query_value,
+        resolved_directory,
+        len(files),
+        len(directories),
+        kind,
+    )
 
     if not query_value:
         if kind == "file":
-            return _sort_hidden_last(files, query_value)[:limit_value]
-        return _sort_hidden_last(directories, query_value)[:limit_value]
+            result = _sort_hidden_last(files, query_value)[:limit_value]
+        else:
+            result = _sort_hidden_last(directories, query_value)[:limit_value]
+        _request_log_debug(
+            "find.result session=%s query=%r resolved=%s count=%s sample=%s",
+            session_id or conversation_id or "",
+            query_value,
+            resolved_directory,
+            len(result),
+            result[:5],
+        )
+        return result
 
     items = (
         files
@@ -2570,7 +2856,16 @@ async def opencode_find_files(
     matched = _search_find_file_items(
         items, query_value, max(search_limit, limit_value)
     )
-    return _sort_hidden_last(matched, query_value)[:limit_value]
+    result = _sort_hidden_last(matched, query_value)[:limit_value]
+    _request_log_debug(
+        "find.result session=%s query=%r resolved=%s count=%s sample=%s",
+        session_id or conversation_id or "",
+        query_value,
+        resolved_directory,
+        len(result),
+        result[:5],
+    )
+    return result
 
 
 @router.get("/config")
@@ -3091,6 +3386,8 @@ async def handle_chat_message(
     request_task: Optional[asyncio.Task[Any]] = None
     request_tracked = False
     reasoning_variant_snapshot: Optional[Dict[str, Any]] = None
+    request_model_config: Optional[Any] = None
+    request_api_client: Optional[Any] = None
     try:
         _setup_approval_websocket_callbacks()
         _setup_question_event_callbacks()
@@ -3150,6 +3447,16 @@ async def handle_chat_message(
                     tasks_map[request_session_id] = tasks
                 tasks.add(request_task)
                 request_tracked = True
+                _request_log_debug(
+                    "chat.trace.track request=%s session=%s task=%s tracked=%s session_tasks=%s",
+                    request_task.get_name()
+                    if hasattr(request_task, "get_name")
+                    else hex(id(request_task)),
+                    request_session_id,
+                    hex(id(request_task)),
+                    True,
+                    len(tasks),
+                )
 
         scope_directory = bound_directory or request.directory
         part_context_files, part_image_paths = _extract_paths_from_parts(
@@ -3211,66 +3518,14 @@ async def handle_chat_message(
         requested_model = (
             request.model.strip() if isinstance(request.model, str) else ""
         )
-        if requested_model:
-            current_model = (
-                core.get_current_model() if hasattr(core, "get_current_model") else None
-            )
-            current_raw = ""
-            current_provider = ""
-            if isinstance(current_model, dict):
-                raw_model = current_model.get("model")
-                raw_provider = current_model.get("provider")
-                if isinstance(raw_model, str):
-                    current_raw = raw_model.strip()
-                if isinstance(raw_provider, str):
-                    current_provider = raw_provider.strip()
-            current_qualified = (
-                f"{current_provider}/{current_raw}"
-                if current_provider and current_raw
-                else ""
-            )
-
-            if requested_model not in {current_raw, current_qualified}:
-                candidates: list[str] = [requested_model]
-                if "/" in requested_model:
-                    _, remainder = requested_model.split("/", 1)
-                    if remainder and remainder not in candidates:
-                        candidates.append(remainder)
-
-                model_configs = getattr(
-                    getattr(core, "config", None), "model_configs", {}
-                )
-                if isinstance(model_configs, dict) and len(candidates) == 2:
-                    full = candidates[0]
-                    short = candidates[1]
-                    if short in model_configs and full not in model_configs:
-                        candidates = [short, full]
-
-                loaded = False
-                last_reason: Optional[str] = None
-                for candidate in candidates:
-                    loaded = await core.load_model(candidate)
-                    if loaded:
-                        break
-                    reason = getattr(core, "_last_model_load_error", None)
-                    if isinstance(reason, str) and reason.strip():
-                        last_reason = reason.strip()
-                    _request_log_info(
-                        "chat.model.load_failed session=%s requested=%s candidate=%s reason=%s",
-                        request_session_id or "unknown",
-                        requested_model,
-                        candidate,
-                        last_reason or "unknown",
-                    )
-
-                if not loaded:
-                    detail = f"Failed to load model '{requested_model}'"
-                    if last_reason:
-                        detail = f"{detail}: {last_reason}"
-                    raise HTTPException(
-                        status_code=400,
-                        detail=detail,
-                    )
+        try:
+            (
+                request_model_config,
+                request_api_client,
+            ) = await _resolve_request_runtime_for_model(core, requested_model or None)
+        except Exception as exc:
+            detail = str(exc) or f"Failed to resolve model runtime '{requested_model}'"
+            raise HTTPException(status_code=400, detail=detail) from exc
 
         # Maybe?
         # # If no conversation_id is provided, try to use the most recent one
@@ -3337,8 +3592,16 @@ async def handle_chat_message(
         reasoning_variant_snapshot = _apply_reasoning_variant_override(
             core,
             request.variant,
+            model_config=request_model_config,
         )
-        model_config = getattr(core, "model_config", None)
+        await _persist_session_model_selection(
+            core,
+            request_session_id,
+            provider_id=getattr(request_model_config, "provider", None),
+            model_id=getattr(request_model_config, "model", None),
+            variant=request.variant,
+        )
+        model_config = request_model_config or getattr(core, "model_config", None)
         variant_value = (
             request.variant.strip().lower()
             if isinstance(request.variant, str) and request.variant.strip()
@@ -3368,11 +3631,21 @@ async def handle_chat_message(
         # Process the message with all available options
         with execution_context_scope(execution_context):
             request_gate = _get_session_request_gate(core, request_session_id)
+            gate_locked_before = request_gate.locked()
+            gate_wait_started = time.perf_counter()
+            active_requests = getattr(core, "_opencode_active_requests", {})
+            active_request_count = (
+                active_requests.get(request_session_id, 0)
+                if isinstance(active_requests, dict) and request_session_id
+                else 0
+            )
             _request_log_debug(
-                "chat.trace.before_process request=%s session=%s gate=%s cm=%s tracked=%s ctx=%s",
+                "chat.trace.before_process request=%s session=%s gate=%s gate_locked=%s active=%s cm=%s tracked=%s ctx=%s",
                 execution_context.request_id or "unknown",
                 request_session_id or "unknown",
                 hex(id(request_gate)),
+                gate_locked_before,
+                active_request_count,
                 hex(id(getattr(core, "conversation_manager", None)))
                 if getattr(core, "conversation_manager", None) is not None
                 else "none",
@@ -3380,6 +3653,16 @@ async def handle_chat_message(
                 execution_context.as_dict(),
             )
             async with request_gate:
+                gate_wait_ms = (time.perf_counter() - gate_wait_started) * 1000
+                _request_log_debug(
+                    "chat.trace.gate_acquired request=%s session=%s gate=%s wait_ms=%.2f tracked=%s",
+                    execution_context.request_id or "unknown",
+                    request_session_id or "unknown",
+                    hex(id(request_gate)),
+                    gate_wait_ms,
+                    bool(request_tracked),
+                )
+                process_started = time.perf_counter()
                 process_result = await core.process(
                     input_data=input_data,
                     context=request.context,
@@ -3389,13 +3672,20 @@ async def handle_chat_message(
                     context_files=context_files,
                     streaming=effective_streaming,
                     stream_callback=stream_cb,
+                    api_client_override=request_api_client,
+                    model_config_override=request_model_config,
                 )
+                process_ms = (time.perf_counter() - process_started) * 1000
             _request_log_debug(
-                "chat.trace.after_process request=%s session=%s response_len=%s actions=%s preview=%r",
+                "chat.trace.after_process request=%s session=%s status=%s iterations=%s response_len=%s actions=%s usage=%s process_ms=%.2f preview=%r",
                 execution_context.request_id or "unknown",
                 request_session_id or "unknown",
+                process_result.get("status"),
+                process_result.get("iterations"),
                 len(process_result.get("assistant_response", "") or ""),
                 len(process_result.get("action_results", []) or []),
+                process_result.get("usage") or {},
+                process_ms,
                 _preview_text(process_result.get("assistant_response", "")),
             )
 
@@ -3414,10 +3704,11 @@ async def handle_chat_message(
         if request.include_reasoning:
             resp["reasoning"] = "".join(reasoning_buf)
         _request_log_debug(
-            "chat.trace.response request=%s session=%s response_len=%s aborted=%s preview=%r",
+            "chat.trace.response request=%s session=%s response_len=%s reasoning_len=%s aborted=%s preview=%r",
             execution_context.request_id or "unknown",
             request_session_id or "unknown",
             len(resp.get("response", "") or ""),
+            len(resp.get("reasoning", "") or ""),
             bool(resp.get("aborted")),
             _preview_text(resp.get("response", "")),
         )
@@ -3425,7 +3716,9 @@ async def handle_chat_message(
     except asyncio.CancelledError:
         _request_log_info(
             "chat.trace.cancelled request=%s session=%s",
-            execution_context.request_id if "execution_context" in locals() else "unknown",
+            execution_context.request_id
+            if "execution_context" in locals()
+            else "unknown",
             request_session_id or "unknown",
         )
         return {"response": "", "action_results": [], "aborted": True}
@@ -3597,9 +3890,12 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
             parts = data.get("parts")
             include_reasoning = bool(data.get("include_reasoning", False))
             variant = data.get("variant")
+            model = data.get("model")
             agent_id = data.get("agent_id")
             agent_mode = data.get("agent_mode")
             directory = data.get("directory")
+            request_model_config = None
+            request_api_client = None
 
             # Prefer explicit session_id when provided; conversation_id is continuity metadata.
             effective_session_id = session_id or conversation_id
@@ -3788,11 +4084,28 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     except Exception as e:
                         logger.error(f"Error enqueuing stream chunk: {e}")
 
+                requested_model = model.strip() if isinstance(model, str) else ""
+                (
+                    request_model_config,
+                    request_api_client,
+                ) = await _resolve_request_runtime_for_model(
+                    core, requested_model or None
+                )
                 reasoning_variant_snapshot = _apply_reasoning_variant_override(
                     core,
                     variant if isinstance(variant, str) else None,
+                    model_config=request_model_config,
                 )
-                model_config = getattr(core, "model_config", None)
+                await _persist_session_model_selection(
+                    core,
+                    effective_session_id,
+                    provider_id=getattr(request_model_config, "provider", None),
+                    model_id=getattr(request_model_config, "model", None),
+                    variant=variant if isinstance(variant, str) else None,
+                )
+                model_config = request_model_config or getattr(
+                    core, "model_config", None
+                )
                 variant_value = (
                     variant.strip().lower()
                     if isinstance(variant, str) and variant.strip()
@@ -3830,6 +4143,8 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                                 context=context,
                                 streaming=True,
                                 stream_callback=per_request_stream_callback,
+                                api_client_override=request_api_client,
+                                model_config_override=request_model_config,
                             )
                         )
 
@@ -3837,7 +4152,9 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                     process_result = await process_task
                 finally:
                     _restore_reasoning_variant_override(
-                        core, reasoning_variant_snapshot
+                        core,
+                        reasoning_variant_snapshot,
+                        model_config=request_model_config,
                     )
                 logger.info(
                     f"core.process finished. Result keys: {list(process_result.keys())}"
@@ -4556,6 +4873,9 @@ async def session_create(
     parent_id = body.get("parentID")
     permission = body.get("permission")
     agent_mode = body.get("agent_mode")
+    provider_id = body.get("providerID")
+    model_id = body.get("modelID")
+    variant = body.get("variant")
     if agent_mode is None:
         agent_mode = body.get("agentMode")
 
@@ -4565,6 +4885,12 @@ async def session_create(
         raise HTTPException(status_code=400, detail="parentID must be a string")
     if permission is not None and not isinstance(permission, list):
         raise HTTPException(status_code=400, detail="permission must be a list")
+    if provider_id is not None and not isinstance(provider_id, str):
+        raise HTTPException(status_code=400, detail="providerID must be a string")
+    if model_id is not None and not isinstance(model_id, str):
+        raise HTTPException(status_code=400, detail="modelID must be a string")
+    if variant is not None and not isinstance(variant, str):
+        raise HTTPException(status_code=400, detail="variant must be a string")
     normalized_agent_mode = _normalize_agent_mode(agent_mode)
     if agent_mode is not None and normalized_agent_mode is None:
         raise HTTPException(
@@ -4595,6 +4921,9 @@ async def session_create(
             directory=resolved_directory,
             permission=permission if isinstance(permission, list) else None,
             agent_mode=normalized_agent_mode,
+            provider_id=provider_id if isinstance(provider_id, str) else None,
+            model_id=model_id if isinstance(model_id, str) else None,
+            variant=variant if isinstance(variant, str) else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -4627,11 +4956,20 @@ async def session_update(
     title = body.get("title")
     archived = None
     agent_mode = body.get("agent_mode")
+    provider_id = body.get("providerID")
+    model_id = body.get("modelID")
+    variant = body.get("variant")
     if agent_mode is None:
         agent_mode = body.get("agentMode")
 
     if title is not None and not isinstance(title, str):
         raise HTTPException(status_code=400, detail="title must be a string")
+    if provider_id is not None and not isinstance(provider_id, str):
+        raise HTTPException(status_code=400, detail="providerID must be a string")
+    if model_id is not None and not isinstance(model_id, str):
+        raise HTTPException(status_code=400, detail="modelID must be a string")
+    if variant is not None and not isinstance(variant, str):
+        raise HTTPException(status_code=400, detail="variant must be a string")
     normalized_agent_mode = _normalize_agent_mode(agent_mode)
     if agent_mode is not None and normalized_agent_mode is None:
         raise HTTPException(
@@ -4655,6 +4993,9 @@ async def session_update(
         title=title if isinstance(title, str) else None,
         archived=archived,
         agent_mode=normalized_agent_mode,
+        provider_id=provider_id if isinstance(provider_id, str) else None,
+        model_id=model_id if isinstance(model_id, str) else None,
+        variant=variant if isinstance(variant, str) else None,
     )
     if updated is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")

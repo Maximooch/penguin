@@ -207,23 +207,50 @@ export function Prompt(props: PromptProps) {
     setStore("pendingSeenBusy", false)
   })
 
-  // Initialize agent/model/variant from last user message when session changes
+  // Initialize agent/model/variant from session info first, then last user message fallback.
   let syncedSessionID: string | undefined
   createEffect(() => {
     const sessionID = props.sessionID
     const msg = lastUserMessage()
+    const session = sessionID
+      ? (sync.session.get(sessionID) as {
+          agent_id?: string
+          providerID?: string
+          modelID?: string
+          variant?: string
+        } | undefined)
+      : undefined
 
     if (sessionID !== syncedSessionID) {
-      if (!sessionID || !msg) return
+      if (!sessionID) return
 
       syncedSessionID = sessionID
 
+      const sessionAgent = session?.agent_id
+      const messageAgent = msg?.agent
+      const nextAgent = typeof sessionAgent === "string" && sessionAgent ? sessionAgent : messageAgent
+
       // Only set agent if it's a primary agent (not a subagent)
-      const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
-      if (msg.agent && isPrimaryAgent) {
-        local.agent.set(msg.agent)
-        if (msg.model) local.model.set(msg.model)
-        if (msg.variant) local.model.variant.set(msg.variant)
+      const isPrimaryAgent = nextAgent ? local.agent.list().some((x) => x.name === nextAgent) : false
+      if (nextAgent && isPrimaryAgent) {
+        local.agent.set(nextAgent)
+      }
+
+      const sessionModel =
+        session?.providerID && session?.modelID
+          ? { providerID: session.providerID, modelID: session.modelID }
+          : undefined
+      const messageModel = msg?.model
+      const nextModel = sessionModel ?? messageModel
+      if (nextModel) {
+        local.model.set(nextModel)
+      }
+
+      const nextVariant = session?.variant ?? msg?.variant
+      if (typeof nextVariant === "string") {
+        local.model.variant.set(nextVariant)
+      } else if (nextModel) {
+        local.model.variant.set(undefined)
       }
     }
   })
@@ -618,6 +645,9 @@ export function Prompt(props: PromptProps) {
       promptModelWarning()
       return
     }
+    const currentMode = store.mode
+    const variant = local.model.variant.current()
+    const agent = local.agent.current()
     const sessionID = await iife(async () => {
       if (props.sessionID) return props.sessionID
       if (sdk.sessionID) return sdk.sessionID
@@ -632,7 +662,12 @@ export function Prompt(props: PromptProps) {
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ agent_mode: agentMode() }),
+          body: JSON.stringify({
+            agent_mode: agentMode(),
+            providerID: selectedModel.providerID,
+            modelID: selectedModel.modelID,
+            variant,
+          }),
         }).then(async (res) => {
           if (!res.ok) {
             const details = await res.text().catch(() => "")
@@ -701,11 +736,6 @@ export function Prompt(props: PromptProps) {
 
     // Filter out text parts (pasted content) since they're now expanded inline
     const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
-
-    // Capture mode before it gets reset
-    const currentMode = store.mode
-    const variant = local.model.variant.current()
-    const agent = local.agent.current()
 
     if (sdk.penguin) {
       const firstLine = inputText.split("\n", 1)[0].trim()
