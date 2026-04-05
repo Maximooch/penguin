@@ -723,3 +723,65 @@ These are the most sensible follow-on options after the current clarification ha
 
 **When:** now, as a quick cleanup.
 
+### Current Monthly Recommendation
+
+For the current month, the recommended stance is:
+
+- **Defer waiting-time vs execution-time accounting.**
+  - Reason: timebox enforcement is not yet operational enough to justify accounting complexity.
+- **Do not add global timeout-based default assumptions.**
+  - Reason: that would train agents to guess instead of ask and would create silent behavioral drift.
+- **Treat “move on to the next nonblocking task” as a later scheduler enhancement, not as time accounting.**
+  - Reason: releasing a waiting task's execution slot cleanly requires scheduler-visible waiting semantics, not just timestamps.
+
+Practical consequence:
+
+- short-term clarification work should focus on honest waiting, persistence, answer/resume flow, and later user-surface wiring
+- unanswered clarification should eventually either remain waiting or escalate to blocked
+- auto-assume behavior should be considered only if it is explicit, task-scoped, and intentionally configured
+
+This keeps the system conservative while the clarification flow is still maturing.
+
+
+### Verification Hardening: Hypothesis / Stateful Coverage
+
+This belongs in the planning/backlog layer because it is a verification workstream, not a new architecture contract.
+
+**Goal:** increase confidence in the task state machine, dependency-policy semantics, and clarification lifecycle by testing generated state transitions instead of only fixed examples.
+
+**Recommended scope for the next pass:**
+
+- generated `status × phase` transition sequences against the canonical state-machine contract
+- generated dependency graphs covering:
+  - `completion_required`
+  - `review_ready_ok`
+  - `artifact_ready`
+- clarification lifecycle invariants covering:
+  - open clarification does not imply completion
+  - answering clarification does not mutate task phase directly
+  - resume preserves task identity and carries answer context forward
+
+**Why this is valuable:**
+
+- catches edge cases that focused example tests will miss
+- hardens the behavioral contracts already implemented
+- gives confidence before adding more scheduler and user-surface complexity
+
+**Suggested order:**
+
+1. extend current Hypothesis/property-based tests for dependency policy semantics
+2. add stateful transition tests for `TaskStatus` and `TaskPhase`
+3. add clarification lifecycle invariants once waiting/resume semantics settle further
+
+**Do not do yet:**
+
+- broad randomized CLI/API end-to-end fuzzing
+- speculative model-based tests for features that do not yet have stable contracts
+- fairness/liveness claims that belong in TLA+ rather than Hypothesis
+
+**Success criteria:**
+
+- generated tests fail on invalid lifecycle transitions
+- generated tests preserve current dependency-policy guarantees
+- generated tests prove clarification pause/resume semantics do not silently complete or corrupt task state
+
