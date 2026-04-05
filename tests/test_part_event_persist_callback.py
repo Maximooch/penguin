@@ -125,6 +125,31 @@ async def test_tool_events_attach_to_completed_stream_message_when_available():
 
 
 @pytest.mark.asyncio
+async def test_stream_start_emits_model_provider_and_variant() -> None:
+    bus = _EventBus()
+    adapter = PartEventAdapter(bus)
+    adapter.set_session("session_model_meta")
+
+    await adapter.on_stream_start(
+        agent_id="default",
+        model_id="z-ai/glm-5-turbo",
+        provider_id="openrouter",
+        variant="high",
+    )
+
+    assistant_updates = [
+        item
+        for item in _opencode_events(bus, "message.updated")
+        if item.get("role") == "assistant"
+    ]
+    assert assistant_updates
+    latest = assistant_updates[-1]
+    assert latest["modelID"] == "z-ai/glm-5-turbo"
+    assert latest["providerID"] == "openrouter"
+    assert latest["variant"] == "high"
+
+
+@pytest.mark.asyncio
 async def test_update_assistant_usage_creates_missing_message_and_emits_update():
     bus = _EventBus()
     adapter = PartEventAdapter(bus)

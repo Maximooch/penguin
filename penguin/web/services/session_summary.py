@@ -241,6 +241,20 @@ async def summarize_session_title(
     if existing is None:
         return None
 
+    effective_provider_id = provider_id
+    if not isinstance(effective_provider_id, str) or not effective_provider_id.strip():
+        session_provider = (
+            existing.get("providerID") if isinstance(existing, dict) else None
+        )
+        effective_provider_id = (
+            session_provider if isinstance(session_provider, str) else None
+        )
+
+    effective_model_id = model_id
+    if not isinstance(effective_model_id, str) or not effective_model_id.strip():
+        session_model = existing.get("modelID") if isinstance(existing, dict) else None
+        effective_model_id = session_model if isinstance(session_model, str) else None
+
     explicit_title = get_session_metadata_title(core, session_id)
     if explicit_title is None:
         return None
@@ -257,8 +271,8 @@ async def summarize_session_title(
     generated = await _generate_title_with_model(
         core,
         snippets=snippets,
-        provider_id=provider_id,
-        model_id=model_id,
+        provider_id=effective_provider_id,
+        model_id=effective_model_id,
     )
     source = "generated" if generated else "heuristic"
     title = generated or _heuristic_title(snippets, session_id)

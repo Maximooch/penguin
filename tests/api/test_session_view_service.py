@@ -568,6 +568,49 @@ async def test_summarize_session_title_prefers_model_generation(
 
 
 @pytest.mark.asyncio
+async def test_summarize_session_title_prefers_session_model_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session = _session("session_summary_meta", "Session 1234", "2026-02-03T00:00:00")
+    session.metadata["_opencode_provider_id_v1"] = "openrouter"
+    session.metadata["_opencode_model_id_v1"] = "z-ai/glm-5-turbo"
+    session.messages.append(
+        Message(
+            id="msg_user",
+            role="user",
+            content="Implement session restore parity",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-03T00:00:00",
+        )
+    )
+    core = _core([session])
+    core.model_config = SimpleNamespace(model="z-ai/glm-4.7", provider="openrouter")
+    seen_model_config: dict[str, str | None] = {}
+
+    class _FakeAPIClient:
+        def __init__(self, model_config):
+            seen_model_config["model"] = getattr(model_config, "model", None)
+            seen_model_config["provider"] = getattr(model_config, "provider", None)
+
+        async def get_response(self, messages, **kwargs):
+            del messages, kwargs
+            return "Session restore parity"
+
+    monkeypatch.setattr(
+        "penguin.web.services.session_summary.APIClient", _FakeAPIClient
+    )
+
+    result = await summarize_session_title(core, session.id)
+
+    assert result is not None
+    assert result["changed"] is True
+    assert seen_model_config == {
+        "model": "z-ai/glm-5-turbo",
+        "provider": "openrouter",
+    }
+
+
+@pytest.mark.asyncio
 async def test_summarize_session_title_falls_back_to_heuristic(
     monkeypatch: pytest.MonkeyPatch,
 ):

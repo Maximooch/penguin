@@ -872,3 +872,55 @@ async def test_persist_opencode_events_replays_tool_parts_in_order() -> None:
     assert rows is not None
     assert len(rows) == 1
     assert [part["id"] for part in rows[0]["parts"]] == ["part_text", "part_tool"]
+
+
+@pytest.mark.asyncio
+async def test_persist_opencode_event_uses_session_model_metadata_for_new_entry() -> (
+    None
+):
+    session = Session(id="session_track_model_meta")
+    session.metadata["_opencode_provider_id_v1"] = "openrouter"
+    session.metadata["_opencode_model_id_v1"] = "z-ai/glm-5-turbo"
+    session.metadata["_opencode_variant_v1"] = "high"
+    manager = _SessionManager(session)
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={"default": manager},
+    )
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "conversation_manager", conversation_manager)
+    setattr(
+        core,
+        "model_config",
+        SimpleNamespace(model="z-ai/glm-4.7", provider="openrouter"),
+    )
+    setattr(
+        core,
+        "runtime_config",
+        SimpleNamespace(active_root="/tmp/project", project_root="/tmp/project"),
+    )
+    setattr(core, "_opencode_session_directories", {session.id: "/tmp/project"})
+
+    await core._persist_opencode_event(
+        "message.part.updated",
+        {
+            "part": {
+                "id": "part_text",
+                "sessionID": session.id,
+                "messageID": "msg_1",
+                "type": "text",
+                "text": "hello",
+            }
+        },
+    )
+
+    transcript = session.metadata.get(TRANSCRIPT_KEY)
+    assert isinstance(transcript, dict)
+    message_entry = transcript.get("messages", {}).get("msg_1")
+    assert isinstance(message_entry, dict)
+    info = message_entry.get("info")
+    assert isinstance(info, dict)
+    assert info["providerID"] == "openrouter"
+    assert info["modelID"] == "z-ai/glm-5-turbo"
+    assert info["variant"] == "high"

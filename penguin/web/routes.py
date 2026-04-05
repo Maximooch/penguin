@@ -3694,6 +3694,8 @@ async def handle_chat_message(
             _queue_session_title_refresh(
                 core,
                 request_session_id,
+                provider_id=getattr(request_model_config, "provider", None),
+                model_id=getattr(request_model_config, "model", None),
                 fallback_text=request.text if isinstance(request.text, str) else None,
             )
 

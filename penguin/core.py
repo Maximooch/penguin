@@ -234,6 +234,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 console = Console()
 
+_SESSION_MODEL_ID_KEY = "_opencode_model_id_v1"
+_SESSION_PROVIDER_ID_KEY = "_opencode_provider_id_v1"
+_SESSION_VARIANT_KEY = "_opencode_variant_v1"
+
 
 def _trace_log_info(message: str, *args: Any) -> None:
     """Mirror core trace logs to uvicorn for live server debugging."""
@@ -4627,12 +4631,15 @@ class PenguinCore:
             state["active"] = True
             state["stream_id"] = stream_id
 
+            model_state = self._resolve_opencode_model_state(session_id=session_id)
+
             # Create message and text part
             try:
                 message_id, part_id = await adapter.on_stream_start(
                     agent_id=agent_id,
-                    model_id=getattr(self.model_config, "model", None),
-                    provider_id=getattr(self.model_config, "provider", None),
+                    model_id=model_state.get("modelID"),
+                    provider_id=model_state.get("providerID"),
+                    variant=model_state.get("variant"),
                 )
                 state["message_id"] = message_id
                 state["part_id"] = part_id
@@ -5774,6 +5781,59 @@ class PenguinCore:
 
         return None, None
 
+    def _resolve_opencode_model_state(
+        self,
+        *,
+        session_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+        provider_id: Optional[str] = None,
+        variant: Optional[str] = None,
+    ) -> Dict[str, Optional[str]]:
+        """Resolve model/provider/variant for OpenCode event persistence."""
+
+        def _normalize(value: Any) -> Optional[str]:
+            if not isinstance(value, str):
+                return None
+            stripped = value.strip()
+            return stripped or None
+
+        normalized_session_id = _normalize(session_id)
+        session_meta: Dict[str, Any] = {}
+        if normalized_session_id:
+            session, _ = self._find_session_store(normalized_session_id)
+            metadata = (
+                getattr(session, "metadata", None) if session is not None else None
+            )
+            if isinstance(metadata, dict):
+                session_meta = metadata
+
+        resolved_provider = (
+            _normalize(provider_id)
+            or _normalize(session_meta.get(_SESSION_PROVIDER_ID_KEY))
+            or _normalize(session_meta.get("providerID"))
+            or _normalize(session_meta.get("provider_id"))
+            or _normalize(
+                getattr(getattr(self, "model_config", None), "provider", None)
+            )
+        )
+        resolved_model = (
+            _normalize(model_id)
+            or _normalize(session_meta.get(_SESSION_MODEL_ID_KEY))
+            or _normalize(session_meta.get("modelID"))
+            or _normalize(session_meta.get("model_id"))
+            or _normalize(getattr(getattr(self, "model_config", None), "model", None))
+        )
+        resolved_variant = (
+            _normalize(variant)
+            or _normalize(session_meta.get(_SESSION_VARIANT_KEY))
+            or _normalize(session_meta.get("variant"))
+        )
+        return {
+            "providerID": resolved_provider,
+            "modelID": resolved_model,
+            "variant": resolved_variant,
+        }
+
     async def _persist_opencode_event(
         self, event_type: str, properties: Dict[str, Any]
     ) -> None:
@@ -5874,6 +5934,7 @@ class PenguinCore:
                     or os.getenv("PENGUIN_CWD")
                     or os.getcwd()
                 )
+                model_state = self._resolve_opencode_model_state(session_id=session_id)
                 entry = {
                     "info": {
                         "id": message_id,
@@ -5881,10 +5942,8 @@ class PenguinCore:
                         "role": "assistant",
                         "time": {"created": int(time.time() * 1000)},
                         "parentID": "root",
-                        "modelID": getattr(
-                            self.model_config, "model", "penguin-default"
-                        ),
-                        "providerID": getattr(self.model_config, "provider", "penguin"),
+                        "modelID": model_state.get("modelID") or "penguin-default",
+                        "providerID": model_state.get("providerID") or "penguin",
                         "mode": "chat",
                         "agent": "default",
                         "path": {"cwd": fallback_directory, "root": fallback_directory},
@@ -5895,6 +5954,11 @@ class PenguinCore:
                             "reasoning": 0,
                             "cache": {"read": 0, "write": 0},
                         },
+                        **(
+                            {"variant": model_state.get("variant")}
+                            if model_state.get("variant")
+                            else {}
+                        ),
                     },
                     "parts": {},
                     "part_order": [],
@@ -5974,8 +6038,16 @@ class PenguinCore:
             current_session = self.conversation_manager.get_current_session()
             session_id = current_session.id if current_session else "unknown"
         adapter = self._get_tui_adapter(session_id)
+        model_state = self._resolve_opencode_model_state(
+            session_id=session_id,
+            model_id=model_id,
+            provider_id=provider_id,
+        )
         message_id, part_id = await adapter.on_stream_start(
-            agent_id, model_id, provider_id
+            agent_id,
+            model_state.get("modelID"),
+            model_state.get("providerID"),
+            model_state.get("variant"),
         )
         self._opencode_message_adapters[message_id] = adapter
         return message_id, part_id
