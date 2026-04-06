@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import networkx as nx
 
 from .models import (
+    ArtifactEvidence,
     Blueprint,
     BlueprintItem,
     DependencyPolicy,
@@ -753,6 +754,11 @@ class ProjectManager:
                 return False
 
             for artifact in dependency_task.artifact_evidence:
+                # Older storage round-trips and some tests can still surface raw dict evidence.
+                # Normalize defensively here so readiness semantics depend on artifact truth, not on the caller's representation details.
+                if isinstance(artifact, dict):
+                    artifact = ArtifactEvidence.from_dict(artifact)
+
                 if (
                     artifact.key == dependency.artifact_key
                     and artifact.valid

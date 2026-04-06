@@ -551,10 +551,15 @@ class Task:
         elif new_status == TaskStatus.FAILED:
             # Keep existing progress
             pass
-        elif new_status == TaskStatus.ACTIVE and old_status == TaskStatus.COMPLETED:
-            # Reopening task - reset progress if desired
-            if self.progress == 100:
+        elif new_status == TaskStatus.ACTIVE:
+            if old_status == TaskStatus.COMPLETED and self.progress == 100:
                 self.progress = 90  # Keep most progress but indicate not complete
+
+            # Reopening means the task is schedulable again, so it cannot stay in DONE.
+            # Leaving ACTIVE + DONE around creates a fake "ready but already finished" state that breaks the ITUV contract.
+            if self.phase == TaskPhase.DONE:
+                self.phase = TaskPhase.PENDING
+                self.phase_started_at = datetime.utcnow().isoformat()
         
         return True
     
@@ -566,6 +571,16 @@ class Task:
 
         if self.status == TaskStatus.ACTIVE:
             self.transition_to(TaskStatus.RUNNING, reason="Starting execution")
+
+        if self.status == TaskStatus.RUNNING and self.phase in {
+            TaskPhase.PENDING,
+            TaskPhase.DONE,
+            TaskPhase.BLOCKED,
+        }:
+            # Starting an execution attempt should always put the task back into a real execution phase.
+            # That keeps RUNNING aligned with IMPLEMENT/TEST/USE/VERIFY instead of preserving stale non-executing phases.
+            self.phase = TaskPhase.IMPLEMENT
+            self.phase_started_at = datetime.utcnow().isoformat()
         
         # Create execution record
         record = ExecutionRecord(
@@ -612,6 +627,11 @@ class Task:
                 self.transition_to(TaskStatus.PENDING_REVIEW, reason="Execution successful; pending review")
         elif result == ExecutionResult.FAILURE:
             if self.status == TaskStatus.RUNNING:
+                # A failed retry must not inherit DONE from an earlier successful attempt.
+                # Resetting back to IMPLEMENT preserves the invariant that DONE only pairs with review-ready or completed states.
+                if self.phase == TaskPhase.DONE:
+                    self.phase = TaskPhase.IMPLEMENT
+                    self.phase_started_at = datetime.utcnow().isoformat()
                 self.transition_to(TaskStatus.FAILED, reason="Execution failed")
     
     def mark_pending_review(self, notes: str, reviewer: Optional[str] = None) -> None:
