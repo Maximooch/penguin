@@ -790,6 +790,105 @@ def test_list_session_infos_handles_mutating_index():
     assert any(item["id"] == "session_primary" for item in result)
 
 
+def test_session_view_reads_do_not_mutate_current_session() -> None:
+    current = _session("session_current", "Current", "2026-02-01T00:00:00")
+    target = _session("session_target", "Target", "2026-02-02T00:00:00")
+    target.metadata[TODO_KEY] = [
+        {"id": "todo_1", "content": "Investigate bleed", "status": "pending"}
+    ]
+    target.metadata["directory"] = "/tmp/workspace/target"
+    target.messages.append(
+        Message(
+            id="msg_target_user",
+            role="user",
+            content="hello",
+            category=MessageCategory.DIALOG,
+            timestamp="2026-02-02T00:00:00",
+        )
+    )
+
+    class _LoadingManager(_Manager):
+        def __init__(self, sessions: list[Session]):
+            super().__init__(sessions)
+            self._store = {session.id: session for session in sessions}
+
+        def load_session(self, session_id: str):
+            session = self._store.get(session_id)
+            if session is None:
+                return None
+            self.current_session = session
+            self.sessions[session_id] = (session, False)
+            return session
+
+    manager = _LoadingManager([current, target])
+    manager.sessions.pop(target.id, None)
+    manager.current_session = current
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={"default": manager},
+    )
+    runtime_config = SimpleNamespace(
+        active_root="/tmp/workspace", project_root="/tmp/workspace"
+    )
+    model_config = SimpleNamespace(model="test-model", provider="test-provider")
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        runtime_config=runtime_config,
+        model_config=model_config,
+    )
+
+    info = get_session_info(core, target.id)
+    messages = get_session_messages(core, target.id)
+    todos = get_session_todo(core, target.id)
+    diffs = get_session_diff(core, target.id)
+
+    assert info is not None
+    assert messages is not None
+    assert todos is not None
+    assert diffs == []
+    assert manager.current_session is current
+
+
+def test_list_session_infos_does_not_mutate_current_session() -> None:
+    current = _session("session_current", "Current", "2026-02-01T00:00:00")
+    target = _session("session_target", "Target", "2026-02-02T00:00:00")
+
+    class _LoadingManager(_Manager):
+        def __init__(self, sessions: list[Session]):
+            super().__init__(sessions)
+            self._store = {session.id: session for session in sessions}
+
+        def load_session(self, session_id: str):
+            session = self._store.get(session_id)
+            if session is None:
+                return None
+            self.current_session = session
+            self.sessions[session_id] = (session, False)
+            return session
+
+    manager = _LoadingManager([current, target])
+    manager.sessions.pop(target.id, None)
+    manager.current_session = current
+    conversation_manager = SimpleNamespace(
+        session_manager=manager,
+        agent_session_managers={"default": manager},
+    )
+    runtime_config = SimpleNamespace(
+        active_root="/tmp/workspace", project_root="/tmp/workspace"
+    )
+    model_config = SimpleNamespace(model="test-model", provider="test-provider")
+    core = SimpleNamespace(
+        conversation_manager=conversation_manager,
+        runtime_config=runtime_config,
+        model_config=model_config,
+    )
+
+    result = list_session_infos(core)
+
+    assert [item["id"] for item in result] == ["session_target", "session_current"]
+    assert manager.current_session is current
+
+
 def test_get_session_info_returns_none_for_missing_session():
     core = _core([])
     assert get_session_info(core, "session_missing") is None

@@ -1500,6 +1500,7 @@ class Engine:
 
             last_response = ""
             latest_usage: Dict[str, Any] = {}
+            final_status = "completed"
 
             # Reset loop state for this run
             self._get_loop_state().reset()
@@ -1604,9 +1605,8 @@ class Engine:
                     break
 
             # Determine final status
-            final_status = (
-                "completed" if self.current_iteration < max_iters else "max_iterations"
-            )
+            if final_status == "completed" and self.current_iteration >= max_iters:
+                final_status = "max_iterations"
 
             return {
                 "assistant_response": last_response,

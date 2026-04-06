@@ -644,9 +644,7 @@ async def test_rest_chat_queued_request_returns_aborted_when_cancelled(
             )
             self._opencode_session_directories: dict[str, str] = {}
             self._opencode_process_tasks: dict[str, set[asyncio.Task[Any]]] = {}
-            self._opencode_request_gates = {
-                "session_queued_cancel": asyncio.Lock()
-            }
+            self._opencode_request_gates = {"session_queued_cancel": asyncio.Lock()}
 
         async def process(self, **kwargs):  # type: ignore[no-untyped-def]
             del kwargs
@@ -684,6 +682,46 @@ async def test_rest_chat_queued_request_returns_aborted_when_cancelled(
     assert not tracked_after or request_task not in tracked_after
 
     core._opencode_request_gates["session_queued_cancel"].release()
+
+
+@pytest.mark.asyncio
+async def test_rest_chat_propagates_core_aborted_flag(tmp_path: Path) -> None:
+    repo = tmp_path / "chat_repo_aborted_passthrough"
+    repo.mkdir()
+
+    class _Core:
+        def __init__(self) -> None:
+            self.runtime_config = SimpleNamespace(
+                workspace_root=str(tmp_path),
+                project_root=str(tmp_path),
+                active_root=str(tmp_path),
+            )
+            self._opencode_session_directories: dict[str, str] = {}
+            self._opencode_process_tasks: dict[str, set[asyncio.Task[Any]]] = {}
+            self._opencode_request_gates = {"session_abort_passthrough": asyncio.Lock()}
+
+        async def process(self, **kwargs):  # type: ignore[no-untyped-def]
+            del kwargs
+            return {
+                "assistant_response": "",
+                "action_results": [],
+                "aborted": True,
+            }
+
+    core = _Core()
+    request = MessageRequest(
+        text="aborted",
+        session_id="session_abort_passthrough",
+        conversation_id="session_abort_passthrough",
+        directory=str(repo),
+        streaming=False,
+    )
+
+    response = await handle_chat_message(request, core=cast(Any, core))
+
+    assert response["aborted"] is True
+    assert response["response"] == ""
+    assert response["action_results"] == []
 
 
 @pytest.mark.asyncio

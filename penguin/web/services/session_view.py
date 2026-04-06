@@ -135,13 +135,22 @@ def _find_session(core: Any, session_id: str) -> tuple[Optional[Any], Optional[A
 
         index = getattr(manager, "session_index", {})
         if isinstance(index, dict) and session_id in index:
-            try:
-                session = manager.load_session(session_id)
-            except Exception:
-                session = None
+            session = _load_session_view_only(manager, session_id)
             if session is not None:
                 return session, manager
     return None, None
+
+
+def _load_session_view_only(manager: Any, session_id: str) -> Optional[Any]:
+    """Load a session for inspection without changing shared current_session."""
+    previous = getattr(manager, "current_session", None)
+    try:
+        return manager.load_session(session_id)
+    except Exception:
+        return None
+    finally:
+        if hasattr(manager, "current_session"):
+            manager.current_session = previous
 
 
 def _infer_title(session: Any) -> str:
@@ -771,10 +780,7 @@ def list_session_infos(
             if isinstance(cached, dict) and session_id in cached:
                 session = cached[session_id][0]
             if session is None:
-                try:
-                    session = manager.load_session(session_id)
-                except Exception:
-                    session = None
+                session = _load_session_view_only(manager, session_id)
             if session is None:
                 continue
 

@@ -3702,6 +3702,7 @@ async def handle_chat_message(
         resp: Dict[str, Any] = {
             "response": process_result.get("assistant_response", ""),
             "action_results": process_result.get("action_results", []),
+            "aborted": bool(process_result.get("aborted")),
         }
         if request.include_reasoning:
             resp["reasoning"] = "".join(reasoning_buf)
@@ -4199,6 +4200,7 @@ async def stream_chat(websocket: WebSocket, core: PenguinCore = Depends(get_core
                 complete_payload = {
                     "response": process_result.get("assistant_response", ""),
                     "action_results": process_result.get("action_results", []),
+                    "aborted": bool(process_result.get("aborted")),
                 }
                 if include_reasoning:
                     complete_payload["reasoning"] = getattr(

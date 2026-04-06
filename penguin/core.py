@@ -3949,14 +3949,10 @@ class PenguinCore:
                 event_data["conversation_id"] = scoped_conversation_id
                 event_data["session_id"] = scoped_session_id or scoped_conversation_id
             else:
-                try:
-                    session = self.conversation_manager.get_current_session()
-                    sid = session.id if session else "unknown"
-                    event_data["session_id"] = sid
-                    event_data["conversation_id"] = sid
-                except Exception:
-                    event_data["session_id"] = "unknown"
-                    event_data["conversation_id"] = "unknown"
+                # Do not borrow shared current_session here. In multi-session
+                # mode a concurrent read/poll can temporarily repoint it.
+                event_data["session_id"] = "unknown"
+                event_data["conversation_id"] = "unknown"
 
             event_data["agent_id"] = agent_id
             event_data = self._filter_internal_markers_from_event(event_data)
@@ -4038,17 +4034,23 @@ class PenguinCore:
             agent_id=resolved_stream_scope_id
         )
         if message is None:
-            logical_agent_id = resolved_agent_id
-            if resolved_stream_scope_id != logical_agent_id:
-                message, events = self._stream_manager.finalize(
-                    agent_id=logical_agent_id
-                )
-            if message is None:
-                active_scopes = self._stream_manager.get_active_agents()
-                if len(active_scopes) == 1:
+            allow_unscoped_fallback = not (
+                isinstance(resolved_session_id, str) and resolved_session_id
+            ) and not (
+                isinstance(resolved_conversation_id, str) and resolved_conversation_id
+            )
+            if allow_unscoped_fallback:
+                logical_agent_id = resolved_agent_id
+                if resolved_stream_scope_id != logical_agent_id:
                     message, events = self._stream_manager.finalize(
-                        agent_id=active_scopes[0]
+                        agent_id=logical_agent_id
                     )
+                if message is None:
+                    active_scopes = self._stream_manager.get_active_agents()
+                    if len(active_scopes) == 1:
+                        message, events = self._stream_manager.finalize(
+                            agent_id=active_scopes[0]
+                        )
 
         if message is None:
             return None
@@ -4179,14 +4181,9 @@ class PenguinCore:
                 event_data["session_id"] = scoped_session_id or scoped_conversation_id
                 event_data["conversation_id"] = scoped_conversation_id
             else:
-                try:
-                    session = self.conversation_manager.get_current_session()
-                    sid = session.id if session else "unknown"
-                    event_data["session_id"] = sid
-                    event_data["conversation_id"] = sid
-                except Exception:
-                    event_data["session_id"] = "unknown"
-                    event_data["conversation_id"] = "unknown"
+                # Avoid leaking a stale shared current_session into UI routing.
+                event_data["session_id"] = "unknown"
+                event_data["conversation_id"] = "unknown"
 
             event_data["agent_id"] = resolved_agent_id
             event_data = self._filter_internal_markers_from_event(event_data)

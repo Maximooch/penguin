@@ -176,6 +176,46 @@ async def test_stream_chunk_prefers_explicit_session_hints() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_chunk_without_explicit_scope_does_not_borrow_current_session() -> (
+    None
+):
+    events: list[tuple[str, dict]] = []
+
+    async def _emit(event_type: str, data: dict) -> None:
+        events.append((event_type, data))
+
+    class _ConversationManager:
+        current_agent_id = "cadence_agent"
+
+        @staticmethod
+        def get_current_session():
+            return type("_Session", (), {"id": "stale-session-id"})()
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "conversation_manager", _ConversationManager())
+    setattr(core, "_stream_manager", AgentStreamingStateManager())
+    setattr(core, "_runmode_stream_callback", None)
+    setattr(core, "emit_ui_event", _emit)
+    core_any: Any = core
+
+    await core_any._handle_stream_chunk(
+        "unscoped payload",
+        message_type="assistant",
+        agent_id="tuxford_agent",
+        stream_scope_id="tuxford_agent",
+    )
+
+    stream_events = [
+        payload
+        for event_type, payload in events
+        if event_type == "stream_chunk" and isinstance(payload, dict)
+    ]
+    assert stream_events
+    assert stream_events[-1].get("session_id") == "unknown"
+    assert stream_events[-1].get("conversation_id") == "unknown"
+
+
+@pytest.mark.asyncio
 async def test_finalize_streaming_uses_explicit_session_scope() -> None:
     events: list[tuple[str, dict]] = []
 
@@ -244,3 +284,45 @@ async def test_finalize_streaming_uses_explicit_session_scope() -> None:
     ]
     assert final_events
     assert final_events[-1].get("session_id") == "test-session-110-tuxford"
+
+
+def test_finalize_streaming_does_not_fall_back_to_other_session_scope() -> None:
+    class _Conversation:
+        def __init__(self):
+            self.messages = []
+
+        def add_message(self, **kwargs):
+            self.messages.append(kwargs)
+
+    class _ConversationManager:
+        def __init__(self):
+            self.current_agent_id = "default"
+            self.conversation = _Conversation()
+            self._by_agent: dict[str, _Conversation] = {}
+
+        def get_agent_conversation(self, agent_id: str):
+            if agent_id not in self._by_agent:
+                self._by_agent[agent_id] = _Conversation()
+            return self._by_agent[agent_id]
+
+    core = PenguinCore.__new__(PenguinCore)
+    setattr(core, "conversation_manager", _ConversationManager())
+    setattr(core, "_stream_manager", AgentStreamingStateManager())
+    setattr(core, "_runmode_stream_callback", None)
+    setattr(core, "_filter_internal_markers_from_event", lambda data: data)
+    core_any: Any = core
+
+    core_any._stream_manager.handle_chunk(
+        "other session payload",
+        agent_id="session-b:default",
+        message_type="assistant",
+    )
+
+    finalized = core_any.finalize_streaming_message(
+        agent_id="default",
+        session_id="session-a",
+        conversation_id="session-a",
+    )
+
+    assert finalized is None
+    assert core_any._stream_manager.is_agent_active("session-b:default")
