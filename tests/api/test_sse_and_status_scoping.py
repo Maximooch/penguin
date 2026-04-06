@@ -131,3 +131,54 @@ def test_path_info_prefers_valid_directory_then_session_mapping(tmp_path: Path):
         session_id="session_one",
     )
     assert Path(from_mapping["directory"]).resolve() == mapped.resolve()
+
+
+@pytest.mark.asyncio
+async def test_sse_streams_clarification_session_status_events(tmp_path: Path):
+    from penguin.core import PenguinCore
+
+    event_bus = _EventBus()
+    runtime = SimpleNamespace(
+        workspace_root=str(tmp_path),
+        project_root=str(tmp_path),
+        active_root=str(tmp_path),
+    )
+    core = PenguinCore.__new__(PenguinCore)
+    core.event_bus = event_bus
+    core.runtime_config = runtime
+    core._opencode_session_directories = {}
+    core._current_conversation_id = "session_one"
+    core.conversation_manager = SimpleNamespace(current_agent_id="default")
+    set_core_instance(core)
+
+    response = await events_sse(
+        session_id="session_one",
+        conversation_id=None,
+        agent_id=None,
+        directory=str(tmp_path),
+    )
+    stream = response.body_iterator
+
+    connected = _parse_sse(await stream.__anext__())
+    assert connected["type"] == "server.connected"
+
+    await PenguinCore.emit_ui_event(
+        core,
+        "status",
+        {
+            "status_type": "clarification_needed",
+            "data": {
+                "task_id": "task-1",
+                "prompt": "Choose auth mode",
+            },
+        },
+    )
+
+    clarification_event = _parse_sse(await asyncio.wait_for(stream.__anext__(), timeout=0.25))
+    assert clarification_event["type"] == "session.status"
+    assert clarification_event["properties"]["sessionID"] == "session_one"
+    assert clarification_event["properties"]["status"]["type"] == "clarification_needed"
+    assert clarification_event["properties"]["info"]["task_id"] == "task-1"
+
+    await stream.aclose()
+

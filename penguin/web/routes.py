@@ -35,6 +35,7 @@ import httpx
 
 from penguin.config import WORKSPACE_PATH
 from penguin.core import PenguinCore
+from penguin.run_mode import RunMode
 from penguin import __version__
 from penguin.constants import get_engine_max_iterations_default
 from penguin.utils.events import EventBus as UtilsEventBus
@@ -108,6 +109,43 @@ def _format_error_response(error: Exception, status_code: int = 500) -> HTTPExce
         return HTTPException(
             status_code=status_code, detail={"error": penguin_error.to_dict()}
         )
+
+
+def _serialize_task_payload(task: Any, *, include_metadata: bool = True) -> Dict[str, Any]:
+    """Serialize a task for web responses without flattening new runtime state away."""
+    # Keep this centralized so task payload fixes land in one place instead of drifting across routes.
+    # The web surface should expose current lifecycle truth, including phase and clarification state, not just legacy status fields.
+    dependency_specs = [
+        spec.to_dict() if hasattr(spec, "to_dict") else dict(spec)
+        for spec in getattr(task, "dependency_specs", []) or []
+    ]
+    artifact_evidence = [
+        artifact.to_dict() if hasattr(artifact, "to_dict") else dict(artifact)
+        for artifact in getattr(task, "artifact_evidence", []) or []
+    ]
+    metadata = dict(getattr(task, "metadata", {}) or {})
+    clarification_requests = list(metadata.get("clarification_requests", []))
+
+    payload = {
+        "id": task.id,
+        "project_id": getattr(task, "project_id", None),
+        "title": task.title,
+        "description": task.description,
+        "status": task.status.value if hasattr(task.status, "value") else task.status,
+        "phase": task.phase.value if hasattr(task.phase, "value") else getattr(task, "phase", None),
+        "priority": getattr(task, "priority", None),
+        "parent_task_id": getattr(task, "parent_task_id", None),
+        "dependencies": list(getattr(task, "dependencies", []) or []),
+        "dependency_specs": dependency_specs,
+        "artifact_evidence": artifact_evidence,
+        "recipe": getattr(task, "recipe", None),
+        "clarification_requests": clarification_requests,
+        "created_at": task.created_at if getattr(task, "created_at", None) else None,
+        "updated_at": task.updated_at if getattr(task, "updated_at", None) else None,
+    }
+    if include_metadata:
+        payload["metadata"] = metadata
+    return payload
 
 
 MAX_IMAGES_PER_REQUEST = 10
@@ -3927,6 +3965,11 @@ class TaskCreateRequest(BaseModel):
     priority: Optional[int] = 1
 
 
+class ClarificationAnswerRequest(BaseModel):
+    answer: str
+    answered_by: Optional[str] = None
+
+
 class TaskUpdateRequest(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
@@ -4005,13 +4048,7 @@ async def get_project(project_id: str, core: PenguinCore = Depends(get_core)):
             "created_at": project.created_at if project.created_at else None,
             "updated_at": project.updated_at if project.updated_at else None,
             "tasks": [
-                {
-                    "id": task.id,
-                    "title": task.title,
-                    "status": task.status.value,
-                    "priority": task.priority,
-                    "created_at": task.created_at if task.created_at else None,
-                }
+                _serialize_task_payload(task)
                 for task in tasks
             ],
         }
@@ -4045,16 +4082,7 @@ async def create_task(
             parent_task_id=request.parent_task_id,
             priority=request.priority or 1,
         )
-        return {
-            "id": task.id,
-            "project_id": task.project_id,
-            "title": task.title,
-            "description": task.description,
-            "status": task.status.value,
-            "priority": task.priority,
-            "parent_task_id": task.parent_task_id,
-            "created_at": task.created_at if task.created_at else None,
-        }
+        return _serialize_task_payload(task)
     except Exception as e:
         logger.error(f"Error creating task: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -4074,11 +4102,13 @@ async def list_tasks(
             from penguin.project.models import TaskStatus
 
             try:
-                status_filter = TaskStatus(status.upper())
+                normalized_status = status.strip().lower()
+                status_filter = TaskStatus(normalized_status)
             except ValueError:
+                valid_options = ", ".join(task_status.value for task_status in TaskStatus)
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Invalid status: {status}. Valid options: pending, running, completed, failed",
+                    detail=f"Invalid status: {status}. Valid options: {valid_options}",
                 )
 
         tasks = await core.project_manager.list_tasks_async(
@@ -4087,17 +4117,7 @@ async def list_tasks(
 
         return {
             "tasks": [
-                {
-                    "id": task.id,
-                    "project_id": task.project_id,
-                    "title": task.title,
-                    "description": task.description,
-                    "status": task.status.value,
-                    "priority": task.priority,
-                    "parent_task_id": task.parent_task_id,
-                    "created_at": task.created_at if task.created_at else None,
-                    "updated_at": task.updated_at if task.updated_at else None,
-                }
+                _serialize_task_payload(task)
                 for task in tasks
             ]
         }
@@ -4116,17 +4136,7 @@ async def get_task(task_id: str, core: PenguinCore = Depends(get_core)):
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        return {
-            "id": task.id,
-            "project_id": task.project_id,
-            "title": task.title,
-            "description": task.description,
-            "status": task.status.value,
-            "priority": task.priority,
-            "parent_task_id": task.parent_task_id,
-            "created_at": task.created_at if task.created_at else None,
-            "updated_at": task.updated_at if task.updated_at else None,
-        }
+        return _serialize_task_payload(task)
     except HTTPException:
         raise
     except Exception as e:
@@ -4142,6 +4152,41 @@ async def get_task(task_id: str, core: PenguinCore = Depends(get_core)):
 # Temporarily disabled - delete_task method not implemented in ProjectManager
 # @router.delete("/api/v1/tasks/{task_id}")
 # async def delete_task(...):
+
+
+@router.post("/api/v1/tasks/{task_id}/clarification/resume")
+async def resume_task_clarification(
+    task_id: str,
+    request: ClarificationAnswerRequest,
+    core: PenguinCore = Depends(get_core),
+):
+    """Answer the latest open clarification request and resume task execution."""
+    try:
+        task = await core.project_manager.get_task_async(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+
+        run_mode = RunMode(core=core)
+        result = await run_mode.resume_with_clarification(
+            task_id=task_id,
+            answer=request.answer,
+            answered_by=request.answered_by,
+        )
+
+        updated_task = await core.project_manager.get_task_async(task_id)
+        response_task = updated_task or task
+
+        return {
+            "task_id": task_id,
+            "result": result,
+            "task": _serialize_task_payload(response_task),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error resuming task clarification: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Task Status Management
@@ -4162,7 +4207,7 @@ async def start_task(task_id: str, core: PenguinCore = Depends(get_core)):
                 "id": task.id,
                 "title": task.title,
                 "status": task.status.value,
-                "message": "Task is already active",
+                "message": "Task is already in active state",
             }
 
         # Otherwise, try to transition to active
@@ -4181,7 +4226,7 @@ async def start_task(task_id: str, core: PenguinCore = Depends(get_core)):
             "id": updated_task.id,
             "title": updated_task.title,
             "status": updated_task.status.value,
-            "message": "Task started successfully",
+            "message": "Task moved to active state successfully",
         }
     except HTTPException:
         raise
@@ -4229,78 +4274,43 @@ async def complete_task(task_id: str, core: PenguinCore = Depends(get_core)):
 async def execute_task_from_project(
     task_id: str, core: PenguinCore = Depends(get_core)
 ):
-    """Execute a task using the Engine with project context."""
+    """Execute a task using RunMode so web responses preserve current lifecycle truth."""
     try:
-        # Get the task details
         task = await core.project_manager.get_task_async(task_id)
         if not task:
             raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-        # Check if Engine is available
         if not hasattr(core, "engine") or not core.engine:
             raise HTTPException(
                 status_code=503, detail="Engine layer not available for task execution"
             )
 
-        # Set task to running status
-        from penguin.project.models import TaskStatus
-
-        core.project_manager.update_task_status(
-            task_id, TaskStatus.ACTIVE, "Executing via Engine"
-        )
-
-        # Create task prompt
-        task_prompt = f"Task: {task.title}"
-        if task.description:
-            task_prompt += f"\nDescription: {task.description}"
-
-        # Execute task using Engine
-        result = await core.engine.run_task(
-            task_prompt=task_prompt,
-            max_iterations=get_engine_max_iterations_default(),
-            task_name=task.title,
-            task_context={
+        # Route project execution through RunMode so clarification-needed and other
+        # non-terminal outcomes survive instead of being collapsed into fake failure/completion states.
+        run_mode = RunMode(core=core)
+        result = await run_mode.start(
+            name=task.title,
+            description=task.description,
+            context={
                 "task_id": task_id,
                 "project_id": task.project_id,
                 "priority": task.priority,
             },
-            enable_events=True,
         )
 
-        # Update task status based on result
-        if result.get("status") == "completed":
-            task.mark_pending_review("Engine execution completed", reviewer="engine")
-            core.project_manager.storage.update_task(task)
-            final_task_status = task.status.value
-        else:
-            core.project_manager.update_task_status(
-                task_id, TaskStatus.FAILED, f"Engine execution result: {result.get('status')}"
-            )
-            final_task_status = TaskStatus.FAILED.value
+        updated_task = await core.project_manager.get_task_async(task_id)
+        response_task = updated_task or task
 
         return {
             "task_id": task_id,
-            "status": result.get("status", "completed"),
-            "response": result.get("assistant_response", ""),
-            "iterations": result.get("iterations", 0),
-            "execution_time": result.get("execution_time", 0),
-            "action_results": result.get("action_results", []),
-            "final_task_status": final_task_status,
+            "result": result,
+            "task": _serialize_task_payload(response_task),
         }
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error executing task: {str(e)}")
-        # Set task to failed status
-        try:
-            from penguin.project.models import TaskStatus
-
-            core.project_manager.update_task_status(
-                task_id, TaskStatus.FAILED, f"Execution error: {str(e)}"
-            )
-        except:
-            pass  # Don't fail the response if status update fails
         raise HTTPException(status_code=500, detail=str(e))
 
 

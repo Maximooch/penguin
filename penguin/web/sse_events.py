@@ -247,7 +247,9 @@ async def events_sse(
                         "lsp.client.diagnostics",
                         "vcs.branch.updated",
                     }:
-                        return
+                        # These are intentionally global status events. Dropping them when a directory
+                        # filter is present makes SSE look dead even though the runtime emitted a valid event.
+                        pass
 
             # Filter by agent_id if provided (check multiple possible fields)
             if effective_agent_id:
