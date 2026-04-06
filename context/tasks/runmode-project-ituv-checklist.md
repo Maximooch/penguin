@@ -67,6 +67,7 @@ Do **not** turn this file into a second copy of the architecture contracts or th
 
 - [ ] Review and update CLI/API/library surfaces for compatibility with the refactored runtime
   - Audit user-facing and embedding entry points so they reflect current task, clarification, and dependency behavior
+  - Reference: `context/tasks/runtime-surface-audit-checklist.md`
 - [ ] Review Blueprint sync/import callers for new parser and diagnostics semantics
 - [ ] Audit task metadata consumers for clarification and artifact evidence compatibility
 - [ ] Audit event/UI consumers for new clarification status events
@@ -104,6 +105,7 @@ Do **not** turn this file into a second copy of the architecture contracts or th
 
 - Strategy / backlog: `context/tasks/runmode-project-ituv-gap-matrix.md`
 - Capability bar: `context/tasks/penguin-capability-bar.md`
+- Surface audit checklist: `context/tasks/runtime-surface-audit-checklist.md`
 - Lifecycle contract: `context/architecture/ituv-task-state-machine-contract.md`
 - Artifact contract: `context/architecture/artifact-evidence-contract.md`
 - Typed dependency syntax: `context/architecture/blueprint-typed-dependency-syntax-contract.md`
