@@ -120,6 +120,21 @@ flowchart LR
     ContextAPI -.- contextEndpoint["/api/v1/context-files"]
 ```
 
+### Task / Project Web Surface Notes
+
+The task/project web surface has recently been hardened to better reflect backend runtime truth.
+
+Key current behaviors:
+
+- task payloads now expose richer lifecycle state, including `phase`, dependency fields, artifact evidence, recipe references, metadata, and clarification requests
+- `POST /api/v1/tasks/{task_id}/execute` now runs through `RunMode`
+  - this preserves non-terminal states such as `waiting_input`
+  - clarification-needed outcomes are no longer flattened into fake terminal states
+- `POST /api/v1/tasks/{task_id}/clarification/resume` is available for answering the latest open clarification request and resuming execution
+- `GET /api/v1/events/sse` now carries clarification-related session status visibility for OpenCode-compatible web clients
+
+This part of the API is still under active audit, but the intended contract is clear: the web surface should expose the same task and clarification truth that the runtime uses internally.
+
 ### Chat Endpoints
 
 #### POST `/api/v1/chat/message`

@@ -87,6 +87,17 @@ Penguin exposes the same runtime through several surfaces:
 - `penguin-web` - REST + WebSocket/SSE backend for the TUI and custom integrations.
 - Python API - `PenguinAgent`, `PenguinClient`, and `PenguinAPI` for embedding Penguin in code.
 
+### Web/API Surface Notes
+
+- Task/project endpoints now expose current runtime state rather than only legacy task summaries.
+  - Task payloads include `status`, `phase`, `dependencies`, `dependency_specs`, `artifact_evidence`, `recipe`, `metadata`, and `clarification_requests` where relevant.
+- `POST /api/v1/tasks/{task_id}/execute` now routes through `RunMode`, so non-terminal outcomes like `waiting_input` and clarification-needed results are preserved instead of being flattened into fake completion/failure states.
+- `POST /api/v1/tasks/{task_id}/clarification/resume` answers the latest open clarification request and resumes execution through the same `RunMode` lifecycle.
+- `GET /api/v1/events/sse` streams OpenCode-compatible events and now includes session-scoped clarification status visibility for web clients.
+- `PenguinAPI.run_task(...)` and `PenguinAPI.resume_with_clarification(...)` are aligned with the web route behavior so programmatic callers see the same lifecycle truth.
+
+These surfaces are still under active audit, but the current direction is explicit: web/API consumers should receive the same task/clarification truth that the backend runtime uses internally.
+
 ### Quick Python Example
 
 ```python

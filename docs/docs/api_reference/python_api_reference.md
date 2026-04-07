@@ -204,6 +204,21 @@ success = await client.load_context_files([
 files = await client.list_context_files()
 ```
 
+## PenguinAPI Web/Runtime Notes
+
+For web-backed programmatic usage, `PenguinAPI` is intended to align with the same lifecycle truth as the web routes.
+
+Important current behavior:
+
+- `PenguinAPI.run_task(...)`
+  - now routes through `RunMode` rather than using engine-only shortcuts
+  - callers can receive non-terminal outcomes such as `waiting_input`
+- `PenguinAPI.resume_with_clarification(task_id, answer, answered_by=None)`
+  - answers the latest open clarification request and resumes task execution through the same runtime path
+- task/project-related consumers should expect richer lifecycle state in task payloads, including `phase` and clarification metadata where relevant
+
+This matters because library callers should not see a flatter or more misleading task lifecycle than HTTP callers.
+
 ## Data Classes and Types
 
 ### ChatOptions
