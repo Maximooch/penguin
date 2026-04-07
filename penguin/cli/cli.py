@@ -2911,7 +2911,7 @@ def task_list(
 
 @task_app.command("start")
 def task_start(task_id: str = typer.Argument(..., help="Task ID to start")):
-    """Start a task (set status to running)"""
+    """Start a task by moving it into the active state."""
 
     async def _async_task_start():
         await _initialize_core_components_globally()
@@ -2940,7 +2940,7 @@ def task_start(task_id: str = typer.Argument(..., help="Task ID to start")):
             # Get updated task
             updated_task = await _core.project_manager.get_task_async(task_id)
 
-            console.print(f"[green]✓ Task '{task.title}' started[/green]")
+            console.print(f"[green]✓ Task '{task.title}' moved to active state[/green]")
             console.print(f"  Status: {updated_task.status.value}")
 
         except Exception as e:
@@ -2952,7 +2952,7 @@ def task_start(task_id: str = typer.Argument(..., help="Task ID to start")):
 
 @task_app.command("complete")
 def task_complete(task_id: str = typer.Argument(..., help="Task ID to complete")):
-    """Complete a task (set status to completed)"""
+    """Approve a task that is pending review and mark it completed."""
 
     async def _async_task_complete():
         await _initialize_core_components_globally()
@@ -2971,6 +2971,7 @@ def task_complete(task_id: str = typer.Argument(..., help="Task ID to complete")
 
             if task.status == TaskStatus.COMPLETED:
                 updated_task = task
+                console.print(f"[yellow]Task '{task.title}' is already completed[/yellow]")
             elif task.status == TaskStatus.PENDING_REVIEW:
                 task.approve("cli", notes="Approved via CLI")
                 _core.project_manager.storage.update_task(task)

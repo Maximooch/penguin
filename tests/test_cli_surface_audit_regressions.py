@@ -131,3 +131,50 @@ def test_task_list_accepts_uppercase_status_filter_and_shows_real_options():
     printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
     assert TaskStatus.PENDING_REVIEW.value in printed
     assert TaskStatus.RUNNING.value in printed
+
+
+def test_task_start_reports_active_state_honestly():
+    from penguin.cli import cli as cli_module
+
+    task = make_task("task-1", TaskStatus.RUNNING)
+    updated_task = make_task("task-1", TaskStatus.ACTIVE)
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_task_async=AsyncMock(side_effect=[task, updated_task]),
+            update_task_status=Mock(return_value=True),
+        )
+    )
+
+    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), \
+         patch.object(cli_module, "_core", core), \
+         patch.object(cli_module, "console") as console_mock:
+        cli_module.task_start("task-1")
+
+    printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
+    assert "active state" in printed.lower()
+    assert "running" not in printed.lower()
+
+
+def test_task_complete_docstring_and_message_reflect_review_approval():
+    from penguin.cli import cli as cli_module
+
+    task = make_task("task-1", TaskStatus.PENDING_REVIEW)
+    updated_task = make_task("task-1", TaskStatus.COMPLETED)
+    task.approve = Mock()
+    core = SimpleNamespace(
+        project_manager=SimpleNamespace(
+            get_task_async=AsyncMock(side_effect=[task, updated_task]),
+            storage=SimpleNamespace(update_task=Mock()),
+        )
+    )
+
+    with patch.object(cli_module, "_initialize_core_components_globally", AsyncMock()), \
+         patch.object(cli_module, "_core", core), \
+         patch.object(cli_module, "console") as console_mock:
+        cli_module.task_complete("task-1")
+
+    printed = " ".join(str(call.args[0]) for call in console_mock.print.call_args_list if call.args)
+    assert "approved" in printed.lower()
+    assert "bypass" not in (cli_module.task_complete.__doc__ or "").lower()
+    assert "pending review" in (cli_module.task_complete.__doc__ or "").lower()
+
