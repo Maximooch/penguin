@@ -2854,10 +2854,12 @@ def task_list(
                 from penguin.project.models import TaskStatus
 
                 try:
-                    status_filter = TaskStatus(status.upper())
+                    normalized_status = status.strip().lower()
+                    status_filter = TaskStatus(normalized_status)
                 except ValueError:
+                    valid_options = ", ".join(task_status.value for task_status in TaskStatus)
                     console.print(
-                        f"[red]Invalid status: {status}. Valid options: pending, running, completed, failed[/red]"
+                        f"[red]Invalid status: {status}. Valid options: {valid_options}[/red]"
                     )
                     raise typer.Exit(code=1)
 
@@ -2898,6 +2900,8 @@ def task_list(
 
             console.print(table)
 
+        except typer.Exit:
+            raise
         except Exception as e:
             console.print(f"[red]Error listing tasks: {e}[/red]")
             raise typer.Exit(code=1)
