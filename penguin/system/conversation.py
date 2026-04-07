@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import uuid
-import yaml # type: ignore
+import yaml  # type: ignore
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from penguin.config import CONVERSATION_CONFIG
 from penguin.system.state import Message, MessageCategory, Session
 from penguin.utils.diagnostics import diagnostics
+
 try:
     from penguin.system.message_bus import MessageBus, ProtocolMessage
 except Exception:  # pragma: no cover - optional import to avoid cycles in minimal envs
@@ -21,23 +22,25 @@ except Exception:  # pragma: no cover - optional import to avoid cycles in minim
 
 # Optional - can be replaced with approximation method for multiple providers
 try:
-    import tiktoken # type: ignore
+    import tiktoken  # type: ignore
+
     TOKENIZER_AVAILABLE = True
 except ImportError:
     TOKENIZER_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
+
 class ConversationSystem:
     """
     Manages conversation state and message preparation.
-    
+
     Handles message categorization, history management, and API formatting.
     Uses external systems for token budgeting and context management.
     """
-    
+
     def __init__(
-        self, 
+        self,
         context_window_manager=None,
         session_manager=None,
         system_prompt: str = "",
@@ -45,7 +48,7 @@ class ConversationSystem:
     ):
         """
         Initialize the conversation system.
-        
+
         Args:
             context_window_manager: Manager for token budgeting and context trimming
             session_manager: Manager for session persistence and boundaries
@@ -57,7 +60,7 @@ class ConversationSystem:
         self.checkpoint_manager = checkpoint_manager
         self.system_prompt = system_prompt
         self.system_prompt_sent = False
-        
+
         # Create or load initial session
         if session_manager and session_manager.current_session:
             self.session = session_manager.current_session
@@ -71,7 +74,7 @@ class ConversationSystem:
             else:
                 # Fallback if no session_manager (testing/isolated usage)
                 self.session = Session()
-        
+
         # Track if save is needed
         self._modified = False
 
@@ -108,14 +111,21 @@ class ConversationSystem:
             if role == "system":
                 if content == self.system_prompt:
                     category = MessageCategory.SYSTEM
-                elif any(marker in str(content).lower() for marker in 
-                        ["action executed:", "code saved to:", "result:", "status:"]):
+                elif any(
+                    marker in str(content).lower()
+                    for marker in [
+                        "action executed:",
+                        "code saved to:",
+                        "result:",
+                        "status:",
+                    ]
+                ):
                     category = MessageCategory.SYSTEM_OUTPUT
                 else:
                     category = MessageCategory.CONTEXT
             else:
                 category = MessageCategory.DIALOG
-        
+
         # Resolve agent_id default from session metadata if not provided
         if agent_id is None:
             try:
@@ -136,17 +146,21 @@ class ConversationSystem:
             recipient_id=recipient_id,
             message_type=message_type,
         )
-        
+
         # Add to current session
         self.session.messages.append(message)
         self._modified = True
-        
+
         # Sync modified state to SessionManager's cache for auto-save reliability
         if self.session_manager and self.session:
             try:
                 self.session_manager.mark_session_modified(self.session.id)
             except Exception:
-                pass  # Best-effort sync, don't fail message addition
+                logger.warning(
+                    "Failed to mark session modified during message append: session=%s",
+                    getattr(self.session, "id", "unknown"),
+                    exc_info=True,
+                )
 
         # Phase 3: publish protocol message to MessageBus (best-effort)
         try:
@@ -167,6 +181,7 @@ class ConversationSystem:
                 )
                 # Fire-and-forget, don't block
                 import asyncio as _asyncio
+
                 try:
                     loop = _asyncio.get_event_loop()
                     if loop.is_running():
@@ -176,11 +191,14 @@ class ConversationSystem:
                     pass
         except Exception:
             pass
-        
+
         # NEW: Auto-checkpoint integration
-        if self.checkpoint_manager and self.checkpoint_manager.should_checkpoint(message):
+        if self.checkpoint_manager and self.checkpoint_manager.should_checkpoint(
+            message
+        ):
             # Create checkpoint asynchronously to avoid blocking
             import asyncio
+
             try:
                 # Try to get the current event loop
                 loop = asyncio.get_event_loop()
@@ -202,32 +220,34 @@ class ConversationSystem:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to create checkpoint: {e}")
-        
+
         # Process session through context window manager if available
         if self.context_window:
             self.session = self.context_window.process_session(self.session)
-        
+
         # Check session boundaries and handle transitions automatically
-        if self.session_manager and self.session_manager.check_session_boundary(self.session):
-            logger.info(f"Session {self.session.id} reached boundary, creating continuation")
-            
+        if self.session_manager and self.session_manager.check_session_boundary(
+            self.session
+        ):
+            logger.info(
+                f"Session {self.session.id} reached boundary, creating continuation"
+            )
+
             # Save current session before transitioning
             self.save()
-            
+
             # Create continuation session and switch to it
             new_session = self.session_manager.create_continuation_session(self.session)
             self.session = new_session
             self._modified = True
-            
+
             # Log transition for debugging
             logger.info(f"Transitioned to continuation session {new_session.id}")
-        
+
         return message
 
     def prepare_conversation(
-        self,
-        user_input: str,
-        image_paths: Optional[List[str]] = None
+        self, user_input: str, image_paths: Optional[List[str]] = None
     ) -> None:
         """
         Prepare conversation with user input and optional images.
@@ -259,16 +279,13 @@ class ConversationSystem:
         else:
             # Simple text content
             self.add_message("user", user_input)
-            
+
     def add_assistant_message(self, content: str) -> Message:
         """Add a message from the assistant."""
         return self.add_message("assistant", content)
-        
+
     def add_action_result(
-        self,
-        action_type: str,
-        result: str,
-        status: str = "completed"
+        self, action_type: str, result: str, status: str = "completed"
     ) -> Message:
         """
         Add an action result message using the 'tool' role for better
@@ -290,7 +307,7 @@ class ConversationSystem:
         # Find the last assistant message to attach the tool call ID to
         last_assistant_message = None
         for msg in reversed(self.session.messages):
-            if msg.role == 'assistant':
+            if msg.role == "assistant":
                 last_assistant_message = msg
                 break
 
@@ -301,21 +318,23 @@ class ConversationSystem:
             # Ensure the assistant message's metadata is a dict
             if not isinstance(last_assistant_message.metadata, dict):
                 last_assistant_message.metadata = {}
-            
+
             # Add tool_calls information to the assistant's message
-            if 'tool_calls' not in last_assistant_message.metadata:
-                last_assistant_message.metadata['tool_calls'] = []
-            
+            if "tool_calls" not in last_assistant_message.metadata:
+                last_assistant_message.metadata["tool_calls"] = []
+
             # This part is a simplification. A real implementation would parse
             # the tool call from the assistant's content. Here, we just log it.
-            last_assistant_message.metadata['tool_calls'].append({
-                "id": tool_call_id,
-                "type": "function",
-                "function": {
-                    "name": action_type,
-                    "arguments": "..." # Placeholder for arguments
+            last_assistant_message.metadata["tool_calls"].append(
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": action_type,
+                        "arguments": "...",  # Placeholder for arguments
+                    },
                 }
-            })
+            )
 
         # Add the tool result message
         return self.add_message(
@@ -325,45 +344,37 @@ class ConversationSystem:
             metadata={
                 "tool_call_id": tool_call_id,
                 "action_type": action_type,
-                "status": status
+                "status": status,
             },
             message_type="action",
         )
 
-    def add_context(
-        self, 
-        content: str, 
-        source: Optional[str] = None
-    ) -> Message:
+    def add_context(self, content: str, source: Optional[str] = None) -> Message:
         """
         Add context information to the conversation.
-        
+
         Args:
             content: Context content (documentation, files, etc.)
             source: Optional source identifier
-            
+
         Returns:
             The created Message object
         """
         return self.add_message(
-            "system", 
-            content, 
+            "system",
+            content,
             MessageCategory.CONTEXT,
-            {"source": source} if source else {}
+            {"source": source} if source else {},
         )
-        
-    def add_iteration_marker(
-        self, 
-        iteration: int, 
-        max_iterations: int
-    ) -> Message:
+
+    def add_iteration_marker(self, iteration: int, max_iterations: int) -> Message:
         """
         Add an iteration marker for multi-step processing.
-        
+
         Args:
             iteration: Current iteration number
             max_iterations: Maximum number of iterations
-            
+
         Returns:
             The created Message object
         """
@@ -379,20 +390,19 @@ class ConversationSystem:
     def get_history(self) -> List[Dict[str, Any]]:
         """
         Get formatted conversation history for API consumption.
-        
+
         Returns:
             List of messages in API-compatible format
         """
         # Format for API consumption (remove extra fields)
         return [
-            {"role": msg.role, "content": msg.content}
-            for msg in self.session.messages
+            {"role": msg.role, "content": msg.content} for msg in self.session.messages
         ]
-        
+
     def get_formatted_messages(self) -> List[Dict[str, Any]]:
         """
         Get formatted messages optimized for API consumption.
-        
+
         Organizes messages by category priority and formats for the AI model.
         Returns:
             List of formatted message dictionaries
@@ -402,54 +412,64 @@ class ConversationSystem:
             MessageCategory.SYSTEM: [],
             MessageCategory.CONTEXT: [],
             MessageCategory.DIALOG: [],
-            MessageCategory.SYSTEM_OUTPUT: []
+            MessageCategory.SYSTEM_OUTPUT: [],
         }
-        
+
         # Populate categories
         for msg in self.session.messages:
             categorized[msg.category].append(msg)
-            
+
         # Create ordered list with proper priority
         messages = []
-        
+
         # System messages first (highest priority)
-        messages.extend([{"role": msg.role, "content": msg.content} 
-                        for msg in categorized[MessageCategory.SYSTEM]])
-        
+        messages.extend(
+            [
+                {"role": msg.role, "content": msg.content}
+                for msg in categorized[MessageCategory.SYSTEM]
+            ]
+        )
+
         # Context information next
-        messages.extend([{"role": msg.role, "content": msg.content} 
-                        for msg in categorized[MessageCategory.CONTEXT]])
-        
+        messages.extend(
+            [
+                {"role": msg.role, "content": msg.content}
+                for msg in categorized[MessageCategory.CONTEXT]
+            ]
+        )
+
         # Merge dialogue and system output by timestamp
         dialog_and_output = (
-            categorized[MessageCategory.DIALOG] + 
-            categorized[MessageCategory.SYSTEM_OUTPUT]
+            categorized[MessageCategory.DIALOG]
+            + categorized[MessageCategory.SYSTEM_OUTPUT]
         )
         dialog_and_output.sort(key=lambda msg: msg.timestamp)
-        
+
         # Add merged messages
         for msg in dialog_and_output:
             # --- START MODIFICATION: Handle 'tool' role ---
-            if msg.role == 'tool':
+            if msg.role == "tool":
                 # For 'tool' role, the API expects 'tool_call_id' and 'content'
                 api_msg = {
                     "role": "tool",
                     "tool_call_id": msg.metadata.get("tool_call_id", ""),
-                    "content": msg.content
+                    "content": msg.content,
                 }
                 # Optionally add 'name' if the action_type is available
-                if 'action_type' in msg.metadata:
-                    api_msg['name'] = msg.metadata['action_type']
+                if "action_type" in msg.metadata:
+                    api_msg["name"] = msg.metadata["action_type"]
                 messages.append(api_msg)
             else:
                 # Standard message format
                 messages.append({"role": msg.role, "content": msg.content})
             # --- END MODIFICATION ---
-        
+
         # If no messages, add a default user message to prevent API errors
         if not messages:
-            messages.append({"role": "user", "content": "Placeholder message to prevent API errors"})
-                
+            messages.append(
+                {"role": "user", "content": "Placeholder message to prevent API errors"}
+            )
+
         # --- Add logging here ---
         # try:
         #     # Use json.dumps for potentially complex content structures
@@ -458,26 +478,26 @@ class ConversationSystem:
         # except Exception as e:
         #     logger.error(f"Error logging formatted messages: {e}") # Log formatting errors too
         # --- End logging ---
-        
+
         return messages
-        
+
     def save(self) -> bool:
         """
         Save the current session through session manager.
-        
+
         Returns:
             True if successful, False otherwise
         """
         if not self._modified:
             return True
-            
+
         if self.session_manager:
             success = self.session_manager.save_session(self.session)
             if success:
                 self._modified = False
             return success
         return False
-        
+
     def load(self, session_id: str) -> bool:
         """
         Load a session by ID via session manager, or create a new one if it doesn't exist.
@@ -498,8 +518,7 @@ class ConversationSystem:
             self._modified = False
             # Update sent status
             self.system_prompt_sent = any(
-                msg.category == MessageCategory.SYSTEM
-                for msg in self.session.messages
+                msg.category == MessageCategory.SYSTEM for msg in self.session.messages
             )
             logger.debug(f"Loaded existing session: {session_id}")
             return True
@@ -510,9 +529,9 @@ class ConversationSystem:
             self._modified = True  # Mark as modified so it gets saved
             self.system_prompt_sent = False
             return True
-        
+
     def load_context_file(self, file_path: str) -> bool:
-        """ Load a context file into the conversation.
+        """Load a context file into the conversation.
 
         Args:
             file_path: Path to the file to load
@@ -530,13 +549,16 @@ class ConversationSystem:
             ]
 
             # Try project root if enabled
-            context_config = global_config.get('context', {})
-            if context_config.get('load_from_project', True):
+            context_config = global_config.get("context", {})
+            if context_config.get("load_from_project", True):
                 try:
                     import subprocess
+
                     result = subprocess.run(
-                        ['git', 'rev-parse', '--show-toplevel'],
-                        capture_output=True, text=True, cwd='.'
+                        ["git", "rev-parse", "--show-toplevel"],
+                        capture_output=True,
+                        text=True,
+                        cwd=".",
                     )
                     if result.returncode == 0:
                         project_root = Path(result.stdout.strip())
@@ -547,7 +569,7 @@ class ConversationSystem:
             # Try each location
             for full_path in search_locations:
                 if full_path.exists() and full_path.is_file():
-                    with open(full_path, 'r', encoding='utf-8') as f:
+                    with open(full_path, "r", encoding="utf-8") as f:
                         content = f.read()
 
                     self.add_context(content, source=file_path)
@@ -559,27 +581,27 @@ class ConversationSystem:
         except Exception as e:
             logger.error(f"Error loading context file {file_path}: {str(e)}")
             return False
-                
-            with open(full_path, 'r', encoding='utf-8') as f:
+
+            with open(full_path, "r", encoding="utf-8") as f:
                 content = f.read()
-                
+
             self.add_context(content, source=file_path)
             logger.info(f"Loaded context file: {file_path}")
             return True
         except Exception as e:
             logger.error(f"Error loading context file {file_path}: {str(e)}")
             return False
-        
+
     def list_context_files(self) -> List[Dict[str, Any]]:
-        """ List available context files in workspace and project.
+        """List available context files in workspace and project.
 
         Returns:
             List of file information dictionaries
         """
         from penguin.config import WORKSPACE_PATH, config as global_config
 
-        context_config = global_config.get('context', {})
-        load_from_project = context_config.get('load_from_project', True)
+        context_config = global_config.get("context", {})
+        load_from_project = context_config.get("load_from_project", True)
 
         files = []
 
@@ -587,48 +609,66 @@ class ConversationSystem:
         context_dir = Path(WORKSPACE_PATH) / "context"
         if context_dir.exists():
             for entry in context_dir.iterdir():
-                if entry.is_file() and not entry.name.startswith('.'):
-                    files.append({
-                        'path': f"context/{entry.name}",
-                        'name': entry.name,
-                        'location': 'workspace_context',
-                        'size': entry.stat().st_size,
-                        'modified': datetime.fromtimestamp(entry.stat().st_mtime).isoformat()
-                    })
+                if entry.is_file() and not entry.name.startswith("."):
+                    files.append(
+                        {
+                            "path": f"context/{entry.name}",
+                            "name": entry.name,
+                            "location": "workspace_context",
+                            "size": entry.stat().st_size,
+                            "modified": datetime.fromtimestamp(
+                                entry.stat().st_mtime
+                            ).isoformat(),
+                        }
+                    )
 
         # 2. List files from project root (if enabled)
         if load_from_project:
             try:
                 import subprocess
+
                 result = subprocess.run(
-                    ['git', 'rev-parse', '--show-toplevel'],
-                    capture_output=True, text=True, cwd='.'
+                    ["git", "rev-parse", "--show-toplevel"],
+                    capture_output=True,
+                    text=True,
+                    cwd=".",
                 )
                 if result.returncode == 0:
                     project_root = Path(result.stdout.strip())
-                    doc_files = ['README.md', 'ARCHITECTURE.md', 'architecture.md', 'AGENTS.md', 'PENGUIN.md', 'CONTRIBUTING.md']
+                    doc_files = [
+                        "README.md",
+                        "ARCHITECTURE.md",
+                        "architecture.md",
+                        "AGENTS.md",
+                        "PENGUIN.md",
+                        "CONTRIBUTING.md",
+                    ]
                     for doc_file in doc_files:
                         doc_path = project_root / doc_file
                         if doc_path.exists() and doc_path.is_file():
-                            if not any(f['name'] == doc_file for f in files):
-                                files.append({
-                                    'path': doc_file,
-                                    'name': doc_file,
-                                    'location': 'project_root',
-                                    'size': doc_path.stat().st_size,
-                                    'modified': datetime.fromtimestamp(doc_path.stat().st_mtime).isoformat()
-                                })
+                            if not any(f["name"] == doc_file for f in files):
+                                files.append(
+                                    {
+                                        "path": doc_file,
+                                        "name": doc_file,
+                                        "location": "project_root",
+                                        "size": doc_path.stat().st_size,
+                                        "modified": datetime.fromtimestamp(
+                                            doc_path.stat().st_mtime
+                                        ).isoformat(),
+                                    }
+                                )
             except Exception as e:
                 logger.debug(f"Could not list project files: {e}")
 
-        files.sort(key=lambda x: x['name'])
+        files.sort(key=lambda x: x["name"])
         return files
-        
+
     def reset(self) -> None:
         """Reset the conversation state with a new empty session."""
         self.session = Session()
         self.system_prompt_sent = False
         self._modified = True
-        
+
         if self.session_manager:
             self.session_manager.current_session = self.session

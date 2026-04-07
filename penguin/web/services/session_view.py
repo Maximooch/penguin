@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -23,6 +24,8 @@ VARIANT_KEY = "_opencode_variant_v1"
 
 _TODO_STATUS_VALUES = {"pending", "in_progress", "completed", "cancelled"}
 _TODO_PRIORITY_VALUES = {"high", "medium", "low"}
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_agent_mode(value: Any) -> Optional[str]:
@@ -147,6 +150,12 @@ def _load_session_view_only(manager: Any, session_id: str) -> Optional[Any]:
     try:
         return manager.load_session(session_id)
     except Exception:
+        logger.warning(
+            "session.view.load_failed session=%s manager=%s",
+            session_id,
+            hex(id(manager)),
+            exc_info=True,
+        )
         return None
     finally:
         if hasattr(manager, "current_session"):
@@ -183,16 +192,30 @@ def _build_session_info(core: Any, session: Any, manager: Any) -> dict[str, Any]
     session_dirs = getattr(core, "_opencode_session_directories", {})
 
     directory = ""
+    directory_source = "missing"
     if isinstance(session_dirs, dict):
         mapped = session_dirs.get(str(session.id))
         if isinstance(mapped, str) and mapped.strip():
             directory = mapped
+            directory_source = "session_map"
     if isinstance(metadata, dict) and isinstance(metadata.get("directory"), str):
         directory = metadata["directory"]
+        directory_source = "metadata"
     if not directory and runtime_dir:
         directory = str(runtime_dir)
+        directory_source = "runtime"
     if not directory:
         directory = str(Path.cwd())
+        directory_source = "cwd"
+
+    if directory_source in {"runtime", "cwd"}:
+        logger.warning(
+            "session.view.directory_fallback session=%s source=%s resolved=%s manager=%s",
+            getattr(session, "id", "unknown"),
+            directory_source,
+            directory,
+            hex(id(manager)),
+        )
 
     created = _iso_to_ms(getattr(session, "created_at", None))
     updated = _iso_to_ms(getattr(session, "last_active", None))
@@ -752,7 +775,14 @@ def get_session_diff(
     if by_file:
         return list(by_file.values())
 
-    return _git_fallback_diffs(_session_directory(core, session))
+    fallback_diffs = _git_fallback_diffs(_session_directory(core, session))
+    logger.warning(
+        "session.view.diff_git_fallback session=%s message_id=%s diff_count=%s",
+        session_id,
+        message_id or "",
+        len(fallback_diffs),
+    )
+    return fallback_diffs
 
 
 def list_session_infos(
@@ -1088,6 +1118,23 @@ def get_session_messages(
         return rows
 
     rows = legacy_rows
+
+    if rows:
+        first_id = ""
+        last_id = ""
+        first_info = rows[0].get("info") if isinstance(rows[0], dict) else None
+        last_info = rows[-1].get("info") if isinstance(rows[-1], dict) else None
+        if isinstance(first_info, dict):
+            first_id = str(first_info.get("id") or "")
+        if isinstance(last_info, dict):
+            last_id = str(last_info.get("id") or "")
+        logger.warning(
+            "session.view.messages_legacy_fallback session=%s count=%s first=%s last=%s",
+            session_id,
+            len(rows),
+            first_id,
+            last_id,
+        )
 
     if limit is not None and limit > 0:
         return rows[-limit:]

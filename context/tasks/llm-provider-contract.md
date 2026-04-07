@@ -28,6 +28,22 @@
 - `tests/test_api_client.py`
 - provider-specific test files under `tests/` and `penguin/llm/`
 
+## Design Inputs
+
+- `context/rationale/llm_provider_contract_design_patterns.md`
+
+Key architectural lessons to adopt from OpenCode:
+
+- one internal provider contract
+- one provider registry/resolver
+- one shared normalization/transform layer
+- one canonical stream/result grammar
+- one centralized usage/error/retry model
+
+Important constraint:
+
+- adopt the architecture, not the dependency; Penguin should remain provider-agnostic and local-inference-friendly rather than coupling itself to Vercel's AI SDK
+
 ## Progress Snapshot
 
 - [ ] Document current provider contract drift
@@ -51,13 +67,18 @@
 
 ### Phase 2 - Canonical Contract
 - [ ] Define provider-agnostic types/interfaces
+- [ ] Define one canonical request/result/event/error contract for all providers
+- [ ] Add a single provider registry/resolver instead of overlapping entry points
 - [ ] Centralize normalization where possible
+- [ ] Add a shared transform layer for request shaping and provider quirks
 - [ ] Keep provider-specific quirks at the adapter edge
+- [ ] Preserve a first-class `openai_compatible` path for local inference backends and compatible gateways
 
 ### Phase 3 - Validation
 - [ ] Add contract tests each provider must pass
 - [ ] Add explicit fixtures for streaming + tool-call edge cases
 - [ ] Add reasoning-token cases where relevant
+- [ ] Verify the same contract against native, gateway, and local-inference-compatible adapters
 
 ## Verification Targets
 
@@ -71,3 +92,5 @@
 
 - The enemy here is not diversity.
 - It is invisible inconsistency.
+- OpenCode is a useful reference because it centralizes provider execution, transforms, streaming semantics, and retry handling.
+- Penguin should copy those structural ideas without inheriting an external SDK lock-in.

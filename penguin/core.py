@@ -1822,7 +1822,7 @@ class PenguinCore:
                 )
                 aborted = bool(adapter_aborted) or aborted
             except Exception:
-                logger.debug("Failed to abort active TUI parts", exc_info=True)
+                logger.warning("Failed to abort active TUI parts", exc_info=True)
 
         tasks_map = getattr(self, "_opencode_process_tasks", None)
         if isinstance(tasks_map, dict):
@@ -1847,7 +1847,7 @@ class PenguinCore:
                     await adapter.on_stream_end(message_id, part_id)
                     aborted = True
                 except Exception:
-                    logger.debug(
+                    logger.warning(
                         "Failed to force-finalize aborted stream", exc_info=True
                     )
             state["active"] = False
@@ -3953,6 +3953,14 @@ class PenguinCore:
                 # mode a concurrent read/poll can temporarily repoint it.
                 event_data["session_id"] = "unknown"
                 event_data["conversation_id"] = "unknown"
+                logger.warning(
+                    "stream.event.unknown_scope request=%s event=%s agent=%s scope=%s chunk_preview=%r",
+                    execution_context.request_id if execution_context else "unknown",
+                    event.event_type,
+                    agent_id or "default",
+                    resolved_scope_id,
+                    (chunk or "")[:120],
+                )
 
             event_data["agent_id"] = agent_id
             event_data = self._filter_internal_markers_from_event(event_data)
@@ -4034,10 +4042,21 @@ class PenguinCore:
             agent_id=resolved_stream_scope_id
         )
         if message is None:
+            active_scopes = self._stream_manager.get_active_agents()
             allow_unscoped_fallback = not (
                 isinstance(resolved_session_id, str) and resolved_session_id
             ) and not (
                 isinstance(resolved_conversation_id, str) and resolved_conversation_id
+            )
+            logger.warning(
+                "stream.finalize.scope_miss request=%s session=%s conversation=%s agent=%s scope=%s active_scopes=%s allow_unscoped_fallback=%s",
+                execution_context.request_id if execution_context else "unknown",
+                resolved_session_id or "",
+                resolved_conversation_id or "",
+                resolved_agent_id,
+                resolved_stream_scope_id,
+                active_scopes,
+                allow_unscoped_fallback,
             )
             if allow_unscoped_fallback:
                 logical_agent_id = resolved_agent_id
@@ -4045,12 +4064,33 @@ class PenguinCore:
                     message, events = self._stream_manager.finalize(
                         agent_id=logical_agent_id
                     )
+                    if message is not None:
+                        logger.warning(
+                            "stream.finalize.fallback_used request=%s session=%s conversation=%s requested_scope=%s fallback_scope=%s",
+                            execution_context.request_id
+                            if execution_context
+                            else "unknown",
+                            resolved_session_id or "",
+                            resolved_conversation_id or "",
+                            resolved_stream_scope_id,
+                            logical_agent_id,
+                        )
                 if message is None:
-                    active_scopes = self._stream_manager.get_active_agents()
                     if len(active_scopes) == 1:
                         message, events = self._stream_manager.finalize(
                             agent_id=active_scopes[0]
                         )
+                        if message is not None:
+                            logger.warning(
+                                "stream.finalize.single_active_fallback request=%s session=%s conversation=%s requested_scope=%s fallback_scope=%s",
+                                execution_context.request_id
+                                if execution_context
+                                else "unknown",
+                                resolved_session_id or "",
+                                resolved_conversation_id or "",
+                                resolved_stream_scope_id,
+                                active_scopes[0],
+                            )
 
         if message is None:
             return None
@@ -4184,6 +4224,13 @@ class PenguinCore:
                 # Avoid leaking a stale shared current_session into UI routing.
                 event_data["session_id"] = "unknown"
                 event_data["conversation_id"] = "unknown"
+                logger.warning(
+                    "stream.finalize.unknown_scope request=%s agent=%s scope=%s active_scopes=%s",
+                    execution_context.request_id if execution_context else "unknown",
+                    resolved_agent_id,
+                    resolved_stream_scope_id,
+                    self._stream_manager.get_active_agents(),
+                )
 
             event_data["agent_id"] = resolved_agent_id
             event_data = self._filter_internal_markers_from_event(event_data)
@@ -6007,12 +6054,14 @@ class PenguinCore:
             messages.pop(message_id, None)
             transcript["order"] = [item for item in order if item != message_id]
 
-        try:
-            manager.mark_session_modified(session_id)
-            if should_save:
-                manager.save_session(session)
-        except Exception:
-            logger.debug("Unable to persist OpenCode transcript event", exc_info=True)
+            try:
+                manager.mark_session_modified(session_id)
+                if should_save:
+                    manager.save_session(session)
+            except Exception:
+                logger.warning(
+                    "Unable to persist OpenCode transcript event", exc_info=True
+                )
 
     # ------------------------------------------------------------------
     # OpenCode TUI Adapter Integration

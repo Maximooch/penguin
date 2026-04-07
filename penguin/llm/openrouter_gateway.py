@@ -171,6 +171,64 @@ class OpenRouterGateway:
                 f"Request headers configured: {list(self.extra_headers.keys())}"
             )
 
+    def _stream_timeout_seconds(self, env_name: str, default: float) -> float:
+        """Read a positive streaming timeout from the environment."""
+        raw_value = os.getenv(env_name)
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            return default
+        try:
+            parsed = float(raw_value.strip())
+        except Exception:
+            self.logger.warning(
+                "Invalid %s=%r; using default timeout %ss",
+                env_name,
+                raw_value,
+                default,
+            )
+            return default
+        if parsed <= 0:
+            self.logger.warning(
+                "Non-positive %s=%r; using default timeout %ss",
+                env_name,
+                raw_value,
+                default,
+            )
+            return default
+        return parsed
+
+    def _stream_chunk_timeout_seconds(self) -> float:
+        """Return maximum wait for the next streaming chunk."""
+        return self._stream_timeout_seconds(
+            "PENGUIN_OPENROUTER_STREAM_CHUNK_TIMEOUT_SECONDS",
+            75.0,
+        )
+
+    def _stream_total_timeout_seconds(self) -> float:
+        """Return maximum total duration for one streaming response."""
+        return self._stream_timeout_seconds(
+            "PENGUIN_OPENROUTER_STREAM_TOTAL_TIMEOUT_SECONDS",
+            300.0,
+        )
+
+    async def _next_stream_item(
+        self,
+        iterator: AsyncIterator[Any],
+        *,
+        wait_timeout: float,
+        total_timeout: float,
+        started_at: float,
+        phase: str,
+    ) -> Any:
+        """Wait for the next stream item with chunk and total timeout guards."""
+        elapsed = asyncio.get_running_loop().time() - started_at
+        remaining_total = max(total_timeout - elapsed, 0.0)
+        if remaining_total <= 0:
+            raise TimeoutError(
+                f"{phase} exceeded total timeout after {total_timeout:.1f}s"
+            )
+        effective_timeout = min(wait_timeout, remaining_total)
+        return await asyncio.wait_for(iterator.__anext__(), timeout=effective_timeout)
+
     def _to_dict(self, value: Any) -> Dict[str, Any]:
         if isinstance(value, dict):
             return value
@@ -875,6 +933,9 @@ class OpenRouterGateway:
                 # self.logger.info(f"[OpenRouterGateway] Starting stream processing loop [{request_id}].")
                 # debug_stream_start(request_id, debug_config)
                 chunk_index = 0
+                stream_started_at = asyncio.get_running_loop().time()
+                chunk_timeout_seconds = self._stream_chunk_timeout_seconds()
+                total_timeout_seconds = self._stream_total_timeout_seconds()
                 # Separate accumulators for reasoning and content
                 _gateway_accumulated_reasoning = ""
                 _gateway_accumulated_content = ""
@@ -882,8 +943,32 @@ class OpenRouterGateway:
                 # Track finish_reason for error and truncation detection
                 sdk_last_finish_reason: Optional[str] = None
                 sdk_stream_error: Optional[Dict[str, Any]] = None
+                completion_iter = completion.__aiter__()
 
-                async for chunk in completion:
+                while True:
+                    try:
+                        chunk = await self._next_stream_item(
+                            completion_iter,
+                            wait_timeout=chunk_timeout_seconds,
+                            total_timeout=total_timeout_seconds,
+                            started_at=stream_started_at,
+                            phase="OpenRouter SDK stream",
+                        )
+                    except StopAsyncIteration:
+                        break
+                    except TimeoutError as exc:
+                        self.logger.warning(
+                            "[OpenRouterGateway] SDK stream stalled model=%s chunk_timeout=%ss total_timeout=%ss detail=%s",
+                            self.model_config.model,
+                            chunk_timeout_seconds,
+                            total_timeout_seconds,
+                            exc,
+                        )
+                        return (
+                            f"[Error: OpenRouter stream stalled for {self.model_config.model}. "
+                            "No chunks were received before timeout. Try again or switch models.]"
+                        )
+
                     self._set_last_usage(getattr(chunk, "usage", None))
                     raw_choices = getattr(chunk, "choices", None)
                     choice = (
@@ -1450,6 +1535,9 @@ class OpenRouterGateway:
         stream_error: Optional[Dict[str, Any]] = None
         interrupted_reason: Optional[str] = None
         generation_id: Optional[str] = None
+        stream_started_at = asyncio.get_running_loop().time()
+        chunk_timeout_seconds = self._stream_chunk_timeout_seconds()
+        total_timeout_seconds = self._stream_total_timeout_seconds()
 
         async with client.stream("POST", url, headers=headers, json=params) as response:
             if response.status_code != 200:
@@ -1460,8 +1548,32 @@ class OpenRouterGateway:
                 return self._parse_openrouter_error(error_text, response.status_code)
 
             generation_id = self._extract_generation_id_from_headers(response.headers)
+            line_iter = response.aiter_lines().__aiter__()
 
-            async for line in response.aiter_lines():
+            while True:
+                try:
+                    line = await self._next_stream_item(
+                        line_iter,
+                        wait_timeout=chunk_timeout_seconds,
+                        total_timeout=total_timeout_seconds,
+                        started_at=stream_started_at,
+                        phase="OpenRouter direct stream",
+                    )
+                except StopAsyncIteration:
+                    break
+                except TimeoutError as exc:
+                    self.logger.warning(
+                        "[OpenRouterGateway] Direct stream stalled model=%s chunk_timeout=%ss total_timeout=%ss detail=%s",
+                        self.model_config.model,
+                        chunk_timeout_seconds,
+                        total_timeout_seconds,
+                        exc,
+                    )
+                    return (
+                        f"[Error: OpenRouter stream stalled for {self.model_config.model}. "
+                        "No chunks were received before timeout. Try again or switch models.]"
+                    )
+
                 if not line.strip():
                     continue
 
