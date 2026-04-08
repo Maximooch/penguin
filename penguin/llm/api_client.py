@@ -474,6 +474,10 @@ class APIClient:
             return "auth"
         if "status=400" in detail or "status=404" in detail or "status=422" in detail:
             return "upstream_request"
+        if "error code: 400" in detail:
+            return "upstream_request"
+        if "maximum context length" in detail or "requested about" in detail:
+            return "upstream_request"
         if "status=429" in detail:
             return "rate_limit"
         if "status=500" in detail or "status=502" in detail or "status=503" in detail:
@@ -490,7 +494,7 @@ class APIClient:
         elif category == "network":
             reason = "LLM network request failed"
         elif category == "upstream_request":
-            reason = "LLM upstream rejected the request"
+            reason = "LLM upstream rejected the request, likely due to context or output token limits"
         elif category == "rate_limit":
             reason = "LLM upstream rate-limited this request"
         elif category == "upstream_unavailable":
@@ -534,6 +538,7 @@ class APIClient:
             stream if stream is not None else self.model_config.streaming_enabled
         )
         prepared_messages = self._prepare_messages_with_system_prompt(messages)
+        estimated_input_tokens: Optional[int] = None
 
         try:
             from penguin.system.execution_context import get_current_execution_context
@@ -576,6 +581,7 @@ class APIClient:
             # <<<--- Add Token Count Logging ---<<<
             try:
                 final_token_count = self.count_tokens(prepared_messages)
+                estimated_input_tokens = final_token_count
                 self.logger.info(
                     f"[Request:{request_id_api}] Estimated token count for prepared messages: {final_token_count}"
                 )
@@ -618,10 +624,47 @@ class APIClient:
                 f"[APIClient:{request_id_api}] PRE-CALL TO HANDLER: use_streaming={use_streaming}, effective_callback is {effective_callback}"
             )
 
+            effective_max_output_tokens = (
+                max_output_tokens or self.model_config.max_output_tokens
+            )
+            raw_context_limit = getattr(
+                self.model_config, "max_context_window_tokens", None
+            )
+            try:
+                context_limit_int = (
+                    int(raw_context_limit)
+                    if raw_context_limit is not None and int(raw_context_limit) > 0
+                    else None
+                )
+            except Exception:
+                context_limit_int = None
+            if (
+                context_limit_int is not None
+                and estimated_input_tokens is not None
+                and estimated_input_tokens > 0
+            ):
+                available_output_tokens = max(
+                    context_limit_int - estimated_input_tokens - 512,
+                    1,
+                )
+                if (
+                    effective_max_output_tokens is None
+                    or effective_max_output_tokens > available_output_tokens
+                ):
+                    self.logger.warning(
+                        "[APIClient:%s] Clamping max_output_tokens from %s to %s "
+                        "based on context_limit=%s estimated_input_tokens=%s",
+                        request_id_api,
+                        effective_max_output_tokens,
+                        available_output_tokens,
+                        context_limit_int,
+                        estimated_input_tokens,
+                    )
+                    effective_max_output_tokens = available_output_tokens
+
             response_text = await self.client_handler.get_response(
                 messages=prepared_messages,
-                max_output_tokens=max_output_tokens
-                or self.model_config.max_output_tokens,
+                max_output_tokens=effective_max_output_tokens,
                 temperature=temperature
                 if temperature is not None
                 else self.model_config.temperature,
