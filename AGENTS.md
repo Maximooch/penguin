@@ -34,3 +34,5 @@ Notes
 - Cursor rules: this repo has .cursorrules at root; agents should adhere to it.
 - Copilot rules: none found under .github/copilot-instructions.md.
 - Entry points: penguin (CLI), penguin-web (API/web), see pyproject [project.scripts].
+- Verification scripts and local web surface checks should prefer port `9000` by default unless another non-reserved port is explicitly needed.
+- Avoid `5***` ports for ad hoc local verification because some are reserved by Apple on macOS.

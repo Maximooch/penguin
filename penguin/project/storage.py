@@ -252,12 +252,17 @@ class ProjectStorage:
         """List all projects, optionally filtered by status."""
         query = "SELECT * FROM projects"
         params = []
-        
+
         if status:
             query += " WHERE status = ?"
             params.append(status)
-        
+
         query += " ORDER BY created_at DESC"
+
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+            return [self._row_to_project(row) for row in rows]
+
     # Task operations
 
     def create_task(self, task: Task) -> None:

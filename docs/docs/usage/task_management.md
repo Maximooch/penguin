@@ -5,23 +5,31 @@ This guide focuses specifically on task management within Penguin's project syst
 ## Task Lifecycle
 
 ### Task States
-Tasks progress through several states during their lifecycle:
+Tasks now use a more explicit lifecycle than the older pending/in-progress shorthand.
 
-- **Pending** - Created but not yet started
-- **In Progress** - Currently being worked on
-- **Completed** - Successfully finished
-- **Failed** - Encountered an error and could not complete
-- **Cancelled** - Manually cancelled before completion
-- **Paused** - Temporarily suspended (can be resumed)
+Current task statuses include:
+
+- **Active** - schedulable / ready for work
+- **Running** - actively executing
+- **Pending Review** - execution reached a review gate, not final completion
+- **Completed** - approved terminal state
+- **Failed** - execution or validation failed
+- **Cancelled** - manually cancelled
+- **Archived** - retained but not active work
+
+Tasks also carry a separate **phase** (`TaskPhase`) for ITUV-style execution progress such as `implement`, `test`, `use`, `verify`, and `done`.
 
 ### State Transitions
-```
-Pending → In Progress → Completed
-    ↓         ↓           ↗
-    ↓    → Failed      ↗
-    ↓         ↓       ↗
-    → Cancelled ←→ Paused
-```
+Think of task status and task phase as related but distinct:
+
+- status answers **where the task is in its lifecycle**
+- phase answers **where the task is in execution/verification flow**
+
+For concrete, currently supported CLI commands, prefer:
+- `docs/docs/usage/cli_commands.md`
+- `docs/docs/usage/project_management.md`
+
+This page mixes current concepts with illustrative patterns. Many examples below are workflow guidance, not a promise that every shown CLI flag already exists as a literal command.
 
 ## Creating Effective Tasks
 

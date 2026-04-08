@@ -1,4 +1,4 @@
-# Penguin CLI – Command Reference (v0.4.x)
+# Penguin CLI – Command Reference (v0.6.x)
 
 Penguin’s CLI supports both traditional sub‑commands (via Typer) and rich in‑chat commands inside the interactive session. This page documents what’s currently implemented and commonly used.
 
@@ -67,11 +67,11 @@ Tasks are namespaced under a project:
 |---------|---------|
 | `penguin project task create <PROJECT_ID> <TITLE>` | Create a task |
 | `penguin project task list [<PROJECT_ID>] [--status/-s STATUS]` | List tasks (optionally filtered) |
-| `penguin project task start <TASK_ID>` | Mark task **running** |
-| `penguin project task complete <TASK_ID>` | Mark task **completed** |
+| `penguin project task start <TASK_ID>` | Move task into the **active** state |
+| `penguin project task complete <TASK_ID>` | Approve a task that is **pending review** and mark it completed |
 | `penguin project task delete <TASK_ID> [--force/-f]` | Delete task |
 
-Status values can be `pending`, `active`, `completed`, or `failed`.
+Status filters are case-insensitive and use the current task lifecycle values: `active`, `running`, `pending_review`, `completed`, `cancelled`, `failed`, and `archived`.
 
 ### `config`
 Manage the Penguin configuration file and first-run setup wizard.
@@ -151,6 +151,12 @@ Additional context management commands:
 /run continuous ["Name" [description]]   # Continuous Run Mode (alias: --247)
 /run stop                                # Stop current Run Mode execution (if supported)
 ```
+
+When Run Mode needs human input, the interactive CLI now surfaces both:
+- `clarification_needed` status
+- `clarification_answered` acknowledgement
+
+That keeps the pause/resume loop visible instead of making the CLI look stuck.
 
 ## Examples
 ```bash

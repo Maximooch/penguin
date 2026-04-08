@@ -434,11 +434,15 @@ async def _initialize_core_components_globally(
     logger.info("Initializing core components globally...")
     init_start_time = time.time()
 
+    workspace_source = workspace_override or os.environ.get("PENGUIN_WORKSPACE")
+    if workspace_source:
+        _set_cli_workspace_path(workspace_source)
+
     _loaded_config = Config.load_config()  # Use Config object with parsed agent_personas
 
-    effective_workspace = (
-        workspace_override or WORKSPACE_PATH
-    )  # WORKSPACE_PATH from penguin.config
+    effective_workspace = Path(
+        workspace_override or os.environ.get("PENGUIN_WORKSPACE", str(WORKSPACE_PATH))
+    ).expanduser().resolve()
     logger.debug(f"Effective workspace path for global init: {effective_workspace}")
     # Note: PenguinCore itself uses WORKSPACE_PATH from config for ProjectManager.
     # A more direct way to override this in Core would be needed if ProjectManager path needs to change.
@@ -759,6 +763,71 @@ async def _run_interactive_chat():
 _previous_main_callback = app.registered_callback
 
 
+def _set_cli_workspace_path(workspace_path: Union[str, Path]) -> Path:
+    """Normalize and propagate a CLI workspace override before core initialization."""
+    global WORKSPACE_PATH
+
+    resolved_workspace = Path(workspace_path).expanduser().resolve()
+    os.environ["PENGUIN_WORKSPACE"] = str(resolved_workspace)
+    WORKSPACE_PATH = resolved_workspace
+
+    try:
+        import importlib
+
+        config_module = importlib.import_module("penguin.config")
+        config_module.WORKSPACE_PATH = resolved_workspace
+    except Exception:
+        logger.debug("Unable to sync workspace override into penguin.config", exc_info=True)
+
+    return resolved_workspace
+
+
+def _preconfigure_cli_environment(
+    workspace: Optional[Path],
+    project: Optional[str],
+    root: Optional[str],
+) -> Tuple[Optional[Path], Path]:
+    """Normalize root/workspace env hints before config- and core-level initialization."""
+    workspace_source: Union[str, Path] = workspace or os.environ.get(
+        "PENGUIN_WORKSPACE", WORKSPACE_PATH
+    )
+    resolved_workspace = _set_cli_workspace_path(workspace_source)
+
+    current_cwd = Path.cwd().resolve()
+    os.environ["PENGUIN_CWD"] = str(current_cwd)
+    os.environ.pop("PENGUIN_PROJECT_ROOT", None)
+
+    resolved_project_path: Optional[Path] = None
+    if project:
+        candidates = []
+        try:
+            candidates.append(Path(project).expanduser())
+        except Exception:
+            pass
+        candidates.append(resolved_workspace / "projects" / project)
+
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_dir():
+                    resolved_project_path = candidate.resolve()
+                    os.environ["PENGUIN_PROJECT_ROOT"] = str(resolved_project_path)
+                    os.environ["PENGUIN_CWD"] = str(resolved_project_path)
+                    logger.info("CLI env: PENGUIN_PROJECT_ROOT=%s", resolved_project_path)
+                    break
+            except Exception:
+                continue
+
+    root_mode = (root or "project").lower()
+    if root_mode in ("project", "workspace"):
+        os.environ["PENGUIN_WRITE_ROOT"] = root_mode
+        if root_mode == "workspace":
+            os.environ["PENGUIN_CWD"] = str(resolved_workspace)
+        elif resolved_project_path is not None:
+            os.environ["PENGUIN_CWD"] = str(resolved_project_path)
+
+    return resolved_project_path, resolved_workspace
+
+
 @app.callback(invoke_without_command=True)
 def main_entry(
     ctx: typer.Context,
@@ -845,42 +914,15 @@ def main_entry(
 
     # Preconfigure environment for root/project overrides so that even
     # early-return paths (e.g. launching the TUI) honour the requested roots.
-    resolved_project_path: Optional[Path] = None
-    if project:
-        # Try as-is, then workspace/projects/<name>
-        candidates = []
-        try:
-            candidates.append(Path(project).expanduser())
-        except Exception:
-            pass
-        candidates.append(Path(WORKSPACE_PATH) / "projects" / project)
-        for candidate in candidates:
-            try:
-                if candidate.exists() and candidate.is_dir():
-                    resolved_project_path = candidate.resolve()
-                    os.environ["PENGUIN_PROJECT_ROOT"] = str(resolved_project_path)
-                    os.environ.setdefault("PENGUIN_CWD", str(resolved_project_path))
-                    logger.info(
-                        "CLI env: PENGUIN_PROJECT_ROOT=%s", resolved_project_path
-                    )
-                    break
-            except Exception:
-                continue
+    resolved_project_path, _resolved_workspace = _preconfigure_cli_environment(
+        workspace=workspace,
+        project=project,
+        root=root,
+    )
 
     if root:
         root_mode = root.lower()
-        if root_mode in ("project", "workspace"):
-            os.environ["PENGUIN_WRITE_ROOT"] = root_mode
-            if root_mode == "workspace":
-                os.environ["PENGUIN_CWD"] = str(WORKSPACE_PATH)
-            elif root_mode == "project" and resolved_project_path is not None:
-                os.environ["PENGUIN_CWD"] = str(resolved_project_path)
-            logger.info(
-                "CLI env: PENGUIN_WRITE_ROOT=%s PENGUIN_CWD=%s",
-                root_mode,
-                os.environ.get("PENGUIN_CWD"),
-            )
-        else:
+        if root_mode not in ("project", "workspace"):
             console.print(
                 f"[yellow]Warning: unknown root '{root}'. Expected 'project' or 'workspace'.[/yellow]"
             )

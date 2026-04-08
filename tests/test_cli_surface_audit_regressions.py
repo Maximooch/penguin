@@ -1,4 +1,6 @@
 from datetime import datetime
+import importlib
+import os
 
 import click
 from types import SimpleNamespace
@@ -177,4 +179,42 @@ def test_task_complete_docstring_and_message_reflect_review_approval():
     assert "approved" in printed.lower()
     assert "bypass" not in (cli_module.task_complete.__doc__ or "").lower()
     assert "pending review" in (cli_module.task_complete.__doc__ or "").lower()
+
+
+def test_preconfigure_cli_environment_clears_stale_root_hints(tmp_path, monkeypatch):
+    config_module = importlib.import_module("penguin.config")
+    from penguin.cli import cli as cli_module
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    stale_project_root = tmp_path / "stale-project"
+    stale_project_root.mkdir()
+
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setenv("PENGUIN_CWD", str(stale_project_root))
+    monkeypatch.setenv("PENGUIN_PROJECT_ROOT", str(stale_project_root))
+    monkeypatch.setenv("PENGUIN_WRITE_ROOT", "project")
+
+    original_cli_workspace = cli_module.WORKSPACE_PATH
+    original_config_workspace = config_module.WORKSPACE_PATH
+    try:
+        resolved_project_path, resolved_workspace = cli_module._preconfigure_cli_environment(
+            workspace=workspace,
+            project=None,
+            root=None,
+        )
+
+        assert resolved_project_path is None
+        assert resolved_workspace == workspace.resolve()
+        assert os.environ["PENGUIN_CWD"] == str(repo_root.resolve())
+        assert os.environ["PENGUIN_WORKSPACE"] == str(workspace.resolve())
+        assert os.environ["PENGUIN_WRITE_ROOT"] == "project"
+        assert "PENGUIN_PROJECT_ROOT" not in os.environ
+        assert cli_module.WORKSPACE_PATH == workspace.resolve()
+        assert config_module.WORKSPACE_PATH == workspace.resolve()
+    finally:
+        cli_module.WORKSPACE_PATH = original_cli_workspace
+        config_module.WORKSPACE_PATH = original_config_workspace
 
