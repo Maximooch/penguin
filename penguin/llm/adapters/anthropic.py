@@ -12,6 +12,7 @@ from anthropic.types import ContentBlock, MessageParam  # type: ignore
 from anthropic import AsyncAnthropic, Anthropic
 
 from .base import BaseAdapter
+from ..contracts import LLMUsage
 from ..model_config import ModelConfig
 
 from penguin.constants import get_default_max_output_tokens
@@ -34,6 +35,7 @@ class AnthropicAdapter(BaseAdapter):
 
         # Initialize async client for message creation
         self.async_client = AsyncAnthropic(api_key=self.api_key)
+        self._last_usage: Dict[str, Any] = {}
 
         # Add a logger for the adapter
         self.logger = logging.getLogger(__name__)
@@ -41,6 +43,45 @@ class AnthropicAdapter(BaseAdapter):
     @property
     def provider(self) -> str:
         return "anthropic"
+
+    def _usage_to_dict(self, usage: Any) -> Dict[str, Any]:
+        if isinstance(usage, dict):
+            return usage
+        if hasattr(usage, "model_dump"):
+            try:
+                dumped = usage.model_dump()
+                if isinstance(dumped, dict):
+                    return dumped
+            except Exception:
+                pass
+        try:
+            dumped = vars(usage)
+            if isinstance(dumped, dict):
+                return dumped
+        except Exception:
+            pass
+        return {}
+
+    def _set_last_usage(self, usage: Any) -> None:
+        payload = self._usage_to_dict(usage)
+        if not payload:
+            return
+        normalized = LLMUsage.from_dict(
+            {
+                "input_tokens": payload.get("input_tokens"),
+                "output_tokens": payload.get("output_tokens"),
+                "cache_read_tokens": payload.get("cache_read_input_tokens"),
+                "cache_write_tokens": payload.get("cache_creation_input_tokens"),
+                "total_tokens": payload.get("total_tokens"),
+            }
+        )
+        self._last_usage = normalized.to_dict()
+
+    def get_last_usage(self) -> Dict[str, Any]:
+        """Return normalized usage from the most recent Anthropic request."""
+        if not isinstance(getattr(self, "_last_usage", None), dict):
+            return {}
+        return dict(self._last_usage)
 
     async def create_message(
         self,
@@ -401,6 +442,8 @@ class AnthropicAdapter(BaseAdapter):
                     f"Could not get final message object from stream: {e}"
                 )
 
+            self._set_last_usage(usage_info)
+
             # Log streaming stats
             total_stream_time = time.time() - stream_start_time
             self.logger.info(
@@ -583,6 +626,7 @@ class AnthropicAdapter(BaseAdapter):
             if hasattr(response, "content") and hasattr(response, "stop_reason"):
                 stop_reason = response.stop_reason
                 usage = getattr(response, "usage", None)
+                self._set_last_usage(usage)
 
                 # Extract text from content blocks
                 text_content = []

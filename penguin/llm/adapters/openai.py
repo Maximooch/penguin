@@ -8,7 +8,7 @@ import logging
 import mimetypes
 import os
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
 
 import httpx  # type: ignore
 import tiktoken  # type: ignore
@@ -25,6 +25,7 @@ from penguin.web.services.provider_credentials import (
 )
 
 from ..api_client import ConnectionPoolManager
+from ..contracts import LLMUsage
 from ..model_config import ModelConfig
 from .base import BaseAdapter
 
@@ -93,6 +94,7 @@ class OpenAIAdapter(BaseAdapter):
             base_url=model_config.api_base or None,
             default_headers=default_headers or None,
         )
+        self._last_usage: Dict[str, Any] = {}
         self._reset_tool_call_state()
 
     @property
@@ -121,6 +123,41 @@ class OpenAIAdapter(BaseAdapter):
         )
         self._reset_tool_call_state()
         return dict(tool_call) if isinstance(tool_call, dict) else None
+
+    def _normalize_usage(self, usage: Any) -> Dict[str, Any]:
+        payload = self._to_dict(usage)
+        if not payload:
+            return {}
+
+        input_details = self._to_dict(payload.get("input_tokens_details"))
+        output_details = self._to_dict(payload.get("output_tokens_details"))
+        normalized = LLMUsage.from_dict(
+            {
+                "input_tokens": payload.get("input_tokens"),
+                "output_tokens": payload.get("output_tokens"),
+                "reasoning_tokens": output_details.get("reasoning_tokens")
+                or payload.get("reasoning_tokens"),
+                "cache_read_tokens": input_details.get("cached_tokens")
+                or payload.get("input_cache_read_tokens"),
+                "cache_write_tokens": payload.get("input_cache_write_tokens"),
+                "total_tokens": payload.get("total_tokens"),
+                "cost": payload.get("cost")
+                or payload.get("total_cost")
+                or payload.get("usd"),
+            }
+        )
+        return normalized.to_dict()
+
+    def _set_last_usage(self, usage: Any) -> None:
+        normalized = self._normalize_usage(usage)
+        if normalized:
+            self._last_usage = normalized
+
+    def get_last_usage(self) -> Dict[str, Any]:
+        """Return normalized usage from the latest request."""
+        if not isinstance(self._last_usage, dict):
+            return {}
+        return dict(self._last_usage)
 
     def _to_dict(self, value: Any) -> Dict[str, Any]:
         if isinstance(value, dict):
@@ -408,6 +445,7 @@ class OpenAIAdapter(BaseAdapter):
 
         # Non-streaming
         resp = await self.client.responses.create(**request_params)
+        self._set_last_usage(getattr(resp, "usage", None))
         tool_call = self._extract_function_call_from_response_object(resp)
         if tool_call:
             self._last_tool_call = tool_call
@@ -1316,7 +1354,13 @@ class OpenAIAdapter(BaseAdapter):
 
             with PILImage.open(image_path) as img:
                 max_size = (1024, 1024)
-                img.thumbnail(max_size, PILImage.LANCZOS)
+                resampling_namespace = getattr(PILImage, "Resampling", PILImage)
+                resample_filter = getattr(
+                    PILImage,
+                    "LANCZOS",
+                    getattr(resampling_namespace, "LANCZOS"),
+                )
+                img.thumbnail(max_size, resample_filter)
                 if img.mode != "RGB":
                     img = img.convert("RGB")
                 buffer = io.BytesIO()
@@ -1366,6 +1410,7 @@ class OpenAIAdapter(BaseAdapter):
                                 "reasoning",
                             )
                 final = await stream.get_final_response()
+                self._set_last_usage(getattr(final, "usage", None))
                 tool_call = self._extract_function_call_from_response_object(final)
                 if tool_call:
                     self._last_tool_call = tool_call
@@ -1446,6 +1491,8 @@ class OpenAIAdapter(BaseAdapter):
                             completed_text = done_text
                     elif etype == "response.completed":
                         response_obj = data.get("response")
+                        if isinstance(response_obj, dict):
+                            self._set_last_usage(response_obj.get("usage"))
                         extracted = self._extract_text_from_response_object(
                             response_obj
                         )
@@ -1473,7 +1520,10 @@ class OpenAIAdapter(BaseAdapter):
         return "".join(accumulated_content)
 
     async def _safe_invoke_callback(
-        self, cb: Callable[[str], None], chunk: str, message_type: str
+        self,
+        cb: Callable[..., Any],
+        chunk: str,
+        message_type: str,
     ) -> None:
         """Invoke provided callback safely with support for legacy signatures."""
         try:
@@ -1481,10 +1531,11 @@ class OpenAIAdapter(BaseAdapter):
 
             if asyncio.iscoroutinefunction(cb):
                 params = list(inspect.signature(cb).parameters.keys())
+                callback = cast(Callable[..., Any], cb)
                 if len(params) >= 2:
-                    await cb(chunk, message_type)
+                    await callback(chunk, message_type)
                 else:
-                    await cb(chunk)
+                    await callback(chunk)
             else:
                 loop = asyncio.get_event_loop()
                 params = []
@@ -1495,9 +1546,15 @@ class OpenAIAdapter(BaseAdapter):
                 except Exception:
                     params = []
                 if len(params) >= 2:
-                    await loop.run_in_executor(None, cb, chunk, message_type)
+                    await loop.run_in_executor(
+                        None,
+                        lambda: cast(Callable[..., Any], cb)(chunk, message_type),
+                    )
                 else:
-                    await loop.run_in_executor(None, cb, chunk)
+                    await loop.run_in_executor(
+                        None,
+                        lambda: cast(Callable[..., Any], cb)(chunk),
+                    )
         except Exception as e:
             logger.error(f"Error in stream callback: {e}")
 

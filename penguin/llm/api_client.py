@@ -20,6 +20,8 @@ import tiktoken  # type: ignore
 from PIL import Image  # type: ignore
 
 from .model_config import ModelConfig
+from .provider_registry import ProviderRegistry
+from .provider_transform import apply_model_config_transforms
 from penguin.constants import get_default_max_history_tokens
 from penguin.utils.callbacks import adapt_stream_callback
 from .adapters import get_adapter  # Keep for native preference
@@ -279,6 +281,10 @@ class APIClient:
         self.system_prompt = None
         self.logger = logging.getLogger(__name__)
         self.client_handler = None  # Will be set based on preference
+        self.provider_registry = ProviderRegistry(
+            native_adapter_factory=get_adapter,
+            litellm_gateway_loader=load_litellm_gateway_class,
+        )
 
         self.logger.info(
             f"Initializing APIClient for model: {model_config.model}, "
@@ -286,64 +292,28 @@ class APIClient:
             f"Preference: {model_config.client_preference}"
         )
 
-        # --- Instantiate the correct handler ---
-        if model_config.client_preference == "litellm":
-            try:
-                LiteLLMGateway = load_litellm_gateway_class(
-                    "client_preference='litellm'"
-                )
-                # LiteLLM gateway handles API keys/base internally based on model_config
-                self.client_handler = LiteLLMGateway(model_config)
-                self.logger.info(f"Using LiteLLMGateway for {model_config.model}")
-            except RuntimeError as e:
-                self.logger.error("LiteLLM support unavailable: %s", e)
-                raise RuntimeError(str(e)) from e
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to initialize LiteLLMGateway: {e}", exc_info=True
-                )
-                raise ValueError(f"Could not initialize LiteLLMGateway: {e}") from e
-
-        elif model_config.client_preference == "openrouter":
-            try:
-                # Lazy import OpenRouterGateway to avoid import overhead
-                from .openrouter_gateway import OpenRouterGateway
-
-                # Initialize OpenRouter gateway with model_config
-                self.client_handler = OpenRouterGateway(model_config)
-                self.logger.info(f"Using OpenRouterGateway for {model_config.model}")
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to initialize OpenRouterGateway: {e}", exc_info=True
-                )
-                raise ValueError(f"Could not initialize OpenRouterGateway: {e}") from e
-
-        elif model_config.client_preference == "native":
-            try:
-                # Get native adapter
-                # Note: Native adapters might expect simpler model names in model_config.model
-                self.client_handler = get_adapter(model_config.provider, model_config)
-                if not self.client_handler:
-                    raise ValueError(
-                        f"No native adapter found for provider: {model_config.provider}"
-                    )
-                self.logger.info(
-                    f"Using native adapter for provider: {model_config.provider} "
-                    f"(Model: {model_config.model})"
-                )
-                # Native adapter might need API key directly (handled by get_adapter?)
-                # self.api_key = model_config.api_key # Store if needed separately? get_adapter should handle it.
-
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to initialize native adapter for {model_config.provider}: {e}",
-                    exc_info=True,
-                )
-                raise ValueError(f"Could not initialize native adapter: {e}") from e
-        else:
-            raise ValueError(
-                f"Invalid client_preference: {model_config.client_preference}. Must be 'native', 'litellm', or 'openrouter'."
+        # --- Instantiate the correct handler via the shared registry ---
+        try:
+            self.client_handler = self.provider_registry.create_handler(model_config)
+            self.logger.info(
+                "Using %s for %s (provider=%s, preference=%s)",
+                type(self.client_handler).__name__,
+                model_config.model,
+                model_config.provider,
+                model_config.client_preference,
             )
+        except RuntimeError as e:
+            self.logger.error("Provider handler unavailable: %s", e)
+            raise RuntimeError(str(e)) from e
+        except Exception as e:
+            self.logger.error(
+                "Failed to initialize provider handler for %s/%s: %s",
+                model_config.provider,
+                model_config.model,
+                e,
+                exc_info=True,
+            )
+            raise ValueError(f"Could not initialize provider handler: {e}") from e
 
         # Common properties (potentially less relevant now?)
         self.max_history_tokens = (
@@ -375,24 +345,7 @@ class APIClient:
 
     def _canonicalize_native_model_id(self) -> None:
         """Normalize provider-prefixed native model IDs before adapter creation."""
-        if getattr(self.model_config, "client_preference", "native") != "native":
-            return
-
-        provider = str(getattr(self.model_config, "provider", "") or "").strip().lower()
-        if provider not in {"openai", "anthropic"}:
-            return
-
-        model_value = str(getattr(self.model_config, "model", "") or "").strip()
-        if "/" not in model_value:
-            return
-
-        prefix, remainder = model_value.split("/", 1)
-        if prefix.strip().lower() != provider:
-            return
-        if not remainder.strip():
-            return
-
-        self.model_config.model = remainder.strip()
+        apply_model_config_transforms(self.model_config)
 
     def set_system_prompt(self, prompt: str) -> None:
         """Set the system prompt."""

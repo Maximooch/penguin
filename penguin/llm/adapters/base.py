@@ -1,38 +1,39 @@
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+
 class BaseAdapter(ABC):
     """Base adapter interface for LLM providers"""
-    
+
     @property
     @abstractmethod
     def provider(self) -> str:
         """Return the provider name"""
         pass
-    
+
     @abstractmethod
     def format_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Format messages for the specific provider"""
         pass
-    
+
     @abstractmethod
     def process_response(self, response: Any) -> Tuple[str, List[Any]]:
         """Process the raw model response into a standardized format"""
         pass
-    
+
     @abstractmethod
-    def count_tokens(self, text: str) -> int:
+    def count_tokens(self, content: Any) -> int:
         """
         Count tokens in the given text or structured content.
-        
+
         Args:
-            text: Text string or structured content to count tokens for
-            
+            content: Text string or structured content to count tokens for
+
         Returns:
             Approximate token count
         """
         pass
-    
+
     @abstractmethod
     async def create_completion(
         self,
@@ -45,7 +46,7 @@ class BaseAdapter(ABC):
     ) -> Any:
         """Create a completion request with optional streaming"""
         pass
-    
+
     @abstractmethod
     async def get_response(
         self,
@@ -70,11 +71,23 @@ class BaseAdapter(ABC):
             The complete response string.
         """
         pass
-    
+
     def supports_system_messages(self) -> bool:
         """Whether this provider supports system messages"""
         return True
-    
+
     def supports_vision(self) -> bool:
         """Whether this provider supports vision/images"""
-        return False 
+        return False
+
+    def get_last_usage(self) -> Dict[str, Any]:
+        """Return normalized usage from the most recent request when available."""
+        return {}
+
+    def has_pending_tool_call(self) -> bool:
+        """Return whether a tool call is waiting to execute."""
+        return False
+
+    def get_and_clear_last_tool_call(self) -> Optional[Dict[str, Any]]:
+        """Return the last captured tool call when supported by the provider."""
+        return None

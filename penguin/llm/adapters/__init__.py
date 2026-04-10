@@ -3,13 +3,15 @@ import logging
 
 __all__ = [
     "AnthropicAdapter",
-    "BaseAdapter", 
+    "BaseAdapter",
     "OllamaAdapter",
     "OpenAIAdapter",
+    "OpenAICompatibleAdapter",
     "get_adapter",
 ]
 
 from ..provider_adapters import get_provider_adapter
+from ..provider_transform import normalize_provider_name
 from .base import BaseAdapter
 # Lazy import the heavy adapters to avoid import time overhead
 # from .anthropic import AnthropicAdapter
@@ -21,6 +23,8 @@ def get_adapter(provider: str, model_config):
     Get the appropriate adapter for the provider.
     Uses client_preference to determine whether to use native adapter or generic one.
     """
+    provider = normalize_provider_name(provider)
+
     # Try to import native adapter first if client_preference is 'native'
     try:
         # Map provider names to module & class names
@@ -28,6 +32,7 @@ def get_adapter(provider: str, model_config):
             "anthropic": ("anthropic", "AnthropicAdapter"),
             "ollama": ("ollama", "OllamaAdapter"),
             "openai": ("openai", "OpenAIAdapter"),
+            "openai_compatible": ("openai_compatible", "OpenAICompatibleAdapter"),
             # Add more mappings as needed
         }
 
