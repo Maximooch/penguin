@@ -841,7 +841,13 @@ class ConversationManager:
         return self.conversation.list_context_files()
 
     def add_action_result(
-        self, action_type: str, result: str, status: str = "completed"
+        self,
+        action_type: str,
+        result: str,
+        status: str = "completed",
+        *,
+        tool_call_id: Optional[str] = None,
+        tool_arguments: Optional[str] = None,
     ) -> Message:
         """
         Add an action result to conversation.
@@ -854,7 +860,13 @@ class ConversationManager:
         Returns:
             The created Message object
         """
-        return self.conversation.add_action_result(action_type, result, status)
+        return self.conversation.add_action_result(
+            action_type,
+            result,
+            status,
+            tool_call_id=tool_call_id,
+            tool_arguments=tool_arguments,
+        )
 
     def get_token_usage(self) -> Dict[str, Any]:
         """

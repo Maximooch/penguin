@@ -36,6 +36,12 @@ class _EventBus:
     ("action", "params", "expected_tool", "expected_values"),
     [
         (
+            "code_execution",
+            {"code": "print(13)"},
+            "bash",
+            {"command": "print(13)", "description": "IPython"},
+        ),
+        (
             "insert_lines",
             {"path": "src/main.py", "after_line": 4, "new_content": "print('x')"},
             "edit",
@@ -212,6 +218,19 @@ def test_map_action_result_metadata_extracts_diff_for_replace_lines() -> None:
     assert metadata["filePath"] == "src/main.py"
     assert metadata["diff"].startswith("--- a/src/main.py")
     assert "+++ b/src/main.py" in metadata["diff"]
+
+
+def test_map_action_result_metadata_sets_output_for_code_execution() -> None:
+    core = PenguinCore.__new__(PenguinCore)
+
+    metadata = core._map_action_result_metadata(
+        "code_execution",
+        "13\nRESULT=13",
+        existing={"source": "test"},
+    )
+
+    assert metadata["source"] == "test"
+    assert metadata["output"] == "13\nRESULT=13"
 
 
 def test_map_action_result_metadata_extracts_diff_for_edit_with_pattern() -> None:

@@ -5046,7 +5046,7 @@ class PenguinCore:
                 or ""
             )
 
-        if action_name == "execute":
+        if action_name in {"execute", "code_execution"}:
             tool_input = {"command": raw, "description": "IPython"}
             return "bash", tool_input, metadata
 
@@ -5475,7 +5475,7 @@ class PenguinCore:
             if isinstance(raw_diff, str) and raw_diff.strip():
                 metadata["attemptedDiff"] = raw_diff
 
-        if action_name in {"execute", "execute_command"}:
+        if action_name in {"execute", "execute_command", "code_execution"}:
             metadata.setdefault("output", "" if result is None else str(result))
         if status != "error" and action_name in {"todowrite", "todoread"}:
             todos = self._extract_todos_from_result(result)

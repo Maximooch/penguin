@@ -340,12 +340,27 @@ class _ScopedConversationManager:
         action_type: str,
         result: str,
         status: str = "completed",
+        *,
+        tool_call_id: Optional[str] = None,
+        tool_arguments: Optional[str] = None,
     ) -> Any:
         if self._conversation is not None and hasattr(
             self._conversation, "add_action_result"
         ):
-            return self._conversation.add_action_result(action_type, result, status)
-        return self._base_manager.add_action_result(action_type, result, status)
+            return self._conversation.add_action_result(
+                action_type,
+                result,
+                status,
+                tool_call_id=tool_call_id,
+                tool_arguments=tool_arguments,
+            )
+        return self._base_manager.add_action_result(
+            action_type,
+            result,
+            status,
+            tool_call_id=tool_call_id,
+            tool_arguments=tool_arguments,
+        )
 
     def get_current_session(self) -> Any:
         session = getattr(self._conversation, "session", None)
@@ -941,6 +956,8 @@ class Engine:
             - should_break: True if loop should terminate
             - completion_status: Status string if breaking, None otherwise
         """
+        stripped_response = (last_response or "").strip()
+
         # Check for no-action completion (models that don't use CodeAct format)
         if not iteration_results and last_response:
             if self._looks_like_malformed_action_output(last_response):
@@ -958,6 +975,15 @@ class Engine:
                 )
                 return True, "implicit_completion" if mode == "task" else None
 
+        # Tool-only turns are valid for providers like OpenAI/Codex. Treat an
+        # empty assistant transcript as in-progress work rather than a loop.
+        if iteration_results and not stripped_response:
+            loop_state = self._get_loop_state()
+            loop_state.empty_response_count = 0
+            loop_state.repeat_count = 0
+            loop_state.last_response_hash = None
+            return False, None
+
         # Check for confused model echoing tool results
         if last_response and "[Tool Result]" in last_response:
             logger.warning(
@@ -974,7 +1000,11 @@ class Engine:
             return True, "implicit_completion" if mode == "task" else None
 
         # Check for empty/trivial responses
-        stripped_response = (last_response or "").strip()
+        # Tool-bearing turns with assistant text still reset the trivial counter.
+        if iteration_results:
+            loop_state.empty_response_count = 0
+            return False, None
+
         is_empty_or_trivial, should_break = loop_state.check_trivial(last_response)
 
         # DIAGNOSTIC: Log trivial responses
@@ -2166,10 +2196,13 @@ class Engine:
         return await execute_pending_tool_call(
             api_client=api_client,
             tool_manager=tool_manager,
-            persist_action_result=lambda action_result: cm.add_action_result(
+            persist_action_result=lambda action_result,
+            tool_context: cm.add_action_result(
                 action_type=action_result["action"],
                 result=action_result["result"],
                 status=action_result["status"],
+                tool_call_id=tool_context.get("tool_call_id"),
+                tool_arguments=tool_context.get("tool_arguments"),
             ),
             emit_action_start=(
                 (lambda payload: cm.core.emit_ui_event("action", payload))

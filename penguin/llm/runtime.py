@@ -261,7 +261,7 @@ async def execute_pending_tool_call(
     *,
     api_client: Any,
     tool_manager: Any,
-    persist_action_result: Callable[[Dict[str, Any]], None],
+    persist_action_result: Callable[[Dict[str, Any], Dict[str, Any]], None],
     emit_action_start: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_action_result: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     emit_tool_timeline: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
@@ -328,7 +328,13 @@ async def execute_pending_tool_call(
             "result": str(output if output is not None else ""),
             "status": "completed",
         }
-        persist_action_result(action_result)
+        persist_action_result(
+            action_result,
+            {
+                "tool_call_id": tool_call_id,
+                "tool_arguments": raw_args if isinstance(raw_args, str) else None,
+            },
+        )
 
         if emit_action_result is not None:
             await emit_action_result(

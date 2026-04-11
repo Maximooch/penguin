@@ -408,6 +408,94 @@ async def test_oauth_stream_records_reasoning_debug_snapshot(
     assert "response.completed" in debug_snapshot["event_types"]
 
 
+def test_codex_input_items_include_function_call_and_output_for_tool_history() -> None:
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    _, transformed = adapter._prepare_codex_messages_and_instructions(
+        None,
+        [
+            {
+                "role": "assistant",
+                "content": "Running a tiny Python function now.",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "code_execution",
+                            "arguments": '{"code":"print(13)"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_123",
+                "content": "13\nRESULT=13",
+                "name": "code_execution",
+            },
+        ],
+    )
+
+    items = adapter._build_codex_input_items(transformed)
+
+    assert {
+        "type": "function_call",
+        "call_id": "call_123",
+        "name": "code_execution",
+        "arguments": '{"code":"print(13)"}',
+    } in items
+    assert {
+        "type": "function_call_output",
+        "call_id": "call_123",
+        "output": "13\nRESULT=13",
+    } in items
+
+
+def test_codex_input_items_synthesize_function_call_from_tool_message_when_needed() -> (
+    None
+):
+    model_config = ModelConfig(
+        model="gpt-5.4",
+        provider="openai",
+        client_preference="native",
+        api_key="sk-test",
+    )
+    adapter = OpenAIAdapter(model_config)
+
+    items = adapter._build_codex_input_items(
+        [
+            {
+                "role": "tool",
+                "tool_call_id": "call_456",
+                "name": "code_execution",
+                "tool_arguments": '{"code":"print(44)"}',
+                "content": "44\nRESULT=44",
+            }
+        ]
+    )
+
+    assert items == [
+        {
+            "type": "function_call",
+            "call_id": "call_456",
+            "name": "code_execution",
+            "arguments": '{"code":"print(44)"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_456",
+            "output": "44\nRESULT=44",
+        },
+    ]
+
+
 @pytest.mark.asyncio
 async def test_oauth_request_refreshes_before_codex_call(
     monkeypatch: pytest.MonkeyPatch,

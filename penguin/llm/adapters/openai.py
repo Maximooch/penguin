@@ -748,14 +748,7 @@ class OpenAIAdapter(BaseAdapter):
             saw_non_system_message = True
 
             if role == "tool":
-                tool_text = self._extract_codex_text_content(message.get("content"))
-                if tool_text:
-                    transformed_messages.append(
-                        {
-                            "role": "user",
-                            "content": f"[TOOL RESULT]\n{tool_text}",
-                        }
-                    )
+                transformed_messages.append({**message, "role": "tool"})
                 continue
 
             transformed_messages.append(
@@ -778,10 +771,64 @@ class OpenAIAdapter(BaseAdapter):
         messages: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
         items: List[Dict[str, Any]] = []
+        seen_function_call_ids: set[str] = set()
         for message in messages:
-            role = self._normalize_codex_role(
-                str(message.get("role", "user") or "user")
-            )
+            raw_role = str(message.get("role", "user") or "user")
+            role = self._normalize_codex_role(raw_role)
+
+            if raw_role.strip().lower() == "tool":
+                tool_call_id = str(message.get("tool_call_id") or "").strip()
+                output_text = self._extract_codex_text_content(message.get("content"))
+                tool_name = str(message.get("name") or "").strip()
+                tool_arguments = (
+                    str(message.get("tool_arguments") or "{}").strip() or "{}"
+                )
+                if (
+                    tool_call_id
+                    and tool_call_id not in seen_function_call_ids
+                    and tool_name
+                ):
+                    items.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tool_call_id,
+                            "name": tool_name,
+                            "arguments": tool_arguments,
+                        }
+                    )
+                    seen_function_call_ids.add(tool_call_id)
+                if tool_call_id and output_text:
+                    items.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": tool_call_id,
+                            "output": output_text,
+                        }
+                    )
+                continue
+
+            tool_calls = message.get("tool_calls")
+            if role == "assistant" and isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function_payload = tool_call.get("function")
+                    if not isinstance(function_payload, dict):
+                        continue
+                    call_id = str(tool_call.get("id") or "").strip()
+                    name = str(function_payload.get("name") or "").strip()
+                    arguments = function_payload.get("arguments") or "{}"
+                    if call_id and name:
+                        items.append(
+                            {
+                                "type": "function_call",
+                                "call_id": call_id,
+                                "name": name,
+                                "arguments": str(arguments),
+                            }
+                        )
+                        seen_function_call_ids.add(call_id)
+
             text_part_type = self._codex_text_part_type_for_role(role)
             content = message.get("content", "")
             parts: List[Dict[str, Any]] = []
@@ -1461,9 +1508,15 @@ class OpenAIAdapter(BaseAdapter):
                             fixed_parts.append(part)
                     else:
                         fixed_parts.append({"type": "text", "text": str(part)})
-                normalized.append({"role": role, "content": fixed_parts})
+                item = dict(m)
+                item["role"] = role
+                item["content"] = fixed_parts
+                normalized.append(item)
             else:
-                normalized.append({"role": role, "content": str(content)})
+                item = dict(m)
+                item["role"] = role
+                item["content"] = str(content)
+                normalized.append(item)
         return normalized
 
     def process_response(self, response: Any) -> Tuple[str, List[Any]]:

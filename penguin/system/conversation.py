@@ -285,7 +285,13 @@ class ConversationSystem:
         return self.add_message("assistant", content)
 
     def add_action_result(
-        self, action_type: str, result: str, status: str = "completed"
+        self,
+        action_type: str,
+        result: str,
+        status: str = "completed",
+        *,
+        tool_call_id: Optional[str] = None,
+        tool_arguments: Optional[str] = None,
     ) -> Message:
         """
         Add an action result message using the 'tool' role for better
@@ -312,7 +318,7 @@ class ConversationSystem:
                 break
 
         # Generate a unique ID for this tool interaction
-        tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
+        resolved_tool_call_id = tool_call_id or f"call_{uuid.uuid4().hex[:8]}"
 
         if last_assistant_message:
             # Ensure the assistant message's metadata is a dict
@@ -327,11 +333,11 @@ class ConversationSystem:
             # the tool call from the assistant's content. Here, we just log it.
             last_assistant_message.metadata["tool_calls"].append(
                 {
-                    "id": tool_call_id,
+                    "id": resolved_tool_call_id,
                     "type": "function",
                     "function": {
                         "name": action_type,
-                        "arguments": "...",  # Placeholder for arguments
+                        "arguments": tool_arguments or "{}",
                     },
                 }
             )
@@ -342,8 +348,9 @@ class ConversationSystem:
             content=str(result),  # Content is just the result string
             category=MessageCategory.SYSTEM_OUTPUT,
             metadata={
-                "tool_call_id": tool_call_id,
+                "tool_call_id": resolved_tool_call_id,
                 "action_type": action_type,
+                "tool_arguments": tool_arguments,
                 "status": status,
             },
             message_type="action",
@@ -458,10 +465,17 @@ class ConversationSystem:
                 # Optionally add 'name' if the action_type is available
                 if "action_type" in msg.metadata:
                     api_msg["name"] = msg.metadata["action_type"]
+                if "tool_arguments" in msg.metadata:
+                    api_msg["tool_arguments"] = msg.metadata["tool_arguments"]
                 messages.append(api_msg)
             else:
                 # Standard message format
-                messages.append({"role": msg.role, "content": msg.content})
+                api_msg = {"role": msg.role, "content": msg.content}
+                if msg.role == "assistant" and isinstance(msg.metadata, dict):
+                    tool_calls = msg.metadata.get("tool_calls")
+                    if isinstance(tool_calls, list) and tool_calls:
+                        api_msg["tool_calls"] = tool_calls
+                messages.append(api_msg)
             # --- END MODIFICATION ---
 
         # If no messages, add a default user message to prevent API errors
